@@ -220,6 +220,9 @@ mod pg_support {
 /// Asynchronous execution adapter over [`tokio_postgres::Client`].
 #[cfg(feature = "tokio-postgres")]
 mod async_backend {
+    use std::future::Future;
+    use std::pin::Pin;
+
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{BuiltQuery, ExecutableQuery, ExecutionError};
     use rurqe_core::row::FromRow;
@@ -328,6 +331,38 @@ mod async_backend {
                 .await
                 .map_err(ExecutionError::Backend)
         }
+
+        /// Runs `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
+        ///
+        /// The closure receives a mutable borrow of the connection and returns a
+        /// boxed future, so queries can be awaited inside the transaction. Any
+        /// error returned by `f` rolls the transaction back.
+        pub async fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
+        where
+            F: for<'a> FnOnce(
+                &'a mut PgAsyncConnection,
+            ) -> Pin<Box<dyn Future<Output = Result<T, E>> + 'a>>,
+            E: From<PgError>,
+        {
+            self.client
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|error| E::from(PgError::from(error)))?;
+            let outcome = f(self).await;
+            match outcome {
+                Ok(value) => {
+                    self.client
+                        .batch_execute("COMMIT")
+                        .await
+                        .map_err(|error| E::from(PgError::from(error)))?;
+                    Ok(value)
+                }
+                Err(error) => {
+                    let _ = self.client.batch_execute("ROLLBACK").await;
+                    Err(error)
+                }
+            }
+        }
     }
 }
 
@@ -336,7 +371,7 @@ mod async_backend {
 mod sync_backend {
     use postgres::types::ToSql;
     use rurqe_core::expr::SqlVal;
-    use rurqe_core::query::{BuiltQuery, QueryBackend};
+    use rurqe_core::query::{BuiltQuery, QueryBackend, TransactionBackend};
 
     use crate::pg_support::{row_to_sql_vals, PgError, SqlValParam};
 
@@ -370,6 +405,30 @@ mod sync_backend {
         pub fn into_inner(self) -> postgres::Client {
             self.client
         }
+
+        /// Runs `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
+        ///
+        /// The block executes between `BEGIN` and `COMMIT`; any error returned by
+        /// `f` rolls the transaction back, so a failed block never leaves partial
+        /// work behind.
+        pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
+        where
+            F: FnOnce(&mut PgConnection) -> Result<T, E>,
+            E: From<PgError>,
+        {
+            self.begin(None).map_err(E::from)?;
+            let outcome = f(self);
+            match outcome {
+                Ok(value) => {
+                    self.commit().map_err(E::from)?;
+                    Ok(value)
+                }
+                Err(error) => {
+                    let _ = self.rollback();
+                    Err(error)
+                }
+            }
+        }
     }
 
     impl QueryBackend for PgConnection {
@@ -394,6 +453,8 @@ mod sync_backend {
             Ok(self.client.execute(query.sql.as_str(), &refs)?)
         }
     }
+
+    impl TransactionBackend for PgConnection {}
 }
 
 #[cfg(feature = "tokio-postgres")]
