@@ -35,7 +35,7 @@ Rather than failing at runtime when an engine lacks a feature, SQL capabilities 
 - `SupportsDistinctOn: Dialect` (PostgreSQL only)
 - `SupportsReturning: Dialect` (PostgreSQL, SQLite 3.35+)
 - `SupportsIlike: Dialect` (PostgreSQL)
-- `SupportsOnConflict: Dialect` (PostgreSQL, SQLite)
+- `SupportsOnConflict: Dialect` (PostgreSQL, SQLite 3.24+)
 
 Methods requiring specific SQL features are gated via trait bounds:
 ```rust
@@ -45,7 +45,26 @@ impl<D: SupportsDistinctOn, T: Table> SelectQuery<D, T> {
 ```
 Attempting to invoke `.distinct_on(...)` on a `SelectQuery<Sqlite, ...>` produces a compile error: *the trait `SupportsDistinctOn` is not implemented for `Sqlite`*.
 
-### 3. Dialect-Specific Extension Traits
+### 3. Version-Aware Capabilities & Minimum Engine Target
+Database features frequently depend on the target engine release:
+- **SQLite:** `UPSERT` (3.24+), generated columns (3.31+), `RETURNING` (3.35+), `->` / `->>` JSON operators (3.38+).
+- **PostgreSQL:** `jsonpath` (12+), multirange types (14+), `MERGE` statement (15+), enhanced regex / JSON constructors (16+).
+- **MySQL:** CTEs and Window Functions (8.0+ vs 5.7).
+
+To represent engine versions at zero runtime cost without fragmented dialect types:
+- Dialects accept an optional type-level version parameter with modern defaults (e.g., `Postgres<V = Pg16>`, `Sqlite<V = Sqlite3_35>`).
+- Capability traits are conditionally implemented based on version bounds:
+  ```rust
+  impl<V: SqliteVersionAtLeast<3, 35>> SupportsReturning for Sqlite<V> {}
+  impl<V: PgVersionAtLeast<15>> SupportsMerge for Postgres<V> {}
+  ```
+- Target version is specified once in project configuration or codegen CLI (`target_version = "sqlite:3.35"`), binding the target type to the generated schema.
+- Calling a feature unsupported by the configured version produces a focused compiler diagnostic via `#[diagnostic::on_unimplemented]`:
+  ```text
+  error[E0277]: The `RETURNING` clause requires SQLite 3.35.0+, but target dialect is configured for `Sqlite<Sqlite3_24>`
+  ```
+
+### 4. Dialect-Specific Extension Traits
 Engine-exclusive syntax (such as PostgreSQL JSONB operators `@>`, `?|`, regex matching `~`, or full-text search) is exposed via dedicated extension traits (`PgExpressions`, `SqliteExpressions`) that decorate expressions only when the active dialect matches.
 
 ---
@@ -96,7 +115,7 @@ Create a lightweight, strictly typed query builder core with an extensible multi
 - **Multi-Dialect Foundation:**
   - `Dialect` trait specifying identifier quoting and placeholder formatting.
   - `Postgres` dialect implementation (`$1, $2, ...` placeholders, double-quote identifiers).
-  - Capability marker traits infrastructure (`SupportsReturning`, `SupportsDistinctOn`).
+  - Capability marker traits infrastructure (`SupportsReturning`, `SupportsDistinctOn`, version-gated capabilities).
 - **Core Abstractions:**
   - `Table` trait: table identifier and schema namespace.
   - `Column` trait: column name, parent table marker, and associated `RustType` & `SqlType`.
@@ -173,11 +192,11 @@ Expand the query builder into a comprehensive CRUD library with compile-time saf
   - Bulk inserts (`insert_many`).
 - **Compile-Time Safe `UPDATE` & `DELETE`:**
   - Typestate enforcement: prevents executing `UPDATE` or `DELETE` without a `WHERE` clause unless explicitly overridden (`.allow_all()`).
-- **Dialect-Gated `RETURNING` Clause:**
-  - Available where `D: SupportsReturning`.
+- **Dialect- and Version-Gated `RETURNING` Clause:**
+  - Available where `D: SupportsReturning` (PostgreSQL, SQLite 3.35+).
   - Return individual columns, typed tuples, or complete record structs upon mutation.
-- **Dialect-Aware Conflict Handling (Upsert):**
-  - Standard `ON CONFLICT (columns) DO NOTHING / DO UPDATE` for dialects implementing `SupportsOnConflict`.
+- **Dialect- and Version-Aware Conflict Handling (Upsert):**
+  - Standard `ON CONFLICT (columns) DO NOTHING / DO UPDATE` for dialects implementing `SupportsOnConflict` (PostgreSQL, SQLite 3.24+).
   - Dialect-specific upsert syntax variants formatted transparently.
 
 ### Example Usage
