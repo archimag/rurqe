@@ -131,6 +131,8 @@ let mut pg_sync = PgConnection::new(client);
 let users = query.fetch_all(&mut pg_sync)?;
 ```
 
+The complete SQLite CRUD lifecycle — typed `INSERT ... RETURNING`, a filtered `SELECT`, an `UPDATE ... RETURNING`, a `DELETE` reporting affected rows, and an optional single-row lookup — is verified end to end through the facade in `crates/rurqe/tests/sqlite_e2e.rs`.
+
 ### 6. Embedded Migrations
 
 ```rust
