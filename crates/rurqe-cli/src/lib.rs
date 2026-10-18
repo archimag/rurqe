@@ -11,8 +11,10 @@ pub use cli::{parse_args, run_cli, CliCommand, CliError};
 pub use codegen::{generate_schema_rs, CodegenOptions};
 pub use drift::{verify_drift, DriftError, DriftReport, SchemaDiff};
 pub use introspect::{
-    catalog_from_metadata, map_sql_type_to_kind, IntrospectQueries, RawColumnMetadata,
-    RawForeignKeyMetadata, RawPrimaryKeyMetadata, RawTableMetadata,
+    catalog_from_metadata, catalog_from_sqlite_metadata, detect_dialect, map_sql_type_to_kind,
+    DatabaseDialect, IntrospectQueries, RawColumnMetadata, RawForeignKeyMetadata,
+    RawPrimaryKeyMetadata, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
+    RawSqliteTableMetadata, RawTableMetadata,
 };
 pub use loader::{load_migrations_from_dir, read_migration_files};
 

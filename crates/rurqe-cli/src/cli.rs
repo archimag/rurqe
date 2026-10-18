@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use rurqe_migrate::version::MigrationVersion;
 
+use crate::introspect::detect_dialect;
+
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -301,16 +303,29 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             println!("Baselining database at version {version} ({description})...");
             Ok(())
         }
-        CliCommand::Codegen { output, lock_path, .. } => {
+        CliCommand::Codegen {
+            database_url,
+            output,
+            lock_path,
+        } => {
+            let dialect = detect_dialect(database_url.as_deref());
             println!(
-                "Generating schema to {} and snapshot to {}...",
+                "Generating {dialect} schema to {} and snapshot to {}...",
                 output.display(),
                 lock_path.display()
             );
             Ok(())
         }
-        CliCommand::Verify { lock_path, .. } => {
-            println!("Verifying schema against {}...", lock_path.display());
+        CliCommand::Verify {
+            database_url,
+            lock_path,
+            ..
+        } => {
+            let dialect = detect_dialect(database_url.as_deref());
+            println!(
+                "Verifying {dialect} schema against {}...",
+                lock_path.display()
+            );
             Ok(())
         }
     }
