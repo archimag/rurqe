@@ -293,35 +293,136 @@ mod rusqlite_backend {
         }
     }
 
+    pub(crate) fn fetch_raw_with(
+        connection: &mut Connection,
+        query: &BuiltQuery,
+    ) -> Result<Vec<Vec<SqlVal>>, ::rusqlite::Error> {
+        let mut statement = connection.prepare(&query.sql)?;
+        let column_count = statement.column_count();
+        let params = query.params.iter().map(SqlValParam);
+        let mut rows = statement.query(::rusqlite::params_from_iter(params))?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut values = Vec::with_capacity(column_count);
+            for index in 0..column_count {
+                values.push(value_ref_to_sql_val(row.get_ref(index)?));
+            }
+            result.push(values);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn execute_raw_with(
+        connection: &mut Connection,
+        query: &BuiltQuery,
+    ) -> Result<u64, ::rusqlite::Error> {
+        let params = query.params.iter().map(SqlValParam);
+        let affected = connection.execute(&query.sql, ::rusqlite::params_from_iter(params))?;
+        Ok(affected as u64)
+    }
+
     impl QueryBackend for SqliteConnection {
         type Error = ::rusqlite::Error;
 
         fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-            let mut statement = self.connection.prepare(&query.sql)?;
-            let column_count = statement.column_count();
-            let params = query.params.iter().map(SqlValParam);
-            let mut rows = statement.query(::rusqlite::params_from_iter(params))?;
-
-            let mut result = Vec::new();
-            while let Some(row) = rows.next()? {
-                let mut values = Vec::with_capacity(column_count);
-                for index in 0..column_count {
-                    values.push(value_ref_to_sql_val(row.get_ref(index)?));
-                }
-                result.push(values);
-            }
-            Ok(result)
+            fetch_raw_with(&mut self.connection, query)
         }
 
         fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
-            let params = query.params.iter().map(SqlValParam);
-            let affected = self
-                .connection
-                .execute(&query.sql, ::rusqlite::params_from_iter(params))?;
-            Ok(affected as u64)
+            execute_raw_with(&mut self.connection, query)
         }
     }
 }
+
+#[cfg(feature = "r2d2")]
+mod r2d2_pool {
+    use std::error::Error as StdError;
+    use std::fmt;
+
+    use r2d2::ManageConnection;
+    use rurqe_core::expr::SqlVal;
+    use rurqe_core::query::{BuiltQuery, QueryBackend};
+
+    use crate::rusqlite_backend::{execute_raw_with, fetch_raw_with};
+
+    /// An `r2d2` pool of SQLite connections.
+    ///
+    /// The pool implements the RURQE
+    /// [`QueryBackend`](rurqe_core::query::QueryBackend) contract, so the
+    /// `fetch_all`, `fetch_one`, `fetch_optional`, and `execute` helpers of
+    /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available
+    /// directly on the pool: every call checks a connection out, runs the
+    /// statement, and returns the connection to the pool.
+    ///
+    /// ```
+    /// use rurqe_sqlite::rusqlite::Connection;
+    /// use r2d2_sqlite::SqliteConnectionManager;
+    ///
+    /// let manager = SqliteConnectionManager::memory();
+    /// let pool = r2d2::Pool::builder().max_size(4).build(manager).unwrap();
+    /// let _pool = rurqe_sqlite::SqlitePool::new(pool);
+    /// ```
+    pub struct SqlitePool<M: ManageConnection> {
+        pool: r2d2::Pool<M>,
+    }
+
+    impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
+        /// Wraps an existing `r2d2` pool managing `rusqlite` connections.
+        pub fn new(pool: r2d2::Pool<M>) -> Self {
+            Self { pool }
+        }
+
+        /// Checks a connection out of the pool.
+        pub fn get(&self) -> Result<r2d2::PooledConnection<M>, r2d2::Error> {
+            self.pool.get()
+        }
+    }
+
+    /// Error raised while executing a query through an `r2d2` SQLite pool.
+    #[derive(Debug)]
+    pub enum SqlitePoolError {
+        /// The connection could not be checked out of the pool.
+        Pool(r2d2::Error),
+        /// The statement failed to execute.
+        Query(::rusqlite::Error),
+    }
+
+    impl fmt::Display for SqlitePoolError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                SqlitePoolError::Pool(error) => write!(f, "connection pool error: {error}"),
+                SqlitePoolError::Query(error) => write!(f, "SQLite query error: {error}"),
+            }
+        }
+    }
+
+    impl StdError for SqlitePoolError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            match self {
+                SqlitePoolError::Pool(error) => Some(error),
+                SqlitePoolError::Query(error) => Some(error),
+            }
+        }
+    }
+
+    impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for SqlitePool<M> {
+        type Error = SqlitePoolError;
+
+        fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+            let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+            fetch_raw_with(&mut *connection, query).map_err(SqlitePoolError::Query)
+        }
+
+        fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
+            let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+            execute_raw_with(&mut *connection, query).map_err(SqlitePoolError::Query)
+        }
+    }
+}
+
+#[cfg(feature = "r2d2")]
+pub use r2d2_pool::{SqlitePool, SqlitePoolError};
 
 #[cfg(test)]
 mod tests {

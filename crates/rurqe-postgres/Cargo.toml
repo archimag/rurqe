@@ -10,9 +10,13 @@ description = "PostgreSQL dialect implementation and runtime adapters for RURQE"
 [dependencies]
 rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
 bytes = { version = "1", optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
 postgres = { version = "0.19", optional = true }
+r2d2 = { version = "0.8", optional = true }
 tokio-postgres = { version = "0.7", optional = true }
 
 [features]
 postgres = ["dep:postgres", "tokio-postgres"]
 tokio-postgres = ["dep:tokio-postgres", "dep:bytes"]
+deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
+r2d2 = ["dep:r2d2", "postgres"]

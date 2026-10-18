@@ -182,6 +182,15 @@ pub mod prelude {
         Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_35, SqliteConnection, SqliteVersion,
     };
 
+    #[cfg(feature = "r2d2")]
+    pub use rurqe_postgres::{PgPool, PgPoolError};
+
+    #[cfg(feature = "r2d2")]
+    pub use rurqe_sqlite::{SqlitePool, SqlitePoolError};
+
+    #[cfg(feature = "deadpool-postgres")]
+    pub use rurqe_postgres::PgAsyncPool;
+
     #[cfg(feature = "migrate")]
     pub use rurqe_migrate::{
         embed_migrations, Checksum, EmbeddedMigrations, Migration, MigrationKind, MigrationStatus,
