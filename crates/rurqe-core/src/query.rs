@@ -73,6 +73,42 @@ impl_selection!(
     (C6, RustType)
 );
 
+/// A column or tuple of columns for the `GROUP BY` clause.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid GROUP BY clause",
+    label = "group by a column or a tuple of columns",
+    note = "group by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
+)]
+pub trait GroupBy {
+    /// Appends the column names to `out` in grouping order.
+    fn push_column_names(&self, out: &mut Vec<&'static str>);
+}
+
+impl<C: Column> GroupBy for C {
+    fn push_column_names(&self, out: &mut Vec<&'static str>) {
+        out.push(C::NAME);
+    }
+}
+
+macro_rules! impl_group_by {
+    ($($column:ident),+) => {
+        impl<$($column: Column),+> GroupBy for ($($column,)+) {
+            fn push_column_names(&self, out: &mut Vec<&'static str>) {
+                $(out.push($column::NAME);)+
+            }
+        }
+    };
+}
+
+impl_group_by!(C1);
+impl_group_by!(C1, C2);
+impl_group_by!(C1, C2, C3);
+impl_group_by!(C1, C2, C3, C4);
+impl_group_by!(C1, C2, C3, C4, C5);
+impl_group_by!(C1, C2, C3, C4, C5, C6);
+impl_group_by!(C1, C2, C3, C4, C5, C6, C7);
+impl_group_by!(C1, C2, C3, C4, C5, C6, C7, C8);
+
 /// The ordered list of tables a query selects from, joined tables included.
 ///
 /// The trait is implemented for every [`Table`] and for each [`Joined`] scope
@@ -208,6 +244,8 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     projections: Vec<&'static str>,
     joins: Vec<(JoinKind, ExprKind)>,
     filter: Option<ExprKind>,
+    group_by: Vec<&'static str>,
+    having: Option<ExprKind>,
     order_by: Vec<(&'static str, OrderDirection)>,
     limit: Option<u32>,
     offset: Option<u32>,
@@ -227,6 +265,8 @@ impl<D: Dialect> SelectQuery<D, (), ()> {
             projections: Vec::new(),
             joins: Vec::new(),
             filter: None,
+            group_by: Vec::new(),
+            having: None,
             order_by: Vec::new(),
             limit: None,
             offset: None,
@@ -282,6 +322,31 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
             None => predicate,
         };
         self.filter = Some(filter);
+        self
+    }
+
+    /// Groups query results by `columns`.
+    ///
+    /// Calling this multiple times appends further grouping columns.
+    pub fn group_by<G: GroupBy>(mut self, columns: G) -> Self {
+        columns.push_column_names(&mut self.group_by);
+        self
+    }
+
+    /// Restricts grouped rows to those satisfying `predicate`.
+    ///
+    /// Repeated calls combine conditions with SQL `AND`.
+    pub fn having(mut self, predicate: Expr<bool>) -> Self {
+        let predicate = predicate.into_kind();
+        let having = match self.having.take() {
+            Some(existing) => ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs: Box::new(existing),
+                rhs: Box::new(predicate),
+            },
+            None => predicate,
+        };
+        self.having = Some(having);
         self
     }
 
@@ -351,6 +416,8 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
             projections: self.projections,
             joins: self.joins,
             filter: self.filter,
+            group_by: self.group_by,
+            having: self.having,
             order_by: self.order_by,
             limit: self.limit,
             offset: self.offset,
@@ -401,6 +468,21 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
             render_expr::<D>(&mut sql, &mut params, filter);
         }
 
+        if !self.group_by.is_empty() {
+            sql.push_str(" GROUP BY ");
+            for (index, name) in self.group_by.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
+            }
+        }
+
+        if let Some(having) = &self.having {
+            sql.push_str(" HAVING ");
+            render_expr::<D>(&mut sql, &mut params, having);
+        }
+
         if !self.order_by.is_empty() {
             sql.push_str(" ORDER BY ");
             for (index, (name, direction)) in self.order_by.iter().enumerate() {
@@ -439,6 +521,15 @@ fn render_expr<D: Dialect>(sql: &mut String, params: &mut Vec<SqlVal>, expr: &Ex
             sql.push_str(op.as_str());
             sql.push(' ');
             render_expr::<D>(sql, params, rhs);
+            sql.push(')');
+        }
+        ExprKind::Aggregate { func, arg } => {
+            sql.push_str(func.as_str());
+            sql.push('(');
+            match arg {
+                Some(inner) => render_expr::<D>(sql, params, inner),
+                None => sql.push('*'),
+            }
             sql.push(')');
         }
     }
@@ -626,6 +717,80 @@ mod tests {
 
         assert_eq!(Nullable::<OrderTotal>::NAME, OrderTotal::NAME);
         takes_optional_total::<Nullable<OrderTotal>>();
+    }
+
+    #[test]
+    fn group_by_renders_single_column_and_tuple() {
+        let single = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+            .group_by(UserId)
+            .build();
+        assert_eq!(single.sql, "SELECT \"id\" FROM \"users\" GROUP BY \"id\"");
+
+        let tuple = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .group_by((UserId, UserName))
+            .build();
+        assert_eq!(
+            tuple.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" GROUP BY \"id\", \"name\""
+        );
+    }
+
+    #[test]
+    fn multiple_group_by_calls_append_columns() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .group_by(UserId)
+            .group_by(UserName)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" GROUP BY \"id\", \"name\""
+        );
+    }
+
+    #[test]
+    fn having_renders_aggregate_filters_and_binds_parameters() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderUserId,))
+            .group_by(OrderUserId)
+            .having(Expr::count_all().gt(5i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" HAVING (COUNT(*) > $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(5)]);
+    }
+
+    #[test]
+    fn repeated_having_calls_are_combined_with_and() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderUserId,))
+            .where_(Expr::column::<OrderId>().gt(0i64))
+            .group_by(OrderUserId)
+            .having(Expr::count_all().gt(2i64))
+            .having(Expr::sum::<OrderTotal>().lt(100.0))
+            .order_by_asc(OrderUserId)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"user_id\" FROM \"orders\" WHERE (\"id\" > $1) GROUP BY \"user_id\" \
+             HAVING ((COUNT(*) > $2) AND (SUM(\"total\") < $3)) ORDER BY \"user_id\" ASC"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(0), SqlVal::I64(2), SqlVal::F64(100.0)]
+        );
     }
 
     #[test]

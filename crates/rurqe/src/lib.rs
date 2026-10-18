@@ -126,9 +126,10 @@ pub mod prelude {
     pub use crate::{delete_from, insert_into, update};
 
     pub use rurqe_core::{
-        table, At, BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Dialect, Expr, ExprKind,
-        FromRow, FromSqlValue, OrderDirection, SelectQuery, Selection, SqlCompatible, SqlVal,
-        SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
+        table, AggregateFunc, At, BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Dialect, Expr,
+        ExprKind, FromRow, FromSqlValue, GroupBy, OrderDirection, SelectQuery, Selection,
+        SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table,
+        TableInScope,
     };
 
     pub use rurqe_core::dml::{

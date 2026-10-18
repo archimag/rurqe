@@ -66,6 +66,34 @@ impl From<&str> for SqlVal {
     }
 }
 
+/// An aggregate function applied to a column or expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AggregateFunc {
+    /// `COUNT`
+    Count,
+    /// `SUM`
+    Sum,
+    /// `AVG`
+    Avg,
+    /// `MIN`
+    Min,
+    /// `MAX`
+    Max,
+}
+
+impl AggregateFunc {
+    /// The SQL name of the aggregate function.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AggregateFunc::Count => "COUNT",
+            AggregateFunc::Sum => "SUM",
+            AggregateFunc::Avg => "AVG",
+            AggregateFunc::Min => "MIN",
+            AggregateFunc::Max => "MAX",
+        }
+    }
+}
+
 /// The binary operator joining two sub-expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
@@ -115,6 +143,13 @@ pub enum ExprKind {
         lhs: Box<ExprKind>,
         /// The right-hand operand.
         rhs: Box<ExprKind>,
+    },
+    /// An aggregate function call.
+    Aggregate {
+        /// The aggregate function being applied.
+        func: AggregateFunc,
+        /// The optional operand; `None` represents `*` (as in `COUNT(*)`).
+        arg: Option<Box<ExprKind>>,
     },
 }
 
@@ -173,6 +208,39 @@ impl<T> Expr<T> {
         self.kind
     }
 
+    /// Builds a `SUM(C)` expression for column `C`.
+    pub fn sum<C>() -> Self
+    where
+        C: Column<RustType = T>,
+    {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Sum,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+
+    /// Builds a `MIN(C)` expression for column `C`.
+    pub fn min<C>() -> Self
+    where
+        C: Column<RustType = T>,
+    {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Min,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+
+    /// Builds a `MAX(C)` expression for column `C`.
+    pub fn max<C>() -> Self
+    where
+        C: Column<RustType = T>,
+    {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Max,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+
     /// Compares the expression with `value` using the SQL `=` operator.
     pub fn eq<V>(self, value: V) -> Expr<bool>
     where
@@ -210,6 +278,34 @@ impl<T> Expr<T> {
             op,
             lhs: Box::new(self.kind),
             rhs: Box::new(ExprKind::Value(value.into())),
+        })
+    }
+}
+
+impl Expr<i64> {
+    /// Builds a `COUNT(*)` expression.
+    pub fn count_all() -> Self {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            arg: None,
+        })
+    }
+
+    /// Builds a `COUNT(C)` expression for column `C`.
+    pub fn count<C: Column>() -> Self {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+}
+
+impl Expr<f64> {
+    /// Builds an `AVG(C)` expression for column `C`.
+    pub fn avg<C: Column>() -> Self {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Avg,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })
     }
 }
@@ -336,6 +432,61 @@ mod tests {
         assert_eq!(BinaryOp::Lt.as_str(), "<");
         assert_eq!(BinaryOp::And.as_str(), "AND");
         assert_eq!(BinaryOp::Or.as_str(), "OR");
+    }
+
+    #[test]
+    fn aggregate_expressions_build_expected_ast() {
+        assert_eq!(
+            Expr::count_all().kind(),
+            &ExprKind::Aggregate {
+                func: AggregateFunc::Count,
+                arg: None,
+            }
+        );
+        assert_eq!(
+            Expr::count::<UserId>().kind(),
+            &ExprKind::Aggregate {
+                func: AggregateFunc::Count,
+                arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            }
+        );
+        assert_eq!(
+            Expr::sum::<UserId>().kind(),
+            &ExprKind::Aggregate {
+                func: AggregateFunc::Sum,
+                arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            }
+        );
+        assert_eq!(
+            Expr::avg::<UserId>().kind(),
+            &ExprKind::Aggregate {
+                func: AggregateFunc::Avg,
+                arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            }
+        );
+        assert_eq!(
+            Expr::min::<UserId>().kind(),
+            &ExprKind::Aggregate {
+                func: AggregateFunc::Min,
+                arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            }
+        );
+        assert_eq!(
+            Expr::max::<UserName>().kind(),
+            &ExprKind::Aggregate {
+                func: AggregateFunc::Max,
+                arg: Some(Box::new(ExprKind::Column { name: "name" })),
+            }
+        );
+    }
+
+    #[test]
+    fn aggregate_names_render_sql_identifiers() {
+        assert_eq!(AggregateFunc::Count.as_str(), "COUNT");
+        assert_eq!(AggregateFunc::Sum.as_str(), "SUM");
+        assert_eq!(AggregateFunc::Avg.as_str(), "AVG");
+        assert_eq!(AggregateFunc::Min.as_str(), "MIN");
+        assert_eq!(AggregateFunc::Max.as_str(), "MAX");
     }
 
     #[test]

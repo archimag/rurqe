@@ -9,7 +9,7 @@ pub mod schema;
 
 pub use dialect::{Dialect, SupportsDistinctOn, SupportsOnConflict, SupportsReturning};
 pub use dml::{AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign};
-pub use expr::{BinaryOp, Expr, ExprKind, SqlCompatible, SqlVal};
-pub use query::{BuiltQuery, OrderDirection, SelectQuery, Selection};
+pub use expr::{AggregateFunc, BinaryOp, Expr, ExprKind, SqlCompatible, SqlVal};
+pub use query::{BuiltQuery, GroupBy, OrderDirection, SelectQuery, Selection};
 pub use row::{FromRow, FromSqlValue};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

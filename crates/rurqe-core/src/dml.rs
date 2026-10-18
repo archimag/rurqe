@@ -58,6 +58,15 @@ pub(crate) fn render_expr<D: Dialect>(
             render_expr::<D>(sql, params, rhs);
             sql.push(')');
         }
+        ExprKind::Aggregate { func, arg } => {
+            sql.push_str(func.as_str());
+            sql.push('(');
+            match arg {
+                Some(inner) => render_expr::<D>(sql, params, inner),
+                None => sql.push('*'),
+            }
+            sql.push(')');
+        }
     }
 }
 
