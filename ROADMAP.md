@@ -13,7 +13,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | Phase | Focus | User Capability | Product Maturity |
 |---|---|---|---|
 | **Phase 1** [x] | Type-Safe Core & AST | Strict `SELECT` with tuple mapping (Postgres first, dialect-ready) | Minimal Viable Query Builder (Completed) |
-| **Phase 2** [ ] | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer |
+| **Phase 2** [x] | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer (Completed) |
 | **Phase 3** [ ] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution |
 | **Phase 4** [ ] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder |
 | **Phase 5** [ ] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity |
@@ -64,18 +64,18 @@ let rows: Vec<(i32, String)> = db
 
 ---
 
-## Phase 2: Kysely DX: Macros for Named Projections (`select!` & DTOs)
+## Phase 2: Kysely DX: Macros for Named Projections (`select!` & DTOs) [Completed]
 
 ### Objective
 Eliminate tuple indexing (`row.0`, `row.1`) in favor of named fields matching Kysely's ergonomic developer experience, using Rust's macro system without requiring compile-time database connectivity.
 
 ### Key Deliverables
-- **Ad-Hoc Projection Macro (`select!`):**
+- [x] **Ad-Hoc Projection Macro (`select!`):**
   - Synthesizes an anonymous local row struct at the call site.
   - Resolves field types automatically from associated column markers (`<Col as Column>::RustType`).
   - Supports field aliasing (`users::EMAIL as contact_email`).
   - Implements row decoding traits automatically for the generated struct.
-- **DTO Macro (`dto!`):**
+- [x] **DTO Macro (`dto!`):**
   - Generates reusable structs for queries whose results must cross function boundaries, deriving field types directly from schema columns.
 
 ### Example Usage
