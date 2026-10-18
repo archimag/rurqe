@@ -12,4 +12,4 @@ pub use dml::{AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign
 pub use expr::{BinaryOp, Expr, ExprKind, SqlCompatible, SqlVal};
 pub use query::{BuiltQuery, OrderDirection, SelectQuery, Selection};
 pub use row::{FromRow, FromSqlValue};
-pub use schema::{Column, ColumnBelongsTo, Table, TableInScope};
+pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

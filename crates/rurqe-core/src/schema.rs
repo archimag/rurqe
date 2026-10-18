@@ -39,18 +39,94 @@ pub trait ColumnBelongsTo<T: Table> {}
 
 impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 
+/// Position marker used to disambiguate table membership in composite scopes.
+///
+/// Lone tables use position 0 ([`At<0>`]), while composite scopes such as `(T1, T2)`
+/// assign positions `At<1>`, `At<2>`, etc. to each member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct At<const N: usize>;
+
 /// Statically asserts that the [`Table`] `T` is part of the query scope.
 ///
 /// Expressions may only reference tables that were added to the query, and every
-/// table is trivially in scope of itself.
+/// table is trivially in scope of itself. Composite scopes represented as tuples
+/// contain each of their member tables at distinct positions.
+///
+/// ```compile_fail
+/// use rurqe_core::schema::{Table, TableInScope};
+///
+/// rurqe_core::table! {
+///     User => "users" { UserId => "id": i64, }
+///     Order => "orders" { OrderId => "id": i64, }
+/// }
+///
+/// fn require_in_scope<T: Table, S: TableInScope<T, P>, P>() {}
+///
+/// // Fails to compile because `Order` is not in scope of `User`:
+/// require_in_scope::<Order, User, _>();
+/// ```
 #[diagnostic::on_unimplemented(
     message = "table `{T}` is not part of this query's scope",
     label = "add `{T}` to the query before referencing its columns",
     note = "only tables introduced into the query scope can be used by its expressions"
 )]
-pub trait TableInScope<T: Table> {}
+pub trait TableInScope<T: Table, P = At<0>> {}
 
-impl<T: Table> TableInScope<T> for T {}
+impl<T: Table> TableInScope<T, At<0>> for T {}
+
+macro_rules! impl_tuple_scope {
+    ($(($elem:ident, $pos:expr) in ($($member:ident),+);)+) => {
+        $(
+            impl<$($member: Table),+> TableInScope<$elem, At<$pos>> for ($($member,)+) {}
+        )+
+    };
+}
+
+impl_tuple_scope! {
+    (T1, 1) in (T1);
+
+    (T1, 1) in (T1, T2);
+    (T2, 2) in (T1, T2);
+
+    (T1, 1) in (T1, T2, T3);
+    (T2, 2) in (T1, T2, T3);
+    (T3, 3) in (T1, T2, T3);
+
+    (T1, 1) in (T1, T2, T3, T4);
+    (T2, 2) in (T1, T2, T3, T4);
+    (T3, 3) in (T1, T2, T3, T4);
+    (T4, 4) in (T1, T2, T3, T4);
+
+    (T1, 1) in (T1, T2, T3, T4, T5);
+    (T2, 2) in (T1, T2, T3, T4, T5);
+    (T3, 3) in (T1, T2, T3, T4, T5);
+    (T4, 4) in (T1, T2, T3, T4, T5);
+    (T5, 5) in (T1, T2, T3, T4, T5);
+
+    (T1, 1) in (T1, T2, T3, T4, T5, T6);
+    (T2, 2) in (T1, T2, T3, T4, T5, T6);
+    (T3, 3) in (T1, T2, T3, T4, T5, T6);
+    (T4, 4) in (T1, T2, T3, T4, T5, T6);
+    (T5, 5) in (T1, T2, T3, T4, T5, T6);
+    (T6, 6) in (T1, T2, T3, T4, T5, T6);
+
+    (T1, 1) in (T1, T2, T3, T4, T5, T6, T7);
+    (T2, 2) in (T1, T2, T3, T4, T5, T6, T7);
+    (T3, 3) in (T1, T2, T3, T4, T5, T6, T7);
+    (T4, 4) in (T1, T2, T3, T4, T5, T6, T7);
+    (T5, 5) in (T1, T2, T3, T4, T5, T6, T7);
+    (T6, 6) in (T1, T2, T3, T4, T5, T6, T7);
+    (T7, 7) in (T1, T2, T3, T4, T5, T6, T7);
+
+    (T1, 1) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T2, 2) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T3, 3) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T4, 4) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T5, 5) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T6, 6) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T7, 7) in (T1, T2, T3, T4, T5, T6, T7, T8);
+    (T8, 8) in (T1, T2, T3, T4, T5, T6, T7, T8);
+}
 
 /// Declares a table marker type together with its column marker types.
 ///
@@ -84,6 +160,7 @@ macro_rules! table {
         }
     ) => {
         $(#[$table_meta])*
+        #[allow(dead_code)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $table;
 
@@ -93,6 +170,7 @@ macro_rules! table {
 
         $(
             $(#[$column_meta])*
+            #[allow(dead_code)]
             #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
             pub struct $column;
 
@@ -145,5 +223,30 @@ mod tests {
         fn assert_in_scope<T: Table + TableInScope<T>>() {}
 
         assert_in_scope::<User>();
+    }
+
+    crate::table! {
+        Order => "orders" {
+            OrderId => "id": i64,
+            OrderUserId => "user_id": i64,
+        }
+    }
+
+    #[test]
+    fn composite_scope_contains_all_member_tables() {
+        fn assert_in_scope<T: Table, S: TableInScope<T, P>, P>() {}
+
+        assert_in_scope::<User, (User, Order), _>();
+        assert_in_scope::<Order, (User, Order), _>();
+        assert_in_scope::<User, (Order, User), _>();
+        assert_in_scope::<Order, (Order, User), _>();
+    }
+
+    #[test]
+    fn composite_scope_supports_self_joins() {
+        fn assert_in_scope<T: Table, S: TableInScope<T, P>, P>() {}
+
+        assert_in_scope::<User, (User, User), At<1>>();
+        assert_in_scope::<User, (User, User), At<2>>();
     }
 }
