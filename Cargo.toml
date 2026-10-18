@@ -5,6 +5,7 @@ members = [
     "crates/rurqe-macros",
     "crates/rurqe-migrate",
     "crates/rurqe-postgres",
+    "crates/rurqe-sqlite",
     "crates/rurqe-cli",
 ]
 resolver = "2"

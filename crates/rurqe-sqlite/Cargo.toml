@@ -1,0 +1,11 @@
+[package]
+name = "rurqe-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SQLite dialect implementation and runtime adapters for RURQE"
+
+[dependencies]
+rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
