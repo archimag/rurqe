@@ -16,12 +16,22 @@
 //! ```text
 //! SELECT "id", "name" FROM "users" INNER JOIN "orders" ON ("user_id" = $1)
 //! ```
+//!
+//! Rendering and execution are decoupled: [`ExecutableQuery`] exposes both the
+//! rendered [`BuiltQuery`] and the row type of every query builder, while
+//! [`QueryBackend`] translates the typed [`SqlVal`] parameters into native
+//! driver values. [`QueryBackendExt`] adds `fetch_all`, `fetch_one`,
+//! `fetch_optional`, and `execute`, decoding every returned row through
+//! [`FromRow`].
 
+use core::fmt;
 use core::fmt::Write;
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
+use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal};
+use crate::row::FromRow;
 use crate::schema::{Column, Table};
 
 /// A list of selected columns whose Rust value types form the query row type.
@@ -535,9 +545,209 @@ fn render_expr<D: Dialect>(sql: &mut String, params: &mut Vec<SqlVal>, expr: &Ex
     }
 }
 
+/// A query whose statement can be rendered and whose rows decode into `Row`.
+///
+/// The trait gives every query builder — [`SelectQuery`], [`InsertQuery`],
+/// [`UpdateQuery`], and [`DeleteQuery`] — a uniform view on the rendered
+/// [`BuiltQuery`] and on the Rust type produced for a single result row, so
+/// execution helpers accept any of them. Queries without a `RETURNING` clause
+/// expose `()` as their row type, reflecting that they produce no rows.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be executed as a query",
+    label = "unsupported query type",
+    note = "executable queries are `SelectQuery`, `InsertQuery`, `UpdateQuery`, and `DeleteQuery`"
+)]
+pub trait ExecutableQuery {
+    /// The Rust type produced for a single row of the query.
+    type Row;
+
+    /// Renders the statement into SQL text and its ordered parameter list.
+    fn build_query(&self) -> BuiltQuery;
+}
+
+impl<D: Dialect, Tables: TableScope, Output> ExecutableQuery for SelectQuery<D, Tables, Output> {
+    type Row = Output;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, T: Table, Values, Returning> ExecutableQuery
+    for InsertQuery<D, T, Values, Returning>
+{
+    type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, T: Table, Returning> ExecutableQuery for UpdateQuery<D, T, Filtered, Returning> {
+    type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, T: Table, Returning> ExecutableQuery for DeleteQuery<D, T, Filtered, Returning> {
+    type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+/// A database driver capable of executing rendered queries.
+///
+/// A backend receives the statement as a [`BuiltQuery`], so it binds the typed
+/// [`SqlVal`] parameters through its native driver API instead of interpolating
+/// SQL text. Rows come back as ordered value lists, which
+/// [`QueryBackendExt`] decodes through [`FromRow`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot execute RURQE queries",
+    label = "unsupported query backend",
+    note = "driver adapters implement `QueryBackend` by translating `SqlVal` parameters into native driver values"
+)]
+pub trait QueryBackend {
+    /// The error raised by the driver.
+    type Error;
+
+    /// Executes `query` and returns every produced row as ordered values.
+    fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error>;
+
+    /// Executes `query` without decoding rows and returns the affected row count.
+    fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error>;
+}
+
+/// Error raised while executing a query through [`QueryBackendExt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionError<E> {
+    /// The driver failed to execute the statement.
+    Backend(E),
+    /// A produced row did not match the row type of the query.
+    RowDecode {
+        /// The zero-based index of the first row that failed to decode.
+        row_index: usize,
+    },
+    /// A single-row query produced no rows.
+    NoRows,
+    /// A single-row query produced more than one row.
+    MultipleRows {
+        /// The number of rows the query produced.
+        count: usize,
+    },
+}
+
+impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExecutionError::Backend(error) => write!(f, "database backend error: {error}"),
+            ExecutionError::RowDecode { row_index } => write!(
+                f,
+                "failed to decode row {row_index}: values do not match the query row type"
+            ),
+            ExecutionError::NoRows => {
+                f.write_str("expected exactly one row, but the query returned none")
+            }
+            ExecutionError::MultipleRows { count } => {
+                write!(f, "expected at most one row, but the query returned {count}")
+            }
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ExecutionError::Backend(error) => Some(error),
+            ExecutionError::RowDecode { .. }
+            | ExecutionError::NoRows
+            | ExecutionError::MultipleRows { .. } => None,
+        }
+    }
+}
+
+/// Execution helpers decoding query rows through [`FromRow`].
+///
+/// The trait is implemented for every [`QueryBackend`], adding typed helpers on
+/// top of the raw driver contract:
+///
+/// - [`fetch_all`](QueryBackendExt::fetch_all) decodes every produced row.
+/// - [`fetch_optional`](QueryBackendExt::fetch_optional) decodes at most one row.
+/// - [`fetch_one`](QueryBackendExt::fetch_one) requires exactly one row.
+/// - [`execute`](QueryBackendExt::execute) returns the affected row count.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a RURQE query backend",
+    label = "missing backend implementation",
+    note = "implement `QueryBackend` for the driver; `QueryBackendExt` is then available for free"
+)]
+pub trait QueryBackendExt: QueryBackend {
+    /// Executes `query` and decodes every produced row.
+    fn fetch_all<Q>(&mut self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        let built = query.build_query();
+        let rows = self.fetch_raw(&built).map_err(ExecutionError::Backend)?;
+        rows.iter()
+            .enumerate()
+            .map(|(row_index, values)| {
+                Q::Row::from_row(values).ok_or(ExecutionError::RowDecode { row_index })
+            })
+            .collect()
+    }
+
+    /// Executes `query` and decodes at most one row.
+    ///
+    /// Returns `None` when the query produces no rows and
+    /// [`ExecutionError::MultipleRows`] when it produces more than one.
+    fn fetch_optional<Q>(
+        &mut self,
+        query: &Q,
+    ) -> Result<Option<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        let rows = self.fetch_all(query)?;
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(rows.into_iter().next()),
+            count => Err(ExecutionError::MultipleRows { count }),
+        }
+    }
+
+    /// Executes `query` and decodes exactly one row.
+    ///
+    /// Returns [`ExecutionError::NoRows`] when the query produces no rows and
+    /// [`ExecutionError::MultipleRows`] when it produces more than one.
+    fn fetch_one<Q>(&mut self, query: &Q) -> Result<Q::Row, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        self.fetch_optional(query)?.ok_or(ExecutionError::NoRows)
+    }
+
+    /// Executes `query` and returns the number of affected rows.
+    fn execute<Q>(&mut self, query: &Q) -> Result<u64, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+    {
+        let built = query.build_query();
+        self.execute_raw(&built).map_err(ExecutionError::Backend)
+    }
+}
+
+impl<B: QueryBackend + ?Sized> QueryBackendExt for B {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dml::ColumnAssign;
 
     struct MockDialect;
 
@@ -550,6 +760,27 @@ mod tests {
 
         fn push_placeholder(out: &mut String, index: usize) {
             let _ = write!(out, "${index}");
+        }
+    }
+
+    #[derive(Default)]
+    struct MockBackend {
+        rows: Vec<Vec<SqlVal>>,
+        affected: u64,
+        executed: Vec<BuiltQuery>,
+    }
+
+    impl QueryBackend for MockBackend {
+        type Error = &'static str;
+
+        fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+            self.executed.push(query.clone());
+            Ok(self.rows.clone())
+        }
+
+        fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
+            self.executed.push(query.clone());
+            Ok(self.affected)
         }
     }
 
@@ -801,5 +1032,139 @@ mod tests {
             <(i64, Option<f64>)>::from_row(&[SqlVal::I64(1), SqlVal::Null]),
             Some((1, None))
         );
+    }
+
+    #[test]
+    fn fetch_all_renders_the_query_and_decodes_rows() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .where_(Expr::column::<UserId>().gt(10i64));
+
+        let mut backend = MockBackend {
+            rows: vec![
+                vec![SqlVal::I64(11), SqlVal::Text("root".to_owned())],
+                vec![SqlVal::I64(12), SqlVal::Text("guest".to_owned())],
+            ],
+            ..MockBackend::default()
+        };
+
+        let rows = backend.fetch_all(&query).expect("rows decode");
+
+        assert_eq!(
+            rows,
+            vec![(11i64, "root".to_owned()), (12i64, "guest".to_owned())]
+        );
+        assert_eq!(backend.executed, vec![query.build()]);
+    }
+
+    #[test]
+    fn fetch_one_reports_missing_and_duplicate_rows() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,));
+
+        let mut empty = MockBackend::default();
+        assert_eq!(empty.fetch_one(&query), Err(ExecutionError::NoRows));
+
+        let mut many = MockBackend {
+            rows: vec![vec![SqlVal::I64(1)], vec![SqlVal::I64(2)]],
+            ..MockBackend::default()
+        };
+        assert_eq!(
+            many.fetch_one(&query),
+            Err(ExecutionError::MultipleRows { count: 2 })
+        );
+
+        let mut single = MockBackend {
+            rows: vec![vec![SqlVal::I64(7)]],
+            ..MockBackend::default()
+        };
+        assert_eq!(single.fetch_one(&query), Ok((7i64,)));
+    }
+
+    #[test]
+    fn fetch_optional_returns_none_for_absent_rows() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,));
+
+        let mut backend = MockBackend::default();
+        assert_eq!(backend.fetch_optional(&query), Ok(None));
+
+        backend.rows = vec![vec![SqlVal::I64(3)]];
+        assert_eq!(backend.fetch_optional(&query), Ok(Some((3i64,))));
+    }
+
+    #[test]
+    fn fetch_all_reports_the_row_that_fails_to_decode() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,));
+
+        let mut backend = MockBackend {
+            rows: vec![vec![SqlVal::Text("oops".to_owned())]],
+            ..MockBackend::default()
+        };
+
+        assert_eq!(
+            backend.fetch_all(&query),
+            Err(ExecutionError::RowDecode { row_index: 0 })
+        );
+    }
+
+    #[test]
+    fn execute_reports_affected_rows_without_decoding() {
+        let query = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")));
+
+        let mut backend = MockBackend {
+            affected: 1,
+            ..MockBackend::default()
+        };
+
+        assert_eq!(backend.execute(&query), Ok(1));
+        assert_eq!(backend.executed, vec![query.build_query()]);
+    }
+
+    #[test]
+    fn executable_queries_expose_built_sql_and_row_type() {
+        let insert = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")));
+        assert_eq!(insert.build_query(), insert.build());
+
+        fn assert_row<Q: ExecutableQuery<Row = (i64, String)>>() {}
+
+        assert_row::<SelectQuery<MockDialect, User, (i64, String)>>();
+        assert_row::<InsertQuery<MockDialect, User, (), (i64, String)>>();
+        assert_row::<UpdateQuery<MockDialect, User, Filtered, (i64, String)>>();
+        assert_row::<DeleteQuery<MockDialect, User, Filtered, (i64, String)>>();
+    }
+
+    #[test]
+    fn execution_errors_render_actionable_messages() {
+        assert_eq!(
+            ExecutionError::<&str>::Backend("connection lost").to_string(),
+            "database backend error: connection lost"
+        );
+        assert_eq!(
+            ExecutionError::<&str>::RowDecode { row_index: 2 }.to_string(),
+            "failed to decode row 2: values do not match the query row type"
+        );
+        assert_eq!(
+            ExecutionError::<&str>::NoRows.to_string(),
+            "expected exactly one row, but the query returned none"
+        );
+        assert_eq!(
+            ExecutionError::<&str>::MultipleRows { count: 3 }.to_string(),
+            "expected at most one row, but the query returned 3"
+        );
+    }
+
+    #[test]
+    fn execution_error_implements_the_error_trait() {
+        fn assert_error<E: std::error::Error>() {}
+
+        assert_error::<ExecutionError<std::io::Error>>();
     }
 }
