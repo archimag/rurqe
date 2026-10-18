@@ -132,6 +132,8 @@ pub mod prelude {
         TableInScope,
     };
 
+    pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, TableScope};
+
     pub use rurqe_core::dml::{
         AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign, DeleteQuery, Filtered,
         InsertQuery, Unfiltered, UpdateQuery,
