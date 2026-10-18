@@ -12,9 +12,12 @@ rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
 rurqe-macros = { path = "../rurqe-macros", version = "0.1.0", optional = true }
 rurqe-postgres = { path = "../rurqe-postgres", version = "0.1.0", optional = true }
 rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0", optional = true }
+rurqe-sqlite = { path = "../rurqe-sqlite", version = "0.1.0", optional = true }
 
 [features]
-default = ["postgres", "macros", "migrate"]
+default = ["postgres", "macros", "migrate", "sqlite"]
 macros = ["dep:rurqe-macros"]
-postgres = ["dep:rurqe-postgres"]
+postgres = ["dep:rurqe-postgres", "rurqe-postgres/postgres"]
+tokio-postgres = ["dep:rurqe-postgres", "rurqe-postgres/tokio-postgres"]
+sqlite = ["dep:rurqe-sqlite"]
 migrate = ["dep:rurqe-migrate"]

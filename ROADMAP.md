@@ -17,7 +17,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 3** [x] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution (Completed) |
 | **Phase 4** [x] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder (Completed) |
 | **Phase 5** [x] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity (Completed) |
-| **Phase 6** [ ] | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
+| **Phase 6** [~] | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework (In Progress) |
 
 ---
 
@@ -217,19 +217,45 @@ Harden the library into an enterprise-grade SQL toolkit suitable for high-throug
 
 ### Key Deliverables
 - **First-Class SQLite Dialect & Driver:**
-  - `Sqlite` dialect implementation (`?` positional parameter placeholders, SQLite identifier quoting).
-  - Driver adapter for `rusqlite` (synchronous) and optional async wrappers.
-  - Compile-time capability matrix verification ensuring incompatible Postgres constructs cannot be compiled against SQLite.
-  - SQLite schema introspection support in the codegen CLI (`sqlite_master` / `PRAGMA table_info`).
+  - [x] `Sqlite<V>` dialect implementation (`?` positional parameter placeholders, SQLite identifier quoting).
+  - [x] Driver adapter for `rusqlite` (synchronous), implementing the shared `QueryBackend` execution contract.
+  - [x] Compile-time capability matrix verification: `Sqlite3_24` gates `ON CONFLICT`, `Sqlite3_35` gates `RETURNING`, so incompatible constructs cannot be compiled against older engines.
+  - [ ] SQLite schema introspection support in the codegen CLI (`sqlite_master` / `PRAGMA table_info`).
 - **Dual Engine Architecture:**
-  - Asynchronous driver (`tokio-postgres`).
-  - Synchronous driver (`postgres`) for CLI tools, workers, and non-tokio runtimes.
+  - [x] Asynchronous driver (`tokio-postgres`) through `PgAsyncConnection`.
+  - [x] Synchronous driver (`postgres`) for CLI tools, workers, and non-tokio runtimes through `PgConnection`.
+  - [x] Unified execution helpers (`fetch_all`, `fetch_one`, `fetch_optional`, `execute`) exported via `rurqe::prelude`.
 - **Transaction Management:**
-  - RAII transactions with automatic rollback on error:
+  - [ ] RAII transactions with automatic rollback on error:
     `db.transaction(|tx| async move { ... })`.
-  - Configurable transaction isolation levels across supported engines.
+  - [ ] Configurable transaction isolation levels across supported engines.
 - **Connection Pooling:**
-  - First-class support for connection pools (`deadpool-postgres`, `bb8`, `r2d2`).
+  - [ ] First-class support for connection pools (`deadpool-postgres`, `bb8`, `r2d2`).
 - **Escape Hatches & Raw SQL Interop:**
-  - Type-safe raw SQL fragments (`sql!("custom_func({})", users::ID)`).
-  - Window functions (`OVER (PARTITION BY ... ORDER BY ...)`).
+  - [ ] Type-safe raw SQL fragments (`sql!("custom_func({})", users::ID)`).
+  - [ ] Window functions (`OVER (PARTITION BY ... ORDER BY ...)`).
+
+### Example Usage
+
+```rust
+use rurqe::prelude::*;
+use rurqe::sqlite::rusqlite::Connection;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+        UserName => "name": String,
+    }
+}
+
+let mut db = SqliteConnection::new(Connection::open_in_memory()?);
+db.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);")?;
+
+insert_into::<Sqlite<Sqlite3_35>, User>()
+    .values((UserId::set(1i64), UserName::set("root")))
+    .execute(&mut db)?;
+
+let rows = select_from::<Sqlite<Sqlite3_35>, User>()
+    .select((UserId, UserName))
+    .fetch_all(&mut db)?;
+```

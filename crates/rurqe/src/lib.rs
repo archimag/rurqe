@@ -16,6 +16,10 @@ pub use rurqe_postgres as postgres;
 #[cfg(feature = "migrate")]
 pub use rurqe_migrate as migrate;
 
+/// SQLite dialect, version markers, and the `rusqlite` execution adapter.
+#[cfg(feature = "sqlite")]
+pub use rurqe_sqlite as sqlite;
+
 /// Starts an `INSERT` statement over the table `T` for the dialect `D`.
 ///
 /// Rows are supplied through `values` or `values_many`, and every assigned value
@@ -151,10 +155,10 @@ pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};
 
     pub use rurqe_core::{
-        table, AggregateFunc, At, BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Dialect, Expr,
-        ExprKind, FromRow, FromSqlValue, GroupBy, OrderDirection, SelectQuery, Selection,
-        SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table,
-        TableInScope,
+        table, AggregateFunc, At, BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Dialect,
+        ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy,
+        OrderDirection, QueryBackend, QueryBackendExt, SelectQuery, Selection, SqlCompatible,
+        SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
     };
 
     pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, TableScope};
@@ -168,7 +172,15 @@ pub mod prelude {
     pub use rurqe_macros::{cols, dto, select};
 
     #[cfg(feature = "postgres")]
-    pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgVersion, Postgres};
+    pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};
+
+    #[cfg(feature = "tokio-postgres")]
+    pub use rurqe_postgres::{PgAsyncConnection, PgError};
+
+    #[cfg(feature = "sqlite")]
+    pub use rurqe_sqlite::{
+        Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_35, SqliteConnection, SqliteVersion,
+    };
 
     #[cfg(feature = "migrate")]
     pub use rurqe_migrate::{

@@ -178,41 +178,41 @@ mod pg_support {
         #[test]
         fn scalar_values_map_to_driver_parameters() {
             let mut buffer = BytesMut::new();
-            assert_eq!(
+            assert!(matches!(
                 SqlValParam(&SqlVal::I64(7))
                     .to_sql(&Type::INT8, &mut buffer)
                     .unwrap(),
                 IsNull::No
-            );
-            assert_eq!(
+            ));
+            assert!(matches!(
                 SqlValParam(&SqlVal::Bool(true))
                     .to_sql(&Type::BOOL, &mut buffer)
                     .unwrap(),
                 IsNull::No
-            );
-            assert_eq!(
+            ));
+            assert!(matches!(
                 SqlValParam(&SqlVal::Text("root".to_owned()))
                     .to_sql(&Type::TEXT, &mut buffer)
                     .unwrap(),
                 IsNull::No
-            );
+            ));
         }
 
         #[test]
         fn null_binds_for_any_declared_type() {
             let mut buffer = BytesMut::new();
-            assert_eq!(
+            assert!(matches!(
                 SqlValParam(&SqlVal::Null)
                     .to_sql(&Type::INT8, &mut buffer)
                     .unwrap(),
                 IsNull::Yes
-            );
-            assert_eq!(
+            ));
+            assert!(matches!(
                 SqlValParam(&SqlVal::Null)
                     .to_sql(&Type::UUID, &mut buffer)
                     .unwrap(),
                 IsNull::Yes
-            );
+            ));
         }
     }
 }
