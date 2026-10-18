@@ -14,10 +14,10 @@
 use core::marker::PhantomData;
 
 use super::{Filtered, Unfiltered};
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
-use crate::query::BuiltQuery;
+use crate::query::{BuiltQuery, Selection};
 use crate::schema::Table;
 
 /// A `DELETE` statement targeting table `T`.
@@ -25,7 +25,8 @@ use crate::schema::Table;
 /// `State` starts as [`Unfiltered`], preventing accidental full-table deletions.
 /// Calling [`.where_()`](DeleteQuery::where_) or [`.allow_all()`](DeleteQuery::allow_all)
 /// transitions the query into [`Filtered`] state, enabling [`DeleteQuery::build`].
-/// `Returning` is reserved for dialects that support a `RETURNING` clause.
+/// `Returning` becomes the row type of the [`DeleteQuery::returning`] selection
+/// once it is set.
 ///
 /// ```compile_fail
 /// use rurqe_core::dml::DeleteQuery;
@@ -46,6 +47,7 @@ type DeleteMarker<D, T, State, Returning> = PhantomData<fn() -> (D, T, State, Re
 
 pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = ()> {
     filter: Option<ExprKind>,
+    returning: Vec<&'static str>,
     _marker: DeleteMarker<D, T, State, Returning>,
 }
 
@@ -54,6 +56,7 @@ impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, ()> {
     pub fn new() -> Self {
         DeleteQuery {
             filter: None,
+            returning: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -97,8 +100,21 @@ impl<D: Dialect, T: Table, State, Returning> DeleteQuery<D, T, State, Returning>
     ) -> DeleteQuery<D2, T2, State2, Returning2> {
         DeleteQuery {
             filter: self.filter,
+            returning: self.returning,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<D: Dialect + SupportsReturning, T: Table, State> DeleteQuery<D, T, State, ()> {
+    /// Adds a `RETURNING` clause projecting `selection` for every affected row.
+    ///
+    /// The query row type becomes [`Selection::Row`], keeping the projected
+    /// columns statically tied to the decoded result. Available only for dialects
+    /// implementing [`SupportsReturning`].
+    pub fn returning<S: Selection>(mut self, selection: S) -> DeleteQuery<D, T, State, S::Row> {
+        selection.push_column_names(&mut self.returning);
+        self.retype()
     }
 }
 
@@ -112,6 +128,16 @@ impl<D: Dialect, T: Table, Returning> DeleteQuery<D, T, Filtered, Returning> {
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
             render_expr::<D>(&mut sql, &mut params, filter);
+        }
+
+        if !self.returning.is_empty() {
+            sql.push_str(" RETURNING ");
+            for (index, name) in self.returning.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
+            }
         }
 
         BuiltQuery { sql, params }
@@ -137,6 +163,8 @@ mod tests {
             let _ = write!(out, "${index}");
         }
     }
+
+    impl SupportsReturning for MockDialect {}
 
     crate::table! {
         User => "users" {
@@ -178,5 +206,19 @@ mod tests {
             built.params,
             vec![SqlVal::I64(1), SqlVal::Text("guest".to_owned())]
         );
+    }
+
+    #[test]
+    fn returning_renders_selection_columns_after_where() {
+        let built = DeleteQuery::<MockDialect, User>::new()
+            .where_(Expr::column::<UserId>().eq(5i64))
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "DELETE FROM \"users\" WHERE (\"id\" = $1) RETURNING \"id\", \"name\""
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(5)]);
     }
 }

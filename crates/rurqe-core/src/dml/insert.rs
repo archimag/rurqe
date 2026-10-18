@@ -12,19 +12,20 @@
 use core::marker::PhantomData;
 
 use super::{AssignValue, AssignmentSet};
-use crate::dialect::Dialect;
-use crate::query::BuiltQuery;
+use crate::dialect::{Dialect, SupportsReturning};
+use crate::query::{BuiltQuery, Selection};
 use crate::schema::Table;
 
 /// An `INSERT` statement over the table `T`.
 ///
 /// `Values` is the [`AssignmentSet`] type of a single inserted row and changes
 /// from `()` once [`InsertQuery::values`] or [`InsertQuery::values_many`] is
-/// called, so rows may only be supplied once. `Returning` is reserved for
-/// dialects that carry a `RETURNING` clause.
+/// called, so rows may only be supplied once. `Returning` becomes the row type
+/// of the [`InsertQuery::returning`] selection once it is set.
 pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
     columns: Vec<&'static str>,
     rows: Vec<Vec<AssignValue>>,
+    returning: Vec<&'static str>,
     _marker: InsertMarker<D, T, Values, Returning>,
 }
 
@@ -41,6 +42,7 @@ impl<D: Dialect, T: Table> InsertQuery<D, T, (), ()> {
         InsertQuery {
             columns: Vec::new(),
             rows: Vec::new(),
+            returning: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -71,6 +73,18 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         for set in rows {
             self.push_row(&set);
         }
+        self.retype()
+    }
+}
+
+impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values, ()> {
+    /// Adds a `RETURNING` clause projecting `selection` for every affected row.
+    ///
+    /// The query row type becomes [`Selection::Row`], keeping the projected
+    /// columns statically tied to the decoded result. Available only for dialects
+    /// implementing [`SupportsReturning`].
+    pub fn returning<S: Selection>(mut self, selection: S) -> InsertQuery<D, T, Values, S::Row> {
+        selection.push_column_names(&mut self.returning);
         self.retype()
     }
 }
@@ -114,6 +128,16 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
                 }
             }
             sql.push(')');
+        }
+
+        if !self.returning.is_empty() {
+            sql.push_str(" RETURNING ");
+            for (index, name) in self.returning.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
+            }
         }
 
         BuiltQuery { sql, params }
@@ -160,6 +184,7 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         InsertQuery {
             columns: self.columns,
             rows: self.rows,
+            returning: self.returning,
             _marker: PhantomData,
         }
     }
@@ -185,6 +210,8 @@ mod tests {
             let _ = write!(out, "${index}");
         }
     }
+
+    impl SupportsReturning for MockDialect {}
 
     crate::table! {
         User => "users" {
@@ -268,5 +295,22 @@ mod tests {
     #[should_panic(expected = "at least one row")]
     fn building_without_rows_panics() {
         let _ = InsertQuery::<MockDialect, User>::new().build();
+    }
+
+    #[test]
+    fn returning_renders_selection_columns() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) RETURNING \"id\", \"name\""
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
     }
 }

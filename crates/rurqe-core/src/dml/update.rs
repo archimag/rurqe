@@ -14,10 +14,10 @@
 use core::marker::PhantomData;
 
 use super::{AssignValue, AssignmentSet, Filtered, Unfiltered};
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
-use crate::query::BuiltQuery;
+use crate::query::{BuiltQuery, Selection};
 use crate::schema::Table;
 
 /// An `UPDATE` statement targeting table `T`.
@@ -25,7 +25,8 @@ use crate::schema::Table;
 /// `State` starts as [`Unfiltered`], preventing accidental full-table updates.
 /// Calling [`.where_()`](UpdateQuery::where_) or [`.allow_all()`](UpdateQuery::allow_all)
 /// transitions the query into [`Filtered`] state, enabling [`UpdateQuery::build`].
-/// `Returning` is reserved for dialects that support a `RETURNING` clause.
+/// `Returning` becomes the row type of the [`UpdateQuery::returning`] selection
+/// once it is set.
 ///
 /// ```compile_fail
 /// use rurqe_core::dml::UpdateQuery;
@@ -47,6 +48,7 @@ type UpdateMarker<D, T, State, Returning> = PhantomData<fn() -> (D, T, State, Re
 pub struct UpdateQuery<D: Dialect, T: Table, State = Unfiltered, Returning = ()> {
     assignments: Vec<(&'static str, AssignValue)>,
     filter: Option<ExprKind>,
+    returning: Vec<&'static str>,
     _marker: UpdateMarker<D, T, State, Returning>,
 }
 
@@ -56,6 +58,7 @@ impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, ()> {
         UpdateQuery {
             assignments: Vec::new(),
             filter: None,
+            returning: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -110,8 +113,21 @@ impl<D: Dialect, T: Table, State, Returning> UpdateQuery<D, T, State, Returning>
         UpdateQuery {
             assignments: self.assignments,
             filter: self.filter,
+            returning: self.returning,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<D: Dialect + SupportsReturning, T: Table, State> UpdateQuery<D, T, State, ()> {
+    /// Adds a `RETURNING` clause projecting `selection` for every affected row.
+    ///
+    /// The query row type becomes [`Selection::Row`], keeping the projected
+    /// columns statically tied to the decoded result. Available only for dialects
+    /// implementing [`SupportsReturning`].
+    pub fn returning<S: Selection>(mut self, selection: S) -> UpdateQuery<D, T, State, S::Row> {
+        selection.push_column_names(&mut self.returning);
+        self.retype()
     }
 }
 
@@ -150,6 +166,16 @@ impl<D: Dialect, T: Table, Returning> UpdateQuery<D, T, Filtered, Returning> {
             render_expr::<D>(&mut sql, &mut params, filter);
         }
 
+        if !self.returning.is_empty() {
+            sql.push_str(" RETURNING ");
+            for (index, name) in self.returning.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
+            }
+        }
+
         BuiltQuery { sql, params }
     }
 }
@@ -174,6 +200,8 @@ mod tests {
             let _ = write!(out, "${index}");
         }
     }
+
+    impl SupportsReturning for MockDialect {}
 
     crate::table! {
         User => "users" {
@@ -297,5 +325,23 @@ mod tests {
     #[should_panic(expected = "at least one column assignment")]
     fn building_without_assignments_panics() {
         let _ = UpdateQuery::<MockDialect, User>::new().allow_all().build();
+    }
+
+    #[test]
+    fn returning_renders_selection_columns_after_where() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .where_(Expr::column::<UserId>().eq(1i64))
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2) RETURNING \"id\", \"name\""
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::Text("alice".to_owned()), SqlVal::I64(1)]
+        );
     }
 }
