@@ -40,6 +40,9 @@ pub mod prelude {
         SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
     };
 
+    #[cfg(feature = "macros")]
+    pub use rurqe_macros::{dto, select};
+
     #[cfg(feature = "postgres")]
     pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgVersion, Postgres};
 }
