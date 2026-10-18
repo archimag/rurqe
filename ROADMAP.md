@@ -1,158 +1,23 @@
-# RURQE: Rust Universal Relational Query Engine
-## Project Roadmap & Architecture Specification
+# RURQE: Project Roadmap & Evolution Plan
 
-**RURQE** (**R**ust **U**niversal **R**elational **Q**uery **E**ngine) is an ergonomic, strictly type-safe SQL query builder, relational execution engine, and database-first codegen toolkit for Rust. It synthesizes the architectural strengths of **jOOQ** (database-first single source of truth, relational depth, sound nullability) and **Kysely** (zero-boilerplate ergonomics, named ad-hoc row projections, instant IDE feedback) with the zero-cost guarantees and compile-time invariants of **Rust**.
+This document details the progressive execution roadmap for **RURQE** (**R**ust **U**niversal **R**elational **Q**uery **E**ngine).
 
-The roadmap is structured into vertical slices: **at the end of each phase, the library is fully functional, cohesive, and immediately useful**.
-
----
-
-## Workspace Crate Architecture
-
-RURQE is designed as a modular Cargo workspace, enabling minimal dependency footprints and fast compilation:
-
-- **`rurqe`**: The primary facade crate providing high-level re-exports and fluent entrypoints.
-- **`rurqe-core`**: Pure, lightweight AST representation, schema markers (`Table`, `Column`), dialect traits (`Dialect`), capability marker traits, and expression operator logic.
-- **`rurqe-macros`**: Declarative and procedural macros (`select!`, `dto!`, `table!`) for zero-cost projection synthesis and compile-time schema DSLs.
-- **`rurqe-postgres`**: PostgreSQL dialect renderer, version markers (`Pg14`, `Pg15`, `Pg16`), and execution adapters for `tokio-postgres` and synchronous `postgres`.
-- **`rurqe-sqlite`**: SQLite dialect renderer, version bounds (`Sqlite3_35`, etc.), and driver adapter for `rusqlite`.
-- **`rurqe-cli`**: Developer toolchain for live catalog introspection, code generation, migration execution, and CI schema drift verification (`schema.lock`).
+For core vision, design philosophy, architectural foundations, and benchmark comparisons, see [`Vision.md`](Vision.md).
 
 ---
 
-## Core Vision & Design Philosophy: The Foundational Triad
+## Evolutionary Slices: Overview
 
-The guiding north star of this library is the synthesis of three superpowers into a unified, uncompromising developer experience:
-
-```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                        THE FOUNDATIONAL TRIAD                          │
-├───────────────────────┬────────────────────────┬───────────────────────┤
-│   Kysely Ergonomics   │  jOOQ Expressiveness   │    Rust Type Safety   │
-│         (DX)          │   & Relational Depth   │ & Zero-Cost Guarantees│
-├───────────────────────┼────────────────────────┼───────────────────────┤
-│ • Fluent syntax       │ • Database-first truth │ • Compile-time guards │
-│ • Named projections   │ • Complex joins & CTEs │ • Zero runtime cost   │
-│ • Zero boilerplate    │ • Schema drift verify  │ • Actionable errors   │
-│ • First-class tooling │ • Sound nullability    │ • Multi-dialect gates │
-└───────────────────────┴────────────────────────┴───────────────────────┘
-```
-
-### 1. Kysely Ergonomics (Developer Experience)
-- **Named Ad-Hoc Projections:** Ergonomic projection macros (`select!`) synthesize strongly typed row records with named fields (`user.id`, `user.email`), eliminating tuple indexing (`row.0`, `row.1`) without tedious manual DTO definitions.
-- **Zero-Boilerplate Fluent API:** Queries read like idiomatic, clean SQL with minimal syntactic overhead and no generic type noise.
-- **First-Class Tooling:** Instant autocompletion, inlay hints, and rename-refactoring support in `rust-analyzer` without requiring a running database server during compilation.
-
-### 2. jOOQ Expressiveness & Relational Soundness
-- **Database-First Single Source of Truth:** Schema metadata is introspected directly from the live database catalog, eliminating duplicated hand-written schema definitions and drift.
-- **Relational Expressiveness:** First-class support for advanced SQL capabilities: multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, and `CASE WHEN` constructs.
-- **Relational Type Invariants:** Mathematically sound compile-time nullability tracking (e.g. automatically lifting non-nullable columns to `Option<T>` in `LEFT JOIN` and outer join operations).
-- **Lifecycle Integrity & Baseline:** Comprehensive migration engine, baseline snapshots for legacy and squashed schemas, and deterministic CI drift detection via `schema.lock`.
-
-### 3. Rust Strict Type Safety & Zero-Cost Guarantees
-- **Zero-Cost Abstractions:** Monomorphized query builders and phantom markers compile down to static SQL buffers and direct deserializers with zero virtual calls or reflection overhead.
-- **Compile-Time Capability & Version Gating:** Dialect- and version-dependent SQL features (such as `RETURNING`, `MERGE`, or `DISTINCT ON`) are enforced via capability marker traits; incompatible queries simply fail to compile.
-- **Human- and LLM-Friendly Diagnostics:** Explicit diagnostics via `#[diagnostic::on_unimplemented]` and fail-fast call-site checking ensure short, actionable compiler error messages rather than multi-clause trait cascade dumps.
-
----
-
-## Evolution Overview
+The roadmap is structured into vertical slices: **at the end of each phase, the library is fully functional, cohesive, and immediately usable**.
 
 | Phase | Focus | User Capability | Product Maturity |
 |---|---|---|---|
 | **Phase 1** | Type-Safe Core & AST | Strict `SELECT` with tuple mapping (Postgres first, dialect-ready) | Minimal Viable Query Builder |
 | **Phase 2** | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer |
-| **Phase 3** | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING` | Complete CRUD Solution |
-| **Phase 4** | Relational Power | Joins, compile-time nullability, group by | Advanced Relational Builder |
-| **Phase 5** | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & schema lock | Zero-Boilerplate & Verified Integrity |
+| **Phase 3** | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution |
+| **Phase 4** | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder |
+| **Phase 5** | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity |
 | **Phase 6** | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
-
----
-
-## Architectural Foundation: Multi-Dialect Design
-
-To support multiple SQL engines (PostgreSQL primary, followed by SQLite and MySQL) without runtime overhead or lowest-common-denominator compromises:
-
-### 1. Zero-Cost Dialect Abstraction
-- **`Dialect` Trait:** Encapsulates dialect-specific SQL rendering rules:
-  - Identifier quoting (`"table"` vs `` `table` ``).
-  - Parameter placeholder format (`$1, $2` in PostgreSQL vs `?, ?` in SQLite).
-  - String literal escaping and boolean representation (`TRUE/FALSE` vs `1/0`).
-- **Zero Runtime Overhead:** Dialect is a zero-sized phantom type parameter on queries (e.g., `SelectQuery<Postgres, ...>`), enabling monomorphization and compiler inlining.
-
-### 2. Compile-Time Capability Marker Traits
-Rather than failing at runtime when an engine lacks a feature, SQL capabilities are verified at compile time via marker traits:
-- `SupportsDistinctOn: Dialect` (PostgreSQL only)
-- `SupportsReturning: Dialect` (PostgreSQL, SQLite 3.35+)
-- `SupportsIlike: Dialect` (PostgreSQL)
-- `SupportsOnConflict: Dialect` (PostgreSQL, SQLite 3.24+)
-
-Methods requiring specific SQL features are gated via trait bounds:
-```rust
-impl<D: SupportsDistinctOn, T: Table> SelectQuery<D, T> {
-    pub fn distinct_on<C: Column>(self, col: C) -> Self { ... }
-}
-```
-Attempting to invoke `.distinct_on(...)` on a `SelectQuery<Sqlite, ...>` produces a compile error: *the trait `SupportsDistinctOn` is not implemented for `Sqlite`*.
-
-### 3. Version-Aware Capabilities & Minimum Engine Target
-Database features frequently depend on the target engine release:
-- **SQLite:** `UPSERT` (3.24+), generated columns (3.31+), `RETURNING` (3.35+), `->` / `->>` JSON operators (3.38+).
-- **PostgreSQL:** `jsonpath` (12+), multirange types (14+), `MERGE` statement (15+), enhanced regex / JSON constructors (16+).
-- **MySQL:** CTEs and Window Functions (8.0+ vs 5.7).
-
-To represent engine versions at zero runtime cost without fragmented dialect types:
-- Dialects accept an optional type-level version parameter with modern defaults (e.g., `Postgres<V = Pg16>`, `Sqlite<V = Sqlite3_35>`).
-- Capability traits are conditionally implemented based on version bounds:
-  ```rust
-  impl<V: SqliteVersionAtLeast<3, 35>> SupportsReturning for Sqlite<V> {}
-  impl<V: PgVersionAtLeast<15>> SupportsMerge for Postgres<V> {}
-  ```
-- Target version is specified once in project configuration or codegen CLI (`target_version = "sqlite:3.35"`), binding the target type to the generated schema.
-- Calling a feature unsupported by the configured version produces a focused compiler diagnostic via `#[diagnostic::on_unimplemented]`:
-  ```text
-  error[E0277]: The `RETURNING` clause requires SQLite 3.35.0+, but target dialect is configured for `Sqlite<Sqlite3_24>`
-  ```
-
-### 4. Dialect-Specific Extension Traits
-Engine-exclusive syntax (such as PostgreSQL JSONB operators `@>`, `?|`, regex matching `~`, or full-text search) is exposed via dedicated extension traits (`PgExpressions`, `SqliteExpressions`) that decorate expressions only when the active dialect matches.
-
----
-
-## Architectural Foundation: Compiler Diagnostics & Error Ergonomics (Human & LLM First)
-
-A critical failure mode of heavily typed SQL libraries in Rust (such as Diesel) is opaque compiler error messages spanning dozens of lines of deeply nested AST types. To make this library effortless to understand and debug for both human developers and LLMs / AI agents:
-
-### 1. Actionable Diagnostics via `#[diagnostic::on_unimplemented]`
-Public core traits utilize Rust 1.78+ `#[diagnostic::on_unimplemented]` to deliver concise, focused error messages with remediation hints instead of low-level trait resolution failures:
-```rust
-#[diagnostic::on_unimplemented(
-    message = "Cannot compare column `{Self}` with value of type `{Rhs}`",
-    label = "type mismatch: column `{Self}` expects `{Expected}`, but got `{Rhs}`",
-    note = "Hint: verify that the value type matches the column definition in your schema"
-)]
-pub trait SqlEq<Rhs, Expected> { ... }
-```
-
-### 2. Fail-Fast Call-Site Validation
-Type errors are caught immediately at the offending method call (`.where_()`, `.eq()`, `.select()`), rather than deferred to the terminal execution method (`.fetch_all()`). This ensures the compiler points directly to the incorrect expression and prevents multi-clause error cascading.
-
-### 3. Flat Query Types (No Generic Parameter Explosion)
-Deeply nested AST wrapper types are avoided in public query signatures. The query signature exposes only its high-level public contract:
-```rust
-pub struct Query<Dialect, TablesInScope, OutputRow> { ... }
-```
-Internal clauses are encapsulated inside AST nodes rather than layered into type parameters, keeping compiler errors and rust-analyzer inlay hints short and readable.
-
-### 4. Semantic, Human-Readable Marker Traits
-Trait boundaries are formulated as natural English domain constraints rather than obscure internal mechanics:
-- `ColumnBelongsTo<Table>`
-- `TableInScope<Table>`
-- `SupportsDistinctOn<Dialect>`
-- `SqlCompatible<ColType, ValType>`
-
-### 5. Explicit Macro Diagnostics
-Declarative and procedural macros (`select!`, `dto!`, `table!`) validate syntax and invariants proactively, producing structured `compile_error!("...")` messages with explicit guidance rather than failing with confusing internal parser syntax errors.
 
 ---
 
