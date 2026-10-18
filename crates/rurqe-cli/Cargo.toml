@@ -1,0 +1,16 @@
+[package]
+name = "rurqe-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Developer toolchain for schema introspection, code generation, migrations, and drift verification"
+
+[[bin]]
+name = "rurqe"
+path = "src/main.rs"
+
+[dependencies]
+rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
+rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0" }

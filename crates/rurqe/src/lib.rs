@@ -13,6 +13,9 @@ pub use rurqe_macros as macros;
 #[cfg(feature = "postgres")]
 pub use rurqe_postgres as postgres;
 
+#[cfg(feature = "migrate")]
+pub use rurqe_migrate as migrate;
+
 /// Starts an `INSERT` statement over the table `T` for the dialect `D`.
 ///
 /// Rows are supplied through `values` or `values_many`, and every assigned value
@@ -166,4 +169,10 @@ pub mod prelude {
 
     #[cfg(feature = "postgres")]
     pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgVersion, Postgres};
+
+    #[cfg(feature = "migrate")]
+    pub use rurqe_migrate::{
+        embed_migrations, Checksum, EmbeddedMigrations, Migration, MigrationKind, MigrationStatus,
+        MigrationStatusKind, MigrationVersion, SchemaCatalog,
+    };
 }
