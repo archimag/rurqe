@@ -16,6 +16,8 @@ use crate::schema::Column;
 /// the produced parameter list remains typed and allocation-free for scalars.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SqlVal {
+    /// The SQL `NULL` value.
+    Null,
     /// A 32-bit signed integer.
     I32(i32),
     /// A 64-bit signed integer.

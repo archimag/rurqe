@@ -94,6 +94,25 @@ impl<T: Table> TableScope for T {
     }
 }
 
+/// The flavour of join used to bring a table into the query scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JoinKind {
+    /// `INNER JOIN`, which only keeps rows matched in the joined table.
+    Inner,
+    /// `LEFT JOIN`, which keeps unmatched rows and nulls the joined columns.
+    Left,
+}
+
+impl JoinKind {
+    /// The SQL text of the join keywords.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            JoinKind::Inner => "INNER JOIN",
+            JoinKind::Left => "LEFT JOIN",
+        }
+    }
+}
+
 /// A query scope extending `Tables` with the table `T` joined to it.
 ///
 /// The marker is produced by [`SelectQuery::inner_join`], carries no values, and
@@ -105,6 +124,49 @@ impl<Tables: TableScope, T: Table> TableScope for Joined<Tables, T> {
         Tables::push_table_names(out);
         out.push(T::NAME);
     }
+}
+
+/// A query scope extending `Tables` with the table `T` joined by a `LEFT JOIN`.
+///
+/// The marker is produced by [`SelectQuery::left_join`] and records the same
+/// `FROM` order as [`Joined`], while signalling that the columns of `T` may be
+/// absent from a result row.
+pub struct LeftJoined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
+
+impl<Tables: TableScope, T: Table> TableScope for LeftJoined<Tables, T> {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        Tables::push_table_names(out);
+        out.push(T::NAME);
+    }
+}
+
+/// A column lifted to its nullable form for outer joins.
+///
+/// The marker keeps the name and owning table of the column `C`, but replaces
+/// its Rust type with `Option<C::RustType>`. Projecting a column of a
+/// [`left_join`](SelectQuery::left_join)ed table through
+/// [`SelectQuery::nullable`] therefore yields an optional value at compile time,
+/// matching the `NULL` values produced by the database.
+pub struct Nullable<C>(PhantomData<fn() -> C>);
+
+impl<C: Column> Nullable<C> {
+    /// Creates the nullable marker for the column `C`.
+    pub fn new() -> Self {
+        Nullable(PhantomData)
+    }
+}
+
+impl<C: Column> Default for Nullable<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C: Column> Column for Nullable<C> {
+    type Table = C::Table;
+    type RustType = Option<C::RustType>;
+
+    const NAME: &'static str = C::NAME;
 }
 
 /// The rendered SQL text of a query together with its bound parameters.
@@ -144,7 +206,7 @@ impl OrderDirection {
 /// and the result type at compile time.
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     projections: Vec<&'static str>,
-    joins: Vec<ExprKind>,
+    joins: Vec<(JoinKind, ExprKind)>,
     filter: Option<ExprKind>,
     order_by: Vec<(&'static str, OrderDirection)>,
     limit: Option<u32>,
@@ -195,6 +257,16 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
 }
 
 impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
+    /// Lifts the column `C` into its nullable form [`Nullable`].
+    ///
+    /// Columns of a table introduced with
+    /// [`left_join`](SelectQuery::left_join) may be missing from a result row, so
+    /// projecting them through `nullable` yields `Option<C::RustType>` instead of
+    /// `C::RustType`.
+    pub fn nullable<C: Column>(&self) -> Nullable<C> {
+        Nullable::new()
+    }
+
     /// Restricts the query to rows matching `predicate`.
     ///
     /// Repeated calls narrow the result with `AND`, so each predicate may be
@@ -253,7 +325,24 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     where
         Tables: TableScope,
     {
-        self.joins.push(on.into_kind());
+        self.joins.push((JoinKind::Inner, on.into_kind()));
+        self.retype()
+    }
+
+    /// Joins the table `T` to the query with a `LEFT JOIN` restricted by `on`.
+    ///
+    /// Rows of `T` may be missing from the result, so its columns are projected
+    /// through [`SelectQuery::nullable`] to keep their absence visible in the row
+    /// type. Parameters of `on` are bound before the parameters of the `WHERE`
+    /// clause.
+    pub fn left_join<T: Table>(
+        mut self,
+        on: Expr<bool>,
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.joins.push((JoinKind::Left, on.into_kind()));
         self.retype()
     }
 
@@ -298,8 +387,10 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         D::push_quoted_identifier(&mut sql, tables[0]);
 
         let mut params = Vec::new();
-        for (index, on) in self.joins.iter().enumerate() {
-            sql.push_str(" INNER JOIN ");
+        for (index, (kind, on)) in self.joins.iter().enumerate() {
+            sql.push(' ');
+            sql.push_str(kind.as_str());
+            sql.push(' ');
             D::push_quoted_identifier(&mut sql, tables[index + 1]);
             sql.push_str(" ON ");
             render_expr::<D>(&mut sql, &mut params, on);
@@ -382,6 +473,7 @@ mod tests {
         Order => "orders" {
             OrderId => "id": i64,
             OrderUserId => "user_id": i64,
+            OrderTotal => "total": f64,
         }
     }
 
@@ -501,6 +593,48 @@ mod tests {
 
         assert_scope::<User>();
         assert_scope::<Joined<User, Order>>();
+        assert_scope::<LeftJoined<User, Order>>();
         assert_scope::<Joined<Joined<User, Order>, User>>();
+        assert_scope::<Joined<LeftJoined<User, Order>, User>>();
+    }
+
+    #[test]
+    fn left_join_renders_left_keyword_and_composes_with_inner_join() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .left_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
+            .inner_join::<User>(Expr::column::<UserId>().eq(2i64));
+        let total = query.nullable::<OrderTotal>();
+
+        let built = query.select((UserId, total)).build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1) \
+             INNER JOIN \"users\" ON (\"id\" = $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(2)]);
+    }
+
+    #[test]
+    fn nullable_column_keeps_name_and_lifts_rust_type() {
+        fn takes_optional_total<C>()
+        where
+            C: Column<RustType = Option<f64>, Table = Order>,
+        {
+        }
+
+        assert_eq!(Nullable::<OrderTotal>::NAME, OrderTotal::NAME);
+        takes_optional_total::<Nullable<OrderTotal>>();
+    }
+
+    #[test]
+    fn left_joined_rows_decode_missing_columns_as_none() {
+        use crate::row::FromRow;
+
+        assert_eq!(
+            <(i64, Option<f64>)>::from_row(&[SqlVal::I64(1), SqlVal::Null]),
+            Some((1, None))
+        );
     }
 }

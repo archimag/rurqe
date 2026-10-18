@@ -10,11 +10,12 @@ use crate::expr::SqlVal;
 /// A Rust value decoded from a single [`SqlVal`].
 ///
 /// The trait is implemented for the scalar types representable as [`SqlVal`]
-/// variants: `i32`, `i64`, `f64`, `bool`, and `String`.
+/// variants: `i32`, `i64`, `f64`, `bool`, and `String`. Optional values wrap any
+/// of them and decode the SQL `NULL` value as `None`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be decoded from a SQL value",
     label = "unsupported row value type",
-    note = "row values must implement `FromSqlValue`, which is provided for `i32`, `i64`, `f64`, `bool`, and `String`"
+    note = "row values must implement `FromSqlValue`, which is provided for `i32`, `i64`, `f64`, `bool`, `String`, and `Option<T>` for nullable columns"
 )]
 pub trait FromSqlValue: Sized {
     /// Decodes `value`, returning `None` when it holds a different variant.
@@ -62,6 +63,15 @@ impl FromSqlValue for String {
         match value {
             SqlVal::Text(value) => Some(value.clone()),
             _ => None,
+        }
+    }
+}
+
+impl<T: FromSqlValue> FromSqlValue for Option<T> {
+    fn from_sql_value(value: &SqlVal) -> Option<Self> {
+        match value {
+            SqlVal::Null => Some(None),
+            _ => T::from_sql_value(value).map(Some),
         }
     }
 }
@@ -184,6 +194,23 @@ mod tests {
                 SqlVal::Text("1".to_owned()),
                 SqlVal::Text("root".to_owned()),
             ]),
+            None
+        );
+    }
+
+    #[test]
+    fn null_decodes_into_none_for_optional_values() {
+        assert_eq!(<Option<i64>>::from_sql_value(&SqlVal::Null), Some(None));
+        assert_eq!(
+            <Option<String>>::from_sql_value(&SqlVal::Text("root".to_owned())),
+            Some(Some("root".to_owned()))
+        );
+    }
+
+    #[test]
+    fn optional_values_reject_foreign_variants() {
+        assert_eq!(
+            <Option<i64>>::from_sql_value(&SqlVal::Text("7".to_owned())),
             None
         );
     }
