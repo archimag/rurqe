@@ -8,6 +8,13 @@
 //! Sets of assignments are expressed as tuples of arbitrary arity. The
 //! [`AssignmentSet`] trait ties every element to the same target table, so
 //! mixing columns of unrelated tables simply does not compile.
+//!
+//! The [`insert`] module turns those assignments into a renderable `INSERT`
+//! statement through [`InsertQuery`].
+
+pub mod insert;
+
+pub use insert::InsertQuery;
 
 use core::marker::PhantomData;
 
