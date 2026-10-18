@@ -4,22 +4,22 @@
 
 ---
 
-## 1. Core Vision: The Foundational Triad
+## 1. Core Vision: The Foundational Tetrad
 
-RURQE synthesizes three foundational superpowers into a unified, uncompromising developer experience:
+RURQE synthesizes four foundational superpowers into a unified, uncompromising developer experience:
 
 ```text
-┌────────────────────────────────────────────────────────────────────────┐
-│                        THE FOUNDATIONAL TRIAD                          │
-├───────────────────────┬────────────────────────┬───────────────────────┤
-│   Kysely Ergonomics   │  jOOQ Expressiveness   │    Rust Type Safety   │
-│         (DX)          │   & Relational Depth   │ & Zero-Cost Guarantees│
-├───────────────────────┼────────────────────────┼───────────────────────┤
-│ • Fluent syntax       │ • Database-first truth │ • Compile-time guards │
-│ • Named projections   │ • Complex joins & CTEs │ • Zero runtime cost   │
-│ • Zero boilerplate    │ • Schema drift verify  │ • Actionable errors   │
-│ • First-class tooling │ • Sound nullability    │ • Multi-dialect gates │
-└───────────────────────┴────────────────────────┴───────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                                 THE FOUNDATIONAL TETRAD                                 │
+├───────────────────────┬────────────────────────┬───────────────────────┬────────────────┤
+│   Kysely Ergonomics   │  jOOQ Expressiveness   │   Flyway Lifecycle    │Rust Type Safety│
+│         (DX)          │   & Relational Depth   │       Integrity       │  & Zero-Cost   │
+├───────────────────────┼────────────────────────┼───────────────────────┼────────────────┤
+│ • Fluent syntax       │ • Database-first truth │ • Versioned (V) &     │• Compile guards│
+│ • Named projections   │ • Complex joins & CTEs │   Repeatable (R)      │• Zero cost     │
+│ • Zero boilerplate    │ • Sound nullability    │ • SHA-256 checksums   │• Clear errors  │
+│ • First-class tooling │ • Catalog introspection│ • Baseline & Repair   │• Version gates │
+└───────────────────────┴────────────────────────┴───────────────────────┴────────────────┘
 ```
 
 ### 1.1 Kysely Ergonomics (Developer Experience)
@@ -31,9 +31,14 @@ RURQE synthesizes three foundational superpowers into a unified, uncompromising 
 - **Database-First Single Source of Truth:** Schema metadata is introspected directly from the live database catalog, eliminating duplicated hand-written schema definitions and drift.
 - **Relational Expressiveness:** First-class support for advanced SQL capabilities: multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, and `CASE WHEN` constructs.
 - **Relational Type Invariants:** Mathematically sound compile-time nullability tracking (e.g. automatically lifting non-nullable columns to `Option<T>` in `LEFT JOIN` and outer join operations).
-- **Lifecycle Integrity & Baseline:** Comprehensive migration engine, baseline snapshots for legacy and squashed schemas, and deterministic CI drift detection via `schema.lock`.
 
-### 1.3 Rust Strict Type Safety & Zero-Cost Guarantees
+### 1.3 Flyway Lifecycle Integrity (Database Migrations)
+- **Versioned & Repeatable Migrations:** Strict support for versioned migrations (`V1__init.sql`, `V2_1__orders.sql`) and repeatable migrations (`R__views_and_functions.sql`) executed only when their hash changes.
+- **Checksum Audit & Repair:** Cryptographic SHA-256 verification of applied migration files prevents undetected retroactive edits, with `repair` workflows for managed baseline transitions.
+- **Legacy Baseline & Squashing:** First-class `baseline` capability to onboard pre-existing databases or squash lengthy migration chains cleanly.
+- **Embedded & CLI Execution:** Zero-dependency migration runner usable both from the CLI and embedded directly into the application binary (`embed_migrations!`).
+
+### 1.4 Rust Strict Type Safety & Zero-Cost Guarantees
 - **Zero-Cost Abstractions:** Monomorphized query builders and phantom markers compile down to static SQL buffers and direct deserializers with zero virtual calls or reflection overhead.
 - **Compile-Time Capability & Version Gating:** Dialect- and version-dependent SQL features (such as `RETURNING`, `MERGE`, or `DISTINCT ON`) are enforced via capability marker traits; incompatible queries simply fail to compile.
 - **Human- and LLM-Friendly Diagnostics:** Explicit diagnostics via `#[diagnostic::on_unimplemented]` and fail-fast call-site checking ensure short, actionable compiler error messages rather than multi-clause trait cascade dumps.
@@ -73,20 +78,22 @@ Preventing the cryptic, 50-line compiler errors notorious in existing Rust ORMs:
 5. **Explicit Macro Diagnostics:** Macros produce intentional `compile_error!("...")` feedback with actionable guidance.
 
 ### 3.3 Database-First Single Source of Truth & Drift Detection
-1. **Catalog Introspection:** Introspects tables, views, primary/foreign keys, nullability, defaults, enums, JSONB, and UUIDs directly from the database catalog.
-2. **Deterministic Schema Lock (`schema.lock`):** Emits a canonical schema snapshot and embeds a compile-time checksum (`pub const SCHEMA_HASH: &str = "...";`) inside generated Rust code.
-3. **Continuous Drift Verification (`cargo db-verify`):** CI applies migrations on an ephemeral database and verifies bit-for-bit parity against `schema.lock` and `SCHEMA_HASH`.
-4. **Baseline Support:** `cargo db-baseline --version 1.0.0` allows onboarding legacy databases or squashing migration histories cleanly.
+1. **Flyway-Compatible Migration Lifecycle:** Versioned migrations (`V...`), repeatable migrations (`R...`), deterministic execution ordering, checksum verification, and `__rurqe_schema_history` metadata tracking.
+2. **Catalog Introspection:** Introspects tables, views, primary/foreign keys, nullability, defaults, enums, JSONB, and UUIDs directly from the database catalog.
+3. **Deterministic Schema Lock (`schema.lock`):** Emits a canonical schema snapshot and embeds a compile-time checksum (`pub const SCHEMA_HASH: &str = "...";`) inside generated Rust code.
+4. **Continuous Drift Verification (`cargo db-verify`):** CI applies migrations on an ephemeral database and verifies bit-for-bit parity against `schema.lock` and `SCHEMA_HASH`.
+5. **Baseline Support:** `cargo db-baseline --version 1.0.0` allows onboarding legacy databases or squashing migration histories cleanly.
 
 ---
 
 ## 4. Benchmark Comparison
 
-| Feature / Property | RURQE | jOOQ (Java) | Kysely (TypeScript) | Diesel / SQLx (Rust) |
-|---|---|---|---|---|
-| **Dialect Capability Gates** | Compile-time (Trait markers) | Runtime check / exception | Runtime syntax error | Mostly unchecked / dialect-tied |
-| **Null-Safety on Outer Joins** | Strict `Option<T>` compile-time lifting | Nullable at runtime (`NullPointerException` risk) | Optional in types, prone to `as` escapes | Varies (complex macros or manual) |
-| **Ad-Hoc Named Projections** | Zero-boilerplate via `select!` | Record classes / ad-hoc tuples | Native object literals | Tuples or manual DTO structs |
-| **Single Source of Truth** | DB-first codegen + `schema.lock` | DB-first codegen | DB-first types generator | Diesel: CLI / SQLx: offline JSON |
-| **Error Message Ergonomics** | Tailored via `#[diagnostic]` & fail-fast | Clear compiler / runtime errors | TypeScript diagnostics | Verbose multi-clause trait dumps |
-| **Runtime Overhead** | Zero-cost (no GC, monomorphized) | Moderate (GC allocations, reflection) | Moderate (V8 JS heap, string ops) | Minimal (zero-cost) |
+| Feature / Property | RURQE | jOOQ (Java) | Kysely (TypeScript) | Flyway (Java/CLI) | Diesel / SQLx (Rust) |
+|---|---|---|---|---|---|
+| **Dialect Capability Gates** | Compile-time (Trait markers) | Runtime check / exception | Runtime syntax error | N/A (DDL-only) | Mostly unchecked / dialect-tied |
+| **Null-Safety on Outer Joins** | Strict `Option<T>` compile-time lifting | Nullable at runtime (`NullPointerException` risk) | Optional in types, prone to `as` escapes | N/A (DDL-only) | Varies (complex macros or manual) |
+| **Ad-Hoc Named Projections** | Zero-boilerplate via `select!` | Record classes / ad-hoc tuples | Native object literals | N/A (DDL-only) | Tuples or manual DTO structs |
+| **Single Source of Truth** | DB-first codegen + `schema.lock` | DB-first codegen | DB-first types generator | Schema history table | Diesel: CLI / SQLx: offline JSON |
+| **Migration Integrity** | Flyway-grade (V + R, SHA-256, baseline) | External integration (Flyway/Liquibase) | External plugins / basic runners | Gold standard (V + R, repair, baseline) | Basic sequential up/down |
+| **Error Message Ergonomics** | Tailored via `#[diagnostic]` & fail-fast | Clear compiler / runtime errors | TypeScript diagnostics | Clear CLI / log errors | Verbose multi-clause trait dumps |
+| **Runtime Overhead** | Zero-cost (no GC, monomorphized) | Moderate (GC allocations, reflection) | Moderate (V8 JS heap, string ops) | JVM startup / CLI process | Minimal (zero-cost) |
