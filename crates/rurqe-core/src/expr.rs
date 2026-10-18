@@ -166,6 +166,11 @@ impl<T> Expr<T> {
         &self.kind
     }
 
+    /// Consumes the expression and returns its tree.
+    pub fn into_kind(self) -> ExprKind {
+        self.kind
+    }
+
     /// Compares the expression with `value` using the SQL `=` operator.
     pub fn eq<V>(self, value: V) -> Expr<bool>
     where
