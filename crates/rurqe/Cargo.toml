@@ -1,0 +1,16 @@
+[package]
+name = "rurqe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ergonomic, strictly type-safe SQL query builder and execution engine for Rust"
+
+[dependencies]
+rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
+rurqe-postgres = { path = "../rurqe-postgres", version = "0.1.0", optional = true }
+
+[features]
+default = ["postgres"]
+postgres = ["dep:rurqe-postgres"]

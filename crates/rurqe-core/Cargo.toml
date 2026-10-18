@@ -1,0 +1,10 @@
+[package]
+name = "rurqe-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core type-safe SQL AST, schema traits, and dialect abstractions for RURQE"
+
+[dependencies]
