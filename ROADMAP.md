@@ -1,8 +1,22 @@
-# Project Roadmap: Type-Safe SQL Query Builder & Codegen for Rust
+# RURQE: Rust Universal Relational Query Engine
+## Project Roadmap & Architecture Specification
 
-This document outlines the phased roadmap for building an ergonomic, strictly type-safe SQL query builder and codegen library for Rust, combining the architectural principles of **jOOQ** (database-first codegen, strong typing, relational soundness) and **Kysely** (ergonomic typed queries, named ad-hoc selections, minimal boilerplate).
+**RURQE** (**R**ust **U**niversal **R**elational **Q**uery **E**ngine) is an ergonomic, strictly type-safe SQL query builder, relational execution engine, and database-first codegen toolkit for Rust. It synthesizes the architectural strengths of **jOOQ** (database-first single source of truth, relational depth, sound nullability) and **Kysely** (zero-boilerplate ergonomics, named ad-hoc row projections, instant IDE feedback) with the zero-cost guarantees and compile-time invariants of **Rust**.
 
 The roadmap is structured into vertical slices: **at the end of each phase, the library is fully functional, cohesive, and immediately useful**.
+
+---
+
+## Workspace Crate Architecture
+
+RURQE is designed as a modular Cargo workspace, enabling minimal dependency footprints and fast compilation:
+
+- **`rurqe`**: The primary facade crate providing high-level re-exports and fluent entrypoints.
+- **`rurqe-core`**: Pure, lightweight AST representation, schema markers (`Table`, `Column`), dialect traits (`Dialect`), capability marker traits, and expression operator logic.
+- **`rurqe-macros`**: Declarative and procedural macros (`select!`, `dto!`, `table!`) for zero-cost projection synthesis and compile-time schema DSLs.
+- **`rurqe-postgres`**: PostgreSQL dialect renderer, version markers (`Pg14`, `Pg15`, `Pg16`), and execution adapters for `tokio-postgres` and synchronous `postgres`.
+- **`rurqe-sqlite`**: SQLite dialect renderer, version bounds (`Sqlite3_35`, etc.), and driver adapter for `rusqlite`.
+- **`rurqe-cli`**: Developer toolchain for live catalog introspection, code generation, migration execution, and CI schema drift verification (`schema.lock`).
 
 ---
 
