@@ -18,7 +18,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 4** [x] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder (Completed) |
 | **Phase 5** [x] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity (Completed) |
 | **Phase 6** [x] | Multi-Dialect & Execution Adapters | SQLite dialect (`Sqlite<V>`), dual engine (`tokio-postgres`/`postgres`/`rusqlite`) | Multi-Engine Execution Layer (Completed) |
-| **Phase 7** [ ] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready |
+| **Phase 7** [x] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready (Completed) |
 | **Phase 8** [ ] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity |
 
 ---
@@ -241,23 +241,45 @@ let users = select_from::<Sqlite<Sqlite3_35>, User>()
 
 ---
 
-## Phase 7: Runtime Hardening: Transactions & Connection Pools
+## Phase 7: Runtime Hardening: Transactions & Connection Pools [Completed]
 
 ### Objective
 Provide ergonomic RAII-managed transactions with automatic rollback on error, savepoint-based nesting, and seamless integration with production connection pools (`deadpool-postgres`, `r2d2`).
 
 ### Key Deliverables
-- **RAII Transaction Scopes:**
+- [x] **RAII Transaction Scopes:**
   - Synchronous `db.transaction(|tx| { ... })` and asynchronous `db.transaction(|tx| async move { ... })`.
   - Guaranteed `ROLLBACK` on error or panic; atomic `COMMIT` only on `Ok(_)`.
   - Nested transaction scopes backed by SQL `SAVEPOINT` / `RELEASE SAVEPOINT` / `ROLLBACK TO SAVEPOINT`.
-- **Transaction Isolation Levels:**
+- [x] **Transaction Isolation Levels:**
   - Configurable transaction options: `ReadCommitted`, `RepeatableRead`, `Serializable`.
-- **Connection Pool Adapters:**
+- [x] **Connection Pool Adapters:**
   - Asynchronous pool support via `deadpool-postgres`: pool and pooled client implement execution contracts directly.
   - Synchronous pool support via `r2d2`: pooled connections for `SqliteConnection` and `PgConnection`.
-- **Facade Integration & Verification:**
+- [x] **Facade Integration & Verification:**
   - Comprehensive transactional integration tests verifying rollback on error, commit persistence, and nested savepoint isolation.
+
+### Example Usage
+```rust
+use rurqe::prelude::*;
+
+// RAII transaction with automatic rollback on error or panic
+let result = db.transaction(|tx| {
+    insert_into::<Sqlite<Sqlite3_35>, User>()
+        .values((UserId::set(1i64), UserName::set("alice")))
+        .execute(tx)?;
+
+    // Nested savepoint transaction
+    tx.transaction(|nested| {
+        insert_into::<Sqlite<Sqlite3_35>, User>()
+            .values((UserId::set(2i64), UserName::set("bob")))
+            .execute(nested)?;
+        Ok(())
+    })?;
+
+    Ok(())
+});
+```
 
 ---
 
