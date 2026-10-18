@@ -10,12 +10,15 @@
 //! mixing columns of unrelated tables simply does not compile.
 //!
 //! The [`insert`] module turns those assignments into a renderable `INSERT`
-//! statement through [`InsertQuery`].
+//! statement through [`InsertQuery`], and the [`conflict`] module adds the
+//! `ON CONFLICT` upsert clause to that statement.
 
+pub mod conflict;
 pub mod delete;
 pub mod insert;
 pub mod update;
 
+pub use conflict::{Conflict, ConflictAction, OnConflict};
 pub use delete::DeleteQuery;
 pub use insert::InsertQuery;
 pub use update::UpdateQuery;

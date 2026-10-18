@@ -11,8 +11,9 @@
 
 use core::marker::PhantomData;
 
+use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, AssignmentSet};
-use crate::dialect::{Dialect, SupportsReturning};
+use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::query::{BuiltQuery, Selection};
 use crate::schema::Table;
 
@@ -21,10 +22,14 @@ use crate::schema::Table;
 /// `Values` is the [`AssignmentSet`] type of a single inserted row and changes
 /// from `()` once [`InsertQuery::values`] or [`InsertQuery::values_many`] is
 /// called, so rows may only be supplied once. `Returning` becomes the row type
-/// of the [`InsertQuery::returning`] selection once it is set.
+/// of the [`InsertQuery::returning`] selection once it is set, and the optional
+/// [`Conflict`] clause is recorded by
+/// [`on_conflict`](InsertQuery::on_conflict) and
+/// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing).
 pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
     columns: Vec<&'static str>,
     rows: Vec<Vec<AssignValue>>,
+    conflict: Option<Conflict>,
     returning: Vec<&'static str>,
     _marker: InsertMarker<D, T, Values, Returning>,
 }
@@ -42,6 +47,7 @@ impl<D: Dialect, T: Table> InsertQuery<D, T, (), ()> {
         InsertQuery {
             columns: Vec::new(),
             rows: Vec::new(),
+            conflict: None,
             returning: Vec::new(),
             _marker: PhantomData,
         }
@@ -89,7 +95,56 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
     }
 }
 
+impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
+    InsertQuery<D, T, Values, Returning>
+{
+    /// Adds an `ON CONFLICT DO NOTHING` clause without a conflict target.
+    ///
+    /// Conflicting rows are skipped silently, whatever unique constraint they
+    /// violate. Available only for dialects implementing [`SupportsOnConflict`].
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dml::InsertQuery;
+    /// # use rurqe_core::dialect::Dialect;
+    /// # struct MockDialect;
+    /// # impl Dialect for MockDialect {
+    /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+    /// #     fn push_placeholder(_: &mut String, _: usize) {}
+    /// # }
+    /// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+    /// // Fails to compile because `MockDialect` does not implement `SupportsOnConflict`:
+    /// let query = InsertQuery::<MockDialect, User>::new().on_conflict_do_nothing();
+    /// ```
+    pub fn on_conflict_do_nothing(mut self) -> Self {
+        self.conflict = Some(Conflict {
+            target: Vec::new(),
+            action: ConflictAction::DoNothing,
+        });
+        self
+    }
+
+    /// Starts an `ON CONFLICT (target) DO ...` clause for the columns `target`.
+    ///
+    /// The returned [`OnConflict`] builder chooses the action through
+    /// [`OnConflict::do_nothing`] or [`OnConflict::do_update`]. Available only for
+    /// dialects implementing [`SupportsOnConflict`].
+    pub fn on_conflict<S: Selection>(self, target: S) -> OnConflict<D, T, Values, Returning> {
+        let mut columns = Vec::new();
+        target.push_column_names(&mut columns);
+        OnConflict {
+            query: self,
+            target: columns,
+        }
+    }
+}
+
 impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
+    /// Attaches a rendered [`Conflict`] clause to the statement.
+    pub(crate) fn with_conflict(mut self, conflict: Conflict) -> Self {
+        self.conflict = Some(conflict);
+        self
+    }
+
     /// Renders the statement into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
         assert!(
@@ -128,6 +183,10 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
                 }
             }
             sql.push(')');
+        }
+
+        if let Some(conflict) = &self.conflict {
+            conflict.render::<D>(&mut sql, &mut params);
         }
 
         if !self.returning.is_empty() {
@@ -184,6 +243,7 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         InsertQuery {
             columns: self.columns,
             rows: self.rows,
+            conflict: self.conflict,
             returning: self.returning,
             _marker: PhantomData,
         }
@@ -212,6 +272,8 @@ mod tests {
     }
 
     impl SupportsReturning for MockDialect {}
+
+    impl SupportsOnConflict for MockDialect {}
 
     crate::table! {
         User => "users" {
@@ -311,6 +373,86 @@ mod tests {
         assert_eq!(
             built.params,
             vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn on_conflict_do_nothing_renders_bare_clause() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict_do_nothing()
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT DO NOTHING"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn on_conflict_target_do_nothing_renders_target_columns() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .do_nothing()
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO NOTHING"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn on_conflict_do_update_renders_assignments_after_values() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .do_update(UserName::set("upserted"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $3"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::Text("upserted".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn on_conflict_renders_before_returning() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId, UserName))
+            .do_update((UserName::set("bob"),))
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\", \"name\") DO UPDATE SET \"name\" = $3 RETURNING \"id\", \"name\""
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::Text("bob".to_owned()),
+            ]
         );
     }
 }
