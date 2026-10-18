@@ -17,7 +17,9 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 3** [x] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution (Completed) |
 | **Phase 4** [x] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder (Completed) |
 | **Phase 5** [x] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity (Completed) |
-| **Phase 6** [~] | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework (In Progress) |
+| **Phase 6** [x] | Multi-Dialect & Execution Adapters | SQLite dialect (`Sqlite<V>`), dual engine (`tokio-postgres`/`postgres`/`rusqlite`) | Multi-Engine Execution Layer (Completed) |
+| **Phase 7** [ ] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready |
+| **Phase 8** [ ] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity |
 
 ---
 
@@ -210,32 +212,71 @@ cargo db-verify --database-url postgres://localhost:5432/testdb
 
 ---
 
-## Phase 6: Production Hardening: Dual Engine, Multi-Dialect (SQLite) & Pooling
+## Phase 6: Multi-Dialect & Execution Adapters [Completed]
 
 ### Objective
-Harden the library into an enterprise-grade SQL toolkit suitable for high-throughput production services, embedded use cases, and flexible deployment environments.
+Provide first-class SQLite dialect support, version threshold capability gating, and synchronous and asynchronous execution adapters across SQLite and PostgreSQL.
 
 ### Key Deliverables
-- **First-Class SQLite Dialect & Driver:**
-  - [x] `Sqlite<V>` dialect implementation (`?` positional parameter placeholders, SQLite identifier quoting).
-  - [x] Driver adapter for `rusqlite` (synchronous), implementing the shared `QueryBackend` execution contract.
-  - [x] Compile-time capability matrix verification: `Sqlite3_24` gates `ON CONFLICT`, `Sqlite3_35` gates `RETURNING`, so incompatible constructs cannot be compiled against older engines.
-  - [ ] SQLite schema introspection support in the codegen CLI (`sqlite_master` / `PRAGMA table_info`).
-- **Dual Engine Architecture:**
-  - [x] Asynchronous driver (`tokio-postgres`) through `PgAsyncConnection`.
-  - [x] Synchronous driver (`postgres`) for CLI tools, workers, and non-tokio runtimes through `PgConnection`.
-  - [x] Unified execution helpers (`fetch_all`, `fetch_one`, `fetch_optional`, `execute`) exported via `rurqe::prelude`.
-- **Transaction Management:**
-  - [ ] RAII transactions with automatic rollback on error:
-    `db.transaction(|tx| async move { ... })`.
-  - [ ] Configurable transaction isolation levels across supported engines.
-- **Connection Pooling:**
-  - [ ] First-class support for connection pools (`deadpool-postgres`, `bb8`, `r2d2`).
-- **Escape Hatches & Raw SQL Interop:**
-  - [ ] Type-safe raw SQL fragments (`sql!("custom_func({})", users::ID)`).
-  - [ ] Window functions (`OVER (PARTITION BY ... ORDER BY ...)`).
+- [x] **First-Class SQLite Dialect & Driver:**
+  - `Sqlite<V>` dialect implementation (`?` positional parameter placeholders, SQLite identifier quoting).
+  - Driver adapter for `rusqlite` (synchronous `SqliteConnection`), implementing the shared `QueryBackend` execution contract.
+  - Compile-time capability matrix verification: `Sqlite3_24` gates `ON CONFLICT`, `Sqlite3_35` gates `RETURNING`.
+- [x] **Dual Engine Architecture:**
+  - Asynchronous driver (`tokio-postgres`) through `PgAsyncConnection` with mirrored `async` helpers.
+  - Synchronous driver (`postgres`) for CLI tools, workers, and non-tokio runtimes through `PgConnection`.
+  - Unified execution helpers (`fetch_all`, `fetch_one`, `fetch_optional`, `execute`) exported via `rurqe::prelude`.
+  - End-to-end CRUD verification suite on in-memory SQLite (`crates/rurqe/tests/sqlite_e2e.rs`).
 
 ### Example Usage
+```rust
+use rurqe::prelude::*;
+use rurqe::sqlite::rusqlite::Connection;
+
+let mut db = SqliteConnection::new(Connection::open_in_memory()?);
+let users = select_from::<Sqlite<Sqlite3_35>, User>()
+    .select((UserId, UserName))
+    .fetch_all(&mut db)?;
+```
+
+---
+
+## Phase 7: Runtime Hardening: Transactions & Connection Pools
+
+### Objective
+Provide ergonomic RAII-managed transactions with automatic rollback on error, savepoint-based nesting, and seamless integration with production connection pools (`deadpool-postgres`, `r2d2`).
+
+### Key Deliverables
+- **RAII Transaction Scopes:**
+  - Synchronous `db.transaction(|tx| { ... })` and asynchronous `db.transaction(|tx| async move { ... })`.
+  - Guaranteed `ROLLBACK` on error or panic; atomic `COMMIT` only on `Ok(_)`.
+  - Nested transaction scopes backed by SQL `SAVEPOINT` / `RELEASE SAVEPOINT` / `ROLLBACK TO SAVEPOINT`.
+- **Transaction Isolation Levels:**
+  - Configurable transaction options: `ReadCommitted`, `RepeatableRead`, `Serializable`.
+- **Connection Pool Adapters:**
+  - Asynchronous pool support via `deadpool-postgres`: pool and pooled client implement execution contracts directly.
+  - Synchronous pool support via `r2d2`: pooled connections for `SqliteConnection` and `PgConnection`.
+- **Facade Integration & Verification:**
+  - Comprehensive transactional integration tests verifying rollback on error, commit persistence, and nested savepoint isolation.
+
+---
+
+## Phase 8: Advanced SQL Expressiveness & SQLite Toolchain Parity
+
+### Objective
+Broaden SQL relational expressiveness with window functions, Common Table Expressions (CTEs), type-safe raw SQL escape hatches, and complete SQLite CLI introspection parity.
+
+### Key Deliverables
+- **SQLite CLI Introspection & Drift Parity:**
+  - Full catalog introspection for SQLite (`sqlite_master`, `PRAGMA table_info`, `PRAGMA foreign_key_list`).
+  - Unified `cargo db-codegen` and `cargo db-verify` across both PostgreSQL and SQLite URLs.
+- **Window Functions:**
+  - `OVER (PARTITION BY ... ORDER BY ...)` clause builder.
+  - Typed window operators: `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`.
+- **Common Table Expressions (CTEs):**
+  - Type-safe `WITH cte AS (...) SELECT ...` query composition.
+- **Safe Raw SQL Escape Hatches:**
+  - `sql!(...)` with bound parameter interpolation for engine-specific functions.
 
 ```rust
 use rurqe::prelude::*;
