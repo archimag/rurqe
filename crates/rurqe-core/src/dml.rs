@@ -12,14 +12,51 @@
 //! The [`insert`] module turns those assignments into a renderable `INSERT`
 //! statement through [`InsertQuery`].
 
+pub mod delete;
 pub mod insert;
+pub mod update;
 
+pub use delete::DeleteQuery;
 pub use insert::InsertQuery;
+pub use update::UpdateQuery;
 
 use core::marker::PhantomData;
 
-use crate::expr::{SqlCompatible, SqlVal};
+use crate::dialect::Dialect;
+use crate::expr::{ExprKind, SqlCompatible, SqlVal};
 use crate::schema::{Column, Table};
+
+/// Typestate marker indicating that a DML mutation does not yet have a filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unfiltered;
+
+/// Typestate marker indicating that a DML mutation has a filter or has explicitly allowed all rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Filtered;
+
+/// Renders `expr` into `sql`, appending every literal as a bound parameter.
+pub(crate) fn render_expr<D: Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    expr: &ExprKind,
+) {
+    match expr {
+        ExprKind::Column { name } => D::push_quoted_identifier(sql, name),
+        ExprKind::Value(value) => {
+            params.push(value.clone());
+            D::push_placeholder(sql, params.len());
+        }
+        ExprKind::Binary { op, lhs, rhs } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, lhs);
+            sql.push(' ');
+            sql.push_str(op.as_str());
+            sql.push(' ');
+            render_expr::<D>(sql, params, rhs);
+            sql.push(')');
+        }
+    }
+}
 
 /// The value part of a single column assignment.
 #[derive(Debug, Clone, PartialEq)]
