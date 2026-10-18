@@ -23,6 +23,7 @@
 //! ```
 
 pub mod checksum;
+pub mod embedded;
 pub mod error;
 pub mod history;
 pub mod migration;
@@ -30,6 +31,7 @@ pub mod runner;
 pub mod version;
 
 pub use checksum::{sha256, Checksum};
+pub use embedded::EmbeddedMigrations;
 pub use error::Error;
 pub use history::{create_schema_history_table_sql, SchemaHistoryEntry, SCHEMA_HISTORY_TABLE};
 pub use migration::{Migration, MigrationKind};

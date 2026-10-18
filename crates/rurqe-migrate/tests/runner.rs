@@ -195,3 +195,72 @@ fn failed_migration_triggers_rollback_and_prevents_subsequent_runs() {
     assert_eq!(backend.history.len(), 1);
     assert_eq!(backend.history[0].script, "V1__ok.sql");
 }
+
+#[test]
+fn embedded_migrations_macro_and_lifecycle_execution() {
+    use rurqe_migrate::{embed_migrations, EmbeddedMigrations};
+
+    let embedded: EmbeddedMigrations = embed_migrations!(
+        "V2__add_items.sql" => "CREATE TABLE items (id INT);",
+        "V1__init.sql" => "CREATE TABLE users (id INT);",
+        "R__users_view.sql" => "CREATE VIEW users_v AS SELECT * FROM users;",
+    )
+    .expect("valid embedded migrations");
+
+    assert_eq!(embedded.len(), 3);
+    assert!(!embedded.is_empty());
+    // Validates that migrations are automatically ordered (versioned ascending, then repeatable)
+    assert_eq!(embedded[0].script, "V1__init.sql");
+    assert_eq!(embedded[1].script, "V2__add_items.sql");
+    assert_eq!(embedded[2].script, "R__users_view.sql");
+
+    let mut backend = InMemoryBackend::new();
+    let report = embedded.migrate(&mut backend).expect("migration succeeds");
+
+    assert_eq!(report.applied_count, 3);
+    assert_eq!(
+        report.applied_scripts,
+        vec![
+            "V1__init.sql",
+            "V2__add_items.sql",
+            "R__users_view.sql"
+        ]
+    );
+
+    let statuses = embedded.status(&mut backend).expect("status succeeds");
+    assert_eq!(statuses.len(), 3);
+    assert!(statuses.iter().all(|s| s.status == MigrationStatusKind::Applied));
+}
+
+#[test]
+fn embedded_migrations_tuple_syntax_and_deref_coercion() {
+    use rurqe_migrate::embed_migrations;
+
+    let embedded = embed_migrations!(
+        ("V1__init.sql", "CREATE TABLE users (id INT);"),
+        ("R__view.sql", "CREATE VIEW v AS SELECT 1;"),
+    )
+    .expect("valid migrations");
+
+    let mut backend = InMemoryBackend::new();
+    let migrator = Migrator::new();
+
+    // Deref coercion into &[Migration]
+    let report = migrator.migrate(&mut backend, &embedded).expect("migrate via deref");
+    assert_eq!(report.applied_count, 2);
+}
+
+#[test]
+fn embedded_migrations_rejects_invalid_script_names() {
+    use rurqe_migrate::embed_migrations;
+
+    let err = embed_migrations!(
+        "invalid_name.sql" => "SELECT 1;",
+    )
+    .expect_err("must reject invalid script name");
+
+    match err {
+        Error::InvalidScriptName { script } => assert_eq!(script, "invalid_name.sql"),
+        other => panic!("expected InvalidScriptName, got {other:?}"),
+    }
+}
