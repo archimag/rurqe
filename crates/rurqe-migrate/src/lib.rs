@@ -22,6 +22,7 @@
 //! assert_eq!(migration.checksum.to_hex().len(), 64);
 //! ```
 
+pub mod catalog;
 pub mod checksum;
 pub mod embedded;
 pub mod error;
@@ -30,6 +31,7 @@ pub mod migration;
 pub mod runner;
 pub mod version;
 
+pub use catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
 pub use checksum::{sha256, Checksum};
 pub use embedded::EmbeddedMigrations;
 pub use error::Error;
