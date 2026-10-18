@@ -1,0 +1,157 @@
+# RURQE (Rust Universal Relational Query Engine)
+
+> Ergonomic, strictly type-safe SQL query builder, relational execution engine, and database-first codegen toolkit for Rust.
+
+## Core Principles
+
+- **Zero-Boilerplate Fluent API:** Queries read like idiomatic SQL without tuple indexing (`row.0`) or generic cascading.
+- **Strict Compile-Time Safety:** Column types, table scopes, nullability, and database capabilities are verified at compile time.
+- **Zero-Cost Abstractions:** Zero-Sized Type (ZST) markers monomorphize into static SQL buffers and direct deserializers.
+- **Database-First Integrity:** Flyway-compatible migrations, canonical `schema.lock`, and CI drift verification.
+
+---
+
+## Workspace Architecture
+
+- **`rurqe`**: Facade crate re-exporting the prelude, entrypoints, and runtime drivers.
+- **`rurqe-core`**: AST, expressions, schema markers (`Table`, `Column`), dialects, DML typestates, execution contracts (`QueryBackend`).
+- **`rurqe-macros`**: Declarative and procedural macros (`select!`, `cols!`, `dto!`, `table!`).
+- **`rurqe-postgres`**: PostgreSQL dialect (`Postgres<V>`), synchronous (`PgConnection`), and asynchronous (`PgAsyncConnection`) drivers.
+- **`rurqe-sqlite`**: SQLite dialect (`Sqlite<V>`) and synchronous `rusqlite` driver (`SqliteConnection`).
+- **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `embed_migrations!`, and `SchemaCatalog`.
+- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`).
+
+---
+
+## Quickstart & Code Patterns
+
+### 1. Schema Declaration
+
+```rust
+use rurqe::prelude::*;
+
+table! {
+    /// The `users` table.
+    User => "users" {
+        UserId => "id": i64,
+        UserName => "name": String,
+        UserActive => "active": bool,
+    }
+}
+
+table! {
+    /// The `orders` table.
+    Order => "orders" {
+        OrderId => "id": i64,
+        OrderUserId => "user_id": i64,
+        OrderTotal => "total": f64,
+    }
+}
+```
+
+### 2. Relational Querying (Joins & Sound Nullability)
+
+```rust
+// Columns from LEFT JOIN are lifted to Option<T> via query.nullable::<Col>()
+let query = select_from::<Postgres, User>()
+    .left_join::<Order>(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+    .select((UserId, UserName, query.nullable::<OrderTotal>()))
+    .where_(Expr::column::<UserActive>().eq(true))
+    .order_by_desc(UserId)
+    .limit(10);
+
+// Built SQL:
+// SELECT "id", "name", "total" FROM "users"
+// LEFT JOIN "orders" ON ("user_id" = "id")
+// WHERE ("active" = $1) ORDER BY "id" DESC LIMIT 10
+// Decoded row type: (i64, String, Option<f64>)
+```
+
+### 3. Named Projections (`cols!`, `select!`, `dto!`)
+
+```rust
+// Macro cols! generates an anonymous row record with named fields
+let query = select_from::<Postgres, User>()
+    .select(cols!(UserId, UserName as contact_name))
+    .where_(Expr::column::<UserActive>().eq(true));
+
+// Access fields directly: row.user_id, row.contact_name (no row.0, row.1)
+
+// Or declare reusable DTO structs:
+dto! {
+    pub struct UserProfile {
+        UserId,
+        UserName as display_name,
+    }
+}
+```
+
+### 4. Type-Safe DML with Typestate Protection
+
+Unfiltered `UPDATE` and `DELETE` do not compile unless `.where_(...)` or `.allow_all()` is called.
+
+```rust
+// INSERT with typed assignments and RETURNING
+let new_id: (i64,) = insert_into::<Postgres, User>()
+    .values((
+        UserId::default_value(), // uses SQL DEFAULT keyword
+        UserName::set("alice"),
+        UserActive::set(true),
+    ))
+    .returning((UserId,))
+    .fetch_one(&mut db)?;
+
+// UPDATE with typestate compile guard
+update::<Postgres, User>()
+    .set(UserActive::set(false))
+    .where_(Expr::column::<UserId>().eq(new_id.0))
+    .execute(&mut db)?;
+
+// UPSERT (ON CONFLICT)
+insert_into::<Postgres, User>()
+    .values((UserId::set(1i64), UserName::set("root"), UserActive::set(true)))
+    .on_conflict((UserId,))
+    .do_update(UserName::set("root_updated"))
+    .execute(&mut db)?;
+```
+
+### 5. Multi-Dialect & Execution
+
+```rust
+// SQLite (synchronous with rusqlite)
+use rurqe::sqlite::rusqlite::Connection;
+let mut db = SqliteConnection::new(Connection::open_in_memory()?);
+
+let rows = select_from::<Sqlite<Sqlite3_35>, User>()
+    .select((UserId, UserName))
+    .fetch_all(&mut db)?;
+
+// PostgreSQL (synchronous PgConnection or asynchronous PgAsyncConnection)
+let mut pg_sync = PgConnection::new(client);
+let users = query.fetch_all(&mut pg_sync)?;
+```
+
+### 6. Embedded Migrations
+
+```rust
+use rurqe::migrate::{embed_migrations, EmbeddedMigrations};
+
+let migrations = embed_migrations!(
+    "V1__init.sql" => "CREATE TABLE users (id BIGINT PRIMARY KEY, name TEXT NOT NULL);",
+    "V2__orders.sql" => "CREATE TABLE orders (id BIGINT PRIMARY KEY, user_id BIGINT);",
+    "R__views.sql" => "CREATE VIEW active_users AS SELECT * FROM users;",
+).expect("valid migrations");
+
+migrations.migrate(&mut backend)?;
+```
+
+---
+
+## Toolchain CLI Commands
+
+- `cargo db-migrate up` — Apply pending versioned and modified repeatable migrations.
+- `cargo db-migrate status` — Inspect migration statuses against `__rurqe_schema_history`.
+- `cargo db-migrate repair` — Realign checksums and purge failed attempts.
+- `cargo db-baseline --version <V>` — Baseline pre-existing schemas without historical replay.
+- `cargo db-codegen --output src/db/schema.rs` — Introspect database, generate Rust schema, and create `schema.lock`.
+- `cargo db-verify` — CI drift check: verifies live DB against `schema.lock` and `SCHEMA_HASH`.
