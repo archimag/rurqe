@@ -12,6 +12,21 @@ use crate::version::MigrationVersion;
 /// Name of the table tracking the migration lifecycle.
 pub const SCHEMA_HISTORY_TABLE: &str = "__rurqe_schema_history";
 
+/// DDL query to initialize the metadata history table.
+pub fn create_schema_history_table_sql() -> &'static str {
+    "CREATE TABLE IF NOT EXISTS __rurqe_schema_history (
+    installed_rank BIGINT NOT NULL PRIMARY KEY,
+    version VARCHAR(50),
+    description VARCHAR(200) NOT NULL,
+    type VARCHAR(20) NOT NULL,
+    script VARCHAR(1000) NOT NULL,
+    checksum VARCHAR(64),
+    installed_on VARCHAR(50) NOT NULL,
+    execution_time BIGINT NOT NULL,
+    success BOOLEAN NOT NULL
+);"
+}
+
 /// A single row of the [`SCHEMA_HISTORY_TABLE`] metadata table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaHistoryEntry {
@@ -21,7 +36,7 @@ pub struct SchemaHistoryEntry {
     pub version: Option<MigrationVersion>,
     /// The decoded description of the script name.
     pub description: String,
-    /// Whether the migration is versioned or repeatable.
+    /// Whether the migration is versioned, repeatable, or a baseline marker.
     pub kind: MigrationKind,
     /// The script name the row was recorded from.
     pub script: String,
@@ -53,6 +68,46 @@ impl SchemaHistoryEntry {
             installed_on: installed_on.into(),
             execution_time_ms,
             success: true,
+        }
+    }
+
+    /// Records a synthetic baseline entry for legacy databases or squashed history.
+    pub fn baseline(
+        installed_rank: i64,
+        version: MigrationVersion,
+        description: impl Into<String>,
+        installed_on: impl Into<String>,
+    ) -> Self {
+        Self {
+            installed_rank,
+            version: Some(version),
+            description: description.into(),
+            kind: MigrationKind::Baseline,
+            script: "<< Baseline >>".to_owned(),
+            checksum: None,
+            installed_on: installed_on.into(),
+            execution_time_ms: 0,
+            success: true,
+        }
+    }
+
+    /// Records a failed migration attempt.
+    pub fn failed(
+        installed_rank: i64,
+        migration: &Migration,
+        installed_on: impl Into<String>,
+        execution_time_ms: i64,
+    ) -> Self {
+        Self {
+            installed_rank,
+            version: migration.version.clone(),
+            description: migration.description.clone(),
+            kind: migration.kind,
+            script: migration.script.clone(),
+            checksum: Some(migration.checksum),
+            installed_on: installed_on.into(),
+            execution_time_ms,
+            success: false,
         }
     }
 

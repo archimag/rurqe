@@ -26,10 +26,15 @@ pub mod checksum;
 pub mod error;
 pub mod history;
 pub mod migration;
+pub mod runner;
 pub mod version;
 
 pub use checksum::{sha256, Checksum};
 pub use error::Error;
-pub use history::{SchemaHistoryEntry, SCHEMA_HISTORY_TABLE};
+pub use history::{create_schema_history_table_sql, SchemaHistoryEntry, SCHEMA_HISTORY_TABLE};
 pub use migration::{Migration, MigrationKind};
+pub use runner::{
+    InMemoryBackend, InMemoryTransaction, MigrationBackend, MigrationReport, MigrationStatus,
+    MigrationStatusKind, MigrationTransaction, Migrator, RepairReport,
+};
 pub use version::MigrationVersion;

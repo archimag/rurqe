@@ -26,6 +26,8 @@ pub enum MigrationKind {
     Versioned,
     /// An `R__{description}.sql` script re-applied whenever its checksum changes.
     Repeatable,
+    /// A synthetic baseline entry recording a starting state.
+    Baseline,
 }
 
 impl MigrationKind {
@@ -34,6 +36,7 @@ impl MigrationKind {
         match self {
             MigrationKind::Versioned => "VERSIONED",
             MigrationKind::Repeatable => "REPEATABLE",
+            MigrationKind::Baseline => "BASELINE",
         }
     }
 }
@@ -51,10 +54,12 @@ pub struct Migration {
     pub description: String,
     /// The script name, including its extension.
     pub script: String,
-    /// Whether the migration is versioned or repeatable.
+    /// Whether the migration is versioned, repeatable, or a baseline marker.
     pub kind: MigrationKind,
     /// The SHA-256 digest of the script contents.
     pub checksum: Checksum,
+    /// The SQL statements of the migration script.
+    pub sql: String,
 }
 
 impl Migration {
@@ -73,12 +78,18 @@ impl Migration {
             script: script.to_owned(),
             kind,
             checksum: Checksum::of(sql.as_bytes()),
+            sql: sql.to_owned(),
         })
     }
 
     /// Whether the migration is versioned and therefore applied exactly once.
     pub fn is_versioned(&self) -> bool {
         self.kind == MigrationKind::Versioned
+    }
+
+    /// Whether the migration is repeatable.
+    pub fn is_repeatable(&self) -> bool {
+        self.kind == MigrationKind::Repeatable
     }
 }
 
@@ -112,6 +123,7 @@ fn parse_script_name(
             let description = rest.strip_prefix(DESCRIPTION_SEPARATOR).ok_or_else(invalid)?;
             (None, description)
         }
+        MigrationKind::Baseline => unreachable!(),
     };
 
     Ok((kind, version, description.replace('_', " ")))
@@ -198,5 +210,6 @@ mod tests {
     fn kind_text_is_stable() {
         assert_eq!(MigrationKind::Versioned.as_str(), "VERSIONED");
         assert_eq!(MigrationKind::Repeatable.as_str(), "REPEATABLE");
+        assert_eq!(MigrationKind::Baseline.as_str(), "BASELINE");
     }
 }
