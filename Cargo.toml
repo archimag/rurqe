@@ -2,6 +2,7 @@
 members = [
     "crates/rurqe",
     "crates/rurqe-core",
+    "crates/rurqe-macros",
     "crates/rurqe-postgres",
 ]
 resolver = "2"

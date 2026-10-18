@@ -9,8 +9,10 @@ description = "Ergonomic, strictly type-safe SQL query builder and execution eng
 
 [dependencies]
 rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
+rurqe-macros = { path = "../rurqe-macros", version = "0.1.0", optional = true }
 rurqe-postgres = { path = "../rurqe-postgres", version = "0.1.0", optional = true }
 
 [features]
-default = ["postgres"]
+default = ["postgres", "macros"]
+macros = ["dep:rurqe-macros"]
 postgres = ["dep:rurqe-postgres"]

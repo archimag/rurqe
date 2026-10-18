@@ -4,6 +4,9 @@
 
 pub use rurqe_core as core;
 
+#[cfg(feature = "macros")]
+pub use rurqe_macros as macros;
+
 #[cfg(feature = "postgres")]
 pub use rurqe_postgres as postgres;
 
