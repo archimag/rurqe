@@ -744,6 +744,152 @@ pub trait QueryBackendExt: QueryBackend {
 
 impl<B: QueryBackend + ?Sized> QueryBackendExt for B {}
 
+/// The isolation level a transaction runs under.
+///
+/// The level is rendered into the `ISOLATION LEVEL` clause of the statement
+/// issued by [`TransactionBackend::begin`], letting the engine trade
+/// concurrency for consistency (for example, `SERIALIZABLE` behaves as if the
+/// conflicting transactions ran one after another).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IsolationLevel {
+    /// Reads only rows committed before the statement started.
+    ReadCommitted,
+    /// Reads a stable snapshot, so repeated reads observe the same rows.
+    RepeatableRead,
+    /// Behaves as if transactions ran one after another.
+    Serializable,
+}
+
+impl IsolationLevel {
+    /// The SQL text of the corresponding `ISOLATION LEVEL` clause.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            IsolationLevel::ReadCommitted => "READ COMMITTED",
+            IsolationLevel::RepeatableRead => "REPEATABLE READ",
+            IsolationLevel::Serializable => "SERIALIZABLE",
+        }
+    }
+}
+
+/// Tracks the nesting depth and savepoint names of an open transaction.
+///
+/// The outermost transaction is committed or rolled back as a whole, while each
+/// nested block runs inside a savepoint. The context allocates unique savepoint
+/// names and remembers the active nesting, so a [`TransactionBackend`] can turn
+/// a nested transaction into `SAVEPOINT`, `RELEASE SAVEPOINT`, and
+/// `ROLLBACK TO SAVEPOINT` statements without the caller tracking depth.
+#[derive(Debug, Clone, Default)]
+pub struct TransactionContext {
+    next_savepoint: u32,
+    savepoints: Vec<String>,
+}
+
+impl TransactionContext {
+    /// Creates a context for the outermost transaction.
+    pub fn new() -> Self {
+        TransactionContext::default()
+    }
+
+    /// The number of nested savepoints currently open.
+    pub fn depth(&self) -> usize {
+        self.savepoints.len()
+    }
+
+    /// Whether the context currently sits inside a nested transaction.
+    pub fn is_nested(&self) -> bool {
+        !self.savepoints.is_empty()
+    }
+
+    /// The name of the innermost open savepoint, if any.
+    pub fn current_savepoint(&self) -> Option<&str> {
+        self.savepoints.last().map(String::as_str)
+    }
+
+    /// Allocates a fresh savepoint name and makes it the innermost block.
+    pub fn open_savepoint(&mut self) -> String {
+        self.next_savepoint += 1;
+        let name = format!("rurqe_sp_{}", self.next_savepoint);
+        self.savepoints.push(name.clone());
+        name
+    }
+
+    /// Ends the innermost block and returns the savepoint name it used.
+    pub fn close_savepoint(&mut self) -> Option<String> {
+        self.savepoints.pop()
+    }
+}
+
+/// Runs a parameterless statement through a [`QueryBackend`].
+fn execute_statement<B: QueryBackend + ?Sized>(
+    backend: &mut B,
+    sql: String,
+) -> Result<(), B::Error> {
+    backend
+        .execute_raw(&BuiltQuery {
+            sql,
+            params: Vec::new(),
+        })
+        .map(|_| ())
+}
+
+/// A synchronous connection able to run transactions and nested savepoints.
+///
+/// The trait is the driver-side half of RAII-managed transactions: it exposes
+/// the primitives — `BEGIN`, `COMMIT`, `ROLLBACK`, and the savepoint statements
+/// — that the transaction executor drives to commit on `Ok(_)` and roll back on
+/// `Err(_)` or panic. Because a nested transaction is a savepoint, a failing
+/// inner block only rolls back to its savepoint and leaves the outer transaction
+/// intact.
+///
+/// Every method has a dialect-neutral default implementation that renders the
+/// statement and forwards it to [`QueryBackend::execute_raw`], so a driver that
+/// already implements [`QueryBackend`] gains transaction support for free and
+/// only overrides the statements its engine spells differently.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot run RURQE transactions",
+    label = "unsupported transaction backend",
+    note = "synchronous connections implement `TransactionBackend` on top of `QueryBackend`"
+)]
+pub trait TransactionBackend: QueryBackend {
+    /// Opens the outermost transaction with the given isolation level.
+    ///
+    /// Passing `None` keeps the engine default isolation level.
+    fn begin(&mut self, isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
+        let mut sql = String::from("BEGIN");
+        if let Some(level) = isolation {
+            sql.push_str(" ISOLATION LEVEL ");
+            sql.push_str(level.as_str());
+        }
+        execute_statement(self, sql)
+    }
+
+    /// Commits the current transaction, persisting all its work.
+    fn commit(&mut self) -> Result<(), Self::Error> {
+        execute_statement(self, String::from("COMMIT"))
+    }
+
+    /// Rolls the current transaction back, discarding all its work.
+    fn rollback(&mut self) -> Result<(), Self::Error> {
+        execute_statement(self, String::from("ROLLBACK"))
+    }
+
+    /// Opens the nested transaction `name` as a savepoint.
+    fn savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
+        execute_statement(self, format!("SAVEPOINT {name}"))
+    }
+
+    /// Releases the savepoint `name`, keeping its work in the transaction.
+    fn release_savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
+        execute_statement(self, format!("RELEASE SAVEPOINT {name}"))
+    }
+
+    /// Rolls the transaction back to the savepoint `name`, discarding only the
+    /// work done inside the nested block.
+    fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
+        execute_statement(self, format!("ROLLBACK TO SAVEPOINT {name}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1166,5 +1312,81 @@ mod tests {
         fn assert_error<E: std::error::Error>() {}
 
         assert_error::<ExecutionError<std::io::Error>>();
+    }
+
+    #[derive(Default)]
+    struct MockTransactionBackend {
+        statements: Vec<String>,
+    }
+
+    impl QueryBackend for MockTransactionBackend {
+        type Error = &'static str;
+
+        fn fetch_raw(&mut self, _query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
+            self.statements.push(query.sql.clone());
+            Ok(0)
+        }
+    }
+
+    impl TransactionBackend for MockTransactionBackend {}
+
+    #[test]
+    fn transaction_statements_render_expected_sql() {
+        let mut backend = MockTransactionBackend::default();
+        backend.begin(None).expect("begin");
+        backend
+            .begin(Some(IsolationLevel::Serializable))
+            .expect("begin with isolation");
+        backend.savepoint("rurqe_sp_1").expect("savepoint");
+        backend.release_savepoint("rurqe_sp_1").expect("release");
+        backend
+            .rollback_to_savepoint("rurqe_sp_2")
+            .expect("rollback to savepoint");
+        backend.commit().expect("commit");
+        backend.rollback().expect("rollback");
+
+        assert_eq!(
+            backend.statements,
+            vec![
+                "BEGIN",
+                "BEGIN ISOLATION LEVEL SERIALIZABLE",
+                "SAVEPOINT rurqe_sp_1",
+                "RELEASE SAVEPOINT rurqe_sp_1",
+                "ROLLBACK TO SAVEPOINT rurqe_sp_2",
+                "COMMIT",
+                "ROLLBACK",
+            ]
+        );
+    }
+
+    #[test]
+    fn isolation_levels_render_canonical_clauses() {
+        assert_eq!(IsolationLevel::ReadCommitted.as_str(), "READ COMMITTED");
+        assert_eq!(IsolationLevel::RepeatableRead.as_str(), "REPEATABLE READ");
+        assert_eq!(IsolationLevel::Serializable.as_str(), "SERIALIZABLE");
+    }
+
+    #[test]
+    fn transaction_context_hands_out_nested_savepoints() {
+        let mut context = TransactionContext::new();
+        assert_eq!(context.depth(), 0);
+        assert!(!context.is_nested());
+        assert_eq!(context.current_savepoint(), None);
+
+        let outer = context.open_savepoint();
+        let inner = context.open_savepoint();
+        assert_ne!(outer, inner);
+        assert_eq!(context.depth(), 2);
+        assert!(context.is_nested());
+        assert_eq!(context.current_savepoint(), Some(inner.as_str()));
+
+        assert_eq!(context.close_savepoint(), Some(inner));
+        assert_eq!(context.current_savepoint(), Some(outer.as_str()));
+        assert_eq!(context.close_savepoint(), Some(outer));
+        assert_eq!(context.close_savepoint(), None);
     }
 }
