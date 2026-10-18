@@ -21,26 +21,52 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 
 ## Architectural Foundation: Multi-Dialect Design
 
-To support dialect diversity (PostgreSQL first, with SQLite and others to follow) without runtime overhead:
-- **`Dialect` Trait:** Abstracts SQL syntax formatting (identifiers quoting, parameter placeholders like `$1` vs `?`).
-- **Compile-Time Capability Traits:** Incompatible features (e.g., `DISTINCT ON`, `ILIKE`, specific JSON operators) are guarded by capability marker traits (e.g. `SupportsDistinctOn`). If a dialect lacks a capability, the method does not exist on the query builder at compile time.
-- **Dialect Extension Traits:** Database-specific operators (e.g., PostgreSQL JSONB `@>`, full-text search) are provided via dedicated extension traits without polluting portable queries.
+To support multiple SQL engines (PostgreSQL primary, followed by SQLite and MySQL) without runtime overhead or lowest-common-denominator compromises:
+
+### 1. Zero-Cost Dialect Abstraction
+- **`Dialect` Trait:** Encapsulates dialect-specific SQL rendering rules:
+  - Identifier quoting (`"table"` vs `` `table` ``).
+  - Parameter placeholder format (`$1, $2` in PostgreSQL vs `?, ?` in SQLite).
+  - String literal escaping and boolean representation (`TRUE/FALSE` vs `1/0`).
+- **Zero Runtime Overhead:** Dialect is a zero-sized phantom type parameter on queries (e.g., `SelectQuery<Postgres, ...>`), enabling monomorphization and compiler inlining.
+
+### 2. Compile-Time Capability Marker Traits
+Rather than failing at runtime when an engine lacks a feature, SQL capabilities are verified at compile time via marker traits:
+- `SupportsDistinctOn: Dialect` (PostgreSQL only)
+- `SupportsReturning: Dialect` (PostgreSQL, SQLite 3.35+)
+- `SupportsIlike: Dialect` (PostgreSQL)
+- `SupportsOnConflict: Dialect` (PostgreSQL, SQLite)
+
+Methods requiring specific SQL features are gated via trait bounds:
+```rust
+impl<D: SupportsDistinctOn, T: Table> SelectQuery<D, T> {
+    pub fn distinct_on<C: Column>(self, col: C) -> Self { ... }
+}
+```
+Attempting to invoke `.distinct_on(...)` on a `SelectQuery<Sqlite, ...>` produces a compile error: *the trait `SupportsDistinctOn` is not implemented for `Sqlite`*.
+
+### 3. Dialect-Specific Extension Traits
+Engine-exclusive syntax (such as PostgreSQL JSONB operators `@>`, `?|`, regex matching `~`, or full-text search) is exposed via dedicated extension traits (`PgExpressions`, `SqliteExpressions`) that decorate expressions only when the active dialect matches.
 
 ---
 
 ## Phase 1: Type-Safe Core & Tuple Select
 
 ### Objective
-Create a lightweight, strictly typed query builder core capable of constructing parameterized SQL queries and decoding rows into typed tuples without runtime overhead.
+Create a lightweight, strictly typed query builder core with an extensible multi-dialect architecture, capable of constructing parameterized SQL queries and decoding rows into typed tuples without runtime overhead.
 
 ### Key Deliverables
+- **Multi-Dialect Foundation:**
+  - `Dialect` trait specifying identifier quoting and placeholder formatting.
+  - `Postgres` dialect implementation (`$1, $2, ...` placeholders, double-quote identifiers).
+  - Capability marker traits infrastructure (`SupportsReturning`, `SupportsDistinctOn`).
 - **Core Abstractions:**
   - `Table` trait: table identifier and schema namespace.
   - `Column` trait: column name, parent table marker, and associated `RustType` & `SqlType`.
   - `Expression<SqlType>` trait: type-safe SQL expressions and operators (`eq`, `neq`, `gt`, `lt`, `and`, `or`).
 - **Query Construction:**
-  - `SelectQuery` builder supporting `.from()`, `.where_()`, `.order_by()`, and `.limit()`.
-  - Deterministic parameterized SQL renderer (`$1`, `$2`, ...).
+  - `SelectQuery<D: Dialect, ...>` builder supporting `.from()`, `.where_()`, `.order_by()`, and `.limit()`.
+  - Deterministic parameterized SQL renderer driving output via the active `Dialect`.
 - **Manual Schema Declaration DSL:**
   - A lightweight declarative macro (`table!`) for defining table and column markers in under 10 lines of code per table.
 - **Async Execution:**
@@ -110,10 +136,12 @@ Expand the query builder into a comprehensive CRUD library with compile-time saf
   - Bulk inserts (`insert_many`).
 - **Compile-Time Safe `UPDATE` & `DELETE`:**
   - Typestate enforcement: prevents executing `UPDATE` or `DELETE` without a `WHERE` clause unless explicitly overridden (`.allow_all()`).
-- **`RETURNING` Clause:**
+- **Dialect-Gated `RETURNING` Clause:**
+  - Available where `D: SupportsReturning`.
   - Return individual columns, typed tuples, or complete record structs upon mutation.
-- **Conflict Handling (Upsert):**
-  - `ON CONFLICT (columns) DO NOTHING` and `ON CONFLICT (columns) DO UPDATE`.
+- **Dialect-Aware Conflict Handling (Upsert):**
+  - Standard `ON CONFLICT (columns) DO NOTHING / DO UPDATE` for dialects implementing `SupportsOnConflict`.
+  - Dialect-specific upsert syntax variants formatted transparently.
 
 ### Example Usage
 ```rust
@@ -193,19 +221,24 @@ cargo db-codegen --database-url postgres://localhost:5432/mydb --output src/db/s
 
 ---
 
-## Phase 6: Production Hardening: Dual Engine, Transactions & Pooling
+## Phase 6: Production Hardening: Dual Engine, Multi-Dialect (SQLite) & Pooling
 
 ### Objective
-Harden the library into an enterprise-grade SQL toolkit suitable for high-throughput production services and flexible deployment environments.
+Harden the library into an enterprise-grade SQL toolkit suitable for high-throughput production services, embedded use cases, and flexible deployment environments.
 
 ### Key Deliverables
+- **First-Class SQLite Dialect & Driver:**
+  - `Sqlite` dialect implementation (`?` positional parameter placeholders, SQLite identifier quoting).
+  - Driver adapter for `rusqlite` (synchronous) and optional async wrappers.
+  - Compile-time capability matrix verification ensuring incompatible Postgres constructs cannot be compiled against SQLite.
+  - SQLite schema introspection support in the codegen CLI (`sqlite_master` / `PRAGMA table_info`).
 - **Dual Engine Architecture:**
   - Asynchronous driver (`tokio-postgres`).
   - Synchronous driver (`postgres`) for CLI tools, workers, and non-tokio runtimes.
 - **Transaction Management:**
   - RAII transactions with automatic rollback on error:
     `db.transaction(|tx| async move { ... })`.
-  - Configurable transaction isolation levels.
+  - Configurable transaction isolation levels across supported engines.
 - **Connection Pooling:**
   - First-class support for connection pools (`deadpool-postgres`, `bb8`, `r2d2`).
 - **Escape Hatches & Raw SQL Interop:**
