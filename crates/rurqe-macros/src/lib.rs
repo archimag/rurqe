@@ -1,5 +1,6 @@
 //! Procedural macros for RURQE query builder and relational execution engine.
 
+mod dto;
 #[allow(dead_code)]
 mod parse;
 mod select;
@@ -23,6 +24,31 @@ use proc_macro::TokenStream;
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     crate::select::expand(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Declares a reusable named projection struct for query results.
+///
+/// Field types are read from the schema markers through
+/// `<Column as Column>::RustType`, so a DTO never repeats column types and stays
+/// in sync with the schema. Field names follow the column markers (`UserId`
+/// becomes `user_id`) unless renamed with `as alias`. The generated struct
+/// implements `FromRow`, so it decodes rows straight from the ordered result
+/// values and is usable as a function return type:
+///
+/// ```ignore
+/// dto! {
+///     /// A user as returned by the repository.
+///     pub struct UserSummary {
+///         UserId,
+///         UserEmail as contact_email,
+///     }
+/// }
+/// ```
+#[proc_macro]
+pub fn dto(input: TokenStream) -> TokenStream {
+    crate::dto::expand(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
