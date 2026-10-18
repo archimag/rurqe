@@ -12,36 +12,37 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 
 | Phase | Focus | User Capability | Product Maturity |
 |---|---|---|---|
-| **Phase 1** | Type-Safe Core & AST | Strict `SELECT` with tuple mapping (Postgres first, dialect-ready) | Minimal Viable Query Builder |
-| **Phase 2** | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer |
-| **Phase 3** | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution |
-| **Phase 4** | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder |
-| **Phase 5** | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity |
-| **Phase 6** | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
+| **Phase 1** [x] | Type-Safe Core & AST | Strict `SELECT` with tuple mapping (Postgres first, dialect-ready) | Minimal Viable Query Builder (Completed) |
+| **Phase 2** [ ] | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer |
+| **Phase 3** [ ] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution |
+| **Phase 4** [ ] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder |
+| **Phase 5** [ ] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity |
+| **Phase 6** [ ] | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
 
 ---
 
-## Phase 1: Type-Safe Core & Tuple Select
+## Phase 1: Type-Safe Core & Tuple Select [Completed]
 
 ### Objective
 Create a lightweight, strictly typed query builder core with an extensible multi-dialect architecture, capable of constructing parameterized SQL queries and decoding rows into typed tuples without runtime overhead.
 
 ### Key Deliverables
-- **Multi-Dialect Foundation:**
+- [x] **Multi-Dialect Foundation:**
   - `Dialect` trait specifying identifier quoting and placeholder formatting.
-  - `Postgres` dialect implementation (`$1, $2, ...` placeholders, double-quote identifiers).
-  - Capability marker traits infrastructure (`SupportsReturning`, `SupportsDistinctOn`, version-gated capabilities).
-- **Core Abstractions:**
-  - `Table` trait: table identifier and schema namespace.
-  - `Column` trait: column name, parent table marker, and associated `RustType` & `SqlType`.
-  - `Expression<SqlType>` trait: type-safe SQL expressions and operators (`eq`, `neq`, `gt`, `lt`, `and`, `or`).
-- **Query Construction:**
-  - `SelectQuery<D: Dialect, ...>` builder supporting `.from()`, `.where_()`, `.order_by()`, and `.limit()`.
+  - `Postgres` dialect implementation (`$1, $2, ...` placeholders, double-quote identifiers, version markers `Pg14`, `Pg15`, `Pg16`).
+  - Capability marker traits infrastructure (`SupportsReturning`, `SupportsDistinctOn`, `SupportsOnConflict`).
+- [x] **Core Abstractions:**
+  - `Table` trait: table identifier and compile-time name.
+  - `Column` trait: column name, parent table marker, and associated `RustType`.
+  - Type-safe diagnostics via `#[diagnostic::on_unimplemented]` (`ColumnBelongsTo`, `TableInScope`, `SqlCompatible`).
+  - `Expr<T>` AST and typed operators (`eq`, `ne`, `gt`, `lt`, `and`, `or`).
+- [x] **Query Construction:**
+  - `SelectQuery<D: Dialect, ...>` builder supporting `.from()`, `.select()`, `.where_()`, `.order_by()`, `.limit()`, and `.offset()`.
   - Deterministic parameterized SQL renderer driving output via the active `Dialect`.
-- **Manual Schema Declaration DSL:**
+- [x] **Manual Schema Declaration DSL:**
   - A lightweight declarative macro (`table!`) for defining table and column markers in under 10 lines of code per table.
-- **Async Execution:**
-  - Execution adapter for `tokio-postgres` decoding typed projections directly into tuples (e.g. `(i32, String)`).
+- [x] **Row Decoding:**
+  - Zero-overhead row extraction traits (`FromRow`, `FromSqlValue`) mapping SQL values into typed tuples for arities 1..=12.
 
 ### Example Usage
 ```rust

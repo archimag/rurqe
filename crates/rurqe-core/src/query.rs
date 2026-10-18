@@ -76,6 +76,25 @@ pub struct BuiltQuery {
     pub params: Vec<SqlVal>,
 }
 
+/// The direction of an `ORDER BY` clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderDirection {
+    /// Ascending order (`ASC`).
+    Asc,
+    /// Descending order (`DESC`).
+    Desc,
+}
+
+impl OrderDirection {
+    /// The SQL text of the direction.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            OrderDirection::Asc => "ASC",
+            OrderDirection::Desc => "DESC",
+        }
+    }
+}
+
 /// A `SELECT` query over the table `Tables` producing rows of type `Output`.
 ///
 /// `Tables` remains `()` until [`SelectQuery::from`] introduces the queried
@@ -85,6 +104,7 @@ pub struct BuiltQuery {
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     projections: Vec<&'static str>,
     filter: Option<ExprKind>,
+    order_by: Vec<(&'static str, OrderDirection)>,
     limit: Option<u32>,
     offset: Option<u32>,
     _marker: QueryMarker<D, Tables, Output>,
@@ -102,6 +122,7 @@ impl<D: Dialect> SelectQuery<D, (), ()> {
         SelectQuery {
             projections: Vec::new(),
             filter: None,
+            order_by: Vec::new(),
             limit: None,
             offset: None,
             _marker: PhantomData,
@@ -149,6 +170,22 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self
     }
 
+    /// Appends an ordering criterion for column `col` with `direction`.
+    pub fn order_by<C: Column>(mut self, _col: C, direction: OrderDirection) -> Self {
+        self.order_by.push((C::NAME, direction));
+        self
+    }
+
+    /// Appends an ascending ordering criterion for column `col`.
+    pub fn order_by_asc<C: Column>(self, col: C) -> Self {
+        self.order_by(col, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for column `col`.
+    pub fn order_by_desc<C: Column>(self, col: C) -> Self {
+        self.order_by(col, OrderDirection::Desc)
+    }
+
     /// Limits the number of returned rows to `limit`.
     pub fn limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
@@ -165,6 +202,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         SelectQuery {
             projections: self.projections,
             filter: self.filter,
+            order_by: self.order_by,
             limit: self.limit,
             offset: self.offset,
             _marker: PhantomData,
@@ -195,6 +233,18 @@ impl<D: Dialect, Tables: Table, Output> SelectQuery<D, Tables, Output> {
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
             render_expr::<D>(&mut sql, &mut params, filter);
+        }
+
+        if !self.order_by.is_empty() {
+            sql.push_str(" ORDER BY ");
+            for (index, (name, direction)) in self.order_by.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
+                sql.push(' ');
+                sql.push_str(direction.as_str());
+            }
         }
 
         if let Some(limit) = self.limit {
@@ -304,6 +354,21 @@ mod tests {
         assert_eq!(
             built.params,
             vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn order_by_renders_asc_and_desc() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .order_by(UserId, OrderDirection::Desc)
+            .order_by_asc(UserName)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" ORDER BY \"id\" DESC, \"name\" ASC"
         );
     }
 

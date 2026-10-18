@@ -22,6 +22,8 @@ fn builds_parameterised_select_for_postgres() {
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().gt(10i64))
         .where_(Expr::column::<UserName>().eq("root"))
+        .order_by_desc(UserId)
+        .order_by(UserName, OrderDirection::Asc)
         .limit(20)
         .offset(5)
         .build();
@@ -29,7 +31,8 @@ fn builds_parameterised_select_for_postgres() {
     assert_eq!(
         built.sql,
         "SELECT \"id\", \"name\" FROM \"users\" \
-         WHERE ((\"id\" > $1) AND (\"name\" = $2)) LIMIT 20 OFFSET 5"
+         WHERE ((\"id\" > $1) AND (\"name\" = $2)) \
+         ORDER BY \"id\" DESC, \"name\" ASC LIMIT 20 OFFSET 5"
     );
     assert_eq!(
         built.params,

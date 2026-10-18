@@ -33,8 +33,8 @@ pub use rurqe_postgres as postgres;
 pub mod prelude {
     pub use rurqe_core::{
         table, BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Dialect, Expr, ExprKind, FromRow,
-        FromSqlValue, SelectQuery, Selection, SqlCompatible, SqlVal, SupportsDistinctOn,
-        SupportsOnConflict, SupportsReturning, Table, TableInScope,
+        FromSqlValue, OrderDirection, SelectQuery, Selection, SqlCompatible, SqlVal,
+        SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
     };
 
     #[cfg(feature = "postgres")]
