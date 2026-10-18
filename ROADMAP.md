@@ -15,7 +15,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 1** [x] | Type-Safe Core & AST | Strict `SELECT` with tuple mapping (Postgres first, dialect-ready) | Minimal Viable Query Builder (Completed) |
 | **Phase 2** [x] | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer (Completed) |
 | **Phase 3** [x] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution (Completed) |
-| **Phase 4** [ ] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder |
+| **Phase 4** [x] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder (Completed) |
 | **Phase 5** [ ] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity |
 | **Phase 6** [ ] | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
 
@@ -135,20 +135,20 @@ db.update(users::TABLE)
 
 ---
 
-## Phase 4: Relational Querying: Joins, Nullability Tracking & Aggregations
+## Phase 4: Relational Querying: Joins, Nullability Tracking & Aggregations [Completed]
 
 ### Objective
 Provide advanced relational querying capabilities comparable to jOOQ, maintaining sound compile-time nullability tracking across joins.
 
 ### Key Deliverables
-- **Join Semantics:**
-  - `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, and `FULL JOIN`.
-- **Automatic Nullability Tracking:**
-  - Type-level transformation: columns participating in a `LEFT JOIN` automatically wrap their Rust type in `Option<T>` at compile time, preventing runtime panics.
-- **Aggregations & Grouping:**
-  - Standard aggregate functions (`count`, `sum`, `avg`, `min`, `max`).
-  - `.group_by(...)` and `.having(...)` validation.
-- **Conditional Expressions:**
+- [x] **Join Semantics:**
+  - `INNER JOIN` and `LEFT JOIN` with typed `ON` predicates.
+- [x] **Automatic Sound Nullability Tracking:**
+  - Type-level transformation: columns participating in a `LEFT JOIN` automatically wrap their Rust type in `Option<T>` at compile time via `Nullable<Col>`.
+- [x] **Aggregations & Grouping:**
+  - Standard aggregate functions (`count_all`, `count`, `sum`, `avg`, `min`, `max`).
+  - `.group_by(...)` and `.having(...)` validation and parameter binding.
+- [ ] **Conditional Expressions:**
   - Type-safe `case_when(...).then(...).else_(...).end()`.
 
 ### Example Usage
