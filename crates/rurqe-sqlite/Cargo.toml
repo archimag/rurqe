@@ -7,5 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "SQLite dialect implementation and runtime adapters for RURQE"
 
+[features]
+default = ["rusqlite"]
+rusqlite = ["dep:rusqlite"]
+
 [dependencies]
 rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
+rusqlite = { version = "0.31", optional = true, features = ["bundled"] }

@@ -99,6 +99,135 @@ impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsReturning for Sqlit
 
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsOnConflict for Sqlite<V> {}
 
+/// Re-export of the underlying `rusqlite` crate for adapter users.
+#[cfg(feature = "rusqlite")]
+pub use ::rusqlite;
+
+/// A `rusqlite` connection extended with the RURQE execution contract.
+#[cfg(feature = "rusqlite")]
+pub use rusqlite_backend::SqliteConnection;
+
+#[cfg(feature = "rusqlite")]
+mod rusqlite_backend {
+    use core::ops::{Deref, DerefMut};
+
+    use ::rusqlite::types::{ToSql, ToSqlOutput, ValueRef};
+    use ::rusqlite::Connection;
+
+    use rurqe_core::expr::SqlVal;
+    use rurqe_core::query::{BuiltQuery, QueryBackend};
+
+    /// A `rusqlite` connection that executes RURQE-built queries.
+    ///
+    /// The adapter implements the RURQE
+    /// [`QueryBackend`](rurqe_core::query::QueryBackend) contract, so the
+    /// `fetch_all`, `fetch_one`, `fetch_optional`, and `execute` helpers of
+    /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available.
+    /// It also dereferences to the wrapped [`Connection`], so raw SQL can still be
+    /// executed directly.
+    pub struct SqliteConnection {
+        connection: Connection,
+    }
+
+    impl SqliteConnection {
+        /// Wraps an existing `rusqlite` connection.
+        pub fn new(connection: Connection) -> Self {
+            Self { connection }
+        }
+
+        /// Opens a new in-memory SQLite database.
+        pub fn open_in_memory() -> Result<Self, ::rusqlite::Error> {
+            Connection::open_in_memory().map(Self::new)
+        }
+
+        /// Returns a shared reference to the wrapped connection.
+        pub fn connection(&self) -> &Connection {
+            &self.connection
+        }
+
+        /// Returns a mutable reference to the wrapped connection.
+        pub fn connection_mut(&mut self) -> &mut Connection {
+            &mut self.connection
+        }
+
+        /// Consumes the adapter, returning the wrapped connection.
+        pub fn into_inner(self) -> Connection {
+            self.connection
+        }
+    }
+
+    impl Deref for SqliteConnection {
+        type Target = Connection;
+
+        fn deref(&self) -> &Self::Target {
+            &self.connection
+        }
+    }
+
+    impl DerefMut for SqliteConnection {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.connection
+        }
+    }
+
+    /// Bridges a [`SqlVal`] into the `rusqlite` parameter interface.
+    struct SqlValParam<'a>(&'a SqlVal);
+
+    impl ToSql for SqlValParam<'_> {
+        fn to_sql(&self) -> ::rusqlite::Result<ToSqlOutput<'_>> {
+            let value_ref = match self.0 {
+                SqlVal::Null => ValueRef::Null,
+                SqlVal::I32(value) => ValueRef::Integer(i64::from(*value)),
+                SqlVal::I64(value) => ValueRef::Integer(*value),
+                SqlVal::F64(value) => ValueRef::Real(*value),
+                SqlVal::Bool(value) => ValueRef::Integer(*value as i64),
+                SqlVal::Text(value) => ValueRef::Text(value.as_bytes()),
+            };
+            Ok(ToSqlOutput::Borrowed(value_ref))
+        }
+    }
+
+    /// Decodes a raw SQLite value into the matching [`SqlVal`] variant.
+    fn value_ref_to_sql_val(value: ValueRef<'_>) -> SqlVal {
+        match value {
+            ValueRef::Null => SqlVal::Null,
+            ValueRef::Integer(value) => SqlVal::I64(value),
+            ValueRef::Real(value) => SqlVal::F64(value),
+            ValueRef::Text(bytes) => SqlVal::Text(String::from_utf8_lossy(bytes).into_owned()),
+            ValueRef::Blob(bytes) => SqlVal::Text(String::from_utf8_lossy(bytes).into_owned()),
+        }
+    }
+
+    impl QueryBackend for SqliteConnection {
+        type Error = ::rusqlite::Error;
+
+        fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+            let mut statement = self.connection.prepare(&query.sql)?;
+            let column_count = statement.column_count();
+            let params = query.params.iter().map(SqlValParam);
+            let mut rows = statement.query(::rusqlite::params_from_iter(params))?;
+
+            let mut result = Vec::new();
+            while let Some(row) = rows.next()? {
+                let mut values = Vec::with_capacity(column_count);
+                for index in 0..column_count {
+                    values.push(value_ref_to_sql_val(row.get_ref(index)?));
+                }
+                result.push(values);
+            }
+            Ok(result)
+        }
+
+        fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
+            let params = query.params.iter().map(SqlValParam);
+            let affected = self
+                .connection
+                .execute(&query.sql, ::rusqlite::params_from_iter(params))?;
+            Ok(affected as u64)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
