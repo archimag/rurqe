@@ -14,7 +14,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 2** | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer |
 | **Phase 3** | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING` | Complete CRUD Solution |
 | **Phase 4** | Relational Power | Joins, compile-time nullability, group by | Advanced Relational Builder |
-| **Phase 5** | jOOQ-Style Codegen | CLI database introspection (`pg_catalog`) | Zero-Boilerplate Type System |
+| **Phase 5** | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & schema lock | Zero-Boilerplate & Verified Integrity |
 | **Phase 6** | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
 
 ---
@@ -232,28 +232,45 @@ let report = select! {
 
 ---
 
-## Phase 5: jOOQ-Style Codegen: Database Schema Introspection CLI
+## Phase 5: jOOQ-Style Codegen, Migrations & Schema Drift Verification (Baseline)
 
 ### Objective
-Eliminate manual schema maintenance by deriving the complete Rust schema directly from a live PostgreSQL database.
+Eliminate manual schema maintenance and guarantee total synchronization between migrations, database state, and Rust types via database-first introspection, an integrated migration engine, baseline snapshots, and deterministic drift detection.
 
 ### Key Deliverables
-- **Introspection CLI & Build Plugin:**
-  - Standalone executable (`cargo-codegen`) and `build.rs` integration.
-  - Queries `pg_catalog` and `information_schema` directly.
-- **Introspected Schema Features:**
-  - Tables, views, and schemas (namespaces).
-  - Primary keys, foreign keys, and unique constraints.
-  - PostgreSQL data types: primitives, enums, arrays, `timestamptz`, `uuid`, `jsonb`.
-  - Nullability and column default expressions.
-- **Generated Artifacts:**
-  - Zero-sized column and table markers.
-  - Full record structs (`Record`, `NewRecord`, `UpdateRecord`).
-  - Strongly typed foreign key navigation helpers.
+- **Transactional Migration Engine:**
+  - Forward-only, sequential SQL migration files (`migrations/0001_init.sql`, `migrations/0002_add_orders.sql`).
+  - Checksum validation: stores SHA-256 hashes in `__schema_migrations` to catch retroactive edits to already applied migrations.
+  - Dual execution:
+    - CLI commands: `cargo db-migrate up`, `cargo db-migrate status`.
+    - Embedded migrator: `embed_migrations!()` macro for zero-dependency runtime execution on container startup.
+- **Baseline Support (Legacy & Squash):**
+  - Ability to baseline existing databases: `cargo db-baseline --version 1.0.0` records the current state as a starting point without running historical migrations.
+  - Enables squashing large migration histories into a clean foundation.
+- **Database Introspection Engine:**
+  - Direct introspection of `pg_catalog` and `information_schema`.
+  - Captures tables, views, schemas, primary/foreign/unique keys, nullability, defaults, enums, arrays, JSONB, and UUIDs.
+  - Generates zero-sized column and table markers, strongly typed `Record` structs, and foreign key relations.
+- **Schema Snapshot (`schema.lock`) & Deterministic Drift Detection:**
+  - Emits a normalized canonical schema snapshot (`schema.lock`) and embeds a compile-time checksum (`pub const SCHEMA_HASH: &str = "...";`) inside generated Rust schema code.
+  - **CI Drift Verification (`cargo db-verify`):** runs migrations on an ephemeral test database and verifies that the live database matches `schema.lock` and `SCHEMA_HASH` bit-for-bit.
+  - Fail-fast error reporting when code and database diverge:
+    ```text
+    Error: Schema drift detected!
+    Column `users.phone_number` exists in migrations but is missing from `schema.rs`.
+    Hint: Run `cargo db-codegen` to update code and snapshot.
+    ```
 
 ### Example Usage
 ```bash
+# 1. Apply pending migrations
+cargo db-migrate up
+
+# 2. Introspect database, generate Rust schema, and create schema.lock
 cargo db-codegen --database-url postgres://localhost:5432/mydb --output src/db/schema.rs
+
+# 3. Verify in CI that migrations, live DB, and generated Rust code are 100% in sync
+cargo db-verify --database-url postgres://localhost:5432/testdb
 ```
 
 ---
