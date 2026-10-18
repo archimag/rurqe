@@ -6,6 +6,42 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 
 ---
 
+## Core Vision & Design Philosophy: The Foundational Triad
+
+The guiding north star of this library is the synthesis of three superpowers into a unified, uncompromising developer experience:
+
+```text
+┌────────────────────────────────────────────────────────────────────────┐
+│                        THE FOUNDATIONAL TRIAD                          │
+├───────────────────────┬────────────────────────┬───────────────────────┤
+│   Kysely Ergonomics   │  jOOQ Expressiveness   │    Rust Type Safety   │
+│         (DX)          │   & Relational Depth   │ & Zero-Cost Guarantees│
+├───────────────────────┼────────────────────────┼───────────────────────┤
+│ • Fluent syntax       │ • Database-first truth │ • Compile-time guards │
+│ • Named projections   │ • Complex joins & CTEs │ • Zero runtime cost   │
+│ • Zero boilerplate    │ • Schema drift verify  │ • Actionable errors   │
+│ • First-class tooling │ • Sound nullability    │ • Multi-dialect gates │
+└───────────────────────┴────────────────────────┴───────────────────────┘
+```
+
+### 1. Kysely Ergonomics (Developer Experience)
+- **Named Ad-Hoc Projections:** Ergonomic projection macros (`select!`) synthesize strongly typed row records with named fields (`user.id`, `user.email`), eliminating tuple indexing (`row.0`, `row.1`) without tedious manual DTO definitions.
+- **Zero-Boilerplate Fluent API:** Queries read like idiomatic, clean SQL with minimal syntactic overhead and no generic type noise.
+- **First-Class Tooling:** Instant autocompletion, inlay hints, and rename-refactoring support in `rust-analyzer` without requiring a running database server during compilation.
+
+### 2. jOOQ Expressiveness & Relational Soundness
+- **Database-First Single Source of Truth:** Schema metadata is introspected directly from the live database catalog, eliminating duplicated hand-written schema definitions and drift.
+- **Relational Expressiveness:** First-class support for advanced SQL capabilities: multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, and `CASE WHEN` constructs.
+- **Relational Type Invariants:** Mathematically sound compile-time nullability tracking (e.g. automatically lifting non-nullable columns to `Option<T>` in `LEFT JOIN` and outer join operations).
+- **Lifecycle Integrity & Baseline:** Comprehensive migration engine, baseline snapshots for legacy and squashed schemas, and deterministic CI drift detection via `schema.lock`.
+
+### 3. Rust Strict Type Safety & Zero-Cost Guarantees
+- **Zero-Cost Abstractions:** Monomorphized query builders and phantom markers compile down to static SQL buffers and direct deserializers with zero virtual calls or reflection overhead.
+- **Compile-Time Capability & Version Gating:** Dialect- and version-dependent SQL features (such as `RETURNING`, `MERGE`, or `DISTINCT ON`) are enforced via capability marker traits; incompatible queries simply fail to compile.
+- **Human- and LLM-Friendly Diagnostics:** Explicit diagnostics via `#[diagnostic::on_unimplemented]` and fail-fast call-site checking ensure short, actionable compiler error messages rather than multi-clause trait cascade dumps.
+
+---
+
 ## Evolution Overview
 
 | Phase | Focus | User Capability | Product Maturity |
