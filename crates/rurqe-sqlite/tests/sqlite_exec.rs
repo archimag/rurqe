@@ -92,3 +92,109 @@ fn fetch_optional_returns_none_for_absent_rows() {
 
     assert_eq!(adapter.fetch_optional(&query).expect("optional"), None);
 }
+
+/// Minimal error type used by the transaction closures in the tests below.
+#[derive(Debug)]
+struct TestError;
+
+impl From<rurqe_sqlite::rusqlite::Error> for TestError {
+    fn from(_: rurqe_sqlite::rusqlite::Error) -> Self {
+        TestError
+    }
+}
+
+#[test]
+fn transaction_commits_work_on_success() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+            Ok(())
+        })
+        .expect("transaction commits");
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn transaction_rolls_back_on_error() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    let outcome = adapter.transaction(|conn| -> Result<(), TestError> {
+        conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+        Err(TestError)
+    });
+    assert!(outcome.is_err());
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn nested_transaction_rolls_back_to_its_savepoint() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+            let inner = conn.transaction(|inner| -> Result<(), TestError> {
+                inner.execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")?;
+                Err(TestError)
+            });
+            assert!(inner.is_err());
+            Ok(())
+        })
+        .expect("outer transaction commits");
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 1);
+    let name: String = adapter
+        .query_row("SELECT name FROM users", [], |row| row.get(0))
+        .expect("select name");
+    assert_eq!(name, "root");
+}
+
+#[test]
+fn nested_transaction_releases_its_savepoint_on_success() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+            conn.transaction(|inner| -> Result<(), TestError> {
+                inner.execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+        .expect("outer transaction commits");
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 2);
+}

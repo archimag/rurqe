@@ -115,7 +115,9 @@ mod rusqlite_backend {
     use ::rusqlite::Connection;
 
     use rurqe_core::expr::SqlVal;
-    use rurqe_core::query::{BuiltQuery, QueryBackend};
+    use rurqe_core::query::{
+        BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionContext,
+    };
 
     /// A `rusqlite` connection that executes RURQE-built queries.
     ///
@@ -127,12 +129,18 @@ mod rusqlite_backend {
     /// executed directly.
     pub struct SqliteConnection {
         connection: Connection,
+        tx_context: TransactionContext,
+        in_transaction: bool,
     }
 
     impl SqliteConnection {
         /// Wraps an existing `rusqlite` connection.
         pub fn new(connection: Connection) -> Self {
-            Self { connection }
+            Self {
+                connection,
+                tx_context: TransactionContext::new(),
+                in_transaction: false,
+            }
         }
 
         /// Opens a new in-memory SQLite database.
@@ -153,6 +161,93 @@ mod rusqlite_backend {
         /// Consumes the adapter, returning the wrapped connection.
         pub fn into_inner(self) -> Connection {
             self.connection
+        }
+
+        /// Runs `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
+        ///
+        /// When no transaction is open the block runs between `BEGIN` and `COMMIT`.
+        /// Calling `transaction` again while a transaction is already open nests the
+        /// block inside a `SAVEPOINT`, so an inner failure rolls back only its own
+        /// statements while the enclosing transaction stays intact. A panic raised by
+        /// `f` is rolled back as well, so the transaction can never be left
+        /// half-finished.
+        pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
+        where
+            F: FnOnce(&mut SqliteConnection) -> Result<T, E>,
+            E: From<::rusqlite::Error>,
+        {
+            let outer = !self.in_transaction;
+            let savepoint = if outer {
+                self.begin(None).map_err(E::from)?;
+                self.in_transaction = true;
+                None
+            } else {
+                let name = self.tx_context.open_savepoint();
+                self.savepoint(&name).map_err(E::from)?;
+                Some(name)
+            };
+
+            let mut guard = TransactionGuard {
+                connection: self,
+                outer,
+                savepoint,
+                finished: false,
+            };
+
+            match f(&mut *guard.connection) {
+                Ok(value) => {
+                    if outer {
+                        guard.connection.commit().map_err(E::from)?;
+                        guard.connection.in_transaction = false;
+                    } else {
+                        let name = guard
+                            .savepoint
+                            .as_deref()
+                            .expect("nested transactions always own a savepoint");
+                        guard.connection.release_savepoint(name).map_err(E::from)?;
+                        guard.connection.tx_context.close_savepoint();
+                    }
+                    guard.finished = true;
+                    Ok(value)
+                }
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    /// RAII guard that rolls the surrounding block back unless it finished cleanly.
+    ///
+    /// The guard owns the mutable borrow of the connection for the duration of the
+    /// closure, so the closure still receives a reborrow while an unwind discards
+    /// the block through [`Drop`].
+    struct TransactionGuard<'a> {
+        connection: &'a mut SqliteConnection,
+        outer: bool,
+        savepoint: Option<String>,
+        finished: bool,
+    }
+
+    impl Drop for TransactionGuard<'_> {
+        fn drop(&mut self) {
+            if self.finished {
+                return;
+            }
+            if self.outer {
+                let _ = self.connection.rollback();
+                self.connection.in_transaction = false;
+            } else if let Some(savepoint) = self.savepoint.as_deref() {
+                let _ = self.connection.rollback_to_savepoint(savepoint);
+                let _ = self.connection.release_savepoint(savepoint);
+                self.connection.tx_context.close_savepoint();
+            }
+        }
+    }
+
+    impl TransactionBackend for SqliteConnection {
+        fn begin(&mut self, _isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
+            // SQLite serialises access through database-level locking, so the
+            // requested isolation level does not map onto a `BEGIN` clause.
+            self.connection.execute_batch("BEGIN")
         }
     }
 
