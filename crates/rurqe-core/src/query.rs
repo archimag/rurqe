@@ -9,6 +9,13 @@
 //! ```text
 //! SELECT "id", "name" FROM "users" WHERE ("id" > $1) LIMIT 10
 //! ```
+//!
+//! Joining another table keeps the scope at the type level, so the rendered
+//! `FROM` clause always matches the tables the query was built with:
+//!
+//! ```text
+//! SELECT "id", "name" FROM "users" INNER JOIN "orders" ON ("user_id" = $1)
+//! ```
 
 use core::fmt::Write;
 use core::marker::PhantomData;
@@ -66,6 +73,40 @@ impl_selection!(
     (C6, RustType)
 );
 
+/// The ordered list of tables a query selects from, joined tables included.
+///
+/// The trait is implemented for every [`Table`] and for each [`Joined`] scope
+/// produced by [`SelectQuery::inner_join`], so the rendered `FROM` clause stays
+/// in sync with the tables tracked at the type level.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid query scope",
+    label = "a query must select from a table",
+    note = "introduce the first table with `SelectQuery::from` and additional tables with `SelectQuery::inner_join`"
+)]
+pub trait TableScope {
+    /// Appends the table names of the scope in `FROM` order.
+    fn push_table_names(out: &mut Vec<&'static str>);
+}
+
+impl<T: Table> TableScope for T {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        out.push(T::NAME);
+    }
+}
+
+/// A query scope extending `Tables` with the table `T` joined to it.
+///
+/// The marker is produced by [`SelectQuery::inner_join`], carries no values, and
+/// only records the `FROM` order of the participating tables.
+pub struct Joined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
+
+impl<Tables: TableScope, T: Table> TableScope for Joined<Tables, T> {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        Tables::push_table_names(out);
+        out.push(T::NAME);
+    }
+}
+
 /// The rendered SQL text of a query together with its bound parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuiltQuery {
@@ -103,6 +144,7 @@ impl OrderDirection {
 /// and the result type at compile time.
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     projections: Vec<&'static str>,
+    joins: Vec<ExprKind>,
     filter: Option<ExprKind>,
     order_by: Vec<(&'static str, OrderDirection)>,
     limit: Option<u32>,
@@ -121,6 +163,7 @@ impl<D: Dialect> SelectQuery<D, (), ()> {
     pub fn new() -> Self {
         SelectQuery {
             projections: Vec::new(),
+            joins: Vec::new(),
             filter: None,
             order_by: Vec::new(),
             limit: None,
@@ -198,9 +241,26 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self
     }
 
+    /// Joins the table `T` to the query with an `INNER JOIN` restricted by `on`.
+    ///
+    /// The joined table becomes part of the query scope, so several joins may be
+    /// chained. Parameters of `on` are bound before the parameters of the
+    /// `WHERE` clause.
+    pub fn inner_join<T: Table>(
+        mut self,
+        on: Expr<bool>,
+    ) -> SelectQuery<D, Joined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.joins.push(on.into_kind());
+        self.retype()
+    }
+
     fn retype<D2: Dialect, Tables2, Output2>(self) -> SelectQuery<D2, Tables2, Output2> {
         SelectQuery {
             projections: self.projections,
+            joins: self.joins,
             filter: self.filter,
             order_by: self.order_by,
             limit: self.limit,
@@ -210,12 +270,20 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 }
 
-impl<D: Dialect, Tables: Table, Output> SelectQuery<D, Tables, Output> {
+impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     /// Renders the query into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
         assert!(
             !self.projections.is_empty(),
             "a SELECT query requires at least one projection; call `select` before `build`"
+        );
+
+        let mut tables = Vec::new();
+        Tables::push_table_names(&mut tables);
+        assert_eq!(
+            tables.len(),
+            self.joins.len() + 1,
+            "every joined table requires an ON condition"
         );
 
         let mut sql = String::from("SELECT ");
@@ -227,9 +295,16 @@ impl<D: Dialect, Tables: Table, Output> SelectQuery<D, Tables, Output> {
         }
 
         sql.push_str(" FROM ");
-        D::push_quoted_identifier(&mut sql, Tables::NAME);
+        D::push_quoted_identifier(&mut sql, tables[0]);
 
         let mut params = Vec::new();
+        for (index, on) in self.joins.iter().enumerate() {
+            sql.push_str(" INNER JOIN ");
+            D::push_quoted_identifier(&mut sql, tables[index + 1]);
+            sql.push_str(" ON ");
+            render_expr::<D>(&mut sql, &mut params, on);
+        }
+
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
             render_expr::<D>(&mut sql, &mut params, filter);
@@ -300,6 +375,13 @@ mod tests {
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
+        }
+    }
+
+    crate::table! {
+        Order => "orders" {
+            OrderId => "id": i64,
+            OrderUserId => "user_id": i64,
         }
     }
 
@@ -376,5 +458,49 @@ mod tests {
     #[should_panic(expected = "at least one projection")]
     fn building_without_projections_panics() {
         let _ = SelectQuery::<MockDialect>::new().from::<User>().build();
+    }
+
+    #[test]
+    fn inner_join_renders_join_clause_before_filter() {
+        let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64)> =
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .inner_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
+                .select((UserId, OrderId));
+
+        let built = query.where_(Expr::column::<UserId>().gt(1i64)).build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"id\" FROM \"users\" INNER JOIN \"orders\" \
+             ON (\"user_id\" = $1) WHERE (\"id\" > $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(1)]);
+    }
+
+    #[test]
+    fn joined_scope_tracks_every_table_in_from_order() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .inner_join::<Order>(Expr::column::<OrderUserId>().eq(1i64))
+            .inner_join::<User>(Expr::column::<UserId>().eq(2i64))
+            .select((UserId,))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\" FROM \"users\" INNER JOIN \"orders\" ON (\"user_id\" = $1) \
+             INNER JOIN \"users\" ON (\"id\" = $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(2)]);
+    }
+
+    #[test]
+    fn single_table_and_joined_scopes_are_query_scopes() {
+        fn assert_scope<S: TableScope>() {}
+
+        assert_scope::<User>();
+        assert_scope::<Joined<User, Order>>();
+        assert_scope::<Joined<Joined<User, Order>, User>>();
     }
 }
