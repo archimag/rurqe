@@ -50,6 +50,43 @@ Engine-exclusive syntax (such as PostgreSQL JSONB operators `@>`, `?|`, regex ma
 
 ---
 
+## Architectural Foundation: Compiler Diagnostics & Error Ergonomics (Human & LLM First)
+
+A critical failure mode of heavily typed SQL libraries in Rust (such as Diesel) is opaque compiler error messages spanning dozens of lines of deeply nested AST types. To make this library effortless to understand and debug for both human developers and LLMs / AI agents:
+
+### 1. Actionable Diagnostics via `#[diagnostic::on_unimplemented]`
+Public core traits utilize Rust 1.78+ `#[diagnostic::on_unimplemented]` to deliver concise, focused error messages with remediation hints instead of low-level trait resolution failures:
+```rust
+#[diagnostic::on_unimplemented(
+    message = "Cannot compare column `{Self}` with value of type `{Rhs}`",
+    label = "type mismatch: column `{Self}` expects `{Expected}`, but got `{Rhs}`",
+    note = "Hint: verify that the value type matches the column definition in your schema"
+)]
+pub trait SqlEq<Rhs, Expected> { ... }
+```
+
+### 2. Fail-Fast Call-Site Validation
+Type errors are caught immediately at the offending method call (`.where_()`, `.eq()`, `.select()`), rather than deferred to the terminal execution method (`.fetch_all()`). This ensures the compiler points directly to the incorrect expression and prevents multi-clause error cascading.
+
+### 3. Flat Query Types (No Generic Parameter Explosion)
+Deeply nested AST wrapper types are avoided in public query signatures. The query signature exposes only its high-level public contract:
+```rust
+pub struct Query<Dialect, TablesInScope, OutputRow> { ... }
+```
+Internal clauses are encapsulated inside AST nodes rather than layered into type parameters, keeping compiler errors and rust-analyzer inlay hints short and readable.
+
+### 4. Semantic, Human-Readable Marker Traits
+Trait boundaries are formulated as natural English domain constraints rather than obscure internal mechanics:
+- `ColumnBelongsTo<Table>`
+- `TableInScope<Table>`
+- `SupportsDistinctOn<Dialect>`
+- `SqlCompatible<ColType, ValType>`
+
+### 5. Explicit Macro Diagnostics
+Declarative and procedural macros (`select!`, `dto!`, `table!`) validate syntax and invariants proactively, producing structured `compile_error!("...")` messages with explicit guidance rather than failing with confusing internal parser syntax errors.
+
+---
+
 ## Phase 1: Type-Safe Core & Tuple Select
 
 ### Objective
