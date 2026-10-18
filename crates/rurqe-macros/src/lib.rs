@@ -28,6 +28,19 @@ pub fn select(input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Builds an ad-hoc named-field projection, providing an ergonomic alias for [`select!`].
+///
+/// Eliminates syntactic stuttering when passing projections to query methods:
+///
+/// ```ignore
+/// let query = select_from::<Postgres, User>()
+///     .select(cols!(UserId, UserEmail as contact_email));
+/// ```
+#[proc_macro]
+pub fn cols(input: TokenStream) -> TokenStream {
+    select(input)
+}
+
 /// Declares a reusable named projection struct for query results.
 ///
 /// Field types are read from the schema markers through

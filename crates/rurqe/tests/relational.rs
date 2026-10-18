@@ -47,12 +47,11 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
     assert_scope::<Joined<User, Order>>();
     assert_scope::<LeftJoined<User, Order>>();
 
-    let selection = select!(UserId, OrderId, OrderTotal);
+    let selection = cols!(UserId, OrderId, OrderTotal);
 
-    let built = SelectQuery::<Postgres<Pg16>>::new()
-        .from::<User>()
+    let built = select_from::<Postgres<Pg16>, User>()
         .inner_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
-        .select(select!(UserId, OrderId, OrderTotal))
+        .select(cols!(UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
         .build();
 

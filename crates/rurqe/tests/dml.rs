@@ -167,7 +167,7 @@ fn update_returning_decodes_into_a_named_dto() {
     let built = update::<Postgres, User>()
         .set((UserName::set("bob"), UserActive::set(false)))
         .where_(Expr::column::<UserId>().gt(10i64))
-        .returning(select!(UserId, UserName as contact_email, UserActive))
+        .returning(cols!(UserId, UserName as contact_email, UserActive))
         .build();
 
     assert_eq!(

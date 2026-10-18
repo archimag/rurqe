@@ -3,7 +3,7 @@
 //! An ergonomic, strictly type-safe SQL query builder and relational execution engine for Rust.
 
 use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
-use rurqe_core::{Dialect, Table};
+use rurqe_core::{Dialect, SelectQuery, Table};
 
 pub use rurqe_core as core;
 
@@ -38,6 +38,28 @@ pub use rurqe_postgres as postgres;
 ///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
 /// );
 /// ```
+/// Starts a `SELECT` statement over the table `T` for the dialect `D`.
+///
+/// ```
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// let built = select_from::<Postgres, User>()
+///     .select(cols!(UserId))
+///     .build();
+///
+/// assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
+/// ```
+pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, ()> {
+    SelectQuery::new().from::<T>()
+}
+
 pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
     InsertQuery::new()
 }
@@ -123,7 +145,7 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// );
 /// ```
 pub mod prelude {
-    pub use crate::{delete_from, insert_into, update};
+    pub use crate::{delete_from, insert_into, select_from, update};
 
     pub use rurqe_core::{
         table, AggregateFunc, At, BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Dialect, Expr,
@@ -140,7 +162,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "macros")]
-    pub use rurqe_macros::{dto, select};
+    pub use rurqe_macros::{cols, dto, select};
 
     #[cfg(feature = "postgres")]
     pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgVersion, Postgres};
