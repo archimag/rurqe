@@ -14,7 +14,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 |---|---|---|---|
 | **Phase 1** [x] | Type-Safe Core & AST | Strict `SELECT` with tuple mapping (Postgres first, dialect-ready) | Minimal Viable Query Builder (Completed) |
 | **Phase 2** [x] | Kysely DX & Macros | Named fields via `select!`, DTO derivation | High-Ergonomics Read Layer (Completed) |
-| **Phase 3** [ ] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution |
+| **Phase 3** [x] | Type-Safe DML | `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, `UPSERT` | Complete CRUD Solution (Completed) |
 | **Phase 4** [ ] | Relational Power | Joins, compile-time nullability, `GROUP BY`, aggregations | Advanced Relational Builder |
 | **Phase 5** [ ] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity |
 | **Phase 6** [ ] | Production Hardening | Dual engine (sync/async), multi-dialect (SQLite), pools | Production-Grade Framework |
@@ -96,22 +96,22 @@ for user in users {
 
 ---
 
-## Phase 3: Type-Safe DML (Insert, Update, Delete, Returning, Upsert)
+## Phase 3: Type-Safe DML (Insert, Update, Delete, Returning, Upsert) [Completed]
 
 ### Objective
 Expand the query builder into a comprehensive CRUD library with compile-time safety guards against common runtime mistakes.
 
 ### Key Deliverables
-- **Type-Safe `INSERT`:**
-  - Strongly typed column assignment (`users::EMAIL.set("alice@example.com")`).
+- [x] **Type-Safe `INSERT`:**
+  - Strongly typed column assignment (`UserId::set(...)`).
   - Support for `DEFAULT` values (e.g. autoincrement primary keys).
-  - Bulk inserts (`insert_many`).
-- **Compile-Time Safe `UPDATE` & `DELETE`:**
+  - Bulk inserts (`values_many`).
+- [x] **Compile-Time Safe `UPDATE` & `DELETE`:**
   - Typestate enforcement: prevents executing `UPDATE` or `DELETE` without a `WHERE` clause unless explicitly overridden (`.allow_all()`).
-- **Dialect- and Version-Gated `RETURNING` Clause:**
+- [x] **Dialect- and Version-Gated `RETURNING` Clause:**
   - Available where `D: SupportsReturning` (PostgreSQL, SQLite 3.35+).
   - Return individual columns, typed tuples, or complete record structs upon mutation.
-- **Dialect- and Version-Aware Conflict Handling (Upsert):**
+- [x] **Dialect- and Version-Aware Conflict Handling (Upsert):**
   - Standard `ON CONFLICT (columns) DO NOTHING / DO UPDATE` for dialects implementing `SupportsOnConflict` (PostgreSQL, SQLite 3.24+).
   - Dialect-specific upsert syntax variants formatted transparently.
 
