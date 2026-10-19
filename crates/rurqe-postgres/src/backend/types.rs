@@ -259,19 +259,60 @@ impl ToSql for SqlValParam<'_> {
                     value.to_string().to_sql(ty, out)
                 }
             }
+            SqlVal::EncodingError(message) => {
+                Err(Box::new(::std::io::Error::other(message.clone())))
+            }
         }
     }
 
-    fn accepts(_ty: &Type) -> bool {
-        true
+    /// Reports whether a column of type `ty` can receive a bound parameter.
+    ///
+    /// The list covers every type the adapter encodes natively or through its
+    /// textual representation. Columns outside the list are rejected before the
+    /// driver is asked to encode the parameter, which turns an opaque driver
+    /// error into an actionable diagnostic.
+    fn accepts(ty: &Type) -> bool {
+        matches!(
+            ty,
+            &Type::BOOL
+                | &Type::INT2
+                | &Type::INT4
+                | &Type::INT8
+                | &Type::FLOAT4
+                | &Type::FLOAT8
+                | &Type::TEXT
+                | &Type::VARCHAR
+                | &Type::BPCHAR
+                | &Type::NAME
+                | &Type::UNKNOWN
+                | &Type::BYTEA
+                | &Type::UUID
+                | &Type::JSON
+                | &Type::JSONB
+                | &Type::TIMESTAMP
+                | &Type::TIMESTAMPTZ
+                | &Type::DATE
+        )
     }
 
+    /// Encodes the parameter, rejecting columns of a type the adapter cannot bind.
+    ///
+    /// `NULL` is bindable for any column type, so an optional parameter keeps
+    /// working regardless of the column it is bound to.
     fn to_sql_checked(
         &self,
         ty: &Type,
         out: &mut BytesMut,
     ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
-        self.to_sql(ty, out)
+        if matches!(self.0, SqlVal::Null) || Self::accepts(ty) {
+            return self.to_sql(ty, out);
+        }
+
+        Err(Box::new(::std::io::Error::other(format!(
+            "cannot bind a SQL `{}` value to a PostgreSQL column of type `{}`",
+            self.0.variant_name(),
+            ty.name()
+        ))))
     }
 }
 
@@ -446,5 +487,43 @@ mod tests {
                 .unwrap(),
             IsNull::Yes
         ));
+    }
+
+    #[test]
+    fn unusable_column_types_are_rejected_with_a_clear_message() {
+        let mut buffer = BytesMut::new();
+        let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INTERVAL, &mut buffer)
+        {
+            Ok(_) => panic!("intervals cannot receive bound parameters"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("int64"));
+        assert!(error.to_string().contains("interval"));
+    }
+
+    #[test]
+    fn null_binds_to_columns_outside_the_supported_types() {
+        let mut buffer = BytesMut::new();
+
+        assert!(matches!(
+            SqlValParam(&SqlVal::Null)
+                .to_sql_checked(&Type::INTERVAL, &mut buffer)
+                .unwrap(),
+            IsNull::Yes
+        ));
+    }
+
+    #[test]
+    fn encoding_failures_surface_as_driver_errors() {
+        let mut buffer = BytesMut::new();
+        let error = match SqlValParam(&SqlVal::EncodingError("not encodable".to_owned()))
+            .to_sql_checked(&Type::TEXT, &mut buffer)
+        {
+            Ok(_) => panic!("an encoding failure cannot be bound"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("not encodable"));
     }
 }

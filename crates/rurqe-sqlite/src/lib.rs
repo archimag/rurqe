@@ -280,6 +280,9 @@ mod rusqlite_backend {
                 SqlVal::Bool(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value as i64))),
                 SqlVal::Text(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes()))),
                 SqlVal::Bytes(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Blob(value.as_slice()))),
+                SqlVal::EncodingError(message) => Err(::rusqlite::Error::ToSqlConversionFailure(
+                    Box::new(::std::io::Error::other(message.clone())),
+                )),
                 #[allow(unreachable_patterns)]
                 other => Ok(ToSqlOutput::Owned(::rusqlite::types::Value::Text(
                     other.to_string(),
@@ -289,14 +292,29 @@ mod rusqlite_backend {
     }
 
     /// Decodes a raw SQLite value into the matching [`SqlVal`] variant.
-    fn value_ref_to_sql_val(value: ValueRef<'_>) -> SqlVal {
-        match value {
+    ///
+    /// Text columns must hold valid UTF-8: a value that is not valid UTF-8 is
+    /// reported as a conversion failure for the offending column instead of being
+    /// silently rewritten with replacement characters.
+    fn value_ref_to_sql_val(
+        index: usize,
+        value: ValueRef<'_>,
+    ) -> Result<SqlVal, ::rusqlite::Error> {
+        Ok(match value {
             ValueRef::Null => SqlVal::Null,
             ValueRef::Integer(value) => SqlVal::I64(value),
             ValueRef::Real(value) => SqlVal::F64(value),
-            ValueRef::Text(bytes) => SqlVal::Text(String::from_utf8_lossy(bytes).into_owned()),
+            ValueRef::Text(bytes) => SqlVal::Text(String::from_utf8(bytes.to_vec()).map_err(
+                |error| {
+                    ::rusqlite::Error::FromSqlConversionFailure(
+                        index,
+                        ::rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                },
+            )?),
             ValueRef::Blob(bytes) => SqlVal::Bytes(bytes.to_vec()),
-        }
+        })
     }
 
     pub(crate) fn fetch_raw_with(
@@ -312,7 +330,7 @@ mod rusqlite_backend {
         while let Some(row) = rows.next()? {
             let mut values = Vec::with_capacity(column_count);
             for index in 0..column_count {
-                values.push(value_ref_to_sql_val(row.get_ref(index)?));
+                values.push(value_ref_to_sql_val(index, row.get_ref(index)?)?);
             }
             result.push(values);
         }

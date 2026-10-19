@@ -37,6 +37,12 @@ pub enum SqlVal {
     /// A JSON value.
     #[cfg(feature = "serde_json")]
     Json(serde_json::Value),
+    /// A value that could not be encoded into a SQL parameter.
+    ///
+    /// The variant carries the reason the conversion failed instead of binding
+    /// `NULL`, so an unencodable value is reported by the driver rather than
+    /// silently changing the meaning of the statement.
+    EncodingError(String),
 }
 
 impl SqlVal {
@@ -60,6 +66,7 @@ impl SqlVal {
             SqlVal::NaiveDate(_) => "date",
             #[cfg(feature = "serde_json")]
             SqlVal::Json(_) => "json",
+            SqlVal::EncodingError(_) => "encoding error",
         }
     }
 }
@@ -84,6 +91,7 @@ impl fmt::Display for SqlVal {
             SqlVal::NaiveDate(value) => write!(f, "{}", value.format("%Y-%m-%d")),
             #[cfg(feature = "serde_json")]
             SqlVal::Json(value) => write!(f, "{value}"),
+            SqlVal::EncodingError(message) => f.write_str(message),
         }
     }
 }
@@ -143,7 +151,12 @@ impl ToSqlVal for i64 {
 
 impl ToSqlVal for usize {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::I64(self as i64)
+        match i64::try_from(self) {
+            Ok(value) => SqlVal::I64(value),
+            Err(_) => SqlVal::EncodingError(format!(
+                "the value {self} cannot be represented as a 64-bit signed integer"
+            )),
+        }
     }
 }
 
@@ -226,23 +239,28 @@ impl<T> From<T> for Json<T> {
     }
 }
 
+/// Encodes `value` as a JSON parameter, reporting values `serde` refuses to serialise.
+#[cfg(feature = "serde_json")]
+fn encode_json<T: serde::Serialize>(value: &T) -> SqlVal {
+    match serde_json::to_value(value) {
+        Ok(json) => SqlVal::Json(json),
+        Err(error) => SqlVal::EncodingError(format!(
+            "the value cannot be encoded as JSON: {error}"
+        )),
+    }
+}
+
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> ToSqlVal for Json<T> {
     fn to_sql_val(self) -> SqlVal {
-        match serde_json::to_value(&self.0) {
-            Ok(json) => SqlVal::Json(json),
-            Err(_) => SqlVal::Null,
-        }
+        encode_json(&self.0)
     }
 }
 
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> ToSqlVal for &Json<T> {
     fn to_sql_val(self) -> SqlVal {
-        match serde_json::to_value(&self.0) {
-            Ok(json) => SqlVal::Json(json),
-            Err(_) => SqlVal::Null,
-        }
+        encode_json(&self.0)
     }
 }
 
@@ -755,5 +773,50 @@ mod tests {
         assert_eq!(SqlVal::from(7u32), 7u32.to_sql_val());
         assert_eq!(SqlVal::from("root"), "root".to_sql_val());
         assert_eq!(SqlVal::from(1.5f64), 1.5f64.to_sql_val());
+    }
+
+    #[test]
+    fn encoding_failures_carry_their_reason() {
+        let failure = SqlVal::EncodingError("cannot encode".to_owned());
+
+        assert_eq!(failure.variant_name(), "encoding error");
+        assert_eq!(failure.to_string(), "cannot encode");
+    }
+
+    #[test]
+    fn indices_within_the_signed_range_encode_as_integers() {
+        assert_eq!(7usize.to_sql_val(), SqlVal::I64(7));
+        assert_eq!(0usize.to_sql_val(), SqlVal::I64(0));
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn indices_above_the_signed_range_report_a_failure() {
+        let wide = (i64::MAX as usize) + 1;
+
+        let encoded = wide.to_sql_val();
+        assert!(matches!(encoded, SqlVal::EncodingError(_)));
+        assert!(encoded.to_string().contains("64-bit signed integer"));
+    }
+
+    #[cfg(feature = "serde_json")]
+    #[test]
+    fn unencodable_json_values_report_the_failure() {
+        struct Unencodable;
+
+        impl serde::Serialize for Unencodable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("not serialisable"))
+            }
+        }
+
+        let encoded = Json(Unencodable).to_sql_val();
+        assert!(matches!(encoded, SqlVal::EncodingError(_)));
+        assert!(encoded.to_string().contains("not serialisable"));
+
+        assert_eq!(
+            Json(1i64).to_sql_val(),
+            SqlVal::Json(serde_json::json!(1))
+        );
     }
 }
