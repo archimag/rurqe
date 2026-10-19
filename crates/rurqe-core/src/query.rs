@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use crate::dialect::Dialect;
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
-use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal};
+use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::row::FromRow;
 use crate::schema::{Column, ExprScope, Table};
 
@@ -737,6 +737,31 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         let mut params = Vec::new();
         self.render_into(&mut sql, &mut params);
         BuiltQuery { sql, params }
+    }
+}
+
+impl<D: Dialect, Tables: TableScope + 'static, Output: 'static> SelectQuery<D, Tables, Output> {
+    /// Wraps the query into a [`Subquery`] rendered with the enclosing statement's parameters.
+    pub fn into_subquery(self) -> Subquery {
+        Subquery::new(move |sql, params| self.render_into(sql, params))
+    }
+
+    /// Builds an `EXISTS (subquery)` predicate over this query.
+    pub fn exists(&self) -> Expr<bool> {
+        Expr::exists(self.clone())
+    }
+
+    /// Builds a `NOT EXISTS (subquery)` predicate over this query.
+    pub fn not_exists(&self) -> Expr<bool> {
+        Expr::not_exists(self.clone())
+    }
+}
+
+impl<D: Dialect, Tables: TableScope + 'static, Output: 'static> From<SelectQuery<D, Tables, Output>>
+    for Subquery
+{
+    fn from(query: SelectQuery<D, Tables, Output>) -> Self {
+        query.into_subquery()
     }
 }
 
@@ -2046,5 +2071,52 @@ mod tests {
             built.params,
             vec![SqlVal::I64(10), SqlVal::Text("2024-01".into())]
         );
+    }
+
+    #[test]
+    fn subquery_predicates_render_nested_queries_with_sequential_parameters() {
+        let large_orders = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderUserId,))
+            .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+        let recent_orders = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderId,))
+            .where_(Expr::column::<OrderTotal>().lt(10.0));
+
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+            .where_(Expr::column::<UserId>().in_subquery(large_orders))
+            .where_(Expr::not_exists(recent_orders))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\" FROM \"users\" WHERE ((\"id\" IN (SELECT \"user_id\" FROM \"orders\" \
+             WHERE (\"total\" > $1))) AND (NOT EXISTS (SELECT \"id\" FROM \"orders\" WHERE \
+             (\"total\" < $2))))"
+        );
+        assert_eq!(built.params, vec![SqlVal::F64(100.0), SqlVal::F64(10.0)]);
+    }
+
+    #[test]
+    fn not_in_subquery_renders_negated_membership() {
+        let totals = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderTotal,));
+
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderId,))
+            .where_(Expr::column::<OrderTotal>().not_in_subquery(totals))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\" FROM \"orders\" WHERE (\"total\" NOT IN (SELECT \"total\" FROM \"orders\"))"
+        );
+        assert!(built.params.is_empty());
     }
 }

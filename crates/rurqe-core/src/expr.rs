@@ -6,7 +6,9 @@
 //! checked at the call site through [`SqlCompatible`], so a comparison between
 //! unrelated types simply does not compile.
 
+use core::fmt;
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::schema::Column;
 
@@ -149,6 +151,61 @@ impl BinaryOp {
     }
 }
 
+/// A nested query rendered inline within a predicate of an enclosing statement.
+///
+/// The nested query renders on demand into the buffers of the enclosing
+/// statement, so its parameters continue the placeholder numbering of the outer
+/// query instead of starting over:
+///
+/// ```text
+/// SELECT "id" FROM "users" WHERE ("id" IN (SELECT "user_id" FROM "orders" WHERE ("total" > $1)))
+/// ```
+/// A deferred SQL rendering closure receiving the statement buffers to fill.
+///
+/// Nested statements render on demand into the buffers of their enclosing
+/// statement, so their placeholders continue the outer numbering.
+type SubqueryRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+
+#[derive(Clone)]
+pub struct Subquery {
+    renderer: SubqueryRenderer,
+}
+
+impl Subquery {
+    /// Creates a subquery from a deferred rendering closure.
+    pub fn new(renderer: impl Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync + 'static) -> Self {
+        Self {
+            renderer: Arc::new(renderer),
+        }
+    }
+
+    /// Renders the nested query into the buffers of the enclosing statement.
+    pub fn render(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        (self.renderer)(sql, params);
+    }
+}
+
+impl fmt::Debug for Subquery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Subquery(..)")
+    }
+}
+
+impl PartialEq for Subquery {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.renderer, &other.renderer)
+    }
+}
+
+/// The predicate operator applied to a [`Subquery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubqueryOp {
+    /// `EXISTS (subquery)`
+    Exists,
+    /// `operand IN (subquery)`
+    In,
+}
+
 /// The shape of a SQL expression tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
@@ -188,6 +245,17 @@ pub enum ExprKind {
         fragments: Vec<String>,
         /// The bound parameter values to insert between fragments.
         params: Vec<SqlVal>,
+    },
+    /// A nested query used as an `EXISTS` or `IN` predicate.
+    Subquery {
+        /// The predicate operator applied to the nested query.
+        op: SubqueryOp,
+        /// The left-hand operand of an `IN` predicate; `None` for `EXISTS`.
+        operand: Option<Box<ExprKind>>,
+        /// The nested query rendered with the enclosing statement's parameters.
+        query: Subquery,
+        /// Whether the predicate is negated, which renders `NOT EXISTS` or `NOT IN`.
+        negated: bool,
     },
     /// An `IS NULL` or `IS NOT NULL` predicate over a sub-expression.
     IsNull {
@@ -344,6 +412,29 @@ impl<T> Expr<T> {
     pub fn is_not_null(&self) -> Expr<bool> {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
+            negated: true,
+        })
+    }
+
+    /// Builds an `IN (subquery)` predicate matching this expression.
+    ///
+    /// The nested query renders inline with the enclosing statement, so its
+    /// parameters continue the placeholder numbering of the outer query.
+    pub fn in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool> {
+        Expr::new(ExprKind::Subquery {
+            op: SubqueryOp::In,
+            operand: Some(Box::new(self.kind)),
+            query: subquery.into(),
+            negated: false,
+        })
+    }
+
+    /// Builds a `NOT IN (subquery)` predicate matching this expression.
+    pub fn not_in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool> {
+        Expr::new(ExprKind::Subquery {
+            op: SubqueryOp::In,
+            operand: Some(Box::new(self.kind)),
+            query: subquery.into(),
             negated: true,
         })
     }
@@ -541,6 +632,26 @@ impl Expr<f64> {
 }
 
 impl Expr<bool> {
+    /// Builds an `EXISTS (subquery)` predicate.
+    pub fn exists<S: Into<Subquery>>(subquery: S) -> Expr<bool> {
+        Expr::new(ExprKind::Subquery {
+            op: SubqueryOp::Exists,
+            operand: None,
+            query: subquery.into(),
+            negated: false,
+        })
+    }
+
+    /// Builds a `NOT EXISTS (subquery)` predicate.
+    pub fn not_exists<S: Into<Subquery>>(subquery: S) -> Expr<bool> {
+        Expr::new(ExprKind::Subquery {
+            op: SubqueryOp::Exists,
+            operand: None,
+            query: subquery.into(),
+            negated: true,
+        })
+    }
+
     /// Combines two predicates with the SQL `AND` operator.
     pub fn and(self, other: Expr<bool>) -> Expr<bool> {
         self.combine(BinaryOp::And, other)
@@ -748,6 +859,27 @@ pub fn render_expr<D: crate::dialect::Dialect>(
                     D::push_placeholder(sql, params.len());
                 }
             }
+        }
+        ExprKind::Subquery {
+            op,
+            operand,
+            query,
+            negated,
+        } => {
+            sql.push('(');
+            if let Some(operand) = operand {
+                render_expr::<D>(sql, params, operand);
+                sql.push(' ');
+            }
+            if *negated {
+                sql.push_str("NOT ");
+            }
+            match op {
+                SubqueryOp::Exists => sql.push_str("EXISTS ("),
+                SubqueryOp::In => sql.push_str("IN ("),
+            }
+            query.render(sql, params);
+            sql.push_str("))");
         }
         ExprKind::IsNull { operand, negated } => {
             sql.push('(');
@@ -979,7 +1111,10 @@ mod tests {
 
     #[test]
     fn null_predicates_render_is_null_and_is_not_null() {
-        assert_eq!(render(Expr::column::<UserName>().is_null().kind()).0, "(\"name\" IS NULL)");
+        assert_eq!(
+            render(Expr::column::<UserName>().is_null().kind()).0,
+            "(\"name\" IS NULL)"
+        );
         assert_eq!(
             render(Expr::column::<UserName>().is_not_null().kind()).0,
             "(\"name\" IS NOT NULL)"
@@ -1072,6 +1207,57 @@ mod tests {
     #[should_panic(expected = "at least one WHEN branch")]
     fn case_expression_requires_a_branch() {
         let _ = Expr::<String>::case().else_("regular").end();
+    }
+
+    #[test]
+    fn exists_predicate_renders_nested_query_with_continued_placeholders() {
+        let sub = crate::query::SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+            .where_(Expr::column::<UserActive>().eq(true));
+
+        let (sql, params) = render(Expr::exists(sub).kind());
+
+        assert_eq!(
+            sql,
+            "(EXISTS (SELECT \"id\" FROM \"users\" WHERE (\"active\" = ?)))"
+        );
+        assert_eq!(params, vec![SqlVal::Bool(true)]);
+    }
+
+    #[test]
+    fn in_subquery_predicates_render_membership_and_negation() {
+        let sub = || {
+            crate::query::SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .select((UserId,))
+                .where_(Expr::column::<UserId>().gt(1i64))
+        };
+
+        let (sql, params) = render(Expr::column::<UserId>().in_subquery(sub()).kind());
+        assert_eq!(
+            sql,
+            "(\"id\" IN (SELECT \"id\" FROM \"users\" WHERE (\"id\" > ?)))"
+        );
+        assert_eq!(params, vec![SqlVal::I64(1)]);
+
+        let (sql, _) = render(Expr::column::<UserId>().not_in_subquery(sub()).kind());
+        assert_eq!(
+            sql,
+            "(\"id\" NOT IN (SELECT \"id\" FROM \"users\" WHERE (\"id\" > ?)))"
+        );
+    }
+
+    #[test]
+    fn not_exists_predicate_renders_not_keyword() {
+        let sub = crate::query::SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,));
+
+        let (sql, params) = render(Expr::not_exists(sub).kind());
+
+        assert_eq!(sql, "(NOT EXISTS (SELECT \"id\" FROM \"users\"))");
+        assert!(params.is_empty());
     }
 
     #[test]
