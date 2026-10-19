@@ -98,11 +98,17 @@ impl SchemaCatalog {
             if is_close || is_item {
                 if !item_lines.is_empty() {
                     let item = item_lines.join("\n");
-                    apply_table_item(current.as_mut().expect("open table"), &item)?;
+                    let table = current.as_mut().ok_or_else(|| {
+                        lock_error("expected a `table` declaration before a table-body item")
+                    })?;
+                    apply_table_item(table, &item)?;
                     item_lines.clear();
                 }
                 if is_close {
-                    tables.push(current.take().expect("open table").finish());
+                    let table = current
+                        .take()
+                        .ok_or_else(|| lock_error("unexpected `}` outside a table block"))?;
+                    tables.push(table.finish());
                     continue;
                 }
                 item_lines.push(line.to_owned());

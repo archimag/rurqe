@@ -123,7 +123,10 @@ fn parse_script_name(
             let description = rest.strip_prefix(DESCRIPTION_SEPARATOR).ok_or_else(invalid)?;
             (None, description)
         }
-        MigrationKind::Baseline => unreachable!(),
+        // The kind is derived from the script-name prefix above, so a baseline
+        // marker can never reach this point; report a malformed name instead of
+        // panicking on input the parser does not recognise.
+        MigrationKind::Baseline => return Err(invalid()),
     };
 
     Ok((kind, version, description.replace('_', " ")))
