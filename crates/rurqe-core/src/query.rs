@@ -477,6 +477,201 @@ impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6);
 impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7);
 impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7, C8 P8);
 
+/// The empty base of the type-level set of columns a query groups by.
+///
+/// The marker starts the set built by [`GroupByColumns`] and carries no values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EmptyGroupSet;
+
+/// A type-level set of grouped columns, extended one column at a time.
+///
+/// [`SelectQuery::group_by`] records the grouped columns in this marker, so the
+/// grouping of the query is checked at compile time. The position of a column
+/// inside the set is resolved by [`ColumnInGroupBy`], which lets a projected
+/// column be validated against the grouping of the query.
+pub struct GroupSet<Prev, C>(PhantomData<fn() -> (Prev, C)>);
+
+/// Derives the type-level set of grouped columns from a `GROUP BY` clause.
+///
+/// The trait mirrors [`GroupBy`] while recording the grouped columns in its
+/// associated type, extending the set `Prev` the query already groups by.
+/// Repeated [`SelectQuery::group_by`] calls therefore accumulate their columns
+/// instead of replacing the earlier grouping.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid GROUP BY clause",
+    label = "group by a column or a tuple of columns",
+    note = "GROUP BY accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
+)]
+pub trait GroupByColumns<Prev> {
+    /// The set of grouped columns, extending `Prev` with the grouped columns.
+    type Columns;
+}
+
+impl<Prev, C: Column> GroupByColumns<Prev> for C {
+    type Columns = GroupSet<Prev, C>;
+}
+
+impl<Prev, C1: Column> GroupByColumns<Prev> for (C1,) {
+    type Columns = GroupSet<Prev, C1>;
+}
+
+impl<Prev, C1: Column, C2: Column> GroupByColumns<Prev> for (C1, C2) {
+    type Columns = GroupSet<GroupSet<Prev, C1>, C2>;
+}
+
+impl<Prev, C1: Column, C2: Column, C3: Column> GroupByColumns<Prev> for (C1, C2, C3) {
+    type Columns = GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>;
+}
+
+impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column> GroupByColumns<Prev>
+    for (C1, C2, C3, C4)
+{
+    type Columns = GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>;
+}
+
+impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column, C5: Column> GroupByColumns<Prev>
+    for (C1, C2, C3, C4, C5)
+{
+    type Columns = GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>;
+}
+
+impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column, C5: Column, C6: Column>
+    GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6)
+{
+    type Columns =
+        GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>;
+}
+
+impl<
+        Prev,
+        C1: Column,
+        C2: Column,
+        C3: Column,
+        C4: Column,
+        C5: Column,
+        C6: Column,
+        C7: Column,
+    > GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6, C7)
+{
+    type Columns = GroupSet<
+        GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>,
+        C7,
+    >;
+}
+
+impl<
+        Prev,
+        C1: Column,
+        C2: Column,
+        C3: Column,
+        C4: Column,
+        C5: Column,
+        C6: Column,
+        C7: Column,
+        C8: Column,
+    > GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6, C7, C8)
+{
+    type Columns = GroupSet<
+        GroupSet<
+            GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>,
+            C7,
+        >,
+        C8,
+    >;
+}
+
+/// Checks that the column `C` is part of the set of grouped columns at position `P`.
+///
+/// The lookup mirrors [`TableInScope`]: the column the set was last extended
+/// with sits at `At<0>`, and the columns of the inner set sit one position
+/// deeper. A column the query never grouped by therefore has no position, which
+/// rejects its projection at the call site.
+#[diagnostic::on_unimplemented(
+    message = "column `{C}` cannot be selected in a GROUP BY query because it is neither grouped nor an aggregate",
+    label = "the column is not part of the GROUP BY clause",
+    note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
+)]
+pub trait ColumnInGroupBy<C, P = At<0>> {}
+
+// Base case: the column the set was last extended with sits at `At<0>`.
+impl<Prev, C: Column> ColumnInGroupBy<C, At<0>> for GroupSet<Prev, C> {}
+
+// Inductive case: columns of the inner set sit one position deeper.
+impl<Prev, C: Column, Target: Column, P> ColumnInGroupBy<Target, Next<P>> for GroupSet<Prev, C>
+where
+    Prev: ColumnInGroupBy<Target, P>,
+{
+}
+
+/// Derives the row item produced by a projection in a `GROUP BY` query.
+///
+/// Grouped columns keep the type declared by the schema, while [`Expr`] and
+/// [`WindowExpr`] values are accepted unconditionally: they represent the
+/// computed values of a grouped query, so `Expr::count_all()`,
+/// `Expr::sum::<OrderTotal>()`, and `row_number().over(..)` compose with the
+/// grouping. An ordinary column is accepted only when an earlier `group_by`
+/// call grouped it, so projecting an ungrouped column of a grouped query fails
+/// to compile.
+#[diagnostic::on_unimplemented(
+    message = "column `{Self}` cannot be selected in a GROUP BY query because it is neither grouped nor an aggregate",
+    label = "the projected column is neither part of the GROUP BY clause nor an aggregate",
+    note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
+)]
+pub trait GroupedSelectTarget<GroupByCols, P = At<0>>: SelectTarget {
+    /// The Rust type produced for this projection in a grouped query.
+    type Output;
+}
+
+impl<GroupByCols, C, P> GroupedSelectTarget<GroupByCols, P> for C
+where
+    C: Column,
+    GroupByCols: ColumnInGroupBy<C, P>,
+{
+    type Output = C::RustType;
+}
+
+impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>> for Expr<T> {
+    type Output = T;
+}
+
+impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>>
+    for WindowExpr<T>
+{
+    type Output = T;
+}
+
+/// Derives the row type of a selection projected from a grouped query.
+///
+/// The trait mirrors [`SelectionFor`] while requiring every projected item to be
+/// accepted by [`GroupedSelectTarget`], so a grouped selection is checked
+/// against the grouping of the query at the call site.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be selected in a GROUP BY query",
+    label = "one of the projected columns is neither grouped nor an aggregate",
+    note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
+)]
+pub trait GroupedSelection<GroupByCols, Positions>: Selection {}
+
+macro_rules! impl_grouped_selection {
+    ($($target:ident $position:ident),+) => {
+        impl<GroupByCols, $($target, $position),+> GroupedSelection<GroupByCols, ($($position,)+)>
+            for ($($target,)+)
+        where
+            $($target: GroupedSelectTarget<GroupByCols, $position>,)+
+        {
+        }
+    };
+}
+
+impl_grouped_selection!(T1 P1);
+impl_grouped_selection!(T1 P1, T2 P2);
+impl_grouped_selection!(T1 P1, T2 P2, T3 P3);
+impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4);
+impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5);
+impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6);
+impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
+impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
+
 /// The ordered list of tables a query selects from, joined tables included.
 ///
 /// The trait is implemented for every [`Table`] and for each [`Joined`] scope
@@ -735,17 +930,13 @@ pub struct Cte<T = (), Row = ()> {
 
 impl<T, Row> fmt::Debug for Cte<T, Row> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Cte")
-            .field("name", &self.name)
-            .finish()
+        f.debug_struct("Cte").field("name", &self.name).finish()
     }
 }
 
 impl<T: Table, Row> Cte<T, Row> {
     /// Creates a CTE for the table `T` from a `SelectQuery`.
-    pub fn new<D: Dialect, S: TableScope + 'static>(
-        query: SelectQuery<D, S, Row>,
-    ) -> Self
+    pub fn new<D: Dialect, S: TableScope + 'static>(query: SelectQuery<D, S, Row>) -> Self
     where
         Row: 'static,
     {
@@ -969,29 +1160,6 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
     ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
     where
         S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
-    /*
-     * Leftover markup of a corrupted edit. It is inert inside this comment and
-     * has to be deleted manually, because an edit search cannot match the stray
-     * protocol markers it contains.
-    {</search_7739A7077210B47A>
-<replace>    /// Selects `selection`, fixing the row type of the query to the row the
-    /// selection produces in this relational context.
-    ///
-    /// Every projected column must belong to a table the query selects from, so
-    /// projecting a column of an unrelated table fails to compile. Columns of a
-    /// table introduced with [`left_join`](SelectQuery::left_join) or
-    /// [`left_join_lateral`](SelectQuery::left_join_lateral) lift into
-    /// `Option<T>` automatically, while tables of an `INNER JOIN` keep the
-    /// types declared by the schema.
-    pub fn select<S, Positions>(
-        mut self,
-        selection: S,
-    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
-    where
-        S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
-    {
-    */
-
     {
         self.projections = Some(Arc::new(move |sql, params| {
             selection.render_projections::<D>(sql, params);
@@ -1065,17 +1233,26 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self
     }
 
-    /// Groups query results by `columns`.
+    /// Groups query results by `columns`, moving the query into the
+    /// [`GroupedQuery`] state.
     ///
-    /// Calling this multiple times appends further grouping columns. Grouped
-    /// columns must belong to the query scope, so a column of a table the query
-    /// does not select from fails to compile.
-    pub fn group_by<G, Positions>(mut self, columns: G) -> Self
+    /// Grouped columns must belong to the query scope, so a column of a table the
+    /// query does not select from fails to compile. Once grouped, a selection
+    /// made through [`GroupedQuery::select`] accepts only the grouped columns and
+    /// aggregate or window expressions, while a later
+    /// [`group_by`](GroupedQuery::group_by) call appends further grouping columns.
+    pub fn group_by<G, Positions>(
+        mut self,
+        columns: G,
+    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<EmptyGroupSet>>::Columns>
     where
-        G: GroupBy + GroupByInScope<Tables, Positions>,
+        G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<EmptyGroupSet>,
     {
         columns.push_column_names(&mut self.group_by);
-        self
+        GroupedQuery {
+            query: self,
+            _marker: PhantomData,
+        }
     }
 
     /// Restricts grouped rows to those satisfying `predicate`.
@@ -1418,6 +1595,131 @@ impl<D: Dialect, Tables: TableScope + 'static, Output: 'static> From<SelectQuery
     }
 }
 
+/// A `SELECT` query whose rows are grouped by the columns recorded in `GroupByCols`.
+///
+/// [`SelectQuery::group_by`] moves a query into this state, which keeps the
+/// grouping in the type: [`GroupedQuery::select`] accepts only the grouped
+/// columns and aggregate or window expressions, so projecting an ungrouped
+/// column of a grouped query fails to compile. The remaining clauses —
+/// `HAVING`, `ORDER BY`, `LIMIT`, and `OFFSET` — keep their usual semantics, and
+/// [`GroupedQuery::build`] renders the statement with its `GROUP BY` clause.
+pub struct GroupedQuery<D: Dialect, Tables = (), Output = (), GroupByCols = EmptyGroupSet> {
+    query: SelectQuery<D, Tables, Output>,
+    _marker: PhantomData<fn() -> GroupByCols>,
+}
+
+impl<D: Dialect, Tables, GroupByCols> GroupedQuery<D, Tables, (), GroupByCols> {
+    /// Selects `selection`, requiring every projected column to be grouped or aggregated.
+    ///
+    /// Grouped columns keep the type declared by the schema, while aggregate and
+    /// window expressions are accepted unconditionally. A column the query does
+    /// not group by is rejected at compile time, since it has no single value per
+    /// group.
+    pub fn select<S, Positions, GroupPositions>(
+        self,
+        selection: S,
+    ) -> GroupedQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, GroupByCols>
+    where
+        S: SelectionFor<Tables, Positions>
+            + GroupedSelection<GroupByCols, GroupPositions>
+            + Send
+            + Sync
+            + 'static,
+    {
+        GroupedQuery {
+            query: self.query.select::<S, Positions>(selection),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<D: Dialect, Tables, Output, GroupByCols> GroupedQuery<D, Tables, Output, GroupByCols> {
+    /// Groups the rows further by `columns`, appending them to the grouping.
+    ///
+    /// The grouped columns must belong to the query scope, so grouping by a
+    /// column of a table the query does not select from fails to compile.
+    pub fn group_by<G, Positions>(
+        self,
+        columns: G,
+    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<GroupByCols>>::Columns>
+    where
+        G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<GroupByCols>,
+    {
+        let mut query = self.query;
+        columns.push_column_names(&mut query.group_by);
+        GroupedQuery {
+            query,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Restricts grouped rows to those satisfying `predicate`.
+    ///
+    /// Repeated calls combine conditions with SQL `AND`.
+    pub fn having(mut self, predicate: Expr<bool>) -> Self {
+        self.query = self.query.having(predicate);
+        self
+    }
+
+    /// Appends an ordering criterion for column `col` with `direction`.
+    pub fn order_by<C: Column, P>(mut self, col: C, direction: OrderDirection) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.query = self.query.order_by(col, direction);
+        self
+    }
+
+    /// Appends an ascending ordering criterion for column `col`.
+    pub fn order_by_asc<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by(col, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for column `col`.
+    pub fn order_by_desc<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by(col, OrderDirection::Desc)
+    }
+
+    /// Limits the number of returned groups to `limit`.
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.query = self.query.limit(limit);
+        self
+    }
+
+    /// Skips the first `offset` groups of the result.
+    pub fn offset(mut self, offset: u32) -> Self {
+        self.query = self.query.offset(offset);
+        self
+    }
+
+    /// Returns the query of this state, dropping the grouping marker.
+    pub fn into_select(self) -> SelectQuery<D, Tables, Output> {
+        self.query
+    }
+}
+
+impl<D: Dialect, Tables: TableScope, Output, GroupByCols> GroupedQuery<D, Tables, Output, GroupByCols> {
+    /// Renders the grouped statement into SQL text and its ordered parameter list.
+    pub fn build(&self) -> BuiltQuery {
+        self.query.build()
+    }
+}
+
+impl<D: Dialect, Tables: TableScope + 'static, Output: 'static, GroupByCols>
+    GroupedQuery<D, Tables, Output, GroupByCols>
+{
+    /// Converts this grouped query into a CTE for the table `T`.
+    pub fn as_cte<T: Table>(self) -> Cte<T, Output> {
+        Cte::new(self.query)
+    }
+}
+
 use crate::expr::render_expr;
 
 /// A query whose statement can be rendered and whose rows decode into `Row`.
@@ -1472,6 +1774,16 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> Executab
     for DeleteQuery<D, T, State, Returning, Scope>
 {
     type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, Tables: TableScope, Output, GroupByCols> ExecutableQuery
+    for GroupedQuery<D, Tables, Output, GroupByCols>
+{
+    type Row = Output;
 
     fn build_query(&self) -> BuiltQuery {
         self.build()
@@ -3128,5 +3440,119 @@ mod tests {
              LIMIT 1) AS \"recent\" WHERE (\"id\" > $2)"
         );
         assert_eq!(built.params, vec![SqlVal::F64(10.0), SqlVal::I64(1)]);
+    }
+
+    #[test]
+    fn group_by_transitions_to_the_grouped_typestate() {
+        let query: GroupedQuery<MockDialect, Order, (i64,), GroupSet<EmptyGroupSet, OrderUserId>> =
+            SelectQuery::<MockDialect>::new()
+                .from::<Order>()
+                .select((OrderUserId,))
+                .group_by(OrderUserId);
+
+        assert_eq!(
+            query.build().sql,
+            "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\""
+        );
+    }
+
+    #[test]
+    fn grouped_selection_accepts_grouped_columns_and_aggregates() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .group_by(OrderUserId)
+            .select((
+                OrderUserId,
+                Expr::count_all(),
+                Expr::sum::<OrderTotal>(),
+                Expr::avg::<OrderTotal>(),
+                Expr::min::<OrderId>(),
+                Expr::max::<OrderTotal>(),
+            ))
+            .having(Expr::count_all().gt(1i64))
+            .order_by_asc(OrderUserId)
+            .limit(5)
+            .offset(2)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"user_id\", COUNT(*), SUM(\"total\"), AVG(\"total\"), MIN(\"id\"), \
+             MAX(\"total\") FROM \"orders\" GROUP BY \"user_id\" HAVING (COUNT(*) > $1) \
+             ORDER BY \"user_id\" ASC LIMIT 5 OFFSET 2"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+    }
+
+    #[test]
+    fn chained_group_by_extends_the_grouped_columns() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .group_by(UserId)
+            .group_by(UserName)
+            .select((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" GROUP BY \"id\", \"name\""
+        );
+    }
+
+    #[test]
+    fn grouped_selection_accepts_window_expressions() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .group_by(OrderUserId)
+            .select((OrderUserId, row_number().over(Window::order_by_asc(OrderId))))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"user_id\", ROW_NUMBER() OVER (ORDER BY \"id\" ASC) FROM \"orders\" \
+             GROUP BY \"user_id\""
+        );
+    }
+
+    #[test]
+    fn grouped_queries_are_executable() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .group_by(OrderUserId)
+            .select((OrderUserId, Expr::count_all()));
+
+        let mut backend = MockBackend {
+            rows: vec![vec![SqlVal::I64(1), SqlVal::I64(3)]],
+            ..MockBackend::default()
+        };
+
+        let rows = backend.fetch_all(&query).expect("grouped rows decode");
+
+        assert_eq!(rows, vec![(1i64, 3i64)]);
+        assert_eq!(backend.executed, vec![query.build()]);
+
+        let built = query.build();
+        assert_eq!(query.into_select().build(), built);
+    }
+
+    #[test]
+    fn group_set_resolves_grouped_column_positions() {
+        type Grouping = GroupSet<GroupSet<EmptyGroupSet, UserId>, UserName>;
+
+        fn assert_grouped<G, C: Column, P>()
+        where
+            G: ColumnInGroupBy<C, P>,
+        {
+        }
+
+        fn assert_grouped_selection<S, G, P>()
+        where
+            S: GroupedSelection<G, P>,
+        {
+        }
+
+        assert_grouped::<Grouping, UserName, At<0>>();
+        assert_grouped::<Grouping, UserId, Next<At<0>>>();
+        assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, _>();
     }
 }
