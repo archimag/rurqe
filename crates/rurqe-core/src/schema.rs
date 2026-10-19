@@ -298,6 +298,9 @@ pub struct Next<P>(core::marker::PhantomData<P>);
 ///
 /// rurqe_core::table! {
 ///     User => "users" { UserId => "id": i64, }
+/// }
+///
+/// rurqe_core::table! {
 ///     Order => "orders" { OrderId => "id": i64, }
 /// }
 ///
@@ -407,6 +410,142 @@ impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6);
 impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7);
 
 impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7, T8);
+
+/// Statically asserts that every table an expression references is part of the
+/// query scope.
+///
+/// The scope of an expression is the set of tables its columns belong to, which
+/// [`Expr`](crate::expr::Expr) carries as its scope parameter. A reference to a
+/// single column yields the bare [`Table`], a reference spanning several tables
+/// yields a tuple of tables, and an expression referencing no table at all
+/// carries `()`. Bounding the scope by `ExprInScope<Tables, _>` therefore
+/// rejects a reference to a table that was never added to the query at the call
+/// site.
+///
+/// ```compile_fail
+/// use rurqe_core::schema::{ExprInScope, Table, TableInScope};
+///
+/// rurqe_core::table! {
+///     User => "users" { UserId => "id": i64, }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" { OrderId => "id": i64, }
+/// }
+///
+/// fn require_in_scope<S, Tables, P>()
+/// where
+///     S: ExprInScope<Tables, P>,
+/// {
+/// }
+///
+/// // Fails to compile because `Order` is not part of the `users` scope:
+/// require_in_scope::<Order, User, _>();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "expression references table `{Self}`, which is not part of this query's scope",
+    label = "table `{Self}` is not in scope for this query",
+    note = "add `{Self}` to the query via `from`, `inner_join`, or `left_join` before referencing its columns"
+)]
+pub trait ExprInScope<Tables, Positions = At<0>> {}
+
+impl<Tables, Positions> ExprInScope<Tables, Positions> for () {}
+
+impl<T: Table, Tables, P> ExprInScope<Tables, P> for T where Tables: TableInScope<T, P> {}
+
+macro_rules! impl_tuple_expr_in_scope {
+    ($($member:ident : $pos:ident),+) => {
+        impl<$($member: Table),+, Tables, $($pos),+> ExprInScope<Tables, ($($pos,)+)>
+            for ($($member,)+)
+        where
+            $(Tables: TableInScope<$member, $pos>),+
+        {
+        }
+    };
+}
+
+impl_tuple_expr_in_scope!(T1: P1);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3, T4: P4);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3, T4: P4, T5: P5);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3, T4: P4, T5: P5, T6: P6);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3, T4: P4, T5: P5, T6: P6, T7: P7);
+
+impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3, T4: P4, T5: P5, T6: P6, T7: P7, T8: P8);
+
+/// Combines two expression scopes into the scope referencing both of them.
+///
+/// Joins extend the scope of a query by the tables they introduce, and an
+/// expression built from columns of several tables carries the union of their
+/// scopes. The trait names that union at the type level: `()` contributes
+/// nothing, a single table contributes itself, and any further table extends a
+/// tuple of references from the left.
+///
+/// ```
+/// use rurqe_core::schema::CombineScope;
+///
+/// rurqe_core::table! {
+///     User => "users" { UserId => "id": i64, }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" { OrderId => "id": i64, }
+/// }
+///
+/// fn assert_combined<A: CombineScope<B, Combined = C>, B, C>() {}
+///
+/// assert_combined::<User, Order, (User, Order)>();
+/// assert_combined::<(User, Order), User, (User, Order, User)>();
+/// ```
+pub trait CombineScope<Other> {
+    /// The scope referencing both `Self` and `Other`.
+    type Combined;
+}
+
+impl CombineScope<()> for () {
+    type Combined = ();
+}
+
+impl<T: Table> CombineScope<()> for T {
+    type Combined = T;
+}
+
+impl<T: Table> CombineScope<T> for () {
+    type Combined = T;
+}
+
+impl<T1: Table, T2: Table> CombineScope<T2> for T1 {
+    type Combined = (T1, T2);
+}
+
+macro_rules! impl_tuple_combine_scope {
+    ($($member:ident),+) => {
+        impl<$($member: Table),+, Added: Table> CombineScope<Added> for ($($member,)+) {
+            type Combined = ($($member,)+ Added);
+        }
+    };
+}
+
+impl_tuple_combine_scope!(T1);
+
+impl_tuple_combine_scope!(T1, T2);
+
+impl_tuple_combine_scope!(T1, T2, T3);
+
+impl_tuple_combine_scope!(T1, T2, T3, T4);
+
+impl_tuple_combine_scope!(T1, T2, T3, T4, T5);
+
+impl_tuple_combine_scope!(T1, T2, T3, T4, T5, T6);
+
+impl_tuple_combine_scope!(T1, T2, T3, T4, T5, T6, T7);
 
 /// Trait for extending a relational scope with an additional table.
 pub trait ExtendScope<S: Table> {
@@ -653,5 +792,58 @@ mod tests {
 
         assert_extend::<User, Order, (User, Order)>();
         assert_extend::<(User, Order), User, (User, Order, User)>();
+    }
+
+    fn assert_expr_in_scope<S: ExprInScope<Tables, P>, Tables, P>() {}
+
+    #[test]
+    fn expressions_referencing_no_table_are_in_every_scope() {
+        assert_expr_in_scope::<(), User, At<0>>();
+        assert_expr_in_scope::<(), (User, Order), (At<0>, At<1>)>();
+        assert_expr_in_scope::<(), User, (At<0>,)>();
+    }
+
+    #[test]
+    fn expressions_referencing_a_table_follow_the_query_scope() {
+        assert_expr_in_scope::<User, User, _>();
+        assert_expr_in_scope::<User, (User, Order), _>();
+        assert_expr_in_scope::<Order, (User, Order), _>();
+        assert_expr_in_scope::<Order, (Order, User), _>();
+    }
+
+    #[test]
+    fn expressions_referencing_several_tables_follow_the_query_scope() {
+        assert_expr_in_scope::<(User,), User, _>();
+        assert_expr_in_scope::<(User, Order), (User, Order), _>();
+        assert_expr_in_scope::<(Order, User), (Order, User), _>();
+        // A self-join reaches the same table through both positions, so the
+        // positions must be pinned instead of inferred.
+        assert_expr_in_scope::<(User, User), (User, User), (At<1>, At<2>)>();
+    }
+
+    fn assert_combined<A: CombineScope<B, Combined = C>, B, C>() {}
+
+    #[test]
+    fn combining_scopes_names_the_referenced_tables() {
+        assert_combined::<(), (), ()>();
+        assert_combined::<(), User, User>();
+        assert_combined::<User, (), User>();
+        assert_combined::<User, Order, (User, Order)>();
+        assert_combined::<(User, Order), User, (User, Order, User)>();
+        assert_combined::<(User, Order, User), Order, (User, Order, User, Order)>();
+        assert_combined::<(User, User, User), User, (User, User, User, User)>();
+    }
+
+    #[test]
+    fn a_combined_scope_is_checked_against_the_query_scope() {
+        fn require_combined_in_scope<A, B, Tables, P>()
+        where
+            A: CombineScope<B>,
+            <A as CombineScope<B>>::Combined: ExprInScope<Tables, P>,
+        {
+        }
+
+        require_combined_in_scope::<(), User, User, _>();
+        require_combined_in_scope::<User, Order, (User, Order), _>();
     }
 }
