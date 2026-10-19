@@ -1,0 +1,359 @@
+//! Query execution contracts, typed errors, and synchronous transaction control.
+
+use core::fmt;
+
+use crate::dialect::Dialect;
+use crate::dml::{DeleteQuery, ExecutableMutation, InsertQuery, UpdateQuery};
+use crate::expr::SqlVal;
+use crate::row::FromRow;
+use crate::schema::Table;
+
+use super::group_by::GroupedQuery;
+use super::scope::TableScope;
+use super::select::{BuiltQuery, SelectQuery};
+
+/// A query whose statement can be rendered and whose rows decode into `Row`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be executed as a query",
+    label = "unsupported query type",
+    note = "executable queries are `SelectQuery`, `InsertQuery`, `UpdateQuery`, and `DeleteQuery`"
+)]
+pub trait ExecutableQuery {
+    /// The Rust type produced for a single row of the query.
+    type Row;
+
+    /// Renders the statement into SQL text and its ordered parameter list.
+    fn build_query(&self) -> BuiltQuery;
+}
+
+impl<D: Dialect, Tables: TableScope, Output> ExecutableQuery for SelectQuery<D, Tables, Output> {
+    type Row = Output;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, T: Table, Values, Returning> ExecutableQuery
+    for InsertQuery<D, T, Values, Returning>
+{
+    type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> ExecutableQuery
+    for UpdateQuery<D, T, State, Returning, Scope>
+{
+    type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> ExecutableQuery
+    for DeleteQuery<D, T, State, Returning, Scope>
+{
+    type Row = Returning;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+impl<D: Dialect, Tables: TableScope, Output, GroupByCols> ExecutableQuery
+    for GroupedQuery<D, Tables, Output, GroupByCols>
+{
+    type Row = Output;
+
+    fn build_query(&self) -> BuiltQuery {
+        self.build()
+    }
+}
+
+/// A database driver capable of executing rendered queries.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot execute RURQE queries",
+    label = "unsupported query backend",
+    note = "driver adapters implement `QueryBackend` by translating `SqlVal` parameters into native driver values"
+)]
+pub trait QueryBackend {
+    /// The error raised by the driver.
+    type Error;
+
+    /// Executes `query` and returns every produced row as ordered values.
+    fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error>;
+
+    /// Executes `query` without decoding rows and returns the affected row count.
+    fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error>;
+}
+
+/// Error raised while executing a query through [`QueryBackendExt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionError<E> {
+    /// The driver failed to execute the statement.
+    Backend(E),
+    /// A produced row did not match the row type of the query.
+    RowDecode {
+        /// The zero-based index of the first row that failed to decode.
+        row_index: usize,
+    },
+    /// A single-row query produced no rows.
+    NoRows,
+    /// A single-row query produced more than one row.
+    MultipleRows {
+        /// The number of rows the query produced.
+        count: usize,
+    },
+}
+
+impl<E> ExecutionError<E> {
+    /// Returns `true` when the query produced no rows at all.
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, ExecutionError::NoRows)
+    }
+
+    /// Returns `true` when a single-row query produced more than one row.
+    pub fn is_multiple_rows(&self) -> bool {
+        matches!(self, ExecutionError::MultipleRows { .. })
+    }
+
+    /// Returns `true` when a produced row did not match the query row type.
+    pub fn is_row_decode(&self) -> bool {
+        matches!(self, ExecutionError::RowDecode { .. })
+    }
+
+    /// Borrows the driver error when the failure came from the backend.
+    pub fn as_backend(&self) -> Option<&E> {
+        match self {
+            ExecutionError::Backend(error) => Some(error),
+            ExecutionError::RowDecode { .. }
+            | ExecutionError::NoRows
+            | ExecutionError::MultipleRows { .. } => None,
+        }
+    }
+
+    /// Takes the driver error when the failure came from the backend.
+    pub fn into_backend(self) -> Option<E> {
+        match self {
+            ExecutionError::Backend(error) => Some(error),
+            ExecutionError::RowDecode { .. }
+            | ExecutionError::NoRows
+            | ExecutionError::MultipleRows { .. } => None,
+        }
+    }
+}
+
+impl<E> From<E> for ExecutionError<E> {
+    fn from(error: E) -> Self {
+        ExecutionError::Backend(error)
+    }
+}
+
+impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExecutionError::Backend(error) => write!(f, "database backend error: {error}"),
+            ExecutionError::RowDecode { row_index } => write!(
+                f,
+                "failed to decode row {row_index}: values do not match the query row type"
+            ),
+            ExecutionError::NoRows => {
+                f.write_str("expected exactly one row, but the query returned none")
+            }
+            ExecutionError::MultipleRows { count } => {
+                write!(f, "expected at most one row, but the query returned {count}")
+            }
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ExecutionError::Backend(error) => Some(error),
+            ExecutionError::RowDecode { .. }
+            | ExecutionError::NoRows
+            | ExecutionError::MultipleRows { .. } => None,
+        }
+    }
+}
+
+/// Execution helpers decoding query rows through [`FromRow`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a RURQE query backend",
+    label = "missing backend implementation",
+    note = "implement `QueryBackend` for the driver; `QueryBackendExt` is then available for free"
+)]
+pub trait QueryBackendExt: QueryBackend {
+    /// Executes `query` and decodes every produced row.
+    fn fetch_all<Q>(&mut self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        let built = query.build_query();
+        let rows = self.fetch_raw(&built).map_err(ExecutionError::Backend)?;
+        rows.iter()
+            .enumerate()
+            .map(|(row_index, values)| {
+                Q::Row::from_row(values).ok_or(ExecutionError::RowDecode { row_index })
+            })
+            .collect()
+    }
+
+    /// Executes `query` and decodes at most one row.
+    fn fetch_optional<Q>(&mut self, query: &Q) -> Result<Option<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        let rows = self.fetch_all(query)?;
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(rows.into_iter().next()),
+            count => Err(ExecutionError::MultipleRows { count }),
+        }
+    }
+
+    /// Executes `query` and decodes exactly one row.
+    fn fetch_one<Q>(&mut self, query: &Q) -> Result<Q::Row, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        self.fetch_optional(query)?.ok_or(ExecutionError::NoRows)
+    }
+
+    /// Executes `query` and returns the number of affected rows.
+    fn execute<Q>(&mut self, query: &Q) -> Result<u64, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+    {
+        let built = query.build_query();
+        self.execute_raw(&built).map_err(ExecutionError::Backend)
+    }
+}
+
+impl<B: QueryBackend + ?Sized> QueryBackendExt for B {}
+
+/// The isolation level a transaction runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IsolationLevel {
+    /// Reads only rows committed before the statement started.
+    ReadCommitted,
+    /// Reads a stable snapshot, so repeated reads observe the same rows.
+    RepeatableRead,
+    /// Behaves as if transactions ran one after another.
+    Serializable,
+}
+
+impl IsolationLevel {
+    /// The SQL text of the corresponding `ISOLATION LEVEL` clause.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            IsolationLevel::ReadCommitted => "READ COMMITTED",
+            IsolationLevel::RepeatableRead => "REPEATABLE READ",
+            IsolationLevel::Serializable => "SERIALIZABLE",
+        }
+    }
+}
+
+/// Tracks the nesting depth and savepoint names of an open transaction.
+#[derive(Debug, Clone, Default)]
+pub struct TransactionContext {
+    next_savepoint: u32,
+    savepoints: Vec<String>,
+}
+
+impl TransactionContext {
+    /// Creates a context for the outermost transaction.
+    pub fn new() -> Self {
+        TransactionContext::default()
+    }
+
+    /// The number of nested savepoints currently open.
+    pub fn depth(&self) -> usize {
+        self.savepoints.len()
+    }
+
+    /// Whether the context currently sits inside a nested transaction.
+    pub fn is_nested(&self) -> bool {
+        !self.savepoints.is_empty()
+    }
+
+    /// The name of the innermost open savepoint, if any.
+    pub fn current_savepoint(&self) -> Option<&str> {
+        self.savepoints.last().map(String::as_str)
+    }
+
+    /// Allocates a fresh savepoint name and makes it the innermost block.
+    pub fn open_savepoint(&mut self) -> String {
+        self.next_savepoint += 1;
+        let name = format!("rurqe_sp_{}", self.next_savepoint);
+        self.savepoints.push(name.clone());
+        name
+    }
+
+    /// Ends the innermost block and returns the savepoint name it used.
+    pub fn close_savepoint(&mut self) -> Option<String> {
+        self.savepoints.pop()
+    }
+}
+
+/// Runs a parameterless statement through a [`QueryBackend`].
+fn execute_statement<B: QueryBackend + ?Sized>(backend: &mut B, sql: String) -> Result<(), B::Error> {
+    backend
+        .execute_raw(&BuiltQuery {
+            sql,
+            params: Vec::new(),
+        })
+        .map(|_| ())
+}
+
+/// A synchronous connection able to run transactions and nested savepoints.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot run RURQE transactions",
+    label = "unsupported transaction backend",
+    note = "synchronous connections implement `TransactionBackend` on top of `QueryBackend`"
+)]
+pub trait TransactionBackend: QueryBackend {
+    /// Opens the outermost transaction with the given isolation level.
+    fn begin(&mut self, isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
+        let mut sql = String::from("BEGIN");
+        if let Some(level) = isolation {
+            sql.push_str(" ISOLATION LEVEL ");
+            sql.push_str(level.as_str());
+        }
+        execute_statement(self, sql)
+    }
+
+    /// Commits the current transaction, persisting all its work.
+    fn commit(&mut self) -> Result<(), Self::Error> {
+        execute_statement(self, String::from("COMMIT"))
+    }
+
+    /// Rolls the current transaction back, discarding all its work.
+    fn rollback(&mut self) -> Result<(), Self::Error> {
+        execute_statement(self, String::from("ROLLBACK"))
+    }
+
+    /// Opens the nested transaction `name` as a savepoint.
+    fn savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
+        execute_statement(self, format!("SAVEPOINT {name}"))
+    }
+
+    /// Releases the savepoint `name`, keeping its work in the transaction.
+    fn release_savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
+        execute_statement(self, format!("RELEASE SAVEPOINT {name}"))
+    }
+
+    /// Rolls the transaction back to the savepoint `name`, discarding only the
+    /// work done inside the nested block.
+    fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
+        execute_statement(self, format!("ROLLBACK TO SAVEPOINT {name}"))
+    }
+}

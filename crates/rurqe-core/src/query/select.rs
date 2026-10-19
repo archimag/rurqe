@@ -1,0 +1,565 @@
+//! The type-safe `SELECT` builder and its single-pass SQL renderer.
+
+use core::fmt::Write;
+use core::marker::PhantomData;
+use std::sync::Arc;
+
+use crate::dialect::{Dialect, SupportsLateralJoin};
+use crate::expr::{render_expr, BinaryOp, Expr, ExprKind, SqlVal, Subquery};
+use crate::schema::{Column, Table, TableInScope};
+
+use super::cte::{Cte, CteRenderer, Lateral};
+use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
+use super::scope::{
+    CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, TableScope,
+};
+use super::selection::{Nullable, SelectionFor};
+use super::set_ops::{SetOpKind, SetOperation};
+
+/// The rendered SQL text of a query together with its bound parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltQuery {
+    /// The SQL text using the dialect's positional placeholders.
+    pub sql: String,
+
+    /// The parameter values referenced by the placeholders, in placeholder order.
+    pub params: Vec<SqlVal>,
+}
+
+/// The direction of an `ORDER BY` clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderDirection {
+    /// Ascending order (`ASC`).
+    Asc,
+    /// Descending order (`DESC`).
+    Desc,
+}
+
+impl OrderDirection {
+    /// The SQL text of the direction.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            OrderDirection::Asc => "ASC",
+            OrderDirection::Desc => "DESC",
+        }
+    }
+}
+
+/// Phantom marker carrying the dialect, scope, and row type of a query.
+type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
+
+/// A type-erased renderer producing a list of projection items into the SQL buffer.
+pub(crate) type ProjectionRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+
+/// A single join clause recorded on a [`SelectQuery`].
+#[derive(Clone)]
+struct JoinClause {
+    kind: JoinKind,
+    on: Option<ExprKind>,
+    lateral: Option<CteRenderer>,
+}
+
+/// Internal definition of a single Common Table Expression (`WITH cte AS (...)`).
+#[derive(Clone)]
+struct CteDefinition {
+    name: &'static str,
+    renderer: CteRenderer,
+}
+
+/// A `SELECT` query over the table `Tables` producing rows of type `Output`.
+pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
+    ctes: Vec<CteDefinition>,
+    projections: Option<ProjectionRenderer>,
+    joins: Vec<JoinClause>,
+    filter: Option<ExprKind>,
+    pub(crate) group_by: Vec<&'static str>,
+    having: Option<ExprKind>,
+    order_by: Vec<(&'static str, OrderDirection)>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+    set_operations: Vec<SetOperation>,
+    _marker: QueryMarker<D, Tables, Output>,
+}
+
+impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
+    fn clone(&self) -> Self {
+        Self {
+            ctes: self.ctes.clone(),
+            projections: self.projections.clone(),
+            joins: self.joins.clone(),
+            filter: self.filter.clone(),
+            group_by: self.group_by.clone(),
+            having: self.having.clone(),
+            order_by: self.order_by.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            set_operations: self.set_operations.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<D: Dialect> SelectQuery<D, (), ()> {
+    /// Creates a query without a table, projections, filter, or pagination.
+    pub fn new() -> Self {
+        SelectQuery {
+            ctes: Vec::new(),
+            projections: None,
+            joins: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
+            set_operations: Vec::new(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<D: Dialect> Default for SelectQuery<D, (), ()> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D: Dialect, Output> SelectQuery<D, (), Output> {
+    /// Introduces `T` as the table rows are selected from.
+    pub fn from<T: Table>(self) -> SelectQuery<D, T, Output> {
+        self.retype()
+    }
+
+    /// Introduces `table` as the table rows are selected from.
+    pub fn from_table<T: Table>(self, _table: T) -> SelectQuery<D, T, Output> {
+        self.retype()
+    }
+}
+
+impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
+    /// Selects `selection`, fixing the row type of the query to the selection row.
+    pub fn select<S, Positions>(
+        mut self,
+        selection: S,
+    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
+    where
+        S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
+    {
+        self.projections = Some(Arc::new(move |sql, params| {
+            selection.render_projections::<D>(sql, params);
+        }));
+        self.retype()
+    }
+}
+
+impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
+    /// Adds a Common Table Expression (`WITH cte AS (...)`) to this query.
+    pub fn with<T, Row>(mut self, cte: Cte<T, Row>) -> Self {
+        self.ctes.push(CteDefinition {
+            name: cte.name,
+            renderer: cte.renderer,
+        });
+        self
+    }
+
+    /// Converts this query into a CTE for the table `T`.
+    pub fn as_cte<T: Table>(self) -> Cte<T, Output>
+    where
+        Tables: TableScope + 'static,
+        Output: 'static,
+    {
+        Cte::new(self)
+    }
+
+    /// Converts this query into a named CTE with alias `name`.
+    pub fn as_named_cte(self, name: &'static str) -> Cte<(), Output>
+    where
+        Tables: TableScope + 'static,
+        Output: 'static,
+    {
+        Cte::named(name, self)
+    }
+
+    /// Converts this query into a `LATERAL` subquery exposed under the table marker `T`.
+    pub fn as_lateral<T: Table>(self) -> Lateral<T, Output>
+    where
+        Tables: TableScope + 'static,
+        Output: 'static,
+    {
+        Lateral::new(self)
+    }
+
+    /// Lifts the column `C` into its nullable form [`Nullable`].
+    pub fn nullable<C: Column>(&self) -> Nullable<C> {
+        Nullable::new()
+    }
+
+    /// Restricts the query to rows matching `predicate`.
+    pub fn where_(mut self, predicate: Expr<bool>) -> Self {
+        let predicate = predicate.into_kind();
+        let filter = match self.filter.take() {
+            Some(existing) => ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs: Box::new(existing),
+                rhs: Box::new(predicate),
+            },
+            None => predicate,
+        };
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Groups query results by `columns`, moving the query into the
+    /// [`GroupedQuery`] state.
+    pub fn group_by<G, Positions>(
+        mut self,
+        columns: G,
+    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<EmptyGroupSet>>::Columns>
+    where
+        G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<EmptyGroupSet>,
+    {
+        columns.push_column_names(&mut self.group_by);
+        GroupedQuery {
+            query: self,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Restricts grouped rows to those satisfying `predicate`.
+    pub fn having(mut self, predicate: Expr<bool>) -> Self {
+        let predicate = predicate.into_kind();
+        let having = match self.having.take() {
+            Some(existing) => ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs: Box::new(existing),
+                rhs: Box::new(predicate),
+            },
+            None => predicate,
+        };
+        self.having = Some(having);
+        self
+    }
+
+    /// Appends an ordering criterion for column `col` with `direction`.
+    pub fn order_by<C: Column, P>(mut self, _col: C, direction: OrderDirection) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by.push((C::NAME, direction));
+        self
+    }
+
+    /// Appends an ascending ordering criterion for column `col`.
+    pub fn order_by_asc<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by(col, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for column `col`.
+    pub fn order_by_desc<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by(col, OrderDirection::Desc)
+    }
+
+    /// Limits the number of returned rows to `limit`.
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Skips the first `offset` rows of the result.
+    pub fn offset(mut self, offset: u32) -> Self {
+        self.offset = Some(offset);
+        self
+    }
+
+    /// Joins the table `T` to the query with an `INNER JOIN` restricted by `on`.
+    pub fn inner_join<T: Table>(self, on: Expr<bool>) -> SelectQuery<D, Joined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins `table` to the query with an `INNER JOIN` restricted by `on`.
+    pub fn inner_join_table<T: Table>(
+        self,
+        _table: T,
+        on: Expr<bool>,
+    ) -> SelectQuery<D, Joined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins the table `T` to the query with a `LEFT JOIN` restricted by `on`.
+    pub fn left_join<T: Table>(
+        self,
+        on: Expr<bool>,
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Left, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins `table` to the query with a `LEFT JOIN` restricted by `on`.
+    pub fn left_join_table<T: Table>(
+        self,
+        _table: T,
+        on: Expr<bool>,
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Left, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Records a regular join clause whose relational effect is expressed by the
+    /// caller's return type.
+    fn push_join(mut self, kind: JoinKind, on: Option<ExprKind>) -> Self {
+        self.joins.push(JoinClause {
+            kind,
+            on,
+            lateral: None,
+        });
+        self
+    }
+
+    fn retype<Tables2, Output2>(self) -> SelectQuery<D, Tables2, Output2> {
+        SelectQuery {
+            ctes: self.ctes,
+            projections: self.projections,
+            joins: self.joins,
+            filter: self.filter,
+            group_by: self.group_by,
+            having: self.having,
+            order_by: self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            set_operations: self.set_operations,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
+    /// Joins `lateral` to the query with a `CROSS JOIN LATERAL`.
+    pub fn cross_join_lateral<T: Table, Row: 'static>(
+        mut self,
+        lateral: Lateral<T, Row>,
+    ) -> SelectQuery<D, CrossLateralJoined<Tables, T>, Output> {
+        self.joins.push(JoinClause {
+            kind: JoinKind::CrossLateral,
+            on: None,
+            lateral: Some(lateral.renderer),
+        });
+        self.retype()
+    }
+
+    /// Joins `lateral` to the query with a `LEFT JOIN LATERAL ... ON true`.
+    pub fn left_join_lateral<T: Table, Row: 'static>(
+        mut self,
+        lateral: Lateral<T, Row>,
+    ) -> SelectQuery<D, LeftLateralJoined<Tables, T>, Output> {
+        self.joins.push(JoinClause {
+            kind: JoinKind::LeftLateral,
+            on: Some(ExprKind::Raw {
+                fragments: vec!["true".to_owned()],
+                params: Vec::new(),
+            }),
+            lateral: Some(lateral.renderer),
+        });
+        self.retype()
+    }
+}
+
+impl<D: Dialect, Tables, Output: 'static> SelectQuery<D, Tables, Output> {
+    /// Combines this query with `other` using `UNION`, removing duplicate rows.
+    pub fn union<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::Union, other)
+    }
+
+    /// Combines this query with `other` using `UNION ALL`, keeping duplicates.
+    pub fn union_all<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::UnionAll, other)
+    }
+
+    /// Keeps only the rows produced by both this query and `other` (`INTERSECT`).
+    pub fn intersect<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::Intersect, other)
+    }
+
+    /// Keeps the rows of this query that are absent from `other` (`EXCEPT`).
+    pub fn except<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::Except, other)
+    }
+
+    fn with_set_operation<Tables2: TableScope + 'static>(
+        mut self,
+        kind: SetOpKind,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.set_operations.push(SetOperation {
+            kind,
+            render: Arc::new(move |sql, params| other.render_into(sql, params)),
+        });
+        self
+    }
+}
+
+impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
+    /// Renders the query statement and parameters into the target buffers.
+    pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        let render_projections = self.projections.as_ref().expect(
+            "a SELECT query requires at least one projection; call `select` before `build`",
+        );
+
+        let mut tables = Vec::new();
+        Tables::push_table_refs(&mut tables);
+        assert_eq!(
+            tables.len(),
+            self.joins.len() + 1,
+            "every joined table requires an ON condition"
+        );
+
+        if !self.ctes.is_empty() {
+            sql.push_str("WITH ");
+            for (index, cte) in self.ctes.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, cte.name);
+                sql.push_str(" AS (");
+                (cte.renderer)(sql, params);
+                sql.push(')');
+            }
+            sql.push(' ');
+        }
+
+        sql.push_str("SELECT ");
+        render_projections(sql, params);
+
+        sql.push_str(" FROM ");
+        tables[0].render::<D>(sql);
+
+        for (index, join) in self.joins.iter().enumerate() {
+            sql.push(' ');
+            sql.push_str(join.kind.as_str());
+            sql.push(' ');
+            match &join.lateral {
+                Some(render_lateral) => {
+                    sql.push('(');
+                    render_lateral(sql, params);
+                    sql.push_str(") AS ");
+                    D::push_quoted_identifier(sql, tables[index + 1].name);
+                }
+                None => tables[index + 1].render::<D>(sql),
+            }
+            if let Some(on) = &join.on {
+                sql.push_str(" ON ");
+                render_expr::<D>(sql, params, on);
+            }
+        }
+
+        if let Some(filter) = &self.filter {
+            sql.push_str(" WHERE ");
+            render_expr::<D>(sql, params, filter);
+        }
+
+        if !self.group_by.is_empty() {
+            sql.push_str(" GROUP BY ");
+            for (index, name) in self.group_by.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, name);
+            }
+        }
+
+        if let Some(having) = &self.having {
+            sql.push_str(" HAVING ");
+            render_expr::<D>(sql, params, having);
+        }
+
+        for operation in &self.set_operations {
+            sql.push(' ');
+            sql.push_str(operation.kind.as_str());
+            sql.push(' ');
+            (operation.render)(sql, params);
+        }
+
+        if !self.order_by.is_empty() {
+            sql.push_str(" ORDER BY ");
+            for (index, (name, direction)) in self.order_by.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, name);
+                sql.push(' ');
+                sql.push_str(direction.as_str());
+            }
+        }
+
+        if let Some(limit) = self.limit {
+            let _ = write!(sql, " LIMIT {limit}");
+        }
+        if let Some(offset) = self.offset {
+            let _ = write!(sql, " OFFSET {offset}");
+        }
+    }
+
+    /// Renders the query into SQL text and its ordered parameter list.
+    pub fn build(&self) -> BuiltQuery {
+        let mut sql = String::new();
+        let mut params = Vec::new();
+        self.render_into(&mut sql, &mut params);
+        BuiltQuery { sql, params }
+    }
+}
+
+impl<D: Dialect, Tables: TableScope + 'static, Output: 'static> SelectQuery<D, Tables, Output> {
+    /// Wraps the query into a [`Subquery`] rendered with the enclosing statement's parameters.
+    pub fn into_subquery(self) -> Subquery {
+        Subquery::new(move |sql, params| self.render_into(sql, params))
+    }
+
+    /// Builds an `EXISTS (subquery)` predicate over this query.
+    pub fn exists(&self) -> Expr<bool> {
+        Expr::exists(self.clone())
+    }
+
+    /// Builds a `NOT EXISTS (subquery)` predicate over this query.
+    pub fn not_exists(&self) -> Expr<bool> {
+        Expr::not_exists(self.clone())
+    }
+}
+
+impl<D: Dialect, Tables: TableScope + 'static, Output: 'static>
+    From<SelectQuery<D, Tables, Output>> for Subquery
+{
+    fn from(query: SelectQuery<D, Tables, Output>) -> Self {
+        query.into_subquery()
+    }
+}
