@@ -1,7 +1,8 @@
 //! Catalog introspection queries and metadata normalization.
 //!
-//! Provides engine-independent metadata structures and PostgreSQL system catalog
-//! queries for inspecting `information_schema` and `pg_catalog`.
+//! Provides engine-independent metadata structures plus PostgreSQL and SQLite
+//! catalog queries for inspecting `information_schema`, `pg_catalog`,
+//! `sqlite_master`, and the `PRAGMA` metadata interfaces.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -43,7 +44,7 @@ pub struct RawForeignKeyMetadata {
     pub referenced_column: String,
 }
 
-/// Canonical PostgreSQL catalog introspection queries.
+/// Canonical PostgreSQL and SQLite catalog introspection queries.
 pub struct IntrospectQueries;
 
 impl IntrospectQueries {
