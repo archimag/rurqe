@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use crate::dialect::{Dialect, SupportsLateralJoin};
 use crate::expr::{render_expr, BinaryOp, Expr, ExprKind, SqlVal, Subquery};
-use crate::schema::{Column, Table, TableInScope};
+use crate::schema::{Column, ExprInScope, Table, TableInScope};
 
 use super::cte::{Cte, CteRenderer, Lateral};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
 use super::scope::{
-    CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, TableScope,
+    CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, ScopePositions,
+    TableScope,
 };
 use super::selection::{Nullable, SelectionFor};
 use super::set_ops::{SetOpKind, SetOperation};
@@ -195,7 +196,10 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 
     /// Restricts the query to rows matching `predicate`.
-    pub fn where_(mut self, predicate: Expr<bool>) -> Self {
+    pub fn where_<Scope, P>(mut self, predicate: Expr<bool, Scope>) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
         let predicate = predicate.into_kind();
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {
@@ -226,7 +230,10 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 
     /// Restricts grouped rows to those satisfying `predicate`.
-    pub fn having(mut self, predicate: Expr<bool>) -> Self {
+    pub fn having<Scope, P>(mut self, predicate: Expr<bool, Scope>) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
         let predicate = predicate.into_kind();
         let having = match self.having.take() {
             Some(existing) => ExprKind::Binary {
@@ -278,47 +285,54 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 
     /// Joins the table `T` to the query with an `INNER JOIN` restricted by `on`.
-    pub fn inner_join<T: Table>(self, on: Expr<bool>) -> SelectQuery<D, Joined<Tables, T>, Output>
+    pub fn inner_join<T: Table, Scope, P>(
+        self,
+        on: Expr<bool, Scope>,
+    ) -> SelectQuery<D, Joined<Tables, T>, Output>
     where
         Tables: TableScope,
+        Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Inner, Some(on.into_kind()))
             .retype()
     }
 
     /// Joins `table` to the query with an `INNER JOIN` restricted by `on`.
-    pub fn inner_join_table<T: Table>(
+    pub fn inner_join_table<T: Table, Scope, P>(
         self,
         _table: T,
-        on: Expr<bool>,
+        on: Expr<bool, Scope>,
     ) -> SelectQuery<D, Joined<Tables, T>, Output>
     where
         Tables: TableScope,
+        Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Inner, Some(on.into_kind()))
             .retype()
     }
 
     /// Joins the table `T` to the query with a `LEFT JOIN` restricted by `on`.
-    pub fn left_join<T: Table>(
+    pub fn left_join<T: Table, Scope, P>(
         self,
-        on: Expr<bool>,
+        on: Expr<bool, Scope>,
     ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
     where
         Tables: TableScope,
+        Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Left, Some(on.into_kind()))
             .retype()
     }
 
     /// Joins `table` to the query with a `LEFT JOIN` restricted by `on`.
-    pub fn left_join_table<T: Table>(
+    pub fn left_join_table<T: Table, Scope, P>(
         self,
         _table: T,
-        on: Expr<bool>,
+        on: Expr<bool, Scope>,
     ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
     where
         Tables: TableScope,
+        Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Left, Some(on.into_kind()))
             .retype()

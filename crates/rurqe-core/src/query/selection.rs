@@ -4,9 +4,9 @@ use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::expr::{render_expr, Expr, ExprKind, SqlVal};
-use crate::schema::{At, Column, ColumnBelongsTo, Table};
+use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
 
-use super::scope::{NonNullableRel, NullableRel, TableNullabilityInScope};
+use super::scope::{NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope};
 
 /// A single item projected by a `SELECT` query, such as a column or a window expression.
 #[diagnostic::on_unimplemented(
@@ -39,7 +39,7 @@ impl<C: Column> SelectTarget for C {
     }
 }
 
-impl<T: 'static + Send + Sync> SelectTarget for Expr<T> {
+impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget for Expr<T, Scope> {
     type RustType = T;
 
     fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
@@ -133,7 +133,10 @@ where
     type Output = <C as ColumnInScope<Tables, P>>::Output;
 }
 
-impl<Tables, T> SelectTargetInScope<Tables, At<0>> for Expr<T> {
+impl<Tables, T, Scope, P> SelectTargetInScope<Tables, P> for Expr<T, Scope>
+where
+    Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+{
     type Output = T;
 }
 

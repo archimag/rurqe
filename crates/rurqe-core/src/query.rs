@@ -47,7 +47,7 @@ pub use self::group_by::{
 };
 pub use self::scope::{
     CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, NonNullableRel,
-    NullableRel, TableNullabilityInScope, TableScope,
+    NullableRel, ScopePositions, TableNullabilityInScope, TableScope,
 };
 pub use self::select::{BuiltQuery, OrderDirection, SelectQuery};
 pub use self::selection::{

@@ -78,6 +78,42 @@ impl<T: Table> TableScope for T {
     }
 }
 
+/// Pins the scope positions `P` an expression scope `Self` is checked against.
+///
+/// [`ExprInScope`](crate::schema::ExprInScope) accepts an expression referencing
+/// no table in every scope, so a bare `()` leaves the position `P` ambiguous and
+/// the compiler reports `E0282`. This trait names the markers explicitly: the
+/// empty scope always sits at [`At<0>`], a single table keeps its own position,
+/// and a tuple of tables contributes one position per member.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be checked against a query scope",
+    label = "unsupported expression scope",
+    note = "expressions may reference `()`, a single table, or a tuple of tables"
+)]
+pub trait ScopePositions<P = At<0>> {}
+
+impl ScopePositions<At<0>> for () {}
+
+impl<T: Table, P> ScopePositions<P> for T {}
+
+macro_rules! impl_scope_positions {
+    ($($table:ident $position:ident),+) => {
+        impl<$($table: Table),+, $($position),+> ScopePositions<($($position,)+)>
+            for ($($table,)+)
+        {
+        }
+    };
+}
+
+impl_scope_positions!(T1 P1);
+impl_scope_positions!(T1 P1, T2 P2);
+impl_scope_positions!(T1 P1, T2 P2, T3 P3);
+impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4);
+impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5);
+impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6);
+impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
+impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
+
 /// The flavour of join used to bring a table into the query scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinKind {

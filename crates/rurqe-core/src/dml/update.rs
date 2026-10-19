@@ -20,8 +20,8 @@ use super::{
 use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
-use crate::query::{BuiltQuery, Selection, TableSelection};
-use crate::schema::{ExtendScope, Table};
+use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
+use crate::schema::{ExprInScope, ExtendScope, Table};
 
 /// An `UPDATE` statement targeting table `T`.
 ///
@@ -139,10 +139,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
     /// transitions the query from [`Unfiltered`] to [`Filtered`].
-    pub fn where_(
+    pub fn where_<PredicateScope, P>(
         mut self,
-        predicate: Expr<bool>,
-    ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments> {
+        predicate: Expr<bool, PredicateScope>,
+    ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+    {
         let predicate = predicate.into_kind();
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {

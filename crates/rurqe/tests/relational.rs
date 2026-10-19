@@ -94,7 +94,7 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
     let selection = cols!(UserId, OrderId, OrderTotal);
 
     let built = select_from::<Postgres<Pg16>, User>()
-        .inner_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
+        .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
         .select(cols!(UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
         .build();
@@ -123,7 +123,7 @@ fn left_join_lifts_joined_columns_into_options() {
 
     let query = SelectQuery::<Postgres<Pg14>>::new()
         .from::<User>()
-        .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64));
+        .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64));
     let total = query.nullable::<OrderTotal>();
     let built = query.select((UserId, total)).build();
 
@@ -192,7 +192,7 @@ fn aggregate_functions_cover_avg_min_and_max() {
 fn joined_aggregations_group_rows_by_the_joined_table() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
-        .inner_join::<User>(Expr::column::<UserId>().eq(7i64))
+        .inner_join::<User, _, _>(Expr::column::<UserId>().eq(7i64))
         .select((UserName,))
         .group_by(UserName)
         .having(Expr::count_all().gt(1i64))
@@ -265,7 +265,7 @@ fn cte_subquery_composes_with_main_query_and_decodes_rows() {
 
     let built = select_from::<Postgres<Pg16>, User>()
         .with(summary_cte)
-        .inner_join::<UserSummary>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
+        .inner_join::<UserSummary, _, _>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
         .select((UserId, UserName, SummaryOrderCount))
         .where_(Expr::column::<SummaryOrderCount>().gt(5i64))
         .build();
@@ -512,7 +512,7 @@ fn latest_order_per_user() -> SelectQuery<Postgres<Pg16>, Order, (f64,)> {
 #[test]
 fn self_join_with_aliases_qualifies_repeated_table_references() {
     let built = select_from::<Postgres<Pg16>, User>()
-        .inner_join::<Aliased<User, ManagerAlias>>(
+        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
             Expr::column::<UserManagerId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
         )
         .select((

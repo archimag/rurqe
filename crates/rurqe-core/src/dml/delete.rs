@@ -17,8 +17,8 @@ use super::{ExecutableMutation, Filtered, Unfiltered};
 use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
-use crate::query::{BuiltQuery, Selection, TableSelection};
-use crate::schema::{ExtendScope, Table};
+use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
+use crate::schema::{ExprInScope, ExtendScope, Table};
 
 /// A `DELETE` statement targeting table `T`.
 ///
@@ -104,7 +104,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
     /// transitions the query from [`Unfiltered`] to [`Filtered`].
-    pub fn where_(mut self, predicate: Expr<bool>) -> DeleteQuery<D, T, Filtered, Returning, Scope> {
+    pub fn where_<PredicateScope, P>(
+        mut self,
+        predicate: Expr<bool, PredicateScope>,
+    ) -> DeleteQuery<D, T, Filtered, Returning, Scope>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+    {
         let predicate = predicate.into_kind();
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {

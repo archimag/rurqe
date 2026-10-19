@@ -23,7 +23,7 @@ impl<'a> SqlCompatible<String, &'a str> for &'a str {}
 
 impl<'a> SqlCompatible<Vec<u8>, &'a [u8]> for &'a [u8] {}
 
-impl<T> SqlCompatible<T, Expr<T>> for Expr<T> {}
+impl<T, Scope> SqlCompatible<T, Expr<T, Scope>> for Expr<T, Scope> {}
 
 /// A value or expression that can be compared with an expression of type `T`.
 ///
@@ -90,7 +90,7 @@ impl IntoExpr<Vec<u8>> for &[u8] {
     }
 }
 
-impl<T> IntoExpr<T> for Expr<T> {
+impl<T, Scope> IntoExpr<T> for Expr<T, Scope> {
     fn into_expr_kind(self) -> ExprKind {
         self.into_kind()
     }
@@ -341,7 +341,7 @@ impl<T> Expression<T> for Expr<T> {
 
 impl<C: Column> Expression<C::RustType> for C {
     fn into_expression(self) -> Expr<C::RustType> {
-        Expr::<C::RustType>::column::<C>()
+        Expr::<C::RustType, ()>::new(C::expr_kind())
     }
 }
 
@@ -377,14 +377,14 @@ pub trait StringExpression {
     }
 }
 
-impl StringExpression for Expr<String> {
+impl<Scope> StringExpression for Expr<String, Scope> {
     fn into_string_expression(self) -> Expr<String> {
-        self
+        Expr::<String, ()>::new(self.into_kind())
     }
 }
 
 impl<C: Column<RustType = String>> StringExpression for C {
     fn into_string_expression(self) -> Expr<String> {
-        Expr::<String>::column::<C>()
+        Expr::<String, ()>::new(C::expr_kind())
     }
 }

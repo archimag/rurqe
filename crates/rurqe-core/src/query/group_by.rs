@@ -4,10 +4,10 @@ use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::expr::Expr;
-use crate::schema::{At, Column, Next, Table, TableInScope};
+use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 
 use super::cte::Cte;
-use super::scope::TableScope;
+use super::scope::{ScopePositions, TableScope};
 use super::selection::{Selection, SelectionFor, SelectTarget};
 use super::select::{BuiltQuery, OrderDirection, SelectQuery};
 use super::window::WindowExpr;
@@ -211,7 +211,9 @@ where
     type Output = C::RustType;
 }
 
-impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>> for Expr<T> {
+impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
+    GroupedSelectTarget<GroupByCols, At<0>> for Expr<T, Scope>
+{
     type Output = T;
 }
 
@@ -293,7 +295,10 @@ impl<D: Dialect, Tables, Output, GroupByCols> GroupedQuery<D, Tables, Output, Gr
     }
 
     /// Restricts grouped rows to those satisfying `predicate`.
-    pub fn having(mut self, predicate: Expr<bool>) -> Self {
+    pub fn having<Scope, P>(mut self, predicate: Expr<bool, Scope>) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
         self.query = self.query.having(predicate);
         self
     }

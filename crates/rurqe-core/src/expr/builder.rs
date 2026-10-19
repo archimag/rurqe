@@ -6,9 +6,15 @@ use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::ops::IntoExpr;
 use super::render::parse_raw_sql;
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
-use crate::schema::Column;
+use crate::schema::{Column, Table};
 
-/// A SQL expression whose result has the Rust type `T`.
+/// A SQL expression whose result has the Rust type `T` and which references the
+/// tables named by `Scope`.
+///
+/// Column references carry the table of their column, so a projection built from
+/// a column of another table is rejected at the call site. Constructed values
+/// (literals, raw SQL, aggregates, `CASE` branches) reference no table and keep
+/// the default scope `()`.
 ///
 /// ```
 /// use rurqe_core::expr::{BinaryOp, Expr, ExprKind, SqlVal};
@@ -32,43 +38,17 @@ use crate::schema::Column;
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expr<T> {
+pub struct Expr<T, Scope = ()> {
     pub(super) kind: ExprKind,
-    _result: PhantomData<fn() -> T>,
+    _result: PhantomData<fn() -> (T, Scope)>,
 }
 
-impl<T> Expr<T> {
+impl<T, Scope> Expr<T, Scope> {
     pub(super) fn new(kind: ExprKind) -> Self {
         Self {
             kind,
             _result: PhantomData,
         }
-    }
-
-    /// Builds an expression referencing the column `C`.
-    ///
-    /// Columns of an aliased table build an alias-qualified reference, so
-    /// `Expr::column::<AliasedCol<A, C>>()` renders as `"alias"."column"`.
-    pub fn column<C>() -> Self
-    where
-        C: Column<RustType = T>,
-    {
-        Self::new(C::expr_kind())
-    }
-
-    /// Builds an expression referencing the column `C` qualified by its table `Q`.
-    ///
-    /// Qualified references render as `"table"."column"`, which keeps joins over
-    /// tables that share a column name unambiguous.
-    pub fn qualified_column<Q, C>() -> Self
-    where
-        Q: crate::schema::Table,
-        C: Column<Table = Q, RustType = T>,
-    {
-        Self::new(ExprKind::QualifiedColumn {
-            table: Q::NAME,
-            column: C::NAME,
-        })
     }
 
     /// The expression tree of this expression.
@@ -79,18 +59,6 @@ impl<T> Expr<T> {
     /// Consumes the expression and returns its tree.
     pub fn into_kind(self) -> ExprKind {
         self.kind
-    }
-
-    /// Builds an expression holding the literal `value` typed as `T`.
-    ///
-    /// Literals are the constant operands of scalar function calls (see
-    /// [`ExprKind::Function`]), where the value must carry the same type as the
-    /// expression it accompanies.
-    pub fn literal<V>(value: V) -> Self
-    where
-        V: IntoExpr<T>,
-    {
-        Self::new(value.into_expr_kind())
     }
 
     /// Builds an `IS NULL` predicate over this expression.
@@ -132,53 +100,6 @@ impl<T> Expr<T> {
             operand: Some(Box::new(self.kind)),
             query: subquery.into(),
             negated: true,
-        })
-    }
-
-    /// Starts a searched `CASE` expression whose branches produce values of type `T`.
-    ///
-    /// The builder requires at least one [`CaseBuilder::when`] branch before
-    /// [`CaseBuilder::end`] finalises the expression.
-    pub fn case() -> CaseBuilder<T> {
-        CaseBuilder::new()
-    }
-
-    /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
-    pub fn raw(template: &str, params: Vec<SqlVal>) -> Self {
-        let fragments = parse_raw_sql(template, params.len());
-        Self::new(ExprKind::Raw { fragments, params })
-    }
-
-    /// Builds a `SUM(C)` expression for column `C`.
-    pub fn sum<C>() -> Self
-    where
-        C: Column<RustType = T>,
-    {
-        Self::new(ExprKind::Aggregate {
-            func: AggregateFunc::Sum,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
-        })
-    }
-
-    /// Builds a `MIN(C)` expression for column `C`.
-    pub fn min<C>() -> Self
-    where
-        C: Column<RustType = T>,
-    {
-        Self::new(ExprKind::Aggregate {
-            func: AggregateFunc::Min,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
-        })
-    }
-
-    /// Builds a `MAX(C)` expression for column `C`.
-    pub fn max<C>() -> Self
-    where
-        C: Column<RustType = T>,
-    {
-        Self::new(ExprKind::Aggregate {
-            func: AggregateFunc::Max,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })
     }
 
@@ -290,5 +211,96 @@ impl<T> Expr<T> {
     /// Starts a `LEAD(C)` window function builder for column `C`.
     pub fn lead<C: Column<RustType = T>>(_col: C) -> crate::query::LagLeadFn<Option<T>> {
         crate::query::lead(_col)
+    }
+}
+
+impl<T> Expr<T, ()> {
+    /// Builds an expression holding the literal `value` typed as `T`.
+    ///
+    /// Literals are the constant operands of scalar function calls (see
+    /// [`ExprKind::Function`]), where the value must carry the same type as the
+    /// expression it accompanies.
+    pub fn literal<V>(value: V) -> Self
+    where
+        V: IntoExpr<T>,
+    {
+        Self::new(value.into_expr_kind())
+    }
+
+    /// Starts a searched `CASE` expression whose branches produce values of type `T`.
+    ///
+    /// The builder requires at least one [`CaseBuilder::when`] branch before
+    /// [`CaseBuilder::end`] finalises the expression.
+    pub fn case() -> CaseBuilder<T> {
+        CaseBuilder::new()
+    }
+
+    /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
+    pub fn raw(template: &str, params: Vec<SqlVal>) -> Self {
+        let fragments = parse_raw_sql(template, params.len());
+        Self::new(ExprKind::Raw { fragments, params })
+    }
+
+    /// Builds a `SUM(C)` expression for column `C`.
+    pub fn sum<C>() -> Self
+    where
+        C: Column<RustType = T>,
+    {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Sum,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+
+    /// Builds a `MIN(C)` expression for column `C`.
+    pub fn min<C>() -> Self
+    where
+        C: Column<RustType = T>,
+    {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Min,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+
+    /// Builds a `MAX(C)` expression for column `C`.
+    pub fn max<C>() -> Self
+    where
+        C: Column<RustType = T>,
+    {
+        Self::new(ExprKind::Aggregate {
+            func: AggregateFunc::Max,
+            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+}
+
+impl Expr<(), ()> {
+    /// Builds an expression referencing the column `C`.
+    ///
+    /// The column fixes both the result type and the expression scope, so the
+    /// returned expression is checked against the query scope at the call site.
+    /// Columns of an aliased table build an alias-qualified reference, so
+    /// `Expr::column::<AliasedCol<A, C>>()` renders as `"alias"."column"`.
+    pub fn column<C>() -> Expr<C::RustType, C::Table>
+    where
+        C: Column,
+    {
+        Expr::new(C::expr_kind())
+    }
+
+    /// Builds an expression referencing the column `C` qualified by its table `Q`.
+    ///
+    /// Qualified references render as `"table"."column"`, which keeps joins over
+    /// tables that share a column name unambiguous.
+    pub fn qualified_column<Q, C>() -> Expr<C::RustType, Q>
+    where
+        Q: Table,
+        C: Column<Table = Q>,
+    {
+        Expr::new(ExprKind::QualifiedColumn {
+            table: Q::NAME,
+            column: C::NAME,
+        })
     }
 }

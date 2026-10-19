@@ -140,7 +140,7 @@ fn inner_join_renders_join_clause_before_filter() {
     let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64)> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .inner_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
+            .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
             .select((UserId, OrderId));
 
     let built = query.where_(Expr::column::<UserId>().gt(1i64)).build();
@@ -157,8 +157,8 @@ fn inner_join_renders_join_clause_before_filter() {
 fn joined_scope_tracks_every_table_in_from_order() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .inner_join::<Order>(Expr::column::<OrderUserId>().eq(1i64))
-        .inner_join::<User>(Expr::column::<UserId>().eq(2i64))
+        .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
+        .inner_join::<User, _, _>(Expr::column::<UserId>().eq(2i64))
         .select((OrderId,))
         .build();
 
@@ -221,8 +221,8 @@ fn lateral_scopes_resolve_table_positions_deterministically() {
 fn left_join_renders_left_keyword_and_composes_with_inner_join() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .left_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
-        .inner_join::<User>(Expr::column::<UserId>().eq(2i64));
+        .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
+        .inner_join::<User, _, _>(Expr::column::<UserId>().eq(2i64));
     let total = query.nullable::<OrderTotal>();
 
     let built = query.select((OrderId, total)).build();
@@ -252,7 +252,7 @@ fn left_joined_columns_are_lifted_without_explicit_markers() {
     let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .left_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
+            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
             .select((UserId, OrderTotal));
 
     let built = query.build();
@@ -269,7 +269,7 @@ fn inner_joined_columns_keep_their_declared_types() {
     let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64, f64)> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .inner_join::<Order>(Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+            .inner_join::<Order, _, _>(Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
             .select((UserId, OrderId, OrderTotal));
 
     assert_eq!(
@@ -286,8 +286,8 @@ fn nested_left_join_stays_nullable_inside_an_inner_join() {
     let query: SelectQuery<MockDialect, NestedScope, (Option<i64>,)> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .left_join::<Order>(Expr::column::<OrderUserId>().eq(1i64))
-            .inner_join::<User>(Expr::column::<UserId>().eq(2i64))
+            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
+            .inner_join::<User, _, _>(Expr::column::<UserId>().eq(2i64))
             .select((OrderId,));
 
     assert_eq!(
@@ -302,7 +302,7 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
     fn nullable_scope() -> SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> {
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64))
+            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64))
             .select((UserId, OrderTotal))
     }
 
@@ -310,7 +310,7 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
     let explicit = {
         let query = SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64));
+            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64));
         let total = query.nullable::<OrderTotal>();
         let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
             query.select((UserId, total));
@@ -323,7 +323,7 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
     let single_layer: SelectQuery<MockDialect, LeftJoined<User, Order>, (Option<f64>,)> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64))
+            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64))
             .select((Nullable::<OrderTotal>::new(),));
 
     assert_eq!(
@@ -781,7 +781,7 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .with(summary_cte)
         .from::<User>()
-        .inner_join::<ActiveSummary>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
+        .inner_join::<ActiveSummary, _, _>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
         .select((UserId, UserName, SummaryTotal))
         .where_(Expr::column::<SummaryTotal>().lt(500.0))
         .build();
@@ -989,7 +989,7 @@ fn aliased_table_renders_as_clause_and_qualifies_columns() {
 fn aliased_table_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .inner_join::<Aliased<Order, OrderAlias>>(
+        .inner_join::<Aliased<Order, OrderAlias>, _, _>(
             Expr::column::<OrderUserId>().eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
         )
         .select((UserId, AliasedCol::<OrderAlias, OrderTotal>::new()))
@@ -1007,7 +1007,7 @@ fn aliased_table_participates_in_joins() {
 fn left_joined_aliased_table_lifts_columns_into_options() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .left_join::<Aliased<Order, OrderAlias>>(
+        .left_join::<Aliased<Order, OrderAlias>, _, _>(
             Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
         );
     let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
