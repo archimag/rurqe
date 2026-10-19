@@ -20,6 +20,8 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 6** [x] | Multi-Dialect & Execution Adapters | SQLite dialect (`Sqlite<V>`), dual engine (`tokio-postgres`/`postgres`/`rusqlite`) | Multi-Engine Execution Layer (Completed) |
 | **Phase 7** [x] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready (Completed) |
 | **Phase 8** [x] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity (Completed) |
+| **Phase 9** [ ] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `COALESCE`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Planned) |
+| **Phase 10** [ ] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Planned) |
 
 ---
 
@@ -325,4 +327,93 @@ let results = select_from::<Postgres, User>()
 
 // 3. Safe raw SQL escape hatch with compile-time parameter binding
 let custom_filter = sql!(bool, "EXTRACT(YEAR FROM created_at) = ?", 2024i64);
+```
+
+---
+
+## Phase 9: Core SQL Expressiveness & Set Operations (Expressions, Predicates & Sets) [Planned]
+
+### Objective
+Eliminate the need for raw SQL escape hatches in common query patterns by introducing first-class null predicates, conditional branching (`CASE WHEN`), standard functions (`COALESCE`), subquery predicates (`EXISTS`, `IN`), and strictly typed set operations (`UNION`, `INTERSECT`, `EXCEPT`).
+
+### Key Deliverables
+- [ ] **Null Testing Predicates:**
+  - Typed `.is_null()` and `.is_not_null()` operators on columns and expressions.
+- [ ] **Conditional Branching & SQL Functions:**
+  - Fluent `case().when(condition, then_expr).else_(else_expr)` builder producing typed `Expr<T>`.
+  - Standard functions: `coalesce(...)`, `nullif(...)`.
+- [ ] **Subquery Predicates:**
+  - `exists(subquery)` and `not_exists(subquery)`.
+  - `column.in_subquery(subquery)` and `column.not_in_subquery(subquery)`.
+- [ ] **Type-Safe Set Operations:**
+  - `.union(other_query)` and `.union_all(other_query)`.
+  - `.intersect(other_query)` and `.except(other_query)`.
+  - Compile-time guarantee: both queries must share identical `Dialect` and output row types (`Output`), preserving `FromRow` decoding.
+
+### Example Usage
+```rust
+use rurqe::prelude::*;
+
+// 1. CASE WHEN and COALESCE
+let query = select_from::<Postgres, Employee>()
+    .select((
+        EmployeeId,
+        case()
+            .when(Salary.gt(100_000i64), "senior")
+            .else_("standard"),
+        coalesce((Bonus, 0i64)),
+    ))
+    .where_(DepartmentId.is_not_null());
+
+// 2. Subquery predicates
+let active_buyers = select_from::<Postgres, User>()
+    .select((UserId, UserName))
+    .where_(exists(
+        select_from::<Postgres, Order>()
+            .where_(OrderUserId.eq(UserId))
+    ));
+
+// 3. Type-safe UNION ALL
+let all_contacts = query_customers.union_all(query_suppliers);
+```
+
+---
+
+## Phase 10: Advanced Relational Composition: Aliasing, Lateral Joins & Advanced DML [Planned]
+
+### Objective
+Provide deep relational composition capabilities: table and subquery aliasing for unambiguous self-joins, compile-time capability-gated `LATERAL JOIN`s with sound nullability tracking, and advanced DML (`INSERT INTO ... SELECT`).
+
+### Key Deliverables
+- [ ] **Table & Subquery Aliasing:**
+  - Zero-cost table aliases: `users.alias::<A>()` generating SQL `\"users\" AS \"u1\"`.
+  - Unambiguous self-joins: qualifying columns via their alias marker (`u1.col(UserId)` vs `u2.col(UserId)`).
+- [ ] **First-Class `LATERAL JOIN` Support:**
+  - Capability marker trait `SupportsLateralJoin` implemented for dialects supporting lateral subqueries (PostgreSQL, modern engines).
+  - Correlated subquery scope: subqueries inside `.cross_join_lateral(...)` and `.left_join_lateral(...)` can reference columns from outer tables in scope.
+  - Sound compile-time nullability: `.left_join_lateral(...)` automatically lifts lateral subquery projections into `Option<T>`.
+- [ ] **Advanced DML:**
+  - Type-safe `INSERT INTO ... SELECT`: inserting results of a compatible `SelectQuery` directly into a target table without client round-trips.
+
+### Example Usage
+```rust
+use rurqe::prelude::*;
+
+// 1. Self-join with aliases
+let (u1, u2) = (User::as_alias::<U1>(), User::as_alias::<U2>());
+let colleagues = select_from::<Postgres, _>(u1)
+    .inner_join(u2, u1.col(DepartmentId).eq(u2.col(DepartmentId)))
+    .where_(u1.col(UserId).ne(u2.col(UserId)))
+    .select((u1.col(UserName), u2.col(UserName)));
+
+// 2. LATERAL JOIN (top 3 recent orders per user)
+let report = select_from::<Postgres, User>()
+    .cross_join_lateral(
+        |user| select_from::<Postgres, Order>()
+            .where_(OrderUserId.eq(user.col(UserId)))
+            .order_by_desc(OrderCreatedAt)
+            .limit(3)
+            .as_alias::<LatestOrders>()
+    )
+    .select((UserId, UserName, LatestOrders::col(OrderTotal)));
 ```
