@@ -7,7 +7,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef};
+use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef};
 
 /// Structural schema diff describing exact discrepancies.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -125,6 +125,7 @@ pub enum DriftError {
         expected: String,
         found_in_code: String,
     },
+    InvalidLock(String),
     Io(String),
 }
 
@@ -139,6 +140,9 @@ impl fmt::Display for DriftError {
                 f,
                 "SCHEMA_HASH mismatch in schema code: expected {expected}, found {found_in_code}"
             ),
+            DriftError::InvalidLock(message) => {
+                write!(f, "invalid schema lock snapshot: {message}")
+            }
             DriftError::Io(err) => write!(f, "I/O error during drift verification: {err}"),
         }
     }
@@ -152,7 +156,6 @@ pub fn verify_drift(
     expected_lock: &str,
     schema_rs: Option<&str>,
 ) -> Result<(), DriftError> {
-    let live_lock = live_catalog.to_lock();
     let live_hash = live_catalog.schema_hash();
 
     if let Some(code) = schema_rs {
@@ -166,11 +169,14 @@ pub fn verify_drift(
         }
     }
 
-    if live_lock.trim() == expected_lock.trim() {
+    let expected_catalog = SchemaCatalog::from_lock(expected_lock)
+        .map_err(|err| DriftError::InvalidLock(err.to_string()))?;
+
+    let diff = compute_catalog_diff(live_catalog, &expected_catalog);
+    if diff.is_empty() {
         return Ok(());
     }
 
-    let diff = compute_catalog_diff(live_catalog, expected_lock);
     let expected_hash = rurqe_migrate::checksum::Checksum::of(expected_lock.as_bytes()).to_hex();
 
     Err(DriftError::Drift(DriftReport {
@@ -181,32 +187,121 @@ pub fn verify_drift(
 }
 
 /// Extracts the `pub const SCHEMA_HASH: &str = "...";` literal from generated code.
+///
+/// Matching is anchored to the beginning of a line (ignoring leading
+/// indentation) and skips single-line (`//`) and multi-line (`/* ... */`)
+/// comments as well as string literals, so a commented-out or quoted constant
+/// never yields a false positive.
 pub fn extract_schema_hash(code: &str) -> Option<String> {
     const PREFIX: &str = "pub const SCHEMA_HASH: &str = \"";
-    let start = code.find(PREFIX)?;
-    let rest = &code[start + PREFIX.len()..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_owned())
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Code,
+        LineComment,
+        BlockComment,
+        Str,
+    }
+
+    let mut state = State::Code;
+    let mut block_depth: usize = 0;
+    // True while only whitespace has been seen since the last newline, so the
+    // next non-whitespace code character sits at the logical line start.
+    let mut line_indent_only = true;
+
+    let mut iter = code.char_indices().peekable();
+
+    while let Some((index, ch)) = iter.next() {
+        match state {
+            State::Code => {
+                if line_indent_only && ch == 'p' && code[index..].starts_with(PREFIX) {
+                    let rest = &code[index + PREFIX.len()..];
+                    let end = rest.find('"')?;
+                    return Some(rest[..end].to_owned());
+                }
+
+                match ch {
+                    '/' => match iter.peek() {
+                        Some(&(_, '/')) => {
+                            iter.next();
+                            state = State::LineComment;
+                            line_indent_only = false;
+                        }
+                        Some(&(_, '*')) => {
+                            iter.next();
+                            state = State::BlockComment;
+                            block_depth = 1;
+                            line_indent_only = false;
+                        }
+                        _ => line_indent_only = false,
+                    },
+                    '"' => {
+                        state = State::Str;
+                        line_indent_only = false;
+                    }
+                    '\n' => line_indent_only = true,
+                    c if c.is_whitespace() => {}
+                    _ => line_indent_only = false,
+                }
+            }
+            State::LineComment => {
+                if ch == '\n' {
+                    state = State::Code;
+                    line_indent_only = true;
+                }
+            }
+            State::BlockComment => {
+                if ch == '*' && matches!(iter.peek(), Some(&(_, '/'))) {
+                    iter.next();
+                    block_depth = block_depth.saturating_sub(1);
+                    if block_depth == 0 {
+                        state = State::Code;
+                    }
+                    line_indent_only = false;
+                } else if ch == '/' && matches!(iter.peek(), Some(&(_, '*'))) {
+                    iter.next();
+                    block_depth += 1;
+                } else if ch == '\n' {
+                    line_indent_only = true;
+                } else if !ch.is_whitespace() {
+                    line_indent_only = false;
+                }
+            }
+            State::Str => {
+                if ch == '\\' {
+                    iter.next();
+                } else if ch == '"' {
+                    state = State::Code;
+                } else if ch == '\n' {
+                    state = State::Code;
+                    line_indent_only = true;
+                }
+            }
+        }
+    }
+
+    None
 }
 
-fn compute_catalog_diff(live: &SchemaCatalog, lock_text: &str) -> SchemaDiff {
+fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
 
-    let expected_tables = parse_tables_from_lock(lock_text);
     let live_tables: BTreeMap<&str, &TableDef> =
         live.tables.iter().map(|t| (t.name.as_str(), t)).collect();
+    let expected_tables: BTreeMap<&str, &TableDef> = expected
+        .tables
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
 
     let all_tables: BTreeSet<&str> = live_tables
         .keys()
         .copied()
-        .chain(expected_tables.keys().map(|s| s.as_str()))
+        .chain(expected_tables.keys().copied())
         .collect();
 
     for table_name in all_tables {
-        let in_live = live_tables.get(table_name);
-        let in_expected = expected_tables.get(table_name);
-
-        match (in_live, in_expected) {
+        match (live_tables.get(table_name), expected_tables.get(table_name)) {
             (None, Some(_)) => diff.missing_tables.push(table_name.to_owned()),
             (Some(_), None) => diff.extra_tables.push(table_name.to_owned()),
             (Some(live_table), Some(expected_table)) => {
@@ -222,107 +317,29 @@ fn compute_catalog_diff(live: &SchemaCatalog, lock_text: &str) -> SchemaDiff {
     diff
 }
 
-/// Structurally parsed representation of a `schema.lock` table block.
-#[derive(Debug, Default)]
-struct ExpectedTable {
-    columns: BTreeMap<String, ExpectedColumn>,
-    primary_key: Vec<String>,
-    foreign_keys: BTreeSet<String>,
-}
-
-/// Structurally parsed representation of a `schema.lock` column line.
-#[derive(Debug, PartialEq, Eq)]
-struct ExpectedColumn {
-    type_str: String,
-    nullable: bool,
-    default: Option<String>,
-}
-
-/// Parses every `table "..." { ... }` block of the snapshot.
-fn parse_tables_from_lock(lock: &str) -> BTreeMap<String, ExpectedTable> {
-    let mut tables = BTreeMap::new();
-    let mut current: Option<(String, ExpectedTable)> = None;
-
-    for line in lock.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("table ") {
-            if let Some((name, _)) = parse_quoted(rest) {
-                current = Some((name, ExpectedTable::default()));
-            }
-            continue;
-        }
-        if trimmed == "}" {
-            if let Some((name, table)) = current.take() {
-                tables.insert(name, table);
-            }
-            continue;
-        }
-        if let Some((_, table)) = current.as_mut() {
-            parse_table_line(trimmed, table);
-        }
-    }
-
-    tables
-}
-
-fn parse_table_line(line: &str, table: &mut ExpectedTable) {
-    if let Some(rest) = line.strip_prefix("column ") {
-        if let Some((name, after)) = parse_quoted(rest) {
-            if let Some(definition) = after.strip_prefix(": ").and_then(parse_column_definition) {
-                table.columns.insert(name, definition);
-            }
-        }
-    } else if let Some(rest) = line.strip_prefix("primary key ") {
-        if let Some(columns) = parse_quoted_list(rest) {
-            table.primary_key = columns;
-        }
-    } else if line.starts_with("foreign key ") {
-        table.foreign_keys.insert(line.to_owned());
-    }
-}
-
-fn parse_column_definition(definition: &str) -> Option<ExpectedColumn> {
-    let (head, default) = match definition.find(" default ") {
-        Some(position) => (
-            &definition[..position],
-            Some(definition[position + " default ".len()..].to_owned()),
-        ),
-        None => (definition, None),
-    };
-
-    let (type_str, nullable) = if let Some(ty) = head.strip_suffix(" not null") {
-        (ty, false)
-    } else if let Some(ty) = head.strip_suffix(" null") {
-        (ty, true)
-    } else {
-        (head, false)
-    };
-
-    Some(ExpectedColumn {
-        type_str: type_str.to_owned(),
-        nullable,
-        default,
-    })
-}
-
-fn compute_table_diff(live: &TableDef, expected: &ExpectedTable) -> TableDiff {
+fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
     let mut diff = TableDiff::default();
 
     let live_cols: BTreeMap<&str, &ColumnDef> =
         live.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+    let expected_cols: BTreeMap<&str, &ColumnDef> = expected
+        .columns
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
 
     let all_cols: BTreeSet<&str> = live_cols
         .keys()
         .copied()
-        .chain(expected.columns.keys().map(|s| s.as_str()))
+        .chain(expected_cols.keys().copied())
         .collect();
 
     for col in all_cols {
-        match (live_cols.get(col), expected.columns.get(col)) {
+        match (live_cols.get(col), expected_cols.get(col)) {
             (None, Some(_)) => diff.missing_columns.push(col.to_owned()),
             (Some(_), None) => diff.extra_columns.push(col.to_owned()),
             (Some(live_col), Some(expected_col)) => {
-                if live_col.type_kind.as_str() != expected_col.type_str
+                if live_col.type_kind != expected_col.type_kind
                     || live_col.nullable != expected_col.nullable
                     || live_col.default != expected_col.default
                 {
@@ -337,94 +354,27 @@ fn compute_table_diff(live: &TableDef, expected: &ExpectedTable) -> TableDiff {
         diff.primary_key_mismatch = true;
     }
 
-    let live_foreign_keys: BTreeSet<String> =
-        live.foreign_keys.iter().map(render_foreign_key).collect();
-    if live_foreign_keys != expected.foreign_keys {
+    let live_foreign_keys: BTreeMap<&str, &_> = live
+        .foreign_keys
+        .iter()
+        .map(|fk| (fk.name.as_str(), fk))
+        .collect();
+    let expected_foreign_keys: BTreeMap<&str, &_> = expected
+        .foreign_keys
+        .iter()
+        .map(|fk| (fk.name.as_str(), fk))
+        .collect();
+    if live_foreign_keys != expected_foreign_keys {
         diff.foreign_key_mismatch = true;
     }
 
     diff
 }
 
-/// Renders a foreign key exactly as the canonical `schema.lock` snapshot does.
-fn render_foreign_key(foreign_key: &ForeignKeyDef) -> String {
-    format!(
-        "foreign key {} {} references {} {}",
-        quote_ident(&foreign_key.name),
-        quote_list(&foreign_key.columns),
-        quote_ident(&foreign_key.referenced_table),
-        quote_list(&foreign_key.referenced_columns),
-    )
-}
-
-fn quote_ident(ident: &str) -> String {
-    let mut out = String::from("\"");
-    for character in ident.chars() {
-        if character == '"' {
-            out.push('"');
-        }
-        out.push(character);
-    }
-    out.push('"');
-    out
-}
-
-fn quote_list(idents: &[String]) -> String {
-    let rendered: Vec<String> = idents.iter().map(|ident| quote_ident(ident)).collect();
-    format!("({})", rendered.join(", "))
-}
-
-/// Parses a double-quoted identifier, unescaping doubled inner quotes.
-fn parse_quoted(input: &str) -> Option<(String, &str)> {
-    let mut chars = input.char_indices();
-    let (_, first) = chars.next()?;
-    if first != '"' {
-        return None;
-    }
-
-    let mut name = String::new();
-    let mut iter = chars;
-    while let Some((index, character)) = iter.next() {
-        if character == '"' {
-            match iter.next() {
-                Some((_, '"')) => name.push('"'),
-                _ => return Some((name, &input[index + 1..])),
-            }
-        } else {
-            name.push(character);
-        }
-    }
-
-    None
-}
-
-/// Parses a parenthesised, comma-separated list of quoted identifiers.
-fn parse_quoted_list(input: &str) -> Option<Vec<String>> {
-    let inner = input.strip_prefix('(')?.strip_suffix(')')?;
-    let mut idents = Vec::new();
-    let mut cursor = inner;
-
-    loop {
-        let trimmed = cursor.trim_start();
-        if trimmed.is_empty() {
-            break;
-        }
-        let (ident, after) = parse_quoted(trimmed)?;
-        idents.push(ident);
-        let after = after.trim_start();
-        match after.strip_prefix(',') {
-            Some(next) => cursor = next,
-            None => break,
-        }
-    }
-
-    Some(idents)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rurqe_migrate::catalog::{ColumnDef, TableDef, TypeKind};
+    use rurqe_migrate::catalog::{ForeignKeyDef, TypeKind};
 
     #[test]
     fn identical_catalogs_produce_no_drift() {
@@ -502,8 +452,6 @@ mod tests {
 
     #[test]
     fn foreign_key_drift_is_reported() {
-        use rurqe_migrate::catalog::ForeignKeyDef;
-
         let with_fk = TableDef::new(
             "orders",
             vec![ColumnDef::new("user_id", TypeKind::Int64, false)],
@@ -528,6 +476,50 @@ mod tests {
                 assert!(
                     report.diff.table_diffs["orders"].foreign_key_mismatch,
                     "foreign key drift must be detected"
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn foreign_key_column_changes_are_detected_structurally() {
+        let snapshot = SchemaCatalog::new(vec![TableDef::new(
+            "orders",
+            vec![
+                ColumnDef::new("user_id", TypeKind::Int64, false),
+                ColumnDef::new("tenant_id", TypeKind::Int64, false),
+            ],
+            Vec::new(),
+        )
+        .with_foreign_key(ForeignKeyDef::new(
+            "orders_user_fkey",
+            vec!["user_id".to_owned()],
+            "users",
+            vec!["id".to_owned()],
+        ))]);
+        let lock = snapshot.to_lock();
+
+        let live = SchemaCatalog::new(vec![TableDef::new(
+            "orders",
+            vec![
+                ColumnDef::new("user_id", TypeKind::Int64, false),
+                ColumnDef::new("tenant_id", TypeKind::Int64, false),
+            ],
+            Vec::new(),
+        )
+        .with_foreign_key(ForeignKeyDef::new(
+            "orders_user_fkey",
+            vec!["user_id".to_owned(), "tenant_id".to_owned()],
+            "users",
+            vec!["id".to_owned(), "tenant_id".to_owned()],
+        ))]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert!(
+                    report.diff.table_diffs["orders"].foreign_key_mismatch,
+                    "column-level foreign key drift must be detected"
                 );
             }
             other => panic!("expected Drift, got {other:?}"),
@@ -570,5 +562,57 @@ mod tests {
         let lock = catalog.to_lock();
 
         assert!(verify_drift(&catalog, &lock, None).is_ok());
+    }
+
+    #[test]
+    fn malformed_lock_reports_invalid_lock() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            vec!["id".to_owned()],
+        )]);
+
+        match verify_drift(&catalog, "not a schema lock", None).unwrap_err() {
+            DriftError::InvalidLock(_) => {}
+            other => panic!("expected InvalidLock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hash_extraction_ignores_line_comments() {
+        assert_eq!(
+            extract_schema_hash("// pub const SCHEMA_HASH: &str = \"dead\";"),
+            None
+        );
+    }
+
+    #[test]
+    fn hash_extraction_ignores_block_comments() {
+        let code = "/*\npub const SCHEMA_HASH: &str = \"dead\";\n*/";
+        assert_eq!(extract_schema_hash(code), None);
+    }
+
+    #[test]
+    fn hash_extraction_ignores_strings() {
+        let code = r#"let s = "pub const SCHEMA_HASH: &str = \"dead\"";"#;
+        assert_eq!(extract_schema_hash(code), None);
+    }
+
+    #[test]
+    fn hash_extraction_anchors_to_line_start() {
+        let code = "let marker = \"x\"; pub const SCHEMA_HASH: &str = \"dead\";";
+        assert_eq!(extract_schema_hash(code), None);
+    }
+
+    #[test]
+    fn hash_extraction_reads_indented_constant() {
+        let code = "mod schema {\n    pub const SCHEMA_HASH: &str = \"abc123\";\n}";
+        assert_eq!(extract_schema_hash(code), Some("abc123".to_owned()));
+    }
+
+    #[test]
+    fn hash_extraction_prefers_real_constant_after_comment() {
+        let code = "// pub const SCHEMA_HASH: &str = \"dead\";\npub const SCHEMA_HASH: &str = \"live\";";
+        assert_eq!(extract_schema_hash(code), Some("live".to_owned()));
     }
 }
