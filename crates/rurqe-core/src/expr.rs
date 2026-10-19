@@ -278,6 +278,33 @@ pub enum ExprKind {
         /// Whether the predicate is negated, which renders `IS NOT NULL`.
         negated: bool,
     },
+    /// A `LIKE` (`ILIKE`) pattern-matching predicate over a sub-expression.
+    Like {
+        /// The tested expression.
+        operand: Box<ExprKind>,
+        /// The pattern the tested expression is matched against.
+        pattern: Box<ExprKind>,
+        /// Whether matching is case-insensitive, which renders `ILIKE`.
+        case_insensitive: bool,
+    },
+    /// A `BETWEEN low AND high` range predicate over a sub-expression.
+    Between {
+        /// The tested expression.
+        operand: Box<ExprKind>,
+        /// The inclusive lower bound.
+        low: Box<ExprKind>,
+        /// The inclusive upper bound.
+        high: Box<ExprKind>,
+    },
+    /// An `IN (value, ...)` (`NOT IN`) membership predicate over a sub-expression.
+    InList {
+        /// The tested expression.
+        operand: Box<ExprKind>,
+        /// The candidate values of the membership test.
+        values: Vec<ExprKind>,
+        /// Whether the predicate is negated, which renders `NOT IN`.
+        negated: bool,
+    },
     /// A scalar function call such as `COALESCE` or `NULLIF`.
     Function {
         /// The uppercase SQL name of the function.
@@ -535,6 +562,61 @@ impl<T> Expr<T> {
         self.compare(BinaryOp::Lt, value.into_expr_kind())
     }
 
+    /// Builds a `BETWEEN low AND high` range predicate over this expression.
+    ///
+    /// Both bounds are inclusive and must be compatible with the expression type.
+    pub fn between<L, H>(self, low: L, high: H) -> Expr<bool>
+    where
+        L: IntoExpr<T>,
+        H: IntoExpr<T>,
+    {
+        Expr::new(ExprKind::Between {
+            operand: Box::new(self.kind),
+            low: Box::new(low.into_expr_kind()),
+            high: Box::new(high.into_expr_kind()),
+        })
+    }
+
+    /// Builds an `IN (value, ...)` membership predicate over this expression.
+    ///
+    /// Every candidate value must be compatible with the expression type.
+    pub fn in_list<I, V>(self, values: I) -> Expr<bool>
+    where
+        I: IntoIterator<Item = V>,
+        V: IntoExpr<T>,
+    {
+        self.membership(values, false)
+    }
+
+    /// Builds a `NOT IN (value, ...)` negated membership predicate over this expression.
+    pub fn not_in_list<I, V>(self, values: I) -> Expr<bool>
+    where
+        I: IntoIterator<Item = V>,
+        V: IntoExpr<T>,
+    {
+        self.membership(values, true)
+    }
+
+    fn membership<I, V>(self, values: I, negated: bool) -> Expr<bool>
+    where
+        I: IntoIterator<Item = V>,
+        V: IntoExpr<T>,
+    {
+        let values: Vec<ExprKind> = values
+            .into_iter()
+            .map(|value| value.into_expr_kind())
+            .collect();
+        assert!(
+            !values.is_empty(),
+            "membership predicate requires at least one value"
+        );
+        Expr::new(ExprKind::InList {
+            operand: Box::new(self.kind),
+            values,
+            negated,
+        })
+    }
+
     fn compare(self, op: BinaryOp, rhs: ExprKind) -> Expr<bool> {
         Expr::new(ExprKind::Binary {
             op,
@@ -644,6 +726,35 @@ impl Expr<f64> {
         Self::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
             arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+        })
+    }
+}
+
+impl Expr<String> {
+    /// Builds a case-sensitive `LIKE` pattern-matching predicate over this expression.
+    ///
+    /// In the pattern, `%` matches any sequence of characters and `_` matches a
+    /// single character, following the SQL `LIKE` semantics.
+    pub fn like<V>(self, pattern: V) -> Expr<bool>
+    where
+        V: IntoExpr<String>,
+    {
+        Expr::new(ExprKind::Like {
+            operand: Box::new(self.kind),
+            pattern: Box::new(pattern.into_expr_kind()),
+            case_insensitive: false,
+        })
+    }
+
+    /// Builds a case-insensitive `ILIKE` pattern-matching predicate over this expression.
+    pub fn ilike<V>(self, pattern: V) -> Expr<bool>
+    where
+        V: IntoExpr<String>,
+    {
+        Expr::new(ExprKind::Like {
+            operand: Box::new(self.kind),
+            pattern: Box::new(pattern.into_expr_kind()),
+            case_insensitive: true,
         })
     }
 }
@@ -916,6 +1027,42 @@ pub fn render_expr<D: crate::dialect::Dialect>(
             sql.push('(');
             render_expr::<D>(sql, params, operand);
             sql.push_str(if *negated { " IS NOT NULL)" } else { " IS NULL)" });
+        }
+        ExprKind::Like {
+            operand,
+            pattern,
+            case_insensitive,
+        } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, operand);
+            sql.push_str(if *case_insensitive { " ILIKE " } else { " LIKE " });
+            render_expr::<D>(sql, params, pattern);
+            sql.push(')');
+        }
+        ExprKind::Between { operand, low, high } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, operand);
+            sql.push_str(" BETWEEN ");
+            render_expr::<D>(sql, params, low);
+            sql.push_str(" AND ");
+            render_expr::<D>(sql, params, high);
+            sql.push(')');
+        }
+        ExprKind::InList {
+            operand,
+            values,
+            negated,
+        } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, operand);
+            sql.push_str(if *negated { " NOT IN (" } else { " IN (" });
+            for (index, value) in values.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                render_expr::<D>(sql, params, value);
+            }
+            sql.push_str("))");
         }
         ExprKind::Function { name, args } => {
             sql.push_str(name);
@@ -1342,5 +1489,119 @@ mod tests {
     #[should_panic(expected = "mixes")]
     fn raw_sql_rejects_mixed_placeholder_styles() {
         parse_raw_sql("a = ? AND b = {}", 2);
+    }
+
+    #[test]
+    fn like_and_ilike_build_pattern_predicates() {
+        let predicate = Expr::column::<UserName>().like("A%");
+        assert_eq!(
+            predicate.kind(),
+            &ExprKind::Like {
+                operand: Box::new(ExprKind::Column { name: "name" }),
+                pattern: Box::new(ExprKind::Value(SqlVal::Text("A%".to_owned()))),
+                case_insensitive: false,
+            }
+        );
+
+        let predicate = Expr::column::<UserName>().ilike("a%");
+        assert!(matches!(
+            predicate.kind(),
+            ExprKind::Like {
+                case_insensitive: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn like_and_ilike_render_patterns_with_bound_parameters() {
+        let (sql, params) = render(Expr::column::<UserName>().like("A%").kind());
+        assert_eq!(sql, "(\"name\" LIKE ?)");
+        assert_eq!(params, vec![SqlVal::Text("A%".to_owned())]);
+
+        let (sql, params) = render(Expr::column::<UserName>().ilike("a%").kind());
+        assert_eq!(sql, "(\"name\" ILIKE ?)");
+        assert_eq!(params, vec![SqlVal::Text("a%".to_owned())]);
+    }
+
+    #[test]
+    fn between_builds_and_renders_range_predicate() {
+        let predicate = Expr::column::<UserId>().between(10i64, 20i64);
+        assert_eq!(
+            predicate.kind(),
+            &ExprKind::Between {
+                operand: Box::new(ExprKind::Column { name: "id" }),
+                low: Box::new(ExprKind::Value(SqlVal::I64(10))),
+                high: Box::new(ExprKind::Value(SqlVal::I64(20))),
+            }
+        );
+
+        let (sql, params) = render(predicate.kind());
+        assert_eq!(sql, "(\"id\" BETWEEN ? AND ?)");
+        assert_eq!(params, vec![SqlVal::I64(10), SqlVal::I64(20)]);
+    }
+
+    #[test]
+    fn in_list_builds_and_renders_membership() {
+        let predicate = Expr::column::<UserId>().in_list(vec![1i64, 2i64, 3i64]);
+        assert_eq!(
+            predicate.kind(),
+            &ExprKind::InList {
+                operand: Box::new(ExprKind::Column { name: "id" }),
+                values: vec![
+                    ExprKind::Value(SqlVal::I64(1)),
+                    ExprKind::Value(SqlVal::I64(2)),
+                    ExprKind::Value(SqlVal::I64(3)),
+                ],
+                negated: false,
+            }
+        );
+
+        let (sql, params) = render(predicate.kind());
+        assert_eq!(sql, "(\"id\" IN (?, ?, ?))");
+        assert_eq!(
+            params,
+            vec![SqlVal::I64(1), SqlVal::I64(2), SqlVal::I64(3)]
+        );
+    }
+
+    #[test]
+    fn not_in_list_renders_negated_membership() {
+        let (sql, params) = render(Expr::column::<UserName>().not_in_list(vec!["a", "b"]).kind());
+        assert_eq!(sql, "(\"name\" NOT IN (?, ?))");
+        assert_eq!(
+            params,
+            vec![SqlVal::Text("a".to_owned()), SqlVal::Text("b".to_owned())]
+        );
+    }
+
+    #[test]
+    fn predicates_compose_with_boolean_operators() {
+        let predicate = Expr::column::<UserName>()
+            .like("A%")
+            .and(Expr::column::<UserId>().between(1i64, 9i64))
+            .or(Expr::column::<UserName>().not_in_list(vec!["x"]));
+
+        let (sql, params) = render(predicate.kind());
+
+        assert_eq!(
+            sql,
+            "(((\"name\" LIKE ?) AND (\"id\" BETWEEN ? AND ?)) OR (\"name\" NOT IN (?)))"
+        );
+        assert_eq!(
+            params,
+            vec![
+                SqlVal::Text("A%".to_owned()),
+                SqlVal::I64(1),
+                SqlVal::I64(9),
+                SqlVal::Text("x".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one value")]
+    fn in_list_requires_at_least_one_value() {
+        let _ = Expr::column::<UserId>().in_list(Vec::<i64>::new());
     }
 }
