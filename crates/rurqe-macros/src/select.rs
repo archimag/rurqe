@@ -256,6 +256,36 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                         .from::<__T>()
                         .select::<Self, (#from_positions)>(self)
                 }
+
+                /// Starts a `SELECT` query projecting these projections from `table`.
+                ///
+                /// Table markers are zero-sized, so the projected-from table is
+                /// inferred from the argument and the call needs no turbofish:
+                ///
+                /// ```text
+                /// select!(UserId, UserEmail).from_table(users).build()
+                /// ```
+                pub fn from_table<__D, __T>(
+                    self,
+                    table: __T,
+                ) -> ::rurqe_core::query::SelectQuery<
+                    __D,
+                    __T,
+                    <Self as ::rurqe_core::query::SelectionFor<__T, (#from_positions)>>::Row,
+                >
+                where
+                    __D: ::rurqe_core::dialect::Dialect,
+                    __T: ::rurqe_core::schema::Table,
+                    #from_bounds
+                    Self: ::rurqe_core::query::SelectionFor<__T, (#from_positions)>
+                        + ::core::marker::Send
+                        + ::core::marker::Sync
+                        + 'static,
+                {
+                    ::rurqe_core::query::SelectQuery::<__D>::new()
+                        .from_table(table)
+                        .select::<Self, (#from_positions)>(self)
+                }
             }
 
             __RurqeSelection(#(#element_values),*)

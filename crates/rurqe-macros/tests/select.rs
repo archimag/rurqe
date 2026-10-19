@@ -139,6 +139,20 @@ fn selection_starts_a_query_directly_from_a_table() {
 }
 
 #[test]
+fn selection_starts_a_query_from_a_table_value() {
+    let built = select!(UserId, UserEmail as contact_email)
+        .from_table::<TestDialect, _>(User)
+        .where_(Expr::column::<UserId>().gt(1i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT users.id, users.email FROM users WHERE (id > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
 fn left_joined_columns_are_lifted_into_options() {
     let selection = select!(UserId, OrderTotal);
 

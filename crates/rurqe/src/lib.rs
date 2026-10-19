@@ -20,15 +20,48 @@ pub use rurqe_core::query::TableSelection;
 pub use rurqe_core::schema::Next;
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
+/// PostgreSQL dialect, version markers, and the runtime driver adapters.
+///
+/// The module mirrors the `rurqe-postgres` crate, so paths such as
+/// `rurqe::postgres::PgConnection` stay reachable, and adds a [`prelude`] with
+/// the PostgreSQL items of the shared facade prelude:
+///
+/// ```text
+/// use rurqe::postgres::prelude::*;
+/// ```
 #[cfg(feature = "postgres")]
-pub use rurqe_postgres as postgres;
+pub mod postgres {
+    pub use rurqe_postgres::*;
+
+    /// PostgreSQL dialect, version markers, and the synchronous driver adapter.
+    pub mod prelude {
+        pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};
+    }
+}
 
 #[cfg(feature = "migrate")]
 pub use rurqe_migrate as migrate;
 
 /// SQLite dialect, version markers, and the `rusqlite` execution adapter.
+///
+/// The module mirrors the `rurqe-sqlite` crate, so paths such as
+/// `rurqe::sqlite::rusqlite::Connection` stay reachable, and adds a [`prelude`]
+/// with the SQLite items of the shared facade prelude:
+///
+/// ```text
+/// use rurqe::sqlite::prelude::*;
+/// ```
 #[cfg(feature = "sqlite")]
-pub use rurqe_sqlite as sqlite;
+pub mod sqlite {
+    pub use rurqe_sqlite::*;
+
+    /// SQLite dialect, version markers, and the `rusqlite` execution adapter.
+    pub mod prelude {
+        pub use rurqe_sqlite::{
+            Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_35, SqliteConnection, SqliteVersion,
+        };
+    }
+}
 
 /// Starts a `SELECT` statement over the table `T` for the dialect `D`.
 ///
