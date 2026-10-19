@@ -2,7 +2,7 @@
 
 use rurqe_sqlite::rurqe_core::dml::{ColumnAssign, InsertQuery};
 use rurqe_sqlite::rurqe_core::expr::Expr;
-use rurqe_sqlite::rurqe_core::query::{QueryBackendExt, SelectQuery};
+use rurqe_sqlite::rurqe_core::query::{ExecutionError, QueryBackendExt, SelectQuery};
 use rurqe_sqlite::rurqe_core::table;
 use rurqe_sqlite::rusqlite::Connection;
 use rurqe_sqlite::{Sqlite, Sqlite3_35, SqliteConnection};
@@ -197,4 +197,73 @@ fn nested_transaction_releases_its_savepoint_on_success() {
         .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
         .expect("count rows");
     assert_eq!(count, 2);
+}
+
+/// Counts the rows of `users` through a helper naming the concrete error type.
+///
+/// The signature spells out `ExecutionError<rusqlite::Error>` instead of erasing
+/// the failure into `Box<dyn std::error::Error>`, so the caller keeps exhaustive
+/// pattern matching and no allocation happens on the failure path.
+fn count_users(
+    adapter: &mut SqliteConnection,
+) -> Result<usize, ExecutionError<rurqe_sqlite::rusqlite::Error>> {
+    let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserId,));
+    Ok(adapter.fetch_all(&query)?.len())
+}
+
+/// Reads one user name through the same concrete error type.
+fn user_name(
+    adapter: &mut SqliteConnection,
+    id: i64,
+) -> Result<String, ExecutionError<rurqe_sqlite::rusqlite::Error>> {
+    let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserName,))
+        .where_(Expr::column::<UserId>().eq(id));
+    let (name,) = adapter.fetch_one(&query)?;
+    Ok(name)
+}
+
+#[test]
+fn typed_execution_errors_are_inspectable_without_boxing() {
+    let mut adapter = seeded();
+
+    assert_eq!(count_users(&mut adapter).expect("counting succeeds"), 2);
+    assert_eq!(user_name(&mut adapter, 2).expect("user exists"), "guest");
+
+    // A single-row lookup matching nothing reports the typed `NoRows` failure.
+    let missing = user_name(&mut adapter, 99).expect_err("no matching row");
+    assert!(missing.is_not_found());
+    assert!(!missing.is_multiple_rows());
+    assert!(!missing.is_row_decode());
+    assert!(missing.as_backend().is_none());
+    assert!(missing.into_backend().is_none());
+
+    // A single-row lookup matching several rows keeps its own failure kind.
+    let all_users = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserId,));
+    let duplicated = adapter.fetch_one(&all_users).expect_err("two rows match");
+    assert!(duplicated.is_multiple_rows());
+    assert!(!duplicated.is_not_found());
+
+    // Driver failures stay typed and reachable through `as_backend`.
+    let broken = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserId, Expr::<i64>::raw("missing_function()", vec![])));
+    let failed = adapter
+        .fetch_all(&broken)
+        .expect_err("the driver rejects the unknown function");
+    assert!(!failed.is_not_found());
+    assert!(!failed.is_row_decode());
+    let backend = failed.as_backend().expect("driver error is preserved");
+    // The prepare-time failure carries a concrete driver variant that depends
+    // on the bundled SQLite version, so the driver message is inspected instead
+    // of a single variant.
+    assert!(backend.to_string().contains("missing_function"), "unexpected error: {backend}");
+
+    let owned = failed.into_backend().expect("driver error is owned");
+    assert!(owned.to_string().contains("missing_function"), "unexpected error: {owned}");
 }

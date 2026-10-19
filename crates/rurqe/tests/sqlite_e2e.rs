@@ -107,3 +107,97 @@ fn sqlite_crud_cycle_round_trips_through_the_facade() {
         .expect("remaining rows decode");
     assert_eq!(remaining, vec![(2i64, "guest".to_owned(), false, 7i32)]);
 }
+
+/// Counts the rows of `users` through the pinned `Result<T>` alias.
+///
+/// The signature names the concrete error type of the SQLite dialect instead of
+/// erasing it into `Box<dyn std::error::Error>`, so callers keep exhaustive
+/// pattern matching over the failure.
+fn count_users(db: &mut SqliteConnection) -> rurqe::sqlite::Result<usize> {
+    let query = select_from::<Sqlite<Sqlite3_35>, User>().select((UserId,));
+    let rows = db.fetch_all(&query)?;
+    Ok(rows.len())
+}
+
+/// Reads one user name through the explicit two-parameter form of the alias.
+fn user_name(
+    db: &mut SqliteConnection,
+    id: i64,
+) -> rurqe::sqlite::Result<String, rurqe::sqlite::Error> {
+    let query = select_from::<Sqlite<Sqlite3_35>, User>()
+        .select((UserName,))
+        .where_(Expr::column::<UserId>().eq(id));
+    let (name,) = db.fetch_one(&query)?;
+    Ok(name)
+}
+
+/// Statically asserts that the facade aliases name the shared execution error.
+///
+/// The pinned `Result<T>` alias and the `Error` alias must stay the very same
+/// type as `ExecutionError<rusqlite::Error>`, so a helper written against the
+/// alias of the dialect module and a helper written against the core type stay
+/// interchangeable, and the failure is never widened into an untyped box.
+fn assert_pinned_aliases_match_the_shared_error(
+    _: rurqe::sqlite::Result<()>,
+    _: core::result::Result<(), ExecutionError<rurqe::sqlite::rusqlite::Error>>,
+) {
+}
+
+#[test]
+fn typed_sqlite_errors_are_inspectable_through_the_facade() {
+    assert_pinned_aliases_match_the_shared_error(Ok(()), Ok(()));
+
+    let mut db = database();
+
+    assert_eq!(count_users(&mut db).expect("counting succeeds"), 0);
+
+    // A `fetch_one` on an empty table reports the missing row through a typed
+    // error the caller inspects without matching the enum by hand.
+    let missing = user_name(&mut db, 1).expect_err("the table is empty");
+    assert!(missing.is_not_found());
+    assert!(!missing.is_multiple_rows());
+    assert!(!missing.is_row_decode());
+    assert!(missing.as_backend().is_none());
+
+    let insert_root = insert_into::<Sqlite<Sqlite3_35>, User>().values((
+        UserId::set(1i64),
+        UserName::set("root"),
+        UserActive::set(true),
+        UserScore::set(42i32),
+    ));
+    db.execute(&insert_root).expect("insert root");
+
+    let insert_guest = insert_into::<Sqlite<Sqlite3_35>, User>().values((
+        UserId::set(2i64),
+        UserName::set("guest"),
+        UserActive::set(false),
+        UserScore::set(7i32),
+    ));
+    db.execute(&insert_guest).expect("insert guest");
+
+    assert_eq!(count_users(&mut db).expect("counting succeeds"), 2);
+    assert_eq!(user_name(&mut db, 1).expect("user exists"), "root");
+
+    // A single-row lookup matching several rows keeps its own typed failure.
+    let all_users = select_from::<Sqlite<Sqlite3_35>, User>().select((UserId,));
+    let duplicated = db.fetch_one(&all_users).expect_err("two rows match");
+    assert!(duplicated.is_multiple_rows());
+    assert!(!duplicated.is_not_found());
+
+    // Driver failures stay typed and reachable through `as_backend`.
+    let broken = select_from::<Sqlite<Sqlite3_35>, User>()
+        .select((UserId, Expr::<i64>::raw("missing_function()", vec![])));
+    let failed = db
+        .fetch_all(&broken)
+        .expect_err("the driver rejects the unknown function");
+    assert!(!failed.is_not_found());
+    assert!(!failed.is_row_decode());
+    let backend = failed.as_backend().expect("driver error is preserved");
+    // The prepare-time failure carries a concrete driver variant that depends
+    // on the bundled SQLite version, so the driver message is inspected instead
+    // of a single variant.
+    assert!(backend.to_string().contains("missing_function"), "unexpected error: {backend}");
+
+    let owned = failed.into_backend().expect("driver error is owned");
+    assert!(owned.to_string().contains("missing_function"), "unexpected error: {owned}");
+}
