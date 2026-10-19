@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use rurqe_migrate::runner::{MigrationBackend, MigrationStatusKind, Migrator};
 use rurqe_migrate::version::MigrationVersion;
 
+use crate::codegen::CodegenOptions;
+use crate::config::{CodegenConfig, DEFAULT_CONFIG_PATH};
 use crate::loader::load_migrations_from_dir;
 
 use super::args::CliError;
@@ -12,6 +14,21 @@ use super::args::CliError;
 /// Formats a displayable error as a [`CliError`].
 fn cli_error(err: impl std::fmt::Display) -> CliError {
     CliError(err.to_string())
+}
+
+/// Loads the codegen options of the project from `rurqe.toml`.
+///
+/// The file is optional: a project without it generates the engine-neutral
+/// types, while a malformed file aborts generation instead of silently emitting
+/// wrong types for overridden columns.
+pub(super) fn codegen_options() -> Result<CodegenOptions, CliError> {
+    let config = CodegenConfig::load(Path::new(DEFAULT_CONFIG_PATH)).map_err(cli_error)?;
+    let type_overrides = config.into_type_overrides();
+
+    Ok(CodegenOptions {
+        type_overrides,
+        ..CodegenOptions::default()
+    })
 }
 
 /// Reads the generated schema code used for `SCHEMA_HASH` verification.
@@ -171,6 +188,10 @@ COMMANDS:
     baseline         Mark current schema as baseline without running past migrations
     codegen          Introspect database, generate Rust schema, and write schema.lock
     verify           Verify bit-for-bit parity between live database and schema.lock
+
+CONFIGURATION:
+    `rurqe.toml` `[codegen.type_overrides]` maps a `table.column` onto the Rust
+    type generated for it, e.g. `"users.id" = "uuid::Uuid"`.
 "#
     );
 }

@@ -33,6 +33,11 @@ pub struct CodegenOptions {
     pub doc_comment: Option<String>,
     /// Whether to generate strongly typed `*Record` structs for each table.
     pub generate_records: bool,
+    /// Rust types keyed by their `table.column` schema path.
+    ///
+    /// An override replaces the engine-neutral type mapping of a column, so
+    /// domain newtypes survive code generation. See [`crate::config`].
+    pub type_overrides: BTreeMap<String, String>,
 }
 
 impl Default for CodegenOptions {
@@ -44,6 +49,7 @@ impl Default for CodegenOptions {
                     .to_owned(),
             ),
             generate_records: true,
+            type_overrides: BTreeMap::new(),
         }
     }
 }
@@ -182,7 +188,7 @@ fn build_plan<'a>(
                 name: column.name.as_str(),
                 marker_ident,
                 field_ident,
-                rust_type: type_kind_to_rust_type(&column.type_kind, column.nullable),
+                rust_type: column_rust_type(table.name.as_str(), column, &options.type_overrides),
             });
         }
 
@@ -306,6 +312,34 @@ fn table_type_ident(name: &str) -> String {
     }
 
     ident
+}
+
+/// Resolves the Rust type generated for `column`, honouring project overrides.
+///
+/// An override replaces the engine-neutral mapping entirely and keeps the
+/// column's nullability, so `uuid::Uuid` stays `uuid::Uuid` for a `NOT NULL`
+/// column and becomes `Option<uuid::Uuid>` for a nullable one.
+fn column_rust_type(
+    table: &str,
+    column: &ColumnDef,
+    overrides: &BTreeMap<String, String>,
+) -> String {
+    let path = format!("{table}.{}", column.name);
+
+    match overrides.get(&path).map(|rust_type| rust_type.trim()) {
+        Some(rust_type) if !rust_type.is_empty() => apply_nullability(rust_type, column.nullable),
+        _ => type_kind_to_rust_type(&column.type_kind, column.nullable),
+    }
+}
+
+/// Wraps `rust_type` into `Option<..>` for a nullable column unless it already
+/// spells an optional type, so an override is never wrapped twice.
+fn apply_nullability(rust_type: &str, nullable: bool) -> String {
+    if nullable && !rust_type.starts_with("Option<") {
+        format!("Option<{rust_type}>")
+    } else {
+        rust_type.to_owned()
+    }
 }
 
 /// Maps a catalog type onto the Rust type carried by the generated markers.
@@ -589,5 +623,80 @@ mod tests {
                 assert_eq!(ident, "UserProfiles");
             }
         }
+    }
+
+    #[test]
+    fn type_overrides_replace_the_engine_neutral_mapping() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![
+                ColumnDef::new("id", TypeKind::Uuid, false),
+                ColumnDef::new("created_at", TypeKind::Timestamp, true),
+            ],
+            Vec::new(),
+        )]);
+
+        let mut options = CodegenOptions::default();
+        options
+            .type_overrides
+            .insert("users.id".to_owned(), "uuid::Uuid".to_owned());
+        options.type_overrides.insert(
+            "users.created_at".to_owned(),
+            "chrono::NaiveDateTime".to_owned(),
+        );
+
+        let code = generate_schema_rs(&catalog, &options).expect("codegen succeeds");
+
+        assert!(code.contains("UsersId => \"id\": uuid::Uuid"));
+        assert!(code.contains("UsersCreatedAt => \"created_at\": Option<chrono::NaiveDateTime>"));
+        assert!(code.contains("pub created_at: Option<chrono::NaiveDateTime>,"));
+    }
+
+    #[test]
+    fn type_overrides_respect_declared_nullability() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![
+                ColumnDef::new("id", TypeKind::Int64, false),
+                ColumnDef::new("deleted_at", TypeKind::Timestamp, true),
+            ],
+            Vec::new(),
+        )]);
+
+        let mut options = CodegenOptions::default();
+        options
+            .type_overrides
+            .insert("users.id".to_owned(), "Option<uuid::Uuid>".to_owned());
+        options.type_overrides.insert(
+            "users.deleted_at".to_owned(),
+            "Option<chrono::NaiveDateTime>".to_owned(),
+        );
+
+        let code = generate_schema_rs(&catalog, &options).expect("codegen succeeds");
+
+        // A `NOT NULL` column keeps the type exactly as written ...
+        assert!(code.contains("UsersId => \"id\": Option<uuid::Uuid>"));
+        // ... and an already optional override is never wrapped twice.
+        assert!(code.contains("UsersDeletedAt => \"deleted_at\": Option<chrono::NaiveDateTime>"));
+        assert!(!code.contains("Option<Option<"));
+    }
+
+    #[test]
+    fn columns_without_an_override_keep_the_default_mapping() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("email", TypeKind::Text, false)],
+            Vec::new(),
+        )]);
+
+        let mut options = CodegenOptions::default();
+        options
+            .type_overrides
+            .insert("orders.total".to_owned(), "Money".to_owned());
+
+        let code = generate_schema_rs(&catalog, &options).expect("codegen succeeds");
+
+        assert!(code.contains("UsersEmail => \"email\": String"));
+        assert!(!code.contains("Money"));
     }
 }

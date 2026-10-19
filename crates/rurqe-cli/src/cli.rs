@@ -20,12 +20,12 @@ pub use args::{parse_args, redact_database_url, CliCommand, CliError};
 pub(crate) use connection::{connect, Connection};
 
 use self::commands::{
-    apply_migrations, baseline_database, print_help, repair_history, report_status,
-    resolve_schema_code, write_file,
+    apply_migrations, baseline_database, codegen_options, print_help, repair_history,
+    report_status, resolve_schema_code, write_file,
 };
 use self::connection::resolve_database_url;
 
-use crate::codegen::{generate_schema_rs, CodegenOptions};
+use crate::codegen::generate_schema_rs;
 use crate::drift::verify_drift;
 use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 use crate::introspect::introspect_database;
@@ -104,7 +104,8 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
         } => {
             let url = resolve_database_url(database_url)?;
             let catalog = introspect_database(&url)?;
-            let code = generate_schema_rs(&catalog, &CodegenOptions::default())
+            let options = codegen_options()?;
+            let code = generate_schema_rs(&catalog, &options)
                 .map_err(|err| CliError(format!("failed to generate schema code: {err}")))?;
             write_file(&output, &code)?;
             write_file(&lock_path, &catalog.to_lock())?;
