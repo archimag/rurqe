@@ -357,7 +357,6 @@ mod r2d2_pool {
     /// statement, and returns the connection to the pool.
     ///
     /// ```
-    /// use rurqe_sqlite::rusqlite::Connection;
     /// use r2d2_sqlite::SqliteConnectionManager;
     ///
     /// let manager = SqliteConnectionManager::memory();
