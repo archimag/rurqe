@@ -128,6 +128,45 @@ impl_tuple_scope! {
     (T8, 8) in (T1, T2, T3, T4, T5, T6, T7, T8);
 }
 
+/// Statically asserts that `T` denotes a valid expression scope.
+///
+/// A scope is the set of relations an expression may reference: a lone table
+/// ([`Table`]), a tuple of tables, or a joined query scope such as
+/// [`Joined`](crate::query::Joined) and
+/// [`LeftJoined`](crate::query::LeftJoined). The marker keeps expression
+/// builders honest across joins without pinning them to one concrete scope
+/// representation.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid expression scope",
+    label = "expressions may only reference tables, table tuples, or joined scopes",
+    note = "build expressions against a table, a tuple of tables, or a `Joined` / `LeftJoined` scope"
+)]
+pub trait ExprScope {}
+
+impl<T: Table> ExprScope for T {}
+
+macro_rules! impl_tuple_expr_scope {
+    ($($member:ident),+) => {
+        impl<$($member: Table),+> ExprScope for ($($member,)+) {}
+    };
+}
+
+impl_tuple_expr_scope!(T1);
+
+impl_tuple_expr_scope!(T1, T2);
+
+impl_tuple_expr_scope!(T1, T2, T3);
+
+impl_tuple_expr_scope!(T1, T2, T3, T4);
+
+impl_tuple_expr_scope!(T1, T2, T3, T4, T5);
+
+impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6);
+
+impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7);
+
+impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7, T8);
+
 /// Declares a table marker type together with its column marker types.
 ///
 /// Each column links back to the table through [`Column::Table`] and carries its

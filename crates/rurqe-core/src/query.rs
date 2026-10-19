@@ -33,7 +33,7 @@ use crate::dialect::Dialect;
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal};
 use crate::row::FromRow;
-use crate::schema::{Column, Table};
+use crate::schema::{Column, ExprScope, Table};
 
 /// A single item projected by a `SELECT` query, such as a column or a window expression.
 #[diagnostic::on_unimplemented(
@@ -250,6 +250,10 @@ impl<Tables: TableScope, T: Table> TableScope for LeftJoined<Tables, T> {
         out.push(T::NAME);
     }
 }
+
+impl<Tables: ExprScope, T: Table> ExprScope for Joined<Tables, T> {}
+
+impl<Tables: ExprScope, T: Table> ExprScope for LeftJoined<Tables, T> {}
 
 /// A column lifted to its nullable form for outer joins.
 ///

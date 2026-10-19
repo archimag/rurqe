@@ -157,6 +157,13 @@ pub enum ExprKind {
         /// The compile-time SQL identifier of the column.
         name: &'static str,
     },
+    /// A reference to a schema column qualified by its owning table.
+    QualifiedColumn {
+        /// The compile-time SQL identifier of the owning table.
+        table: &'static str,
+        /// The compile-time SQL identifier of the column.
+        column: &'static str,
+    },
     /// A bound literal value.
     Value(SqlVal),
     /// A binary operation applied to two sub-expressions.
@@ -227,6 +234,21 @@ impl<T> Expr<T> {
         C: Column<RustType = T>,
     {
         Self::new(ExprKind::Column { name: C::NAME })
+    }
+
+    /// Builds an expression referencing the column `C` qualified by its table `Q`.
+    ///
+    /// Qualified references render as `"table"."column"`, which keeps joins over
+    /// tables that share a column name unambiguous.
+    pub fn qualified_column<Q, C>() -> Self
+    where
+        Q: crate::schema::Table,
+        C: Column<Table = Q, RustType = T>,
+    {
+        Self::new(ExprKind::QualifiedColumn {
+            table: Q::NAME,
+            column: C::NAME,
+        })
     }
 
     /// The expression tree of this expression.
@@ -547,6 +569,11 @@ pub fn render_expr<D: crate::dialect::Dialect>(
 ) {
     match expr {
         ExprKind::Column { name } => D::push_quoted_identifier(sql, name),
+        ExprKind::QualifiedColumn { table, column } => {
+            D::push_quoted_identifier(sql, table);
+            sql.push('.');
+            D::push_quoted_identifier(sql, column);
+        }
         ExprKind::Value(value) => {
             params.push(value.clone());
             D::push_placeholder(sql, params.len());
@@ -605,6 +632,34 @@ mod tests {
         assert_eq!(
             Expr::column::<UserName>().kind(),
             &ExprKind::Column { name: "name" }
+        );
+    }
+
+    #[test]
+    fn qualified_column_expression_carries_table_and_column_names() {
+        assert_eq!(
+            Expr::qualified_column::<User, UserId>().kind(),
+            &ExprKind::QualifiedColumn {
+                table: "users",
+                column: "id",
+            }
+        );
+    }
+
+    #[test]
+    fn qualified_column_expression_is_typed_by_the_column() {
+        let predicate = Expr::qualified_column::<User, UserName>().eq("root");
+
+        assert_eq!(
+            predicate.kind(),
+            &ExprKind::Binary {
+                op: BinaryOp::Eq,
+                lhs: Box::new(ExprKind::QualifiedColumn {
+                    table: "users",
+                    column: "name",
+                }),
+                rhs: Box::new(ExprKind::Value(SqlVal::Text("root".to_owned()))),
+            }
         );
     }
 
