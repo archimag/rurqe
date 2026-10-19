@@ -58,6 +58,11 @@ pub enum Error {
         /// The underlying error message.
         source: String,
     },
+    /// A `schema.lock` snapshot could not be parsed back into a catalog.
+    InvalidLockFormat {
+        /// The reason the snapshot could not be parsed.
+        message: String,
+    },
     /// An error occurred during database backend interaction.
     Backend(String),
 }
@@ -110,6 +115,7 @@ impl fmt::Display for Error {
                 f,
                 "failed to execute migration script `{script}`: {source}"
             ),
+            Error::InvalidLockFormat { message } => write!(f, "invalid schema lock: {message}"),
             Error::Backend(message) => write!(f, "database backend error: {message}"),
         }
     }
