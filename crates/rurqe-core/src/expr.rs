@@ -203,6 +203,48 @@ pub enum ExprKind {
         /// The arguments of the call, in declaration order.
         args: Vec<ExprKind>,
     },
+    /// A searched `CASE` expression with `WHEN` branches and an optional `ELSE` fallback.
+    Case {
+        /// The `WHEN ... THEN ...` branches in declaration order.
+        branches: Vec<CaseBranch>,
+        /// The optional `ELSE` fallback expression.
+        else_branch: Option<Box<ExprKind>>,
+    },
+}
+
+/// A single `WHEN condition THEN result` branch of a [`ExprKind::Case`] expression.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseBranch {
+    /// The predicate guarding the branch.
+    pub condition: ExprKind,
+    /// The value produced when `condition` holds.
+    pub result: ExprKind,
+}
+
+/// Builder for a searched `CASE` expression producing values of type `T`.
+///
+/// ```
+/// use rurqe_core::expr::{Expr, ExprKind};
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// let tier = Expr::<String>::case()
+///     .when(Expr::column::<UserId>().gt(100i64), "vip")
+///     .else_("regular")
+///     .end();
+///
+/// assert!(matches!(tier.kind(), ExprKind::Case { branches, .. } if branches.len() == 1));
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseBuilder<T> {
+    branches: Vec<CaseBranch>,
+    else_branch: Option<ExprKind>,
+    _result: PhantomData<fn() -> T>,
 }
 
 /// A SQL expression whose result has the Rust type `T`.
@@ -306,6 +348,14 @@ impl<T> Expr<T> {
         })
     }
 
+    /// Starts a searched `CASE` expression whose branches produce values of type `T`.
+    ///
+    /// The builder requires at least one [`CaseBuilder::when`] branch before
+    /// [`CaseBuilder::end`] finalises the expression.
+    pub fn case() -> CaseBuilder<T> {
+        CaseBuilder::new()
+    }
+
     /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
     pub fn raw(template: &str, params: Vec<SqlVal>) -> Self {
         let fragments = parse_raw_sql(template, params.len());
@@ -398,6 +448,52 @@ impl<T> Expr<T> {
     /// Starts a `LEAD(C)` window function builder for column `C`.
     pub fn lead<C: Column<RustType = T>>(_col: C) -> crate::query::LagLeadFn<Option<T>> {
         crate::query::lead(_col)
+    }
+}
+
+impl<T> CaseBuilder<T> {
+    fn new() -> Self {
+        Self {
+            branches: Vec::new(),
+            else_branch: None,
+            _result: PhantomData,
+        }
+    }
+
+    /// Appends a `WHEN condition THEN result` branch.
+    ///
+    /// Branches are rendered in declaration order, so the first matching
+    /// condition determines the produced value.
+    pub fn when<V>(mut self, condition: Expr<bool>, result: V) -> Self
+    where
+        V: IntoExpr<T>,
+    {
+        self.branches.push(CaseBranch {
+            condition: condition.into_kind(),
+            result: result.into_expr_kind(),
+        });
+        self
+    }
+
+    /// Sets the `ELSE` fallback rendered when no branch matches.
+    pub fn else_<V>(mut self, value: V) -> Self
+    where
+        V: IntoExpr<T>,
+    {
+        self.else_branch = Some(value.into_expr_kind());
+        self
+    }
+
+    /// Finalises the expression, panicking if no `WHEN` branch was declared.
+    pub fn end(self) -> Expr<T> {
+        assert!(
+            !self.branches.is_empty(),
+            "CASE expression requires at least one WHEN branch"
+        );
+        Expr::new(ExprKind::Case {
+            branches: self.branches,
+            else_branch: self.else_branch.map(Box::new),
+        })
     }
 }
 
@@ -669,6 +765,23 @@ pub fn render_expr<D: crate::dialect::Dialect>(
             }
             sql.push(')');
         }
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
+            sql.push_str("CASE");
+            for branch in branches {
+                sql.push_str(" WHEN ");
+                render_expr::<D>(sql, params, &branch.condition);
+                sql.push_str(" THEN ");
+                render_expr::<D>(sql, params, &branch.result);
+            }
+            if let Some(fallback) = else_branch {
+                sql.push_str(" ELSE ");
+                render_expr::<D>(sql, params, fallback);
+            }
+            sql.push_str(" END");
+        }
     }
 }
 
@@ -887,6 +1000,78 @@ mod tests {
 
         assert_eq!(sql, "COALESCE(\"name\", ?)");
         assert_eq!(params, vec![SqlVal::Text("anonymous".to_owned())]);
+    }
+
+    #[test]
+    fn case_expression_builds_searched_branches() {
+        let expr = Expr::<String>::case()
+            .when(Expr::column::<UserId>().gt(100i64), "vip")
+            .when(Expr::column::<UserId>().gt(10i64), "regular")
+            .else_("newcomer")
+            .end();
+
+        let ExprKind::Case {
+            branches,
+            else_branch,
+        } = expr.kind()
+        else {
+            panic!("expected a CASE expression");
+        };
+
+        assert_eq!(branches.len(), 2);
+        assert_eq!(
+            branches[0].result,
+            ExprKind::Value(SqlVal::Text("vip".to_owned()))
+        );
+        assert_eq!(
+            branches[1].condition,
+            ExprKind::Binary {
+                op: BinaryOp::Gt,
+                lhs: Box::new(ExprKind::Column { name: "id" }),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
+            }
+        );
+        assert_eq!(
+            else_branch.as_deref(),
+            Some(&ExprKind::Value(SqlVal::Text("newcomer".to_owned())))
+        );
+    }
+
+    #[test]
+    fn case_expression_renders_when_then_else_and_end() {
+        let expr = Expr::<String>::case()
+            .when(Expr::column::<UserId>().gt(100i64), "vip")
+            .else_("regular")
+            .end();
+
+        let (sql, params) = render(expr.kind());
+
+        assert_eq!(sql, "CASE WHEN (\"id\" > ?) THEN ? ELSE ? END");
+        assert_eq!(
+            params,
+            vec![
+                SqlVal::I64(100),
+                SqlVal::Text("vip".to_owned()),
+                SqlVal::Text("regular".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn case_expression_without_else_renders_bare_branches() {
+        let expr = Expr::<String>::case()
+            .when(Expr::column::<UserActive>().eq(true), "active")
+            .end();
+
+        let (sql, _) = render(expr.kind());
+
+        assert_eq!(sql, "CASE WHEN (\"active\" = ?) THEN ? END");
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one WHEN branch")]
+    fn case_expression_requires_a_branch() {
+        let _ = Expr::<String>::case().else_("regular").end();
     }
 
     #[test]
