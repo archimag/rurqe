@@ -96,6 +96,124 @@ impl<T> IntoExpr<T> for Expr<T> {
     }
 }
 
+#[cfg(feature = "uuid")]
+impl SqlCompatible<uuid::Uuid, &uuid::Uuid> for &uuid::Uuid {}
+
+#[cfg(feature = "uuid")]
+impl IntoExpr<uuid::Uuid> for uuid::Uuid {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl IntoExpr<uuid::Uuid> for &uuid::Uuid {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl<'a> SqlCompatible<uuid::Uuid, &'a str> for &'a str {}
+
+#[cfg(feature = "uuid")]
+impl IntoExpr<uuid::Uuid> for &str {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl SqlCompatible<chrono::NaiveDateTime, &chrono::NaiveDateTime> for &chrono::NaiveDateTime {}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDateTime> for &chrono::NaiveDateTime {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl SqlCompatible<chrono::DateTime<chrono::Utc>, &chrono::DateTime<chrono::Utc>>
+    for &chrono::DateTime<chrono::Utc>
+{
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::DateTime<chrono::Utc>> for &chrono::DateTime<chrono::Utc> {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl SqlCompatible<chrono::NaiveDate, &chrono::NaiveDate> for &chrono::NaiveDate {}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDate> for &chrono::NaiveDate {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl SqlCompatible<serde_json::Value, &serde_json::Value> for &serde_json::Value {}
+
+#[cfg(feature = "serde_json")]
+impl IntoExpr<serde_json::Value> for serde_json::Value {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl IntoExpr<serde_json::Value> for &serde_json::Value {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for crate::expr::Json<T> {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<'a, T: serde::Serialize> SqlCompatible<crate::expr::Json<T>, &'a crate::expr::Json<T>>
+    for &'a crate::expr::Json<T>
+{
+}
+
+#[cfg(feature = "serde_json")]
+impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<T> {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
 /// A SQL expression of type `T` that can be compared with bound values.
 ///
 /// The trait lets the expression be written directly at the call site — a column

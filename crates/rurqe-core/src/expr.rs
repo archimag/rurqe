@@ -25,3 +25,5 @@ pub use functions::{avg, coalesce, count, count_all, max, min, sum};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr};
 pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};
+#[cfg(feature = "serde_json")]
+pub use val::Json;

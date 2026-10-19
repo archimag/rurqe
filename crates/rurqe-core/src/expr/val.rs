@@ -147,6 +147,124 @@ impl<T: ToSqlVal> ToSqlVal for Option<T> {
     }
 }
 
+/// A transparent wrapper for JSON and JSONB columns.
+#[cfg(feature = "serde_json")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Json<T>(pub T);
+
+#[cfg(feature = "serde_json")]
+impl<T> core::ops::Deref for Json<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T> core::ops::DerefMut for Json<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T> From<T> for Json<T> {
+    fn from(value: T) -> Self {
+        Json(value)
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T: serde::Serialize> ToSqlVal for Json<T> {
+    fn to_sql_val(self) -> SqlVal {
+        match serde_json::to_string(&self.0) {
+            Ok(json) => SqlVal::Text(json),
+            Err(_) => SqlVal::Null,
+        }
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T: serde::Serialize> ToSqlVal for &Json<T> {
+    fn to_sql_val(self) -> SqlVal {
+        match serde_json::to_string(&self.0) {
+            Ok(json) => SqlVal::Text(json),
+            Err(_) => SqlVal::Null,
+        }
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl ToSqlVal for uuid::Uuid {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.to_string())
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl ToSqlVal for &uuid::Uuid {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.to_string())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlVal for chrono::NaiveDateTime {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.format("%Y-%m-%d %H:%M:%S%.f").to_string())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlVal for &chrono::NaiveDateTime {
+    fn to_sql_val(self) -> SqlVal {
+        (*self).to_sql_val()
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlVal for chrono::DateTime<chrono::Utc> {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.to_rfc3339())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlVal for &chrono::DateTime<chrono::Utc> {
+    fn to_sql_val(self) -> SqlVal {
+        (*self).to_sql_val()
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlVal for chrono::NaiveDate {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.format("%Y-%m-%d").to_string())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl ToSqlVal for &chrono::NaiveDate {
+    fn to_sql_val(self) -> SqlVal {
+        (*self).to_sql_val()
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl ToSqlVal for serde_json::Value {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.to_string())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl ToSqlVal for &serde_json::Value {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.to_string())
+    }
+}
+
 impl From<i32> for SqlVal {
     fn from(value: i32) -> Self {
         value.to_sql_val()
@@ -217,6 +335,233 @@ impl From<i16> for SqlVal {
     fn from(value: i16) -> Self {
         value.to_sql_val()
     }
+}
+
+#[cfg(feature = "uuid")]
+impl From<uuid::Uuid> for SqlVal {
+    fn from(value: uuid::Uuid) -> Self {
+        value.to_sql_val()
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl From<chrono::NaiveDateTime> for SqlVal {
+    fn from(value: chrono::NaiveDateTime) -> Self {
+        value.to_sql_val()
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl From<chrono::DateTime<chrono::Utc>> for SqlVal {
+    fn from(value: chrono::DateTime<chrono::Utc>) -> Self {
+        value.to_sql_val()
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl From<chrono::NaiveDate> for SqlVal {
+    fn from(value: chrono::NaiveDate) -> Self {
+        value.to_sql_val()
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl From<serde_json::Value> for SqlVal {
+    fn from(value: serde_json::Value) -> Self {
+        value.to_sql_val()
+    }
+}
+
+/// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
+/// and expression compatibility for a binary domain newtype.
+#[macro_export]
+macro_rules! impl_sql_binary_newtype {
+    ($ty:ty, $expected_len:expr) => {
+        impl $crate::expr::ToSqlVal for $ty {
+            fn to_sql_val(self) -> $crate::expr::SqlVal {
+                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(&self).to_vec())
+            }
+        }
+
+        impl<'a> $crate::expr::ToSqlVal for &'a $ty {
+            fn to_sql_val(self) -> $crate::expr::SqlVal {
+                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(self).to_vec())
+            }
+        }
+
+        impl From<$ty> for $crate::expr::SqlVal {
+            fn from(val: $ty) -> Self {
+                $crate::expr::ToSqlVal::to_sql_val(val)
+            }
+        }
+
+        impl $crate::row::FromSqlValue for $ty {
+            fn from_sql_value(value: &$crate::expr::SqlVal) -> ::std::result::Result<Self, $crate::row::RowDecodeError> {
+                match value {
+                    $crate::expr::SqlVal::Bytes(bytes) => {
+                        let expected: usize = $expected_len;
+                        if bytes.len() != expected {
+                            return Err($crate::row::RowDecodeError::InvalidValue {
+                                target: ::std::any::type_name::<Self>(),
+                                found: "bytes",
+                                detail: format!("expected {expected} bytes, got {}", bytes.len()),
+                            });
+                        }
+                        ::std::convert::TryFrom::try_from(bytes.as_slice())
+                            .map_err(|e| $crate::row::RowDecodeError::InvalidValue {
+                                target: ::std::any::type_name::<Self>(),
+                                found: "bytes",
+                                detail: format!("{e}"),
+                            })
+                    }
+                    _ => Err($crate::row::RowDecodeError::TypeMismatch {
+                        target: ::std::any::type_name::<Self>(),
+                        found: value.variant_name(),
+                    }),
+                }
+            }
+        }
+
+        impl $crate::expr::IntoExpr<$ty> for $ty {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+
+        impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
+
+        impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+    };
+    ($ty:ty) => {
+        impl $crate::expr::ToSqlVal for $ty {
+            fn to_sql_val(self) -> $crate::expr::SqlVal {
+                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(&self).to_vec())
+            }
+        }
+
+        impl<'a> $crate::expr::ToSqlVal for &'a $ty {
+            fn to_sql_val(self) -> $crate::expr::SqlVal {
+                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(self).to_vec())
+            }
+        }
+
+        impl From<$ty> for $crate::expr::SqlVal {
+            fn from(val: $ty) -> Self {
+                $crate::expr::ToSqlVal::to_sql_val(val)
+            }
+        }
+
+        impl $crate::row::FromSqlValue for $ty {
+            fn from_sql_value(value: &$crate::expr::SqlVal) -> ::std::result::Result<Self, $crate::row::RowDecodeError> {
+                match value {
+                    $crate::expr::SqlVal::Bytes(bytes) => {
+                        ::std::convert::TryFrom::try_from(bytes.as_slice())
+                            .map_err(|e| $crate::row::RowDecodeError::InvalidValue {
+                                target: ::std::any::type_name::<Self>(),
+                                found: "bytes",
+                                detail: format!("{e}"),
+                            })
+                    }
+                    _ => Err($crate::row::RowDecodeError::TypeMismatch {
+                        target: ::std::any::type_name::<Self>(),
+                        found: value.variant_name(),
+                    }),
+                }
+            }
+        }
+
+        impl $crate::expr::IntoExpr<$ty> for $ty {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+
+        impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
+
+        impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+    };
+}
+
+/// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
+/// and expression compatibility for a text domain newtype.
+#[macro_export]
+macro_rules! impl_sql_text_newtype {
+    ($ty:ty) => {
+        impl $crate::expr::ToSqlVal for $ty {
+            fn to_sql_val(self) -> $crate::expr::SqlVal {
+                $crate::expr::SqlVal::Text(::std::string::ToString::to_string(&self))
+            }
+        }
+
+        impl<'a> $crate::expr::ToSqlVal for &'a $ty {
+            fn to_sql_val(self) -> $crate::expr::SqlVal {
+                $crate::expr::SqlVal::Text(::std::string::ToString::to_string(self))
+            }
+        }
+
+        impl From<$ty> for $crate::expr::SqlVal {
+            fn from(val: $ty) -> Self {
+                $crate::expr::ToSqlVal::to_sql_val(val)
+            }
+        }
+
+        impl $crate::row::FromSqlValue for $ty {
+            fn from_sql_value(value: &$crate::expr::SqlVal) -> ::std::result::Result<Self, $crate::row::RowDecodeError> {
+                match value {
+                    $crate::expr::SqlVal::Text(text) => {
+                        <Self as ::std::str::FromStr>::from_str(text.as_str())
+                            .map_err(|e| $crate::row::RowDecodeError::InvalidValue {
+                                target: ::std::any::type_name::<Self>(),
+                                found: "text",
+                                detail: format!("{e}"),
+                            })
+                    }
+                    _ => Err($crate::row::RowDecodeError::TypeMismatch {
+                        target: ::std::any::type_name::<Self>(),
+                        found: value.variant_name(),
+                    }),
+                }
+            }
+        }
+
+        impl $crate::expr::IntoExpr<$ty> for $ty {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+
+        impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
+
+        impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+
+        impl<'a> $crate::expr::SqlCompatible<$ty, &'a str> for &'a str {}
+
+        impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self.to_owned()))
+            }
+        }
+
+        impl $crate::expr::SqlCompatible<$ty, ::std::string::String> for ::std::string::String {}
+
+        impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
+            fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self))
+            }
+        }
+    };
 }
 
 /// An aggregate function applied to a column or expression.

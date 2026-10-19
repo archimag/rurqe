@@ -225,6 +225,92 @@ impl<T: FromSqlValue> FromSqlValue for Option<T> {
     }
 }
 
+#[cfg(feature = "serde_json")]
+impl<T: for<'de> serde::Deserialize<'de>> FromSqlValue for crate::expr::Json<T> {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        match value {
+            SqlVal::Text(text) => serde_json::from_str(text.as_str())
+                .map(crate::expr::Json)
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            SqlVal::Bytes(bytes) => serde_json::from_slice(bytes.as_slice())
+                .map(crate::expr::Json)
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl FromSqlValue for uuid::Uuid {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        match value {
+            SqlVal::Text(text) => uuid::Uuid::parse_str(text.as_str())
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            SqlVal::Bytes(bytes) => uuid::Uuid::from_slice(bytes.as_slice())
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl FromSqlValue for serde_json::Value {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        match value {
+            SqlVal::Text(text) => serde_json::from_str(text.as_str())
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            SqlVal::Bytes(bytes) => serde_json::from_slice(bytes.as_slice())
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl FromSqlValue for chrono::NaiveDateTime {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        match value {
+            SqlVal::Text(text) => chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f"))
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S"))
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S"))
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl FromSqlValue for chrono::DateTime<chrono::Utc> {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        match value {
+            SqlVal::Text(text) => {
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
+                    return Ok(dt.with_timezone(&chrono::Utc));
+                }
+                chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f"))
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S"))
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S"))
+                    .map(|naive| chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc))
+                    .map_err(|e| invalid_value::<Self>(value, &e.to_string()))
+            }
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl FromSqlValue for chrono::NaiveDate {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        match value {
+            SqlVal::Text(text) => chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
 /// A row decoded from the ordered values of a query result.
 ///
 /// The trait is implemented for every tuple of [`FromSqlValue`] elements from
@@ -526,6 +612,79 @@ mod tests {
             <(i64,)>::from_row(&[SqlVal::Text("1".to_owned())]),
             None
         );
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct MockTxid([u8; 4]);
+
+    impl AsRef<[u8]> for MockTxid {
+        fn as_ref(&self) -> &[u8] {
+            &self.0
+        }
+    }
+
+    impl TryFrom<&[u8]> for MockTxid {
+        type Error = &'static str;
+
+        fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+            if slice.len() == 4 {
+                let mut arr = [0u8; 4];
+                arr.copy_from_slice(slice);
+                Ok(MockTxid(arr))
+            } else {
+                Err("invalid length")
+            }
+        }
+    }
+
+    crate::impl_sql_binary_newtype!(MockTxid, 4);
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct MockAddress(String);
+
+    impl std::fmt::Display for MockAddress {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl std::str::FromStr for MockAddress {
+        type Err = &'static str;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            if s.starts_with("addr_") {
+                Ok(MockAddress(s.to_owned()))
+            } else {
+                Err("missing addr_ prefix")
+            }
+        }
+    }
+
+    crate::impl_sql_text_newtype!(MockAddress);
+
+    #[test]
+    fn custom_binary_newtype_round_trips_and_validates_length() {
+        let txid = MockTxid([1, 2, 3, 4]);
+        let val = txid.to_sql_val();
+        assert_eq!(val, SqlVal::Bytes(vec![1, 2, 3, 4]));
+        assert_eq!(MockTxid::from_sql_value(&val), Ok(MockTxid([1, 2, 3, 4])));
+
+        let wrong_len = SqlVal::Bytes(vec![1, 2, 3]);
+        assert!(MockTxid::from_sql_value(&wrong_len).is_err());
+    }
+
+    #[test]
+    fn custom_text_newtype_round_trips_and_validates_parsing() {
+        let addr = MockAddress("addr_12345".to_owned());
+        let val = addr.to_sql_val();
+        assert_eq!(val, SqlVal::Text("addr_12345".to_owned()));
+        assert_eq!(
+            MockAddress::from_sql_value(&val),
+            Ok(MockAddress("addr_12345".to_owned()))
+        );
+
+        let invalid = SqlVal::Text("invalid_address".to_owned());
+        assert!(MockAddress::from_sql_value(&invalid).is_err());
     }
 
     #[test]
