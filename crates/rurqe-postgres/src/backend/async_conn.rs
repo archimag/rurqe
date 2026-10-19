@@ -95,6 +95,7 @@ impl PgAsyncConnection {
     /// a cancelled future all leave the connection without an open
     /// transaction.
     pub async fn transaction(&mut self) -> Result<PgAsyncTransaction<'_>, PgError> {
+        tracing::info!("beginning transaction");
         let inner = self.client.transaction().await?;
         Ok(PgAsyncTransaction { inner })
     }
@@ -173,11 +174,15 @@ impl PgAsyncTransaction<'_> {
 
     /// Commits the transaction, persisting all its work.
     pub async fn commit(self) -> Result<(), PgError> {
-        Ok(self.inner.commit().await?)
+        self.inner.commit().await?;
+        tracing::info!("committed transaction");
+        Ok(())
     }
 
     /// Rolls the transaction back, discarding all its work.
     pub async fn rollback(self) -> Result<(), PgError> {
-        Ok(self.inner.rollback().await?)
+        self.inner.rollback().await?;
+        tracing::warn!("rolled back transaction");
+        Ok(())
     }
 }

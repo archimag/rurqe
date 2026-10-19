@@ -178,11 +178,13 @@ mod rusqlite_backend {
         {
             let outer = !self.in_transaction;
             let savepoint = if outer {
+                tracing::info!("beginning transaction");
                 self.begin(None).map_err(E::from)?;
                 self.in_transaction = true;
                 None
             } else {
                 let name = self.tx_context.open_savepoint();
+                tracing::debug!(savepoint = %name, "creating savepoint");
                 self.savepoint(&name).map_err(E::from)?;
                 Some(name)
             };
@@ -199,6 +201,7 @@ mod rusqlite_backend {
                     if outer {
                         guard.connection.commit().map_err(E::from)?;
                         guard.connection.in_transaction = false;
+                        tracing::info!("committed transaction");
                     } else {
                         let name = guard
                             .savepoint
@@ -206,6 +209,7 @@ mod rusqlite_backend {
                             .expect("nested transactions always own a savepoint");
                         guard.connection.release_savepoint(name).map_err(E::from)?;
                         guard.connection.tx_context.close_savepoint();
+                        tracing::debug!(savepoint = name, "released savepoint");
                     }
                     guard.finished = true;
                     Ok(value)
@@ -235,10 +239,12 @@ mod rusqlite_backend {
             if self.outer {
                 let _ = self.connection.rollback();
                 self.connection.in_transaction = false;
+                tracing::warn!("rolled back transaction");
             } else if let Some(savepoint) = self.savepoint.as_deref() {
                 let _ = self.connection.rollback_to_savepoint(savepoint);
                 let _ = self.connection.release_savepoint(savepoint);
                 self.connection.tx_context.close_savepoint();
+                tracing::warn!(savepoint = savepoint, "rolled back to savepoint");
             }
         }
     }

@@ -147,6 +147,10 @@ impl Migrator {
         self.validate_version_uniqueness(migrations)?;
         let history = backend.read_history()?;
         self.validate_history(&history, migrations)?;
+        tracing::debug!(
+            history_entries = history.len(),
+            "validated schema history"
+        );
 
         let sorted = Self::sort_migrations(migrations);
         let baseline_version = history
@@ -203,6 +207,7 @@ impl Migrator {
 
             if should_run {
                 current_rank += 1;
+                tracing::info!(script = %migration.script, "applying migration");
                 let mut tx = backend.begin()?;
                 let start_time = std::time::Instant::now();
 
@@ -217,6 +222,11 @@ impl Migrator {
                         );
                         tx.record_entry(&entry)?;
                         tx.commit()?;
+                        tracing::info!(
+                            script = %migration.script,
+                            elapsed_ms = elapsed_ms,
+                            "migration applied"
+                        );
 
                         report.applied_scripts.push(migration.script.clone());
                         report.applied_count += 1;
@@ -224,6 +234,11 @@ impl Migrator {
                     }
                     Err(err) => {
                         let _ = tx.rollback();
+                        tracing::error!(
+                            script = %migration.script,
+                            error = %err,
+                            "migration failed"
+                        );
                         return Err(Error::MigrationExecutionFailed {
                             script: migration.script.clone(),
                             source: err.to_string(),
@@ -263,6 +278,8 @@ impl Migrator {
             .unwrap_or(0)
             + 1;
 
+        tracing::info!(version = %version, description = description, "recording baseline");
+
         let entry =
             SchemaHistoryEntry::baseline(next_rank, version, description, current_timestamp());
 
@@ -294,10 +311,12 @@ impl Migrator {
         for entry in &history {
             if !entry.success {
                 tx.delete_entry(entry.installed_rank)?;
+                tracing::info!(script = %entry.script, "purging failed history entry");
                 report.removed_failed_entries += 1;
             } else if let Some(m) = migrations_by_script.get(entry.script.as_str()) {
                 if m.is_versioned() && entry.is_modified(m) {
                     tx.update_checksum(&entry.script, &m.checksum)?;
+                    tracing::info!(script = %entry.script, "updating recorded checksum");
                     report.updated_checksums.push(entry.script.clone());
                 }
             }
@@ -371,6 +390,8 @@ impl Migrator {
                 installed_rank,
             });
         }
+
+        tracing::debug!(migrations = statuses.len(), "computed migration status");
 
         Ok(statuses)
     }
