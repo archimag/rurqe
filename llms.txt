@@ -515,6 +515,58 @@ All execution backends implement `QueryBackend` and `QueryBackendExt`:
 - `fetch_optional(&mut backend)` -> `Result<Option<Row>, ExecutionError>` (errors if >1 rows)
 - `execute(&mut backend)` -> `Result<u64, ExecutionError>` (returns affected rows count)
 
+### Typed Errors & `Result<T>` Aliases
+
+Failures are never erased into `Box<dyn std::error::Error>`: every dialect module exports a concrete, monomorphic error type together with a matching alias, so application helpers name the failure once and keep exhaustive pattern matching with zero allocation on the error path.
+
+- `rurqe::postgres::Error` is `ExecutionError<PgError>` and `rurqe::postgres::Result<T, E = Error>` defaults to it.
+- `rurqe::sqlite::Error` is `ExecutionError<rusqlite::Error>` and `rurqe::sqlite::Result<T, E = Error>` defaults to it.
+- The version-pinned modules (`rurqe::postgres::pg16`, `rurqe::sqlite::sqlite3_35`, ...) define the same aliases, and every dialect prelude re-exports them, so a single glob import is enough.
+
+`ExecutionError<E>` distinguishes four failure kinds, so a caller never has to guess why a statement failed:
+
+```rust
+pub enum ExecutionError<E> {
+    Backend(E),   // the driver rejected the statement or the connection failed
+    RowDecode,    // a returned row did not decode into the projected type
+    NoRows,       // `fetch_one` matched nothing
+    MultipleRows, // `fetch_one` / `fetch_optional` matched more than one row
+}
+```
+
+Predicates and accessors keep call sites free of manual enum matching:
+
+- `is_not_found()` -> `bool` — the statement matched no row (`NoRows`).
+- `is_multiple_rows()` -> `bool` — `fetch_one` / `fetch_optional` matched several rows.
+- `is_row_decode()` -> `bool` — a row carried an unexpected shape or variant.
+- `as_backend()` -> `Option<&E>` and `into_backend()` -> `Option<E>` — the driver error stays reachable without downcasting.
+- `From<E>` — `?` lifts a concrete driver error into `ExecutionError<E>` automatically.
+
+```rust
+use rurqe::prelude::*;
+use rurqe::sqlite::{rusqlite::Connection, Sqlite, Sqlite3_35, SqliteConnection};
+
+// The helper names the concrete error type instead of boxing it away.
+fn user_name(db: &mut SqliteConnection, id: i64) -> rurqe::sqlite::Result<String> {
+    let query = select_from::<Sqlite<Sqlite3_35>, User>()
+        .select((UserName,))
+        .where_(Expr::column::<UserId>().eq(id));
+    let (name,) = db.fetch_one(&query)?;
+    Ok(name)
+}
+
+let mut db = SqliteConnection::new(Connection::open("app.db")?);
+
+match user_name(&mut db, 42) {
+    Ok(name) => println!("found: {name}"),
+    Err(error) if error.is_not_found() => println!("no such user"),
+    Err(error) => match error.as_backend() {
+        Some(driver) => eprintln!("driver failure: {driver}"),
+        None => eprintln!("query failure: {error}"),
+    },
+}
+```
+
 ### SQLite (Synchronous)
 
 ```rust
