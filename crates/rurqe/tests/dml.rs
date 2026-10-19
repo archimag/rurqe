@@ -331,3 +331,24 @@ fn returning_and_conflict_targets_are_scoped_to_the_mutated_table() {
     assert_table_selection::<(UserId, UserName), User>();
     assert_table_selection::<(UserName,), User>();
 }
+
+#[test]
+fn mutation_filters_keep_the_scope_of_column_markers() {
+    let updated = update::<Postgres, User>()
+        .set(UserActive::set(true))
+        .where_(UserId.eq(1i64))
+        .build();
+
+    assert_eq!(
+        updated.sql,
+        "UPDATE \"users\" SET \"active\" = $1 WHERE (\"id\" = $2)"
+    );
+    assert_eq!(updated.params, vec![SqlVal::Bool(true), SqlVal::I64(1)]);
+
+    let deleted = delete_from::<Postgres, User>()
+        .where_(UserName.eq("guest"))
+        .build();
+
+    assert_eq!(deleted.sql, "DELETE FROM \"users\" WHERE (\"name\" = $1)");
+    assert_eq!(deleted.params, vec![SqlVal::Text("guest".to_owned())]);
+}
