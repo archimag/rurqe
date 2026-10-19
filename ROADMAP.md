@@ -26,7 +26,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, zero-turbofish queries, automatic nullability, universal record synthesis | Two-Tier Architecture & Reference SQL DSL (Planned) |
 | **Phase 13** [x] | Codebase Hardening & Conventions Refactoring | Large module decomposition (<800 LOC), panic-free typestate | Production Rigor & Standard Compliance (Completed) |
 | **Phase 14** [x] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Completed) |
-| **Phase 15** [ ] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Planned) |
+| **Phase 15** [x] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Completed) |
 
 ---
 
@@ -594,28 +594,28 @@ let tx = select!(
 
 ---
 
-## Phase 15: Stage-Based Schema Evolution (Unified Stage + Migration Tail) [Planned]
+## Phase 15: Stage-Based Schema Evolution (Unified Stage + Migration Tail) [Completed]
 
 ### Objective
 Unify declarative schema design with sequential migration safety in a **Grand Unified Model**: maintain a single current declarative DDL state (`schema/`) as the Single Source of Truth for developers and AI, alongside an active tail of sequential migrations (`migrations/`) for upgrading existing databases with data transformations. Enable instant cold-start database initialization directly from `schema/` for tests and CI, introduce cryptographic checkpoint markers for zero-pain migration pruning without squashing, mathematically verify consistency via **The Golden Equation** ($\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$), and preserve 100% compatibility for classic Flyway-style workflows.
 
 ### Key Deliverables
-- [ ] **Dual Lifecycle Modes (Traditional vs. Stage+Tail):**
+- [x] **Dual Lifecycle Modes (Traditional vs. Stage+Tail):**
   - Traditional mode: sequential execution of versioned (`V...`) and repeatable (`R...`) scripts directly from `migrations/`.
   - Stage+Tail mode: cold-start bootstrap from `schema/` for clean databases, or sequential application of `migrations/` for existing databases.
-- [ ] **Declarative Target Schema (`schema/`) & Instant Cold-Start:**
+- [x] **Declarative Target Schema (`schema/`) & Instant Cold-Start:**
   - Single Source of Truth directory containing complete declarative DDL (e.g. `schema/users.sql`, `schema/billing.sql`).
   - Cold-start bootstrap: instant database initialization from `schema/` in a single transaction, recording a synthesized applied marker in `__rurqe_schema_history` matching the active stage checksum.
-- [ ] **Checkpoint Markers & Zero-Pain History Pruning:**
+- [x] **Checkpoint Markers & Zero-Pain History Pruning:**
   - Checkpoint metadata (`checkpoint.toml` or migration header) storing `pruned_up_to_version` and base `stage_hash`.
   - Freedom to delete historical migration files prior to the checkpoint (`rm -f migrations/V001..V050*.sql`) without rewriting baselines or invalidating checksums.
   - Fail-safe guard: migration runner aborts with an actionable error if an existing target database version is older than the pruned checkpoint boundary.
-- [ ] **Golden Equation Verification Engine (`cargo db-verify`):**
+- [x] **Golden Equation Verification Engine (`cargo db-verify`):**
   - Verification workflow asserting $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$:
     1. Spin up ephemeral DB 1 $\to$ apply `schema/` DDL $\to$ snapshot catalog $K_{stage}$.
     2. Spin up ephemeral DB 2 $\to$ apply Checkpoint base + active `migrations/` $\to$ snapshot catalog $K_{tail}$.
     3. Compare $K_{stage}$ and $K_{tail}$ bit-for-bit using `SchemaDiff`. Fail with exact divergence report on mismatch.
-- [ ] **Stage & Pruning Developer Tooling in `rurqe-cli`:**
+- [x] **Stage & Pruning Developer Tooling in `rurqe-cli`:**
   - `cargo db stage init`: bootstrap declarative `schema/` and `schema.lock` from an existing database or migration set.
   - `cargo db stage commit -m "..."`: introspect differences, generate next migration draft in `migrations/`, and synchronize `schema/`.
   - `cargo db prune --before <version>`: create or advance the checkpoint marker and prune obsolete migration files safely.
