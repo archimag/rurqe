@@ -8,18 +8,18 @@
 use std::fmt;
 use std::str::FromStr;
 
-use rurqe_core::expr::{SqlVal, ToSqlVal};
+use rurqe_core::expr::{Expr, Expression, SqlVal, ToSqlVal};
 use rurqe_core::row::{FromSqlValue, RowDecodeError};
 use rurqe_macros::SqlType;
 
 #[derive(Debug, PartialEq, Eq, SqlType)]
 #[sql(transparent)]
-struct UserId(i64);
+pub struct UserId(i64);
 
-#[derive(Debug, PartialEq, Eq, SqlType)]
+#[derive(Debug, Clone, PartialEq, Eq, SqlType)]
 #[sql(transparent)]
-struct Email {
-    value: String,
+pub struct Email {
+    pub value: String,
 }
 
 #[derive(Debug, PartialEq, Eq, SqlType)]
@@ -60,6 +60,14 @@ impl FromStr for Address {
         } else {
             Err("addresses start with `addr_`")
         }
+    }
+}
+
+rurqe_core::table! {
+    /// The `accounts` table typed with derived domain newtypes.
+    Account => "accounts" {
+        AccountId => "id": UserId,
+        AccountEmail => "email": Email,
     }
 }
 
@@ -141,4 +149,40 @@ fn text_newtypes_encode_through_display_and_decode_through_from_str() {
     assert!(invalid.to_string().contains("addr_"));
 
     assert!(Address::from_sql_value(&SqlVal::I64(1)).is_err());
+}
+
+#[test]
+fn derived_newtypes_compose_with_the_expression_builders() {
+    assert_eq!(
+        AccountId.eq(UserId(7)),
+        Expr::column::<AccountId>().eq(UserId(7))
+    );
+
+    let email = Email {
+        value: "root@example.com".to_owned(),
+    };
+    assert_eq!(
+        AccountEmail.eq(email.clone()),
+        Expr::column::<AccountEmail>().eq(email)
+    );
+}
+
+#[test]
+fn optional_newtypes_bind_null_and_decode_from_it() {
+    assert_eq!(Some(UserId(7)).to_sql_val(), SqlVal::I64(7));
+    assert_eq!(None::<UserId>.to_sql_val(), SqlVal::Null);
+    assert_eq!(None::<Address>.to_sql_val(), SqlVal::Null);
+
+    assert_eq!(
+        <Option<UserId> as FromSqlValue>::from_sql_value(&SqlVal::I64(7)),
+        Ok(Some(UserId(7)))
+    );
+    assert_eq!(
+        <Option<UserId> as FromSqlValue>::from_sql_value(&SqlVal::Null),
+        Ok(None)
+    );
+    assert_eq!(
+        <Option<Txid> as FromSqlValue>::from_sql_value(&SqlVal::Null),
+        Ok(None)
+    );
 }
