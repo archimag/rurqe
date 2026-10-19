@@ -320,3 +320,20 @@ fn raw_sql_macro_escapes_and_formats_subexpressions() {
     );
     assert_eq!(built.params, vec![SqlVal::I64(90)]);
 }
+
+#[test]
+fn sql_macro_composes_with_group_by_and_having() {
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId, sql!(<i64> "COUNT(*)")))
+        .group_by(OrderUserId)
+        .having(sql!(bool, "SUM(total) > ?", 250.0))
+        .having(Expr::count_all().lt(100i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+         HAVING (SUM(total) > $1 AND (COUNT(*) < $2))"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(250.0), SqlVal::I64(100)]);
+}
