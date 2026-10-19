@@ -378,7 +378,7 @@ impl<T, Row> Cte<T, Row> {
     }
 }
 
-impl<T: Table, Row> Table for Cte<T, Row> {
+impl<T: Table, Row: 'static> Table for Cte<T, Row> {
     const NAME: &'static str = T::NAME;
 }
 
