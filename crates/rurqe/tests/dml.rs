@@ -254,3 +254,17 @@ fn on_conflict_do_update_upserts_typed_assignments_before_returning() {
         ]
     );
 }
+
+#[test]
+fn mutations_are_scoped_to_the_users_table() {
+    fn assert_belongs<C: Column + ColumnBelongsTo<T>, T: Table>() {}
+    fn assert_assignment_set<T: Table, S: AssignmentSet<T>>() {}
+    fn assert_delete_scope<R>(_query: &DeleteQuery<Postgres, User, Filtered, R>) {}
+
+    assert_belongs::<UserId, User>();
+    assert_belongs::<UserName, User>();
+    assert_assignment_set::<User, Assignment<UserId, i64>>();
+
+    let delete_query = delete_from::<Postgres, User>().allow_all();
+    assert_delete_scope(&delete_query);
+}

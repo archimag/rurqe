@@ -89,3 +89,14 @@ fn predicates_support_comparisons_and_boolean_composition() {
     );
     assert_eq!(built.params, vec![SqlVal::Bool(true), SqlVal::I64(5)]);
 }
+
+#[test]
+fn users_table_is_an_expression_scope() {
+    fn assert_expr_scope<S: ExprScope>() {}
+    fn assert_belongs<C: Column + ColumnBelongsTo<T>, T: Table>() {}
+
+    assert_expr_scope::<User>();
+    assert_belongs::<UserId, User>();
+    assert_belongs::<UserName, User>();
+    assert_belongs::<UserActive, User>();
+}

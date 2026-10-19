@@ -108,6 +108,30 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 ///     "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
 /// );
 /// ```
+///
+/// Assignments are statically tied to the mutated table, so a column of another
+/// table cannot be set on `User`:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` belongs to `Order`, not to `User`.
+/// let _ = update::<Postgres, User>().set(OrderTotal::set(1.0));
+/// ```
 pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
     UpdateQuery::new()
 }
@@ -175,6 +199,8 @@ pub mod prelude {
     };
 
     pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, TableScope};
+
+    pub use rurqe_core::schema::ExprScope;
 
     pub use rurqe_core::dml::{
         AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign, DeleteQuery, Filtered,

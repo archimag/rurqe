@@ -50,6 +50,29 @@ fn assert_scope<S: TableScope>() {}
 fn assert_nullable_row<S: Selection<Row = (i64, Option<f64>)>>() {}
 
 #[test]
+fn expression_scopes_cover_tables_tuples_and_joined_scopes() {
+    fn assert_expr_scope<S: ExprScope>() {}
+    fn assert_in_scope<T: Table, S: TableInScope<T, P>, P>() {}
+    fn assert_belongs<C: Column + ColumnBelongsTo<T>, T: Table>() {}
+
+    assert_expr_scope::<User>();
+    assert_expr_scope::<Order>();
+    assert_expr_scope::<(User, Order)>();
+    assert_expr_scope::<Joined<User, Order>>();
+    assert_expr_scope::<LeftJoined<User, Order>>();
+    assert_expr_scope::<Joined<LeftJoined<User, Order>, User>>();
+
+    assert_in_scope::<User, User, _>();
+    assert_in_scope::<User, (User, Order), _>();
+    assert_in_scope::<Order, (User, Order), _>();
+    assert_in_scope::<User, (User, User), At<1>>();
+    assert_in_scope::<User, (User, User), At<2>>();
+
+    assert_belongs::<UserId, User>();
+    assert_belongs::<OrderId, Order>();
+}
+
+#[test]
 fn inner_join_spans_multiple_tables_and_decodes_rows() {
     assert_scope::<User>();
     assert_scope::<Joined<User, Order>>();

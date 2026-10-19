@@ -105,3 +105,9 @@ fn dto_rejects_rows_with_mismatched_shape() {
     ])
     .is_none());
 }
+
+#[test]
+fn users_table_is_an_expression_scope() {
+    fn assert_expr_scope<S: ExprScope>() {}
+    assert_expr_scope::<User>();
+}
