@@ -81,6 +81,14 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         tokens.remove(0);
     }
 
+    // Cargo invokes custom subcommand binaries as `cargo-<name> <name> ...`,
+    // so strip the duplicated subcommand token passed as argv[1].
+    if let Some(sub) = program.strip_prefix("cargo-") {
+        if tokens.first() == Some(&sub) {
+            tokens.remove(0);
+        }
+    }
+
     if tokens.is_empty() {
         if program == "cargo-db-migrate" {
             return Ok(CliCommand::MigrateUp {
@@ -608,6 +616,69 @@ mod tests {
             CliCommand::Baseline {
                 version: "1.0.0".parse().unwrap(),
                 description: "initial".into(),
+                database_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_cargo_db_migrate_invocation() {
+        let cmd = parse_args(&["cargo-db-migrate".into(), "db-migrate".into()]).unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::MigrateUp {
+                migrations_dir: PathBuf::from("migrations"),
+                database_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_cargo_db_codegen_invocation() {
+        let cmd = parse_args(&[
+            "cargo-db-codegen".into(),
+            "db-codegen".into(),
+            "--output".into(),
+            "src/db/schema.rs".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Codegen {
+                database_url: None,
+                output: PathBuf::from("src/db/schema.rs"),
+                lock_path: PathBuf::from("schema.lock"),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_cargo_db_verify_invocation() {
+        let cmd = parse_args(&["cargo-db-verify".into(), "db-verify".into()]).unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Verify {
+                database_url: None,
+                schema_path: Some(PathBuf::from("src/schema.rs")),
+                lock_path: PathBuf::from("schema.lock"),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_cargo_db_baseline_invocation() {
+        let cmd = parse_args(&[
+            "cargo-db-baseline".into(),
+            "db-baseline".into(),
+            "--version".into(),
+            "1.0.0".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Baseline {
+                version: "1.0.0".parse().unwrap(),
+                description: "baseline".into(),
                 database_url: None,
             }
         );
