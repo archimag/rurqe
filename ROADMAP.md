@@ -23,7 +23,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 9** [x] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Completed) |
 | **Phase 10** [x] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Completed) |
 | **Phase 11** [x] | Vision Alignment & Semantic Ergonomics | Actionable diagnostics, fluent predicates, ergonomic aliases, multi-table DML | Reference Ergonomics & Soundness (Completed) |
-| **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, zero-turbofish queries, automatic nullability, universal record synthesis | Two-Tier Architecture & Reference SQL DSL (Planned) |
+| **Phase 12** [x] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, zero-turbofish queries, automatic nullability, universal record synthesis | Two-Tier Architecture & Reference SQL DSL (Completed) |
 | **Phase 13** [x] | Codebase Hardening & Conventions Refactoring | Large module decomposition (<800 LOC), panic-free typestate | Production Rigor & Standard Compliance (Completed) |
 | **Phase 14** [x] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Completed) |
 | **Phase 15** [x] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Completed) |
@@ -463,32 +463,32 @@ Align all RURQE APIs and compiler behaviors with the core Vision requirements (A
 
 ---
 
-## Phase 12: Two-Tier Architecture & High-Level SQL DSL [Planned]
+## Phase 12: Two-Tier Architecture & High-Level SQL DSL [Completed]
 
 ### Objective
 Establish a clean two-tier architecture separating the internal monomorphized relational IR from the primary public SQL DSL. Eliminate type-system machinery leaks (turbofish on table/column markers, manual `.nullable()` lifting, tuple projections, repeated dialect generics) in favor of value-based schema arguments (`.from(users)`), dialect-scoped modules (`rurqe::postgres::*`), connection-bound query factories, automatic nullability inference from relation provenance, universal named record synthesis in `select!`, and compile-time `GROUP BY` soundness.
 
 ### Key Deliverables
-- [ ] **Zero-Turbofish Value-Based DSL:**
+- [x] **Zero-Turbofish Value-Based DSL:**
   - Query builder methods accept zero-sized table values as arguments: `.from(users)` / `.from(Users)`, `.inner_join(orders, ...)` / `.left_join(orders, ...)`.
   - Type-safe DML entrypoints taking table arguments: `insert_into(users)`, `update(users)`, `delete_from(users)` without turbofish syntax.
   - Zero runtime overhead: ZST arguments compile away completely while allowing `rustc` to infer table types immediately.
-- [ ] **Dialect Ergonomics & Connection Integration:**
+- [x] **Dialect Ergonomics & Connection Integration:**
   - Specialized dialect modules (`rurqe::postgres::prelude::*`, `rurqe::sqlite::prelude::*`) pre-binding the dialect so application queries never require `<Postgres>` annotations.
   - Turbofish-free named selection start: `select!(...).from(table)` resolves dialect automatically from the active dialect prelude without explicit type parameters.
   - First-class dialect version submodules with dedicated preludes (`rurqe::postgres::pg14::prelude::*`, `rurqe::sqlite::sqlite3_24::prelude::*`) binding specific engine versions and automatically enforcing compile-time capability gates (`SupportsReturning`, `SupportsOnConflict`, etc.) with zero turbofish noise.
   - Connection and transaction query methods (`conn.select_from(users)`, `conn.update(users)`) inferring dialect directly from the database handle.
-- [ ] **Value-Based Schema & Unified Expression Model:**
+- [x] **Value-Based Schema & Unified Expression Model:**
   - Codegen and `table!` generate schema objects/values (`users.id`, `orders.total`) that directly implement `Expression<T>`, eliminating `Expr::column::<Col>()` turbofish calls.
   - Fluent operator and method calls directly on columns (`users.age.gt(18)`, `users.name.like("%admin%")`).
   - Value-based table aliasing (`let u1 = users.as_alias("u1");`) without raw `AliasedCol<A, C>` wrappers.
-- [ ] **Automatic Nullability Inference on Outer Joins:**
+- [x] **Automatic Nullability Inference on Outer Joins:**
   - Outer joins mark relation scopes (`NullableRelation<T>`); columns projected from outer joins automatically lift their types to `Option<T>` without explicit `.nullable::<Col>()` calls.
-- [ ] **Universal Named Record Projections:**
+- [x] **Universal Named Record Projections:**
   - Macro `select!` synthesizes strongly typed ad-hoc structs for any projection items (columns, computed expressions, aggregates, aliased fields), making named field access (`row.id`, `row.total`) universal and phasing out manual tuple indexing.
-- [ ] **Systematic SQL Soundness (GROUP BY Validation):**
+- [x] **Systematic SQL Soundness (GROUP BY Validation):**
   - Typestate transition to `GroupedQuery` upon `.group_by(...)`, statically restricting projected fields to grouped columns or aggregate expressions, preventing runtime SQL grouping errors at compile time.
-- [ ] **Domain-Specific Diagnostics & Error Reporting:**
+- [x] **Domain-Specific Diagnostics & Error Reporting:**
   - Semantic compiler messages in pure SQL terminology, pinpointing out-of-scope tables and grouping violations without exposing inductive position markers (`Next<P>`, `At<0>`).
 
 ### Example Usage
