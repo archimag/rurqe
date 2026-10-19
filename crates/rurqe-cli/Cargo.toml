@@ -12,5 +12,9 @@ name = "rurqe"
 path = "src/main.rs"
 
 [dependencies]
+postgres = "0.19"
+rusqlite = { version = "0.31", features = ["bundled"] }
 rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
 rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0" }
+rurqe-postgres = { path = "../rurqe-postgres", version = "0.1.0", features = ["postgres"] }
+rurqe-sqlite = { path = "../rurqe-sqlite", version = "0.1.0", features = ["rusqlite"] }

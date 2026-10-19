@@ -8,6 +8,8 @@ use std::fmt;
 
 use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
 
+use crate::cli::CliError;
+
 /// Raw table metadata row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTableMetadata {
@@ -144,6 +146,7 @@ pub fn detect_dialect(database_url: Option<&str>) -> DatabaseDialect {
         Some(url) => {
             let lower = url.trim().to_ascii_lowercase();
             if lower.starts_with("sqlite:")
+                || lower == ":memory:"
                 || lower.ends_with(".sqlite")
                 || lower.ends_with(".sqlite3")
                 || lower.ends_with(".db")
@@ -154,6 +157,172 @@ pub fn detect_dialect(database_url: Option<&str>) -> DatabaseDialect {
             }
         }
         None => DatabaseDialect::Postgres,
+    }
+}
+
+/// Introspects a live SQLite database connection and returns the normalized [`SchemaCatalog`].
+pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, CliError> {
+    let mut stmt = conn
+        .prepare(IntrospectQueries::SQLITE_TABLES)
+        .map_err(|e| CliError(format!("failed to prepare SQLite table query: {e}")))?;
+    let table_names = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| CliError(format!("failed to query SQLite tables: {e}")))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError(format!("failed to read SQLite table row: {e}")))?;
+
+    let raw_tables: Vec<RawSqliteTableMetadata> = table_names
+        .iter()
+        .map(|name| RawSqliteTableMetadata { name: name.clone() })
+        .collect();
+
+    let mut raw_columns = Vec::new();
+    let mut raw_foreign_keys = Vec::new();
+
+    for table in &table_names {
+        let col_sql = IntrospectQueries::sqlite_table_info(table);
+        let mut col_stmt = conn
+            .prepare(&col_sql)
+            .map_err(|e| CliError(format!("failed to prepare table_info for `{table}`: {e}")))?;
+
+        let cols = col_stmt
+            .query_map([], |row| {
+                let notnull: i64 = row.get(3)?;
+                let pk: i64 = row.get(5)?;
+                Ok(RawSqliteColumnMetadata {
+                    table_name: table.clone(),
+                    column_name: row.get(1)?,
+                    data_type: row.get(2)?,
+                    not_null: notnull != 0,
+                    pk_position: pk,
+                    default_value: row.get(4)?,
+                })
+            })
+            .map_err(|e| CliError(format!("failed to inspect columns for `{table}`: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError(format!("failed to read column for `{table}`: {e}")))?;
+
+        raw_columns.extend(cols);
+
+        let fk_sql = IntrospectQueries::sqlite_foreign_key_list(table);
+        let mut fk_stmt = conn.prepare(&fk_sql).map_err(|e| {
+            CliError(format!(
+                "failed to prepare foreign_key_list for `{table}`: {e}"
+            ))
+        })?;
+
+        let fks = fk_stmt
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let referenced_table: String = row.get(2)?;
+                let from_column: String = row.get(3)?;
+                let to_column: Option<String> = row.get(4)?;
+                Ok(RawSqliteForeignKeyMetadata {
+                    table_name: table.clone(),
+                    id,
+                    from_column,
+                    to_column: to_column.unwrap_or_default(),
+                    referenced_table,
+                })
+            })
+            .map_err(|e| CliError(format!("failed to inspect foreign keys for `{table}`: {e}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CliError(format!("failed to read foreign key for `{table}`: {e}")))?;
+
+        raw_foreign_keys.extend(fks);
+    }
+
+    Ok(catalog_from_sqlite_metadata(
+        &raw_tables,
+        &raw_columns,
+        &raw_foreign_keys,
+    ))
+}
+
+/// Introspects a live PostgreSQL database client and returns the normalized [`SchemaCatalog`].
+pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalog, CliError> {
+    let table_rows = client
+        .query(IntrospectQueries::POSTGRES_TABLES, &[])
+        .map_err(|e| CliError(format!("failed to query PostgreSQL tables: {e}")))?;
+    let raw_tables: Vec<RawTableMetadata> = table_rows
+        .into_iter()
+        .map(|row| RawTableMetadata { name: row.get(0) })
+        .collect();
+
+    let col_rows = client
+        .query(IntrospectQueries::POSTGRES_COLUMNS, &[])
+        .map_err(|e| CliError(format!("failed to query PostgreSQL columns: {e}")))?;
+    let raw_columns: Vec<RawColumnMetadata> = col_rows
+        .into_iter()
+        .map(|row| RawColumnMetadata {
+            table_name: row.get(0),
+            column_name: row.get(1),
+            data_type: row.get(2),
+            is_nullable: row.get(3),
+            column_default: row.get(4),
+        })
+        .collect();
+
+    let pk_rows = client
+        .query(IntrospectQueries::POSTGRES_PRIMARY_KEYS, &[])
+        .map_err(|e| CliError(format!("failed to query PostgreSQL primary keys: {e}")))?;
+    let raw_pks: Vec<RawPrimaryKeyMetadata> = pk_rows
+        .into_iter()
+        .map(|row| RawPrimaryKeyMetadata {
+            table_name: row.get(0),
+            column_name: row.get(1),
+        })
+        .collect();
+
+    let fk_rows = client
+        .query(IntrospectQueries::POSTGRES_FOREIGN_KEYS, &[])
+        .map_err(|e| CliError(format!("failed to query PostgreSQL foreign keys: {e}")))?;
+    let raw_fks: Vec<RawForeignKeyMetadata> = fk_rows
+        .into_iter()
+        .map(|row| RawForeignKeyMetadata {
+            name: row.get(0),
+            table_name: row.get(1),
+            column_name: row.get(2),
+            referenced_table: row.get(3),
+            referenced_column: row.get(4),
+        })
+        .collect();
+
+    Ok(catalog_from_metadata(
+        &raw_tables,
+        &raw_columns,
+        &raw_pks,
+        &raw_fks,
+    ))
+}
+
+/// Introspects the schema catalog of a live database identified by its connection URL or path.
+pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
+    match detect_dialect(Some(url)) {
+        DatabaseDialect::Sqlite => {
+            let path = if let Some(stripped) = url.strip_prefix("sqlite://") {
+                stripped
+            } else if let Some(stripped) = url.strip_prefix("sqlite:") {
+                stripped
+            } else {
+                url
+            };
+
+            let conn = if path == ":memory:" || path.is_empty() {
+                rusqlite::Connection::open_in_memory()
+            } else {
+                rusqlite::Connection::open(path)
+            }
+            .map_err(|e| CliError(format!("failed to open SQLite database at `{url}`: {e}")))?;
+
+            introspect_sqlite(&conn)
+        }
+        DatabaseDialect::Postgres => {
+            let mut client = postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
+                CliError(format!("failed to connect to PostgreSQL at `{url}`: {e}"))
+            })?;
+            introspect_postgres(&mut client)
+        }
     }
 }
 
@@ -449,6 +618,56 @@ mod tests {
         assert_eq!(orders.foreign_keys.len(), 1);
         assert_eq!(orders.foreign_keys[0].referenced_table, "users");
         assert_eq!(orders.foreign_keys[0].columns, vec!["user_id"]);
+    }
+
+    #[test]
+    fn introspect_sqlite_builds_catalog_from_live_tables() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY,
+                email TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE posts (
+                id INTEGER PRIMARY KEY,
+                author_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                FOREIGN KEY (author_id) REFERENCES users(id)
+            );
+            CREATE TABLE __rurqe_schema_history (
+                installed_rank INTEGER PRIMARY KEY,
+                version TEXT
+            );
+            "#,
+        )
+        .unwrap();
+
+        let catalog = introspect_sqlite(&conn).unwrap();
+        assert_eq!(catalog.tables.len(), 2);
+
+        let users = catalog.tables.iter().find(|t| t.name == "users").unwrap();
+        assert_eq!(users.primary_key, vec!["id"]);
+        assert_eq!(users.columns.len(), 3);
+        let email = users.columns.iter().find(|c| c.name == "email").unwrap();
+        assert_eq!(email.type_kind, TypeKind::Text);
+        assert!(!email.nullable);
+
+        let posts = catalog.tables.iter().find(|t| t.name == "posts").unwrap();
+        assert_eq!(posts.foreign_keys.len(), 1);
+        assert_eq!(posts.foreign_keys[0].referenced_table, "users");
+        assert_eq!(posts.foreign_keys[0].columns, vec!["author_id"]);
+        assert_eq!(posts.foreign_keys[0].referenced_columns, vec!["id"]);
+    }
+
+    #[test]
+    fn introspect_database_handles_sqlite_memory() {
+        let catalog = introspect_database(":memory:").unwrap();
+        assert!(catalog.tables.is_empty());
+
+        let catalog = introspect_database("sqlite::memory:").unwrap();
+        assert!(catalog.tables.is_empty());
     }
 
     #[test]
