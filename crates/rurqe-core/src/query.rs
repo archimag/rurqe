@@ -27,6 +27,7 @@
 use core::fmt;
 use core::fmt::Write;
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::dialect::Dialect;
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
@@ -300,6 +301,94 @@ impl OrderDirection {
     }
 }
 
+type CteRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+
+/// Internal definition of a single Common Table Expression (`WITH cte AS (...)`).
+#[derive(Clone)]
+struct CteDefinition {
+    name: &'static str,
+    renderer: CteRenderer,
+}
+
+/// A Common Table Expression (`WITH cte AS (...)`) encapsulating a subquery and its output shape.
+#[derive(Clone)]
+pub struct Cte<T = (), Row = ()> {
+    name: &'static str,
+    renderer: CteRenderer,
+    _marker: PhantomData<fn() -> (T, Row)>,
+}
+
+impl<T, Row> fmt::Debug for Cte<T, Row> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cte")
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl<T: Table, Row> Cte<T, Row> {
+    /// Creates a CTE for the table `T` from a `SelectQuery`.
+    pub fn new<D: Dialect, S: TableScope + 'static>(
+        query: SelectQuery<D, S, Row>,
+    ) -> Self
+    where
+        Row: 'static,
+    {
+        Self {
+            name: T::NAME,
+            renderer: Arc::new(move |sql, params| {
+                query.render_into(sql, params);
+            }),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<Row> Cte<(), Row> {
+    /// Creates a CTE with an explicit alias `name` from a `SelectQuery`.
+    pub fn named<D: Dialect, S: TableScope + 'static>(
+        name: &'static str,
+        query: SelectQuery<D, S, Row>,
+    ) -> Self
+    where
+        Row: 'static,
+    {
+        Self {
+            name,
+            renderer: Arc::new(move |sql, params| {
+                query.render_into(sql, params);
+            }),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T, Row> Cte<T, Row> {
+    /// Returns the SQL identifier / alias of this CTE.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl<T: Table, Row> Table for Cte<T, Row> {
+    const NAME: &'static str = T::NAME;
+}
+
+/// Starts a CTE definition for the table marker `T` from `query`.
+pub fn cte<T: Table, D: Dialect, S: TableScope + 'static, Row: 'static>(
+    query: SelectQuery<D, S, Row>,
+) -> Cte<T, Row> {
+    Cte::new(query)
+}
+
+/// Starts a CTE definition with an explicit alias `name` from `query`.
+pub fn cte_named<D: Dialect, S: TableScope + 'static, Row: 'static>(
+    name: &'static str,
+    query: SelectQuery<D, S, Row>,
+) -> Cte<(), Row> {
+    Cte::named(name, query)
+}
+
 /// A `SELECT` query over the table `Tables` producing rows of type `Output`.
 ///
 /// `Tables` remains `()` until [`SelectQuery::from`] introduces the queried
@@ -307,6 +396,7 @@ impl OrderDirection {
 /// type, which keeps the builder signature flat while tracking both the scope
 /// and the result type at compile time.
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
+    ctes: Vec<CteDefinition>,
     projections: Option<ProjectionRenderer>,
     joins: Vec<(JoinKind, ExprKind)>,
     filter: Option<ExprKind>,
@@ -318,18 +408,36 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     _marker: QueryMarker<D, Tables, Output>,
 }
 
+impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
+    fn clone(&self) -> Self {
+        Self {
+            ctes: self.ctes.clone(),
+            projections: self.projections.clone(),
+            joins: self.joins.clone(),
+            filter: self.filter.clone(),
+            group_by: self.group_by.clone(),
+            having: self.having.clone(),
+            order_by: self.order_by.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            _marker: PhantomData,
+        }
+    }
+}
+
 /// Phantom marker carrying the dialect, scope, and row type of a query.
 ///
 /// The parameters are wrapped in a function result, so they are treated as
 /// covariant and no drop-check obligations are introduced.
 type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
 
-type ProjectionRenderer = Box<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+type ProjectionRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
 
 impl<D: Dialect> SelectQuery<D, (), ()> {
     /// Creates a query without a table, projections, filter, or pagination.
     pub fn new() -> Self {
         SelectQuery {
+            ctes: Vec::new(),
             projections: None,
             joins: Vec::new(),
             filter: None,
@@ -362,7 +470,7 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
         mut self,
         selection: S,
     ) -> SelectQuery<D, Tables, S::Row> {
-        self.projections = Some(Box::new(move |sql, params| {
+        self.projections = Some(Arc::new(move |sql, params| {
             selection.render_projections::<D>(sql, params);
         }));
         self.retype()
@@ -370,6 +478,33 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
 }
 
 impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
+    /// Adds a Common Table Expression (`WITH cte AS (...)`) to this query.
+    pub fn with<T, Row>(mut self, cte: Cte<T, Row>) -> Self {
+        self.ctes.push(CteDefinition {
+            name: cte.name,
+            renderer: cte.renderer,
+        });
+        self
+    }
+
+    /// Converts this query into a CTE for the table `T`.
+    pub fn as_cte<T: Table>(self) -> Cte<T, Output>
+    where
+        Tables: TableScope + 'static,
+        Output: 'static,
+    {
+        Cte::new(self)
+    }
+
+    /// Converts this query into a named CTE with alias `name`.
+    pub fn as_named_cte(self, name: &'static str) -> Cte<(), Output>
+    where
+        Tables: TableScope + 'static,
+        Output: 'static,
+    {
+        Cte::named(name, self)
+    }
+
     /// Lifts the column `C` into its nullable form [`Nullable`].
     ///
     /// Columns of a table introduced with
@@ -486,6 +621,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
 
     fn retype<Tables2, Output2>(self) -> SelectQuery<D, Tables2, Output2> {
         SelectQuery {
+            ctes: self.ctes,
             projections: self.projections,
             joins: self.joins,
             filter: self.filter,
@@ -500,8 +636,8 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
 }
 
 impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
-    /// Renders the query into SQL text and its ordered parameter list.
-    pub fn build(&self) -> BuiltQuery {
+    /// Renders the query statement and parameters into the target buffers.
+    pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
         let render_projections = self.projections.as_ref().expect(
             "a SELECT query requires at least one projection; call `select` before `build`",
         );
@@ -514,25 +650,38 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
             "every joined table requires an ON condition"
         );
 
-        let mut sql = String::from("SELECT ");
-        let mut params = Vec::new();
-        render_projections(&mut sql, &mut params);
+        if !self.ctes.is_empty() {
+            sql.push_str("WITH ");
+            for (index, cte) in self.ctes.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, cte.name);
+                sql.push_str(" AS (");
+                (cte.renderer)(sql, params);
+                sql.push(')');
+            }
+            sql.push(' ');
+        }
+
+        sql.push_str("SELECT ");
+        render_projections(sql, params);
 
         sql.push_str(" FROM ");
-        D::push_quoted_identifier(&mut sql, tables[0]);
+        D::push_quoted_identifier(sql, tables[0]);
 
         for (index, (kind, on)) in self.joins.iter().enumerate() {
             sql.push(' ');
             sql.push_str(kind.as_str());
             sql.push(' ');
-            D::push_quoted_identifier(&mut sql, tables[index + 1]);
+            D::push_quoted_identifier(sql, tables[index + 1]);
             sql.push_str(" ON ");
-            render_expr::<D>(&mut sql, &mut params, on);
+            render_expr::<D>(sql, params, on);
         }
 
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
-            render_expr::<D>(&mut sql, &mut params, filter);
+            render_expr::<D>(sql, params, filter);
         }
 
         if !self.group_by.is_empty() {
@@ -541,13 +690,13 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                D::push_quoted_identifier(sql, name);
             }
         }
 
         if let Some(having) = &self.having {
             sql.push_str(" HAVING ");
-            render_expr::<D>(&mut sql, &mut params, having);
+            render_expr::<D>(sql, params, having);
         }
 
         if !self.order_by.is_empty() {
@@ -556,7 +705,7 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                D::push_quoted_identifier(sql, name);
                 sql.push(' ');
                 sql.push_str(direction.as_str());
             }
@@ -568,7 +717,13 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         if let Some(offset) = self.offset {
             let _ = write!(sql, " OFFSET {offset}");
         }
+    }
 
+    /// Renders the query into SQL text and its ordered parameter list.
+    pub fn build(&self) -> BuiltQuery {
+        let mut sql = String::new();
+        let mut params = Vec::new();
+        self.render_into(&mut sql, &mut params);
         BuiltQuery { sql, params }
     }
 }
@@ -1791,5 +1946,98 @@ mod tests {
              COUNT(*) OVER (PARTITION BY \"id\") \
              FROM \"users\""
         );
+    }
+
+    #[test]
+    fn single_cte_renders_with_clause_and_binds_sequential_parameters() {
+        let active = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .where_(Expr::column::<UserId>().gt(10i64));
+        let active_cte = cte::<User, _, _, _>(active);
+
+        let built = SelectQuery::<MockDialect>::new()
+            .with(active_cte)
+            .from::<User>()
+            .select((UserId, UserName))
+            .where_(Expr::column::<UserName>().eq("root"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "WITH \"users\" AS (SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1)) \
+             SELECT \"id\", \"name\" FROM \"users\" WHERE (\"name\" = $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(10), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn multiple_ctes_render_comma_separated_clauses() {
+        let u_sub = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+            .where_(Expr::column::<UserId>().gt(1i64));
+        let o_sub = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderId,))
+            .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+        let built = SelectQuery::<MockDialect>::new()
+            .with(cte_named("active_users", u_sub))
+            .with(cte_named("large_orders", o_sub))
+            .from::<User>()
+            .select((UserId,))
+            .where_(Expr::column::<UserId>().eq(7i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "WITH \"active_users\" AS (SELECT \"id\" FROM \"users\" WHERE (\"id\" > $1)), \
+             \"large_orders\" AS (SELECT \"id\" FROM \"orders\" WHERE (\"total\" > $2)) \
+             SELECT \"id\" FROM \"users\" WHERE (\"id\" = $3)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::F64(100.0), SqlVal::I64(7)]
+        );
+    }
+
+    #[test]
+    fn cte_binds_to_table_marker_and_participates_in_joins() {
+        crate::table! {
+            ActiveSummary => "active_summary" {
+                SummaryUserId => "user_id": i64,
+                SummaryTotal => "total": f64,
+            }
+        }
+
+        let summary_query = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderUserId, OrderTotal))
+            .where_(Expr::column::<OrderTotal>().gt(50.0));
+
+        let summary_cte = summary_query.as_cte::<ActiveSummary>();
+
+        let built = SelectQuery::<MockDialect>::new()
+            .with(summary_cte)
+            .from::<User>()
+            .inner_join::<ActiveSummary>(
+                Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()),
+            )
+            .select((UserId, UserName, SummaryTotal))
+            .where_(Expr::column::<SummaryTotal>().lt(500.0))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "WITH \"active_summary\" AS (SELECT \"user_id\", \"total\" FROM \"orders\" WHERE (\"total\" > $1)) \
+             SELECT \"id\", \"name\", \"total\" FROM \"users\" \
+             INNER JOIN \"active_summary\" ON (\"id\" = \"user_id\") \
+             WHERE (\"total\" < $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::F64(50.0), SqlVal::F64(500.0)]);
     }
 }

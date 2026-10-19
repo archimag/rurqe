@@ -155,12 +155,13 @@ pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};
 
     pub use rurqe_core::{
-        dense_rank, lag, lead, rank, row_number, table, AggregateFunc, At, BinaryOp, BuiltQuery,
-        Column, ColumnBelongsTo, Dialect, ExecutableQuery, ExecutionError, Expr, ExprKind,
-        FromRow, FromSqlValue, GroupBy, IsolationLevel, LagLeadFn, OrderDirection, PartitionBy,
-        QueryBackend, QueryBackendExt, SelectQuery, SelectTarget, Selection, SqlCompatible,
-        SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
-        Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+        cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, At,
+        BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Cte, Dialect, ExecutableQuery,
+        ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
+        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, SelectQuery,
+        SelectTarget, Selection, SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict,
+        SupportsReturning, Table, TableInScope, Window, WindowExpr, WindowExprKind, WindowFn,
+        WindowSpec,
     };
 
     pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, TableScope};

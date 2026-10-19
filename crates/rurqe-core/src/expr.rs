@@ -244,40 +244,40 @@ impl<T> Expr<T> {
     /// Compares the expression with `value` using the SQL `=` operator.
     pub fn eq<V>(self, value: V) -> Expr<bool>
     where
-        V: SqlCompatible<T, V> + Into<SqlVal>,
+        V: IntoExpr<T>,
     {
-        self.compare(BinaryOp::Eq, value)
+        self.compare(BinaryOp::Eq, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `<>` operator.
     pub fn ne<V>(self, value: V) -> Expr<bool>
     where
-        V: SqlCompatible<T, V> + Into<SqlVal>,
+        V: IntoExpr<T>,
     {
-        self.compare(BinaryOp::Ne, value)
+        self.compare(BinaryOp::Ne, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `>` operator.
     pub fn gt<V>(self, value: V) -> Expr<bool>
     where
-        V: SqlCompatible<T, V> + Into<SqlVal>,
+        V: IntoExpr<T>,
     {
-        self.compare(BinaryOp::Gt, value)
+        self.compare(BinaryOp::Gt, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `<` operator.
     pub fn lt<V>(self, value: V) -> Expr<bool>
     where
-        V: SqlCompatible<T, V> + Into<SqlVal>,
+        V: IntoExpr<T>,
     {
-        self.compare(BinaryOp::Lt, value)
+        self.compare(BinaryOp::Lt, value.into_expr_kind())
     }
 
-    fn compare<V: Into<SqlVal>>(self, op: BinaryOp, value: V) -> Expr<bool> {
+    fn compare(self, op: BinaryOp, rhs: ExprKind) -> Expr<bool> {
         Expr::new(ExprKind::Binary {
             op,
             lhs: Box::new(self.kind),
-            rhs: Box::new(ExprKind::Value(value.into())),
+            rhs: Box::new(rhs),
         })
     }
 
@@ -375,6 +375,61 @@ pub trait SqlCompatible<ColType, ValType> {}
 impl<T> SqlCompatible<T, T> for T {}
 
 impl<'a> SqlCompatible<String, &'a str> for &'a str {}
+
+impl<T> SqlCompatible<T, Expr<T>> for Expr<T> {}
+
+/// A value or expression that can be compared with an expression of type `T`.
+#[diagnostic::on_unimplemented(
+    message = "value of type `{Self}` cannot be compared with a column of type `{T}`",
+    label = "incompatible operand types",
+    note = "convert the value to the column's `Column::RustType` before comparing"
+)]
+pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
+    /// Converts `self` into an expression AST node.
+    fn into_expr_kind(self) -> ExprKind;
+}
+
+impl IntoExpr<i32> for i32 {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::I32(self))
+    }
+}
+
+impl IntoExpr<i64> for i64 {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::I64(self))
+    }
+}
+
+impl IntoExpr<f64> for f64 {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::F64(self))
+    }
+}
+
+impl IntoExpr<bool> for bool {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::Bool(self))
+    }
+}
+
+impl IntoExpr<String> for String {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::Text(self))
+    }
+}
+
+impl IntoExpr<String> for &str {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::Text(self.to_owned()))
+    }
+}
+
+impl<T> IntoExpr<T> for Expr<T> {
+    fn into_expr_kind(self) -> ExprKind {
+        self.into_kind()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -531,5 +586,20 @@ mod tests {
         assert_compatible::<bool, bool>();
         assert_compatible::<String, String>();
         assert_compatible::<String, &'static str>();
+        assert_compatible::<i64, Expr<i64>>();
+    }
+
+    #[test]
+    fn expressions_can_be_compared_with_other_expressions() {
+        let predicate = Expr::column::<UserId>().eq(Expr::column::<UserId>());
+
+        assert_eq!(
+            predicate.kind(),
+            &ExprKind::Binary {
+                op: BinaryOp::Eq,
+                lhs: Box::new(ExprKind::Column { name: "id" }),
+                rhs: Box::new(ExprKind::Column { name: "id" }),
+            }
+        );
     }
 }
