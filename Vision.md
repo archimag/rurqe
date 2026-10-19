@@ -32,11 +32,12 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 - **Relational Expressiveness:** First-class support for advanced SQL capabilities: multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, and `CASE WHEN` constructs.
 - **Relational Type Invariants:** Mathematically sound compile-time nullability tracking (e.g. automatically lifting non-nullable columns to `Option<T>` in `LEFT JOIN` and outer join operations).
 
-### 1.3 Flyway Lifecycle Integrity (Database Migrations)
-- **Versioned & Repeatable Migrations:** Strict support for versioned migrations (`V1__init.sql`, `V2_1__orders.sql`) and repeatable migrations (`R__views_and_functions.sql`) executed only when their hash changes.
-- **Checksum Audit & Repair:** Cryptographic SHA-256 verification of applied migration files prevents undetected retroactive edits, with `repair` workflows for managed baseline transitions.
-- **Legacy Baseline & Squashing:** First-class `baseline` capability to onboard pre-existing databases or squash lengthy migration chains cleanly.
-- **Embedded & CLI Execution:** Zero-dependency migration runner usable both from the CLI and embedded directly into the application binary (`embed_migrations!`).
+### 1.3 Stage-Based Evolution & Lifecycle Integrity (AI-First Database Management)
+- **Stage as the Primary Unit of Evolution:** Each stage provides a complete, declarative SQL schema definition across one or multiple files. Any stage can initialize an empty database independently without executing historical migration chains.
+- **Verifiable Transitions:** Explicit transitions connect stages ($A \to B$), combining DDL changes and data transformations. Transitions are mathematically verifiable in CI: $\text{State}(A) + \text{Transition}(A \to B) \equiv \text{State}(B)$.
+- **Current Schema as Single Source of Truth:** Developers and LLMs interact exclusively with the declarative schema of the current stage. Understanding the database never requires mentally reconstructing fragmented migration histories.
+- **Optional History Retention:** Migration history is an operational deployment detail retained only while active environments require it. Obsolete stages and transitions can be pruned cleanly without baseline reconstruction or squashing pain.
+- **Flyway Lifecycle Compatibility:** Proven Flyway-grade standards (versioned `V` and repeatable `R` scripts, SHA-256 checksum audits, baseline and repair workflows) are retained as execution foundations and legacy bridges.
 
 ### 1.4 Rust Strict Type Safety & Zero-Cost Guarantees
 - **Zero-Cost Abstractions:** Monomorphized query builders and phantom markers compile down to static SQL buffers and direct deserializers with zero virtual calls or reflection overhead.
@@ -94,12 +95,12 @@ Preventing the cryptic, 50-line compiler errors notorious in existing Rust ORMs:
 4. **Semantic Domain Markers:** Trait bounds use clear domain terminology (`ColumnBelongsTo<Table>`, `TableInScope<Table>`, `SqlCompatible<ColType, ValType>`).
 5. **Explicit Macro Diagnostics:** Macros produce intentional `compile_error!("...")` feedback with actionable guidance.
 
-### 3.3 Database-First Single Source of Truth & Drift Detection
-1. **Flyway-Compatible Migration Lifecycle:** Versioned migrations (`V...`), repeatable migrations (`R...`), deterministic execution ordering, checksum verification, and `__rurqe_schema_history` metadata tracking.
-2. **Catalog Introspection:** Introspects tables, views, primary/foreign keys, nullability, defaults, enums, JSONB, and UUIDs directly from the database catalog.
-3. **Deterministic Schema Lock (`schema.lock`):** Emits a canonical schema snapshot and embeds a compile-time checksum (`pub const SCHEMA_HASH: &str = "...";`) inside generated Rust code.
-4. **Continuous Drift Verification (`cargo db-verify`):** CI applies migrations on an ephemeral database and verifies bit-for-bit parity against `schema.lock` and `SCHEMA_HASH`.
-5. **Baseline Support:** `cargo db-baseline --version 1.0.0` allows onboarding legacy databases or squashing migration histories cleanly.
+### 3.3 Stage-Based Evolution & Deterministic Drift Verification
+1. **Stage-Based Evolution Architecture:** Stages define independently reproducible, verifiable schema states. Upgrades follow verified transition chains recorded in the `__rurqe_stage_history` directed acyclic graph.
+2. **AI-First Declarative Schema Context:** The current stage DDL serves as the single source of truth for both developers and LLMs, eliminating multi-migration context pollution and token waste.
+3. **Continuous Golden Verification (`cargo db-verify`):** Ephemeral CI runs verify that $\text{State}(A) + \text{Transition}(A \to B)$ matches $\text{State}(B)$ bit-for-bit against `schema.lock` and catalog snapshots.
+4. **Zero-Pain History Pruning:** Safe removal of obsolete stages when no deployed database requires them, with no baseline reconstruction needed.
+5. **Flyway-Grade Migration Support:** Full support for versioned migrations (`V...`), repeatable migrations (`R...`), deterministic ordering, SHA-256 integrity, and repair workflows for traditional setups.
 
 ---
 
@@ -111,6 +112,6 @@ Preventing the cryptic, 50-line compiler errors notorious in existing Rust ORMs:
 | **Null-Safety on Outer Joins** | Strict `Option<T>` compile-time lifting | Nullable at runtime (`NullPointerException` risk) | Optional in types, prone to `as` escapes | N/A (DDL-only) | Varies (complex macros or manual) |
 | **Ad-Hoc Named Projections** | Zero-boilerplate via `select!` | Record classes / ad-hoc tuples | Native object literals | N/A (DDL-only) | Tuples or manual DTO structs |
 | **Single Source of Truth** | DB-first codegen + `schema.lock` | DB-first codegen | DB-first types generator | Schema history table | Diesel: CLI / SQLx: offline JSON |
-| **Migration Integrity** | Flyway-grade (V + R, SHA-256, baseline) | External integration (Flyway/Liquibase) | External plugins / basic runners | Gold standard (V + R, repair, baseline) | Basic sequential up/down |
+| **Migration & Schema Evolution** | AI-First Stages + Flyway (Verifiable $A \to B$, optional history) | External integration (Flyway/Liquibase) | External plugins / basic runners | Gold standard (V + R, repair, baseline) | Basic sequential up/down |
 | **Error Message Ergonomics** | Tailored via `#[diagnostic]` & fail-fast | Clear compiler / runtime errors | TypeScript diagnostics | Clear CLI / log errors | Verbose multi-clause trait dumps |
 | **Runtime Overhead** | Zero-cost (no GC, monomorphized) | Moderate (GC allocations, reflection) | Moderate (V8 JS heap, string ops) | JVM startup / CLI process | Minimal (zero-cost) |

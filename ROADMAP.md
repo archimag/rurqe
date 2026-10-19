@@ -26,6 +26,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, zero-turbofish queries, automatic nullability, universal record synthesis | Two-Tier Architecture & Reference SQL DSL (Planned) |
 | **Phase 13** [ ] | Codebase Hardening & Conventions Refactoring | Large module decomposition (<800 LOC), panic-free typestate, tracing facade | Production Rigor & Standard Compliance (Planned) |
 | **Phase 14** [ ] | Rich Types & Custom Domain Types | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums | Type System Completeness & Domain Ergonomics (Planned) |
+| **Phase 15** [ ] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Planned) |
 
 ---
 
@@ -586,4 +587,44 @@ let tx = select!(
 .from(Transactions)
 .where_(Transactions::TxId.eq(target_txid))
 .fetch_optional(&mut conn)?;
+```
+
+---
+
+## Phase 15: Stage-Based Schema Evolution (AI-First Database Lifecycle) [Planned]
+
+### Objective
+Replace traditional migration-centric fragmentation with **Stage-Based Schema Evolution** optimized for AI-first development: every stage contains a complete, declarative SQL schema definition capable of standalone initialization; explicit transitions ($A \to B$) define upgrade paths combining DDL and data transformations; and transitions are mathematically verified in CI ($\text{State}(A) + \text{Transition}(A \to B) \equiv \text{State}(B)$). Obsolete historical stages can be pruned freely once no deployed databases depend on them, eliminating migration squashing and baseline reconstruction debt.
+
+### Key Deliverables
+- [ ] **Declarative Stage Architecture:**
+  - Stage directory structure (`stages/<stage_id>/`) containing complete, self-contained declarative SQL schemas (splittable across multiple files, e.g. `schema/users.sql`, `schema/billing.sql`).
+  - Standalone stage initialization: any stage can instantly initialize an empty database (for ephemeral CI runs, local dev, or integration tests) in a single step without playing historical migrations.
+- [ ] **Transition Verification Engine ($\text{State}(A) + \text{Transition} \equiv \text{State}(B)$):**
+  - Verification workflow in `cargo db-verify`:
+    1. Initialize Database 1 directly to Target Stage $B$ via declarative DDL $\to$ snapshot catalog $K_B$.
+    2. Initialize Database 2 to Stage $A$ $\to$ apply `Transition(A -> B)` $\to$ snapshot catalog $K_{A \to B}$.
+    3. Compare $K_B$ and $K_{A \to B}$ bit-for-bit via `SchemaDiff`. Fail with detailed drift diagnostics on any divergence.
+- [ ] **Stage History Graph & Runner (`__rurqe_stage_history`):**
+  - Directed transition history table tracking applied stage IDs, predecessor references, transition SHA-256 checksums, and execution timestamps.
+  - Automated transition path resolution: given the current database stage and target stage, find and sequentially execute the verified transition path.
+- [ ] **Zero-Pain History Retention & Pruning:**
+  - Freedom to prune obsolete stages (`rm -rf stages/001..010`) once all production and staging environments have reached or passed Stage 011.
+  - No baseline rewriting, no checksum invalidation, and no migration squashing required.
+- [ ] **Developer & AI Tooling in `rurqe-cli`:**
+  - `cargo db stage commit -m "..."`: introspects differences between working declarative schema and the previous stage, commits the new stage artifact, and generates a transition template.
+  - Backward compatibility bridge: seamless import/export between classic Flyway versioned scripts and stage definitions.
+
+### Conceptual Layout
+```text
+stages/
+├── 001_initial/
+│   └── schema.sql                # Complete declarative DDL for Stage 1
+├── 002_billing/
+│   ├── schema/                   # Complete declarative DDL for Stage 2
+│   │   ├── users.sql
+│   │   └── billing.sql
+│   └── transitions/
+│       └── from_001.sql          # Verified upgrade instructions (DDL + DML)
+└── current -> 002_billing/       # Active stage: SSOT for developers and LLMs
 ```
