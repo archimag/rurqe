@@ -23,6 +23,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 9** [x] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Completed) |
 | **Phase 10** [x] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Completed) |
 | **Phase 11** [x] | Vision Alignment & Semantic Ergonomics | Actionable diagnostics, fluent predicates, ergonomic aliases, multi-table DML | Reference Ergonomics & Soundness (Completed) |
+| **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, automatic nullability, universal record synthesis, GROUP BY soundness | Two-Tier Architecture & Reference SQL DSL (Planned) |
 
 ---
 
@@ -456,3 +457,49 @@ Align all RURQE APIs and compiler behaviors with the core Vision requirements (A
 - [x] **Verification & LLM Documentation:**
   - Negative compile-fail doctests asserting actionable error messages.
   - Complete update of `llms.txt` reflecting the pure, unencumbered SQL DSL.
+
+---
+
+## Phase 12: Two-Tier Architecture & High-Level SQL DSL [Planned]
+
+### Objective
+Establish a clean two-tier architecture separating the internal monomorphized relational IR from the primary public SQL DSL. Eliminate type-system machinery leaks (turbofish on ZST column markers, manual `.nullable()` lifting, tuple projections) in favor of value-based schema instances (`users.id`), automatic nullability inference from relation provenance, universal named record synthesis in `select!`, and systematic relational correctness (such as compile-time `GROUP BY` soundness).
+
+### Key Deliverables
+- [ ] **Tiered Architecture (High-Level DSL over Relational IR):**
+  - High-Level Tier 1 DSL operating strictly in SQL domain concepts without exposing traits or position markers.
+  - Tier 2 typed AST and capability-gated builder retained as the robust relational IR backend.
+- [ ] **Value-Based Schema & Unified Expression Model:**
+  - Codegen and `table!` generate schema objects/values (`users.id`, `orders.total`) that directly implement `SQLExpression<T>`, eliminating `Expr::column::<Col>()` turbofish calls.
+  - Fluent operator and method calls directly on columns (`users.age.gt(18)`, `users.name.like("%admin%")`).
+  - Value-based table aliasing (`let u1 = users.as_alias("u1");`) without raw `AliasedCol<A, C>` wrappers.
+- [ ] **Automatic Nullability Inference on Outer Joins:**
+  - Outer joins mark relation scopes (`NullableRelation<T>`); columns projected from outer joins automatically lift their types to `Option<T>` without explicit `.nullable::<Col>()` calls.
+- [ ] **Universal Named Record Projections:**
+  - Macro `select!` synthesizes strongly typed ad-hoc structs for any projection items (columns, computed expressions, aggregates, aliased fields), making named field access (`row.id`, `row.total`) universal and phasing out manual tuple indexing.
+- [ ] **Systematic SQL Soundness (GROUP BY Validation):**
+  - Typestate transition to `GroupedQuery` upon `.group_by(...)`, statically restricting projected fields to grouped columns or aggregate expressions, preventing runtime SQL grouping errors at compile time.
+- [ ] **Domain-Specific Diagnostics & Error Reporting:**
+  - Semantic compiler messages in pure SQL terminology, pinpointing out-of-scope tables and grouping violations without exposing inductive position markers (`Next<P>`, `At<0>`).
+
+### Example Usage
+```rust
+use rurqe::prelude::*;
+
+// 1. Value-based schema expressions, automatic outer-join nullability, and GROUP BY validation
+let report = select! {
+    users.id,
+    users.name,
+    order_count: count(orders.id),
+    total_spent: coalesce(sum(orders.total), 0.0),
+}
+.from(users)
+.left_join(orders, orders.user_id.eq(users.id))
+.group_by((users.id, users.name))
+.having(count(orders.id).gt(0))
+.fetch_all(&db)?;
+
+for r in report {
+    println!("User {} (id: {}) spent {}", r.name, r.id, r.total_spent);
+}
+```
