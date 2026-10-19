@@ -113,10 +113,17 @@ mod pg_support {
     }
 
     /// Executes `query` through an asynchronous client without decoding rows.
-    pub(crate) async fn fetch_raw_async(
-        client: &tokio_postgres::Client,
+    ///
+    /// The helper accepts any [`tokio_postgres::GenericClient`] — a plain
+    /// client, a pooled client, or an open transaction — so the parameter
+    /// binding logic is shared by every asynchronous adapter.
+    pub(crate) async fn fetch_raw_async<C>(
+        client: &C,
         query: &BuiltQuery,
-    ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+    ) -> Result<Vec<Vec<SqlVal>>, PgError>
+    where
+        C: tokio_postgres::GenericClient,
+    {
         let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
         let refs: Vec<&(dyn ToSql + Sync)> = params
             .iter()
@@ -127,10 +134,13 @@ mod pg_support {
     }
 
     /// Executes `query` through an asynchronous client and returns affected rows.
-    pub(crate) async fn execute_raw_async(
-        client: &tokio_postgres::Client,
+    pub(crate) async fn execute_raw_async<C>(
+        client: &C,
         query: &BuiltQuery,
-    ) -> Result<u64, PgError> {
+    ) -> Result<u64, PgError>
+    where
+        C: tokio_postgres::GenericClient,
+    {
         let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
         let refs: Vec<&(dyn ToSql + Sync)> = params
             .iter()
@@ -140,11 +150,12 @@ mod pg_support {
     }
 
     /// Executes `query` through an asynchronous client and decodes every row.
-    pub(crate) async fn fetch_all_async<Q>(
-        client: &tokio_postgres::Client,
+    pub(crate) async fn fetch_all_async<Q, C>(
+        client: &C,
         query: &Q,
     ) -> Result<Vec<Q::Row>, ExecutionError<PgError>>
     where
+        C: tokio_postgres::GenericClient,
         Q: ExecutableQuery,
         Q::Row: FromRow,
     {
@@ -313,9 +324,6 @@ mod pg_support {
 /// Asynchronous execution adapter over [`tokio_postgres::Client`].
 #[cfg(feature = "tokio-postgres")]
 mod async_backend {
-    use std::future::Future;
-    use std::pin::Pin;
-
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{BuiltQuery, ExecutableQuery, ExecutionError};
     use rurqe_core::row::FromRow;
@@ -403,36 +411,98 @@ mod async_backend {
                 .map_err(ExecutionError::Backend)
         }
 
-        /// Runs `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
+        /// Begins a transaction over the connection.
         ///
-        /// The closure receives a mutable borrow of the connection and returns a
-        /// boxed future, so queries can be awaited inside the transaction. Any
-        /// error returned by `f` rolls the transaction back.
-        pub async fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
+        /// The returned [`PgAsyncTransaction`] issues `COMMIT` only when
+        /// [`commit`](PgAsyncTransaction::commit) is called and rolls the
+        /// transaction back when it is dropped, so a returned error, a panic, and
+        /// a cancelled future all leave the connection without an open
+        /// transaction.
+        pub async fn transaction(&mut self) -> Result<PgAsyncTransaction<'_>, PgError> {
+            let inner = self.client.transaction().await?;
+            Ok(PgAsyncTransaction { inner })
+        }
+    }
+
+    /// An open transaction started by [`PgAsyncConnection::transaction`].
+    ///
+    /// The wrapper runs the query helpers on the transactional connection and
+    /// keeps the transaction alive across `await` points. Committing is explicit:
+    /// dropping the handle without calling [`commit`](PgAsyncTransaction::commit)
+    /// rolls the transaction back, so a cancelled future or a panicking block
+    /// never leaves partial work behind — the driver issues the `ROLLBACK` from
+    /// `Drop` without awaiting anything.
+    pub struct PgAsyncTransaction<'a> {
+        inner: tokio_postgres::Transaction<'a>,
+    }
+
+    impl PgAsyncTransaction<'_> {
+        /// Executes `query` and returns every produced row as ordered values.
+        pub async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+            fetch_raw_async(&self.inner, query).await
+        }
+
+        /// Executes `query` without decoding rows and returns the affected rows.
+        pub async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
+            execute_raw_async(&self.inner, query).await
+        }
+
+        /// Executes `query` and decodes every produced row.
+        pub async fn fetch_all<Q>(&self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<PgError>>
         where
-            F: for<'a> FnOnce(
-                &'a mut PgAsyncConnection,
-            ) -> Pin<Box<dyn Future<Output = Result<T, E>> + 'a>>,
-            E: From<PgError>,
+            Q: ExecutableQuery,
+            Q::Row: FromRow,
         {
-            self.client
-                .batch_execute("BEGIN")
-                .await
-                .map_err(|error| E::from(PgError::from(error)))?;
-            let outcome = f(self).await;
-            match outcome {
-                Ok(value) => {
-                    self.client
-                        .batch_execute("COMMIT")
-                        .await
-                        .map_err(|error| E::from(PgError::from(error)))?;
-                    Ok(value)
-                }
-                Err(error) => {
-                    let _ = self.client.batch_execute("ROLLBACK").await;
-                    Err(error)
-                }
+            fetch_all_async(&self.inner, query).await
+        }
+
+        /// Executes `query` and decodes at most one row.
+        pub async fn fetch_optional<Q>(
+            &self,
+            query: &Q,
+        ) -> Result<Option<Q::Row>, ExecutionError<PgError>>
+        where
+            Q: ExecutableQuery,
+            Q::Row: FromRow,
+        {
+            let rows = self.fetch_all(query).await?;
+            match rows.len() {
+                0 => Ok(None),
+                1 => Ok(rows.into_iter().next()),
+                count => Err(ExecutionError::MultipleRows { count }),
             }
+        }
+
+        /// Executes `query` and decodes exactly one row.
+        pub async fn fetch_one<Q>(&self, query: &Q) -> Result<Q::Row, ExecutionError<PgError>>
+        where
+            Q: ExecutableQuery,
+            Q::Row: FromRow,
+        {
+            self.fetch_optional(query)
+                .await?
+                .ok_or(ExecutionError::NoRows)
+        }
+
+        /// Executes `query` and returns the number of affected rows.
+        pub async fn execute<Q>(&self, query: &Q) -> Result<u64, ExecutionError<PgError>>
+        where
+            Q: ExecutableQuery,
+        {
+            let built = query.build_query();
+            self.execute_raw(&built)
+                .await
+                .map_err(ExecutionError::Backend)
+        }
+
+        /// Commits the transaction, persisting all its work.
+        pub async fn commit(self) -> Result<(), PgError> {
+            Ok(self.inner.commit().await?)
+        }
+
+        /// Rolls the transaction back, discarding all its work.
+        pub async fn rollback(self) -> Result<(), PgError> {
+            Ok(self.inner.rollback().await?)
         }
     }
 }
@@ -480,22 +550,28 @@ mod sync_backend {
         ///
         /// The block executes between `BEGIN` and `COMMIT`; any error returned by
         /// `f` rolls the transaction back, so a failed block never leaves partial
-        /// work behind.
+        /// work behind. A panicking block is rolled back before the panic is
+        /// resumed, so unwinding never leaves an open transaction on the
+        /// connection either.
         pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
         where
             F: FnOnce(&mut PgConnection) -> Result<T, E>,
             E: From<PgError>,
         {
             self.begin(None).map_err(E::from)?;
-            let outcome = f(self);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
             match outcome {
-                Ok(value) => {
+                Ok(Ok(value)) => {
                     self.commit().map_err(E::from)?;
                     Ok(value)
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     let _ = self.rollback();
                     Err(error)
+                }
+                Err(payload) => {
+                    let _ = self.rollback();
+                    std::panic::resume_unwind(payload)
                 }
             }
         }
@@ -549,13 +625,13 @@ mod deadpool_backend {
         /// Executes `query` and returns every produced row as ordered values.
         pub async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
             let client = self.pool.get().await.map_err(PgError::Pool)?;
-            fetch_raw_async(&client, query).await
+            fetch_raw_async(&*client, query).await
         }
 
         /// Executes `query` without decoding rows and returns the affected rows.
         pub async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
             let client = self.pool.get().await.map_err(PgError::Pool)?;
-            execute_raw_async(&client, query).await
+            execute_raw_async(&*client, query).await
         }
 
         /// Executes `query` and decodes every produced row.
@@ -569,7 +645,7 @@ mod deadpool_backend {
                 .get()
                 .await
                 .map_err(|error| ExecutionError::Backend(PgError::Pool(error)))?;
-            fetch_all_async(&client, query).await
+            fetch_all_async(&*client, query).await
         }
 
         /// Executes `query` and decodes at most one row.
@@ -692,7 +768,7 @@ mod r2d2_backend {
 }
 
 #[cfg(feature = "tokio-postgres")]
-pub use async_backend::PgAsyncConnection;
+pub use async_backend::{PgAsyncConnection, PgAsyncTransaction};
 #[cfg(feature = "deadpool-postgres")]
 pub use deadpool_backend::PgAsyncPool;
 #[cfg(feature = "tokio-postgres")]
