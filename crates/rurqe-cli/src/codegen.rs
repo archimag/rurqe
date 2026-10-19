@@ -24,7 +24,7 @@ const RUST_KEYWORDS: &[&str] = &[
 ];
 
 /// Keywords that cannot be spelled as raw identifiers and are suffixed instead.
-const NON_RAW_KEYWORDS: &[&str] = &["crate", "self", "Self", "super", "_"];
+const NON_RAW_KEYWORDS: &[&str] = &["crate", "self", "super", "_"];
 
 /// Options controlling code generation.
 #[derive(Debug, Clone)]
@@ -35,9 +35,17 @@ pub struct CodegenOptions {
     pub generate_records: bool,
     /// Rust types keyed by their `table.column` schema path.
     ///
-    /// An override replaces the engine-neutral type mapping of a column, so
-    /// domain newtypes survive code generation. See [`crate::config`].
+    /// An override replaces the mapped type of a column, so domain newtypes
+    /// survive code generation. See [`crate::config`].
     pub type_overrides: BTreeMap<String, String>,
+    /// Whether `Uuid`, `Json`, `Timestamp`, and `Date` columns map onto their
+    /// domain types instead of `String`.
+    ///
+    /// The default mapping keeps the generated module compilable without extra
+    /// dependencies, so the domain mapping is opt-in: enabling it makes the
+    /// generated module require the `uuid`, `chrono`, and `serde_json` features
+    /// of the `rurqe` facade.
+    pub domain_types: bool,
 }
 
 impl Default for CodegenOptions {
@@ -50,6 +58,7 @@ impl Default for CodegenOptions {
             ),
             generate_records: true,
             type_overrides: BTreeMap::new(),
+            domain_types: false,
         }
     }
 }
@@ -188,7 +197,7 @@ fn build_plan<'a>(
                 name: column.name.as_str(),
                 marker_ident,
                 field_ident,
-                rust_type: column_rust_type(table.name.as_str(), column, &options.type_overrides),
+                rust_type: column_rust_type(table.name.as_str(), column, options),
             });
         }
 
@@ -316,19 +325,19 @@ fn table_type_ident(name: &str) -> String {
 
 /// Resolves the Rust type generated for `column`, honouring project overrides.
 ///
-/// An override replaces the engine-neutral mapping entirely and keeps the
-/// column's nullability, so `uuid::Uuid` stays `uuid::Uuid` for a `NOT NULL`
-/// column and becomes `Option<uuid::Uuid>` for a nullable one.
-fn column_rust_type(
-    table: &str,
-    column: &ColumnDef,
-    overrides: &BTreeMap<String, String>,
-) -> String {
+/// An override replaces the mapped type entirely and keeps the column's
+/// nullability, so `uuid::Uuid` stays `uuid::Uuid` for a `NOT NULL` column and
+/// becomes `Option<uuid::Uuid>` for a nullable one.
+fn column_rust_type(table: &str, column: &ColumnDef, options: &CodegenOptions) -> String {
     let path = format!("{table}.{}", column.name);
 
-    match overrides.get(&path).map(|rust_type| rust_type.trim()) {
+    match options
+        .type_overrides
+        .get(&path)
+        .map(|rust_type| rust_type.trim())
+    {
         Some(rust_type) if !rust_type.is_empty() => apply_nullability(rust_type, column.nullable),
-        _ => type_kind_to_rust_type(&column.type_kind, column.nullable),
+        _ => type_kind_to_rust_type(&column.type_kind, column.nullable, options.domain_types),
     }
 }
 
@@ -344,14 +353,16 @@ fn apply_nullability(rust_type: &str, nullable: bool) -> String {
 
 /// Maps a catalog type onto the Rust type carried by the generated markers.
 ///
-/// Primitive SQL types map onto their Rust counterparts. `Uuid`, `Json`,
-/// `Timestamp`, `Date` and engine-specific `Other` columns are represented as
-/// `String`, because the execution adapters decode those SQL types as text; no
-/// dedicated Rust wrapper types exist for them yet. Integer width follows the
-/// catalog: SQLite reports every integer column as `Int64`, while PostgreSQL
-/// distinguishes `Int32` from `Int64`, so an `i32` column is never widened
-/// silently.
-fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool) -> String {
+/// Integer width follows the catalog: SQLite reports every integer column as
+/// `Int64`, while PostgreSQL distinguishes `Int32` from `Int64`, so an `i32`
+/// column is never widened silently.
+///
+/// `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific `Other` columns are
+/// represented as `String` by default, because the generated module then compiles
+/// without extra dependencies. With [`CodegenOptions::domain_types`] enabled they
+/// map onto `uuid::Uuid`, `serde_json::Value`, `chrono::NaiveDateTime`, and
+/// `chrono::NaiveDate` instead.
+fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -> String {
     let base = match kind {
         TypeKind::Boolean => "bool",
         TypeKind::Int32 => "i32",
@@ -359,10 +370,11 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool) -> String {
         TypeKind::Float64 => "f64",
         TypeKind::Text => "String",
         TypeKind::Bytes => "Vec<u8>",
-        TypeKind::Uuid => "String",
-        TypeKind::Json => "String",
-        TypeKind::Timestamp => "String",
-        TypeKind::Date => "String",
+        TypeKind::Uuid if domain_types => "uuid::Uuid",
+        TypeKind::Json if domain_types => "serde_json::Value",
+        TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime",
+        TypeKind::Date if domain_types => "chrono::NaiveDate",
+        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String",
         TypeKind::Other(_) => "String",
     };
 
@@ -409,8 +421,9 @@ pub fn to_pascal_case(s: &str) -> String {
 /// Characters outside `[A-Za-z0-9]` become `_` and a leading digit is prefixed
 /// with `_`, so every schema name yields a valid identifier. Rust keywords are
 /// escaped as raw identifiers (`type` becomes `r#type`), except the handful that
-/// cannot be raw identifiers (`crate`, `self`, `Self`, `super`, `_`), which are
-/// suffixed with `_` instead.
+/// cannot be raw identifiers (`crate`, `self`, `super`, `_`), which are
+/// suffixed with `_` instead. Every keyword is matched after lowercasing, so
+/// `Self` escapes exactly like `self`.
 pub fn to_safe_ident(s: &str) -> String {
     let snake = sanitize_snake_case(s);
 
@@ -626,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn type_overrides_replace_the_engine_neutral_mapping() {
+    fn type_overrides_replace_the_default_mapping() {
         let catalog = SchemaCatalog::new(vec![TableDef::new(
             "users",
             vec![
@@ -698,5 +711,72 @@ mod tests {
 
         assert!(code.contains("UsersEmail => \"email\": String"));
         assert!(!code.contains("Money"));
+    }
+
+    #[test]
+    fn domain_types_map_uuid_json_and_temporal_columns() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "events",
+            vec![
+                ColumnDef::new("id", TypeKind::Uuid, false),
+                ColumnDef::new("payload", TypeKind::Json, true),
+                ColumnDef::new("created_at", TypeKind::Timestamp, false),
+                ColumnDef::new("on_day", TypeKind::Date, true),
+            ],
+            Vec::new(),
+        )]);
+
+        let options = CodegenOptions {
+            domain_types: true,
+            ..CodegenOptions::default()
+        };
+        let code = generate_schema_rs(&catalog, &options).expect("codegen succeeds");
+
+        assert!(code.contains("EventsId => \"id\": uuid::Uuid"));
+        assert!(code.contains("EventsPayload => \"payload\": Option<serde_json::Value>"));
+        assert!(code.contains("EventsCreatedAt => \"created_at\": chrono::NaiveDateTime"));
+        assert!(code.contains("EventsOnDay => \"on_day\": Option<chrono::NaiveDate>"));
+    }
+
+    #[test]
+    fn domain_types_are_opt_in() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "events",
+            vec![
+                ColumnDef::new("id", TypeKind::Uuid, false),
+                ColumnDef::new("created_at", TypeKind::Timestamp, true),
+            ],
+            Vec::new(),
+        )]);
+
+        let code =
+            generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
+
+        assert!(code.contains("EventsId => \"id\": String"));
+        assert!(code.contains("EventsCreatedAt => \"created_at\": Option<String>"));
+        assert!(!code.contains("uuid::"));
+        assert!(!code.contains("chrono::"));
+    }
+
+    #[test]
+    fn domain_types_still_yield_to_column_overrides() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "events",
+            vec![ColumnDef::new("id", TypeKind::Uuid, false)],
+            Vec::new(),
+        )]);
+
+        let mut options = CodegenOptions {
+            domain_types: true,
+            ..CodegenOptions::default()
+        };
+        options
+            .type_overrides
+            .insert("events.id".to_owned(), "EventId".to_owned());
+
+        let code = generate_schema_rs(&catalog, &options).expect("codegen succeeds");
+
+        assert!(code.contains("EventsId => \"id\": EventId"));
+        assert!(!code.contains("uuid::"));
     }
 }
