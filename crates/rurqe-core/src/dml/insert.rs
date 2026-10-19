@@ -10,25 +10,84 @@
 //! ```
 
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
-use crate::query::{BuiltQuery, Selection};
-use crate::schema::Table;
+use crate::expr::SqlVal;
+use crate::query::{BuiltQuery, SelectQuery, Selection, TableScope};
+use crate::schema::{Column, ColumnBelongsTo, Table};
+
+/// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InsertedSelect<Row>(PhantomData<fn() -> Row>);
+
+/// Marker representing target columns configured for an `INSERT INTO ... SELECT` statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct InsertColumnsTarget<Cols>(PhantomData<fn() -> Cols>);
+
+/// A column or tuple of columns for the target column list of an `INSERT INTO ... SELECT` statement.
+///
+/// Ensures at compile time that every column belongs to table `T` and infers the expected
+/// row type for the corresponding `SELECT` subquery.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid column list for table `{T}`",
+    label = "columns must belong to table `{T}`",
+    note = "ensure all columns are members of `{T}` using column markers or tuples of column markers"
+)]
+pub trait InsertColumns<T: Table> {
+    /// The tuple of Rust types matching the selected column values.
+    type Row;
+
+    /// Appends the target column names to `out`.
+    fn push_column_names(&self, out: &mut Vec<&'static str>);
+}
+
+impl<T: Table, C: Column + ColumnBelongsTo<T>> InsertColumns<T> for C {
+    type Row = (C::RustType,);
+
+    fn push_column_names(&self, out: &mut Vec<&'static str>) {
+        out.push(C::NAME);
+    }
+}
+
+macro_rules! impl_insert_columns {
+    ($($col:ident),+) => {
+        impl<T: Table, $($col: Column + ColumnBelongsTo<T>),+> InsertColumns<T> for ($($col,)+) {
+            type Row = ($($col::RustType,)+);
+
+            fn push_column_names(&self, out: &mut Vec<&'static str>) {
+                $(out.push($col::NAME);)+
+            }
+        }
+    };
+}
+
+impl_insert_columns!(C1);
+impl_insert_columns!(C1, C2);
+impl_insert_columns!(C1, C2, C3);
+impl_insert_columns!(C1, C2, C3, C4);
+impl_insert_columns!(C1, C2, C3, C4, C5);
+impl_insert_columns!(C1, C2, C3, C4, C5, C6);
+impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7);
+impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7, C8);
+
+type SelectRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
 
 /// An `INSERT` statement over the table `T`.
 ///
-/// `Values` is the [`AssignmentSet`] type of a single inserted row and changes
-/// from `()` once [`InsertQuery::values`] or [`InsertQuery::values_many`] is
-/// called, so rows may only be supplied once. `Returning` becomes the row type
-/// of the [`InsertQuery::returning`] selection once it is set, and the optional
-/// [`Conflict`] clause is recorded by
+/// `Values` is the [`AssignmentSet`] type of a single inserted row or [`InsertedSelect`]
+/// and changes from `()` once [`InsertQuery::values`], [`InsertQuery::values_many`],
+/// or [`InsertQuery::from_select`] is called, so rows may only be supplied once.
+/// `Returning` becomes the row type of the [`InsertQuery::returning`] selection once
+/// it is set, and the optional [`Conflict`] clause is recorded by
 /// [`on_conflict`](InsertQuery::on_conflict) and
 /// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing).
 pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
     columns: Vec<&'static str>,
     rows: Vec<Vec<AssignValue>>,
+    select: Option<SelectRenderer>,
     conflict: Option<Conflict>,
     returning: Vec<&'static str>,
     _marker: InsertMarker<D, T, Values, Returning>,
@@ -47,6 +106,7 @@ impl<D: Dialect, T: Table> InsertQuery<D, T, (), ()> {
         InsertQuery {
             columns: Vec::new(),
             rows: Vec::new(),
+            select: None,
             conflict: None,
             returning: Vec::new(),
             _marker: PhantomData,
@@ -79,6 +139,51 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         for set in rows {
             self.push_row(&set);
         }
+        self.retype()
+    }
+
+    /// Specifies the target columns for an `INSERT INTO ... SELECT` statement.
+    pub fn columns<Cols: InsertColumns<T>>(
+        mut self,
+        columns: Cols,
+    ) -> InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning> {
+        columns.push_column_names(&mut self.columns);
+        self.retype()
+    }
+
+    /// Configures the statement to insert rows from `select` into `columns`.
+    pub fn from_select<Cols, S>(
+        mut self,
+        columns: Cols,
+        select: SelectQuery<D, S, Cols::Row>,
+    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning>
+    where
+        Cols: InsertColumns<T>,
+        S: TableScope + 'static,
+        Cols::Row: 'static,
+    {
+        columns.push_column_names(&mut self.columns);
+        self.select = Some(Arc::new(move |sql, params| {
+            select.render_into(sql, params);
+        }));
+        self.retype()
+    }
+}
+
+impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
+    InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning>
+{
+    /// Configures the statement to insert rows produced by `select` into the specified columns.
+    pub fn from_select<S: TableScope + 'static>(
+        mut self,
+        select: SelectQuery<D, S, Cols::Row>,
+    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning>
+    where
+        Cols::Row: 'static,
+    {
+        self.select = Some(Arc::new(move |sql, params| {
+            select.render_into(sql, params);
+        }));
         self.retype()
     }
 }
@@ -148,8 +253,8 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
     /// Renders the statement into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
         assert!(
-            !self.rows.is_empty(),
-            "an INSERT requires at least one row; call `values` or `values_many` before `build`"
+            !self.rows.is_empty() || self.select.is_some(),
+            "an INSERT requires at least one row or a SELECT query; call `values`, `values_many`, or `from_select` before `build`"
         );
 
         let mut sql = String::from("INSERT INTO ");
@@ -162,27 +267,33 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
             }
             D::push_quoted_identifier(&mut sql, name);
         }
-        sql.push_str(") VALUES ");
+        sql.push(')');
 
         let mut params = Vec::new();
-        for (row_index, row) in self.rows.iter().enumerate() {
-            if row_index > 0 {
-                sql.push_str(", ");
-            }
-            sql.push('(');
-            for (value_index, value) in row.iter().enumerate() {
-                if value_index > 0 {
+        if let Some(render_select) = &self.select {
+            sql.push(' ');
+            render_select(&mut sql, &mut params);
+        } else {
+            sql.push_str(" VALUES ");
+            for (row_index, row) in self.rows.iter().enumerate() {
+                if row_index > 0 {
                     sql.push_str(", ");
                 }
-                match value {
-                    AssignValue::Value(inner) => {
-                        params.push(inner.clone());
-                        D::push_placeholder(&mut sql, params.len());
+                sql.push('(');
+                for (value_index, value) in row.iter().enumerate() {
+                    if value_index > 0 {
+                        sql.push_str(", ");
                     }
-                    AssignValue::Default => sql.push_str("DEFAULT"),
+                    match value {
+                        AssignValue::Value(inner) => {
+                            params.push(inner.clone());
+                            D::push_placeholder(&mut sql, params.len());
+                        }
+                        AssignValue::Default => sql.push_str("DEFAULT"),
+                    }
                 }
+                sql.push(')');
             }
-            sql.push(')');
         }
 
         if let Some(conflict) = &self.conflict {
@@ -203,6 +314,10 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
     }
 
     fn push_row<S: AssignmentSet<T>>(&mut self, set: &S) {
+        assert!(
+            self.select.is_none(),
+            "cannot add VALUES rows to an INSERT statement configured with `from_select`"
+        );
         let mut assignments = Vec::new();
         set.extend_assignments(&mut assignments);
         assert!(
@@ -243,6 +358,7 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         InsertQuery {
             columns: self.columns,
             rows: self.rows,
+            select: self.select,
             conflict: self.conflict,
             returning: self.returning,
             _marker: PhantomData,
@@ -279,6 +395,13 @@ mod tests {
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
+        }
+    }
+
+    crate::table! {
+        ArchiveUser => "archive_users" {
+            ArchiveId => "old_id": i64,
+            ArchiveName => "old_name": String,
         }
     }
 
@@ -454,5 +577,91 @@ mod tests {
                 SqlVal::Text("bob".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn from_select_with_columns_renders_insert_select_sql_and_binds_parameters() {
+        use crate::expr::Expr;
+
+        let source = SelectQuery::<MockDialect>::new()
+            .from::<ArchiveUser>()
+            .select((ArchiveId, ArchiveName))
+            .where_(Expr::column::<ArchiveId>().gt(10i64));
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .columns((UserId, UserName))
+            .from_select(source)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") SELECT \"old_id\", \"old_name\" FROM \"archive_users\" WHERE (\"old_id\" > $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(10)]);
+    }
+
+    #[test]
+    fn from_select_direct_accepts_columns_and_select() {
+        use crate::expr::Expr;
+
+        let source = SelectQuery::<MockDialect>::new()
+            .from::<ArchiveUser>()
+            .select((ArchiveId, ArchiveName))
+            .where_(Expr::column::<ArchiveId>().gt(5i64));
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .from_select((UserId, UserName), source)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") SELECT \"old_id\", \"old_name\" FROM \"archive_users\" WHERE (\"old_id\" > $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(5)]);
+    }
+
+    #[test]
+    fn from_select_supports_returning_and_on_conflict() {
+        use crate::expr::Expr;
+
+        let source = SelectQuery::<MockDialect>::new()
+            .from::<ArchiveUser>()
+            .select((ArchiveId, ArchiveName))
+            .where_(Expr::column::<ArchiveId>().gt(1i64));
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .columns((UserId, UserName))
+            .from_select(source)
+            .on_conflict((UserId,))
+            .do_update(UserName::set("migrated"))
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") SELECT \"old_id\", \"old_name\" FROM \"archive_users\" WHERE (\"old_id\" > $1) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $2 RETURNING \"id\", \"name\""
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("migrated".to_owned())]
+        );
+    }
+
+    #[test]
+    fn from_select_supports_single_column_target() {
+        let source = SelectQuery::<MockDialect>::new()
+            .from::<ArchiveUser>()
+            .select((ArchiveId,));
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .columns(UserId)
+            .from_select(source)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\") SELECT \"old_id\" FROM \"archive_users\""
+        );
+        assert!(built.params.is_empty());
     }
 }
