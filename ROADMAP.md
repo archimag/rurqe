@@ -19,7 +19,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 5** [x] | Codegen, Migrations & Drift Verification | CLI introspection, migration engine, baseline & `schema.lock` | Zero-Boilerplate & Verified Integrity (Completed) |
 | **Phase 6** [x] | Multi-Dialect & Execution Adapters | SQLite dialect (`Sqlite<V>`), dual engine (`tokio-postgres`/`postgres`/`rusqlite`) | Multi-Engine Execution Layer (Completed) |
 | **Phase 7** [x] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready (Completed) |
-| **Phase 8** [ ] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity |
+| **Phase 8** [x] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity (Completed) |
 
 ---
 
@@ -283,42 +283,46 @@ let result = db.transaction(|tx| {
 
 ---
 
-## Phase 8: Advanced SQL Expressiveness & SQLite Toolchain Parity
+## Phase 8: Advanced SQL Expressiveness & SQLite Toolchain Parity [Completed]
 
 ### Objective
 Broaden SQL relational expressiveness with window functions, Common Table Expressions (CTEs), type-safe raw SQL escape hatches, and complete SQLite CLI introspection parity.
 
 ### Key Deliverables
-- **SQLite CLI Introspection & Drift Parity:**
+- [x] **SQLite CLI Introspection & Drift Parity:**
   - Full catalog introspection for SQLite (`sqlite_master`, `PRAGMA table_info`, `PRAGMA foreign_key_list`).
   - Unified `cargo db-codegen` and `cargo db-verify` across both PostgreSQL and SQLite URLs.
-- **Window Functions:**
-  - `OVER (PARTITION BY ... ORDER BY ...)` clause builder.
+- [x] **Window Functions:**
+  - `OVER (PARTITION BY ... ORDER BY ...)` clause builder (`Window`, `WindowSpec`).
   - Typed window operators: `row_number()`, `rank()`, `dense_rank()`, `lag()`, `lead()`.
-- **Common Table Expressions (CTEs):**
-  - Type-safe `WITH cte AS (...) SELECT ...` query composition.
-- **Safe Raw SQL Escape Hatches:**
-  - `sql!(...)` with bound parameter interpolation for engine-specific functions.
+  - Type-safe integration into `.select(...)` projections preserving `FromRow` tuple decoding.
+- [x] **Common Table Expressions (CTEs):**
+  - Type-safe `WITH cte AS (...) SELECT ...` query composition (`cte`, `cte_named`).
+  - Sequential parameter binding and integration with `TableScope` joins.
+- [x] **Safe Raw SQL Escape Hatches:**
+  - `sql!(...)` and `raw_sql!(...)` procedural macros with bound `SqlVal` parameter interpolation and compile-time placeholder arity validation.
 
+### Example Usage
 ```rust
 use rurqe::prelude::*;
-use rurqe::sqlite::rusqlite::Connection;
 
-table! {
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-    }
-}
+// 1. Analytical window functions with OVER clause
+let ranked_query = select_from::<Postgres, Employee>()
+    .select((
+        EmployeeId,
+        row_number().over(Window::new().partition_by(DepartmentId).order_by_desc(Salary)),
+    ));
 
-let mut db = SqliteConnection::new(Connection::open_in_memory()?);
-db.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);")?;
-
-insert_into::<Sqlite<Sqlite3_35>, User>()
-    .values((UserId::set(1i64), UserName::set("root")))
-    .execute(&mut db)?;
-
-let rows = select_from::<Sqlite<Sqlite3_35>, User>()
+// 2. Common Table Expressions (WITH cte AS ...)
+let active_cte = select_from::<Postgres, User>()
     .select((UserId, UserName))
-    .fetch_all(&mut db)?;
+    .where_(IsActive.eq(true))
+    .as_cte();
+
+let results = select_from::<Postgres, User>()
+    .with(cte(active_cte))
+    .select((UserId, UserName));
+
+// 3. Safe raw SQL escape hatch with compile-time parameter binding
+let custom_filter = sql!(bool, "EXTRACT(YEAR FROM created_at) = ?", 2024i64);
 ```
