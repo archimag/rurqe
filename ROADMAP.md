@@ -21,7 +21,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 7** [x] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready (Completed) |
 | **Phase 8** [x] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity (Completed) |
 | **Phase 9** [x] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Completed) |
-| **Phase 10** [ ] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Planned) |
+| **Phase 10** [x] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Completed) |
 
 ---
 
@@ -379,41 +379,57 @@ let all_contacts = query_customers.union_all(query_suppliers);
 
 ---
 
-## Phase 10: Advanced Relational Composition: Aliasing, Lateral Joins & Advanced DML [Planned]
+## Phase 10: Advanced Relational Composition: Aliasing, Lateral Joins & Advanced DML [Completed]
 
 ### Objective
 Provide deep relational composition capabilities: table and subquery aliasing for unambiguous self-joins, compile-time capability-gated `LATERAL JOIN`s with sound nullability tracking, and advanced DML (`INSERT INTO ... SELECT`).
 
 ### Key Deliverables
-- [ ] **Table & Subquery Aliasing:**
-  - Zero-cost table aliases: `users.alias::<A>()` generating SQL `\"users\" AS \"u1\"`.
-  - Unambiguous self-joins: qualifying columns via their alias marker (`u1.col(UserId)` vs `u2.col(UserId)`).
-- [ ] **First-Class `LATERAL JOIN` Support:**
-  - Capability marker trait `SupportsLateralJoin` implemented for dialects supporting lateral subqueries (PostgreSQL, modern engines).
-  - Correlated subquery scope: subqueries inside `.cross_join_lateral(...)` and `.left_join_lateral(...)` can reference columns from outer tables in scope.
+- [x] **Table & Subquery Aliasing:**
+  - Zero-cost table aliases via `table_alias!`, `Aliased<T, A>`, `AliasedCol<A, C>` and `aliased::<T, A>()`, rendering SQL `\"table\" AS \"alias\"` and addressing columns as `\"alias\".\"column\"`.
+  - Unambiguous self-joins: qualifying columns via their alias marker, fully participating in `TableScope`, `ExprScope` and projection macros.
+- [x] **First-Class `LATERAL JOIN` Support:**
+  - Capability marker trait `SupportsLateralJoin` implemented for PostgreSQL.
+  - Correlated subqueries via `.cross_join_lateral(lateral(subquery))` and `.left_join_lateral(lateral(subquery))`.
   - Sound compile-time nullability: `.left_join_lateral(...)` automatically lifts lateral subquery projections into `Option<T>`.
-- [ ] **Advanced DML:**
-  - Type-safe `INSERT INTO ... SELECT`: inserting results of a compatible `SelectQuery` directly into a target table without client round-trips.
+- [x] **Advanced DML:**
+  - Type-safe `INSERT INTO ... SELECT`: inserting results of a compatible `SelectQuery` directly into a target table via `.columns(...).from_select(...)` without client round-trips, supporting parameter chaining and `RETURNING`.
 
 ### Example Usage
 ```rust
 use rurqe::prelude::*;
 
-// 1. Self-join with aliases
-let (u1, u2) = (User::as_alias::<U1>(), User::as_alias::<U2>());
-let colleagues = select_from::<Postgres, _>(u1)
-    .inner_join(u2, u1.col(DepartmentId).eq(u2.col(DepartmentId)))
-    .where_(u1.col(UserId).ne(u2.col(UserId)))
-    .select((u1.col(UserName), u2.col(UserName)));
+// 1. Self-join with table aliases
+table_alias!(Mgr, "m");
+table_alias!(Emp, "e");
 
-// 2. LATERAL JOIN (top 3 recent orders per user)
-let report = select_from::<Postgres, User>()
-    .cross_join_lateral(
-        |user| select_from::<Postgres, Order>()
-            .where_(OrderUserId.eq(user.col(UserId)))
-            .order_by_desc(OrderCreatedAt)
-            .limit(3)
-            .as_alias::<LatestOrders>()
+let managers = select_from::<Postgres, Aliased<User, Mgr>>()
+    .inner_join(
+        aliased::<User, Emp>(),
+        AliasedCol::<Mgr, UserId>::new().eq(AliasedCol::<Emp, ManagerId>::new()),
     )
-    .select((UserId, UserName, LatestOrders::col(OrderTotal)));
+    .select((
+        AliasedCol::<Mgr, UserName>::new(),
+        AliasedCol::<Emp, UserName>::new(),
+    ));
+
+// 2. LATERAL JOIN with capability gating
+let latest_orders = select_from::<Postgres, Order>()
+    .where_(OrderUserId.eq(UserId))
+    .order_by_desc(OrderCreatedAt)
+    .limit(1)
+    .as_lateral::<LatestOrder>();
+
+let report = select_from::<Postgres, User>()
+    .left_join_lateral(latest_orders)
+    .select((UserId, OrderTotal.nullable()));
+
+// 3. Type-safe INSERT INTO ... SELECT
+let archived = insert_into::<Postgres, ArchiveUser>()
+    .columns((ArchiveUserId, ArchiveEmail))
+    .from_select(
+        select_from::<Postgres, User>()
+            .select((UserId, UserEmail))
+            .where_(IsActive.eq(false)),
+    );
 ```
