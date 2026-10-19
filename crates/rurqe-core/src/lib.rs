@@ -12,9 +12,10 @@ pub use dml::{AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign
 pub use expr::{AggregateFunc, BinaryOp, Expr, ExprKind, IntoExpr, SqlCompatible, SqlVal};
 pub use query::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, BuiltQuery, Cte, ExecutableQuery,
-    ExecutionError, GroupBy, IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend,
-    QueryBackendExt, SelectQuery, SelectTarget, Selection, TransactionBackend, TransactionContext,
-    Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+    ExecutionError, GroupBy, GroupByInScope, IsolationLevel, LagLeadFn, OrderDirection,
+    PartitionBy, QueryBackend, QueryBackendExt, SelectQuery, SelectTarget, SelectTargetInScope,
+    Selection, SelectionInScope, TransactionBackend, TransactionContext, Window, WindowExpr,
+    WindowExprKind, WindowFn, WindowSpec,
 };
 pub use row::{FromRow, FromSqlValue};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

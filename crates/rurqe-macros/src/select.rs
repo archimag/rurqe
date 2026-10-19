@@ -15,7 +15,7 @@
 //! an explicit `as <alias>` rename.
 
 use proc_macro2::{Span, TokenStream};
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{GenericArgument, Ident, Path, PathArguments, PathSegment, Type};
 
 use crate::parse::{to_snake_case, ProjectionItem, ProjectionList};
@@ -31,9 +31,12 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut field_reads = TokenStream::new();
     let mut name_pushes = TokenStream::new();
     let mut render_pushes = TokenStream::new();
+    let mut scope_bounds = TokenStream::new();
+    let mut position_params = Vec::new();
+    let mut position_args = Vec::new();
     let mut used_fields = Vec::new();
 
-    for item in &projections.items {
+    for (index, item) in projections.items.iter().enumerate() {
         let field = projection_field(item);
         let field_name = field.to_string();
         if used_fields.contains(&field_name) {
@@ -46,6 +49,12 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         used_fields.push(field_name);
 
         let column = &item.column;
+        let position = format_ident!("P{index}");
+        position_args.push(position.clone());
+        position_params.push(position.clone());
+        scope_bounds.extend(quote! {
+            #column: ::rurqe_core::query::SelectTargetInScope<Tables, #position>,
+        });
 
         field_defs.extend(quote! {
             #field: <#column as ::rurqe_core::schema::Column>::RustType,
@@ -121,6 +130,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                     let mut first_projection = true;
                     #render_pushes
                 }
+            }
+
+            impl<Tables, #(#position_params,)*>
+                ::rurqe_core::query::SelectionInScope<Tables, (#(#position_args,)*)>
+                for __RurqeSelection
+            where
+                #scope_bounds
+            {
             }
 
             __RurqeSelection

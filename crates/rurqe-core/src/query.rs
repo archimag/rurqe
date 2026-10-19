@@ -82,6 +82,66 @@ impl<T: 'static + Send + Sync> SelectTarget for Expr<T> {
     }
 }
 
+/// Statically asserts that a projection item may be selected from the query scope.
+///
+/// Columns may only be projected from a table the query selects from, so a
+/// column of a table that was never introduced fails to compile. Computed
+/// expressions carry no table and stay projectable in any scope, which pins
+/// their position to `At<0>` so the position of every projected item stays
+/// inferable.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be selected from this query's scope",
+    label = "the projected column belongs to a table the query does not select from",
+    note = "introduce the column's table with `from` or a join before projecting it"
+)]
+pub trait SelectTargetInScope<Tables, P> {}
+
+impl<Tables, C, P> SelectTargetInScope<Tables, P> for C
+where
+    C: Column,
+    Tables: TableInScope<C::Table, P>,
+{
+}
+
+impl<Tables, T> SelectTargetInScope<Tables, At<0>> for Expr<T> {}
+
+impl<Tables, T> SelectTargetInScope<Tables, At<0>> for WindowExpr<T> {}
+
+/// Statically asserts that every projection item of a selection is in the query scope.
+///
+/// The trait carries the scope positions of the projected items in its type, so
+/// [`SelectQuery::select`] checks each item against the tables the query selects
+/// from while the position of every item stays inferable. A query that projects
+/// before introducing its table has no scope yet, which the `()` scope accepts.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be selected from this query's scope",
+    label = "one of the projected columns belongs to a table the query does not select from",
+    note = "introduce the column's table with `from` or a join before projecting it"
+)]
+pub trait SelectionInScope<Tables, Positions>: Selection {}
+
+impl<S: Selection> SelectionInScope<(), ()> for S {}
+
+macro_rules! impl_selection_in_scope {
+    ($($target:ident $position:ident),+) => {
+        impl<Tables, $($target, $position),+> SelectionInScope<Tables, ($($position,)+)>
+            for ($($target,)+)
+        where
+            $($target: SelectTarget + SelectTargetInScope<Tables, $position>,)+
+        {
+        }
+    };
+}
+
+impl_selection_in_scope!(T1 P1);
+impl_selection_in_scope!(T1 P1, T2 P2);
+impl_selection_in_scope!(T1 P1, T2 P2, T3 P3);
+impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4);
+impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5);
+impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6);
+impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
+impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
+
 /// A list of selected columns whose Rust value types form the query row type.
 ///
 /// The trait is implemented for tuples of projection targets, so `(UserId,)`
@@ -183,6 +243,45 @@ impl_group_by!(C1, C2, C3, C4, C5);
 impl_group_by!(C1, C2, C3, C4, C5, C6);
 impl_group_by!(C1, C2, C3, C4, C5, C6, C7);
 impl_group_by!(C1, C2, C3, C4, C5, C6, C7, C8);
+
+/// Statically asserts that every grouped column belongs to the query scope.
+///
+/// The trait mirrors [`GroupBy`] while carrying the scope positions of the
+/// grouped columns in its type, so [`SelectQuery::group_by`] checks each column
+/// against the tables the query selects from.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be grouped in this query's scope",
+    label = "the grouped column belongs to a table the query does not select from",
+    note = "introduce the column's table with `from` or a join before grouping by it"
+)]
+pub trait GroupByInScope<Tables, Positions>: GroupBy {}
+
+impl<Tables, C, P> GroupByInScope<Tables, P> for C
+where
+    C: Column,
+    Tables: TableInScope<C::Table, P>,
+{
+}
+
+macro_rules! impl_group_by_in_scope {
+    ($($column:ident $position:ident),+) => {
+        impl<Tables, $($column, $position),+> GroupByInScope<Tables, ($($position,)+)>
+            for ($($column,)+)
+        where
+            $($column: Column, Tables: TableInScope<$column::Table, $position>,)+
+        {
+        }
+    };
+}
+
+impl_group_by_in_scope!(C1 P1);
+impl_group_by_in_scope!(C1 P1, C2 P2);
+impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3);
+impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4);
+impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5);
+impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6);
+impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7);
+impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7, C8 P8);
 
 /// The ordered list of tables a query selects from, joined tables included.
 ///
@@ -662,10 +761,13 @@ impl<D: Dialect, Output> SelectQuery<D, (), Output> {
 
 impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
     /// Selects `selection`, fixing the row type of the query to [`Selection::Row`].
-    pub fn select<S: Selection + Send + Sync + 'static>(
-        mut self,
-        selection: S,
-    ) -> SelectQuery<D, Tables, S::Row> {
+    ///
+    /// Every projected column must belong to a table the query selects from, so
+    /// projecting a column of an unrelated table fails to compile.
+    pub fn select<S, Positions>(mut self, selection: S) -> SelectQuery<D, Tables, S::Row>
+    where
+        S: Selection + SelectionInScope<Tables, Positions> + Send + Sync + 'static,
+    {
         self.projections = Some(Arc::new(move |sql, params| {
             selection.render_projections::<D>(sql, params);
         }));
@@ -740,8 +842,13 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
 
     /// Groups query results by `columns`.
     ///
-    /// Calling this multiple times appends further grouping columns.
-    pub fn group_by<G: GroupBy>(mut self, columns: G) -> Self {
+    /// Calling this multiple times appends further grouping columns. Grouped
+    /// columns must belong to the query scope, so a column of a table the query
+    /// does not select from fails to compile.
+    pub fn group_by<G, Positions>(mut self, columns: G) -> Self
+    where
+        G: GroupBy + GroupByInScope<Tables, Positions>,
+    {
         columns.push_column_names(&mut self.group_by);
         self
     }
@@ -764,18 +871,30 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 
     /// Appends an ordering criterion for column `col` with `direction`.
-    pub fn order_by<C: Column>(mut self, _col: C, direction: OrderDirection) -> Self {
+    ///
+    /// The ordered column must belong to the query scope, so ordering by a
+    /// column of a table the query does not select from fails to compile.
+    pub fn order_by<C: Column, P>(mut self, _col: C, direction: OrderDirection) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
         self.order_by.push((C::NAME, direction));
         self
     }
 
     /// Appends an ascending ordering criterion for column `col`.
-    pub fn order_by_asc<C: Column>(self, col: C) -> Self {
+    pub fn order_by_asc<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
         self.order_by(col, OrderDirection::Asc)
     }
 
     /// Appends a descending ordering criterion for column `col`.
-    pub fn order_by_desc<C: Column>(self, col: C) -> Self {
+    pub fn order_by_desc<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
         self.order_by(col, OrderDirection::Desc)
     }
 
@@ -1895,7 +2014,7 @@ mod tests {
             .from::<User>()
             .inner_join::<Order>(Expr::column::<OrderUserId>().eq(1i64))
             .inner_join::<User>(Expr::column::<UserId>().eq(2i64))
-            .select((UserId,))
+            .select((OrderId,))
             .build();
 
         assert_eq!(
@@ -1961,7 +2080,7 @@ mod tests {
             .inner_join::<User>(Expr::column::<UserId>().eq(2i64));
         let total = query.nullable::<OrderTotal>();
 
-        let built = query.select((UserId, total)).build();
+        let built = query.select((OrderId, total)).build();
 
         assert_eq!(
             built.sql,
@@ -2574,13 +2693,16 @@ mod tests {
     fn aliased_table_renders_as_clause_and_qualifies_columns() {
         let built = SelectQuery::<MockDialect>::new()
             .from::<Aliased<User, UserAlias>>()
-            .select((AliasedCol::<UserAlias, UserId>::new(), UserName))
+            .select((
+                AliasedCol::<UserAlias, UserId>::new(),
+                AliasedCol::<UserAlias, UserName>::new(),
+            ))
             .where_(Expr::column::<AliasedCol<UserAlias, UserId>>().gt(1i64))
             .build();
 
         assert_eq!(
             built.sql,
-            "SELECT \"u\".\"id\", \"name\" FROM \"users\" AS \"u\" WHERE (\"u\".\"id\" > $1)"
+            "SELECT \"u\".\"id\", \"u\".\"name\" FROM \"users\" AS \"u\" WHERE (\"u\".\"id\" > $1)"
         );
         assert_eq!(built.params, vec![SqlVal::I64(1)]);
     }
