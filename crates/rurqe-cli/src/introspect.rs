@@ -78,24 +78,33 @@ WHERE tc.constraint_type = 'PRIMARY KEY'
 ORDER BY kcu.table_name, kcu.ordinal_position;
 "#;
 
-    /// Query to fetch all foreign key constraints.
+    /// Query to fetch all foreign key columns in key order.
+    ///
+    /// `information_schema.constraint_column_usage` loses the positional
+    /// relationship between referencing and referenced columns, so the catalog is
+    /// read through `pg_constraint` and the `conkey` / `confkey` arrays are
+    /// unnested together with `generate_subscripts` to keep composite keys aligned.
     pub const POSTGRES_FOREIGN_KEYS: &'static str = r#"
 SELECT
-  tc.constraint_name,
-  kcu.table_name,
-  kcu.column_name,
-  ccu.table_name AS referenced_table,
-  ccu.column_name AS referenced_column
-FROM information_schema.table_constraints tc
-JOIN information_schema.key_column_usage kcu
-  ON tc.constraint_name = kcu.constraint_name
- AND tc.table_schema = kcu.table_schema
-JOIN information_schema.constraint_column_usage ccu
-  ON ccu.constraint_name = tc.constraint_name
- AND ccu.table_schema = tc.table_schema
-WHERE tc.constraint_type = 'FOREIGN KEY'
-  AND tc.table_schema = 'public'
-ORDER BY tc.constraint_name, kcu.ordinal_position;
+  constraint_row.conname,
+  owning.relname AS table_name,
+  owning_column.attname AS column_name,
+  referenced.relname AS referenced_table,
+  referenced_column.attname AS referenced_column
+FROM pg_constraint constraint_row
+JOIN pg_class owning ON owning.oid = constraint_row.conrelid
+JOIN pg_namespace namespace ON namespace.oid = owning.relnamespace
+JOIN pg_class referenced ON referenced.oid = constraint_row.confrelid
+JOIN generate_subscripts(constraint_row.conkey, 1) AS position(index) ON TRUE
+JOIN pg_attribute owning_column
+  ON owning_column.attrelid = constraint_row.conrelid
+ AND owning_column.attnum = constraint_row.conkey[position.index]
+JOIN pg_attribute referenced_column
+  ON referenced_column.attrelid = constraint_row.confrelid
+ AND referenced_column.attnum = constraint_row.confkey[position.index]
+WHERE constraint_row.contype = 'f'
+  AND namespace.nspname = 'public'
+ORDER BY owning.relname, constraint_row.conname, position.index;
 "#;
 
     /// Query to fetch user tables from the SQLite `sqlite_master` catalog.
@@ -356,8 +365,9 @@ pub struct RawSqliteForeignKeyMetadata {
 /// Assembles a normalized [`SchemaCatalog`] from SQLite introspection results.
 ///
 /// Columns whose `pk_position` is greater than zero form the primary key, ordered
-/// by their position in the key, and each `PRAGMA foreign_key_list` row becomes a
-/// single-column [`ForeignKeyDef`] named after the owning table and the constraint id.
+/// by their position in the key. `PRAGMA foreign_key_list` rows sharing a constraint
+/// id are folded into one [`ForeignKeyDef`] named after the owning table and that id,
+/// so composite foreign keys stay a single constraint.
 pub fn catalog_from_sqlite_metadata(
     tables: &[RawSqliteTableMetadata],
     columns: &[RawSqliteColumnMetadata],
@@ -365,7 +375,7 @@ pub fn catalog_from_sqlite_metadata(
 ) -> SchemaCatalog {
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut pk_by_table: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
-    let mut fks_by_table: BTreeMap<String, Vec<ForeignKeyDef>> = BTreeMap::new();
+    let mut fks_by_table: BTreeMap<String, BTreeMap<i64, ForeignKeyDef>> = BTreeMap::new();
 
     for column in columns {
         let kind = map_sql_type_to_kind(&column.data_type);
@@ -387,15 +397,20 @@ pub fn catalog_from_sqlite_metadata(
     }
 
     for fk in foreign_keys {
-        fks_by_table
+        let constraint = fks_by_table
             .entry(fk.table_name.clone())
             .or_default()
-            .push(ForeignKeyDef::new(
-                format!("{}_{}_fkey", fk.table_name, fk.id),
-                vec![fk.from_column.clone()],
-                &fk.referenced_table,
-                vec![fk.to_column.clone()],
-            ));
+            .entry(fk.id)
+            .or_insert_with(|| {
+                ForeignKeyDef::new(
+                    format!("{}_{}_fkey", fk.table_name, fk.id),
+                    Vec::new(),
+                    &fk.referenced_table,
+                    Vec::new(),
+                )
+            });
+        constraint.columns.push(fk.from_column.clone());
+        constraint.referenced_columns.push(fk.to_column.clone());
     }
 
     let mut result_tables = Vec::new();
@@ -404,7 +419,10 @@ pub fn catalog_from_sqlite_metadata(
         let mut key_columns = pk_by_table.remove(&table.name).unwrap_or_default();
         key_columns.sort_by_key(|(position, _)| *position);
         let primary_key = key_columns.into_iter().map(|(_, name)| name).collect();
-        let table_foreign_keys = fks_by_table.remove(&table.name).unwrap_or_default();
+        let table_foreign_keys: Vec<ForeignKeyDef> = fks_by_table
+            .remove(&table.name)
+            .map(|constraints| constraints.into_values().collect())
+            .unwrap_or_default();
 
         let mut def = TableDef::new(&table.name, table_columns, primary_key);
         for fk in table_foreign_keys {
@@ -441,6 +459,9 @@ pub fn map_sql_type_to_kind(sql_type: &str) -> TypeKind {
 }
 
 /// Assembles a normalized [`SchemaCatalog`] from introspected metadata collections.
+///
+/// Foreign key rows sharing a constraint name on the same table are folded into a
+/// single [`ForeignKeyDef`], preserving the order of the columns inside the key.
 pub fn catalog_from_metadata(
     tables: &[RawTableMetadata],
     columns: &[RawColumnMetadata],
@@ -449,13 +470,13 @@ pub fn catalog_from_metadata(
 ) -> SchemaCatalog {
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut pks_by_table: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut fks_by_table: BTreeMap<String, Vec<ForeignKeyDef>> = BTreeMap::new();
+    let mut fks_by_table: BTreeMap<String, BTreeMap<String, ForeignKeyDef>> = BTreeMap::new();
 
     for col in columns {
         let kind = map_sql_type_to_kind(&col.data_type);
         let mut def = ColumnDef::new(&col.column_name, kind, col.is_nullable);
-        if let Some(ref def_expr) = col.column_default {
-            def = def.with_default(def_expr);
+        if let Some(ref default) = col.column_default {
+            def = def.with_default(default);
         }
         columns_by_table
             .entry(col.table_name.clone())
@@ -471,22 +492,25 @@ pub fn catalog_from_metadata(
     }
 
     for fk in fks {
-        fks_by_table
+        let constraint = fks_by_table
             .entry(fk.table_name.clone())
             .or_default()
-            .push(ForeignKeyDef::new(
-                &fk.name,
-                vec![fk.column_name.clone()],
-                &fk.referenced_table,
-                vec![fk.referenced_column.clone()],
-            ));
+            .entry(fk.name.clone())
+            .or_insert_with(|| {
+                ForeignKeyDef::new(&fk.name, Vec::new(), &fk.referenced_table, Vec::new())
+            });
+        constraint.columns.push(fk.column_name.clone());
+        constraint.referenced_columns.push(fk.referenced_column.clone());
     }
 
     let mut result_tables = Vec::new();
     for table in tables {
         let table_cols = columns_by_table.remove(&table.name).unwrap_or_default();
         let table_pk = pks_by_table.remove(&table.name).unwrap_or_default();
-        let table_fks = fks_by_table.remove(&table.name).unwrap_or_default();
+        let table_fks: Vec<ForeignKeyDef> = fks_by_table
+            .remove(&table.name)
+            .map(|constraints| constraints.into_values().collect())
+            .unwrap_or_default();
 
         let mut def = TableDef::new(&table.name, table_cols, table_pk);
         for fk in table_fks {
@@ -536,6 +560,107 @@ mod tests {
         assert_eq!(catalog.tables[0].columns[0].type_kind, TypeKind::Int64);
         assert_eq!(catalog.tables[0].columns[1].type_kind, TypeKind::Text);
         assert_eq!(catalog.tables[0].primary_key, vec!["id"]);
+    }
+
+    #[test]
+    fn composite_foreign_key_rows_fold_into_one_constraint() {
+        let tables = vec![RawTableMetadata {
+            name: "order_items".to_owned(),
+        }];
+        let cols = vec![
+            RawColumnMetadata {
+                table_name: "order_items".to_owned(),
+                column_name: "order_id".to_owned(),
+                data_type: "bigint".to_owned(),
+                is_nullable: false,
+                column_default: None,
+            },
+            RawColumnMetadata {
+                table_name: "order_items".to_owned(),
+                column_name: "line_no".to_owned(),
+                data_type: "bigint".to_owned(),
+                is_nullable: false,
+                column_default: None,
+            },
+        ];
+        let fks = vec![
+            RawForeignKeyMetadata {
+                name: "order_items_order_fkey".to_owned(),
+                table_name: "order_items".to_owned(),
+                column_name: "order_id".to_owned(),
+                referenced_table: "orders".to_owned(),
+                referenced_column: "id".to_owned(),
+            },
+            RawForeignKeyMetadata {
+                name: "order_items_order_fkey".to_owned(),
+                table_name: "order_items".to_owned(),
+                column_name: "line_no".to_owned(),
+                referenced_table: "orders".to_owned(),
+                referenced_column: "line_no".to_owned(),
+            },
+        ];
+
+        let catalog = catalog_from_metadata(&tables, &cols, &[], &fks);
+
+        let table = &catalog.tables[0];
+        assert_eq!(table.foreign_keys.len(), 1);
+        assert_eq!(table.foreign_keys[0].columns, vec!["order_id", "line_no"]);
+        assert_eq!(
+            table.foreign_keys[0].referenced_columns,
+            vec!["id", "line_no"]
+        );
+    }
+
+    #[test]
+    fn sqlite_composite_foreign_key_rows_fold_into_one_constraint() {
+        let tables = vec![RawSqliteTableMetadata {
+            name: "order_items".to_owned(),
+        }];
+        let columns = vec![
+            RawSqliteColumnMetadata {
+                table_name: "order_items".to_owned(),
+                column_name: "order_id".to_owned(),
+                data_type: "INTEGER".to_owned(),
+                not_null: true,
+                pk_position: 1,
+                default_value: None,
+            },
+            RawSqliteColumnMetadata {
+                table_name: "order_items".to_owned(),
+                column_name: "line_no".to_owned(),
+                data_type: "INTEGER".to_owned(),
+                not_null: true,
+                pk_position: 2,
+                default_value: None,
+            },
+        ];
+        let fks = vec![
+            RawSqliteForeignKeyMetadata {
+                table_name: "order_items".to_owned(),
+                id: 0,
+                from_column: "order_id".to_owned(),
+                to_column: "id".to_owned(),
+                referenced_table: "orders".to_owned(),
+            },
+            RawSqliteForeignKeyMetadata {
+                table_name: "order_items".to_owned(),
+                id: 0,
+                from_column: "line_no".to_owned(),
+                to_column: "line_no".to_owned(),
+                referenced_table: "orders".to_owned(),
+            },
+        ];
+
+        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &fks);
+
+        let table = &catalog.tables[0];
+        assert_eq!(table.foreign_keys.len(), 1);
+        assert_eq!(table.primary_key, vec!["order_id", "line_no"]);
+        assert_eq!(table.foreign_keys[0].columns, vec!["order_id", "line_no"]);
+        assert_eq!(
+            table.foreign_keys[0].referenced_columns,
+            vec!["id", "line_no"]
+        );
     }
 
     #[test]
@@ -596,28 +721,32 @@ mod tests {
         let users = catalog.tables.iter().find(|t| t.name == "users").unwrap();
         assert_eq!(users.primary_key, vec!["id"]);
         assert_eq!(users.columns.len(), 2);
-        assert_eq!(
-            users
-                .columns
-                .iter()
-                .find(|c| c.name == "email")
-                .unwrap()
-                .type_kind,
-            TypeKind::Text
-        );
-        assert!(
-            users
-                .columns
-                .iter()
-                .find(|c| c.name == "email")
-                .unwrap()
-                .nullable
-        );
+        let email = users.columns.iter().find(|c| c.name == "email").unwrap();
+        assert_eq!(email.type_kind, TypeKind::Text);
+        assert!(email.nullable);
 
         let orders = catalog.tables.iter().find(|t| t.name == "orders").unwrap();
         assert_eq!(orders.foreign_keys.len(), 1);
         assert_eq!(orders.foreign_keys[0].referenced_table, "users");
         assert_eq!(orders.foreign_keys[0].columns, vec!["user_id"]);
+    }
+
+    #[test]
+    fn sql_type_mapping_covers_builtin_kinds() {
+        assert_eq!(map_sql_type_to_kind("BOOLEAN"), TypeKind::Boolean);
+        assert_eq!(map_sql_type_to_kind("INTEGER"), TypeKind::Int32);
+        assert_eq!(map_sql_type_to_kind("bigint"), TypeKind::Int64);
+        assert_eq!(map_sql_type_to_kind("double precision"), TypeKind::Float64);
+        assert_eq!(
+            map_sql_type_to_kind("timestamp with time zone"),
+            TypeKind::Timestamp
+        );
+        assert_eq!(map_sql_type_to_kind("uuid"), TypeKind::Uuid);
+        assert_eq!(map_sql_type_to_kind("jsonb"), TypeKind::Json);
+        assert_eq!(
+            map_sql_type_to_kind("inet"),
+            TypeKind::Other("inet".to_owned())
+        );
     }
 
     #[test]
@@ -680,14 +809,8 @@ mod tests {
             detect_dialect(Some("sqlite://local.db")),
             DatabaseDialect::Sqlite
         );
-        assert_eq!(
-            detect_dialect(Some("app.sqlite3")),
-            DatabaseDialect::Sqlite
-        );
-        assert_eq!(
-            detect_dialect(Some("data/app.db")),
-            DatabaseDialect::Sqlite
-        );
+        assert_eq!(detect_dialect(Some("app.sqlite3")), DatabaseDialect::Sqlite);
+        assert_eq!(detect_dialect(Some("data/app.db")), DatabaseDialect::Sqlite);
         assert_eq!(detect_dialect(None), DatabaseDialect::Postgres);
         assert_eq!(DatabaseDialect::Sqlite.to_string(), "SQLite");
     }
