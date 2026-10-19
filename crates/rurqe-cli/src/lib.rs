@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod codegen;
+pub mod driver;
 pub mod drift;
 pub mod introspect;
 pub mod loader;
@@ -10,6 +11,7 @@ pub mod loader;
 pub use cli::{parse_args, run_cli, CliCommand, CliError};
 pub use codegen::{generate_schema_rs, CodegenOptions};
 pub use drift::{verify_drift, DriftError, DriftReport, SchemaDiff};
+pub use driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 pub use introspect::{
     catalog_from_metadata, catalog_from_sqlite_metadata, detect_dialect, map_sql_type_to_kind,
     DatabaseDialect, IntrospectQueries, RawColumnMetadata, RawForeignKeyMetadata,
