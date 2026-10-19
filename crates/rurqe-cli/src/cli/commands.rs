@@ -84,12 +84,27 @@ pub(super) fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
         .map_err(|e| CliError(format!("failed to write `{}`: {e}", path.display())))
 }
 
+/// Builds the migration runner guarded by the committed checkpoint, if any.
+///
+/// A project that pruned its folded history carries a `checkpoint.toml` marker.
+/// Loading it arms the fail-safe outdated-target protection, so a database whose
+/// newest recorded version sits below the pruned boundary is rejected instead of
+/// being silently advanced by the remaining tail. A project without a marker
+/// keeps the classic sequential lifecycle.
+pub(super) fn load_migrator(checkpoint_path: &Path) -> Result<Migrator, CliError> {
+    match Checkpoint::load(checkpoint_path).map_err(cli_error)? {
+        Some(checkpoint) => Ok(Migrator::with_checkpoint(checkpoint)),
+        None => Ok(Migrator::new()),
+    }
+}
+
 pub(super) fn apply_migrations<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
+    checkpoint_path: &Path,
 ) -> Result<(), CliError> {
     let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
-    let report = Migrator::new()
+    let report = load_migrator(checkpoint_path)?
         .migrate(backend, &migrations)
         .map_err(cli_error)?;
 
@@ -390,7 +405,8 @@ pub(super) fn print_help() {
         r#"RURQE Developer CLI
 
 USAGE:
-    cargo db-migrate [up|status|repair] [--migrations-dir <dir>]
+    cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>]
+    cargo db-migrate [status|repair] [--migrations-dir <dir>]
     cargo db-baseline --version <version> [--description <desc>]
     cargo db-codegen [--output <path>] [--lock-path <path>]
     cargo db-verify [--schema-path <path>] [--lock-path <path>]
@@ -398,7 +414,7 @@ USAGE:
     cargo rurqe prune --before <version> [options]
 
 COMMANDS:
-    migrate up       Apply all pending migrations
+    migrate up       Apply all pending migrations, guarded by `checkpoint.toml`
     migrate status   Inspect status of migrations against history table
     migrate repair   Fix checksums and purge failed migration attempts
     baseline         Mark current schema as baseline without running past migrations

@@ -9,6 +9,7 @@ fn parses_migrate_up() {
         cmd,
         CliCommand::MigrateUp {
             migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
             database_url: None,
         }
     );
@@ -43,6 +44,28 @@ fn parses_cargo_db_migrate_invocation() {
         cmd,
         CliCommand::MigrateUp {
             migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            database_url: None,
+        }
+    );
+}
+
+#[test]
+fn parses_migrate_up_checkpoint_path() {
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "migrate".into(),
+        "up".into(),
+        "--checkpoint-path".into(),
+        "deploy/checkpoint.toml".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::MigrateUp {
+            migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("deploy/checkpoint.toml"),
             database_url: None,
         }
     );

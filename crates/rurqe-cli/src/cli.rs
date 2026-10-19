@@ -67,10 +67,11 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
         }
         CliCommand::MigrateUp {
             migrations_dir,
+            checkpoint_path,
             database_url,
         } => {
             with_migration_backend!(database_url, |backend| {
-                apply_migrations(&mut backend, &migrations_dir)
+                apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
             })
         }
         CliCommand::MigrateStatus {

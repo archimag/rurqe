@@ -437,6 +437,69 @@ fn an_outdated_database_is_blocked_by_the_checkpoint() {
 }
 
 #[test]
+fn migrate_up_honours_the_committed_checkpoint() {
+    let workspace = temp_workspace("cli-checkpoint");
+    let db = workspace.join("app.db");
+    let migrations = workspace.join("migrations");
+    write_scripts(&migrations, &[("V1__init.sql", USERS)]);
+
+    let dir = path_string(&migrations);
+    let database = path_string(&db);
+
+    run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the initial migration is applied without a checkpoint");
+
+    write_scripts(&migrations, &[("V3__orders.sql", ORDERS)]);
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    write_checkpoint(&checkpoint_path, "2");
+    let checkpoint = path_string(&checkpoint_path);
+
+    let error = run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--database-url",
+        &database,
+    ]))
+    .expect_err("the database sits below the pruned boundary");
+
+    assert!(error.to_string().contains("schema/"), "got {error}");
+    assert_eq!(tables(&db), vec!["users".to_owned()]);
+
+    write_checkpoint(&checkpoint_path, "1");
+    run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--database-url",
+        &database,
+    ]))
+    .expect("a database at the boundary is advanced by the tail");
+
+    assert_eq!(tables(&db), vec!["orders".to_owned(), "users".to_owned()]);
+    assert_eq!(
+        history(&db)
+            .into_iter()
+            .map(|(script, _, _)| script)
+            .collect::<Vec<_>>(),
+        vec!["V1__init.sql".to_owned(), "V3__orders.sql".to_owned()]
+    );
+}
+
+#[test]
 fn the_golden_equation_holds_for_a_consistent_stage_and_tail() {
     let workspace = temp_workspace("golden");
     let stage_dir = workspace.join("schema");

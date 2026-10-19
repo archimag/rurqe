@@ -17,6 +17,7 @@ const DEFAULT_STAGE_DIR: &str = DeclarativeStage::DIRECTORY;
 pub enum CliCommand {
     MigrateUp {
         migrations_dir: PathBuf,
+        checkpoint_path: PathBuf,
         database_url: Option<String>,
     },
     MigrateStatus {
@@ -114,7 +115,8 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
     if tokens.is_empty() {
         if program == "cargo-db-migrate" {
             return Ok(CliCommand::MigrateUp {
-                migrations_dir: PathBuf::from("migrations"),
+                migrations_dir: PathBuf::from(DEFAULT_MIGRATIONS_DIR),
+                checkpoint_path: PathBuf::from(CHECKPOINT_FILE),
                 database_url: None,
             });
         }
@@ -159,6 +161,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             };
 
             let mut migrations_dir = PathBuf::from("migrations");
+            let mut checkpoint_path = PathBuf::from(CHECKPOINT_FILE);
             let mut database_url = None;
 
             let mut idx = 0;
@@ -166,6 +169,10 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
                 match tokens[idx] {
                     "--migrations-dir" if idx + 1 < tokens.len() => {
                         migrations_dir = PathBuf::from(tokens[idx + 1]);
+                        idx += 2;
+                    }
+                    "--checkpoint-path" if idx + 1 < tokens.len() => {
+                        checkpoint_path = PathBuf::from(tokens[idx + 1]);
                         idx += 2;
                     }
                     "--database-url" if idx + 1 < tokens.len() => {
@@ -181,6 +188,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             match action {
                 "up" => Ok(CliCommand::MigrateUp {
                     migrations_dir,
+                    checkpoint_path,
                     database_url,
                 }),
                 "status" => Ok(CliCommand::MigrateStatus {
