@@ -23,6 +23,15 @@ pub trait Table {
     fn table_ref() -> TableRef {
         TableRef::plain(Self::NAME)
     }
+
+    /// Builds the expression node referencing `column` of this table.
+    ///
+    /// The default references the bare column name; tables referenced under an
+    /// alias override it to qualify every reference with their alias, so joins
+    /// over repeated table references stay unambiguous.
+    fn column_expr(column: &'static str) -> crate::expr::ExprKind {
+        crate::expr::ExprKind::Column { name: column }
+    }
 }
 
 /// A table reference rendered into a `FROM` or `JOIN` clause.
@@ -140,6 +149,19 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 pub trait TableAlias: Sized {
     /// The SQL identifier of the alias, known at compile time.
     const NAME: &'static str;
+
+    /// Renders `table` under this alias, as used in `FROM` and `JOIN` clauses.
+    fn table_ref(table: &'static str) -> TableRef {
+        TableRef::aliased(table, Self::NAME)
+    }
+
+    /// Builds the expression node referencing `column` of a table through this alias.
+    fn column_expr(column: &'static str) -> crate::expr::ExprKind {
+        crate::expr::ExprKind::QualifiedColumn {
+            table: Self::NAME,
+            column,
+        }
+    }
 
     /// Addresses the column `C` through this alias.
     ///
