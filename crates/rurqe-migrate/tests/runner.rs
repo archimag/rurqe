@@ -264,3 +264,49 @@ fn embedded_migrations_rejects_invalid_script_names() {
         other => panic!("expected InvalidScriptName, got {other:?}"),
     }
 }
+
+#[test]
+fn duplicate_versions_are_rejected_before_any_migration_runs() {
+    let mut backend = InMemoryBackend::new();
+    let migrator = Migrator::new();
+
+    let a = Migration::parse("V1__a.sql", "SELECT 1;").unwrap();
+    let b = Migration::parse("V1__b.sql", "SELECT 2;").unwrap();
+
+    let err = migrator
+        .migrate(&mut backend, &[a, b])
+        .expect_err("duplicate versions must be rejected");
+
+    match err {
+        Error::DuplicateMigrationVersion {
+            version,
+            first,
+            second,
+        } => {
+            assert_eq!(version, "1");
+            assert_eq!(first, "V1__a.sql");
+            assert_eq!(second, "V1__b.sql");
+        }
+        other => panic!("expected DuplicateMigrationVersion, got {other:?}"),
+    }
+
+    assert!(backend.history.is_empty());
+}
+
+#[test]
+fn baseline_rejects_non_empty_history() {
+    let mut backend = InMemoryBackend::new();
+    let migrator = Migrator::new();
+
+    let m1 = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT);").unwrap();
+    migrator.migrate(&mut backend, &[m1]).expect("first migration");
+
+    let err = migrator
+        .baseline(&mut backend, "2.0.0".parse().unwrap(), "too late")
+        .expect_err("baseline on non-empty history must fail");
+
+    match err {
+        Error::BaselineAlreadyExists { version } => assert_eq!(version, "1"),
+        other => panic!("expected BaselineAlreadyExists, got {other:?}"),
+    }
+}

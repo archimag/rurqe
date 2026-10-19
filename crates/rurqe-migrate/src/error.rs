@@ -42,6 +42,15 @@ pub enum Error {
         /// The existing baseline or migration version.
         version: String,
     },
+    /// Two versioned migrations declare the same version.
+    DuplicateMigrationVersion {
+        /// The duplicated version text.
+        version: String,
+        /// The first script declaring the version.
+        first: String,
+        /// The second script declaring the version.
+        second: String,
+    },
     /// Executing a migration script failed.
     MigrationExecutionFailed {
         /// The script that failed to execute.
@@ -88,6 +97,14 @@ impl fmt::Display for Error {
             Error::BaselineAlreadyExists { version } => write!(
                 f,
                 "cannot baseline database: history already contains migration or baseline version {version}"
+            ),
+            Error::DuplicateMigrationVersion {
+                version,
+                first,
+                second,
+            } => write!(
+                f,
+                "duplicate migration version {version}: `{first}` and `{second}` declare the same version"
             ),
             Error::MigrationExecutionFailed { script, source } => write!(
                 f,

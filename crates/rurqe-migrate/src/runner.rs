@@ -144,6 +144,7 @@ impl Migrator {
         migrations: &[Migration],
     ) -> Result<MigrationReport, Error> {
         backend.ensure_schema_history_table()?;
+        self.validate_version_uniqueness(migrations)?;
         let history = backend.read_history()?;
         self.validate_history(&history, migrations)?;
 
@@ -245,12 +246,13 @@ impl Migrator {
         backend.ensure_schema_history_table()?;
         let history = backend.read_history()?;
 
-        if let Some(existing) = history
-            .iter()
-            .find(|e| e.version.as_ref() == Some(&version))
-        {
+        if let Some(existing) = history.iter().max_by_key(|e| e.installed_rank) {
             return Err(Error::BaselineAlreadyExists {
-                version: existing.version.as_ref().unwrap().to_string(),
+                version: existing
+                    .version
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| existing.script.clone()),
             });
         }
 
@@ -371,6 +373,26 @@ impl Migrator {
         }
 
         Ok(statuses)
+    }
+
+    fn validate_version_uniqueness(&self, migrations: &[Migration]) -> Result<(), Error> {
+        let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+
+        for migration in migrations {
+            if let Some(ref version) = migration.version {
+                let key = version.to_string();
+                if let Some(first) = seen.get(&key) {
+                    return Err(Error::DuplicateMigrationVersion {
+                        version: key,
+                        first: (*first).to_owned(),
+                        second: migration.script.clone(),
+                    });
+                }
+                seen.insert(key, migration.script.as_str());
+            }
+        }
+
+        Ok(())
     }
 
     fn validate_history(
