@@ -143,3 +143,115 @@ fn sqlite_select_macro_starts_query_from_table_without_turbofish() {
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
+
+#[test]
+fn postgres_versioned_prelude_pins_the_dialect_without_turbofish() {
+    use rurqe::postgres::pg14::prelude::*;
+
+    // The selection fixes the dialect through the imported `from(table)` trait,
+    // so neither the dialect nor the row type is spelled out.
+    let selected = select!(UserId, UserName as contact_email)
+        .from(User)
+        .where_(Expr::column::<UserId>().gt(1i64))
+        .build();
+
+    assert_eq!(
+        selected.sql,
+        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" > $1)"
+    );
+    assert_eq!(selected.params, vec![SqlVal::I64(1)]);
+
+    let inserted = insert_into(User)
+        .values((UserId::set(1i64), UserName::set("root")))
+        .build();
+
+    assert_eq!(
+        inserted.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+    );
+
+    let updated = update(User).set(UserName::set("root")).allow_all().build();
+
+    assert_eq!(updated.sql, "UPDATE \"users\" SET \"name\" = $1");
+
+    let deleted = delete_from(User)
+        .where_(Expr::column::<UserId>().eq(1i64))
+        .build();
+
+    assert_eq!(deleted.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+}
+
+#[test]
+fn sqlite_3_35_prelude_gates_returning_on_the_pinned_version() {
+    use rurqe::sqlite::sqlite3_35::prelude::*;
+
+    let selected = select!(UserId, UserName as contact_email)
+        .from(User)
+        .where_(Expr::column::<UserId>().eq(1i64))
+        .build();
+
+    assert_eq!(
+        selected.sql,
+        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" = ?)"
+    );
+
+    // `RETURNING` is only reachable because the pinned version implements the
+    // `SupportsReturning` capability trait.
+    let inserted = insert_into(User)
+        .values((UserId::set(7i64), UserName::set("root")))
+        .returning(cols!(UserId, UserName as contact_email))
+        .build();
+
+    assert_eq!(
+        inserted.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) RETURNING \"id\", \"name\""
+    );
+    assert_eq!(
+        inserted.params,
+        vec![SqlVal::I64(7), SqlVal::Text("root".to_owned())]
+    );
+}
+
+#[test]
+fn sqlite_3_24_prelude_gates_on_conflict_on_the_pinned_version() {
+    use rurqe::sqlite::sqlite3_24::prelude::*;
+
+    // `ON CONFLICT` is only reachable because the pinned version implements the
+    // `SupportsOnConflict` capability trait.
+    let built = insert_into(User)
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict((UserId,))
+        .do_nothing()
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) \
+         ON CONFLICT (\"id\") DO NOTHING"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+    );
+}
+
+#[test]
+fn dialect_versions_gate_capabilities_at_the_type_level() {
+    fn assert_dialect<D: Dialect>() {}
+    fn assert_returning<D: Dialect + SupportsReturning>() {}
+    fn assert_on_conflict<D: Dialect + SupportsOnConflict>() {}
+
+    // PostgreSQL implements both capabilities on every supported version.
+    assert_returning::<Postgres<Pg14>>();
+    assert_returning::<Postgres<Pg16>>();
+    assert_on_conflict::<Postgres<Pg14>>();
+    assert_on_conflict::<Postgres<Pg16>>();
+
+    // SQLite 3.0 is a dialect but predates both capability gates.
+    assert_dialect::<Sqlite<Sqlite3_0>>();
+
+    // SQLite 3.35 satisfies both gates, SQLite 3.24 only the conflict gate.
+    assert_returning::<Sqlite<Sqlite3_35>>();
+    assert_on_conflict::<Sqlite<Sqlite3_24>>();
+    assert_on_conflict::<Sqlite<Sqlite3_35>>();
+}

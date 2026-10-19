@@ -203,3 +203,69 @@ fn selection_feeds_the_query_builder() {
 
     assert_eq!(built.sql, "SELECT users.id, users.email FROM users");
 }
+
+/// A second dialect scope proving that the dialect is fixed by the imported
+/// `from(table)` trait, so the same `select!` expression binds to another
+/// dialect without any turbofish.
+mod question_mark_dialect_scope {
+    use rurqe_core::dialect::Dialect;
+    use rurqe_core::expr::{Expr, SqlVal};
+    use rurqe_core::query::{SelectQuery, SelectionFor};
+    use rurqe_core::schema::Table;
+    use rurqe_macros::select;
+
+    rurqe_core::table! {
+        User => "users" {
+            UserId => "id": i64,
+            UserEmail => "email": String,
+        }
+    }
+
+    /// A dialect that quotes identifiers and renders anonymous `?` placeholders.
+    struct QuestionDialect;
+
+    impl Dialect for QuestionDialect {
+        fn push_quoted_identifier(out: &mut String, ident: &str) {
+            out.push('"');
+            out.push_str(ident);
+            out.push('"');
+        }
+
+        fn push_placeholder(out: &mut String, _index: usize) {
+            out.push('?');
+        }
+    }
+
+    trait QuestionSelectFrom<T: Table, Positions>: Sized {
+        type Row;
+        fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row>;
+    }
+
+    impl<S, T, Positions> QuestionSelectFrom<T, Positions> for S
+    where
+        T: Table,
+        S: SelectionFor<T, Positions> + Send + Sync + 'static,
+    {
+        type Row = <S as SelectionFor<T, Positions>>::Row;
+
+        fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row> {
+            SelectQuery::<QuestionDialect>::new()
+                .from_table(table)
+                .select::<S, Positions>(self)
+        }
+    }
+
+    #[test]
+    fn the_same_selection_rebinds_to_the_scoped_dialect_without_turbofish() {
+        let built = select!(UserId, UserEmail as contact_email)
+            .from(User)
+            .where_(Expr::column::<UserId>().gt(1i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"users\".\"id\", \"users\".\"email\" FROM \"users\" WHERE (\"id\" > ?)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+    }
+}
