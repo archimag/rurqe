@@ -1264,8 +1264,8 @@ impl<D: Dialect, T: Table, Values, Returning> ExecutableQuery
     }
 }
 
-impl<D: Dialect, T: Table, State: ExecutableMutation, Returning> ExecutableQuery
-    for UpdateQuery<D, T, State, Returning>
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> ExecutableQuery
+    for UpdateQuery<D, T, State, Returning, Scope>
 {
     type Row = Returning;
 
@@ -1274,8 +1274,8 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning> ExecutableQuery
     }
 }
 
-impl<D: Dialect, T: Table, State: ExecutableMutation, Returning> ExecutableQuery
-    for DeleteQuery<D, T, State, Returning>
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> ExecutableQuery
+    for DeleteQuery<D, T, State, Returning, Scope>
 {
     type Row = Returning;
 

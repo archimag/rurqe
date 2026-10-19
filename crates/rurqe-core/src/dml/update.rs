@@ -18,7 +18,7 @@ use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
 use crate::query::{BuiltQuery, Selection, TableSelection};
-use crate::schema::Table;
+use crate::schema::{ExtendScope, Table};
 
 /// An `UPDATE` statement targeting table `T`.
 ///
@@ -41,22 +41,25 @@ use crate::schema::Table;
 /// let query = UpdateQuery::<MockDialect, User>::new();
 /// query.build();
 /// ```
-/// Phantom marker carrying the dialect, target table, filtering typestate, and
-/// `RETURNING` clause type of an `UPDATE` statement.
-type UpdateMarker<D, T, State, Returning> = PhantomData<fn() -> (D, T, State, Returning)>;
+/// Phantom marker carrying the dialect, target table, filtering typestate,
+/// `RETURNING` clause type, and scope of an `UPDATE` statement.
+type UpdateMarker<D, T, State, Returning, Scope> =
+    PhantomData<fn() -> (D, T, State, Returning, Scope)>;
 
-pub struct UpdateQuery<D: Dialect, T: Table, State = Unfiltered, Returning = ()> {
+pub struct UpdateQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (), Scope = T> {
     assignments: Vec<(&'static str, AssignValue)>,
+    from_tables: Vec<&'static str>,
     filter: Option<ExprKind>,
     returning: Vec<&'static str>,
-    _marker: UpdateMarker<D, T, State, Returning>,
+    _marker: UpdateMarker<D, T, State, Returning, Scope>,
 }
 
-impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, ()> {
+impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, (), T> {
     /// Creates a new `UPDATE` statement targeting table `T` without a filter.
     pub fn new() -> Self {
         UpdateQuery {
             assignments: Vec::new(),
+            from_tables: Vec::new(),
             filter: None,
             returning: Vec::new(),
             _marker: PhantomData,
@@ -64,13 +67,28 @@ impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, ()> {
     }
 }
 
-impl<D: Dialect, T: Table> Default for UpdateQuery<D, T, Unfiltered, ()> {
+impl<D: Dialect, T: Table> Default for UpdateQuery<D, T, Unfiltered, (), T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<D: Dialect, T: Table, State, Returning> UpdateQuery<D, T, State, Returning> {
+impl<D: Dialect, T: Table, State, Returning, Scope> UpdateQuery<D, T, State, Returning, Scope> {
+    /// Adds a source table to the `FROM` clause of the `UPDATE` statement.
+    pub fn from<S: Table>(mut self) -> UpdateQuery<D, T, State, Returning, Scope::Output>
+    where
+        Scope: ExtendScope<S>,
+    {
+        self.from_tables.push(S::NAME);
+        UpdateQuery {
+            assignments: self.assignments,
+            from_tables: self.from_tables,
+            filter: self.filter,
+            returning: self.returning,
+            _marker: PhantomData,
+        }
+    }
+
     /// Appends the column assignments from `set` to the `UPDATE` statement.
     pub fn set<S: AssignmentSet<T>>(mut self, set: S) -> Self {
         let mut columns = Vec::new();
@@ -85,7 +103,7 @@ impl<D: Dialect, T: Table, State, Returning> UpdateQuery<D, T, State, Returning>
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
     /// transitions the query from [`Unfiltered`] to [`Filtered`].
-    pub fn where_(mut self, predicate: Expr<bool>) -> UpdateQuery<D, T, Filtered, Returning> {
+    pub fn where_(mut self, predicate: Expr<bool>) -> UpdateQuery<D, T, Filtered, Returning, Scope> {
         let predicate = predicate.into_kind();
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {
@@ -103,15 +121,16 @@ impl<D: Dialect, T: Table, State, Returning> UpdateQuery<D, T, State, Returning>
     ///
     /// This transitions the query to [`Filtered`] state without adding a condition,
     /// permitting a full-table mutation.
-    pub fn allow_all(self) -> UpdateQuery<D, T, Filtered, Returning> {
+    pub fn allow_all(self) -> UpdateQuery<D, T, Filtered, Returning, Scope> {
         self.retype()
     }
 
-    fn retype<D2: Dialect, T2: Table, State2, Returning2>(
+    fn retype<D2: Dialect, T2: Table, State2, Returning2, Scope2>(
         self,
-    ) -> UpdateQuery<D2, T2, State2, Returning2> {
+    ) -> UpdateQuery<D2, T2, State2, Returning2, Scope2> {
         UpdateQuery {
             assignments: self.assignments,
+            from_tables: self.from_tables,
             filter: self.filter,
             returning: self.returning,
             _marker: PhantomData,
@@ -119,7 +138,9 @@ impl<D: Dialect, T: Table, State, Returning> UpdateQuery<D, T, State, Returning>
     }
 }
 
-impl<D: Dialect + SupportsReturning, T: Table, State> UpdateQuery<D, T, State, ()> {
+impl<D: Dialect + SupportsReturning, T: Table, State, Scope>
+    UpdateQuery<D, T, State, (), Scope>
+{
     /// Adds a `RETURNING` clause projecting `selection` for every affected row.
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
@@ -129,14 +150,14 @@ impl<D: Dialect + SupportsReturning, T: Table, State> UpdateQuery<D, T, State, (
     pub fn returning<S: Selection + TableSelection<T>>(
         mut self,
         selection: S,
-    ) -> UpdateQuery<D, T, State, <S as Selection>::Row> {
+    ) -> UpdateQuery<D, T, State, <S as Selection>::Row, Scope> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }
 }
 
-impl<D: Dialect, T: Table, State: ExecutableMutation, Returning>
-    UpdateQuery<D, T, State, Returning>
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
+    UpdateQuery<D, T, State, Returning, Scope>
 {
     /// Renders the statement into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
@@ -164,6 +185,16 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning>
                 AssignValue::Default => {
                     sql.push_str("DEFAULT");
                 }
+            }
+        }
+
+        if !self.from_tables.is_empty() {
+            sql.push_str(" FROM ");
+            for (index, name) in self.from_tables.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
             }
         }
 
@@ -349,5 +380,27 @@ mod tests {
             built.params,
             vec![SqlVal::Text("alice".to_owned()), SqlVal::I64(1)]
         );
+    }
+
+    crate::table! {
+        Account => "accounts" {
+            AccountId => "id": i64,
+            AccountActive => "active": bool,
+        }
+    }
+
+    #[test]
+    fn update_from_renders_from_clause() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .from::<Account>()
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" WHERE (\"id\" = \"id\")"
+        );
+        assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
     }
 }

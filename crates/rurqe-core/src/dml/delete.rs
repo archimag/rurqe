@@ -18,7 +18,7 @@ use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
 use crate::query::{BuiltQuery, Selection, TableSelection};
-use crate::schema::Table;
+use crate::schema::{ExtendScope, Table};
 
 /// A `DELETE` statement targeting table `T`.
 ///
@@ -41,20 +41,23 @@ use crate::schema::Table;
 /// let query = DeleteQuery::<MockDialect, User>::new();
 /// query.build();
 /// ```
-/// Phantom marker carrying the dialect, target table, filtering typestate, and
-/// `RETURNING` clause type of a `DELETE` statement.
-type DeleteMarker<D, T, State, Returning> = PhantomData<fn() -> (D, T, State, Returning)>;
+/// Phantom marker carrying the dialect, target table, filtering typestate,
+/// `RETURNING` clause type, and scope of a `DELETE` statement.
+type DeleteMarker<D, T, State, Returning, Scope> =
+    PhantomData<fn() -> (D, T, State, Returning, Scope)>;
 
-pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = ()> {
+pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (), Scope = T> {
+    using_tables: Vec<&'static str>,
     filter: Option<ExprKind>,
     returning: Vec<&'static str>,
-    _marker: DeleteMarker<D, T, State, Returning>,
+    _marker: DeleteMarker<D, T, State, Returning, Scope>,
 }
 
-impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, ()> {
+impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, (), T> {
     /// Creates a new `DELETE` statement targeting table `T` without a filter.
     pub fn new() -> Self {
         DeleteQuery {
+            using_tables: Vec::new(),
             filter: None,
             returning: Vec::new(),
             _marker: PhantomData,
@@ -62,18 +65,32 @@ impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, ()> {
     }
 }
 
-impl<D: Dialect, T: Table> Default for DeleteQuery<D, T, Unfiltered, ()> {
+impl<D: Dialect, T: Table> Default for DeleteQuery<D, T, Unfiltered, (), T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<D: Dialect, T: Table, State, Returning> DeleteQuery<D, T, State, Returning> {
+impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Returning, Scope> {
+    /// Adds a source table to the `USING` clause of the `DELETE` statement.
+    pub fn using<S: Table>(mut self) -> DeleteQuery<D, T, State, Returning, Scope::Output>
+    where
+        Scope: ExtendScope<S>,
+    {
+        self.using_tables.push(S::NAME);
+        DeleteQuery {
+            using_tables: self.using_tables,
+            filter: self.filter,
+            returning: self.returning,
+            _marker: PhantomData,
+        }
+    }
+
     /// Restricts the deletion to rows matching `predicate`.
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
     /// transitions the query from [`Unfiltered`] to [`Filtered`].
-    pub fn where_(mut self, predicate: Expr<bool>) -> DeleteQuery<D, T, Filtered, Returning> {
+    pub fn where_(mut self, predicate: Expr<bool>) -> DeleteQuery<D, T, Filtered, Returning, Scope> {
         let predicate = predicate.into_kind();
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {
@@ -91,14 +108,15 @@ impl<D: Dialect, T: Table, State, Returning> DeleteQuery<D, T, State, Returning>
     ///
     /// This transitions the query to [`Filtered`] state without adding a condition,
     /// permitting a full-table deletion.
-    pub fn allow_all(self) -> DeleteQuery<D, T, Filtered, Returning> {
+    pub fn allow_all(self) -> DeleteQuery<D, T, Filtered, Returning, Scope> {
         self.retype()
     }
 
-    fn retype<D2: Dialect, T2: Table, State2, Returning2>(
+    fn retype<D2: Dialect, T2: Table, State2, Returning2, Scope2>(
         self,
-    ) -> DeleteQuery<D2, T2, State2, Returning2> {
+    ) -> DeleteQuery<D2, T2, State2, Returning2, Scope2> {
         DeleteQuery {
+            using_tables: self.using_tables,
             filter: self.filter,
             returning: self.returning,
             _marker: PhantomData,
@@ -106,7 +124,9 @@ impl<D: Dialect, T: Table, State, Returning> DeleteQuery<D, T, State, Returning>
     }
 }
 
-impl<D: Dialect + SupportsReturning, T: Table, State> DeleteQuery<D, T, State, ()> {
+impl<D: Dialect + SupportsReturning, T: Table, State, Scope>
+    DeleteQuery<D, T, State, (), Scope>
+{
     /// Adds a `RETURNING` clause projecting `selection` for every affected row.
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
@@ -116,19 +136,29 @@ impl<D: Dialect + SupportsReturning, T: Table, State> DeleteQuery<D, T, State, (
     pub fn returning<S: Selection + TableSelection<T>>(
         mut self,
         selection: S,
-    ) -> DeleteQuery<D, T, State, <S as Selection>::Row> {
+    ) -> DeleteQuery<D, T, State, <S as Selection>::Row, Scope> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }
 }
 
-impl<D: Dialect, T: Table, State: ExecutableMutation, Returning>
-    DeleteQuery<D, T, State, Returning>
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
+    DeleteQuery<D, T, State, Returning, Scope>
 {
     /// Renders the statement into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
         let mut sql = String::from("DELETE FROM ");
         D::push_quoted_identifier(&mut sql, T::NAME);
+
+        if !self.using_tables.is_empty() {
+            sql.push_str(" USING ");
+            for (index, name) in self.using_tables.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(&mut sql, name);
+            }
+        }
 
         let mut params = Vec::new();
         if let Some(filter) = &self.filter {
@@ -226,5 +256,26 @@ mod tests {
             "DELETE FROM \"users\" WHERE (\"id\" = $1) RETURNING \"id\", \"name\""
         );
         assert_eq!(built.params, vec![SqlVal::I64(5)]);
+    }
+
+    crate::table! {
+        Account => "accounts" {
+            AccountId => "id": i64,
+            AccountActive => "active": bool,
+        }
+    }
+
+    #[test]
+    fn delete_using_renders_using_clause() {
+        let built = DeleteQuery::<MockDialect, User>::new()
+            .using::<Account>()
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "DELETE FROM \"users\" USING \"accounts\" WHERE (\"id\" = \"id\")"
+        );
+        assert!(built.params.is_empty());
     }
 }

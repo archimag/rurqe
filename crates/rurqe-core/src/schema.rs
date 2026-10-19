@@ -386,6 +386,50 @@ impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7);
 
 impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7, T8);
 
+/// Trait for extending a relational scope with an additional table.
+pub trait ExtendScope<S: Table> {
+    /// The resulting composite scope after adding `S`.
+    type Output;
+}
+
+impl<T: Table, S: Table> ExtendScope<S> for T {
+    type Output = (T, S);
+}
+
+impl<T1: Table, S: Table> ExtendScope<S> for (T1,) {
+    type Output = (T1, S);
+}
+
+impl<T1: Table, T2: Table, S: Table> ExtendScope<S> for (T1, T2) {
+    type Output = (T1, T2, S);
+}
+
+impl<T1: Table, T2: Table, T3: Table, S: Table> ExtendScope<S> for (T1, T2, T3) {
+    type Output = (T1, T2, T3, S);
+}
+
+impl<T1: Table, T2: Table, T3: Table, T4: Table, S: Table> ExtendScope<S> for (T1, T2, T3, T4) {
+    type Output = (T1, T2, T3, T4, S);
+}
+
+impl<T1: Table, T2: Table, T3: Table, T4: Table, T5: Table, S: Table> ExtendScope<S>
+    for (T1, T2, T3, T4, T5)
+{
+    type Output = (T1, T2, T3, T4, T5, S);
+}
+
+impl<T1: Table, T2: Table, T3: Table, T4: Table, T5: Table, T6: Table, S: Table> ExtendScope<S>
+    for (T1, T2, T3, T4, T5, T6)
+{
+    type Output = (T1, T2, T3, T4, T5, T6, S);
+}
+
+impl<T1: Table, T2: Table, T3: Table, T4: Table, T5: Table, T6: Table, T7: Table, S: Table>
+    ExtendScope<S> for (T1, T2, T3, T4, T5, T6, T7)
+{
+    type Output = (T1, T2, T3, T4, T5, T6, T7, S);
+}
+
 /// Declares a table marker type together with its column marker types.
 ///
 /// Each column links back to the table through [`Column::Table`] and carries its
@@ -579,5 +623,13 @@ mod tests {
             UserId::expr_kind(),
             crate::expr::ExprKind::Column { name: "id" }
         );
+    }
+
+    #[test]
+    fn extend_scope_combines_tables_into_tuples() {
+        fn assert_extend<T: ExtendScope<S, Output = Expected>, S: Table, Expected>() {}
+
+        assert_extend::<User, Order, (User, Order)>();
+        assert_extend::<(User, Order), User, (User, Order, User)>();
     }
 }
