@@ -172,7 +172,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "macros")]
-    pub use rurqe_macros::{cols, dto, select};
+    pub use rurqe_macros::{cols, dto, raw_sql, select, sql};
 
     #[cfg(feature = "postgres")]
     pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};

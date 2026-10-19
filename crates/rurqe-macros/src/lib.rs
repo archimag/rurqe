@@ -3,6 +3,7 @@
 mod dto;
 #[allow(dead_code)]
 mod parse;
+mod raw_sql;
 mod select;
 
 use proc_macro::TokenStream;
@@ -64,4 +65,28 @@ pub fn dto(input: TokenStream) -> TokenStream {
     crate::dto::expand(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Builds a raw SQL expression with bound parameters and compile-time placeholder validation.
+///
+/// Parameters are bound safely as [`SqlVal`](::rurqe_core::expr::SqlVal) literals and rendered
+/// using dialect-appropriate parameter placeholders (e.g. `$1` for PostgreSQL, `?` for SQLite),
+/// preventing SQL injection vulnerabilities.
+///
+/// ```ignore
+/// let pred = sql!("strftime('%Y-%m', date) = ?", "2024-01");
+/// let explicit = sql!(bool, "data @> '{\"active\": true}'::jsonb");
+/// let count = sql!(i64, "COUNT(*)");
+/// ```
+#[proc_macro]
+pub fn sql(input: TokenStream) -> TokenStream {
+    crate::raw_sql::expand(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Builds a raw SQL expression, providing an ergonomic alias for [`sql!`].
+#[proc_macro]
+pub fn raw_sql(input: TokenStream) -> TokenStream {
+    sql(input)
 }

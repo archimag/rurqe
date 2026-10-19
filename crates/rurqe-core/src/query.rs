@@ -74,6 +74,14 @@ impl<T: 'static + Send + Sync> SelectTarget for WindowExpr<T> {
     }
 }
 
+impl<T: 'static + Send + Sync> SelectTarget for Expr<T> {
+    type RustType = T;
+
+    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        crate::expr::render_expr::<D>(sql, params, self.kind());
+    }
+}
+
 /// A list of selected columns whose Rust value types form the query row type.
 ///
 /// The trait is implemented for tuples of projection targets, so `(UserId,)`
@@ -728,34 +736,7 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     }
 }
 
-/// Renders `expr` into `sql`, appending every literal as a bound parameter.
-fn render_expr<D: Dialect>(sql: &mut String, params: &mut Vec<SqlVal>, expr: &ExprKind) {
-    match expr {
-        ExprKind::Column { name } => D::push_quoted_identifier(sql, name),
-        ExprKind::Value(value) => {
-            params.push(value.clone());
-            D::push_placeholder(sql, params.len());
-        }
-        ExprKind::Binary { op, lhs, rhs } => {
-            sql.push('(');
-            render_expr::<D>(sql, params, lhs);
-            sql.push(' ');
-            sql.push_str(op.as_str());
-            sql.push(' ');
-            render_expr::<D>(sql, params, rhs);
-            sql.push(')');
-        }
-        ExprKind::Aggregate { func, arg } => {
-            sql.push_str(func.as_str());
-            sql.push('(');
-            match arg {
-                Some(inner) => render_expr::<D>(sql, params, inner),
-                None => sql.push('*'),
-            }
-            sql.push(')');
-        }
-    }
-}
+use crate::expr::render_expr;
 
 /// A query whose statement can be rendered and whose rows decode into `Row`.
 ///
@@ -2039,5 +2020,27 @@ mod tests {
              WHERE (\"total\" < $2)"
         );
         assert_eq!(built.params, vec![SqlVal::F64(50.0), SqlVal::F64(500.0)]);
+    }
+
+    #[test]
+    fn raw_sql_renders_sequential_placeholders_in_query_clauses() {
+        let raw_pred: Expr<bool> =
+            Expr::raw("strftime('%Y-%m', date) = ?", vec![SqlVal::Text("2024-01".into())]);
+
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, Expr::<i64>::raw("COUNT(*)", vec![])))
+            .where_(Expr::column::<UserId>().gt(10i64))
+            .where_(raw_pred)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", COUNT(*) FROM \"users\" WHERE ((\"id\" > $1) AND strftime('%Y-%m', date) = $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(10), SqlVal::Text("2024-01".into())]
+        );
     }
 }

@@ -66,6 +66,30 @@ impl From<&str> for SqlVal {
     }
 }
 
+impl From<&String> for SqlVal {
+    fn from(value: &String) -> Self {
+        SqlVal::Text(value.clone())
+    }
+}
+
+impl From<u32> for SqlVal {
+    fn from(value: u32) -> Self {
+        SqlVal::I64(value as i64)
+    }
+}
+
+impl From<usize> for SqlVal {
+    fn from(value: usize) -> Self {
+        SqlVal::I64(value as i64)
+    }
+}
+
+impl From<i16> for SqlVal {
+    fn from(value: i16) -> Self {
+        SqlVal::I32(value as i32)
+    }
+}
+
 /// An aggregate function applied to a column or expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateFunc {
@@ -151,6 +175,13 @@ pub enum ExprKind {
         /// The optional operand; `None` represents `*` (as in `COUNT(*)`).
         arg: Option<Box<ExprKind>>,
     },
+    /// A raw SQL expression with bound parameters and dialect-aware placeholder rendering.
+    Raw {
+        /// The SQL fragments separated by parameter placeholders.
+        fragments: Vec<String>,
+        /// The bound parameter values to insert between fragments.
+        params: Vec<SqlVal>,
+    },
 }
 
 /// A SQL expression whose result has the Rust type `T`.
@@ -206,6 +237,12 @@ impl<T> Expr<T> {
     /// Consumes the expression and returns its tree.
     pub fn into_kind(self) -> ExprKind {
         self.kind
+    }
+
+    /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
+    pub fn raw(template: &str, params: Vec<SqlVal>) -> Self {
+        let fragments = parse_raw_sql(template, params.len());
+        Self::new(ExprKind::Raw { fragments, params })
     }
 
     /// Builds a `SUM(C)` expression for column `C`.
@@ -431,6 +468,114 @@ impl<T> IntoExpr<T> for Expr<T> {
     }
 }
 
+/// Splits a raw SQL template into text fragments around parameter placeholders (`?` or `{}`).
+///
+/// Literal question marks can be escaped as `??`.
+pub fn parse_raw_sql(template: &str, param_count: usize) -> Vec<String> {
+    if param_count == 0 {
+        return vec![template.replace("??", "?")];
+    }
+
+    let mut q_count = 0;
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '?' {
+            if chars.peek() == Some(&'?') {
+                chars.next();
+            } else {
+                q_count += 1;
+            }
+        }
+    }
+
+    let use_question_mark = q_count == param_count || q_count > 0;
+    let mut fragments = Vec::with_capacity(param_count + 1);
+    let mut current = String::new();
+
+    if use_question_mark {
+        let mut chars = template.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '?' {
+                if chars.peek() == Some(&'?') {
+                    chars.next();
+                    current.push('?');
+                } else {
+                    fragments.push(core::mem::take(&mut current));
+                }
+            } else {
+                current.push(c);
+            }
+        }
+        fragments.push(current);
+    } else {
+        let mut chars = template.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' && chars.peek() == Some(&'}') {
+                chars.next();
+                fragments.push(core::mem::take(&mut current));
+            } else {
+                current.push(c);
+            }
+        }
+        fragments.push(current);
+    }
+
+    assert_eq!(
+        fragments.len() - 1,
+        param_count,
+        "raw SQL template expects {} parameter(s), but {} were provided",
+        fragments.len() - 1,
+        param_count
+    );
+
+    fragments
+}
+
+/// Renders `expr` into `sql`, appending every literal as a bound parameter.
+pub fn render_expr<D: crate::dialect::Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    expr: &ExprKind,
+) {
+    match expr {
+        ExprKind::Column { name } => D::push_quoted_identifier(sql, name),
+        ExprKind::Value(value) => {
+            params.push(value.clone());
+            D::push_placeholder(sql, params.len());
+        }
+        ExprKind::Binary { op, lhs, rhs } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, lhs);
+            sql.push(' ');
+            sql.push_str(op.as_str());
+            sql.push(' ');
+            render_expr::<D>(sql, params, rhs);
+            sql.push(')');
+        }
+        ExprKind::Aggregate { func, arg } => {
+            sql.push_str(func.as_str());
+            sql.push('(');
+            match arg {
+                Some(inner) => render_expr::<D>(sql, params, inner),
+                None => sql.push('*'),
+            }
+            sql.push(')');
+        }
+        ExprKind::Raw {
+            fragments,
+            params: raw_params,
+        } => {
+            for (i, fragment) in fragments.iter().enumerate() {
+                sql.push_str(fragment);
+                if i < raw_params.len() {
+                    params.push(raw_params[i].clone());
+                    D::push_placeholder(sql, params.len());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +746,20 @@ mod tests {
                 rhs: Box::new(ExprKind::Column { name: "id" }),
             }
         );
+    }
+
+    #[test]
+    fn raw_sql_splits_fragments_and_preserves_escaped_question_marks() {
+        let fragments = parse_raw_sql("strftime('%Y-%m', date) = ?", 1);
+        assert_eq!(fragments, vec!["strftime('%Y-%m', date) = ", ""]);
+
+        let escaped = parse_raw_sql("data ?? 'key' AND age > ?", 1);
+        assert_eq!(escaped, vec!["data ? 'key' AND age > ", ""]);
+
+        let braces = parse_raw_sql("foo = {} AND bar = {}", 2);
+        assert_eq!(braces, vec!["foo = ", " AND bar = ", ""]);
+
+        let zero_params = parse_raw_sql("data ? 'key'", 0);
+        assert_eq!(zero_params, vec!["data ? 'key'"]);
     }
 }
