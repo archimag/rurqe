@@ -4,7 +4,7 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::dialect::{Dialect, SupportsLateralJoin};
+use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin};
 use crate::expr::{render_expr, BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::schema::{Column, ExprInScope, Table, TableInScope};
 
@@ -79,6 +79,8 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     limit: Option<u32>,
     offset: Option<u32>,
     set_operations: Vec<SetOperation>,
+    distinct: bool,
+    distinct_on: Vec<&'static str>,
     _marker: QueryMarker<D, Tables, Output>,
 }
 
@@ -95,6 +97,8 @@ impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
             limit: self.limit,
             offset: self.offset,
             set_operations: self.set_operations.clone(),
+            distinct: self.distinct,
+            distinct_on: self.distinct_on.clone(),
             _marker: PhantomData,
         }
     }
@@ -114,6 +118,8 @@ impl<D: Dialect> SelectQuery<D, (), ()> {
             limit: None,
             offset: None,
             set_operations: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -188,6 +194,25 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         Output: 'static,
     {
         Lateral::new(self)
+    }
+
+    /// Marks the query as `DISTINCT`, removing duplicate rows.
+    pub fn distinct(mut self) -> Self {
+        self.distinct = true;
+        self
+    }
+
+    /// Appends a column to the `DISTINCT ON (...)` clause.
+    ///
+    /// `DISTINCT ON` is a dialect-specific feature supported by PostgreSQL and
+    /// gated by [`SupportsDistinctOn`].
+    pub fn distinct_on<C: Column, P>(mut self, _col: C) -> Self
+    where
+        D: SupportsDistinctOn,
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.distinct_on.push(C::NAME);
+        self
     }
 
     /// Lifts the column `C` into its nullable form [`Nullable`].
@@ -361,6 +386,8 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
             limit: self.limit,
             offset: self.offset,
             set_operations: self.set_operations,
+            distinct: self.distinct,
+            distinct_on: self.distinct_on,
             _marker: PhantomData,
         }
     }
@@ -473,6 +500,18 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         }
 
         sql.push_str("SELECT ");
+        if !self.distinct_on.is_empty() {
+            sql.push_str("DISTINCT ON (");
+            for (index, name) in self.distinct_on.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, name);
+            }
+            sql.push_str(") ");
+        } else if self.distinct {
+            sql.push_str("DISTINCT ");
+        }
         render_projections(sql, params);
 
         sql.push_str(" FROM ");

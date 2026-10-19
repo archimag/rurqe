@@ -23,6 +23,7 @@ impl Dialect for MockDialect {
 }
 
 impl SupportsLateralJoin for MockDialect {}
+impl crate::dialect::SupportsDistinctOn for MockDialect {}
 
 #[derive(Default)]
 struct MockBackend {
@@ -58,6 +59,31 @@ crate::table! {
         OrderUserId => "user_id": i64,
         OrderTotal => "total": f64,
     }
+}
+
+#[test]
+fn distinct_renders_distinct_keyword() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,))
+        .distinct()
+        .build();
+
+    assert_eq!(built.sql, "SELECT DISTINCT \"id\" FROM \"users\"");
+}
+
+#[test]
+fn distinct_on_renders_distinct_on_clause() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName))
+        .distinct_on(UserId)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT DISTINCT ON (\"id\") \"id\", \"name\" FROM \"users\""
+    );
 }
 
 #[test]

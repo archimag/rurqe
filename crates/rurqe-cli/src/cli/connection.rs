@@ -66,8 +66,16 @@ fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
 /// Connects to PostgreSQL from a connection URL.
 fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
     postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
+        let err_str = e.to_string();
+        let hint = if err_str.to_lowercase().contains("ssl")
+            || err_str.to_lowercase().contains("tls")
+        {
+            "\nHint: PostgreSQL server may require SSL/TLS, but the connection was attempted with NoTls."
+        } else {
+            ""
+        };
         CliError(format!(
-            "failed to connect to PostgreSQL at `{}`: {e}",
+            "failed to connect to PostgreSQL at `{}`: {e}{hint}",
             redact_database_url(url)
         ))
     })
