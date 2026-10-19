@@ -30,7 +30,7 @@ use core::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::dialect::{Dialect, SupportsLateralJoin};
-use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
+use crate::dml::{DeleteQuery, ExecutableMutation, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::row::FromRow;
 use crate::schema::{At, Column, ColumnBelongsTo, ExprScope, Next, Table, TableInScope, TableRef};
@@ -1264,7 +1264,9 @@ impl<D: Dialect, T: Table, Values, Returning> ExecutableQuery
     }
 }
 
-impl<D: Dialect, T: Table, Returning> ExecutableQuery for UpdateQuery<D, T, Filtered, Returning> {
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning> ExecutableQuery
+    for UpdateQuery<D, T, State, Returning>
+{
     type Row = Returning;
 
     fn build_query(&self) -> BuiltQuery {
@@ -1272,7 +1274,9 @@ impl<D: Dialect, T: Table, Returning> ExecutableQuery for UpdateQuery<D, T, Filt
     }
 }
 
-impl<D: Dialect, T: Table, Returning> ExecutableQuery for DeleteQuery<D, T, Filtered, Returning> {
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning> ExecutableQuery
+    for DeleteQuery<D, T, State, Returning>
+{
     type Row = Returning;
 
     fn build_query(&self) -> BuiltQuery {
@@ -1891,7 +1895,7 @@ pub trait TransactionBackend: QueryBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dml::ColumnAssign;
+    use crate::dml::{ColumnAssign, Filtered};
     use crate::schema::{Aliased, AliasedCol};
 
     struct MockDialect;

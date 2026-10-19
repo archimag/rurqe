@@ -198,7 +198,7 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
     pub fn returning<S: Selection + TableSelection<T>>(
         mut self,
         selection: S,
-    ) -> InsertQuery<D, T, Values, S::Row> {
+    ) -> InsertQuery<D, T, Values, <S as Selection>::Row> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }

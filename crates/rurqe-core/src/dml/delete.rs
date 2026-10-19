@@ -13,7 +13,7 @@
 
 use core::marker::PhantomData;
 
-use super::{Filtered, Unfiltered};
+use super::{ExecutableMutation, Filtered, Unfiltered};
 use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
@@ -116,13 +116,15 @@ impl<D: Dialect + SupportsReturning, T: Table, State> DeleteQuery<D, T, State, (
     pub fn returning<S: Selection + TableSelection<T>>(
         mut self,
         selection: S,
-    ) -> DeleteQuery<D, T, State, S::Row> {
+    ) -> DeleteQuery<D, T, State, <S as Selection>::Row> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }
 }
 
-impl<D: Dialect, T: Table, Returning> DeleteQuery<D, T, Filtered, Returning> {
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning>
+    DeleteQuery<D, T, State, Returning>
+{
     /// Renders the statement into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
         let mut sql = String::from("DELETE FROM ");

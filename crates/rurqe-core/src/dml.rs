@@ -36,6 +36,35 @@ pub struct Unfiltered;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Filtered;
 
+/// Statically asserts that a DML mutation is safe to execute.
+///
+/// Mutations start in the [`Unfiltered`] state, where building the statement is
+/// rejected at compile time so a forgotten `WHERE` clause cannot silently modify
+/// every row of a table. Calling `.where_(...)` or `.allow_all()` transitions the
+/// query into [`Filtered`], the only state implementing this trait.
+///
+/// ```compile_fail
+/// use rurqe_core::dml::UpdateQuery;
+/// # use rurqe_core::dialect::Dialect;
+/// # struct MockDialect;
+/// # impl Dialect for MockDialect {
+/// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+/// #     fn push_placeholder(_: &mut String, _: usize) {}
+/// # }
+/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// // Fails to compile: the mutation is unfiltered and `.allow_all()` was not called:
+/// let query = UpdateQuery::<MockDialect, User>::new().set(UserId::set(1i64));
+/// query.build();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "refusing to build a full-table mutation without a filter",
+    label = "this mutation has no `WHERE` clause and would affect every row",
+    note = "restrict the mutation with `.where_(...)`, or call `.allow_all()` to explicitly opt into modifying every row"
+)]
+pub trait ExecutableMutation {}
+
+impl ExecutableMutation for Filtered {}
+
 pub(crate) use crate::expr::render_expr;
 
 /// The value part of a single column assignment.

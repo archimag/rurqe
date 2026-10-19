@@ -13,7 +13,7 @@
 
 use core::marker::PhantomData;
 
-use super::{AssignValue, AssignmentSet, Filtered, Unfiltered};
+use super::{AssignValue, AssignmentSet, ExecutableMutation, Filtered, Unfiltered};
 use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
@@ -129,13 +129,15 @@ impl<D: Dialect + SupportsReturning, T: Table, State> UpdateQuery<D, T, State, (
     pub fn returning<S: Selection + TableSelection<T>>(
         mut self,
         selection: S,
-    ) -> UpdateQuery<D, T, State, S::Row> {
+    ) -> UpdateQuery<D, T, State, <S as Selection>::Row> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }
 }
 
-impl<D: Dialect, T: Table, Returning> UpdateQuery<D, T, Filtered, Returning> {
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning>
+    UpdateQuery<D, T, State, Returning>
+{
     /// Renders the statement into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
         assert!(
