@@ -448,7 +448,62 @@ let deleted = delete_from(Users)
 
 - `rurqe::postgres::prelude::*` re-exports the whole facade prelude and replaces its dialect-generic entry points with PostgreSQL ones, so the dialect is `Postgres<Pg16>` unless a type annotation says otherwise.
 - `rurqe::sqlite::prelude::*` provides the identical SQLite entry points (`Sqlite<Sqlite3_35>`).
+- Every dialect prelude also re-exports its `.from(table)` extension trait, so `select!(...).from(table)` starts a query without any dialect parameters (see §16).
 - The dialect-generic constructors stay available for driver-agnostic code: `select_from::<D, T>()`, `SelectQuery::from_table(table)`, `SelectQuery::inner_join_table(table, on)`, `SelectQuery::left_join_table(table, on)`, `InsertQuery::into_table(table)`, `UpdateQuery::table(table)`, and `DeleteQuery::from_table(table)`.
+
+### 16. Named Selections Without Turbofish & Version-Pinned Preludes
+
+The `select!` macro starts a query straight from a table value through `.from(table)`. Inside a dialect prelude scope this pins the dialect automatically, so neither the dialect nor the row type is written out:
+
+```rust
+use rurqe::postgres::prelude::*;
+
+let users = select!(UsersId, UsersName as contact_email)
+    .from(Users)
+    .where_(UsersId.gt(10i64))
+    .order_by_asc(UsersId)
+    .build();
+
+// SELECT "users"."id", "users"."name" FROM "users" WHERE ("id" > $1) ORDER BY "id" ASC
+```
+
+Version-pinned preludes bind a concrete engine version for the whole entry surface (`select_from`, `insert_into`, `update`, `delete_from`, and `select!(...).from(...)`), so the pinned version's capability gates are checked at compile time:
+
+```rust
+use rurqe::postgres::pg14::prelude::*;      // Postgres<Pg14>
+use rurqe::postgres::pg15::prelude::*;      // Postgres<Pg15>
+use rurqe::postgres::pg16::prelude::*;      // Postgres<Pg16>
+
+use rurqe::sqlite::sqlite3_0::prelude::*;   // Sqlite<Sqlite3_0>
+use rurqe::sqlite::sqlite3_24::prelude::*;  // Sqlite<Sqlite3_24>
+use rurqe::sqlite::sqlite3_35::prelude::*;  // Sqlite<Sqlite3_35>
+```
+
+With a pinned version a capability-gated builder method exists only when that version satisfies the corresponding marker trait:
+
+```rust
+use rurqe::sqlite::sqlite3_35::prelude::*;
+
+// `RETURNING` is reachable because SQLite 3.35 implements `SupportsReturning`.
+let inserted = insert_into(Users)
+    .values((UsersId::set(7i64), UsersName::set("root")))
+    .returning(cols!(UsersId, UsersName))
+    .build();
+```
+
+```rust
+use rurqe::sqlite::sqlite3_24::prelude::*;
+
+// `ON CONFLICT` is reachable because SQLite 3.24 implements `SupportsOnConflict`.
+let upsert = insert_into(Users)
+    .values((UsersId::set(1i64), UsersName::set("root")))
+    .on_conflict((UsersId,))
+    .do_nothing()
+    .build();
+```
+
+- Pinning a version turns a version-dependent runtime SQL error into a compile error at the call site.
+- The dialect-generic constructors (`select_from::<D, T>()`, `from_table::<D, T>(table)`, `SelectQuery::from_table(table)`, ...) stay available for dialect-agnostic libraries that must not commit to a pinned version.
 
 ---
 
