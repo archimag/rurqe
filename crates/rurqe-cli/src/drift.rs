@@ -24,6 +24,55 @@ impl SchemaDiff {
             && self.extra_tables.is_empty()
             && self.table_diffs.is_empty()
     }
+
+    /// Renders every discrepancy as an indented bullet, one line per finding.
+    fn write_details(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for table in &self.missing_tables {
+            writeln!(
+                f,
+                "  - Table `{table}` is declared in snapshot but missing from live database."
+            )?;
+        }
+        for table in &self.extra_tables {
+            writeln!(
+                f,
+                "  - Table `{table}` exists in live database but is missing from snapshot."
+            )?;
+        }
+        for (table, diff) in &self.table_diffs {
+            for col in &diff.missing_columns {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: column `{col}` is in snapshot but missing from database."
+                )?;
+            }
+            for col in &diff.extra_columns {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: column `{col}` exists in database but is missing from snapshot."
+                )?;
+            }
+            for col in &diff.altered_columns {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: column `{col}` definition differs between database and snapshot."
+                )?;
+            }
+            if diff.primary_key_mismatch {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: primary key constraint differs between database and snapshot."
+                )?;
+            }
+            if diff.foreign_key_mismatch {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: foreign key constraints differ between database and snapshot."
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Discrepancies within a specific table.
@@ -62,52 +111,7 @@ impl fmt::Display for DriftReport {
             "Expected schema hash: {}\nLive schema hash:     {}",
             self.expected_hash, self.live_hash
         )?;
-
-        for table in &self.diff.missing_tables {
-            writeln!(
-                f,
-                "  - Table `{table}` is declared in snapshot but missing from live database."
-            )?;
-        }
-        for table in &self.diff.extra_tables {
-            writeln!(
-                f,
-                "  - Table `{table}` exists in live database but is missing from snapshot."
-            )?;
-        }
-        for (table, diff) in &self.diff.table_diffs {
-            for col in &diff.missing_columns {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: column `{col}` is in snapshot but missing from database."
-                )?;
-            }
-            for col in &diff.extra_columns {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: column `{col}` exists in database but is missing from snapshot."
-                )?;
-            }
-            for col in &diff.altered_columns {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: column `{col}` definition differs between database and snapshot."
-                )?;
-            }
-            if diff.primary_key_mismatch {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: primary key constraint differs between database and snapshot."
-                )?;
-            }
-            if diff.foreign_key_mismatch {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: foreign key constraints differ between database and snapshot."
-                )?;
-            }
-        }
-
+        self.diff.write_details(f)?;
         writeln!(
             f,
             "\nHint: Run `cargo db-codegen` to update code and snapshot."
@@ -124,6 +128,9 @@ pub enum DriftError {
     HashMismatch {
         expected: String,
         found_in_code: String,
+        /// Structural diff between the live catalog and the lock snapshot, so a
+        /// stale `SCHEMA_HASH` still reports exactly what drifted.
+        diff: SchemaDiff,
     },
     InvalidLock(String),
     Io(String),
@@ -136,10 +143,18 @@ impl fmt::Display for DriftError {
             DriftError::HashMismatch {
                 expected,
                 found_in_code,
-            } => write!(
-                f,
-                "SCHEMA_HASH mismatch in schema code: expected {expected}, found {found_in_code}"
-            ),
+                diff,
+            } => {
+                writeln!(
+                    f,
+                    "SCHEMA_HASH mismatch in schema code: expected {expected}, found {found_in_code}"
+                )?;
+                diff.write_details(f)?;
+                write!(
+                    f,
+                    "\nHint: Run `cargo db-codegen` to update code and snapshot."
+                )
+            }
             DriftError::InvalidLock(message) => {
                 write!(f, "invalid schema lock snapshot: {message}")
             }
@@ -158,21 +173,22 @@ pub fn verify_drift(
 ) -> Result<(), DriftError> {
     let live_hash = live_catalog.schema_hash();
 
+    let expected_catalog = SchemaCatalog::from_lock(expected_lock)
+        .map_err(|err| DriftError::InvalidLock(err.to_string()))?;
+    let diff = compute_catalog_diff(live_catalog, &expected_catalog);
+
     if let Some(code) = schema_rs {
         if let Some(embedded_hash) = extract_schema_hash(code) {
             if embedded_hash != live_hash {
                 return Err(DriftError::HashMismatch {
-                    expected: live_hash.clone(),
+                    expected: live_hash,
                     found_in_code: embedded_hash,
+                    diff,
                 });
             }
         }
     }
 
-    let expected_catalog = SchemaCatalog::from_lock(expected_lock)
-        .map_err(|err| DriftError::InvalidLock(err.to_string()))?;
-
-    let diff = compute_catalog_diff(live_catalog, &expected_catalog);
     if diff.is_empty() {
         return Ok(());
     }

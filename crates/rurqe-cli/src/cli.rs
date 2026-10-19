@@ -106,7 +106,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         if program == "cargo-db-verify" {
             return Ok(CliCommand::Verify {
                 database_url: None,
-                schema_path: Some(PathBuf::from("src/schema.rs")),
+                schema_path: None,
                 lock_path: PathBuf::from("schema.lock"),
             });
         }
@@ -252,7 +252,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
 
         "db-verify" | "verify" => {
             let mut database_url = None;
-            let mut schema_path = Some(PathBuf::from("src/schema.rs"));
+            let mut schema_path = None;
             let mut lock_path = PathBuf::from("schema.lock");
 
             let mut idx = 0;
@@ -384,15 +384,7 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
                     lock_path.display()
                 ))
             })?;
-            let schema_code = match schema_path {
-                Some(path) if path.exists() => Some(std::fs::read_to_string(&path).map_err(|e| {
-                    CliError(format!(
-                        "failed to read schema code `{}`: {e}",
-                        path.display()
-                    ))
-                })?),
-                _ => None,
-            };
+            let schema_code = resolve_schema_code(schema_path)?;
             let catalog = introspect_database(&url)?;
             verify_drift(&catalog, &expected_lock, schema_code.as_deref())
                 .map_err(|err| CliError(err.to_string()))?;
@@ -418,6 +410,38 @@ fn resolve_database_url(supplied: Option<String>) -> Result<String, CliError> {
                     .to_owned(),
             )
         })
+}
+
+/// Reads the generated schema code used for `SCHEMA_HASH` verification.
+///
+/// An explicitly supplied `--schema-path` must resolve to a readable file, so a
+/// deleted or misconfigured schema file can never silently pass CI. When the
+/// flag is omitted, the conventional `src/schema.rs` is used if present and
+/// verification otherwise falls back to the lock snapshot alone with a warning.
+fn resolve_schema_code(explicit: Option<PathBuf>) -> Result<Option<String>, CliError> {
+    let Some(path) = explicit else {
+        let default = PathBuf::from("src/schema.rs");
+        if !default.exists() {
+            eprintln!(
+                "warning: schema code `{}` not found; verifying against the lock snapshot only \
+                 (pass `--schema-path` to require the generated code)",
+                default.display()
+            );
+            return Ok(None);
+        }
+        return read_schema_code(&default).map(Some);
+    };
+
+    read_schema_code(&path).map(Some)
+}
+
+fn read_schema_code(path: &Path) -> Result<String, CliError> {
+    std::fs::read_to_string(path).map_err(|e| {
+        CliError(format!(
+            "failed to read schema code `{}`: {e}",
+            path.display()
+        ))
+    })
 }
 
 /// Replaces the userinfo section of a connection URL with `***`.
@@ -711,7 +735,25 @@ mod tests {
             cmd,
             CliCommand::Verify {
                 database_url: None,
-                schema_path: Some(PathBuf::from("src/schema.rs")),
+                schema_path: None,
+                lock_path: PathBuf::from("schema.lock"),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_explicit_verify_schema_path() {
+        let cmd = parse_args(&[
+            "cargo-db-verify".into(),
+            "--schema-path".into(),
+            "custom/schema.rs".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            cmd,
+            CliCommand::Verify {
+                database_url: None,
+                schema_path: Some(PathBuf::from("custom/schema.rs")),
                 lock_path: PathBuf::from("schema.lock"),
             }
         );

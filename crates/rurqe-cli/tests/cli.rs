@@ -423,13 +423,13 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
         "unexpected error: {hash_err}"
     );
 
+    // No `--schema-path`: the implicit default is absent, so verification falls
+    // back to the lock snapshot alone and still reports the drift.
     let verify_lock_only = vec![
         "rurqe".to_owned(),
         "verify".to_owned(),
         "--database-url".to_owned(),
         path_string(&db),
-        "--schema-path".to_owned(),
-        path_string(&workspace.join("missing-schema.rs")),
         "--lock-path".to_owned(),
         path_string(&lock),
     ];
@@ -442,6 +442,49 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
     assert!(message.contains("phone"), "unexpected error: {message}");
     assert!(
         message.contains("cargo db-codegen"),
+        "unexpected error: {message}"
+    );
+}
+
+#[test]
+fn run_cli_verify_rejects_a_missing_explicit_schema_path() {
+    let workspace = temp_workspace("verify-missing-schema");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY);")
+            .expect("create schema");
+    }
+
+    let lock = workspace.join("schema.lock");
+    run_cli(vec![
+        "rurqe".to_owned(),
+        "codegen".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--output".to_owned(),
+        path_string(&workspace.join("schema.rs")),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+    ])
+    .expect("codegen succeeds");
+
+    let missing = workspace.join("missing-schema.rs");
+    let err = run_cli(vec![
+        "rurqe".to_owned(),
+        "verify".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--schema-path".to_owned(),
+        path_string(&missing),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+    ])
+    .expect_err("missing explicit schema path is rejected");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("failed to read schema code"),
         "unexpected error: {message}"
     );
 }
