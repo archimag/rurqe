@@ -41,11 +41,6 @@ use crate::schema::{ExtendScope, Table};
 /// let query = UpdateQuery::<MockDialect, User>::new();
 /// query.build();
 /// ```
-/// Phantom marker carrying the dialect, target table, filtering typestate,
-/// `RETURNING` clause type, and scope of an `UPDATE` statement.
-type UpdateMarker<D, T, State, Returning, Scope> =
-    PhantomData<fn() -> (D, T, State, Returning, Scope)>;
-
 pub struct UpdateQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (), Scope = T> {
     assignments: Vec<(&'static str, AssignValue)>,
     from_tables: Vec<&'static str>,
@@ -53,6 +48,11 @@ pub struct UpdateQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (),
     returning: Vec<&'static str>,
     _marker: UpdateMarker<D, T, State, Returning, Scope>,
 }
+
+/// Phantom marker carrying the dialect, target table, filtering typestate,
+/// `RETURNING` clause type, and scope of an `UPDATE` statement.
+type UpdateMarker<D, T, State, Returning, Scope> =
+    PhantomData<fn() -> (D, T, State, Returning, Scope)>;
 
 impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, (), T> {
     /// Creates a new `UPDATE` statement targeting table `T` without a filter.
@@ -64,6 +64,20 @@ impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, (), T> {
             returning: Vec::new(),
             _marker: PhantomData,
         }
+    }
+
+    /// Starts an `UPDATE` of `table`, inferring the mutated table from the value.
+    ///
+    /// Table markers are zero-sized, so the argument carries no data and the
+    /// table is fixed at compile time. The dialect is inferred from the expected
+    /// type of the statement, which lets a dialect module expose a
+    /// turbofish-free entry point:
+    ///
+    /// ```text
+    /// let query: UpdateQuery<Postgres, Users> = UpdateQuery::table(users);
+    /// ```
+    pub fn table(_table: T) -> UpdateQuery<D, T, Unfiltered, (), T> {
+        UpdateQuery::new()
     }
 }
 
@@ -138,9 +152,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope> UpdateQuery<D, T, State, Ret
     }
 }
 
-impl<D: Dialect + SupportsReturning, T: Table, State, Scope>
-    UpdateQuery<D, T, State, (), Scope>
-{
+impl<D: Dialect + SupportsReturning, T: Table, State, Scope> UpdateQuery<D, T, State, (), Scope> {
     /// Adds a `RETURNING` clause projecting `selection` for every affected row.
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
@@ -402,5 +414,24 @@ mod tests {
             "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" WHERE (\"id\" = \"id\")"
         );
         assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
+    }
+
+    #[test]
+    fn table_infers_the_mutated_table_from_the_value() {
+        let query: UpdateQuery<MockDialect, User> = UpdateQuery::table(User);
+
+        let built = query
+            .set(UserName::set("alice"))
+            .where_(Expr::column::<UserId>().eq(1i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::Text("alice".to_owned()), SqlVal::I64(1)]
+        );
     }
 }

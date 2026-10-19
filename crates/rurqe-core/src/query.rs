@@ -1142,6 +1142,20 @@ impl<D: Dialect, Output> SelectQuery<D, (), Output> {
     pub fn from<T: Table>(self) -> SelectQuery<D, T, Output> {
         self.retype()
     }
+
+    /// Introduces `table` as the table rows are selected from.
+    ///
+    /// Table markers are zero-sized values, so the argument carries no data and
+    /// the table type is inferred from it. The call therefore needs no
+    /// turbofish, and the generated machine code stays identical to
+    /// [`from`](SelectQuery::from):
+    ///
+    /// ```text
+    /// SelectQuery::<Postgres>::new().from_table(users)
+    /// ```
+    pub fn from_table<T: Table>(self, _table: T) -> SelectQuery<D, T, Output> {
+        self.retype()
+    }
 }
 
 impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
@@ -1317,40 +1331,86 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     /// The joined table becomes part of the query scope, so several joins may be
     /// chained. Parameters of `on` are bound before the parameters of the
     /// `WHERE` clause.
-    pub fn inner_join<T: Table>(
-        mut self,
+    pub fn inner_join<T: Table>(self, on: Expr<bool>) -> SelectQuery<D, Joined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins `table` to the query with an `INNER JOIN` restricted by `on`.
+    ///
+    /// The table marker is passed by value, so the joined table is inferred from
+    /// the argument and the call needs no turbofish:
+    ///
+    /// ```text
+    /// query.inner_join_table(orders, Expr::column::<OrderUserId>().eq(UserId))
+    /// ```
+    ///
+    /// Like [`inner_join`](SelectQuery::inner_join), the joined table becomes
+    /// part of the query scope and keeps the column types declared by the schema.
+    pub fn inner_join_table<T: Table>(
+        self,
+        _table: T,
         on: Expr<bool>,
     ) -> SelectQuery<D, Joined<Tables, T>, Output>
     where
         Tables: TableScope,
     {
-        self.joins.push(JoinClause {
-            kind: JoinKind::Inner,
-            on: Some(on.into_kind()),
-            lateral: None,
-        });
-        self.retype()
+        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+            .retype()
     }
 
     /// Joins the table `T` to the query with a `LEFT JOIN` restricted by `on`.
     ///
-    /// Rows of `T` may be missing from the result, so its columns are projected
-    /// through [`SelectQuery::nullable`] to keep their absence visible in the row
-    /// type. Parameters of `on` are bound before the parameters of the `WHERE`
-    /// clause.
+    /// Rows of `T` may be missing from the result, so its columns lift into
+    /// `Option<T>` automatically. Parameters of `on` are bound before the
+    /// parameters of the `WHERE` clause.
     pub fn left_join<T: Table>(
-        mut self,
+        self,
         on: Expr<bool>,
     ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
     where
         Tables: TableScope,
     {
+        self.push_join(JoinKind::Left, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins `table` to the query with a `LEFT JOIN` restricted by `on`.
+    ///
+    /// The table marker is passed by value, so the joined table is inferred from
+    /// the argument and the call needs no turbofish:
+    ///
+    /// ```text
+    /// query.left_join_table(orders, Expr::column::<OrderUserId>().eq(UserId))
+    /// ```
+    ///
+    /// Like [`left_join`](SelectQuery::left_join), the columns of `table` lift
+    /// into `Option<T>` at compile time, keeping the absence of unmatched rows
+    /// visible in the row type.
+    pub fn left_join_table<T: Table>(
+        self,
+        _table: T,
+        on: Expr<bool>,
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Left, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Records a regular join clause whose relational effect is expressed by the
+    /// caller's return type.
+    fn push_join(mut self, kind: JoinKind, on: Option<ExprKind>) -> Self {
         self.joins.push(JoinClause {
-            kind: JoinKind::Left,
-            on: Some(on.into_kind()),
+            kind,
+            on,
             lateral: None,
         });
-        self.retype()
+        self
     }
 
     fn retype<Tables2, Output2>(self) -> SelectQuery<D, Tables2, Output2> {
@@ -3554,5 +3614,49 @@ mod tests {
         assert_grouped::<Grouping, UserName, At<0>>();
         assert_grouped::<Grouping, UserId, Next<At<0>>>();
         assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, _>();
+    }
+
+    #[test]
+    fn value_table_argument_infers_the_from_table() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from_table(User)
+            .select((UserId, UserName))
+            .where_(Expr::column::<UserId>().gt(10i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(10)]);
+    }
+
+    #[test]
+    fn value_join_arguments_infer_joined_tables() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from_table(User)
+            .inner_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
+            .select((UserId, OrderTotal))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"total\" FROM \"users\" INNER JOIN \"orders\" ON (\"user_id\" = $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(7)]);
+    }
+
+    #[test]
+    fn value_left_join_arguments_lift_columns_into_options() {
+        let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
+            SelectQuery::<MockDialect>::new()
+                .from_table(User)
+                .left_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
+                .select((UserId, OrderTotal));
+
+        assert_eq!(
+            query.build().sql,
+            "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        );
     }
 }

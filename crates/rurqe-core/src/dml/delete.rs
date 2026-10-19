@@ -41,17 +41,17 @@ use crate::schema::{ExtendScope, Table};
 /// let query = DeleteQuery::<MockDialect, User>::new();
 /// query.build();
 /// ```
-/// Phantom marker carrying the dialect, target table, filtering typestate,
-/// `RETURNING` clause type, and scope of a `DELETE` statement.
-type DeleteMarker<D, T, State, Returning, Scope> =
-    PhantomData<fn() -> (D, T, State, Returning, Scope)>;
-
 pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (), Scope = T> {
     using_tables: Vec<&'static str>,
     filter: Option<ExprKind>,
     returning: Vec<&'static str>,
     _marker: DeleteMarker<D, T, State, Returning, Scope>,
 }
+
+/// Phantom marker carrying the dialect, target table, filtering typestate,
+/// `RETURNING` clause type, and scope of a `DELETE` statement.
+type DeleteMarker<D, T, State, Returning, Scope> =
+    PhantomData<fn() -> (D, T, State, Returning, Scope)>;
 
 impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, (), T> {
     /// Creates a new `DELETE` statement targeting table `T` without a filter.
@@ -62,6 +62,20 @@ impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, (), T> {
             returning: Vec::new(),
             _marker: PhantomData,
         }
+    }
+
+    /// Starts a `DELETE` from `table`, inferring the table from the value.
+    ///
+    /// Table markers are zero-sized, so the argument carries no data and the
+    /// table is fixed at compile time. The dialect is inferred from the expected
+    /// type of the statement, which lets a dialect module expose a
+    /// turbofish-free entry point:
+    ///
+    /// ```text
+    /// let query: DeleteQuery<Postgres, Users> = DeleteQuery::from_table(users);
+    /// ```
+    pub fn from_table(_table: T) -> DeleteQuery<D, T, Unfiltered, (), T> {
+        DeleteQuery::new()
     }
 }
 
@@ -124,9 +138,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     }
 }
 
-impl<D: Dialect + SupportsReturning, T: Table, State, Scope>
-    DeleteQuery<D, T, State, (), Scope>
-{
+impl<D: Dialect + SupportsReturning, T: Table, State, Scope> DeleteQuery<D, T, State, (), Scope> {
     /// Adds a `RETURNING` clause projecting `selection` for every affected row.
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
@@ -277,5 +289,15 @@ mod tests {
             "DELETE FROM \"users\" USING \"accounts\" WHERE (\"id\" = \"id\")"
         );
         assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn from_table_infers_the_deleted_table_from_the_value() {
+        let query: DeleteQuery<MockDialect, User> = DeleteQuery::from_table(User);
+
+        let built = query.where_(Expr::column::<UserId>().eq(5i64)).build();
+
+        assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+        assert_eq!(built.params, vec![SqlVal::I64(5)]);
     }
 }

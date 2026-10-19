@@ -112,6 +112,20 @@ impl<D: Dialect, T: Table> InsertQuery<D, T, (), ()> {
             _marker: PhantomData,
         }
     }
+
+    /// Starts an `INSERT` into `table`, inferring the target table from the value.
+    ///
+    /// Table markers are zero-sized, so the argument carries no data and the
+    /// table is fixed at compile time. The dialect is inferred from the expected
+    /// type of the statement, which lets a dialect module expose a
+    /// turbofish-free entry point:
+    ///
+    /// ```text
+    /// let query: InsertQuery<Postgres, Users> = InsertQuery::into_table(users);
+    /// ```
+    pub fn into_table(_table: T) -> InsertQuery<D, T, (), ()> {
+        InsertQuery::new()
+    }
 }
 
 impl<D: Dialect, T: Table> Default for InsertQuery<D, T, (), ()> {
@@ -481,7 +495,10 @@ mod tests {
         let query: InsertQuery<MockDialect, User, Assignment<UserId, i64>> =
             InsertQuery::<MockDialect, User>::new().values(UserId::set(1i64));
 
-        assert_eq!(query.build().sql, "INSERT INTO \"users\" (\"id\") VALUES ($1)");
+        assert_eq!(
+            query.build().sql,
+            "INSERT INTO \"users\" (\"id\") VALUES ($1)"
+        );
     }
 
     #[test]
@@ -671,5 +688,23 @@ mod tests {
             "INSERT INTO \"users\" (\"id\") SELECT \"old_id\" FROM \"archive_users\""
         );
         assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn into_table_infers_the_target_table_from_the_value() {
+        let query: InsertQuery<MockDialect, User> = InsertQuery::into_table(User);
+
+        let built = query
+            .values((UserId::set(1i64), UserName::set("root")))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
     }
 }
