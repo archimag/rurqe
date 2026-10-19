@@ -9,7 +9,7 @@ pub mod introspect;
 pub mod loader;
 
 pub use cli::{parse_args, run_cli, CliCommand, CliError};
-pub use codegen::{generate_schema_rs, CodegenOptions};
+pub use codegen::{generate_schema_rs, CodegenError, CodegenOptions};
 pub use drift::{verify_drift, DriftError, DriftReport, SchemaDiff};
 pub use driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 pub use introspect::{

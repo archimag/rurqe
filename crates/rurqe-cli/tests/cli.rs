@@ -36,7 +36,7 @@ fn codegen_creates_valid_rust_code_with_schema_hash() {
         ),
     ]);
 
-    let code = generate_schema_rs(&catalog, &CodegenOptions::default());
+    let code = generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
 
     assert!(code.contains(&catalog.hash_const()));
     assert!(code.contains("table! {"));
@@ -62,7 +62,7 @@ fn drift_verification_passes_when_snapshot_matches() {
     )]);
 
     let lock = catalog.to_lock();
-    let code = generate_schema_rs(&catalog, &CodegenOptions::default());
+    let code = generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
 
     assert!(verify_drift(&catalog, &lock, Some(&code)).is_ok());
 }

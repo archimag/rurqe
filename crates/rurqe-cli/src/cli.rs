@@ -361,7 +361,8 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
         } => {
             let url = resolve_database_url(database_url)?;
             let catalog = introspect_database(&url)?;
-            let code = generate_schema_rs(&catalog, &CodegenOptions::default());
+            let code = generate_schema_rs(&catalog, &CodegenOptions::default())
+                .map_err(|err| CliError(format!("failed to generate schema code: {err}")))?;
             write_file(&output, &code)?;
             write_file(&lock_path, &catalog.to_lock())?;
             println!(

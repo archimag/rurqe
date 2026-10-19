@@ -4,8 +4,27 @@
 //! - Compile-time schema fingerprint constant: `pub const SCHEMA_HASH: &str = "...";`
 //! - Zero-cost schema markers via [`rurqe::table!`]
 //! - Strongly typed `Record` structs with `FromRow` implementations
+//!
+//! Schema names are sanitized into valid Rust identifiers and every generated
+//! item is checked against its namespace, so a catalog either renders into a
+//! compilable module or is rejected with [`CodegenError::IdentifierCollision`].
+
+use std::collections::BTreeMap;
+use std::fmt;
 
 use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
+
+/// Rust keywords, including reserved and reserved-for-future spellings.
+const RUST_KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
+    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
+    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
+    "return", "self", "Self", "static", "struct", "super", "trait", "true", "try", "type",
+    "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+];
+
+/// Keywords that cannot be spelled as raw identifiers and are suffixed instead.
+const NON_RAW_KEYWORDS: &[&str] = &["crate", "self", "Self", "super", "_"];
 
 /// Options controlling code generation.
 #[derive(Debug, Clone)]
@@ -29,8 +48,63 @@ impl Default for CodegenOptions {
     }
 }
 
+/// Error raised when a catalog cannot be rendered into valid, unambiguous Rust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodegenError {
+    /// Distinct schema names sanitize into the same Rust identifier.
+    IdentifierCollision {
+        /// The identifier claimed by more than one schema name.
+        ident: String,
+        /// The conflicting schema names, in deterministic order.
+        sources: Vec<String>,
+    },
+}
+
+impl fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CodegenError::IdentifierCollision { ident, sources } => write!(
+                f,
+                "schema names collide on the generated Rust identifier `{ident}`: {}; \
+                 rename them so they differ by more than characters that are invalid in \
+                 Rust identifiers",
+                sources.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CodegenError {}
+
+/// A table rendered into its Rust identifiers.
+struct TablePlan<'a> {
+    name: &'a str,
+    ident: String,
+    record_ident: String,
+    columns: Vec<ColumnPlan<'a>>,
+}
+
+/// A column rendered into its Rust identifiers and value type.
+struct ColumnPlan<'a> {
+    name: &'a str,
+    marker_ident: String,
+    field_ident: String,
+    rust_type: String,
+}
+
 /// Generates Rust schema source code from an engine-neutral [`SchemaCatalog`].
-pub fn generate_schema_rs(catalog: &SchemaCatalog, options: &CodegenOptions) -> String {
+///
+/// Names are sanitized into valid Rust identifiers (`2fa` becomes `_2fa`,
+/// `user.email` becomes `user_email`) and every generated item is registered in
+/// its namespace, so two schema names that reduce to the same identifier are
+/// reported as [`CodegenError::IdentifierCollision`] instead of emitting a
+/// module with duplicate definitions.
+pub fn generate_schema_rs(
+    catalog: &SchemaCatalog,
+    options: &CodegenOptions,
+) -> Result<String, CodegenError> {
+    let tables = build_plan(catalog, options)?;
+
     let mut out = String::new();
 
     if let Some(ref doc) = options.doc_comment {
@@ -53,92 +127,189 @@ pub fn generate_schema_rs(catalog: &SchemaCatalog, options: &CodegenOptions) -> 
     out.push_str(&catalog.hash_const());
     out.push_str("\n\n");
 
-    let mut tables: Vec<&TableDef> = catalog.tables.iter().collect();
-    tables.sort_by(|a, b| a.name.cmp(&b.name));
-
     for table in &tables {
-        let table_ident = to_pascal_case(&table.name);
-
-        out.push_str("table! {\n");
-        out.push_str("    /// The `");
-        out.push_str(&table.name);
-        out.push_str("` table.\n");
-        out.push_str("    ");
-        out.push_str(&table_ident);
-        out.push_str(" => \"");
-        out.push_str(&table.name);
-        out.push_str("\" {\n");
-
-        let mut columns: Vec<&ColumnDef> = table.columns.iter().collect();
-        columns.sort_by(|a, b| a.name.cmp(&b.name));
-
-        for column in &columns {
-            let col_ident = format!("{}{}", table_ident, to_pascal_case(&column.name));
-            let rust_type = type_kind_to_rust_type(&column.type_kind, column.nullable);
-
-            out.push_str("        ");
-            out.push_str(&col_ident);
-            out.push_str(" => \"");
-            out.push_str(&column.name);
-            out.push_str("\": ");
-            out.push_str(&rust_type);
-            out.push_str(",\n");
-        }
-
-        out.push_str("    }\n");
-        out.push_str("}\n\n");
-
-        if options.generate_records {
-            let record_ident = format!("{}Record", table_ident);
-            out.push_str("/// Strongly typed row record for `");
-            out.push_str(&table.name);
-            out.push_str("`.\n");
-            out.push_str("#[derive(Debug, Clone, PartialEq)]\n");
-            out.push_str("pub struct ");
-            out.push_str(&record_ident);
-            out.push_str(" {\n");
-
-            for column in &columns {
-                let field_name = to_safe_ident(&column.name);
-                let rust_type = type_kind_to_rust_type(&column.type_kind, column.nullable);
-
-                out.push_str("    pub ");
-                out.push_str(&field_name);
-                out.push_str(": ");
-                out.push_str(&rust_type);
-                out.push_str(",\n");
-            }
-            out.push_str("}\n\n");
-
-            out.push_str("impl FromRow for ");
-            out.push_str(&record_ident);
-            out.push_str(" {\n");
-            out.push_str("    fn from_row(values: &[SqlVal]) -> Option<Self> {\n");
-            out.push_str("        if values.len() != ");
-            out.push_str(&columns.len().to_string());
-            out.push_str(" {\n");
-            out.push_str("            return None;\n");
-            out.push_str("        }\n");
-            out.push_str("        Some(Self {\n");
-
-            for (idx, column) in columns.iter().enumerate() {
-                let field_name = to_safe_ident(&column.name);
-                out.push_str("            ");
-                out.push_str(&field_name);
-                out.push_str(": FromSqlValue::from_sql_value(&values[");
-                out.push_str(&idx.to_string());
-                out.push_str("])?,\n");
-            }
-
-            out.push_str("        })\n");
-            out.push_str("    }\n");
-            out.push_str("}\n\n");
-        }
+        write_table(&mut out, table, options);
     }
 
-    out
+    Ok(out)
 }
 
+/// Assigns Rust identifiers to every generated item and rejects collisions.
+fn build_plan<'a>(
+    catalog: &'a SchemaCatalog,
+    options: &CodegenOptions,
+) -> Result<Vec<TablePlan<'a>>, CodegenError> {
+    let mut tables: Vec<&'a TableDef> = catalog.tables.iter().collect();
+    tables.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // The type namespace is global: table markers, column markers, and records
+    // share one module, so every generated type name must be unique.
+    let mut types: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut plan = Vec::with_capacity(tables.len());
+
+    for table in tables {
+        let ident = table_type_ident(&table.name);
+        claim(&mut types, &ident, format!("table `{}`", table.name));
+
+        let record_ident = format!("{ident}Record");
+        if options.generate_records {
+            claim(
+                &mut types,
+                &record_ident,
+                format!("record of table `{}`", table.name),
+            );
+        }
+
+        let mut columns: Vec<&'a ColumnDef> = table.columns.iter().collect();
+        columns.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Record fields live in a per-table namespace: two columns of one table
+        // may not share a field name, while equal field names across tables are
+        // harmless because each record is a separate struct.
+        let mut fields: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut column_plans = Vec::with_capacity(columns.len());
+
+        for column in columns {
+            let source = format!("column `{}.{}`", table.name, column.name);
+
+            let marker_ident = format!("{ident}{}", to_pascal_case(&column.name));
+            claim(&mut types, &marker_ident, source.clone());
+
+            let field_ident = to_safe_ident(&column.name);
+            claim(&mut fields, &field_ident, source);
+
+            column_plans.push(ColumnPlan {
+                name: column.name.as_str(),
+                marker_ident,
+                field_ident,
+                rust_type: type_kind_to_rust_type(&column.type_kind, column.nullable),
+            });
+        }
+
+        if let Some((ident, sources)) = first_collision(&fields) {
+            return Err(CodegenError::IdentifierCollision { ident, sources });
+        }
+
+        plan.push(TablePlan {
+            name: table.name.as_str(),
+            ident,
+            record_ident,
+            columns: column_plans,
+        });
+    }
+
+    if let Some((ident, sources)) = first_collision(&types) {
+        return Err(CodegenError::IdentifierCollision { ident, sources });
+    }
+
+    Ok(plan)
+}
+
+/// Renders one `table!` block and its optional row record.
+fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions) {
+    out.push_str("table! {\n");
+    out.push_str("    /// The `");
+    out.push_str(table.name);
+    out.push_str("` table.\n");
+    out.push_str("    ");
+    out.push_str(&table.ident);
+    out.push_str(" => \"");
+    out.push_str(&escape_literal(table.name));
+    out.push_str("\" {\n");
+
+    for column in &table.columns {
+        out.push_str("        ");
+        out.push_str(&column.marker_ident);
+        out.push_str(" => \"");
+        out.push_str(&escape_literal(column.name));
+        out.push_str("\": ");
+        out.push_str(&column.rust_type);
+        out.push_str(",\n");
+    }
+
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+
+    if !options.generate_records {
+        return;
+    }
+
+    out.push_str("/// Strongly typed row record for `");
+    out.push_str(table.name);
+    out.push_str("`.\n");
+    out.push_str("#[derive(Debug, Clone, PartialEq)]\n");
+    out.push_str("pub struct ");
+    out.push_str(&table.record_ident);
+    out.push_str(" {\n");
+
+    for column in &table.columns {
+        out.push_str("    pub ");
+        out.push_str(&column.field_ident);
+        out.push_str(": ");
+        out.push_str(&column.rust_type);
+        out.push_str(",\n");
+    }
+    out.push_str("}\n\n");
+
+    out.push_str("impl FromRow for ");
+    out.push_str(&table.record_ident);
+    out.push_str(" {\n");
+    out.push_str("    fn from_row(values: &[SqlVal]) -> Option<Self> {\n");
+    out.push_str("        if values.len() != ");
+    out.push_str(&table.columns.len().to_string());
+    out.push_str(" {\n");
+    out.push_str("            return None;\n");
+    out.push_str("        }\n");
+    out.push_str("        Some(Self {\n");
+
+    for (index, column) in table.columns.iter().enumerate() {
+        out.push_str("            ");
+        out.push_str(&column.field_ident);
+        out.push_str(": FromSqlValue::from_sql_value(&values[");
+        out.push_str(&index.to_string());
+        out.push_str("])?,\n");
+    }
+
+    out.push_str("        })\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+}
+
+/// Registers `ident` as produced by `source`, so later claims can detect collisions.
+fn claim(namespace: &mut BTreeMap<String, Vec<String>>, ident: &str, source: String) {
+    namespace.entry(ident.to_owned()).or_default().push(source);
+}
+
+/// Returns the first identifier claimed by more than one source, in sorted order.
+fn first_collision(namespace: &BTreeMap<String, Vec<String>>) -> Option<(String, Vec<String>)> {
+    namespace
+        .iter()
+        .find(|(_, sources)| sources.len() > 1)
+        .map(|(ident, sources)| (ident.clone(), sources.clone()))
+}
+
+/// Derives the PascalCase marker type of a table.
+fn table_type_ident(name: &str) -> String {
+    let mut ident = to_pascal_case(name);
+
+    // `Self` is the only capitalized keyword, and it cannot be spelled as a raw
+    // identifier, so a table named `self` is suffixed instead.
+    if ident == "Self" {
+        ident.push('_');
+    }
+
+    ident
+}
+
+/// Maps a catalog type onto the Rust type carried by the generated markers.
+///
+/// Primitive SQL types map onto their Rust counterparts. `Uuid`, `Json`,
+/// `Timestamp`, `Date` and engine-specific `Other` columns are represented as
+/// `String`, because the execution adapters decode those SQL types as text; no
+/// dedicated Rust wrapper types exist for them yet. Integer width follows the
+/// catalog: SQLite reports every integer column as `Int64`, while PostgreSQL
+/// distinguishes `Int32` from `Int64`, so an `i32` column is never widened
+/// silently.
 fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool) -> String {
     let base = match kind {
         TypeKind::Boolean => "bool",
@@ -162,47 +333,91 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool) -> String {
 }
 
 /// Converts an identifier (e.g., `user_profiles`) to PascalCase (`UserProfiles`).
+///
+/// Characters outside `[A-Za-z0-9]` act as word separators, so `user.profiles`
+/// and `user-profiles` both become `UserProfiles`, and a name that starts with a
+/// digit is prefixed with `_` to stay a valid Rust type name.
 pub fn to_pascal_case(s: &str) -> String {
     let mut out = String::new();
     let mut capitalize = true;
 
     for c in s.chars() {
-        if c == '_' || c == '-' || c == ' ' {
-            capitalize = true;
-        } else if capitalize {
-            out.extend(c.to_uppercase());
-            capitalize = false;
+        if c.is_ascii_alphanumeric() {
+            if capitalize {
+                out.push(c.to_ascii_uppercase());
+                capitalize = false;
+            } else {
+                out.push(c);
+            }
         } else {
-            out.push(c);
+            capitalize = true;
         }
     }
 
     if out.is_empty() {
         "Anonymous".to_owned()
+    } else if out.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{out}")
     } else {
         out
     }
 }
 
-/// Converts a column identifier to a safe Rust field identifier, prefixing raw identifiers if reserved.
+/// Converts a column identifier to a safe Rust field identifier.
+///
+/// Characters outside `[A-Za-z0-9]` become `_` and a leading digit is prefixed
+/// with `_`, so every schema name yields a valid identifier. Rust keywords are
+/// escaped as raw identifiers (`type` becomes `r#type`), except the handful that
+/// cannot be raw identifiers (`crate`, `self`, `Self`, `super`, `_`), which are
+/// suffixed with `_` instead.
 pub fn to_safe_ident(s: &str) -> String {
-    let snake: String = s
-        .chars()
-        .map(|c| if c == '-' || c == ' ' { '_' } else { c.to_ascii_lowercase() })
-        .collect();
+    let snake = sanitize_snake_case(s);
 
-    const RESERVED: &[&str] = &[
-        "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn",
-        "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-        "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
-        "use", "where", "while", "async", "await", "dyn",
-    ];
-
-    if RESERVED.contains(&snake.as_str()) {
+    if NON_RAW_KEYWORDS.contains(&snake.as_str()) {
+        format!("{snake}_")
+    } else if RUST_KEYWORDS.contains(&snake.as_str()) {
         format!("r#{snake}")
     } else {
         snake
     }
+}
+
+/// Reduces a schema name to lowercase ASCII alphanumerics and `_` separators.
+fn sanitize_snake_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push('_');
+        }
+    }
+
+    if out.is_empty() {
+        out.push('_');
+    }
+
+    if out.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+
+    out
+}
+
+/// Escapes a schema name for inclusion in a generated Rust string literal.
+fn escape_literal(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+
+    for c in name.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -222,7 +437,8 @@ mod tests {
             vec!["id".to_owned()],
         )]);
 
-        let code = generate_schema_rs(&catalog, &CodegenOptions::default());
+        let code =
+            generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
 
         assert!(code.contains("pub const SCHEMA_HASH: &str = "));
         assert!(code.contains("Users => \"users\""));
@@ -236,12 +452,131 @@ mod tests {
     fn reserved_keywords_are_escaped() {
         assert_eq!(to_safe_ident("type"), "r#type");
         assert_eq!(to_safe_ident("match"), "r#match");
+        assert_eq!(to_safe_ident("abstract"), "r#abstract");
+        assert_eq!(to_safe_ident("final"), "r#final");
+        assert_eq!(to_safe_ident("try"), "r#try");
+        assert_eq!(to_safe_ident("yield"), "r#yield");
         assert_eq!(to_safe_ident("name"), "name");
+    }
+
+    #[test]
+    fn keywords_that_cannot_be_raw_identifiers_are_suffixed() {
+        assert_eq!(to_safe_ident("self"), "self_");
+        assert_eq!(to_safe_ident("Self"), "self_");
+        assert_eq!(to_safe_ident("crate"), "crate_");
+        assert_eq!(to_safe_ident("super"), "super_");
+        assert_eq!(to_safe_ident("_"), "__");
+    }
+
+    #[test]
+    fn identifiers_are_sanitized_into_valid_rust_names() {
+        assert_eq!(to_safe_ident("user.id"), "user_id");
+        assert_eq!(to_safe_ident("line\ttotal"), "line_total");
+        assert_eq!(to_safe_ident("2fa enabled"), "_2fa_enabled");
+        assert_eq!(to_safe_ident("Grüße"), "gr__e");
     }
 
     #[test]
     fn pascal_casing() {
         assert_eq!(to_pascal_case("user_orders"), "UserOrders");
         assert_eq!(to_pascal_case("users"), "Users");
+        assert_eq!(to_pascal_case("user.profiles"), "UserProfiles");
+        assert_eq!(to_pascal_case("2fa"), "_2fa");
+        assert_eq!(to_pascal_case("self"), "Self");
+        // `Self` cannot be spelled as a raw identifier, so a table named `self`
+        // has its marker type suffixed instead.
+        assert_eq!(table_type_ident("self"), "Self_");
+    }
+
+    #[test]
+    fn generated_markers_survive_unusual_names() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "user.profiles",
+            vec![ColumnDef::new("2fa enabled", TypeKind::Boolean, false)],
+            Vec::new(),
+        )]);
+
+        let code =
+            generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
+
+        assert!(code.contains("UserProfiles => \"user.profiles\""));
+        assert!(code.contains("UserProfiles_2faEnabled => \"2fa enabled\": bool"));
+        assert!(code.contains("pub _2fa_enabled: bool,"));
+    }
+
+    #[test]
+    fn colliding_field_identifiers_are_rejected() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![
+                ColumnDef::new("user id", TypeKind::Int64, false),
+                ColumnDef::new("user_id", TypeKind::Int64, false),
+            ],
+            Vec::new(),
+        )]);
+
+        let error = generate_schema_rs(&catalog, &CodegenOptions::default())
+            .expect_err("equal field identifiers are rejected");
+
+        match &error {
+            CodegenError::IdentifierCollision { ident, sources } => {
+                assert_eq!(ident, "user_id");
+                assert_eq!(
+                    sources,
+                    &vec![
+                        "column `users.user id`".to_owned(),
+                        "column `users.user_id`".to_owned(),
+                    ]
+                );
+            }
+        }
+        assert!(error.to_string().contains("user_id"));
+        assert!(error.to_string().contains("collide"));
+    }
+
+    #[test]
+    fn colliding_type_identifiers_are_rejected() {
+        // The `record` column marker `UsersRecord` clashes with the generated
+        // `UsersRecord` row record of the same table.
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("record", TypeKind::Text, false)],
+            Vec::new(),
+        )]);
+
+        let error = generate_schema_rs(&catalog, &CodegenOptions::default())
+            .expect_err("type identifier collisions are rejected");
+
+        match &error {
+            CodegenError::IdentifierCollision { ident, sources } => {
+                assert_eq!(ident, "UsersRecord");
+                assert_eq!(sources.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn colliding_table_identifiers_are_rejected() {
+        let catalog = SchemaCatalog::new(vec![
+            TableDef::new(
+                "user_profiles",
+                vec![ColumnDef::new("id", TypeKind::Int64, false)],
+                Vec::new(),
+            ),
+            TableDef::new(
+                "user.profiles",
+                vec![ColumnDef::new("id", TypeKind::Int64, false)],
+                Vec::new(),
+            ),
+        ]);
+
+        let error = generate_schema_rs(&catalog, &CodegenOptions::default())
+            .expect_err("colliding table identifiers are rejected");
+
+        match &error {
+            CodegenError::IdentifierCollision { ident, .. } => {
+                assert_eq!(ident, "UserProfiles");
+            }
+        }
     }
 }
