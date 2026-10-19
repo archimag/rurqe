@@ -12,6 +12,12 @@ const DEFAULT_MIGRATIONS_DIR: &str = "migrations";
 /// The default directory holding the DDL scripts of the declarative stage.
 const DEFAULT_STAGE_DIR: &str = DeclarativeStage::DIRECTORY;
 
+/// The default file receiving the generated schema code.
+const DEFAULT_SCHEMA_OUTPUT: &str = "src/schema.rs";
+
+/// The default snapshot file recording the canonical schema hash.
+const DEFAULT_LOCK_PATH: &str = "schema.lock";
+
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -83,70 +89,141 @@ impl std::fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
-/// Parses command-line arguments into a typed [`CliCommand`].
-pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
-    let mut tokens: Vec<&str> = args.iter().map(String::as_str).collect();
+/// The binary the CLI was invoked through.
+///
+/// Cargo dispatches custom subcommands as `cargo-<name> <name> ...`, so the
+/// executable name selects the command when no arguments follow it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entrypoint {
+    CargoDbMigrate,
+    CargoDbCodegen,
+    CargoDbVerify,
+    CargoDbBaseline,
+    Direct,
+}
 
-    if tokens.is_empty() {
-        return Ok(CliCommand::Help);
+impl Entrypoint {
+    /// Classifies the executable name extracted from `argv[0]`.
+    fn from_program(program: &str) -> Self {
+        match program {
+            "cargo-db-migrate" => Entrypoint::CargoDbMigrate,
+            "cargo-db-codegen" => Entrypoint::CargoDbCodegen,
+            "cargo-db-verify" => Entrypoint::CargoDbVerify,
+            "cargo-db-baseline" => Entrypoint::CargoDbBaseline,
+            _ => Entrypoint::Direct,
+        }
     }
 
-    // Determine command name from argv[0] or first argument
-    let program = Path::new(tokens[0])
+    /// The subcommand token this entrypoint implies, if any.
+    fn command_name(self) -> Option<&'static str> {
+        match self {
+            Entrypoint::CargoDbMigrate => Some("db-migrate"),
+            Entrypoint::CargoDbCodegen => Some("db-codegen"),
+            Entrypoint::CargoDbVerify => Some("db-verify"),
+            Entrypoint::CargoDbBaseline => Some("db-baseline"),
+            Entrypoint::Direct => None,
+        }
+    }
+
+    /// The command executed when the binary receives no arguments.
+    fn default_command(self) -> Option<CliCommand> {
+        match self {
+            Entrypoint::CargoDbMigrate => Some(CliCommand::MigrateUp {
+                migrations_dir: default_migrations_dir(),
+                checkpoint_path: default_checkpoint_path(),
+                database_url: None,
+            }),
+            Entrypoint::CargoDbCodegen => Some(CliCommand::Codegen {
+                database_url: None,
+                output: default_schema_output(),
+                lock_path: default_lock_path(),
+            }),
+            Entrypoint::CargoDbVerify => Some(CliCommand::Verify {
+                database_url: None,
+                schema_path: None,
+                lock_path: default_lock_path(),
+            }),
+            Entrypoint::CargoDbBaseline | Entrypoint::Direct => None,
+        }
+    }
+}
+
+/// Default migration directory used when `--migrations-dir` is omitted.
+fn default_migrations_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_MIGRATIONS_DIR)
+}
+
+/// Default declarative stage directory used when `--stage-dir` is omitted.
+fn default_stage_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_STAGE_DIR)
+}
+
+/// Default checkpoint marker path used when `--checkpoint-path` is omitted.
+fn default_checkpoint_path() -> PathBuf {
+    PathBuf::from(CHECKPOINT_FILE)
+}
+
+/// Default generated schema path used when `--output` is omitted.
+fn default_schema_output() -> PathBuf {
+    PathBuf::from(DEFAULT_SCHEMA_OUTPUT)
+}
+
+/// Default schema snapshot path used when `--lock-path` is omitted.
+fn default_lock_path() -> PathBuf {
+    PathBuf::from(DEFAULT_LOCK_PATH)
+}
+
+/// Borrows the value following the flag at `*idx`, advancing past both.
+///
+/// A missing value is reported against the flag itself instead of degrading
+/// into the misleading `unknown option` diagnostic.
+fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a str, CliError> {
+    let value = tokens
+        .get(*idx + 1)
+        .copied()
+        .ok_or_else(|| CliError(format!("option `{flag}` requires a value")))?;
+    *idx += 2;
+    Ok(value)
+}
+
+/// Parses command-line arguments into a typed [`CliCommand`].
+pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
+    let tokens: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let Some(program) = tokens.first().copied() else {
+        return Ok(CliCommand::Help);
+    };
+
+    let program = Path::new(program)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
-    tokens.remove(0);
+    let entrypoint = Entrypoint::from_program(program);
 
-    // If invoked through cargo: e.g. `cargo rurqe ...`
-    if !tokens.is_empty() && (tokens[0] == "rurqe" || tokens[0] == "db") {
-        tokens.remove(0);
-    }
+    // Skip the optional `rurqe`/`db` token passed by `cargo rurqe ...`.
+    let rest = &tokens[1..];
+    let rest = match rest.first() {
+        Some(token) if *token == "rurqe" || *token == "db" => &rest[1..],
+        _ => rest,
+    };
 
-    // Cargo invokes custom subcommand binaries as `cargo-<name> <name> ...`,
-    // so strip the duplicated subcommand token passed as argv[1].
-    if let Some(sub) = program.strip_prefix("cargo-") {
-        if tokens.first() == Some(&sub) {
-            tokens.remove(0);
-        }
-    }
+    // Cargo dispatches custom subcommands as `cargo-<name> <name> ...`, so
+    // drop the duplicated subcommand token before parsing the arguments.
+    let rest = match entrypoint.command_name() {
+        Some(name) if rest.first().is_some_and(|token| *token == name) => &rest[1..],
+        _ => rest,
+    };
 
-    if tokens.is_empty() {
-        if program == "cargo-db-migrate" {
-            return Ok(CliCommand::MigrateUp {
-                migrations_dir: PathBuf::from(DEFAULT_MIGRATIONS_DIR),
-                checkpoint_path: PathBuf::from(CHECKPOINT_FILE),
-                database_url: None,
-            });
-        }
-        if program == "cargo-db-codegen" {
-            return Ok(CliCommand::Codegen {
-                database_url: None,
-                output: PathBuf::from("src/schema.rs"),
-                lock_path: PathBuf::from("schema.lock"),
-            });
-        }
-        if program == "cargo-db-verify" {
-            return Ok(CliCommand::Verify {
-                database_url: None,
-                schema_path: None,
-                lock_path: PathBuf::from("schema.lock"),
-            });
-        }
-        return Ok(CliCommand::Help);
-    }
+    let Some((first, remaining)) = rest.split_first() else {
+        return Ok(entrypoint.default_command().unwrap_or(CliCommand::Help));
+    };
 
-    let subcmd = if program == "cargo-db-migrate" {
-        "db-migrate"
-    } else if program == "cargo-db-codegen" {
-        "db-codegen"
-    } else if program == "cargo-db-verify" {
-        "db-verify"
-    } else if program == "cargo-db-baseline" {
-        "db-baseline"
-    } else {
-        tokens.remove(0)
+    // Direct invocations carry the subcommand as the first argument, while
+    // cargo-dispatched binaries force it from the entrypoint name.
+    let (subcmd, tokens): (&str, &[&str]) = match entrypoint.command_name() {
+        Some(name) => (name, rest),
+        None => (*first, remaining),
     };
 
     match subcmd {
@@ -154,30 +231,27 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         "--version" | "-v" | "version" => Ok(CliCommand::Version),
 
         "db-migrate" | "migrate" => {
-            let action = if !tokens.is_empty() && !tokens[0].starts_with('-') {
-                tokens.remove(0)
-            } else {
-                "up"
+            let (action, tokens): (&str, &[&str]) = match tokens.split_first() {
+                Some((action, tail)) if !action.starts_with('-') => (*action, tail),
+                _ => ("up", tokens),
             };
 
-            let mut migrations_dir = PathBuf::from("migrations");
-            let mut checkpoint_path = PathBuf::from(CHECKPOINT_FILE);
+            let mut migrations_dir = default_migrations_dir();
+            let mut checkpoint_path = default_checkpoint_path();
             let mut database_url = None;
 
             let mut idx = 0;
             while idx < tokens.len() {
-                match tokens[idx] {
-                    "--migrations-dir" if idx + 1 < tokens.len() => {
-                        migrations_dir = PathBuf::from(tokens[idx + 1]);
-                        idx += 2;
+                let flag = tokens[idx];
+                match flag {
+                    "--migrations-dir" => {
+                        migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
                     }
-                    "--checkpoint-path" if idx + 1 < tokens.len() => {
-                        checkpoint_path = PathBuf::from(tokens[idx + 1]);
-                        idx += 2;
+                    "--checkpoint-path" => {
+                        checkpoint_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
                     }
-                    "--database-url" if idx + 1 < tokens.len() => {
-                        database_url = Some(tokens[idx + 1].to_owned());
-                        idx += 2;
+                    "--database-url" => {
+                        database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
                     }
                     other => {
                         return Err(CliError(format!("unknown option `{other}` for migrate")));
@@ -212,18 +286,14 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
 
             let mut idx = 0;
             while idx < tokens.len() {
-                match tokens[idx] {
-                    "--version" if idx + 1 < tokens.len() => {
-                        version_str = Some(tokens[idx + 1]);
-                        idx += 2;
+                let flag = tokens[idx];
+                match flag {
+                    "--version" => version_str = Some(take_value(tokens, &mut idx, flag)?),
+                    "--description" => {
+                        description = take_value(tokens, &mut idx, flag)?.to_owned();
                     }
-                    "--description" if idx + 1 < tokens.len() => {
-                        description = tokens[idx + 1].to_owned();
-                        idx += 2;
-                    }
-                    "--database-url" if idx + 1 < tokens.len() => {
-                        database_url = Some(tokens[idx + 1].to_owned());
-                        idx += 2;
+                    "--database-url" => {
+                        database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
                     }
                     other => {
                         return Err(CliError(format!("unknown option `{other}` for baseline")));
@@ -249,23 +319,21 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
 
         "db-codegen" | "codegen" => {
             let mut database_url = None;
-            let mut output = PathBuf::from("src/schema.rs");
-            let mut lock_path = PathBuf::from("schema.lock");
+            let mut output = default_schema_output();
+            let mut lock_path = default_lock_path();
 
             let mut idx = 0;
             while idx < tokens.len() {
-                match tokens[idx] {
-                    "--database-url" if idx + 1 < tokens.len() => {
-                        database_url = Some(tokens[idx + 1].to_owned());
-                        idx += 2;
+                let flag = tokens[idx];
+                match flag {
+                    "--database-url" => {
+                        database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
                     }
-                    "--output" | "-o" if idx + 1 < tokens.len() => {
-                        output = PathBuf::from(tokens[idx + 1]);
-                        idx += 2;
+                    "--output" | "-o" => {
+                        output = PathBuf::from(take_value(tokens, &mut idx, flag)?);
                     }
-                    "--lock-path" if idx + 1 < tokens.len() => {
-                        lock_path = PathBuf::from(tokens[idx + 1]);
-                        idx += 2;
+                    "--lock-path" => {
+                        lock_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
                     }
                     other => {
                         return Err(CliError(format!("unknown option `{other}` for codegen")));
@@ -283,22 +351,20 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         "db-verify" | "verify" => {
             let mut database_url = None;
             let mut schema_path = None;
-            let mut lock_path = PathBuf::from("schema.lock");
+            let mut lock_path = default_lock_path();
 
             let mut idx = 0;
             while idx < tokens.len() {
-                match tokens[idx] {
-                    "--database-url" if idx + 1 < tokens.len() => {
-                        database_url = Some(tokens[idx + 1].to_owned());
-                        idx += 2;
+                let flag = tokens[idx];
+                match flag {
+                    "--database-url" => {
+                        database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
                     }
-                    "--schema-path" if idx + 1 < tokens.len() => {
-                        schema_path = Some(PathBuf::from(tokens[idx + 1]));
-                        idx += 2;
+                    "--schema-path" => {
+                        schema_path = Some(PathBuf::from(take_value(tokens, &mut idx, flag)?));
                     }
-                    "--lock-path" if idx + 1 < tokens.len() => {
-                        lock_path = PathBuf::from(tokens[idx + 1]);
-                        idx += 2;
+                    "--lock-path" => {
+                        lock_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
                     }
                     other => {
                         return Err(CliError(format!("unknown option `{other}` for verify")));
@@ -313,9 +379,9 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             })
         }
 
-        "db-stage" | "stage" => parse_stage(&tokens),
+        "db-stage" | "stage" => parse_stage(tokens),
 
-        "db-prune" | "prune" => parse_prune(&tokens),
+        "db-prune" | "prune" => parse_prune(tokens),
 
         other => Err(CliError(format!("unknown command `{other}`"))),
     }
@@ -344,29 +410,26 @@ fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
 
 /// Parses `stage init`: cold start the database from the declarative stage.
 fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
-    let mut stage_dir = PathBuf::from(DEFAULT_STAGE_DIR);
+    let mut stage_dir = default_stage_dir();
     let mut description = "stage".to_owned();
     let mut version = None;
     let mut database_url = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
-        match tokens[idx] {
-            "--stage-dir" if idx + 1 < tokens.len() => {
-                stage_dir = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+        let flag = tokens[idx];
+        match flag {
+            "--stage-dir" => {
+                stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
-            "--description" if idx + 1 < tokens.len() => {
-                description = tokens[idx + 1].to_owned();
-                idx += 2;
+            "--description" => {
+                description = take_value(tokens, &mut idx, flag)?.to_owned();
             }
-            "--version" if idx + 1 < tokens.len() => {
-                version = Some(parse_version("--version", tokens[idx + 1])?);
-                idx += 2;
+            "--version" => {
+                version = Some(parse_version(flag, take_value(tokens, &mut idx, flag)?)?);
             }
-            "--database-url" if idx + 1 < tokens.len() => {
-                database_url = Some(tokens[idx + 1].to_owned());
-                idx += 2;
+            "--database-url" => {
+                database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             other => {
                 return Err(CliError(format!("unknown option `{other}` for stage init")));
@@ -388,29 +451,26 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
 
 /// Parses `stage verify`: check the golden equation between stage and tail.
 fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
-    let mut stage_dir = PathBuf::from(DEFAULT_STAGE_DIR);
+    let mut stage_dir = default_stage_dir();
     let mut base_stage_dir = None;
-    let mut migrations_dir = PathBuf::from(DEFAULT_MIGRATIONS_DIR);
+    let mut migrations_dir = default_migrations_dir();
     let mut database_url = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
-        match tokens[idx] {
-            "--stage-dir" if idx + 1 < tokens.len() => {
-                stage_dir = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+        let flag = tokens[idx];
+        match flag {
+            "--stage-dir" => {
+                stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
-            "--base-stage-dir" if idx + 1 < tokens.len() => {
-                base_stage_dir = Some(PathBuf::from(tokens[idx + 1]));
-                idx += 2;
+            "--base-stage-dir" => {
+                base_stage_dir = Some(PathBuf::from(take_value(tokens, &mut idx, flag)?));
             }
-            "--migrations-dir" if idx + 1 < tokens.len() => {
-                migrations_dir = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+            "--migrations-dir" => {
+                migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
-            "--database-url" if idx + 1 < tokens.len() => {
-                database_url = Some(tokens[idx + 1].to_owned());
-                idx += 2;
+            "--database-url" => {
+                database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             other => {
                 return Err(CliError(format!(
@@ -431,28 +491,25 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
 /// Parses `stage commit`: seal the live database as the new stage anchor.
 fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut version = None;
-    let mut lock_path = PathBuf::from("schema.lock");
-    let mut checkpoint_path = PathBuf::from(CHECKPOINT_FILE);
+    let mut lock_path = default_lock_path();
+    let mut checkpoint_path = default_checkpoint_path();
     let mut database_url = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
-        match tokens[idx] {
-            "--version" if idx + 1 < tokens.len() => {
-                version = Some(parse_version("--version", tokens[idx + 1])?);
-                idx += 2;
+        let flag = tokens[idx];
+        match flag {
+            "--version" => {
+                version = Some(parse_version(flag, take_value(tokens, &mut idx, flag)?)?);
             }
-            "--lock-path" if idx + 1 < tokens.len() => {
-                lock_path = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+            "--lock-path" => {
+                lock_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
-            "--checkpoint-path" if idx + 1 < tokens.len() => {
-                checkpoint_path = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+            "--checkpoint-path" => {
+                checkpoint_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
-            "--database-url" if idx + 1 < tokens.len() => {
-                database_url = Some(tokens[idx + 1].to_owned());
-                idx += 2;
+            "--database-url" => {
+                database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             other => {
                 return Err(CliError(format!(
@@ -477,24 +534,22 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
 /// Parses `prune`: drop migration scripts the checkpoint already folded in.
 fn parse_prune(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut before = None;
-    let mut migrations_dir = PathBuf::from(DEFAULT_MIGRATIONS_DIR);
-    let mut checkpoint_path = PathBuf::from(CHECKPOINT_FILE);
+    let mut migrations_dir = default_migrations_dir();
+    let mut checkpoint_path = default_checkpoint_path();
     let mut dry_run = false;
 
     let mut idx = 0;
     while idx < tokens.len() {
-        match tokens[idx] {
-            "--before" if idx + 1 < tokens.len() => {
-                before = Some(parse_version("--before", tokens[idx + 1])?);
-                idx += 2;
+        let flag = tokens[idx];
+        match flag {
+            "--before" => {
+                before = Some(parse_version(flag, take_value(tokens, &mut idx, flag)?)?);
             }
-            "--migrations-dir" if idx + 1 < tokens.len() => {
-                migrations_dir = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+            "--migrations-dir" => {
+                migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
-            "--checkpoint-path" if idx + 1 < tokens.len() => {
-                checkpoint_path = PathBuf::from(tokens[idx + 1]);
-                idx += 2;
+            "--checkpoint-path" => {
+                checkpoint_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
             "--dry-run" => {
                 dry_run = true;
