@@ -23,7 +23,7 @@
   - Feature `r2d2`: enables connection pooling for sync SQLite and sync PostgreSQL.
   - Feature `deadpool`: enables async connection pooling for `tokio-postgres`.
 - **`rurqe-core`**: AST, expressions, schema markers (`Table`, `Column`, `ExprScope`), dialects, DML typestates, execution contracts (`QueryBackend`, `TransactionBackend`).
-- **`rurqe-macros`**: Declarative and procedural macros (`table!`, `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`).
+- **`rurqe-macros`**: Declarative and procedural macros (`table!`, `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`) and the `#[derive(SqlType)]` domain newtype derive.
 - **`rurqe-postgres`**: PostgreSQL dialect (`Postgres<V>`), version markers (`Pg14`, `Pg15`, `Pg16`), sync `PgConnection`, async `PgAsyncConnection`, and pool adapters.
 - **`rurqe-sqlite`**: SQLite dialect (`Sqlite<V>`), version bounds (`Sqlite3_0`, `Sqlite3_24`, `Sqlite3_35`), sync `SqliteConnection`, and `r2d2` pool.
 - **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `embed_migrations!`, and `SchemaCatalog`.
@@ -507,6 +507,34 @@ let upsert = insert_into(Users)
 
 ---
 
+## Domain Newtypes (`#[derive(SqlType)]`)
+
+`#[derive(SqlType)]` gives a domain newtype the same parameter-binding and row-decoding surface as a built-in scalar, so no conversion code is written by hand. Three storage modes cover the common encodings:
+
+- `#[sql(transparent)]` delegates to the wrapped value, so `struct UserId(i64)` binds and decodes exactly like `i64`.
+- `#[sql(as = Bytes)]` encodes through `AsRef<[u8]>` and decodes through `TryFrom<&[u8]>`; the optional `len = N` validates that every decoded blob has exactly `N` bytes.
+- `#[sql(as = Text)]` encodes through `Display` and decodes through `FromStr`, reporting invalid textual representations as `RowDecodeError::InvalidValue`.
+
+```rust
+use rurqe::prelude::*;
+
+#[derive(Debug, PartialEq, Eq, SqlType)]
+#[sql(transparent)]
+struct UserId(i64);
+
+#[derive(Debug, PartialEq, Eq, SqlType)]
+#[sql(as = Bytes, len = 4)]
+struct Txid([u8; 4]);
+
+#[derive(Debug, PartialEq, Eq, SqlType)]
+#[sql(as = Text)]
+struct Address(String);
+```
+
+Every mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`, and the expression-compatibility impls, so a derived newtype composes with the expression builders — including `like` / `in_list` for text newtypes — exactly like a built-in scalar. A malformed attribute (`transparent` combined with `as`, `len` without `as = Bytes`, an unknown storage name) is rejected at compile time with an actionable message.
+
+---
+
 ## Execution Backends & Runtimes
 
 All execution backends implement `QueryBackend` and `QueryBackendExt`:
@@ -713,5 +741,5 @@ The `rurqe-cli` toolchain manages database lifecycles for both PostgreSQL and SQ
 - `cargo db-migrate status` — Inspect migration statuses against `__rurqe_schema_history`.
 - `cargo db-migrate repair` — Realign checksums and purge failed attempts.
 - `cargo db-baseline --version <V>` — Baseline pre-existing schemas without historical replay.
-- `cargo db-codegen --output src/db/schema.rs [--database-url <URL>]` — Introspect live database (`postgres://...`, `postgresql://...`, `sqlite://...`, or local file), generate Rust schema, and create `schema.lock`. Schema names are sanitized into valid Rust identifiers (`2fa` → `_2fa`, `user.email` → `user_email`), Rust keywords are escaped (`type` → `r#type`, `self` → `self_`), and two names that reduce to the same identifier fail codegen with an error listing the conflicting names instead of emitting duplicate definitions. `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific columns are generated as `String`, matching the text decoding of the execution adapters.
+- `cargo db-codegen --output src/db/schema.rs [--database-url <URL>]` — Introspect live database (`postgres://...`, `postgresql://...`, `sqlite://...`, or local file), generate Rust schema, and create `schema.lock`. Schema names are sanitized into valid Rust identifiers (`2fa` → `_2fa`, `user.email` → `user_email`), Rust keywords are escaped (`type` → `r#type`, `self` → `self_`), and two names that reduce to the same identifier fail codegen with an error listing the conflicting names instead of emitting duplicate definitions. `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific columns are generated as `String`, matching the text decoding of the execution adapters. The optional `rurqe.toml` `[codegen.type_overrides]` table maps a `table.column` schema path onto the Rust type generated for that column (`"users.id" = "uuid::Uuid"`), so domain newtypes survive code generation; the declared nullability still applies, wrapping a nullable override into `Option<T>` and never wrapping an already optional type twice.
 - `cargo db-verify [--database-url <URL>] [--lock-path schema.lock]` — CI drift verification: verifies bit-for-bit parity between the live database catalog, `schema.lock`, and the embedded `pub const SCHEMA_HASH`.
