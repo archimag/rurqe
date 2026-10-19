@@ -189,6 +189,20 @@ pub enum ExprKind {
         /// The bound parameter values to insert between fragments.
         params: Vec<SqlVal>,
     },
+    /// An `IS NULL` or `IS NOT NULL` predicate over a sub-expression.
+    IsNull {
+        /// The tested expression.
+        operand: Box<ExprKind>,
+        /// Whether the predicate is negated, which renders `IS NOT NULL`.
+        negated: bool,
+    },
+    /// A scalar function call such as `COALESCE` or `NULLIF`.
+    Function {
+        /// The uppercase SQL name of the function.
+        name: &'static str,
+        /// The arguments of the call, in declaration order.
+        args: Vec<ExprKind>,
+    },
 }
 
 /// A SQL expression whose result has the Rust type `T`.
@@ -259,6 +273,37 @@ impl<T> Expr<T> {
     /// Consumes the expression and returns its tree.
     pub fn into_kind(self) -> ExprKind {
         self.kind
+    }
+
+    /// Builds an expression holding the literal `value` typed as `T`.
+    ///
+    /// Literals are the constant operands of scalar function calls (see
+    /// [`ExprKind::Function`]), where the value must carry the same type as the
+    /// expression it accompanies.
+    pub fn literal<V>(value: V) -> Self
+    where
+        V: IntoExpr<T>,
+    {
+        Self::new(value.into_expr_kind())
+    }
+
+    /// Builds an `IS NULL` predicate over this expression.
+    ///
+    /// The predicate compares against SQL `NULL` itself instead of a bound
+    /// parameter, so it works for any expression type, optional or not.
+    pub fn is_null(&self) -> Expr<bool> {
+        Expr::new(ExprKind::IsNull {
+            operand: Box::new(self.kind.clone()),
+            negated: false,
+        })
+    }
+
+    /// Builds an `IS NOT NULL` predicate over this expression.
+    pub fn is_not_null(&self) -> Expr<bool> {
+        Expr::new(ExprKind::IsNull {
+            operand: Box::new(self.kind.clone()),
+            negated: true,
+        })
     }
 
     /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
@@ -608,6 +653,22 @@ pub fn render_expr<D: crate::dialect::Dialect>(
                 }
             }
         }
+        ExprKind::IsNull { operand, negated } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, operand);
+            sql.push_str(if *negated { " IS NOT NULL)" } else { " IS NULL)" });
+        }
+        ExprKind::Function { name, args } => {
+            sql.push_str(name);
+            sql.push('(');
+            for (index, arg) in args.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                render_expr::<D>(sql, params, arg);
+            }
+            sql.push(')');
+        }
     }
 }
 
@@ -621,6 +682,27 @@ mod tests {
             UserName => "name": String,
             UserActive => "active": bool,
         }
+    }
+
+    struct MockDialect;
+
+    impl crate::dialect::Dialect for MockDialect {
+        fn push_quoted_identifier(out: &mut String, ident: &str) {
+            out.push('"');
+            out.push_str(ident);
+            out.push('"');
+        }
+
+        fn push_placeholder(out: &mut String, _index: usize) {
+            out.push('?');
+        }
+    }
+
+    fn render(kind: &ExprKind) -> (String, Vec<SqlVal>) {
+        let mut sql = String::new();
+        let mut params = Vec::new();
+        render_expr::<MockDialect>(&mut sql, &mut params, kind);
+        (sql, params)
     }
 
     #[test]
@@ -780,6 +862,31 @@ mod tests {
         assert_eq!(AggregateFunc::Avg.as_str(), "AVG");
         assert_eq!(AggregateFunc::Min.as_str(), "MIN");
         assert_eq!(AggregateFunc::Max.as_str(), "MAX");
+    }
+
+    #[test]
+    fn null_predicates_render_is_null_and_is_not_null() {
+        assert_eq!(render(Expr::column::<UserName>().is_null().kind()).0, "(\"name\" IS NULL)");
+        assert_eq!(
+            render(Expr::column::<UserName>().is_not_null().kind()).0,
+            "(\"name\" IS NOT NULL)"
+        );
+    }
+
+    #[test]
+    fn function_calls_render_name_and_arguments() {
+        let kind = ExprKind::Function {
+            name: "COALESCE",
+            args: vec![
+                ExprKind::Column { name: "name" },
+                ExprKind::Value(SqlVal::Text("anonymous".to_owned())),
+            ],
+        };
+
+        let (sql, params) = render(&kind);
+
+        assert_eq!(sql, "COALESCE(\"name\", ?)");
+        assert_eq!(params, vec![SqlVal::Text("anonymous".to_owned())]);
     }
 
     #[test]
