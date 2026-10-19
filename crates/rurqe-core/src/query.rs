@@ -29,7 +29,7 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsLateralJoin};
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::row::FromRow;
@@ -227,6 +227,11 @@ pub enum JoinKind {
     Inner,
     /// `LEFT JOIN`, which keeps unmatched rows and nulls the joined columns.
     Left,
+    /// `CROSS JOIN LATERAL`, which joins every outer row with a correlated subquery.
+    CrossLateral,
+    /// `LEFT JOIN LATERAL ... ON true`, which keeps outer rows a lateral subquery
+    /// leaves unmatched.
+    LeftLateral,
 }
 
 impl JoinKind {
@@ -235,8 +240,22 @@ impl JoinKind {
         match self {
             JoinKind::Inner => "INNER JOIN",
             JoinKind::Left => "LEFT JOIN",
+            JoinKind::CrossLateral => "CROSS JOIN LATERAL",
+            JoinKind::LeftLateral => "LEFT JOIN LATERAL",
         }
     }
+}
+
+/// A single join clause recorded on a [`SelectQuery`].
+///
+/// Regular joins reference the table next in scope and carry their `ON`
+/// condition, while lateral joins carry a renderer for the inline subquery
+/// rendered after the `LATERAL` keyword.
+#[derive(Clone)]
+struct JoinClause {
+    kind: JoinKind,
+    on: Option<ExprKind>,
+    lateral: Option<CteRenderer>,
 }
 
 /// A query scope extending `Tables` with the table `T` joined to it.
@@ -279,6 +298,48 @@ impl<Tables: TableScope, T: Table> TableScope for LeftJoined<Tables, T> {
 impl<Tables: ExprScope, T: Table> ExprScope for Joined<Tables, T> {}
 
 impl<Tables: ExprScope, T: Table> ExprScope for LeftJoined<Tables, T> {}
+
+/// A query scope extending `Tables` with the `LATERAL` subquery exposed as `T`.
+///
+/// The marker is produced by [`SelectQuery::cross_join_lateral`] and records the
+/// `FROM` order of the participating relations, the inline subquery included.
+pub struct CrossLateralJoined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
+
+impl<Tables: TableScope, T: Table> TableScope for CrossLateralJoined<Tables, T> {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        Tables::push_table_names(out);
+        out.push(T::NAME);
+    }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        Tables::push_table_refs(out);
+        out.push(T::table_ref());
+    }
+}
+
+impl<Tables: ExprScope, T: Table> ExprScope for CrossLateralJoined<Tables, T> {}
+
+/// A query scope extending `Tables` with a `LEFT JOIN LATERAL` subquery exposed as `T`.
+///
+/// The marker is produced by [`SelectQuery::left_join_lateral`] and signals that
+/// the subquery may leave outer rows unmatched, so its columns are projected
+/// through [`SelectQuery::nullable`] to keep their absence visible in the row
+/// type.
+pub struct LeftLateralJoined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
+
+impl<Tables: TableScope, T: Table> TableScope for LeftLateralJoined<Tables, T> {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        Tables::push_table_names(out);
+        out.push(T::NAME);
+    }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        Tables::push_table_refs(out);
+        out.push(T::table_ref());
+    }
+}
+
+impl<Tables: ExprScope, T: Table> ExprScope for LeftLateralJoined<Tables, T> {}
 
 /// A column lifted to its nullable form for outer joins.
 ///
@@ -430,6 +491,45 @@ pub fn cte_named<D: Dialect, S: TableScope + 'static, Row: 'static>(
     Cte::named(name, query)
 }
 
+/// A `LATERAL` subquery exposing its rows under the table marker `T`.
+///
+/// A lateral subquery may reference columns of the tables to its left, so it is
+/// rendered inline in the join clause instead of as a named CTE. The marker `T`
+/// names the alias and describes the produced columns, while `Row` records the
+/// Rust type of the subquery output.
+pub struct Lateral<T = (), Row = ()> {
+    renderer: CteRenderer,
+    _marker: PhantomData<fn() -> (T, Row)>,
+}
+
+impl<T, Row> fmt::Debug for Lateral<T, Row> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lateral").finish()
+    }
+}
+
+impl<T: Table, Row> Lateral<T, Row> {
+    /// Wraps `query` into a `LATERAL` subquery exposed under the table `T`.
+    pub fn new<D: Dialect, S: TableScope + 'static>(query: SelectQuery<D, S, Row>) -> Self
+    where
+        Row: 'static,
+    {
+        Self {
+            renderer: Arc::new(move |sql, params| {
+                query.render_into(sql, params);
+            }),
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Wraps `query` into a `LATERAL` subquery exposing its rows under the table marker `T`.
+pub fn lateral<T: Table, D: Dialect, S: TableScope + 'static, Row: 'static>(
+    query: SelectQuery<D, S, Row>,
+) -> Lateral<T, Row> {
+    Lateral::new(query)
+}
+
 /// A `SELECT` query over the table `Tables` producing rows of type `Output`.
 ///
 /// `Tables` remains `()` until [`SelectQuery::from`] introduces the queried
@@ -439,7 +539,7 @@ pub fn cte_named<D: Dialect, S: TableScope + 'static, Row: 'static>(
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     ctes: Vec<CteDefinition>,
     projections: Option<ProjectionRenderer>,
-    joins: Vec<(JoinKind, ExprKind)>,
+    joins: Vec<JoinClause>,
     filter: Option<ExprKind>,
     group_by: Vec<&'static str>,
     having: Option<ExprKind>,
@@ -581,6 +681,15 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         Cte::named(name, self)
     }
 
+    /// Converts this query into a `LATERAL` subquery exposed under the table marker `T`.
+    pub fn as_lateral<T: Table>(self) -> Lateral<T, Output>
+    where
+        Tables: TableScope + 'static,
+        Output: 'static,
+    {
+        Lateral::new(self)
+    }
+
     /// Lifts the column `C` into its nullable form [`Nullable`].
     ///
     /// Columns of a table introduced with
@@ -674,7 +783,11 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     where
         Tables: TableScope,
     {
-        self.joins.push((JoinKind::Inner, on.into_kind()));
+        self.joins.push(JoinClause {
+            kind: JoinKind::Inner,
+            on: Some(on.into_kind()),
+            lateral: None,
+        });
         self.retype()
     }
 
@@ -691,7 +804,11 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     where
         Tables: TableScope,
     {
-        self.joins.push((JoinKind::Left, on.into_kind()));
+        self.joins.push(JoinClause {
+            kind: JoinKind::Left,
+            on: Some(on.into_kind()),
+            lateral: None,
+        });
         self.retype()
     }
 
@@ -709,6 +826,47 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
             set_operations: self.set_operations,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
+    /// Joins `lateral` to the query with a `CROSS JOIN LATERAL`.
+    ///
+    /// The subquery is rendered inline and may reference columns of the tables
+    /// to its left, so every outer row is joined with all rows the subquery
+    /// produces for it. Parameters of the subquery are bound before the
+    /// parameters of the `WHERE` clause.
+    pub fn cross_join_lateral<T: Table, Row: 'static>(
+        mut self,
+        lateral: Lateral<T, Row>,
+    ) -> SelectQuery<D, CrossLateralJoined<Tables, T>, Output> {
+        self.joins.push(JoinClause {
+            kind: JoinKind::CrossLateral,
+            on: None,
+            lateral: Some(lateral.renderer),
+        });
+        self.retype()
+    }
+
+    /// Joins `lateral` to the query with a `LEFT JOIN LATERAL ... ON true`.
+    ///
+    /// Unlike [`cross_join_lateral`](SelectQuery::cross_join_lateral), outer rows
+    /// are kept even when the subquery produces no rows, so its columns are
+    /// projected through [`SelectQuery::nullable`] to lift them into `Option<_>`
+    /// at compile time.
+    pub fn left_join_lateral<T: Table, Row: 'static>(
+        mut self,
+        lateral: Lateral<T, Row>,
+    ) -> SelectQuery<D, LeftLateralJoined<Tables, T>, Output> {
+        self.joins.push(JoinClause {
+            kind: JoinKind::LeftLateral,
+            on: Some(ExprKind::Raw {
+                fragments: vec!["true".to_owned()],
+                params: Vec::new(),
+            }),
+            lateral: Some(lateral.renderer),
+        });
+        self.retype()
     }
 }
 
@@ -796,13 +954,23 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         sql.push_str(" FROM ");
         tables[0].render::<D>(sql);
 
-        for (index, (kind, on)) in self.joins.iter().enumerate() {
+        for (index, join) in self.joins.iter().enumerate() {
             sql.push(' ');
-            sql.push_str(kind.as_str());
+            sql.push_str(join.kind.as_str());
             sql.push(' ');
-            tables[index + 1].render::<D>(sql);
-            sql.push_str(" ON ");
-            render_expr::<D>(sql, params, on);
+            match &join.lateral {
+                Some(render_lateral) => {
+                    sql.push('(');
+                    render_lateral(sql, params);
+                    sql.push_str(") AS ");
+                    D::push_quoted_identifier(sql, tables[index + 1].name);
+                }
+                None => tables[index + 1].render::<D>(sql),
+            }
+            if let Some(on) = &join.on {
+                sql.push_str(" ON ");
+                render_expr::<D>(sql, params, on);
+            }
         }
 
         if let Some(filter) = &self.filter {
@@ -1569,6 +1737,8 @@ mod tests {
             let _ = write!(out, "${index}");
         }
     }
+
+    impl SupportsLateralJoin for MockDialect {}
 
     #[derive(Default)]
     struct MockBackend {
@@ -2394,5 +2564,76 @@ mod tests {
             "SELECT \"id\", \"o\".\"total\" FROM \"users\" \
              LEFT JOIN \"orders\" AS \"o\" ON (\"user_id\" = \"id\")"
         );
+    }
+
+    crate::table! {
+        RecentOrder => "recent" {
+            RecentTotal => "total": f64,
+        }
+    }
+
+    fn latest_order_per_user_scope() -> SelectQuery<MockDialect, Order, (f64,)> {
+        SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderTotal,))
+            .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+            .limit(1)
+    }
+
+    #[test]
+    fn cross_join_lateral_renders_inline_correlated_subquery() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .cross_join_lateral(latest_order_per_user_scope().as_lateral::<RecentOrder>())
+            .select((UserId, RecentTotal))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"total\" FROM \"users\" CROSS JOIN LATERAL \
+             (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") LIMIT 1) AS \"recent\""
+        );
+        assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn left_join_lateral_renders_on_true_and_lifts_columns_into_options() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .left_join_lateral(latest_order_per_user_scope().as_lateral::<RecentOrder>());
+        let total = query.nullable::<RecentTotal>();
+
+        let built = query.select((UserId, total)).build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN LATERAL \
+             (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") LIMIT 1) AS \"recent\" ON true"
+        );
+    }
+
+    #[test]
+    fn lateral_join_binds_subquery_parameters_before_the_outer_filter() {
+        let sub = SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderTotal,))
+            .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+            .where_(Expr::column::<OrderTotal>().gt(10.0))
+            .limit(1);
+
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .cross_join_lateral(sub.as_lateral::<RecentOrder>())
+            .select((UserId, RecentTotal))
+            .where_(Expr::column::<UserId>().gt(1i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"total\" FROM \"users\" CROSS JOIN LATERAL \
+             (SELECT \"total\" FROM \"orders\" WHERE ((\"user_id\" = \"id\") AND (\"total\" > $1)) \
+             LIMIT 1) AS \"recent\" WHERE (\"id\" > $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::F64(10.0), SqlVal::I64(1)]);
     }
 }

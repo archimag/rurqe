@@ -4,7 +4,9 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 
 pub use rurqe_core;
-use rurqe_core::dialect::{Dialect, SupportsDistinctOn, SupportsOnConflict, SupportsReturning};
+use rurqe_core::dialect::{
+    Dialect, SupportsDistinctOn, SupportsLateralJoin, SupportsOnConflict, SupportsReturning,
+};
 
 /// Marker trait representing a PostgreSQL engine version.
 pub trait PgVersion: 'static + Send + Sync {}
@@ -48,6 +50,7 @@ impl<V: PgVersion> Dialect for Postgres<V> {
 impl<V: PgVersion> SupportsReturning for Postgres<V> {}
 impl<V: PgVersion> SupportsDistinctOn for Postgres<V> {}
 impl<V: PgVersion> SupportsOnConflict for Postgres<V> {}
+impl<V: PgVersion> SupportsLateralJoin for Postgres<V> {}
 
 /// Shared parameter binding and row decoding for the PostgreSQL driver adapters.
 #[cfg(feature = "tokio-postgres")]
@@ -799,7 +802,9 @@ mod tests {
 
     #[test]
     fn capabilities_are_satisfied() {
-        fn assert_capabilities<D: Dialect + SupportsReturning + SupportsDistinctOn + SupportsOnConflict>() {}
+        fn assert_capabilities<
+            D: Dialect + SupportsReturning + SupportsDistinctOn + SupportsOnConflict + SupportsLateralJoin,
+        >() {}
 
         assert_capabilities::<Postgres<Pg14>>();
         assert_capabilities::<Postgres<Pg15>>();

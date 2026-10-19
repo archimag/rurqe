@@ -47,6 +47,18 @@ pub trait SupportsDistinctOn: Dialect {}
 )]
 pub trait SupportsOnConflict: Dialect {}
 
+/// Marker trait for dialects supporting `LATERAL` joins.
+///
+/// A `LATERAL` subquery may reference columns of the tables to its left in the
+/// `FROM` clause, which lets the query express correlated per-row subqueries
+/// (such as "the latest order of every user") directly in the join.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support LATERAL joins",
+    label = "LATERAL joins are not supported by this dialect",
+    note = "LATERAL joins require a dialect that implements `SupportsLateralJoin` (such as PostgreSQL)"
+)]
+pub trait SupportsLateralJoin: Dialect {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
