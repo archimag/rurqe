@@ -13,7 +13,7 @@ use core::marker::PhantomData;
 use std::sync::Arc;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
-use super::{AssignValue, AssignmentSet};
+use super::{AssignValue, Assignment, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::expr::SqlVal;
 use crate::query::{BuiltQuery, SelectQuery, Selection, TableScope, TableSelection};
@@ -72,6 +72,57 @@ impl_insert_columns!(C1, C2, C3, C4, C5);
 impl_insert_columns!(C1, C2, C3, C4, C5, C6);
 impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7);
 impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7, C8);
+
+/// A source of rows recorded by an [`InsertQuery`].
+///
+/// The trait is implemented by the [`Assignment`] and tuple row values accepted
+/// by [`InsertQuery::values`] and [`InsertQuery::values_many`], and by the
+/// [`InsertedSelect`] marker produced by [`InsertQuery::from_select`]. Since an
+/// `INSERT` without rows cannot be rendered, [`InsertQuery::build`] is only
+/// reachable once a source has been recorded:
+///
+/// ```compile_fail
+/// use rurqe_core::dml::InsertQuery;
+/// # use rurqe_core::dialect::Dialect;
+/// # struct MockDialect;
+/// # impl Dialect for MockDialect {
+/// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+/// #     fn push_placeholder(_: &mut String, _: usize) {}
+/// # }
+/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// // Fails to compile: no rows and no source SELECT were supplied:
+/// let query = InsertQuery::<MockDialect, User>::new();
+/// query.build();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "refusing to build an INSERT without rows",
+    label = "this INSERT has neither `VALUES` rows nor a source `SELECT`",
+    note = "supply rows with `.values(...)`, `.values_many(...)`, or `.from_select(...)` before building the statement"
+)]
+pub trait InsertSource<T: Table> {}
+
+impl<C: Column, V> InsertSource<C::Table> for Assignment<C, V> {}
+
+macro_rules! impl_insert_source_for_tuple {
+    ($($element:ident),+) => {
+        impl<T: Table, $($element),+> InsertSource<T> for ($($element,)+)
+        where
+            ($($element,)+): AssignmentSet<T>,
+        {
+        }
+    };
+}
+
+impl_insert_source_for_tuple!(A);
+impl_insert_source_for_tuple!(A, B);
+impl_insert_source_for_tuple!(A, B, C);
+impl_insert_source_for_tuple!(A, B, C, D);
+impl_insert_source_for_tuple!(A, B, C, D, E);
+impl_insert_source_for_tuple!(A, B, C, D, E, F);
+impl_insert_source_for_tuple!(A, B, C, D, E, F, G);
+impl_insert_source_for_tuple!(A, B, C, D, E, F, G, H);
+
+impl<T: Table, Row> InsertSource<T> for InsertedSelect<Row> {}
 
 type SelectRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
 
@@ -271,14 +322,17 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         self.conflict = Some(conflict);
         self
     }
+}
 
+impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T, Values, Returning> {
     /// Renders the statement into SQL text and its ordered parameter list.
+    ///
+    /// The statement only becomes renderable once a row source was recorded
+    /// through [`values`](InsertQuery::values),
+    /// [`values_many`](InsertQuery::values_many), or
+    /// [`from_select`](InsertQuery::from_select); the [`InsertSource`] bound
+    /// enforces that at compile time.
     pub fn build(&self) -> BuiltQuery {
-        assert!(
-            !self.rows.is_empty() || self.select.is_some(),
-            "an INSERT requires at least one row or a SELECT query; call `values`, `values_many`, or `from_select` before `build`"
-        );
-
         let mut sql = String::from("INSERT INTO ");
         D::push_quoted_identifier(&mut sql, T::NAME);
 
@@ -334,7 +388,9 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
 
         BuiltQuery { sql, params }
     }
+}
 
+impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
     fn push_row<S: AssignmentSet<T>>(&mut self, set: &S) {
         assert!(
             self.select.is_none(),
@@ -502,9 +558,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at least one row")]
-    fn building_without_rows_panics() {
-        let _ = InsertQuery::<MockDialect, User>::new().build();
+    fn insert_source_is_implemented_for_rows_and_selects() {
+        fn assert_source<T: Table, S: InsertSource<T>>() {}
+
+        assert_source::<User, Assignment<UserId, i64>>();
+        assert_source::<User, (Assignment<UserId, i64>, Assignment<UserName, &'static str>)>();
+        assert_source::<User, InsertedSelect<(i64, String)>>();
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use super::*;
 
 use crate::dialect::{Dialect, SupportsLateralJoin};
-use crate::dml::{ColumnAssign, DeleteQuery, Filtered, InsertQuery, UpdateQuery};
+use crate::dml::insert::InsertedSelect;
+use crate::dml::{ColumnAssign, DeleteQuery, Filtered, HasAssignments, InsertQuery, UpdateQuery};
 use crate::expr::{Expr, SqlVal};
 use crate::row::FromRow;
 use crate::schema::{Aliased, AliasedCol, At, Column, Next, Table, TableInScope};
@@ -515,8 +516,8 @@ fn executable_queries_expose_built_sql_and_row_type() {
     fn assert_row<Q: ExecutableQuery<Row = (i64, String)>>() {}
 
     assert_row::<SelectQuery<MockDialect, User, (i64, String)>>();
-    assert_row::<InsertQuery<MockDialect, User, (), (i64, String)>>();
-    assert_row::<UpdateQuery<MockDialect, User, Filtered, (i64, String)>>();
+    assert_row::<InsertQuery<MockDialect, User, InsertedSelect<(i64, String)>, (i64, String)>>();
+    assert_row::<UpdateQuery<MockDialect, User, Filtered, (i64, String), User, HasAssignments>>();
     assert_row::<DeleteQuery<MockDialect, User, Filtered, (i64, String)>>();
 }
 

@@ -65,6 +65,43 @@ pub trait ExecutableMutation {}
 
 impl ExecutableMutation for Filtered {}
 
+/// Typestate marker indicating that a DML mutation has not recorded any column values yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoAssignments;
+
+/// Typestate marker indicating that a DML mutation has recorded at least one column value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HasAssignments;
+
+/// Statically asserts that a mutation carries the column values it renders.
+///
+/// Mutations that render `SET` assignments start in the [`NoAssignments`] state,
+/// where building the statement is rejected at compile time. Recording the first
+/// assignment through `.set(...)` transitions the query into [`HasAssignments`],
+/// the only state implementing this trait.
+///
+/// ```compile_fail
+/// use rurqe_core::dml::UpdateQuery;
+/// # use rurqe_core::dialect::Dialect;
+/// # struct MockDialect;
+/// # impl Dialect for MockDialect {
+/// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+/// #     fn push_placeholder(_: &mut String, _: usize) {}
+/// # }
+/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// // Fails to compile: the mutation records no assignment and cannot be built:
+/// let query = UpdateQuery::<MockDialect, User>::new().allow_all();
+/// query.build();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "refusing to build a mutation without column values",
+    label = "this mutation has no column assignments yet",
+    note = "record at least one value with `.set(...)`, `.values(...)`, or `.from_select(...)` before building the statement"
+)]
+pub trait AssignmentsPresent {}
+
+impl AssignmentsPresent for HasAssignments {}
+
 pub(crate) use crate::expr::render_expr;
 
 /// The value part of a single column assignment.

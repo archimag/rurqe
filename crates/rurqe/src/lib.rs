@@ -650,11 +650,13 @@ pub mod prelude {
 
     pub use rurqe_core::schema::{Aliased, AliasedCol, ExprScope, TableAlias};
 
-    pub use rurqe_core::dml::insert::{InsertColumns, InsertColumnsTarget, InsertedSelect};
+    pub use rurqe_core::dml::insert::{
+        InsertColumns, InsertColumnsTarget, InsertSource, InsertedSelect,
+    };
 
     pub use rurqe_core::dml::{
-        AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign, DeleteQuery, Filtered,
-        InsertQuery, Unfiltered, UpdateQuery,
+        AssignColumn, AssignValue, Assignment, AssignmentSet, AssignmentsPresent, ColumnAssign,
+        DeleteQuery, Filtered, HasAssignments, InsertQuery, NoAssignments, Unfiltered, UpdateQuery,
     };
 
     #[cfg(feature = "macros")]

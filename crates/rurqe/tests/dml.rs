@@ -44,8 +44,11 @@ where
     S::Row::from_row(values)
 }
 
-/// Statically asserts that an `UPDATE` reached the filtered typestate.
-fn assert_update_filtered<R>(_query: &UpdateQuery<Postgres, User, Filtered, R>) {}
+/// Statically asserts that an `UPDATE` reached the filtered typestate with assignments.
+fn assert_update_filtered<R>(
+    _query: &UpdateQuery<Postgres, User, Filtered, R, User, HasAssignments>,
+) {
+}
 
 /// Statically asserts that a `DELETE` reached the filtered typestate.
 fn assert_delete_filtered<R>(_query: &DeleteQuery<Postgres, User, Filtered, R>) {}

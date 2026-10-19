@@ -3,7 +3,8 @@
 use core::fmt;
 
 use crate::dialect::Dialect;
-use crate::dml::{DeleteQuery, ExecutableMutation, InsertQuery, UpdateQuery};
+use crate::dml::insert::InsertSource;
+use crate::dml::{AssignmentsPresent, DeleteQuery, ExecutableMutation, InsertQuery, UpdateQuery};
 use crate::expr::SqlVal;
 use crate::row::FromRow;
 use crate::schema::Table;
@@ -34,7 +35,7 @@ impl<D: Dialect, Tables: TableScope, Output> ExecutableQuery for SelectQuery<D, 
     }
 }
 
-impl<D: Dialect, T: Table, Values, Returning> ExecutableQuery
+impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> ExecutableQuery
     for InsertQuery<D, T, Values, Returning>
 {
     type Row = Returning;
@@ -44,8 +45,10 @@ impl<D: Dialect, T: Table, Values, Returning> ExecutableQuery
     }
 }
 
-impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> ExecutableQuery
-    for UpdateQuery<D, T, State, Returning, Scope>
+impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope, Assignments> ExecutableQuery
+    for UpdateQuery<D, T, State, Returning, Scope, Assignments>
+where
+    Assignments: AssignmentsPresent,
 {
     type Row = Returning;
 
