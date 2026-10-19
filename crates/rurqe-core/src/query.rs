@@ -417,6 +417,7 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     order_by: Vec<(&'static str, OrderDirection)>,
     limit: Option<u32>,
     offset: Option<u32>,
+    set_operations: Vec<SetOperation>,
     _marker: QueryMarker<D, Tables, Output>,
 }
 
@@ -432,6 +433,7 @@ impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
             order_by: self.order_by.clone(),
             limit: self.limit,
             offset: self.offset,
+            set_operations: self.set_operations.clone(),
             _marker: PhantomData,
         }
     }
@@ -444,6 +446,38 @@ impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
 type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
 
 type ProjectionRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+
+/// The flavour of a relational set operation combining two queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SetOpKind {
+    /// `UNION` combines the rows of both queries and removes duplicates.
+    Union,
+    /// `UNION ALL` combines the rows of both queries and keeps duplicates.
+    UnionAll,
+    /// `INTERSECT` keeps only the rows produced by both queries.
+    Intersect,
+    /// `EXCEPT` keeps only the rows of the left query that the right one lacks.
+    Except,
+}
+
+impl SetOpKind {
+    /// The SQL text of the set operation keywords.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SetOpKind::Union => "UNION",
+            SetOpKind::UnionAll => "UNION ALL",
+            SetOpKind::Intersect => "INTERSECT",
+            SetOpKind::Except => "EXCEPT",
+        }
+    }
+}
+
+/// Internal record of a set operation chained onto a [`SelectQuery`].
+#[derive(Clone)]
+struct SetOperation {
+    kind: SetOpKind,
+    render: ProjectionRenderer,
+}
 
 impl<D: Dialect> SelectQuery<D, (), ()> {
     /// Creates a query without a table, projections, filter, or pagination.
@@ -458,6 +492,7 @@ impl<D: Dialect> SelectQuery<D, (), ()> {
             order_by: Vec::new(),
             limit: None,
             offset: None,
+            set_operations: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -642,8 +677,58 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
             order_by: self.order_by,
             limit: self.limit,
             offset: self.offset,
+            set_operations: self.set_operations,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<D: Dialect, Tables, Output: 'static> SelectQuery<D, Tables, Output> {
+    /// Combines this query with `other` using `UNION`, removing duplicate rows.
+    ///
+    /// Both queries must target the same dialect `D` and produce the same row
+    /// type `Output`, so the combined result stays decodable as `Output`.
+    pub fn union<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::Union, other)
+    }
+
+    /// Combines this query with `other` using `UNION ALL`, keeping duplicates.
+    pub fn union_all<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::UnionAll, other)
+    }
+
+    /// Keeps only the rows produced by both this query and `other` (`INTERSECT`).
+    pub fn intersect<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::Intersect, other)
+    }
+
+    /// Keeps the rows of this query that are absent from `other` (`EXCEPT`).
+    pub fn except<Tables2: TableScope + 'static>(
+        self,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.with_set_operation(SetOpKind::Except, other)
+    }
+
+    fn with_set_operation<Tables2: TableScope + 'static>(
+        mut self,
+        kind: SetOpKind,
+        other: SelectQuery<D, Tables2, Output>,
+    ) -> Self {
+        self.set_operations.push(SetOperation {
+            kind,
+            render: Arc::new(move |sql, params| other.render_into(sql, params)),
+        });
+        self
     }
 }
 
@@ -709,6 +794,13 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         if let Some(having) = &self.having {
             sql.push_str(" HAVING ");
             render_expr::<D>(sql, params, having);
+        }
+
+        for operation in &self.set_operations {
+            sql.push(' ');
+            sql.push_str(operation.kind.as_str());
+            sql.push(' ');
+            (operation.render)(sql, params);
         }
 
         if !self.order_by.is_empty() {
@@ -2118,5 +2210,97 @@ mod tests {
             "SELECT \"id\" FROM \"orders\" WHERE (\"total\" NOT IN (SELECT \"total\" FROM \"orders\"))"
         );
         assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn union_renders_combined_query_and_binds_parameters_in_order() {
+        let other = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .where_(Expr::column::<UserId>().gt(10i64));
+
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId, UserName))
+            .where_(Expr::column::<UserId>().lt(5i64))
+            .union(other)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" < $1) \
+             UNION SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(5), SqlVal::I64(10)]);
+    }
+
+    #[test]
+    fn set_operation_keywords_render_expected_sql() {
+        fn base() -> SelectQuery<MockDialect, User, (i64,)> {
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .select((UserId,))
+        }
+
+        assert_eq!(
+            base().union(base()).build().sql,
+            "SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\""
+        );
+        assert_eq!(
+            base().union_all(base()).build().sql,
+            "SELECT \"id\" FROM \"users\" UNION ALL SELECT \"id\" FROM \"users\""
+        );
+        assert_eq!(
+            base().intersect(base()).build().sql,
+            "SELECT \"id\" FROM \"users\" INTERSECT SELECT \"id\" FROM \"users\""
+        );
+        assert_eq!(
+            base().except(base()).build().sql,
+            "SELECT \"id\" FROM \"users\" EXCEPT SELECT \"id\" FROM \"users\""
+        );
+    }
+
+    #[test]
+    fn chained_set_operations_keep_trailing_order_by_and_limit_on_the_union() {
+        fn base() -> SelectQuery<MockDialect, User, (i64,)> {
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .select((UserId,))
+        }
+
+        let built = base()
+            .union(base())
+            .union_all(base())
+            .order_by_asc(UserId)
+            .limit(3)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\" \
+             UNION ALL SELECT \"id\" FROM \"users\" ORDER BY \"id\" ASC LIMIT 3"
+        );
+        assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn union_query_is_executable_and_decodes_rows() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+            .union(
+                SelectQuery::<MockDialect>::new()
+                    .from::<User>()
+                    .select((UserId,)),
+            );
+
+        let mut backend = MockBackend {
+            rows: vec![vec![SqlVal::I64(1)]],
+            ..MockBackend::default()
+        };
+
+        let rows = backend.fetch_all(&query).expect("rows decode");
+        assert_eq!(rows, vec![(1i64,)]);
+        assert_eq!(backend.executed, vec![query.build()]);
     }
 }
