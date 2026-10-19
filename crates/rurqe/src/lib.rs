@@ -30,31 +30,6 @@ pub use rurqe_migrate as migrate;
 #[cfg(feature = "sqlite")]
 pub use rurqe_sqlite as sqlite;
 
-/// Starts an `INSERT` statement over the table `T` for the dialect `D`.
-///
-/// Rows are supplied through `values` or `values_many`, and every assigned value
-/// is checked against its column's Rust type at the call site.
-///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// }
-///
-/// let built = insert_into::<Postgres, User>()
-///     .values((UserId::set(1i64), UserName::set("root")))
-///     .build();
-///
-/// assert_eq!(
-///     built.sql,
-///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
-/// );
-/// ```
 /// Starts a `SELECT` statement over the table `T` for the dialect `D`.
 ///
 /// ```
@@ -152,6 +127,31 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, ()> {
     SelectQuery::new().from::<T>()
 }
 
+/// Starts an `INSERT` statement over the table `T` for the dialect `D`.
+///
+/// Rows are supplied through `values` or `values_many`, and every assigned value
+/// is checked against its column's Rust type at the call site.
+///
+/// ```
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserName => "name": String,
+///     }
+/// }
+///
+/// let built = insert_into::<Postgres, User>()
+///     .values((UserId::set(1i64), UserName::set("root")))
+///     .build();
+///
+/// assert_eq!(
+///     built.sql,
+///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+/// );
+/// ```
 pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
     InsertQuery::new()
 }
