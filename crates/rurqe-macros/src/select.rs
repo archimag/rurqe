@@ -137,11 +137,12 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             }
 
             impl<Tables, #(#position_params,)*>
-                ::rurqe_core::query::SelectionInScope<Tables, (#(#position_args,)*)>
+                ::rurqe_core::query::SelectionFor<Tables, (#(#position_args,)*)>
                 for __RurqeSelection
             where
                 #scope_bounds
             {
+                type Row = __RurqeRecord;
             }
 
             impl<__T: ::rurqe_core::schema::Table>

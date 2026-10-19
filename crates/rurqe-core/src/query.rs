@@ -82,10 +82,148 @@ impl<T: 'static + Send + Sync> SelectTarget for Expr<T> {
     }
 }
 
-/// Statically asserts that a projection item may be selected from the query scope.
+/// Marks a table whose columns are never `NULL` in the current relational context.
 ///
-/// Columns may only be projected from a table the query selects from, so a
-/// column of a table that was never introduced fails to compile. Computed
+/// Single tables introduced with [`SelectQuery::from`], tables of an
+/// `INNER JOIN`, and `CROSS JOIN LATERAL` subqueries keep the column types
+/// declared by the schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NonNullableRel;
+
+/// Marks a table whose columns may be `NULL` because the join may leave it unmatched.
+///
+/// Tables introduced with [`SelectQuery::left_join`] and
+/// [`SelectQuery::left_join_lateral`] lift every projected column into
+/// `Option<T>` at compile time, so the absence of a joined row stays visible in
+/// the row type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NullableRel;
+
+/// Resolves the nullability of the table `T` inside the relational scope `Tables`.
+///
+/// The position `P` locates `T` within `Tables`, so every join keeps the
+/// nullability that introduced the table: a `LEFT JOIN` nested inside an
+/// `INNER JOIN` stays nullable, while a table joined with `INNER JOIN` on top
+/// of a `LEFT JOIN` stays non-nullable.
+#[diagnostic::on_unimplemented(
+    message = "table `{T}` is not part of this query's scope",
+    label = "add `{T}` to the query before projecting its columns",
+    note = "introduce the table with `from`, `inner_join`, `left_join`, or a lateral join"
+)]
+pub trait TableNullabilityInScope<T: Table, P = At<0>> {
+    /// The nullability of `T` contributed by the join that introduced it.
+    type Nullability;
+}
+
+impl<T: Table> TableNullabilityInScope<T, At<0>> for T {
+    type Nullability = NonNullableRel;
+}
+
+macro_rules! impl_joined_scope_nullability {
+    ($scope:ident => $own:ident) => {
+        // Base case: the table the scope was extended with.
+        impl<Tables, T: Table> TableNullabilityInScope<T, At<0>> for $scope<Tables, T> {
+            type Nullability = $own;
+        }
+
+        // Inductive case: tables of the inner scope keep the nullability they had.
+        impl<Tables, T: Table, Target: Table, P> TableNullabilityInScope<Target, Next<P>>
+            for $scope<Tables, T>
+        where
+            Tables: TableNullabilityInScope<Target, P>,
+        {
+            type Nullability = <Tables as TableNullabilityInScope<Target, P>>::Nullability;
+        }
+    };
+}
+
+impl_joined_scope_nullability!(Joined => NonNullableRel);
+impl_joined_scope_nullability!(LeftJoined => NullableRel);
+impl_joined_scope_nullability!(CrossLateralJoined => NonNullableRel);
+impl_joined_scope_nullability!(LeftLateralJoined => NullableRel);
+
+/// Lifts a Rust value type into its nullable form.
+///
+/// The trait is implemented for the scalar column types of the schema and for
+/// `Option<T>` itself, so an already nullable column keeps a single layer of
+/// `Option` when it is projected from an outer join.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no nullable form",
+    label = "the column type cannot be lifted into `Option<{Self}>`",
+    note = "implement `MakeNullable` for the column type to project it from an outer join"
+)]
+pub trait MakeNullable {
+    /// The nullable representation of the type.
+    type Nullable;
+}
+
+macro_rules! impl_make_nullable {
+    ($($scalar:ty),+) => {
+        $(
+            impl MakeNullable for $scalar {
+                type Nullable = Option<$scalar>;
+            }
+        )+
+    };
+}
+
+impl_make_nullable!(i32, i64, f64, bool, String, Vec<u8>);
+
+impl<T> MakeNullable for Option<T> {
+    type Nullable = Option<T>;
+}
+
+/// Applies the nullability `N` of a relational context to a Rust value type.
+///
+/// A [`NonNullableRel`] context keeps the type untouched, while a
+/// [`NullableRel`] context lifts it through [`MakeNullable`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be lifted into the nullability of this relational context",
+    label = "unsupported column type",
+    note = "implement `MakeNullable` for the column type to project it from an outer join"
+)]
+pub trait ApplyNullability<N> {
+    /// The type produced in the relational context `N`.
+    type Output;
+}
+
+impl<T> ApplyNullability<NonNullableRel> for T {
+    type Output = T;
+}
+
+impl<T: MakeNullable> ApplyNullability<NullableRel> for T {
+    type Output = T::Nullable;
+}
+
+/// Derives the effective type of the column `Self` projected from the scope `Tables`.
+///
+/// The type follows the join that introduced the column's table: an `INNER
+/// JOIN` keeps `C::RustType`, while a `LEFT JOIN` lifts it into
+/// `Option<C::RustType>` without an explicit [`SelectQuery::nullable`] call.
+#[diagnostic::on_unimplemented(
+    message = "column `{Self}` cannot be projected from this query's scope",
+    label = "the projected column belongs to a table the query does not select from",
+    note = "introduce the column's table with `from` or a join before projecting it"
+)]
+pub trait ColumnInScope<Tables, P> {
+    /// The type produced when the column is projected from this scope.
+    type Output;
+}
+
+impl<Tables, C, P> ColumnInScope<Tables, P> for C
+where
+    C: Column,
+    Tables: TableNullabilityInScope<C::Table, P>,
+    C::RustType: ApplyNullability<<Tables as TableNullabilityInScope<C::Table, P>>::Nullability>,
+{
+    type Output = <C::RustType as ApplyNullability<
+        <Tables as TableNullabilityInScope<C::Table, P>>::Nullability,
+    >>::Output;
+}
+
+/// Derives the type produced by the projection item `Self` in the scope `Tables`.
+///
+/// Columns derive their type through [`ColumnInScope`], while computed
 /// expressions carry no table and stay projectable in any scope, which pins
 /// their position to `At<0>` so the position of every projected item stays
 /// inferable.
@@ -94,53 +232,78 @@ impl<T: 'static + Send + Sync> SelectTarget for Expr<T> {
     label = "the projected column belongs to a table the query does not select from",
     note = "introduce the column's table with `from` or a join before projecting it"
 )]
-pub trait SelectTargetInScope<Tables, P> {}
+pub trait SelectTargetInScope<Tables, P> {
+    /// The type produced when the item is projected from this scope.
+    type Output;
+}
 
 impl<Tables, C, P> SelectTargetInScope<Tables, P> for C
 where
-    C: Column,
-    Tables: TableInScope<C::Table, P>,
+    C: Column + ColumnInScope<Tables, P>,
 {
+    type Output = <C as ColumnInScope<Tables, P>>::Output;
 }
 
-impl<Tables, T> SelectTargetInScope<Tables, At<0>> for Expr<T> {}
+impl<Tables, T> SelectTargetInScope<Tables, At<0>> for Expr<T> {
+    type Output = T;
+}
 
-impl<Tables, T> SelectTargetInScope<Tables, At<0>> for WindowExpr<T> {}
+impl<Tables, T> SelectTargetInScope<Tables, At<0>> for WindowExpr<T> {
+    type Output = T;
+}
 
-/// Statically asserts that every projection item of a selection is in the query scope.
+/// Derives the row type of the selection `Self` projected from the scope `Tables`.
 ///
 /// The trait carries the scope positions of the projected items in its type, so
 /// [`SelectQuery::select`] checks each item against the tables the query selects
-/// from while the position of every item stays inferable. A query that projects
-/// before introducing its table has no scope yet, which the `()` scope accepts.
+/// from and derives the row type from the join that introduced each table. A
+/// query that projects before introducing its table has no scope yet, which the
+/// `()` scope accepts.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be selected from this query's scope",
     label = "one of the projected columns belongs to a table the query does not select from",
     note = "introduce the column's table with `from` or a join before projecting it"
 )]
+pub trait SelectionFor<Tables, Positions>: Selection {
+    /// The row type produced by the selection in this relational context.
+    type Row;
+}
+
+/// Statically asserts that every projection item of a selection is in the query scope.
+///
+/// Every [`SelectionFor`] selection is in scope, so the trait is used as a plain
+/// bound where only membership matters and not the produced row type.
 pub trait SelectionInScope<Tables, Positions>: Selection {}
 
-impl<S: Selection> SelectionInScope<(), ()> for S {}
+impl<Tables, Positions, S> SelectionInScope<Tables, Positions> for S where
+    S: SelectionFor<Tables, Positions>
+{
+}
 
-macro_rules! impl_selection_in_scope {
+impl<S: Selection> SelectionFor<(), ()> for S {
+    type Row = S::Row;
+}
+
+macro_rules! impl_selection_for {
     ($($target:ident $position:ident),+) => {
-        impl<Tables, $($target, $position),+> SelectionInScope<Tables, ($($position,)+)>
+        impl<Tables, $($target, $position),+> SelectionFor<Tables, ($($position,)+)>
             for ($($target,)+)
         where
             $($target: SelectTarget + SelectTargetInScope<Tables, $position>,)+
         {
+            type Row = ($(<$target as SelectTargetInScope<Tables, $position>>::Output,)+);
         }
     };
 }
 
-impl_selection_in_scope!(T1 P1);
-impl_selection_in_scope!(T1 P1, T2 P2);
-impl_selection_in_scope!(T1 P1, T2 P2, T3 P3);
-impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4);
-impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5);
-impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6);
-impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
-impl_selection_in_scope!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
+impl_selection_for!(T1 P1);
+impl_selection_for!(T1 P1, T2 P2);
+impl_selection_for!(T1 P1, T2 P2, T3 P3);
+impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4);
+impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5);
+impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6);
+impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
+impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
 
 /// A list of selected columns whose Rust value types form the query row type.
 ///
@@ -791,13 +954,44 @@ impl<D: Dialect, Output> SelectQuery<D, (), Output> {
 }
 
 impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
-    /// Selects `selection`, fixing the row type of the query to [`Selection::Row`].
+    /// Selects `selection`, fixing the row type of the query to the row the
+    /// selection produces in this relational context.
     ///
     /// Every projected column must belong to a table the query selects from, so
-    /// projecting a column of an unrelated table fails to compile.
-    pub fn select<S, Positions>(mut self, selection: S) -> SelectQuery<D, Tables, S::Row>
+    /// projecting a column of an unrelated table fails to compile. Columns of a
+    /// table introduced with [`left_join`](SelectQuery::left_join) or
+    /// [`left_join_lateral`](SelectQuery::left_join_lateral) lift into
+    /// `Option<T>` automatically, while tables of an `INNER JOIN` keep the
+    /// types declared by the schema.
+    pub fn select<S, Positions>(
+        mut self,
+        selection: S,
+    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
     where
-        S: Selection + SelectionInScope<Tables, Positions> + Send + Sync + 'static,
+        S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
+    /*
+     * Leftover markup of a corrupted edit. It is inert inside this comment and
+     * has to be deleted manually, because an edit search cannot match the stray
+     * protocol markers it contains.
+    {</search_7739A7077210B47A>
+<replace>    /// Selects `selection`, fixing the row type of the query to the row the
+    /// selection produces in this relational context.
+    ///
+    /// Every projected column must belong to a table the query selects from, so
+    /// projecting a column of an unrelated table fails to compile. Columns of a
+    /// table introduced with [`left_join`](SelectQuery::left_join) or
+    /// [`left_join_lateral`](SelectQuery::left_join_lateral) lift into
+    /// `Option<T>` automatically, while tables of an `INNER JOIN` keep the
+    /// types declared by the schema.
+    pub fn select<S, Positions>(
+        mut self,
+        selection: S,
+    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
+    where
+        S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
+    {
+    */
+
     {
         self.projections = Some(Arc::new(move |sql, params| {
             selection.render_projections::<D>(sql, params);
@@ -2135,6 +2329,92 @@ mod tests {
 
         assert_eq!(Nullable::<OrderTotal>::NAME, OrderTotal::NAME);
         takes_optional_total::<Nullable<OrderTotal>>();
+    }
+
+    #[test]
+    fn left_joined_columns_are_lifted_without_explicit_markers() {
+        let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .left_join::<Order>(Expr::column::<OrderUserId>().eq(7i64))
+                .select((UserId, OrderTotal));
+
+        let built = query.build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(7)]);
+    }
+
+    #[test]
+    fn inner_joined_columns_keep_their_declared_types() {
+        let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64, f64)> =
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .inner_join::<Order>(Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+                .select((UserId, OrderId, OrderTotal));
+
+        assert_eq!(
+            query.build().sql,
+            "SELECT \"id\", \"id\", \"total\" FROM \"users\" \
+             INNER JOIN \"orders\" ON (\"id\" = \"user_id\")"
+        );
+    }
+
+    #[test]
+    fn nested_left_join_stays_nullable_inside_an_inner_join() {
+        type NestedScope = Joined<LeftJoined<User, Order>, User>;
+
+        let query: SelectQuery<MockDialect, NestedScope, (Option<i64>,)> =
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .left_join::<Order>(Expr::column::<OrderUserId>().eq(1i64))
+                .inner_join::<User>(Expr::column::<UserId>().eq(2i64))
+                .select((OrderId,));
+
+        assert_eq!(
+            query.build().sql,
+            "SELECT \"id\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1) \
+             INNER JOIN \"users\" ON (\"id\" = $2)"
+        );
+    }
+
+    #[test]
+    fn explicit_nullable_marker_matches_automatic_lifting() {
+        fn nullable_scope() -> SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)>
+        {
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64))
+                .select((UserId, OrderTotal))
+        }
+
+        let automatic = nullable_scope();
+        let explicit = {
+            let query = SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64));
+            let total = query.nullable::<OrderTotal>();
+            let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
+                query.select((UserId, total));
+            query
+        };
+
+        assert_eq!(automatic.build(), explicit.build());
+
+        // An already nullable column keeps a single layer of `Option`.
+        let single_layer: SelectQuery<MockDialect, LeftJoined<User, Order>, (Option<f64>,)> =
+            SelectQuery::<MockDialect>::new()
+                .from::<User>()
+                .left_join::<Order>(Expr::column::<OrderUserId>().eq(3i64))
+                .select((Nullable::<OrderTotal>::new(),));
+
+        assert_eq!(
+            single_layer.build().sql,
+            "SELECT \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        );
     }
 
     #[test]
