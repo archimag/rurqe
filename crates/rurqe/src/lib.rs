@@ -28,7 +28,11 @@ pub use rurqe_core::{GroupByInScope, SelectionInScope};
 /// `update`, and `delete_from` take a table value, the `SelectFrom` extension
 /// trait starts a query from a selection, and the nested `prelude` re-exports
 /// the shared prelude with the pinned entry points taking precedence, so a
-/// single glob import pins the whole query surface to one engine version:
+/// single glob import pins the whole query surface to one engine version.
+///
+/// The generated module also defines the [`Error`] and `Result` aliases of the
+/// pinned dialect, so an execution helper can be written without naming the
+/// driver adapter:
 ///
 /// ```text
 /// use rurqe::postgres::pg16::prelude::*;
@@ -40,7 +44,7 @@ pub use rurqe_core::{GroupByInScope, SelectionInScope};
 macro_rules! pin_dialect_version {
     (
         $(#[$meta:meta])*
-        $vis:vis mod $version:ident => $dialect:ty;
+        $vis:vis mod $version:ident => $dialect:ty, $error:ty;
     ) => {
         $(#[$meta])*
         $vis mod $version {
@@ -48,6 +52,16 @@ macro_rules! pin_dialect_version {
 
             use $crate::core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
             use $crate::core::{SelectQuery, Table};
+
+            /// The error type produced by queries pinned to this dialect version.
+            pub type Error = $crate::core::query::ExecutionError<$error>;
+
+            /// A [`Result`](core::result::Result) defaulting to [`Error`].
+            ///
+            /// The error parameter keeps the alias usable where a different
+            /// error type is carried, so it never shadows the standard
+            /// two-parameter `Result`.
+            pub type Result<T, E = Error> = ::core::result::Result<T, E>;
 
             /// Starts a `SELECT` over `table` with the dialect version pinned.
             pub fn select_from<T: Table>(table: T) -> SelectQuery<$dialect, T, ()> {
@@ -103,7 +117,9 @@ macro_rules! pin_dialect_version {
             pub mod prelude {
                 pub use $crate::prelude::*;
 
-                pub use super::{delete_from, insert_into, select_from, update, SelectFrom};
+                pub use super::{
+                    delete_from, insert_into, select_from, update, Error, Result, SelectFrom,
+                };
             }
         }
     };
@@ -125,6 +141,19 @@ pub mod postgres {
 
     use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
     use rurqe_core::{SelectQuery, Table};
+
+    /// The error type produced by PostgreSQL queries and adapters.
+    ///
+    /// It lifts a driver-level [`PgError`] into the shared
+    /// [`ExecutionError`](rurqe_core::query::ExecutionError), so a single alias
+    /// covers backend failures, row decoding failures, and row-count mismatches.
+    pub type Error = rurqe_core::query::ExecutionError<PgError>;
+
+    /// A [`Result`](core::result::Result) defaulting to the PostgreSQL [`Error`].
+    ///
+    /// The error parameter keeps the alias usable where a different error type
+    /// is carried, so it never shadows the standard two-parameter `Result`.
+    pub type Result<T, E = Error> = ::core::result::Result<T, E>;
 
     /// Starts a `SELECT` over `table` with the dialect pinned to PostgreSQL.
     ///
@@ -192,23 +221,23 @@ pub mod postgres {
         pub use crate::prelude::*;
 
         pub use super::{
-            delete_from, insert_into, select_from, update, PostgresSelectFrom,
+            delete_from, insert_into, select_from, update, Error, PostgresSelectFrom, Result,
         };
     }
 
     pin_dialect_version! {
         /// Query entry points pinned to PostgreSQL 14.
-        pub mod pg14 => Postgres<Pg14>;
+        pub mod pg14 => Postgres<Pg14>, PgError;
     }
 
     pin_dialect_version! {
         /// Query entry points pinned to PostgreSQL 15.
-        pub mod pg15 => Postgres<Pg15>;
+        pub mod pg15 => Postgres<Pg15>, PgError;
     }
 
     pin_dialect_version! {
         /// Query entry points pinned to PostgreSQL 16.
-        pub mod pg16 => Postgres<Pg16>;
+        pub mod pg16 => Postgres<Pg16>, PgError;
     }
 }
 
@@ -231,6 +260,19 @@ pub mod sqlite {
 
     use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
     use rurqe_core::{SelectQuery, Table};
+
+    /// The error type produced by SQLite queries and adapters.
+    ///
+    /// It lifts a driver-level [`rusqlite::Error`] into the shared
+    /// [`ExecutionError`](rurqe_core::query::ExecutionError), so a single alias
+    /// covers backend failures, row decoding failures, and row-count mismatches.
+    pub type Error = rurqe_core::query::ExecutionError<rusqlite::Error>;
+
+    /// A [`Result`](core::result::Result) defaulting to the SQLite [`Error`].
+    ///
+    /// The error parameter keeps the alias usable where a different error type
+    /// is carried, so it never shadows the standard two-parameter `Result`.
+    pub type Result<T, E = Error> = ::core::result::Result<T, E>;
 
     /// Starts a `SELECT` over `table` with the dialect pinned to SQLite.
     ///
@@ -298,23 +340,23 @@ pub mod sqlite {
         pub use crate::prelude::*;
 
         pub use super::{
-            delete_from, insert_into, select_from, update, SqliteSelectFrom,
+            delete_from, insert_into, select_from, update, Error, Result, SqliteSelectFrom,
         };
     }
 
     pin_dialect_version! {
         /// Query entry points pinned to SQLite 3.0.
-        pub mod sqlite3_0 => Sqlite<Sqlite3_0>;
+        pub mod sqlite3_0 => Sqlite<Sqlite3_0>, rusqlite::Error;
     }
 
     pin_dialect_version! {
         /// Query entry points pinned to SQLite 3.24.
-        pub mod sqlite3_24 => Sqlite<Sqlite3_24>;
+        pub mod sqlite3_24 => Sqlite<Sqlite3_24>, rusqlite::Error;
     }
 
     pin_dialect_version! {
         /// Query entry points pinned to SQLite 3.35.
-        pub mod sqlite3_35 => Sqlite<Sqlite3_35>;
+        pub mod sqlite3_35 => Sqlite<Sqlite3_35>, rusqlite::Error;
     }
 }
 
