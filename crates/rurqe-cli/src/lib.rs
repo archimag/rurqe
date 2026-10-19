@@ -8,6 +8,7 @@ pub mod driver;
 pub mod drift;
 pub mod introspect;
 pub mod loader;
+pub mod stage;
 
 pub use cli::{parse_args, run_cli, CliCommand, CliError};
 pub use codegen::{generate_schema_rs, CodegenError, CodegenOptions};
@@ -21,6 +22,7 @@ pub use introspect::{
     RawSqliteTableMetadata, RawTableMetadata,
 };
 pub use loader::{load_migrations_from_dir, read_migration_files};
+pub use stage::{GoldenEquation, GoldenReport, StageError};
 
 /// Main CLI execution entry point for standalone and Cargo subcommand binaries.
 pub fn run() {

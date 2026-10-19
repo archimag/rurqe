@@ -299,7 +299,8 @@ pub fn extract_schema_hash(code: &str) -> Option<String> {
     None
 }
 
-fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
+/// Computes the structural differences between the `live` and `expected` catalogs.
+pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
 
     let live_tables: BTreeMap<&str, &TableDef> =
