@@ -162,7 +162,77 @@ let query = select_from::<Postgres, User>()
     .where_(raw_sql!("age >= {} AND active = {}", 18i64, true));
 ```
 
-### 8. Type-Safe DML with Typestate Protection
+### 8. NULL Predicates & Conditional Expressions (`CASE WHEN`)
+
+`IS NULL` / `IS NOT NULL` are type-safe methods on any expression, and `Expr::<T>::case()` builds a searched `CASE` expression whose branches must all produce `T`:
+
+```rust
+// IS NULL / IS NOT NULL predicates bind no parameters:
+let query = select_from::<Postgres, Order>()
+    .select((OrderId,))
+    .where_(Expr::column::<OrderTotal>().is_not_null());
+
+// CASE WHEN ... THEN ... ELSE ... END producing String values:
+let tier = Expr::<String>::case()
+    .when(Expr::column::<OrderTotal>().gt(100.0), "large")
+    .when(Expr::column::<OrderTotal>().gt(10.0), "medium")
+    .else_("small")
+    .end();
+
+let query = select_from::<Postgres, Order>()
+    .select((OrderId, tier));
+// Rendered: SELECT "id", CASE WHEN ("total" > $1) THEN $2 ... ELSE $5 END FROM "orders"
+// Decoded row type: (i64, String)
+```
+
+`case()` requires at least one `when` branch; omitting `else_` leaves unmatched rows to the engine's `NULL`.
+
+### 9. Subquery Predicates (`EXISTS`, `IN`)
+
+`Expr::exists` / `Expr::not_exists` accept any `SelectQuery`, while `.in_subquery(...)` / `.not_in_subquery(...)` compare a column with the nested query. Nested statements render inline and continue the placeholder numbering of the enclosing query:
+
+```rust
+let big_spenders = select_from::<Postgres, Order>()
+    .select((OrderUserId,))
+    .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+let query = select_from::<Postgres, User>()
+    .select((UserId,))
+    .where_(Expr::column::<UserId>().in_subquery(big_spenders))
+    .where_(Expr::not_exists(
+        select_from::<Postgres, Order>()
+            .select((OrderId,))
+            .where_(Expr::column::<OrderTotal>().lt(5.0)),
+    ));
+
+// SELECT "id" FROM "users" WHERE (("id" IN (SELECT "user_id" FROM "orders" WHERE ("total" > $1)))
+//   AND (NOT EXISTS (SELECT "id" FROM "orders" WHERE ("total" < $2))))
+```
+
+A `SelectQuery` also converts into a reusable subquery via `.into_subquery()`, `.exists()`, and `.not_exists()`.
+
+### 10. Set Operations (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`)
+
+Set operators combine two `SelectQuery<D, Tables, Output>` values. The dialect and the output row type are checked at compile time, so the combined statement stays decodable as `Output`; trailing `ORDER BY` / `LIMIT` apply to the combined result:
+
+```rust
+let by_state = |active: bool| {
+    select_from::<Postgres, User>()
+        .select((UserId,))
+        .where_(Expr::column::<UserActive>().eq(active))
+};
+
+let visible = by_state(true).union_all(by_state(false)).order_by_asc(UserId).limit(50);
+// SELECT "id" FROM "users" WHERE ("active" = $1)
+// UNION ALL SELECT "id" FROM "users" WHERE ("active" = $2) ORDER BY "id" ASC LIMIT 50
+
+// Deduplicating and filtering variants:
+let deduped = by_state(true).union(by_state(false));
+let both = by_state(true).intersect(by_state(false));
+let only_active = by_state(true).except(by_state(false));
+```
+
+### 11. Type-Safe DML with Typestate Protection
 
 Unfiltered `UPDATE` and `DELETE` queries will not compile without `.where_(...)` or `.allow_all()`:
 

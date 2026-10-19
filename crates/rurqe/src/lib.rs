@@ -198,7 +198,9 @@ pub mod prelude {
         WindowSpec,
     };
 
-    pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, TableScope};
+    pub use rurqe_core::expr::{CaseBranch, CaseBuilder, Subquery, SubqueryOp};
+
+    pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, SetOpKind, TableScope};
 
     pub use rurqe_core::schema::ExprScope;
 

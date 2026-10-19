@@ -360,3 +360,129 @@ fn sql_macro_composes_with_group_by_and_having() {
     );
     assert_eq!(built.params, vec![SqlVal::F64(250.0), SqlVal::I64(100)]);
 }
+
+#[test]
+fn null_predicates_and_case_expressions_render_typed_sql() {
+    let tier = Expr::<String>::case()
+        .when(Expr::column::<OrderTotal>().gt(100.0), "large")
+        .when(Expr::column::<OrderTotal>().gt(10.0), "medium")
+        .else_("small")
+        .end();
+
+    let built = SelectQuery::<Postgres<Pg16>>::new()
+        .from::<Order>()
+        .select((OrderId, tier))
+        .where_(Expr::column::<OrderTotal>().is_not_null())
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", CASE WHEN (\"total\" > $1) THEN $2 WHEN (\"total\" > $3) THEN $4 \
+         ELSE $5 END FROM \"orders\" WHERE (\"total\" IS NOT NULL)"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::F64(100.0),
+            SqlVal::Text("large".into()),
+            SqlVal::F64(10.0),
+            SqlVal::Text("medium".into()),
+            SqlVal::Text("small".into()),
+        ]
+    );
+
+    let nulls = SelectQuery::<Postgres<Pg16>>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .where_(Expr::column::<OrderTotal>().is_null())
+        .build();
+
+    assert_eq!(
+        nulls.sql,
+        "SELECT \"id\" FROM \"orders\" WHERE (\"total\" IS NULL)"
+    );
+    assert!(nulls.params.is_empty());
+
+    let row = <(i64, String)>::from_row(&[SqlVal::I64(7), SqlVal::Text("medium".into())])
+        .expect("case rows decode");
+    assert_eq!(row, (7, "medium".to_owned()));
+}
+
+#[test]
+fn subquery_predicates_filter_rows_and_bind_parameters_in_order() {
+    let big_spenders = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId,))
+        .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+    let built = select_from::<Postgres<Pg16>, User>()
+        .select((UserId, UserName))
+        .where_(Expr::column::<UserId>().in_subquery(big_spenders))
+        .where_(Expr::not_exists(
+            select_from::<Postgres<Pg16>, Order>()
+                .select((OrderId,))
+                .where_(Expr::column::<OrderTotal>().lt(5.0)),
+        ))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"name\" FROM \"users\" WHERE ((\"id\" IN (SELECT \"user_id\" FROM \
+         \"orders\" WHERE (\"total\" > $1))) AND (NOT EXISTS (SELECT \"id\" FROM \"orders\" \
+         WHERE (\"total\" < $2))))"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(100.0), SqlVal::F64(5.0)]);
+}
+
+/// Builds a `CASE`-labelled customer query guarded by a correlated `EXISTS` predicate.
+fn active_customers() -> SelectQuery<Postgres<Pg16>, User, (i64, String)> {
+    select_from::<Postgres<Pg16>, User>()
+        .select((
+            UserId,
+            Expr::<String>::case()
+                .when(Expr::column::<UserActive>().eq(true), "active")
+                .else_("inactive")
+                .end(),
+        ))
+        .where_(Expr::exists(
+            select_from::<Postgres<Pg16>, Order>()
+                .select((OrderId,))
+                .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>())),
+        ))
+}
+
+#[test]
+fn set_operations_combine_case_and_exists_queries() {
+    let built = active_customers().union_all(active_customers()).build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", CASE WHEN (\"active\" = $1) THEN $2 ELSE $3 END FROM \"users\" \
+         WHERE (EXISTS (SELECT \"id\" FROM \"orders\" WHERE (\"user_id\" = \"id\"))) \
+         UNION ALL SELECT \"id\", CASE WHEN (\"active\" = $4) THEN $5 ELSE $6 END FROM \"users\" \
+         WHERE (EXISTS (SELECT \"id\" FROM \"orders\" WHERE (\"user_id\" = \"id\")))"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::Bool(true),
+            SqlVal::Text("active".into()),
+            SqlVal::Text("inactive".into()),
+            SqlVal::Bool(true),
+            SqlVal::Text("active".into()),
+            SqlVal::Text("inactive".into()),
+        ]
+    );
+
+    fn base() -> SelectQuery<Postgres<Pg16>, Order, (i64,)> {
+        select_from::<Postgres<Pg16>, Order>().select((OrderUserId,))
+    }
+
+    assert_eq!(
+        base().intersect(base()).build().sql,
+        "SELECT \"user_id\" FROM \"orders\" INTERSECT SELECT \"user_id\" FROM \"orders\""
+    );
+    assert_eq!(
+        base().except(base()).build().sql,
+        "SELECT \"user_id\" FROM \"orders\" EXCEPT SELECT \"user_id\" FROM \"orders\""
+    );
+}
