@@ -154,8 +154,8 @@ Provide advanced relational querying capabilities comparable to jOOQ, maintainin
 - [x] **Aggregations & Grouping:**
   - Standard aggregate functions (`count_all`, `count`, `sum`, `avg`, `min`, `max`).
   - `.group_by(...)` and `.having(...)` validation and parameter binding.
-- [ ] **Conditional Expressions:**
-  - Type-safe `case_when(...).then(...).else_(...).end()`.
+- [x] **Conditional Expressions:**
+  - Type-safe `Expr::<T>::case().when(condition, value).else_(fallback).end()` producing `CASE WHEN ... THEN ... ELSE ... END` (delivered in Phase 9).
 
 ### Example Usage
 ```rust
