@@ -200,6 +200,14 @@ impl<A: TableAlias, C: Column> Column for AliasedCol<A, C> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct At<const N: usize>;
 
+/// A position marker nested one level deeper than `P`.
+///
+/// Joined query scopes such as [`Joined`](crate::query::Joined) wrap the
+/// positions of their inner scope in `Next`, so a table stays reachable exactly
+/// once per scope without const-generic arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Next<P>(core::marker::PhantomData<P>);
+
 /// Statically asserts that the [`Table`] `T` is part of the query scope.
 ///
 /// Expressions may only reference tables that were added to the query, and every
@@ -441,6 +449,16 @@ mod tests {
 
         assert_in_scope::<User, (User, User), At<1>>();
         assert_in_scope::<User, (User, User), At<2>>();
+    }
+
+    #[test]
+    fn next_marker_nests_positions_without_arithmetic() {
+        // `Next` wraps a position one level deeper and stays zero-sized.
+        let _: Next<At<0>> = Next(core::marker::PhantomData);
+        let _: Next<Next<At<0>>> = Next(core::marker::PhantomData);
+
+        assert_eq!(core::mem::size_of::<Next<At<0>>>(), 0);
+        assert_eq!(core::mem::size_of::<Next<Next<At<0>>>>(), 0);
     }
 
     crate::table_alias! {

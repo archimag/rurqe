@@ -33,7 +33,7 @@ use crate::dialect::{Dialect, SupportsLateralJoin};
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::row::FromRow;
-use crate::schema::{Column, ExprScope, Table, TableRef};
+use crate::schema::{At, Column, ExprScope, Next, Table, TableInScope, TableRef};
 
 /// A single item projected by a `SELECT` query, such as a column or a window expression.
 #[diagnostic::on_unimplemented(
@@ -340,6 +340,26 @@ impl<Tables: TableScope, T: Table> TableScope for LeftLateralJoined<Tables, T> {
 }
 
 impl<Tables: ExprScope, T: Table> ExprScope for LeftLateralJoined<Tables, T> {}
+
+macro_rules! impl_joined_scope_table_in_scope {
+    ($scope:ident) => {
+        // Base case: the table the scope was extended with sits at `At<0>`.
+        impl<Tables, T: Table> TableInScope<T, At<0>> for $scope<Tables, T> {}
+
+        // Inductive case: tables of the inner scope sit one position deeper.
+        impl<Tables, T: Table, Target: Table, P> TableInScope<Target, Next<P>>
+            for $scope<Tables, T>
+        where
+            Tables: TableInScope<Target, P>,
+        {
+        }
+    };
+}
+
+impl_joined_scope_table_in_scope!(Joined);
+impl_joined_scope_table_in_scope!(LeftJoined);
+impl_joined_scope_table_in_scope!(CrossLateralJoined);
+impl_joined_scope_table_in_scope!(LeftLateralJoined);
 
 /// A column lifted to its nullable form for outer joins.
 ///
@@ -1895,6 +1915,42 @@ mod tests {
         assert_scope::<LeftJoined<User, Order>>();
         assert_scope::<Joined<Joined<User, Order>, User>>();
         assert_scope::<Joined<LeftJoined<User, Order>, User>>();
+    }
+
+    #[test]
+    fn joined_scopes_resolve_table_positions_deterministically() {
+        fn assert_in_scope<S, T: Table, P>()
+        where
+            S: TableInScope<T, P>,
+        {
+        }
+
+        // Base case: the newly joined table sits at `At<0>`.
+        assert_in_scope::<Joined<User, Order>, Order, At<0>>();
+        assert_in_scope::<LeftJoined<User, Order>, Order, At<0>>();
+
+        // Inductive case: inner tables sit one position deeper.
+        assert_in_scope::<Joined<User, Order>, User, Next<At<0>>>();
+        assert_in_scope::<LeftJoined<User, Order>, User, Next<At<0>>>();
+
+        // Multi-join: every table keeps a distinct position marker.
+        assert_in_scope::<Joined<Joined<User, Order>, User>, User, At<0>>();
+        assert_in_scope::<Joined<Joined<User, Order>, User>, Order, Next<At<0>>>();
+        assert_in_scope::<Joined<Joined<User, Order>, User>, User, Next<Next<At<0>>>>();
+    }
+
+    #[test]
+    fn lateral_scopes_resolve_table_positions_deterministically() {
+        fn assert_in_scope<S, T: Table, P>()
+        where
+            S: TableInScope<T, P>,
+        {
+        }
+
+        assert_in_scope::<CrossLateralJoined<User, RecentOrder>, RecentOrder, At<0>>();
+        assert_in_scope::<CrossLateralJoined<User, RecentOrder>, User, Next<At<0>>>();
+        assert_in_scope::<LeftLateralJoined<User, RecentOrder>, RecentOrder, At<0>>();
+        assert_in_scope::<LeftLateralJoined<User, RecentOrder>, User, Next<At<0>>>();
     }
 
     #[test]
