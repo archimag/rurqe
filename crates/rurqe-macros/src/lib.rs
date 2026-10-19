@@ -5,6 +5,7 @@ mod dto;
 mod parse;
 mod raw_sql;
 mod select;
+mod sql_type;
 
 use proc_macro::TokenStream;
 
@@ -95,4 +96,35 @@ pub fn sql(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn raw_sql(input: TokenStream) -> TokenStream {
     sql(input)
+}
+
+/// Derives SQL parameter and row-value support for a domain newtype.
+///
+/// The derive mirrors the declarative `impl_sql_binary_newtype!` and
+/// `impl_sql_text_newtype!` helpers and adds a delegation mode, so a domain type
+/// binds like a built-in scalar without repeating the conversion code by hand:
+///
+/// ```ignore
+/// #[derive(SqlType)]
+/// #[sql(transparent)]
+/// struct UserId(i64);
+///
+/// #[derive(SqlType)]
+/// #[sql(as = Bytes, len = 4)]
+/// struct Txid([u8; 4]);
+///
+/// #[derive(SqlType)]
+/// #[sql(as = Text)]
+/// struct Address(String);
+/// ```
+///
+/// The generated code implements `ToSqlVal`, `From<Self> for SqlVal`,
+/// `FromSqlValue`, and the expression-compatibility impls, so the newtype is
+/// usable both as a bound parameter and as a decoded row value.
+#[proc_macro_derive(SqlType, attributes(sql))]
+pub fn sql_type(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    crate::sql_type::expand(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

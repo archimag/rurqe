@@ -11,11 +11,12 @@ pub use rurqe_core as core;
 pub use rurqe_macros as macros;
 
 #[cfg(feature = "macros")]
-pub use rurqe_macros::{cols, dto, raw_sql, select, sql};
+pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
 pub use rurqe_core::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
 };
+pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 pub use rurqe_core::query::TableSelection;
 pub use rurqe_core::schema::Next;
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
@@ -637,6 +638,8 @@ pub mod prelude {
 
     pub use rurqe_core::table_alias;
 
+    pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
+
     pub use rurqe_core::dialect::SupportsLateralJoin;
 
     pub use rurqe_core::expr::{
@@ -660,7 +663,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "macros")]
-    pub use rurqe_macros::{cols, dto, raw_sql, select, sql};
+    pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
     #[cfg(feature = "postgres")]
     pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};
