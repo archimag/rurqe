@@ -20,6 +20,95 @@ pub use rurqe_core::query::TableSelection;
 pub use rurqe_core::schema::Next;
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
+/// Generates a module pinning every query entry point to one dialect version.
+///
+/// The `postgres` and `sqlite` modules use the macro to expose their
+/// version-pinned modules (`pg14` … `pg16` and `sqlite3_0` … `sqlite3_35`).
+/// A generated module mirrors its dialect module: `select_from`, `insert_into`,
+/// `update`, and `delete_from` take a table value, the `SelectFrom` extension
+/// trait starts a query from a selection, and the nested `prelude` re-exports
+/// the shared prelude with the pinned entry points taking precedence, so a
+/// single glob import pins the whole query surface to one engine version:
+///
+/// ```text
+/// use rurqe::postgres::pg16::prelude::*;
+///
+/// select_from(Users).select(cols!(UsersId)).build();
+/// ```
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+#[macro_export]
+macro_rules! pin_dialect_version {
+    (
+        $(#[$meta:meta])*
+        $vis:vis mod $version:ident => $dialect:ty;
+    ) => {
+        $(#[$meta])*
+        $vis mod $version {
+            use super::*;
+
+            use $crate::core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+            use $crate::core::{SelectQuery, Table};
+
+            /// Starts a `SELECT` over `table` with the dialect version pinned.
+            pub fn select_from<T: Table>(table: T) -> SelectQuery<$dialect, T, ()> {
+                SelectQuery::new().from_table(table)
+            }
+
+            /// Starts an `INSERT` into `table` with the dialect version pinned.
+            pub fn insert_into<T: Table>(table: T) -> InsertQuery<$dialect, T, (), ()> {
+                InsertQuery::into_table(table)
+            }
+
+            /// Starts an `UPDATE` of `table` with the dialect version pinned.
+            ///
+            /// The statement starts unfiltered, so it still requires
+            /// `.where_(...)` or `.allow_all()` before it can be built.
+            pub fn update<T: Table>(table: T) -> UpdateQuery<$dialect, T, Unfiltered, ()> {
+                UpdateQuery::table(table)
+            }
+
+            /// Starts a `DELETE` from `table` with the dialect version pinned.
+            ///
+            /// The statement starts unfiltered, so it still requires
+            /// `.where_(...)` or `.allow_all()` before it can be built.
+            pub fn delete_from<T: Table>(table: T) -> DeleteQuery<$dialect, T, Unfiltered, ()> {
+                DeleteQuery::from_table(table)
+            }
+
+            /// Extension trait enabling `.from(table)` on selections with the
+            /// dialect version pinned.
+            pub trait SelectFrom<T: Table, Positions>: Sized {
+                /// The row type produced by the query.
+                type Row;
+
+                /// Starts a `SELECT` query over `table` projecting `self`.
+                fn from(self, table: T) -> SelectQuery<$dialect, T, Self::Row>;
+            }
+
+            impl<S, T, Positions> SelectFrom<T, Positions> for S
+            where
+                T: Table,
+                S: $crate::core::query::SelectionFor<T, Positions> + Send + Sync + 'static,
+            {
+                type Row = <S as $crate::core::query::SelectionFor<T, Positions>>::Row;
+
+                fn from(self, table: T) -> SelectQuery<$dialect, T, Self::Row> {
+                    SelectQuery::new()
+                        .from_table(table)
+                        .select::<S, Positions>(self)
+                }
+            }
+
+            /// The shared facade prelude with the version-pinned entry points.
+            pub mod prelude {
+                pub use $crate::prelude::*;
+
+                pub use super::{delete_from, insert_into, select_from, update, SelectFrom};
+            }
+        }
+    };
+}
+
 /// PostgreSQL dialect, version markers, and the runtime driver adapters.
 ///
 /// The module mirrors the `rurqe-postgres` crate, so paths such as
@@ -105,6 +194,21 @@ pub mod postgres {
         pub use super::{
             delete_from, insert_into, select_from, update, PostgresSelectFrom,
         };
+    }
+
+    pin_dialect_version! {
+        /// Query entry points pinned to PostgreSQL 14.
+        pub mod pg14 => Postgres<Pg14>;
+    }
+
+    pin_dialect_version! {
+        /// Query entry points pinned to PostgreSQL 15.
+        pub mod pg15 => Postgres<Pg15>;
+    }
+
+    pin_dialect_version! {
+        /// Query entry points pinned to PostgreSQL 16.
+        pub mod pg16 => Postgres<Pg16>;
     }
 }
 
@@ -196,6 +300,21 @@ pub mod sqlite {
         pub use super::{
             delete_from, insert_into, select_from, update, SqliteSelectFrom,
         };
+    }
+
+    pin_dialect_version! {
+        /// Query entry points pinned to SQLite 3.0.
+        pub mod sqlite3_0 => Sqlite<Sqlite3_0>;
+    }
+
+    pin_dialect_version! {
+        /// Query entry points pinned to SQLite 3.24.
+        pub mod sqlite3_24 => Sqlite<Sqlite3_24>;
+    }
+
+    pin_dialect_version! {
+        /// Query entry points pinned to SQLite 3.35.
+        pub mod sqlite3_35 => Sqlite<Sqlite3_35>;
     }
 }
 
