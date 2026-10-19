@@ -121,7 +121,7 @@ impl Checkpoint {
             }
 
             let (key, value) = split_entry(line, number).map_err(from_toml)?;
-            match key {
+            match key.as_str() {
                 VERSION_KEY => {
                     if pruned_up_to_version.is_some() {
                         return Err(syntax(
@@ -141,7 +141,7 @@ impl Checkpoint {
                             format!("`{HASH_KEY}` is given more than once"),
                         ));
                     }
-                    let hash = Checksum::from_hex(value)
+                    let hash = Checksum::from_hex(&value)
                         .map_err(|_| syntax(number, format!("invalid SHA-256 hash `{value}`")))?;
                     schema_hash = Some(hash);
                 }

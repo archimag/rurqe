@@ -151,12 +151,7 @@ fn from_toml(error: TomlError) -> ConfigError {
 
 /// Splits one `key = value` entry of the overrides table.
 fn entry(line: &str, number: usize) -> Result<(String, String), ConfigError> {
-    let (key, value) = split_entry(line, number).map_err(|_| {
-        syntax(
-            number,
-            "expected `\"table.column\" = \"RustType\"` on every entry",
-        )
-    })?;
+    let (key, value) = split_entry(line, number).map_err(from_toml)?;
 
     if !key.contains('.') || key.starts_with('.') || key.ends_with('.') {
         return Err(syntax(
@@ -169,7 +164,7 @@ fn entry(line: &str, number: usize) -> Result<(String, String), ConfigError> {
         return Err(syntax(number, "the Rust type cannot be empty"));
     }
 
-    Ok((key.to_owned(), value.to_owned()))
+    Ok((key, value))
 }
 
 #[cfg(test)]
