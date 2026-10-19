@@ -285,7 +285,67 @@ insert_into::<Postgres, User>()
     .values((UserId::set(1i64), UserName::set("root"), UserActive::set(true)))
     .on_conflict_do_nothing()
     .execute(&mut db)?;
+
+// Database-side copy: INSERT INTO ... SELECT
+insert_into::<Postgres, User>()
+    .from_select(
+        (UserId, UserName, UserActive),
+        select_from::<Postgres, ArchivedUser>().select((ArchivedId, ArchivedName, ArchivedActive)),
+    )
+    .execute(&mut db)?;
 ```
+
+### 12. Table Aliases & Self-Joins
+
+`Aliased<T, A>` references table `T` under the alias `A`, while `AliasedCol<A, C>` addresses a column through that alias and keeps the column's `RustType`. Aliases keep self-joins unambiguous: `FROM` / `JOIN` render `"table" AS "alias"` and projections render `"alias"."column"`.
+
+```rust
+use rurqe::prelude::*;
+
+table_alias! {
+    /// The `manager` alias.
+    ManagerAlias => "manager"
+}
+
+let built = select_from::<Postgres, User>()
+    .inner_join::<Aliased<User, ManagerAlias>>(
+        Expr::column::<UserManagerId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
+    )
+    .select((
+        UserId,
+        UserName,
+        AliasedCol::<ManagerAlias, UserId>::new(),
+        AliasedCol::<ManagerAlias, UserName>::new(),
+    ))
+    .build();
+
+// SELECT "id", "name", "manager"."id", "manager"."name" FROM "users"
+//   INNER JOIN "users" AS "manager" ON ("manager_id" = "manager"."id")
+```
+
+Columns of an aliased table introduced with `.left_join(...)` are lifted into `Option<T>` through `query.nullable::<AliasedCol<A, C>>()`.
+
+### 13. LATERAL Joins
+
+LATERAL joins require a dialect implementing `SupportsLateralJoin` (PostgreSQL). The inline subquery may reference columns of the tables to its left, expressing correlated per-row subqueries entirely on the database side.
+
+```rust
+let latest = select_from::<Postgres, Order>()
+    .select((OrderTotal,))
+    .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+    .order_by_desc(OrderId)
+    .limit(1);
+
+let built = select_from::<Postgres, User>()
+    .cross_join_lateral(latest.as_lateral::<RecentOrder>())
+    .select((UserId, RecentTotal))
+    .build();
+
+// SELECT "id", "total" FROM "users" CROSS JOIN LATERAL
+//   (SELECT "total" FROM "orders" WHERE ("user_id" = "id") ORDER BY "id" DESC LIMIT 1) AS "recent"
+```
+
+`left_join_lateral` renders `LEFT JOIN LATERAL ... ON true` and keeps outer rows a lateral subquery leaves unmatched, so its columns must be projected through `query.nullable::<...>()` to lift them into `Option<T>`.
 
 ---
 

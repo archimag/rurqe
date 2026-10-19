@@ -198,11 +198,19 @@ pub mod prelude {
         WindowSpec,
     };
 
+    pub use rurqe_core::table_alias;
+
+    pub use rurqe_core::dialect::SupportsLateralJoin;
+
     pub use rurqe_core::expr::{CaseBranch, CaseBuilder, Subquery, SubqueryOp};
 
     pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, SetOpKind, TableScope};
 
-    pub use rurqe_core::schema::ExprScope;
+    pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};
+
+    pub use rurqe_core::schema::{Aliased, AliasedCol, ExprScope, TableAlias};
+
+    pub use rurqe_core::dml::insert::{InsertColumns, InsertColumnsTarget, InsertedSelect};
 
     pub use rurqe_core::dml::{
         AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign, DeleteQuery, Filtered,

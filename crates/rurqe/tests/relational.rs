@@ -14,6 +14,7 @@ table! {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
+        UserManagerId => "manager_id": i64,
     }
 }
 
@@ -32,6 +33,18 @@ table! {
         SummaryUserId => "user_id": i64,
         SummaryOrderCount => "order_count": i64,
     }
+}
+
+table! {
+    /// The most recent order per user, produced by a LATERAL subquery.
+    RecentOrder => "recent" {
+        RecentTotal => "total": f64,
+    }
+}
+
+table_alias! {
+    /// The `manager` alias.
+    ManagerAlias => "manager"
 }
 
 /// Decodes `values` into the row type of the anonymous selection `S`.
@@ -485,4 +498,68 @@ fn set_operations_combine_case_and_exists_queries() {
         base().except(base()).build().sql,
         "SELECT \"user_id\" FROM \"orders\" EXCEPT SELECT \"user_id\" FROM \"orders\""
     );
+}
+
+/// Builds the most recent order of the outer `users` row.
+fn latest_order_per_user() -> SelectQuery<Postgres<Pg16>, Order, (f64,)> {
+    select_from::<Postgres<Pg16>, Order>()
+        .select((OrderTotal,))
+        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+        .order_by_desc(OrderId)
+        .limit(1)
+}
+
+#[test]
+fn self_join_with_aliases_qualifies_repeated_table_references() {
+    let built = select_from::<Postgres<Pg16>, User>()
+        .inner_join::<Aliased<User, ManagerAlias>>(
+            Expr::column::<UserManagerId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
+        )
+        .select((
+            UserId,
+            UserName,
+            AliasedCol::<ManagerAlias, UserId>::new(),
+            AliasedCol::<ManagerAlias, UserName>::new(),
+        ))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"name\", \"manager\".\"id\", \"manager\".\"name\" FROM \"users\" \
+         INNER JOIN \"users\" AS \"manager\" ON (\"manager_id\" = \"manager\".\"id\")"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn cross_join_lateral_renders_correlated_subquery() {
+    let built = select_from::<Postgres<Pg16>, User>()
+        .cross_join_lateral(latest_order_per_user().as_lateral::<RecentOrder>())
+        .select((UserId, RecentTotal))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"total\" FROM \"users\" CROSS JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") ORDER BY \"id\" DESC LIMIT 1) \
+         AS \"recent\""
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn left_join_lateral_lifts_columns_into_options() {
+    let query = select_from::<Postgres<Pg16>, User>()
+        .left_join_lateral(latest_order_per_user().as_lateral::<RecentOrder>());
+    let total = query.nullable::<RecentTotal>();
+
+    let built = query.select((UserId, total)).build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") ORDER BY \"id\" DESC LIMIT 1) \
+         AS \"recent\" ON true"
+    );
+    assert!(built.params.is_empty());
 }

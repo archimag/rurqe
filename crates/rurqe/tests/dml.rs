@@ -26,6 +26,15 @@ dto! {
     }
 }
 
+table! {
+    /// Archived copies of users, the source of `INSERT INTO ... SELECT` statements.
+    ArchivedUser => "archived_users" {
+        ArchivedId => "id": i64,
+        ArchivedName => "name": String,
+        ArchivedActive => "active": bool,
+    }
+}
+
 /// Decodes `values` into the row type of the anonymous selection `S`.
 fn decode<S>(_selection: &S, values: &[SqlVal]) -> Option<S::Row>
 where
@@ -267,4 +276,41 @@ fn mutations_are_scoped_to_the_users_table() {
 
     let delete_query = delete_from::<Postgres, User>().allow_all();
     assert_delete_scope(&delete_query);
+}
+
+#[test]
+fn insert_from_select_copies_rows_without_round_tripping() {
+    let source = select_from::<Postgres, ArchivedUser>()
+        .select((ArchivedId, ArchivedName, ArchivedActive))
+        .where_(Expr::column::<ArchivedActive>().eq(true));
+
+    let built = insert_into::<Postgres, User>()
+        .from_select((UserId, UserName, UserActive), source)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\", \"active\") \
+         SELECT \"id\", \"name\", \"active\" FROM \"archived_users\" WHERE (\"active\" = $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::Bool(true)]);
+}
+
+#[test]
+fn insert_from_select_supports_returning_projection() {
+    let source = select_from::<Postgres, ArchivedUser>()
+        .select((ArchivedId, ArchivedName, ArchivedActive));
+
+    let built = insert_into::<Postgres, User>()
+        .columns((UserId, UserName, UserActive))
+        .from_select(source)
+        .returning((UserId,))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\", \"active\") \
+         SELECT \"id\", \"name\", \"active\" FROM \"archived_users\" RETURNING \"id\""
+    );
+    assert!(built.params.is_empty());
 }
