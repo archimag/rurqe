@@ -176,9 +176,24 @@ fn case_expression_builds_searched_branches() {
 }
 
 #[test]
-#[should_panic(expected = "at least one WHEN branch")]
-fn case_expression_requires_a_branch() {
-    let _ = Expr::<String>::case().else_("regular").end();
+fn empty_membership_lists_degrade_into_a_constant_predicate() {
+    let nothing = Expr::column::<UserId>().in_list(Vec::<i64>::new());
+    assert_eq!(
+        nothing.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["1 = 0".to_owned()],
+            params: Vec::new(),
+        }
+    );
+
+    let everything = Expr::column::<UserId>().not_in_list(Vec::<i64>::new());
+    assert_eq!(
+        everything.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["1 = 1".to_owned()],
+            params: Vec::new(),
+        }
+    );
 }
 
 #[test]
@@ -233,9 +248,25 @@ fn like_and_ilike_build_pattern_predicates() {
 }
 
 #[test]
-#[should_panic(expected = "at least one value")]
-fn in_list_requires_at_least_one_value() {
-    let _ = Expr::column::<UserId>().in_list(Vec::<i64>::new());
+fn raw_templates_report_placeholder_mismatches() {
+    let expression: Expr<i64> =
+        Expr::raw("COUNT(*)", Vec::new()).expect("a template without placeholders");
+
+    assert_eq!(
+        expression.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["COUNT(*)".to_owned()],
+            params: Vec::new(),
+        }
+    );
+
+    assert_eq!(
+        Expr::<i64>::raw("rate > ?", Vec::new()).err(),
+        Some(RawSqlError::PlaceholderCount {
+            expected: 1,
+            provided: 0,
+        })
+    );
 }
 
 #[test]

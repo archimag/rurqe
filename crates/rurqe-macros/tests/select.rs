@@ -123,7 +123,7 @@ fn aliases_rename_named_fields() {
 fn named_expressions_project_computed_fields() {
     let selection = select!(
         user_id: UserId,
-        doubled: Expr::<i64>::raw("id * 2", vec![]),
+        doubled: Expr::<i64>::raw("id * 2", vec![]).expect("a template without placeholders"),
     );
 
     let row = decode(&selection, &[SqlVal::I64(2), SqlVal::I64(4)]).expect("row decodes");

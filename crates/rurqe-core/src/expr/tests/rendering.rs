@@ -131,38 +131,73 @@ fn not_exists_predicate_renders_not_keyword() {
 
 #[test]
 fn raw_sql_splits_fragments_and_preserves_escaped_question_marks() {
-    let fragments = parse_raw_sql("strftime('%Y-%m', date) = ?", 1);
+    let fragments = parse_raw_sql("strftime('%Y-%m', date) = ?", 1)
+        .expect("one placeholder binds one parameter");
     assert_eq!(fragments, vec!["strftime('%Y-%m', date) = ", ""]);
 
-    let escaped = parse_raw_sql("data ?? 'key' AND age > ?", 1);
+    let escaped = parse_raw_sql("data ?? 'key' AND age > ?", 1)
+        .expect("escaped markers are not placeholders");
     assert_eq!(escaped, vec!["data ? 'key' AND age > ", ""]);
 
-    let braces = parse_raw_sql("foo = {} AND bar = {}", 2);
+    let braces = parse_raw_sql("foo = {} AND bar = {}", 2).expect("two brace placeholders");
     assert_eq!(braces, vec!["foo = ", " AND bar = ", ""]);
 
-    let braces_escaped = parse_raw_sql("data ?? 'key' AND age > {}", 1);
+    let braces_escaped = parse_raw_sql("data ?? 'key' AND age > {}", 1)
+        .expect("escaped markers are not placeholders");
     assert_eq!(braces_escaped, vec!["data ? 'key' AND age > ", ""]);
 
-    let zero_params = parse_raw_sql("data ?? 'key'", 0);
+    let zero_params =
+        parse_raw_sql("data ?? 'key'", 0).expect("escaped markers need no parameter");
     assert_eq!(zero_params, vec!["data ? 'key'"]);
 }
 
 #[test]
-#[should_panic(expected = "mixes")]
 fn raw_sql_rejects_mixed_placeholder_styles() {
-    parse_raw_sql("a = ? AND b = {}", 2);
+    assert_eq!(
+        parse_raw_sql("a = ? AND b = {}", 2),
+        Err(RawSqlError::MixedPlaceholders)
+    );
+    assert!(RawSqlError::MixedPlaceholders.to_string().contains("mixes"));
 }
 
 #[test]
-#[should_panic(expected = "expects 1 parameter")]
-fn raw_sql_rejects_question_mark_with_zero_parameters() {
-    parse_raw_sql("a = ?", 0);
+fn raw_sql_reports_placeholder_count_mismatches() {
+    assert_eq!(
+        parse_raw_sql("a = ?", 0),
+        Err(RawSqlError::PlaceholderCount {
+            expected: 1,
+            provided: 0,
+        })
+    );
+    assert_eq!(
+        parse_raw_sql("a = {}", 0),
+        Err(RawSqlError::PlaceholderCount {
+            expected: 1,
+            provided: 0,
+        })
+    );
+    assert_eq!(
+        parse_raw_sql("a = 1", 2),
+        Err(RawSqlError::PlaceholderCount {
+            expected: 0,
+            provided: 2,
+        })
+    );
+    assert!(parse_raw_sql("a = ?", 0)
+        .expect_err("the template binds one parameter")
+        .to_string()
+        .contains("expects 1 parameter"));
 }
 
 #[test]
-#[should_panic(expected = "expects 1 parameter")]
-fn raw_sql_rejects_brace_placeholder_with_zero_parameters() {
-    parse_raw_sql("a = {}", 0);
+fn empty_membership_renders_a_constant_predicate() {
+    let (sql, params) = render(Expr::column::<UserId>().in_list(Vec::<i64>::new()).kind());
+    assert_eq!(sql, "1 = 0");
+    assert!(params.is_empty());
+
+    let (sql, params) = render(Expr::column::<UserId>().not_in_list(Vec::<i64>::new()).kind());
+    assert_eq!(sql, "1 = 1");
+    assert!(params.is_empty());
 }
 
 #[test]

@@ -185,8 +185,11 @@ fn typed_sqlite_errors_are_inspectable_through_the_facade() {
     assert!(!duplicated.is_not_found());
 
     // Driver failures stay typed and reachable through `as_backend`.
-    let broken = select_from::<Sqlite<Sqlite3_35>, User>()
-        .select((UserId, Expr::<i64>::raw("missing_function()", vec![])));
+    let broken = select_from::<Sqlite<Sqlite3_35>, User>().select((
+        UserId,
+        Expr::<i64>::raw("missing_function()", vec![])
+            .expect("a template without placeholders"),
+    ));
     let failed = db
         .fetch_all(&broken)
         .expect_err("the driver rejects the unknown function");

@@ -252,7 +252,11 @@ fn typed_execution_errors_are_inspectable_without_boxing() {
     // Driver failures stay typed and reachable through `as_backend`.
     let broken = SelectQuery::<Sqlite<Sqlite3_35>>::new()
         .from::<User>()
-        .select((UserId, Expr::<i64>::raw("missing_function()", vec![])));
+        .select((
+            UserId,
+            Expr::<i64>::raw("missing_function()", vec![])
+                .expect("a template without placeholders"),
+        ));
     let failed = adapter
         .fetch_all(&broken)
         .expect_err("the driver rejects the unknown function");

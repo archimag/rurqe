@@ -798,12 +798,18 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
 
 #[test]
 fn raw_sql_renders_sequential_placeholders_in_query_clauses() {
-    let raw_pred: Expr<bool> =
-        Expr::raw("strftime('%Y-%m', date) = ?", vec![SqlVal::Text("2024-01".into())]);
+    let raw_pred: Expr<bool> = Expr::raw(
+        "strftime('%Y-%m', date) = ?",
+        vec![SqlVal::Text("2024-01".into())],
+    )
+    .expect("the template and its parameters match");
 
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .select((UserId, Expr::<i64>::raw("COUNT(*)", vec![])))
+        .select((
+            UserId,
+            Expr::<i64>::raw("COUNT(*)", Vec::new()).expect("a template without placeholders"),
+        ))
         .where_(Expr::column::<UserId>().gt(10i64))
         .where_(raw_pred)
         .build();

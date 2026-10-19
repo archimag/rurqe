@@ -19,11 +19,11 @@ mod val;
 #[cfg(test)]
 mod tests;
 
-pub use ast::{CaseBranch, CaseBuilder, ExprKind, Subquery, SubqueryOp};
+pub use ast::{CaseBranch, CaseBuilder, ExprKind, HasBranches, NoBranches, Subquery, SubqueryOp};
 pub use builder::Expr;
 pub use functions::{avg, coalesce, count, count_all, max, min, sum};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
-pub use render::{parse_raw_sql, render_expr};
+pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};
 #[cfg(feature = "serde_json")]
 pub use val::Json;

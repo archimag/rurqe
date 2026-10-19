@@ -174,6 +174,14 @@ pub enum SubqueryOp {
     In,
 }
 
+/// Typestate marker of a `CASE` builder that has declared no `WHEN` branch yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NoBranches;
+
+/// Typestate marker of a `CASE` builder holding at least one `WHEN` branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HasBranches;
+
 /// Builder for a searched `CASE` expression producing values of type `T`.
 ///
 /// ```
@@ -194,26 +202,29 @@ pub enum SubqueryOp {
 /// assert!(matches!(tier.kind(), ExprKind::Case { branches, .. } if branches.len() == 1));
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct CaseBuilder<T> {
+pub struct CaseBuilder<T, Branches = NoBranches> {
     branches: Vec<CaseBranch>,
     else_branch: Option<ExprKind>,
-    _result: PhantomData<fn() -> T>,
+    _marker: PhantomData<fn() -> (T, Branches)>,
 }
 
-impl<T> CaseBuilder<T> {
+impl<T> CaseBuilder<T, NoBranches> {
     pub(super) fn new() -> Self {
         Self {
             branches: Vec::new(),
             else_branch: None,
-            _result: PhantomData,
+            _marker: PhantomData,
         }
     }
+}
 
+impl<T, Branches> CaseBuilder<T, Branches> {
     /// Appends a `WHEN condition THEN result` branch.
     ///
     /// Branches are rendered in declaration order, so the first matching
-    /// condition determines the produced value.
-    pub fn when<V>(mut self, condition: Expr<bool>, result: V) -> Self
+    /// condition determines the produced value. Declaring a branch moves the
+    /// builder into [`HasBranches`], the only state that can be finalised.
+    pub fn when<V>(mut self, condition: Expr<bool>, result: V) -> CaseBuilder<T, HasBranches>
     where
         V: IntoExpr<T>,
     {
@@ -221,7 +232,11 @@ impl<T> CaseBuilder<T> {
             condition: condition.into_kind(),
             result: result.into_expr_kind(),
         });
-        self
+        CaseBuilder {
+            branches: self.branches,
+            else_branch: self.else_branch,
+            _marker: PhantomData,
+        }
     }
 
     /// Sets the `ELSE` fallback rendered when no branch matches.
@@ -232,13 +247,21 @@ impl<T> CaseBuilder<T> {
         self.else_branch = Some(value.into_expr_kind());
         self
     }
+}
 
-    /// Finalises the expression, panicking if no `WHEN` branch was declared.
+impl<T> CaseBuilder<T, HasBranches> {
+    /// Finalises the expression.
+    ///
+    /// A `CASE` expression without a `WHEN` branch is invalid SQL, so the method
+    /// exists only once a branch was declared:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::expr::Expr;
+    ///
+    /// // Fails to compile: the builder holds no WHEN branch yet.
+    /// let _ = Expr::<String>::case().else_("regular").end();
+    /// ```
     pub fn end(self) -> Expr<T> {
-        assert!(
-            !self.branches.is_empty(),
-            "CASE expression requires at least one WHEN branch"
-        );
         Expr::new(ExprKind::Case {
             branches: self.branches,
             else_branch: self.else_branch.map(Box::new),

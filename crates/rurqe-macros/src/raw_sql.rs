@@ -124,7 +124,9 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             let __rurqe_params: ::std::vec::Vec<::rurqe_core::expr::SqlVal> = ::std::vec![
                 #( ::core::convert::Into::<::rurqe_core::expr::SqlVal>::into(#args) ),*
             ];
-            ::rurqe_core::expr::Expr::<#ty>::raw(#template, __rurqe_params)
+            // The placeholder census above rejects a mismatching template at
+            // compile time, so the expression is built from the checked template.
+            ::rurqe_core::expr::Expr::<#ty>::raw_validated(#template, __rurqe_params)
         }
     })
 }

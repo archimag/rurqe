@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::ops::IntoExpr;
-use super::render::parse_raw_sql;
+use super::render::{parse_raw_sql, split_validated, RawSqlError};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::{Column, Table};
 
@@ -179,10 +179,17 @@ impl<T, Scope> Expr<T, Scope> {
             .into_iter()
             .map(|value| value.into_expr_kind())
             .collect();
-        assert!(
-            !values.is_empty(),
-            "membership predicate requires at least one value"
-        );
+
+        if values.is_empty() {
+            // `x IN ()` is a syntax error in every dialect, so an empty
+            // membership degrades into a constant predicate: nothing is a member
+            // of an empty set, and everything is absent from it.
+            return Expr::new(ExprKind::Raw {
+                fragments: vec![String::from(if negated { "1 = 1" } else { "1 = 0" })],
+                params: Vec::new(),
+            });
+        }
+
         Expr::new(ExprKind::InList {
             operand: Box::new(self.kind),
             values,
@@ -229,16 +236,36 @@ impl<T> Expr<T, ()> {
 
     /// Starts a searched `CASE` expression whose branches produce values of type `T`.
     ///
-    /// The builder requires at least one [`CaseBuilder::when`] branch before
-    /// [`CaseBuilder::end`] finalises the expression.
+    /// The builder starts in the [`NoBranches`](super::ast::NoBranches) state and
+    /// only becomes finalisable once a [`CaseBuilder::when`] branch has been
+    /// declared, so a `CASE` expression without branches does not compile.
     pub fn case() -> CaseBuilder<T> {
         CaseBuilder::new()
     }
 
     /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
-    pub fn raw(template: &str, params: Vec<SqlVal>) -> Self {
-        let fragments = parse_raw_sql(template, params.len());
-        Self::new(ExprKind::Raw { fragments, params })
+    ///
+    /// The template uses `?` or `{}` placeholders — never both — and must declare
+    /// exactly one placeholder per bound parameter; a literal question mark is
+    /// escaped as `??` and counts as no placeholder. A template that does not
+    /// match its parameters is reported as [`RawSqlError`] instead of being
+    /// rendered into invalid SQL.
+    pub fn raw(template: &str, params: Vec<SqlVal>) -> Result<Self, RawSqlError> {
+        let fragments = parse_raw_sql(template, params.len())?;
+        Ok(Self::new(ExprKind::Raw { fragments, params }))
+    }
+
+    /// Builds a raw SQL expression from a template validated elsewhere.
+    ///
+    /// The `sql!` and `raw_sql!` macros check the placeholder census of their
+    /// template at compile time and construct the expression through this
+    /// constructor, so no unchecked template reaches the renderer.
+    #[doc(hidden)]
+    pub fn raw_validated(template: &str, params: Vec<SqlVal>) -> Self {
+        Self::new(ExprKind::Raw {
+            fragments: split_validated(template),
+            params,
+        })
     }
 
     /// Builds a `SUM(C)` expression for column `C`.
