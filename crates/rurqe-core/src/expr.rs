@@ -353,11 +353,14 @@ impl<T> Expr<T> {
     }
 
     /// Builds an expression referencing the column `C`.
+    ///
+    /// Columns of an aliased table build an alias-qualified reference, so
+    /// `Expr::column::<AliasedCol<A, C>>()` renders as `"alias"."column"`.
     pub fn column<C>() -> Self
     where
         C: Column<RustType = T>,
     {
-        Self::new(ExprKind::Column { name: C::NAME })
+        Self::new(C::expr_kind())
     }
 
     /// Builds an expression referencing the column `C` qualified by its table `Q`.

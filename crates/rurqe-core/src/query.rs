@@ -33,7 +33,7 @@ use crate::dialect::Dialect;
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::row::FromRow;
-use crate::schema::{Column, ExprScope, Table};
+use crate::schema::{Column, ExprScope, Table, TableRef};
 
 /// A single item projected by a `SELECT` query, such as a column or a window expression.
 #[diagnostic::on_unimplemented(
@@ -61,8 +61,8 @@ impl<C: Column> SelectTarget for C {
         out.push(C::NAME);
     }
 
-    fn render<D: Dialect>(&self, sql: &mut String, _params: &mut Vec<SqlVal>) {
-        D::push_quoted_identifier(sql, C::NAME);
+    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        crate::expr::render_expr::<D>(sql, params, &C::expr_kind());
     }
 }
 
@@ -197,11 +197,26 @@ impl_group_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 pub trait TableScope {
     /// Appends the table names of the scope in `FROM` order.
     fn push_table_names(out: &mut Vec<&'static str>);
+
+    /// Appends the table references of the scope, aliases included, in `FROM` order.
+    ///
+    /// The default derives plain references from
+    /// [`push_table_names`](TableScope::push_table_names), so a scope only
+    /// overrides it when its tables are referenced under an alias.
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        let mut names = Vec::new();
+        Self::push_table_names(&mut names);
+        out.extend(names.into_iter().map(TableRef::plain));
+    }
 }
 
 impl<T: Table> TableScope for T {
     fn push_table_names(out: &mut Vec<&'static str>) {
         out.push(T::NAME);
+    }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        out.push(T::table_ref());
     }
 }
 
@@ -235,6 +250,11 @@ impl<Tables: TableScope, T: Table> TableScope for Joined<Tables, T> {
         Tables::push_table_names(out);
         out.push(T::NAME);
     }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        Tables::push_table_refs(out);
+        out.push(T::table_ref());
+    }
 }
 
 /// A query scope extending `Tables` with the table `T` joined by a `LEFT JOIN`.
@@ -248,6 +268,11 @@ impl<Tables: TableScope, T: Table> TableScope for LeftJoined<Tables, T> {
     fn push_table_names(out: &mut Vec<&'static str>) {
         Tables::push_table_names(out);
         out.push(T::NAME);
+    }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        Tables::push_table_refs(out);
+        out.push(T::table_ref());
     }
 }
 
@@ -282,6 +307,10 @@ impl<C: Column> Column for Nullable<C> {
     type RustType = Option<C::RustType>;
 
     const NAME: &'static str = C::NAME;
+
+    fn expr_kind() -> ExprKind {
+        C::expr_kind()
+    }
 }
 
 /// The rendered SQL text of a query together with its bound parameters.
@@ -740,7 +769,7 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         );
 
         let mut tables = Vec::new();
-        Tables::push_table_names(&mut tables);
+        Tables::push_table_refs(&mut tables);
         assert_eq!(
             tables.len(),
             self.joins.len() + 1,
@@ -765,13 +794,13 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         render_projections(sql, params);
 
         sql.push_str(" FROM ");
-        D::push_quoted_identifier(sql, tables[0]);
+        tables[0].render::<D>(sql);
 
         for (index, (kind, on)) in self.joins.iter().enumerate() {
             sql.push(' ');
             sql.push_str(kind.as_str());
             sql.push(' ');
-            D::push_quoted_identifier(sql, tables[index + 1]);
+            tables[index + 1].render::<D>(sql);
             sql.push_str(" ON ");
             render_expr::<D>(sql, params, on);
         }
@@ -1525,6 +1554,7 @@ pub trait TransactionBackend: QueryBackend {
 mod tests {
     use super::*;
     use crate::dml::ColumnAssign;
+    use crate::schema::{Aliased, AliasedCol};
 
     struct MockDialect;
 
@@ -2302,5 +2332,67 @@ mod tests {
         let rows = backend.fetch_all(&query).expect("rows decode");
         assert_eq!(rows, vec![(1i64,)]);
         assert_eq!(backend.executed, vec![query.build()]);
+    }
+
+    crate::table_alias! {
+        /// The `u` alias.
+        UserAlias => "u"
+    }
+
+    crate::table_alias! {
+        /// The `o` alias.
+        OrderAlias => "o"
+    }
+
+    #[test]
+    fn aliased_table_renders_as_clause_and_qualifies_columns() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<Aliased<User, UserAlias>>()
+            .select((AliasedCol::<UserAlias, UserId>::new(), UserName))
+            .where_(Expr::column::<AliasedCol<UserAlias, UserId>>().gt(1i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"u\".\"id\", \"name\" FROM \"users\" AS \"u\" WHERE (\"u\".\"id\" > $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+    }
+
+    #[test]
+    fn aliased_table_participates_in_joins() {
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .inner_join::<Aliased<Order, OrderAlias>>(
+                Expr::column::<OrderUserId>()
+                    .eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
+            )
+            .select((UserId, AliasedCol::<OrderAlias, OrderTotal>::new()))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"o\".\"total\" FROM \"users\" \
+             INNER JOIN \"orders\" AS \"o\" ON (\"user_id\" = \"o\".\"user_id\")"
+        );
+        assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn left_joined_aliased_table_lifts_columns_into_options() {
+        let query = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .left_join::<Aliased<Order, OrderAlias>>(
+                Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+            );
+        let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
+
+        let built = query.select((UserId, total)).build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"o\".\"total\" FROM \"users\" \
+             LEFT JOIN \"orders\" AS \"o\" ON (\"user_id\" = \"id\")"
+        );
     }
 }
