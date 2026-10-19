@@ -2,8 +2,8 @@
 //!
 //! [`SqliteMigrationBackend`] and [`PostgresMigrationBackend`] translate the
 //! engine-neutral [`MigrationBackend`] contract into driver calls. Every step
-//! opens a manual `BEGIN` / `COMMIT` / `ROLLBACK` boundary, so a migration script
-//! and its `__rurqe_schema_history` row are always applied or discarded together.
+//! opens a native driver transaction, so a migration script and its
+//! `__rurqe_schema_history` row are always applied or discarded together.
 
 use rurqe_migrate::checksum::Checksum;
 use rurqe_migrate::error::Error;
@@ -16,6 +16,9 @@ use rurqe_migrate::version::MigrationVersion;
 
 /// Number of columns written by [`SchemaHistoryEntry`].
 const HISTORY_COLUMN_COUNT: usize = 9;
+
+/// Advisory lock key guarding a PostgreSQL migration run.
+const MIGRATION_LOCK_ID: i64 = 0x5255_5251_455f_4d49;
 
 /// A raw `__rurqe_schema_history` row before decoding into domain types.
 struct RawHistoryRow {
@@ -150,29 +153,37 @@ impl MigrationBackend for SqliteMigrationBackend {
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
-        self.conn.execute_batch("BEGIN").map_err(backend_error)?;
-        Ok(SqliteMigrationTransaction {
-            conn: &mut self.conn,
-            finished: false,
-        })
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(backend_error)?;
+        Ok(SqliteMigrationTransaction { tx: Some(tx) })
     }
 }
 
 /// Transactional boundary of a [`SqliteMigrationBackend`] step.
 pub struct SqliteMigrationTransaction<'a> {
-    conn: &'a mut rusqlite::Connection,
-    finished: bool,
+    tx: Option<rusqlite::Transaction<'a>>,
 }
 
-impl SqliteMigrationTransaction<'_> {
+impl<'a> SqliteMigrationTransaction<'a> {
+    fn transaction(&mut self) -> Result<&mut rusqlite::Transaction<'a>, Error> {
+        self.tx.as_mut().ok_or_else(|| {
+            Error::Backend("sqlite migration transaction already finished".to_owned())
+        })
+    }
+
     fn run(&mut self, sql: &str, params: impl rusqlite::Params) -> Result<(), Error> {
-        self.conn.execute(sql, params).map(|_| ()).map_err(backend_error)
+        self.transaction()?
+            .execute(sql, params)
+            .map(|_| ())
+            .map_err(backend_error)
     }
 }
 
 impl MigrationTransaction for SqliteMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
-        self.conn.execute_batch(sql).map_err(backend_error)
+        self.transaction()?.execute_batch(sql).map_err(backend_error)
     }
 
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
@@ -207,20 +218,26 @@ impl MigrationTransaction for SqliteMigrationTransaction<'_> {
     }
 
     fn commit(mut self) -> Result<(), Error> {
-        self.finished = true;
-        self.conn.execute_batch("COMMIT").map_err(backend_error)
+        let tx = self.tx.take().ok_or_else(|| {
+            Error::Backend("sqlite migration transaction already finished".to_owned())
+        })?;
+        tx.commit().map_err(backend_error)
     }
 
     fn rollback(mut self) -> Result<(), Error> {
-        self.finished = true;
-        self.conn.execute_batch("ROLLBACK").map_err(backend_error)
+        let tx = self.tx.take().ok_or_else(|| {
+            Error::Backend("sqlite migration transaction already finished".to_owned())
+        })?;
+        tx.rollback().map_err(backend_error)
     }
 }
 
 impl Drop for SqliteMigrationTransaction<'_> {
     fn drop(&mut self) {
-        if !self.finished {
-            let _ = self.conn.execute_batch("ROLLBACK");
+        if let Some(tx) = self.tx.take() {
+            if let Err(err) = tx.rollback() {
+                tracing::warn!(error = %err, "failed to rollback sqlite migration transaction");
+            }
         }
     }
 }
@@ -228,12 +245,16 @@ impl Drop for SqliteMigrationTransaction<'_> {
 /// [`MigrationBackend`] over a `postgres` client.
 pub struct PostgresMigrationBackend {
     client: postgres::Client,
+    lock_held: bool,
 }
 
 impl PostgresMigrationBackend {
     /// Wraps an open PostgreSQL client.
     pub fn new(client: postgres::Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            lock_held: false,
+        }
     }
 }
 
@@ -272,23 +293,56 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
-        self.client.batch_execute("BEGIN").map_err(backend_error)?;
-        Ok(PostgresMigrationTransaction {
-            client: &mut self.client,
-            finished: false,
-        })
+        let tx = self.client.transaction().map_err(backend_error)?;
+        Ok(PostgresMigrationTransaction { tx: Some(tx) })
+    }
+
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        self.client
+            .query("SELECT pg_advisory_lock($1)", &[&MIGRATION_LOCK_ID])
+            .map(|_| ())
+            .map_err(backend_error)?;
+        self.lock_held = true;
+        Ok(())
+    }
+
+    fn release_lock(&mut self) -> Result<(), Error> {
+        self.client
+            .query("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
+            .map(|_| ())
+            .map_err(backend_error)?;
+        self.lock_held = false;
+        Ok(())
+    }
+}
+
+impl Drop for PostgresMigrationBackend {
+    fn drop(&mut self) {
+        if !self.lock_held {
+            return;
+        }
+        if let Err(err) = self.release_lock() {
+            tracing::warn!(error = %err, "failed to release migration advisory lock");
+        }
     }
 }
 
 /// Transactional boundary of a [`PostgresMigrationBackend`] step.
 pub struct PostgresMigrationTransaction<'a> {
-    client: &'a mut postgres::Client,
-    finished: bool,
+    tx: Option<postgres::Transaction<'a>>,
+}
+
+impl<'a> PostgresMigrationTransaction<'a> {
+    fn transaction(&mut self) -> Result<&mut postgres::Transaction<'a>, Error> {
+        self.tx.as_mut().ok_or_else(|| {
+            Error::Backend("postgres migration transaction already finished".to_owned())
+        })
+    }
 }
 
 impl MigrationTransaction for PostgresMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
-        self.client.batch_execute(sql).map_err(backend_error)
+        self.transaction()?.batch_execute(sql).map_err(backend_error)
     }
 
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
@@ -309,7 +363,7 @@ impl MigrationTransaction for PostgresMigrationTransaction<'_> {
             &entry.success,
         ];
 
-        self.client
+        self.transaction()?
             .execute(&sql, &params)
             .map(|_| ())
             .map_err(backend_error)
@@ -317,7 +371,7 @@ impl MigrationTransaction for PostgresMigrationTransaction<'_> {
 
     fn delete_entry(&mut self, installed_rank: i64) -> Result<(), Error> {
         let sql = delete_entry_sql('$');
-        self.client
+        self.transaction()?
             .execute(&sql, &[&installed_rank])
             .map(|_| ())
             .map_err(backend_error)
@@ -326,27 +380,33 @@ impl MigrationTransaction for PostgresMigrationTransaction<'_> {
     fn update_checksum(&mut self, script: &str, checksum: &Checksum) -> Result<(), Error> {
         let sql = update_checksum_sql('$');
         let hex = checksum.to_hex();
-        self.client
+        self.transaction()?
             .execute(&sql, &[&hex, &script])
             .map(|_| ())
             .map_err(backend_error)
     }
 
     fn commit(mut self) -> Result<(), Error> {
-        self.finished = true;
-        self.client.batch_execute("COMMIT").map_err(backend_error)
+        let tx = self.tx.take().ok_or_else(|| {
+            Error::Backend("postgres migration transaction already finished".to_owned())
+        })?;
+        tx.commit().map_err(backend_error)
     }
 
     fn rollback(mut self) -> Result<(), Error> {
-        self.finished = true;
-        self.client.batch_execute("ROLLBACK").map_err(backend_error)
+        let tx = self.tx.take().ok_or_else(|| {
+            Error::Backend("postgres migration transaction already finished".to_owned())
+        })?;
+        tx.rollback().map_err(backend_error)
     }
 }
 
 impl Drop for PostgresMigrationTransaction<'_> {
     fn drop(&mut self) {
-        if !self.finished {
-            let _ = self.client.batch_execute("ROLLBACK");
+        if let Some(tx) = self.tx.take() {
+            if let Err(err) = tx.rollback() {
+                tracing::warn!(error = %err, "failed to rollback postgres migration transaction");
+            }
         }
     }
 }
@@ -388,16 +448,37 @@ mod tests {
         let mut backend = backend();
         let broken = migrations("V1__broken.sql", "CREATE TABLE oops (;");
 
-        assert!(Migrator::new().migrate(&mut backend, &broken).is_err());
-        let history = backend.read_history().unwrap();
+        let error = Migrator::new()
+            .migrate(&mut backend, &broken)
+            .expect_err("the broken script fails to execute");
+        assert!(matches!(
+            error,
+            rurqe_migrate::error::Error::MigrationExecutionFailed { .. }
+        ));
+
+        let history = backend.read_history().expect("history is readable");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].script, "V1__broken.sql");
         assert!(!history[0].success);
 
+        let blocked = Migrator::new()
+            .migrate(&mut backend, &broken)
+            .expect_err("the failed entry blocks the next run");
+        assert!(matches!(
+            blocked,
+            rurqe_migrate::error::Error::FailedMigrationAlreadyApplied { .. }
+        ));
+
         let migrator = Migrator::new();
         let fixed = migrations("V1__fixed.sql", "CREATE TABLE ok (id INTEGER);");
-        migrator.repair(&mut backend, &fixed).unwrap();
-        let report = migrator.migrate(&mut backend, &fixed).unwrap();
+        let repair = migrator
+            .repair(&mut backend, &fixed)
+            .expect("repair purges the failed entry");
+        assert_eq!(repair.removed_failed_entries, 1);
+
+        let report = migrator
+            .migrate(&mut backend, &fixed)
+            .expect("the fixed script applies");
         assert_eq!(report.applied_count, 1);
     }
 }
