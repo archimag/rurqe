@@ -9,7 +9,7 @@ use std::fmt;
 
 use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
 
-use crate::cli::CliError;
+use crate::cli::{connect, CliError, Connection};
 
 /// Raw table metadata row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,15 +323,20 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
 
 /// Introspects the schema catalog of a live database identified by its connection URL or path.
 pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
-    match detect_dialect(Some(url)) {
-        DatabaseDialect::Sqlite => {
-            let conn = crate::cli::open_sqlite(url)?;
-            introspect_sqlite(&conn)
-        }
-        DatabaseDialect::Postgres => {
-            let mut client = crate::cli::connect_postgres(url)?;
-            introspect_postgres(&mut client)
-        }
+    let mut connection = connect(url)?;
+    introspect_connection(&mut connection)
+}
+
+/// Introspects the schema catalog of an already opened [`Connection`].
+///
+/// Engine dispatch lives next to the catalog logic, so callers (including tests)
+/// can hand in an open SQLite or PostgreSQL handle without going through URL parsing.
+pub(crate) fn introspect_connection(
+    connection: &mut Connection,
+) -> Result<SchemaCatalog, CliError> {
+    match connection {
+        Connection::Sqlite(conn) => introspect_sqlite(conn),
+        Connection::Postgres(client) => introspect_postgres(client),
     }
 }
 

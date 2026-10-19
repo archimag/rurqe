@@ -287,6 +287,27 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
     }
 }
 
+/// Opens the migration backend for `database_url` and evaluates `$run` against it.
+///
+/// SQLite and PostgreSQL backends are distinct static types, so the backend is
+/// constructed once per command through the shared [`connect`] helper instead of
+/// repeating the dialect match and connection logic by hand.
+macro_rules! with_migration_backend {
+    ($database_url:expr, |$backend:ident| $run:expr) => {{
+        let url = resolve_database_url($database_url)?;
+        match connect(&url)? {
+            Connection::Sqlite(conn) => {
+                let mut $backend = SqliteMigrationBackend::new(conn);
+                $run
+            }
+            Connection::Postgres(client) => {
+                let mut $backend = PostgresMigrationBackend::new(client);
+                $run
+            }
+        }
+    }};
+}
+
 /// Runs the CLI toolchain and prints execution outputs.
 pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
     let cmd = parse_args(&args)?;
@@ -304,66 +325,34 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             migrations_dir,
             database_url,
         } => {
-            let url = resolve_database_url(database_url)?;
-            match detect_dialect(Some(&url)) {
-                DatabaseDialect::Sqlite => {
-                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
-                    apply_migrations(&mut backend, &migrations_dir)
-                }
-                DatabaseDialect::Postgres => {
-                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
-                    apply_migrations(&mut backend, &migrations_dir)
-                }
-            }
+            with_migration_backend!(database_url, |backend| {
+                apply_migrations(&mut backend, &migrations_dir)
+            })
         }
         CliCommand::MigrateStatus {
             migrations_dir,
             database_url,
         } => {
-            let url = resolve_database_url(database_url)?;
-            match detect_dialect(Some(&url)) {
-                DatabaseDialect::Sqlite => {
-                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
-                    report_status(&mut backend, &migrations_dir)
-                }
-                DatabaseDialect::Postgres => {
-                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
-                    report_status(&mut backend, &migrations_dir)
-                }
-            }
+            with_migration_backend!(database_url, |backend| {
+                report_status(&mut backend, &migrations_dir)
+            })
         }
         CliCommand::MigrateRepair {
             migrations_dir,
             database_url,
         } => {
-            let url = resolve_database_url(database_url)?;
-            match detect_dialect(Some(&url)) {
-                DatabaseDialect::Sqlite => {
-                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
-                    repair_history(&mut backend, &migrations_dir)
-                }
-                DatabaseDialect::Postgres => {
-                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
-                    repair_history(&mut backend, &migrations_dir)
-                }
-            }
+            with_migration_backend!(database_url, |backend| {
+                repair_history(&mut backend, &migrations_dir)
+            })
         }
         CliCommand::Baseline {
             version,
             description,
             database_url,
         } => {
-            let url = resolve_database_url(database_url)?;
-            match detect_dialect(Some(&url)) {
-                DatabaseDialect::Sqlite => {
-                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
-                    baseline_database(&mut backend, version, &description)
-                }
-                DatabaseDialect::Postgres => {
-                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
-                    baseline_database(&mut backend, version, &description)
-                }
-            }
+            with_migration_backend!(database_url, |backend| {
+                baseline_database(&mut backend, version, &description)
+            })
         }
         CliCommand::Codegen {
             database_url,
@@ -463,8 +452,28 @@ pub fn redact_database_url(url: &str) -> String {
     )
 }
 
+/// A live database connection opened from a URL or filesystem path.
+pub(crate) enum Connection {
+    /// SQLite database handle.
+    Sqlite(rusqlite::Connection),
+    /// PostgreSQL client.
+    Postgres(postgres::Client),
+}
+
+/// Opens a connection to the database identified by `url`, detecting its engine.
+///
+/// This is the single entry point for scheme stripping, `:memory:` handling and
+/// connection error wording, so the CLI commands and catalog introspection can
+/// never drift apart.
+pub(crate) fn connect(url: &str) -> Result<Connection, CliError> {
+    match detect_dialect(Some(url)) {
+        DatabaseDialect::Sqlite => Ok(Connection::Sqlite(open_sqlite(url)?)),
+        DatabaseDialect::Postgres => Ok(Connection::Postgres(connect_postgres(url)?)),
+    }
+}
+
 /// Opens a SQLite connection from a URL or plain filesystem path.
-pub(crate) fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
+fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
     let path = url
         .strip_prefix("sqlite://")
         .or_else(|| url.strip_prefix("sqlite:"))
@@ -485,7 +494,7 @@ pub(crate) fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
 }
 
 /// Connects to PostgreSQL from a connection URL.
-pub(crate) fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
+fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
     postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
         CliError(format!(
             "failed to connect to PostgreSQL at `{}`: {e}",
