@@ -16,6 +16,9 @@ pub use rurqe_macros::{cols, dto, raw_sql, select, sql};
 pub use rurqe_core::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
 };
+pub use rurqe_core::query::TableSelection;
+pub use rurqe_core::schema::Next;
+pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
 #[cfg(feature = "postgres")]
 pub use rurqe_postgres as postgres;
@@ -72,6 +75,78 @@ pub use rurqe_sqlite as sqlite;
 ///     built.sql,
 ///     "SELECT \"users\".\"id\" FROM \"users\""
 /// );
+/// ```
+///
+/// Projecting a column of a table the query does not select from is rejected at
+/// compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>().select((UserId, OrderTotal));
+/// ```
+///
+/// Grouping and ordering follow the same rule:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` is not a column of a table in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId,))
+///     .group_by(OrderTotal);
+/// ```
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` is not a column of a table in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId,))
+///     .order_by_desc(OrderTotal);
 /// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, ()> {
     SelectQuery::new().from::<T>()
@@ -131,6 +206,32 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 ///
 /// // Fails to compile: `OrderTotal` belongs to `Order`, not to `User`.
 /// let _ = update::<Postgres, User>().set(OrderTotal::set(1.0));
+/// ```
+///
+/// `RETURNING` projections are tied to the mutated table as well:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` is not a column of `User`.
+/// let _ = update::<Postgres, User>()
+///     .set(UserId::set(1i64))
+///     .allow_all()
+///     .returning((OrderTotal,));
 /// ```
 pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
     UpdateQuery::new()
@@ -197,6 +298,12 @@ pub mod prelude {
         SupportsReturning, Table, TableInScope, Window, WindowExpr, WindowExprKind, WindowFn,
         WindowSpec,
     };
+
+    pub use rurqe_core::{GroupByInScope, SelectionInScope};
+
+    pub use rurqe_core::query::TableSelection;
+
+    pub use rurqe_core::schema::Next;
 
     pub use rurqe_core::table_alias;
 

@@ -563,3 +563,27 @@ fn left_join_lateral_lifts_columns_into_options() {
     );
     assert!(built.params.is_empty());
 }
+
+#[test]
+fn scope_invariants_accept_only_tables_in_scope() {
+    fn assert_in_scope<T: Table, S: TableInScope<T, P>, P>() {}
+    fn assert_selection_in_scope<S, T, P>()
+    where
+        S: SelectionInScope<T, P>,
+    {
+    }
+    fn assert_group_by_in_scope<S, T, P>()
+    where
+        S: GroupByInScope<T, P>,
+    {
+    }
+
+    // Joined scopes keep every participating table reachable at a distinct position.
+    assert_in_scope::<User, Joined<User, Order>, Next<At<0>>>();
+    assert_in_scope::<Order, Joined<User, Order>, At<0>>();
+    assert_in_scope::<User, LeftJoined<User, Order>, Next<At<0>>>();
+
+    // Projections and grouping of in-scope tables are accepted without turbofish noise.
+    assert_selection_in_scope::<(UserId, OrderTotal), Joined<User, Order>, _>();
+    assert_group_by_in_scope::<(UserId, OrderUserId), Joined<User, Order>, _>();
+}

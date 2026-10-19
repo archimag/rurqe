@@ -314,3 +314,17 @@ fn insert_from_select_supports_returning_projection() {
     );
     assert!(built.params.is_empty());
 }
+
+#[test]
+fn returning_and_conflict_targets_are_scoped_to_the_mutated_table() {
+    fn assert_table_selection<S, T>()
+    where
+        S: TableSelection<T>,
+        T: Table,
+    {
+    }
+
+    // `RETURNING` and conflict targets accept only columns of the mutated table.
+    assert_table_selection::<(UserId, UserName), User>();
+    assert_table_selection::<(UserName,), User>();
+}
