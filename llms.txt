@@ -19,7 +19,7 @@
 - **`rurqe-postgres`**: PostgreSQL dialect (`Postgres<V>`), synchronous (`PgConnection`), and asynchronous (`PgAsyncConnection`) drivers.
 - **`rurqe-sqlite`**: SQLite dialect (`Sqlite<V>`) and synchronous `rusqlite` driver (`SqliteConnection`).
 - **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `embed_migrations!`, and `SchemaCatalog`.
-- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`).
+- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`) with dual PostgreSQL and SQLite catalog introspection parity.
 
 ---
 
@@ -147,6 +147,51 @@ let migrations = embed_migrations!(
 migrations.migrate(&mut backend)?;
 ```
 
+### 7. Window Functions & Analytics (`OVER`)
+
+```rust
+let window = Window::partition_by(OrderUserId).order_by_desc(OrderTotal);
+
+let query = select_from::<Postgres, Order>()
+    .select((
+        OrderId,
+        row_number().over(window.clone()),
+        rank().over(window.clone()),
+        dense_rank().over(window.clone()),
+        lag(OrderTotal).offset(1).over(Window::order_by_asc(OrderId)),
+        lead(OrderTotal).over(Window::order_by_asc(OrderId)),
+    ));
+```
+
+### 8. Common Table Expressions (`WITH cte AS (...)`)
+
+```rust
+let active_orders = select_from::<Postgres, Order>()
+    .select((OrderId, OrderUserId))
+    .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+let query = select_from::<Postgres, User>()
+    .with(cte_named("active_orders", active_orders))
+    .select((UserId, UserName))
+    .where_(Expr::column::<UserId>().gt(10i64));
+```
+
+### 9. Controlled Raw SQL Escape Hatch (`sql!`, `raw_sql!`)
+
+```rust
+// Strongly typed Expr<T> with parameter interpolation (prevents SQL injection)
+let custom_filter = sql!(
+    bool,
+    "EXTRACT(YEAR FROM created_at) = ? AND status = ?",
+    2024i64,
+    "active"
+);
+
+let query = select_from::<Postgres, User>()
+    .select((UserId, sql!(<i64> "COUNT(*)")))
+    .where_(custom_filter);
+```
+
 ---
 
 ## Toolchain CLI Commands
@@ -155,5 +200,5 @@ migrations.migrate(&mut backend)?;
 - `cargo db-migrate status` — Inspect migration statuses against `__rurqe_schema_history`.
 - `cargo db-migrate repair` — Realign checksums and purge failed attempts.
 - `cargo db-baseline --version <V>` — Baseline pre-existing schemas without historical replay.
-- `cargo db-codegen --output src/db/schema.rs` — Introspect database, generate Rust schema, and create `schema.lock`.
-- `cargo db-verify` — CI drift check: verifies live DB against `schema.lock` and `SCHEMA_HASH`.
+- `cargo db-codegen --output src/db/schema.rs` — Introspect database (`postgres://...`, `sqlite://...`, or local file `local.db`), generate Rust schema, and create `schema.lock`.
+- `cargo db-verify` — CI drift check: verifies live PostgreSQL or SQLite DB against `schema.lock` and `SCHEMA_HASH`.

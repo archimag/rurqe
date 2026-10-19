@@ -26,6 +26,14 @@ table! {
     }
 }
 
+table! {
+    /// Summary CTE table representation.
+    UserSummary => "user_summary" {
+        SummaryUserId => "user_id": i64,
+        SummaryOrderCount => "order_count": i64,
+    }
+}
+
 /// Decodes `values` into the row type of the anonymous selection `S`.
 fn decode<S>(_selection: &S, values: &[SqlVal]) -> Option<S::Row>
 where
@@ -209,4 +217,106 @@ fn window_functions_render_over_clause_and_decode_rows() {
     assert_eq!(row.4, None);
     assert_eq!(row.5, Some(45.0));
     assert_eq!(row.6, 100.0);
+}
+
+#[test]
+fn cte_subquery_composes_with_main_query_and_decodes_rows() {
+    let summary_subquery = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId, Expr::count_all()))
+        .group_by(OrderUserId);
+
+    let summary_cte = summary_subquery.as_cte::<UserSummary>();
+
+    let built = select_from::<Postgres<Pg16>, User>()
+        .with(summary_cte)
+        .inner_join::<UserSummary>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
+        .select((UserId, UserName, SummaryOrderCount))
+        .where_(Expr::column::<SummaryOrderCount>().gt(5i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "WITH \"user_summary\" AS (SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\") \
+         SELECT \"id\", \"name\", \"order_count\" FROM \"users\" \
+         INNER JOIN \"user_summary\" ON (\"id\" = \"user_id\") \
+         WHERE (\"order_count\" > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(5)]);
+
+    let row = <(i64, String, i64)>::from_row(&[
+        SqlVal::I64(1),
+        SqlVal::Text("alice".into()),
+        SqlVal::I64(10),
+    ])
+    .expect("cte row decodes");
+    assert_eq!(row, (1, "alice".into(), 10));
+}
+
+#[test]
+fn named_cte_renders_with_clause_and_binds_parameters() {
+    let active_orders = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId, OrderUserId))
+        .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+    let built = select_from::<Postgres<Pg16>, User>()
+        .with(cte_named("active_orders", active_orders))
+        .select((UserId, UserName))
+        .where_(Expr::column::<UserId>().gt(10i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "WITH \"active_orders\" AS (SELECT \"id\", \"user_id\" FROM \"orders\" WHERE (\"total\" > $1)) \
+         SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $2)"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(100.0), SqlVal::I64(10)]);
+}
+
+#[test]
+fn sql_macro_integrates_into_query_clauses_and_binds_typed_params() {
+    let custom_filter = sql!(
+        bool,
+        "EXTRACT(YEAR FROM created_at) = ? AND status = ?",
+        2024i64,
+        "active"
+    );
+
+    let built = select_from::<Postgres<Pg16>, User>()
+        .select((UserId, sql!(<i64> "COUNT(*)")))
+        .where_(Expr::column::<UserActive>().eq(true))
+        .where_(custom_filter)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", COUNT(*) FROM \"users\" WHERE ((\"active\" = $1) AND \
+         EXTRACT(YEAR FROM created_at) = $2 AND status = $3)"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::Bool(true),
+            SqlVal::I64(2024),
+            SqlVal::Text("active".into()),
+        ]
+    );
+
+    let row = <(i64, i64)>::from_row(&[SqlVal::I64(1), SqlVal::I64(42)]).expect("decodes");
+    assert_eq!(row, (1, 42));
+}
+
+#[test]
+fn raw_sql_macro_escapes_and_formats_subexpressions() {
+    let expr = raw_sql!(bool, "data ?? 'role' AND score >= {}", 90i64);
+
+    let built = select_from::<Postgres<Pg16>, User>()
+        .select((UserId,))
+        .where_(expr)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"users\" WHERE data ? 'role' AND score >= $1"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(90)]);
 }

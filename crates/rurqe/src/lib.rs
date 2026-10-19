@@ -10,6 +10,13 @@ pub use rurqe_core as core;
 #[cfg(feature = "macros")]
 pub use rurqe_macros as macros;
 
+#[cfg(feature = "macros")]
+pub use rurqe_macros::{cols, dto, raw_sql, select, sql};
+
+pub use rurqe_core::{
+    cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
+};
+
 #[cfg(feature = "postgres")]
 pub use rurqe_postgres as postgres;
 

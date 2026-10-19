@@ -513,6 +513,9 @@ pub fn parse_raw_sql(template: &str, param_count: usize) -> Vec<String> {
             if c == '{' && chars.peek() == Some(&'}') {
                 chars.next();
                 fragments.push(core::mem::take(&mut current));
+            } else if c == '?' && chars.peek() == Some(&'?') {
+                chars.next();
+                current.push('?');
             } else {
                 current.push(c);
             }
@@ -758,6 +761,9 @@ mod tests {
 
         let braces = parse_raw_sql("foo = {} AND bar = {}", 2);
         assert_eq!(braces, vec!["foo = ", " AND bar = ", ""]);
+
+        let braces_escaped = parse_raw_sql("data ?? 'key' AND age > {}", 1);
+        assert_eq!(braces_escaped, vec!["data ? 'key' AND age > ", ""]);
 
         let zero_params = parse_raw_sql("data ? 'key'", 0);
         assert_eq!(zero_params, vec!["data ? 'key'"]);
