@@ -211,7 +211,7 @@ impl Migrator {
                         let entry = SchemaHistoryEntry::applied(
                             current_rank,
                             migration,
-                            "CURRENT_TIMESTAMP",
+                            current_timestamp(),
                             elapsed_ms,
                         );
                         tx.record_entry(&entry)?;
@@ -261,12 +261,8 @@ impl Migrator {
             .unwrap_or(0)
             + 1;
 
-        let entry = SchemaHistoryEntry::baseline(
-            next_rank,
-            version,
-            description,
-            "CURRENT_TIMESTAMP",
-        );
+        let entry =
+            SchemaHistoryEntry::baseline(next_rank, version, description, current_timestamp());
 
         let mut tx = backend.begin()?;
         tx.record_entry(&entry)?;
@@ -410,6 +406,53 @@ impl Migrator {
     }
 }
 
+/// Renders the current UTC time as `YYYY-MM-DD HH:MM:SS`.
+///
+/// The history table stores `installed_on` as a plain string, so the runner has to
+/// produce a concrete timestamp instead of delegating to `CURRENT_TIMESTAMP`.
+/// The crate stays dependency-free, hence the epoch-to-civil conversion below.
+fn current_timestamp() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    format_timestamp(seconds)
+}
+
+/// Formats UNIX epoch seconds as a UTC `YYYY-MM-DD HH:MM:SS` timestamp.
+fn format_timestamp(unix_seconds: i64) -> String {
+    let days = unix_seconds.div_euclid(86_400);
+    let seconds_of_day = unix_seconds.rem_euclid(86_400);
+
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+}
+
+/// Converts days since the UNIX epoch into a proleptic Gregorian civil date.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_pivot = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_pivot + 2) / 5 + 1) as u32;
+    let month = if month_pivot < 10 {
+        month_pivot + 3
+    } else {
+        month_pivot - 9
+    } as u32;
+    let year = if month <= 2 { year + 1 } else { year };
+
+    (year, month, day)
+}
+
 /// An in-memory [`MigrationBackend`] for deterministic execution and testing.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryBackend {
@@ -499,5 +542,27 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 
     fn rollback(self) -> Result<(), Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{civil_from_days, format_timestamp};
+
+    #[test]
+    fn epoch_converts_to_the_unix_epoch_date() {
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00:00");
+    }
+
+    #[test]
+    fn timestamps_convert_to_utc_civil_time() {
+        assert_eq!(format_timestamp(1_700_000_000), "2023-11-14 22:13:20");
+    }
+
+    #[test]
+    fn leap_days_are_accounted_for() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(59), (1970, 3, 1));
+        assert_eq!(format_timestamp(951_782_400), "2000-02-29 00:00:00");
     }
 }
