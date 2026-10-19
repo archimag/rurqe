@@ -392,13 +392,13 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
 
 impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
     fn push_row<S: AssignmentSet<T>>(&mut self, set: &S) {
-        assert!(
+        debug_assert!(
             self.select.is_none(),
             "cannot add VALUES rows to an INSERT statement configured with `from_select`"
         );
         let mut assignments = Vec::new();
         set.extend_assignments(&mut assignments);
-        assert!(
+        debug_assert!(
             !assignments.is_empty(),
             "an INSERT row requires at least one column assignment"
         );
@@ -409,13 +409,13 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
                 .map(|assignment| assignment.column)
                 .collect();
         } else {
-            assert_eq!(
+            debug_assert_eq!(
                 assignments.len(),
                 self.columns.len(),
                 "all inserted rows must assign the same columns"
             );
             for (assignment, expected) in assignments.iter().zip(self.columns.iter()) {
-                assert_eq!(
+                debug_assert_eq!(
                     assignment.column, *expected,
                     "all inserted rows must assign the same columns in the same order"
                 );

@@ -109,7 +109,7 @@ where
     {
         let mut columns = Vec::new();
         assignments.extend_assignments(&mut columns);
-        assert!(
+        debug_assert!(
             !columns.is_empty(),
             "an ON CONFLICT DO UPDATE requires at least one column assignment"
         );

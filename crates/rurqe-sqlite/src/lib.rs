@@ -202,11 +202,7 @@ mod rusqlite_backend {
                         guard.connection.commit().map_err(E::from)?;
                         guard.connection.in_transaction = false;
                         tracing::info!("committed transaction");
-                    } else {
-                        let name = guard
-                            .savepoint
-                            .as_deref()
-                            .expect("nested transactions always own a savepoint");
+                    } else if let Some(name) = guard.savepoint.as_deref() {
                         guard.connection.release_savepoint(name).map_err(E::from)?;
                         guard.connection.tx_context.close_savepoint();
                         tracing::debug!(savepoint = name, "released savepoint");

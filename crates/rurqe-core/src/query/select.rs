@@ -473,13 +473,17 @@ impl<D: Dialect, Tables, Output: 'static> SelectQuery<D, Tables, Output> {
 impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     /// Renders the query statement and parameters into the target buffers.
     pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        let render_projections = self.projections.as_ref().expect(
-            "a SELECT query requires at least one projection; call `select` before `build`",
-        );
+        let Some(render_projections) = self.projections.as_ref() else {
+            debug_assert!(
+                false,
+                "a SELECT query requires at least one projection; call `select` before `build`"
+            );
+            return;
+        };
 
         let mut tables = Vec::new();
         Tables::push_table_refs(&mut tables);
-        assert_eq!(
+        debug_assert_eq!(
             tables.len(),
             self.joins.len() + 1,
             "every joined table requires an ON condition"
@@ -515,9 +519,18 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         render_projections(sql, params);
 
         sql.push_str(" FROM ");
-        tables[0].render::<D>(sql);
+        match tables.first() {
+            Some(first) => first.render::<D>(sql),
+            None => {
+                debug_assert!(false, "a SELECT query requires a source table");
+            }
+        }
 
         for (index, join) in self.joins.iter().enumerate() {
+            let Some(table) = tables.get(index + 1) else {
+                debug_assert!(false, "every joined table requires an ON condition");
+                break;
+            };
             sql.push(' ');
             sql.push_str(join.kind.as_str());
             sql.push(' ');
@@ -526,9 +539,9 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
                     sql.push('(');
                     render_lateral(sql, params);
                     sql.push_str(") AS ");
-                    D::push_quoted_identifier(sql, tables[index + 1].name);
+                    D::push_quoted_identifier(sql, table.name);
                 }
-                None => tables[index + 1].render::<D>(sql),
+                None => table.render::<D>(sql),
             }
             if let Some(on) = &join.on {
                 sql.push_str(" ON ");
