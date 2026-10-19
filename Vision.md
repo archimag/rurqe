@@ -43,6 +43,23 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 - **Compile-Time Capability & Version Gating:** Dialect- and version-dependent SQL features (such as `RETURNING`, `MERGE`, or `DISTINCT ON`) are enforced via capability marker traits; incompatible queries simply fail to compile.
 - **Human- and LLM-Friendly Diagnostics:** Explicit diagnostics via `#[diagnostic::on_unimplemented]` and fail-fast call-site checking ensure short, actionable compiler error messages rather than multi-clause trait cascade dumps.
 
+### 1.5 Core Design Requirements
+
+#### 1.5.1 Absolute SQL Correctness
+Given an accurate database schema, every query accepted by RURQE must be semantically valid for the target database dialect and version.
+- **Soundness:** Invalid queries must be rejected at compile time.
+- **Completeness:** Every valid SQL query must be expressible.
+- **Semantic Diagnostics:** Errors must clearly explain the violated SQL rule, not expose Rust type-system internals.
+
+#### 1.5.2 High-Level SQL DSL
+The primary public API must express SQL concepts, not Rust type-system machinery.
+- **Automatic Inference:** Automatically infer types, scopes, nullability, and result structures.
+- **Internal Complexity Encapsulation:** Hide marker types, traits, generics, and typestate complexity from everyday application queries.
+- **Zero Machinery Leakage:** Require no knowledge of internal implementation mechanisms for regular query authoring.
+- **Tiered Access:** Preserve a lower-level typed AST and macro escape-hatches (`sql!`, `raw_sql!`) for advanced and dialect-specific use cases.
+
+**Guiding Principle:** Maximum semantic guarantees and SQL expressiveness, minimum cognitive complexity for the developer.
+
 ---
 
 ## 2. Workspace Crate Architecture
