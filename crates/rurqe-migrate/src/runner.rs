@@ -35,6 +35,62 @@ pub trait MigrationBackend {
 
     /// Begins a transactional boundary.
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error>;
+
+    /// Acquires an exclusive migration lock.
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Releases the exclusive migration lock.
+    fn release_lock(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// RAII guard managing exclusive migration locking on a [`MigrationBackend`].
+pub struct LockGuard<'a, B: MigrationBackend + ?Sized> {
+    backend: &'a mut B,
+    active: bool,
+}
+
+impl<'a, B: MigrationBackend + ?Sized> LockGuard<'a, B> {
+    /// Acquires the lock via `backend.acquire_lock()` and wraps `backend`.
+    pub fn acquire(backend: &'a mut B) -> Result<Self, Error> {
+        backend.acquire_lock()?;
+        Ok(Self {
+            backend,
+            active: true,
+        })
+    }
+
+    /// Convenience alias for [`acquire`](Self::acquire).
+    pub fn new(backend: &'a mut B) -> Result<Self, Error> {
+        Self::acquire(backend)
+    }
+}
+
+impl<B: MigrationBackend + ?Sized> std::ops::Deref for LockGuard<'_, B> {
+    type Target = B;
+
+    fn deref(&self) -> &Self::Target {
+        self.backend
+    }
+}
+
+impl<B: MigrationBackend + ?Sized> std::ops::DerefMut for LockGuard<'_, B> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.backend
+    }
+}
+
+impl<B: MigrationBackend + ?Sized> Drop for LockGuard<'_, B> {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(err) = self.backend.release_lock() {
+                tracing::warn!(error = %err, "failed to release migration lock");
+            }
+        }
+    }
 }
 
 /// A transactional boundary for applying migrations and recording metadata.
@@ -164,9 +220,10 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<MigrationReport, Error> {
-        backend.ensure_schema_history_table()?;
+        let mut guard = LockGuard::acquire(backend)?;
+        guard.ensure_schema_history_table()?;
         self.validate_version_uniqueness(migrations)?;
-        let history = backend.read_history()?;
+        let history = guard.read_history()?;
         self.validate_history(&history, migrations)?;
         tracing::debug!(
             history_entries = history.len(),
@@ -229,7 +286,7 @@ impl Migrator {
             if should_run {
                 current_rank += 1;
                 tracing::info!(script = %migration.script, "applying migration");
-                let mut tx = backend.begin()?;
+                let mut tx = guard.begin()?;
                 let start_time = std::time::Instant::now();
 
                 match tx.execute(&migration.sql) {
@@ -254,12 +311,52 @@ impl Migrator {
                         report.total_time_ms += elapsed_ms;
                     }
                     Err(err) => {
-                        let _ = tx.rollback();
+                        let elapsed_ms = start_time.elapsed().as_millis() as i64;
+                        if let Err(rollback_err) = tx.rollback() {
+                            tracing::warn!(
+                                script = %migration.script,
+                                error = %rollback_err,
+                                "failed to rollback failed migration transaction"
+                            );
+                        }
                         tracing::error!(
                             script = %migration.script,
                             error = %err,
                             "migration failed"
                         );
+
+                        let failed_entry = SchemaHistoryEntry::failed(
+                            current_rank,
+                            migration,
+                            current_timestamp(),
+                            elapsed_ms,
+                        );
+                        match guard.begin() {
+                            Ok(mut fail_tx) => {
+                                if let Err(rec_err) = fail_tx.record_entry(&failed_entry) {
+                                    tracing::warn!(
+                                        script = %migration.script,
+                                        error = %rec_err,
+                                        "failed to record failed migration entry"
+                                    );
+                                    let _ = fail_tx.rollback();
+                                } else if let Err(commit_err) = fail_tx.commit() {
+                                    tracing::warn!(
+                                        script = %migration.script,
+                                        error = %commit_err,
+                                        "failed to commit failed migration history entry"
+                                    );
+                                }
+                            }
+                            Err(begin_err) => {
+                                tracing::warn!(
+                                    script = %migration.script,
+                                    error = %begin_err,
+                                    "failed to open transaction to record failed migration"
+                                );
+                            }
+                        }
+
                         return Err(Error::MigrationExecutionFailed {
                             script: migration.script.clone(),
                             source: err.to_string(),
@@ -279,8 +376,9 @@ impl Migrator {
         version: MigrationVersion,
         description: &str,
     ) -> Result<SchemaHistoryEntry, Error> {
-        backend.ensure_schema_history_table()?;
-        let history = backend.read_history()?;
+        let mut guard = LockGuard::acquire(backend)?;
+        guard.ensure_schema_history_table()?;
+        let history = guard.read_history()?;
 
         if let Some(existing) = history.iter().max_by_key(|e| e.installed_rank) {
             return Err(Error::BaselineAlreadyExists {
@@ -304,7 +402,7 @@ impl Migrator {
         let entry =
             SchemaHistoryEntry::baseline(next_rank, version, description, current_timestamp());
 
-        let mut tx = backend.begin()?;
+        let mut tx = guard.begin()?;
         tx.record_entry(&entry)?;
         tx.commit()?;
 
@@ -318,8 +416,9 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<RepairReport, Error> {
-        backend.ensure_schema_history_table()?;
-        let history = backend.read_history()?;
+        let mut guard = LockGuard::acquire(backend)?;
+        guard.ensure_schema_history_table()?;
+        let history = guard.read_history()?;
         let mut report = RepairReport::default();
 
         let migrations_by_script: BTreeMap<&str, &Migration> = migrations
@@ -327,7 +426,7 @@ impl Migrator {
             .map(|m| (m.script.as_str(), m))
             .collect();
 
-        let mut tx = backend.begin()?;
+        let mut tx = guard.begin()?;
 
         for entry in &history {
             if !entry.success {
@@ -532,6 +631,8 @@ pub struct InMemoryBackend {
     pub table_created: bool,
     /// Failure simulation on SQL execution.
     pub failure_script: Option<String>,
+    /// Flag indicating whether exclusive migration lock is acquired.
+    pub locked: bool,
 }
 
 impl InMemoryBackend {
@@ -562,6 +663,19 @@ impl MigrationBackend for InMemoryBackend {
             staged_history: initial_history,
             staged_sql: Vec::new(),
         })
+    }
+
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        if self.locked {
+            return Err(Error::Backend("migration lock already acquired".to_owned()));
+        }
+        self.locked = true;
+        Ok(())
+    }
+
+    fn release_lock(&mut self) -> Result<(), Error> {
+        self.locked = false;
+        Ok(())
     }
 }
 
@@ -615,7 +729,18 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, format_timestamp, InMemoryBackend, Migrator};
+    use super::{civil_from_days, format_timestamp, InMemoryBackend, LockGuard, Migrator};
+
+    #[test]
+    fn lock_guard_manages_backend_locking_lifecycle() {
+        let mut backend = InMemoryBackend::new();
+        assert!(!backend.locked);
+        {
+            let guard = LockGuard::acquire(&mut backend).expect("lock acquired");
+            assert!(guard.locked);
+        }
+        assert!(!backend.locked);
+    }
     use crate::checkpoint::Checkpoint;
     use crate::checksum::Checksum;
     use crate::error::Error;

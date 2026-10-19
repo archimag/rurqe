@@ -183,7 +183,7 @@ fn failed_migration_triggers_rollback_and_prevents_subsequent_runs() {
     let m2 = Migration::parse("V2__fail.sql", "SELECT FAIL;").unwrap();
 
     let err = migrator
-        .migrate(&mut backend, &[m1.clone(), m2])
+        .migrate(&mut backend, &[m1.clone(), m2.clone()])
         .expect_err("execution must fail");
 
     match err {
@@ -191,9 +191,51 @@ fn failed_migration_triggers_rollback_and_prevents_subsequent_runs() {
         other => panic!("expected MigrationExecutionFailed, got {other:?}"),
     }
 
-    // m1 was committed, but m2 was rolled back and not recorded
+    // Lock must be released even after migration failure
+    assert!(!backend.locked);
+
+    // m1 was committed, m2 was rolled back and recorded as failed in history
+    assert_eq!(backend.history.len(), 2);
+    assert_eq!(backend.history[0].script, "V1__ok.sql");
+    assert!(backend.history[0].success);
+    assert_eq!(backend.history[1].script, "V2__fail.sql");
+    assert!(!backend.history[1].success);
+    assert_eq!(backend.history[1].installed_rank, 2);
+
+    // Subsequent migrate must be rejected due to the failed migration in history
+    let re_err = migrator
+        .migrate(&mut backend, &[m1.clone(), m2.clone()])
+        .expect_err("subsequent migrate must be blocked by failed migration");
+
+    match re_err {
+        Error::FailedMigrationAlreadyApplied {
+            script,
+            installed_rank,
+        } => {
+            assert_eq!(script, "V2__fail.sql");
+            assert_eq!(installed_rank, 2);
+        }
+        other => panic!("expected FailedMigrationAlreadyApplied, got {other:?}"),
+    }
+
+    // Repair removes the failed entry
+    let repair_report = migrator
+        .repair(&mut backend, std::slice::from_ref(&m1))
+        .expect("repair succeeds");
+    assert_eq!(repair_report.removed_failed_entries, 1);
     assert_eq!(backend.history.len(), 1);
     assert_eq!(backend.history[0].script, "V1__ok.sql");
+
+    // Now migrate can succeed with a fixed migration
+    backend.failure_script = None;
+    let m2_fixed = Migration::parse("V2__fail.sql", "SELECT 2;").unwrap();
+    let report = migrator
+        .migrate(&mut backend, &[m1, m2_fixed])
+        .expect("migrate after repair succeeds");
+    assert_eq!(report.applied_count, 1);
+    assert_eq!(report.applied_scripts, vec!["V2__fail.sql"]);
+    assert_eq!(backend.history.len(), 2);
+    assert!(backend.history[1].success);
 }
 
 #[test]

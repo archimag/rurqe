@@ -389,10 +389,15 @@ mod tests {
         let broken = migrations("V1__broken.sql", "CREATE TABLE oops (;");
 
         assert!(Migrator::new().migrate(&mut backend, &broken).is_err());
-        assert!(backend.read_history().unwrap().is_empty());
+        let history = backend.read_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].script, "V1__broken.sql");
+        assert!(!history[0].success);
 
+        let migrator = Migrator::new();
         let fixed = migrations("V1__fixed.sql", "CREATE TABLE ok (id INTEGER);");
-        let report = Migrator::new().migrate(&mut backend, &fixed).unwrap();
+        migrator.repair(&mut backend, &fixed).unwrap();
+        let report = migrator.migrate(&mut backend, &fixed).unwrap();
         assert_eq!(report.applied_count, 1);
     }
 }
