@@ -325,27 +325,11 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
 pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
     match detect_dialect(Some(url)) {
         DatabaseDialect::Sqlite => {
-            let path = if let Some(stripped) = url.strip_prefix("sqlite://") {
-                stripped
-            } else if let Some(stripped) = url.strip_prefix("sqlite:") {
-                stripped
-            } else {
-                url
-            };
-
-            let conn = if path == ":memory:" || path.is_empty() {
-                rusqlite::Connection::open_in_memory()
-            } else {
-                rusqlite::Connection::open(path)
-            }
-            .map_err(|e| CliError(format!("failed to open SQLite database at `{url}`: {e}")))?;
-
+            let conn = crate::cli::open_sqlite(url)?;
             introspect_sqlite(&conn)
         }
         DatabaseDialect::Postgres => {
-            let mut client = postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
-                CliError(format!("failed to connect to PostgreSQL at `{url}`: {e}"))
-            })?;
+            let mut client = crate::cli::connect_postgres(url)?;
             introspect_postgres(&mut client)
         }
     }

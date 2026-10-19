@@ -431,7 +431,40 @@ fn resolve_database_url(supplied: Option<String>) -> Result<String, CliError> {
         })
 }
 
-fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
+/// Replaces the userinfo section of a connection URL with `***`.
+///
+/// Connection strings routinely embed credentials (`postgres://user:secret@host/db`),
+/// and CLI failures end up in CI logs. Only the authority section between `://` and
+/// the first `/`, `?` or `#` is touched, so SQLite file paths, hosts and query
+/// parameters are preserved verbatim.
+pub fn redact_database_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_owned();
+    };
+
+    let authority_start = scheme_end + 3;
+    let authority = &url[authority_start..];
+    let authority_len = authority
+        .find(['/', '?', '#'])
+        .unwrap_or(authority.len());
+
+    let Some(at) = authority[..authority_len].rfind('@') else {
+        return url.to_owned();
+    };
+
+    if at == 0 {
+        return url.to_owned();
+    }
+
+    format!(
+        "{}***@{}",
+        &url[..authority_start],
+        &url[authority_start + at + 1..]
+    )
+}
+
+/// Opens a SQLite connection from a URL or plain filesystem path.
+pub(crate) fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
     let path = url
         .strip_prefix("sqlite://")
         .or_else(|| url.strip_prefix("sqlite:"))
@@ -443,12 +476,22 @@ fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
         rusqlite::Connection::open(path)
     };
 
-    conn.map_err(|e| CliError(format!("failed to open SQLite database at `{url}`: {e}")))
+    conn.map_err(|e| {
+        CliError(format!(
+            "failed to open SQLite database at `{}`: {e}",
+            redact_database_url(url)
+        ))
+    })
 }
 
-fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
-    postgres::Client::connect(url, postgres::NoTls)
-        .map_err(|e| CliError(format!("failed to connect to PostgreSQL at `{url}`: {e}")))
+/// Connects to PostgreSQL from a connection URL.
+pub(crate) fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
+    postgres::Client::connect(url, postgres::NoTls).map_err(|e| {
+        CliError(format!(
+            "failed to connect to PostgreSQL at `{}`: {e}",
+            redact_database_url(url)
+        ))
+    })
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
@@ -682,6 +725,27 @@ mod tests {
                 database_url: None,
             }
         );
+    }
+
+    #[test]
+    fn redacts_credentials_from_connection_urls() {
+        assert_eq!(
+            redact_database_url("postgres://app:secret@db.internal:5432/app"),
+            "postgres://***@db.internal:5432/app"
+        );
+        assert_eq!(
+            redact_database_url("postgresql://app:pa%40ss@db/app?sslmode=require"),
+            "postgresql://***@db/app?sslmode=require"
+        );
+        assert_eq!(
+            redact_database_url("postgres://db.internal:5432/app"),
+            "postgres://db.internal:5432/app"
+        );
+        assert_eq!(
+            redact_database_url("sqlite:/tmp/data@host.db"),
+            "sqlite:/tmp/data@host.db"
+        );
+        assert_eq!(redact_database_url("app.db"), "app.db");
     }
 
     #[test]
