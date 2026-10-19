@@ -468,60 +468,65 @@ impl<T> IntoExpr<T> for Expr<T> {
     }
 }
 
-/// Splits a raw SQL template into text fragments around parameter placeholders (`?` or `{}`).
-///
-/// Literal question marks can be escaped as `??`.
-pub fn parse_raw_sql(template: &str, param_count: usize) -> Vec<String> {
-    if param_count == 0 {
-        return vec![template.replace("??", "?")];
-    }
-
-    let mut q_count = 0;
+/// Counts unescaped `?` placeholders and `{}` placeholders in a raw SQL template.
+fn count_raw_placeholders(template: &str) -> (usize, usize) {
+    let mut question_marks = 0;
+    let mut braces = 0;
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '?' {
             if chars.peek() == Some(&'?') {
                 chars.next();
             } else {
-                q_count += 1;
+                question_marks += 1;
             }
+        } else if c == '{' && chars.peek() == Some(&'}') {
+            chars.next();
+            braces += 1;
         }
     }
+    (question_marks, braces)
+}
 
-    let use_question_mark = q_count == param_count || q_count > 0;
+/// Splits a raw SQL template into text fragments around parameter placeholders (`?` or `{}`).
+///
+/// Literal question marks can be escaped as `??`. Both placeholder styles may not
+/// be mixed within a single template.
+pub fn parse_raw_sql(template: &str, param_count: usize) -> Vec<String> {
+    if param_count == 0 {
+        return vec![template.replace("??", "?")];
+    }
+
+    let (question_marks, braces) = count_raw_placeholders(template);
+    assert!(
+        !(question_marks > 0 && braces > 0),
+        "raw SQL template mixes `?` and `{{}}` placeholders; use one style consistently"
+    );
+
+    let use_question_mark = question_marks > 0;
+
     let mut fragments = Vec::with_capacity(param_count + 1);
     let mut current = String::new();
 
-    if use_question_mark {
-        let mut chars = template.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '?' {
-                if chars.peek() == Some(&'?') {
-                    chars.next();
-                    current.push('?');
-                } else {
-                    fragments.push(core::mem::take(&mut current));
-                }
-            } else {
-                current.push(c);
-            }
-        }
-        fragments.push(current);
-    } else {
-        let mut chars = template.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '{' && chars.peek() == Some(&'}') {
-                chars.next();
-                fragments.push(core::mem::take(&mut current));
-            } else if c == '?' && chars.peek() == Some(&'?') {
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '?' {
+            if chars.peek() == Some(&'?') {
                 chars.next();
                 current.push('?');
+            } else if use_question_mark {
+                fragments.push(core::mem::take(&mut current));
             } else {
                 current.push(c);
             }
+        } else if c == '{' && chars.peek() == Some(&'}') && !use_question_mark {
+            chars.next();
+            fragments.push(core::mem::take(&mut current));
+        } else {
+            current.push(c);
         }
-        fragments.push(current);
     }
+    fragments.push(current);
 
     assert_eq!(
         fragments.len() - 1,
@@ -767,5 +772,11 @@ mod tests {
 
         let zero_params = parse_raw_sql("data ? 'key'", 0);
         assert_eq!(zero_params, vec!["data ? 'key'"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "mixes")]
+    fn raw_sql_rejects_mixed_placeholder_styles() {
+        parse_raw_sql("a = ? AND b = {}", 2);
     }
 }

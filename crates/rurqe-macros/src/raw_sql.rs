@@ -50,29 +50,43 @@ impl Parse for RawSqlInput {
     }
 }
 
-fn count_placeholders(template: &str) -> (usize, usize) {
-    let mut q_count = 0;
+/// Placeholder census of a raw SQL template.
+struct PlaceholderCounts {
+    question_marks: usize,
+    braces: usize,
+}
+
+impl PlaceholderCounts {
+    fn total(&self) -> usize {
+        self.question_marks + self.braces
+    }
+
+    fn is_mixed(&self) -> bool {
+        self.question_marks > 0 && self.braces > 0
+    }
+}
+
+fn count_placeholders(template: &str) -> PlaceholderCounts {
+    let mut question_marks = 0;
+    let mut braces = 0;
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '?' {
             if chars.peek() == Some(&'?') {
                 chars.next();
             } else {
-                q_count += 1;
+                question_marks += 1;
             }
-        }
-    }
-
-    let mut brace_count = 0;
-    let mut chars = template.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' && chars.peek() == Some(&'}') {
+        } else if c == '{' && chars.peek() == Some(&'}') {
             chars.next();
-            brace_count += 1;
+            braces += 1;
         }
     }
 
-    (q_count, brace_count)
+    PlaceholderCounts {
+        question_marks,
+        braces,
+    }
 }
 
 /// Expands parsed `sql!` / `raw_sql!` macro inputs into an `Expr<T>` construction block.
@@ -80,23 +94,21 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let parsed: RawSqlInput = syn::parse2(input)?;
     let template_val = parsed.template.value();
     let args_len = parsed.args.len();
+    let counts = count_placeholders(&template_val);
 
-    if args_len > 0 {
-        let (q_count, brace_count) = count_placeholders(&template_val);
-        if q_count != args_len && brace_count != args_len {
-            let msg = if q_count > 0 {
-                format!(
-                    "raw SQL template expects {q_count} parameter(s), but {args_len} were provided"
-                )
-            } else if brace_count > 0 {
-                format!(
-                    "raw SQL template expects {brace_count} parameter(s), but {args_len} were provided"
-                )
-            } else {
-                format!("raw SQL template expects 0 parameters, but {args_len} were provided")
-            };
-            return Err(syn::Error::new_spanned(&parsed.template, msg));
-        }
+    if counts.is_mixed() {
+        return Err(syn::Error::new_spanned(
+            &parsed.template,
+            "raw SQL template mixes `?` and `{}` placeholders; use one style consistently",
+        ));
+    }
+
+    if counts.total() != args_len {
+        let expected = counts.total();
+        let msg = format!(
+            "raw SQL template expects {expected} parameter(s), but {args_len} were provided"
+        );
+        return Err(syn::Error::new_spanned(&parsed.template, msg));
     }
 
     let template = &parsed.template;
@@ -115,4 +127,24 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             ::rurqe_core::expr::Expr::<#ty>::raw(#template, __rurqe_params)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_census_ignores_escaped_markers() {
+        let counts = count_placeholders("data ?? 'key' AND age > ?");
+        assert_eq!(counts.question_marks, 1);
+        assert_eq!(counts.braces, 0);
+        assert!(!counts.is_mixed());
+    }
+
+    #[test]
+    fn placeholder_census_detects_mixed_styles() {
+        let counts = count_placeholders("a = ? AND b = {}");
+        assert!(counts.is_mixed());
+        assert_eq!(counts.total(), 2);
+    }
 }
