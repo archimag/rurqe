@@ -235,35 +235,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             where
                 #selection_bounds
             {
-                /// Starts a `SELECT` query projecting these projections from `__T`.
-                pub fn from<__D, __T>(
-                    self,
-                ) -> ::rurqe_core::query::SelectQuery<
-                    __D,
-                    __T,
-                    <Self as ::rurqe_core::query::SelectionFor<__T, (#from_positions)>>::Row,
-                >
-                where
-                    __D: ::rurqe_core::dialect::Dialect,
-                    __T: ::rurqe_core::schema::Table,
-                    #from_bounds
-                    Self: ::rurqe_core::query::SelectionFor<__T, (#from_positions)>
-                        + ::core::marker::Send
-                        + ::core::marker::Sync
-                        + 'static,
-                {
-                    ::rurqe_core::query::SelectQuery::<__D>::new()
-                        .from::<__T>()
-                        .select::<Self, (#from_positions)>(self)
-                }
-
                 /// Starts a `SELECT` query projecting these projections from `table`.
                 ///
-                /// Table markers are zero-sized, so the projected-from table is
-                /// inferred from the argument and the call needs no turbofish:
+                /// In dialect prelude scopes, prefer calling `.from(table)` directly
+                /// without turbofish. For generic usage across dialects, specify the
+                /// dialect using `from_table::<Dialect, _>(table)`:
                 ///
                 /// ```text
-                /// select!(UserId, UserEmail).from_table(users).build()
+                /// select!(UserId, UserEmail).from_table::<Postgres, _>(users).build()
                 /// ```
                 pub fn from_table<__D, __T>(
                     self,

@@ -70,6 +70,29 @@ pub mod postgres {
         DeleteQuery::from_table(table)
     }
 
+    /// Extension trait enabling `.from(table)` on selections in PostgreSQL queries.
+    pub trait PostgresSelectFrom<T: Table, Positions>: Sized {
+        /// The row type produced by the query.
+        type Row;
+
+        /// Starts a `SELECT` query over `table` projecting `self`.
+        fn from(self, table: T) -> SelectQuery<Postgres, T, Self::Row>;
+    }
+
+    impl<S, T, Positions> PostgresSelectFrom<T, Positions> for S
+    where
+        T: Table,
+        S: rurqe_core::query::SelectionFor<T, Positions> + Send + Sync + 'static,
+    {
+        type Row = <S as rurqe_core::query::SelectionFor<T, Positions>>::Row;
+
+        fn from(self, table: T) -> SelectQuery<Postgres, T, Self::Row> {
+            SelectQuery::<Postgres>::new()
+                .from_table(table)
+                .select::<S, Positions>(self)
+        }
+    }
+
     /// The shared facade prelude with PostgreSQL entry points.
     ///
     /// The prelude re-exports the whole facade prelude and replaces its
@@ -79,7 +102,9 @@ pub mod postgres {
     pub mod prelude {
         pub use crate::prelude::*;
 
-        pub use super::{delete_from, insert_into, select_from, update};
+        pub use super::{
+            delete_from, insert_into, select_from, update, PostgresSelectFrom,
+        };
     }
 }
 
@@ -136,6 +161,29 @@ pub mod sqlite {
         DeleteQuery::from_table(table)
     }
 
+    /// Extension trait enabling `.from(table)` on selections in SQLite queries.
+    pub trait SqliteSelectFrom<T: Table, Positions>: Sized {
+        /// The row type produced by the query.
+        type Row;
+
+        /// Starts a `SELECT` query over `table` projecting `self`.
+        fn from(self, table: T) -> SelectQuery<Sqlite, T, Self::Row>;
+    }
+
+    impl<S, T, Positions> SqliteSelectFrom<T, Positions> for S
+    where
+        T: Table,
+        S: rurqe_core::query::SelectionFor<T, Positions> + Send + Sync + 'static,
+    {
+        type Row = <S as rurqe_core::query::SelectionFor<T, Positions>>::Row;
+
+        fn from(self, table: T) -> SelectQuery<Sqlite, T, Self::Row> {
+            SelectQuery::<Sqlite>::new()
+                .from_table(table)
+                .select::<S, Positions>(self)
+        }
+    }
+
     /// The shared facade prelude with SQLite entry points.
     ///
     /// The prelude re-exports the whole facade prelude and replaces its
@@ -145,7 +193,9 @@ pub mod sqlite {
     pub mod prelude {
         pub use crate::prelude::*;
 
-        pub use super::{delete_from, insert_into, select_from, update};
+        pub use super::{
+            delete_from, insert_into, select_from, update, SqliteSelectFrom,
+        };
     }
 }
 

@@ -41,6 +41,25 @@ impl Dialect for TestDialect {
     }
 }
 
+trait TestSelectFrom<T: rurqe_core::schema::Table, Positions>: Sized {
+    type Row;
+    fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row>;
+}
+
+impl<S, T, Positions> TestSelectFrom<T, Positions> for S
+where
+    T: rurqe_core::schema::Table,
+    S: SelectionFor<T, Positions> + Send + Sync + 'static,
+{
+    type Row = <S as SelectionFor<T, Positions>>::Row;
+
+    fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row> {
+        SelectQuery::<TestDialect>::new()
+            .from_table(table)
+            .select::<S, Positions>(self)
+    }
+}
+
 /// Decodes `values` into the row type of the anonymous selection `S`.
 fn decode<S>(_selection: &S, values: &[SqlVal]) -> Option<S::Row>
 where
@@ -127,7 +146,7 @@ fn expressions_render_through_the_select_target_trait() {
 #[test]
 fn selection_starts_a_query_directly_from_a_table() {
     let built = select!(UserId, UserEmail as contact_email)
-        .from::<TestDialect, User>()
+        .from(User)
         .where_(Expr::column::<UserId>().gt(1i64))
         .build();
 

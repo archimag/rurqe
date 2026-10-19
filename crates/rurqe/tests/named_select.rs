@@ -111,3 +111,35 @@ fn users_table_is_an_expression_scope() {
     fn assert_expr_scope<S: ExprScope>() {}
     assert_expr_scope::<User>();
 }
+
+#[test]
+fn postgres_select_macro_starts_query_from_table_without_turbofish() {
+    use rurqe::postgres::prelude::*;
+
+    let built = select!(UserId, UserName as contact_email)
+        .from(User)
+        .where_(Expr::column::<UserId>().gt(1i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
+fn sqlite_select_macro_starts_query_from_table_without_turbofish() {
+    use rurqe::sqlite::prelude::*;
+
+    let built = select!(UserId, UserName as contact_email)
+        .from(User)
+        .where_(Expr::column::<UserId>().gt(1i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" > ?)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
