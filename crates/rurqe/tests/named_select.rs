@@ -45,7 +45,7 @@ fn select_macro_renders_sql_and_decodes_named_fields() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\", \"active\" FROM \"users\""
+        "SELECT \"users\".\"id\", \"users\".\"name\", \"users\".\"active\" FROM \"users\""
     );
 
     let record = decode(
@@ -75,7 +75,8 @@ fn named_projection_composes_with_filters_and_pagination() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1) ORDER BY \"id\" ASC LIMIT 5"
+        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" \
+         WHERE (\"id\" > $1) ORDER BY \"id\" ASC LIMIT 5"
     );
     assert_eq!(built.params, vec![SqlVal::I64(10)]);
 }

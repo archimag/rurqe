@@ -96,5 +96,5 @@ fn selection_feeds_the_query_builder() {
         .select(select!(UserId, UserEmail as contact_email))
         .build();
 
-    assert_eq!(built.sql, "SELECT id, email FROM users");
+    assert_eq!(built.sql, "SELECT users.id, users.email FROM users");
 }

@@ -68,7 +68,10 @@ pub use rurqe_sqlite as sqlite;
 ///     .select(cols!(UserId))
 ///     .build();
 ///
-/// assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
+/// assert_eq!(
+///     built.sql,
+///     "SELECT \"users\".\"id\" FROM \"users\""
+/// );
 /// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, ()> {
     SelectQuery::new().from::<T>()

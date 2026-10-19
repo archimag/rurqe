@@ -16,9 +16,11 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 }
 
 fn expand_projections(projections: &ProjectionList) -> TokenStream {
+    let len = projections.len();
     let mut field_defs = TokenStream::new();
     let mut field_reads = TokenStream::new();
     let mut name_pushes = TokenStream::new();
+    let mut column_pairs = TokenStream::new();
 
     for item in &projections.items {
         let field = item.field_ident();
@@ -32,6 +34,12 @@ fn expand_projections(projections: &ProjectionList) -> TokenStream {
         });
         name_pushes.extend(quote! {
             out.push(<#column as ::rurqe_core::schema::Column>::NAME);
+        });
+        column_pairs.extend(quote! {
+            (
+                <<#column as ::rurqe_core::schema::Column>::Table as ::rurqe_core::schema::Table>::NAME,
+                <#column as ::rurqe_core::schema::Column>::NAME,
+            ),
         });
     }
 
@@ -61,6 +69,22 @@ fn expand_projections(projections: &ProjectionList) -> TokenStream {
 
                 fn push_column_names(&self, out: &mut ::std::vec::Vec<&'static str>) {
                     #name_pushes
+                }
+
+                fn render_projections<__D: ::rurqe_core::dialect::Dialect>(
+                    &self,
+                    sql: &mut ::std::string::String,
+                    _params: &mut ::std::vec::Vec<::rurqe_core::expr::SqlVal>,
+                ) {
+                    let columns: [(&'static str, &'static str); #len] = [#column_pairs];
+                    for (index, &(table, column)) in columns.iter().enumerate() {
+                        if index > 0 {
+                            sql.push_str(", ");
+                        }
+                        __D::push_quoted_identifier(sql, table);
+                        sql.push('.');
+                        __D::push_quoted_identifier(sql, column);
+                    }
                 }
             }
 

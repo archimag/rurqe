@@ -65,8 +65,8 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"id\", \"total\" FROM \"users\" INNER JOIN \"orders\" \
-         ON (\"user_id\" = $1) WHERE (\"active\" = $2)"
+        "SELECT \"users\".\"id\", \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" \
+         INNER JOIN \"orders\" ON (\"user_id\" = $1) WHERE (\"active\" = $2)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::Bool(true)]);
 
