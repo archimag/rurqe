@@ -116,8 +116,9 @@ impl DeclarativeStage {
         let mut scripts = Vec::new();
 
         for entry in entries {
-            let entry = entry
-                .map_err(|error| stage_error(format!("failed to read `{}`: {error}", dir.display())))?;
+            let entry = entry.map_err(|error| {
+                stage_error(format!("failed to read `{}`: {error}", dir.display()))
+            })?;
 
             let path = entry.path();
             let is_script = path.extension().and_then(|extension| extension.to_str())
@@ -127,8 +128,9 @@ impl DeclarativeStage {
                 continue;
             }
 
-            let sql = std::fs::read_to_string(&path)
-                .map_err(|error| stage_error(format!("failed to read `{}`: {error}", path.display())))?;
+            let sql = std::fs::read_to_string(&path).map_err(|error| {
+                stage_error(format!("failed to read `{}`: {error}", path.display()))
+            })?;
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -150,6 +152,25 @@ impl DeclarativeStage {
     pub fn is_empty(&self) -> bool {
         self.scripts.is_empty()
     }
+
+    /// The SHA-256 digest of the stage in application order.
+    ///
+    /// File names and bodies are hashed in the order they are applied, so
+    /// reordering the directory never changes the digest while any edit of a
+    /// script does. The digest anchors a cold start: a database initialised from
+    /// a diverged stage is rejected instead of being silently overwritten.
+    pub fn checksum(&self) -> Checksum {
+        let mut digest = String::new();
+
+        for script in &self.scripts {
+            digest.push_str(&script.name);
+            digest.push('\n');
+            digest.push_str(&script.sql);
+            digest.push('\n');
+        }
+
+        Checksum::of(digest.as_bytes())
+    }
 }
 
 /// The synthetic history entry a cold start records.
@@ -166,7 +187,11 @@ impl StageMarker {
 
     /// Creates a marker from the stage version, its description, and the
     /// digest of the stage it was cut at.
-    pub fn new(version: MigrationVersion, description: impl Into<String>, checksum: Checksum) -> Self {
+    pub fn new(
+        version: MigrationVersion,
+        description: impl Into<String>,
+        checksum: Checksum,
+    ) -> Self {
         Self {
             version,
             description: description.into(),
@@ -346,9 +371,8 @@ mod tests {
 
     fn stage_directory(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "rurqe-stage-{}-{}-{name}",
-            std::process::id(),
-            std::line!()
+            "rurqe-stage-{}-{name}",
+            std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create the stage directory");
@@ -392,6 +416,22 @@ mod tests {
     }
 
     #[test]
+    fn the_stage_digest_follows_names_and_bodies() {
+        let stage = stage();
+        let reordered = DeclarativeStage::new(vec![
+            StageScript::new("users.sql", USERS),
+            StageScript::new("orders.sql", ORDERS),
+        ]);
+        let changed = DeclarativeStage::new(vec![StageScript::new(
+            "users.sql",
+            "CREATE TABLE users (id BIGINT);",
+        )]);
+
+        assert_eq!(reordered.checksum(), stage.checksum());
+        assert_ne!(changed.checksum(), stage.checksum());
+    }
+
+    #[test]
     fn cold_start_applies_the_stage_in_a_single_transaction() {
         let mut backend = InMemoryBackend::new();
         let catalog = SchemaCatalog::default();
@@ -423,7 +463,8 @@ mod tests {
     #[test]
     fn repeating_the_same_stage_is_a_no_op() {
         let mut backend = InMemoryBackend::new();
-        cold_start(&mut backend, &stage(), &marker()).expect("the first run initialises the schema");
+        cold_start(&mut backend, &stage(), &marker())
+            .expect("the first run initialises the schema");
 
         let report = cold_start(&mut backend, &stage(), &marker())
             .expect("the recorded stage is recognised");
@@ -441,11 +482,13 @@ mod tests {
     #[test]
     fn an_initialised_database_is_never_overwritten() {
         let mut backend = InMemoryBackend::new();
-        let migration =
-            Migration::parse("V1__init.sql", USERS).expect("a valid script name");
-        backend
-            .history
-            .push(SchemaHistoryEntry::applied(1, &migration, "2024-01-01 00:00:00", 1));
+        let migration = Migration::parse("V1__init.sql", USERS).expect("a valid script name");
+        backend.history.push(SchemaHistoryEntry::applied(
+            1,
+            &migration,
+            "2024-01-01 00:00:00",
+            1,
+        ));
 
         let error = cold_start(&mut backend, &stage(), &marker())
             .expect_err("an initialised database is rejected");
@@ -457,9 +500,11 @@ mod tests {
     #[test]
     fn a_diverged_stage_digest_is_rejected() {
         let mut backend = InMemoryBackend::new();
-        cold_start(&mut backend, &stage(), &marker()).expect("the first run initialises the schema");
+        cold_start(&mut backend, &stage(), &marker())
+            .expect("the first run initialises the schema");
 
-        let changed = StageMarker::new(version("3.2"), StageMarker::DESCRIPTION, Checksum::of(b"other"));
+        let changed =
+            StageMarker::new(version("3.2"), StageMarker::DESCRIPTION, Checksum::of(b"other"));
         let error = cold_start(&mut backend, &stage(), &changed)
             .expect_err("a diverged stage cannot masquerade as a cold start");
 

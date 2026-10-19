@@ -20,8 +20,9 @@ pub use args::{parse_args, redact_database_url, CliCommand, CliError};
 pub(crate) use connection::{connect, Connection};
 
 use self::commands::{
-    apply_migrations, baseline_database, codegen_options, print_help, repair_history,
-    report_status, resolve_schema_code, write_file,
+    apply_migrations, baseline_database, codegen_options, commit_stage, initialise_stage,
+    print_help, prune_migrations, repair_history, report_status, resolve_schema_code,
+    verify_stage, write_file,
 };
 use self::connection::resolve_database_url;
 
@@ -136,5 +137,44 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             println!("Schema verification passed against {}", lock_path.display());
             Ok(())
         }
+        CliCommand::StageInit {
+            stage_dir,
+            version,
+            description,
+            database_url,
+        } => {
+            with_migration_backend!(database_url, |backend| {
+                initialise_stage(&mut backend, &stage_dir, version, &description)
+            })
+        }
+        CliCommand::StageVerify {
+            stage_dir,
+            base_stage_dir,
+            migrations_dir,
+            database_url,
+        } => {
+            let url = database_url.unwrap_or_else(|| ":memory:".to_owned());
+            verify_stage(
+                &stage_dir,
+                base_stage_dir.as_deref(),
+                &migrations_dir,
+                &url,
+            )
+        }
+        CliCommand::StageCommit {
+            version,
+            database_url,
+            lock_path,
+            checkpoint_path,
+        } => {
+            let url = resolve_database_url(database_url)?;
+            commit_stage(version, &url, &lock_path, &checkpoint_path)
+        }
+        CliCommand::Prune {
+            before,
+            migrations_dir,
+            checkpoint_path,
+            dry_run,
+        } => prune_migrations(before, &migrations_dir, &checkpoint_path, dry_run),
     }
 }

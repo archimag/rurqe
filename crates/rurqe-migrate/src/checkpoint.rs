@@ -81,6 +81,21 @@ impl Checkpoint {
         self.schema_hash
     }
 
+    /// Renders the canonical `checkpoint.toml` marker.
+    ///
+    /// The rendering round-trips through [`Checkpoint::parse`], so a committed
+    /// marker is always readable back by the migration runner.
+    pub fn render(&self) -> String {
+        format!(
+            "[{}]\n{} = \"{}\"\n{} = \"{}\"\n",
+            CHECKPOINT_SECTION,
+            VERSION_KEY,
+            self.pruned_up_to_version,
+            HASH_KEY,
+            self.schema_hash.to_hex()
+        )
+    }
+
     /// Parses the `[checkpoint]` table out of `contents`.
     pub fn parse(contents: &str) -> Result<Self, Error> {
         let mut section: Option<&str> = None;
@@ -333,6 +348,13 @@ mod tests {
         ))
         .expect_err("repeated keys are rejected");
         assert!(duplicate.to_string().contains("more than once"));
+    }
+
+    #[test]
+    fn the_marker_round_trips_through_its_rendering() {
+        let checkpoint = marker("3.2");
+
+        assert_eq!(Checkpoint::parse(&checkpoint.render()), Ok(checkpoint));
     }
 
     #[test]

@@ -2,7 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
+use rurqe_migrate::checkpoint::CHECKPOINT_FILE;
+use rurqe_migrate::stage::DeclarativeStage;
 use rurqe_migrate::version::MigrationVersion;
+
+/// The default directory holding the migration scripts.
+const DEFAULT_MIGRATIONS_DIR: &str = "migrations";
+
+/// The default directory holding the DDL scripts of the declarative stage.
+const DEFAULT_STAGE_DIR: &str = DeclarativeStage::DIRECTORY;
 
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +41,30 @@ pub enum CliCommand {
         database_url: Option<String>,
         schema_path: Option<PathBuf>,
         lock_path: PathBuf,
+    },
+    StageInit {
+        stage_dir: PathBuf,
+        version: MigrationVersion,
+        description: String,
+        database_url: Option<String>,
+    },
+    StageVerify {
+        stage_dir: PathBuf,
+        base_stage_dir: Option<PathBuf>,
+        migrations_dir: PathBuf,
+        database_url: Option<String>,
+    },
+    StageCommit {
+        version: MigrationVersion,
+        database_url: Option<String>,
+        lock_path: PathBuf,
+        checkpoint_path: PathBuf,
+    },
+    Prune {
+        before: MigrationVersion,
+        migrations_dir: PathBuf,
+        checkpoint_path: PathBuf,
+        dry_run: bool,
     },
     Help,
     Version,
@@ -273,8 +305,215 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             })
         }
 
+        "db-stage" | "stage" => parse_stage(&tokens),
+
+        "db-prune" | "prune" => parse_prune(&tokens),
+
         other => Err(CliError(format!("unknown command `{other}`"))),
     }
+}
+
+/// Parses a `stage <action>` invocation into its typed command.
+fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
+    let action = match tokens.first() {
+        Some(action) if !action.starts_with('-') => *action,
+        _ => {
+            return Err(CliError(
+                "missing stage action (expected `init`, `verify`, or `commit`)".to_owned(),
+            ))
+        }
+    };
+
+    match action {
+        "init" => parse_stage_init(&tokens[1..]),
+        "verify" => parse_stage_verify(&tokens[1..]),
+        "commit" => parse_stage_commit(&tokens[1..]),
+        other => Err(CliError(format!(
+            "unknown stage action `{other}` (expected `init`, `verify`, or `commit`)"
+        ))),
+    }
+}
+
+/// Parses `stage init`: cold start the database from the declarative stage.
+fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
+    let mut stage_dir = PathBuf::from(DEFAULT_STAGE_DIR);
+    let mut description = "stage".to_owned();
+    let mut version = None;
+    let mut database_url = None;
+
+    let mut idx = 0;
+    while idx < tokens.len() {
+        match tokens[idx] {
+            "--stage-dir" if idx + 1 < tokens.len() => {
+                stage_dir = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--description" if idx + 1 < tokens.len() => {
+                description = tokens[idx + 1].to_owned();
+                idx += 2;
+            }
+            "--version" if idx + 1 < tokens.len() => {
+                version = Some(parse_version("--version", tokens[idx + 1])?);
+                idx += 2;
+            }
+            "--database-url" if idx + 1 < tokens.len() => {
+                database_url = Some(tokens[idx + 1].to_owned());
+                idx += 2;
+            }
+            other => {
+                return Err(CliError(format!("unknown option `{other}` for stage init")));
+            }
+        }
+    }
+
+    let version = version.ok_or_else(|| {
+        CliError("missing required `--version` argument for stage init".to_owned())
+    })?;
+
+    Ok(CliCommand::StageInit {
+        stage_dir,
+        version,
+        description,
+        database_url,
+    })
+}
+
+/// Parses `stage verify`: check the golden equation between stage and tail.
+fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
+    let mut stage_dir = PathBuf::from(DEFAULT_STAGE_DIR);
+    let mut base_stage_dir = None;
+    let mut migrations_dir = PathBuf::from(DEFAULT_MIGRATIONS_DIR);
+    let mut database_url = None;
+
+    let mut idx = 0;
+    while idx < tokens.len() {
+        match tokens[idx] {
+            "--stage-dir" if idx + 1 < tokens.len() => {
+                stage_dir = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--base-stage-dir" if idx + 1 < tokens.len() => {
+                base_stage_dir = Some(PathBuf::from(tokens[idx + 1]));
+                idx += 2;
+            }
+            "--migrations-dir" if idx + 1 < tokens.len() => {
+                migrations_dir = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--database-url" if idx + 1 < tokens.len() => {
+                database_url = Some(tokens[idx + 1].to_owned());
+                idx += 2;
+            }
+            other => {
+                return Err(CliError(format!(
+                    "unknown option `{other}` for stage verify"
+                )));
+            }
+        }
+    }
+
+    Ok(CliCommand::StageVerify {
+        stage_dir,
+        base_stage_dir,
+        migrations_dir,
+        database_url,
+    })
+}
+
+/// Parses `stage commit`: seal the live database as the new stage anchor.
+fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
+    let mut version = None;
+    let mut lock_path = PathBuf::from("schema.lock");
+    let mut checkpoint_path = PathBuf::from(CHECKPOINT_FILE);
+    let mut database_url = None;
+
+    let mut idx = 0;
+    while idx < tokens.len() {
+        match tokens[idx] {
+            "--version" if idx + 1 < tokens.len() => {
+                version = Some(parse_version("--version", tokens[idx + 1])?);
+                idx += 2;
+            }
+            "--lock-path" if idx + 1 < tokens.len() => {
+                lock_path = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--checkpoint-path" if idx + 1 < tokens.len() => {
+                checkpoint_path = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--database-url" if idx + 1 < tokens.len() => {
+                database_url = Some(tokens[idx + 1].to_owned());
+                idx += 2;
+            }
+            other => {
+                return Err(CliError(format!(
+                    "unknown option `{other}` for stage commit"
+                )));
+            }
+        }
+    }
+
+    let version = version.ok_or_else(|| {
+        CliError("missing required `--version` argument for stage commit".to_owned())
+    })?;
+
+    Ok(CliCommand::StageCommit {
+        version,
+        database_url,
+        lock_path,
+        checkpoint_path,
+    })
+}
+
+/// Parses `prune`: drop migration scripts the checkpoint already folded in.
+fn parse_prune(tokens: &[&str]) -> Result<CliCommand, CliError> {
+    let mut before = None;
+    let mut migrations_dir = PathBuf::from(DEFAULT_MIGRATIONS_DIR);
+    let mut checkpoint_path = PathBuf::from(CHECKPOINT_FILE);
+    let mut dry_run = false;
+
+    let mut idx = 0;
+    while idx < tokens.len() {
+        match tokens[idx] {
+            "--before" if idx + 1 < tokens.len() => {
+                before = Some(parse_version("--before", tokens[idx + 1])?);
+                idx += 2;
+            }
+            "--migrations-dir" if idx + 1 < tokens.len() => {
+                migrations_dir = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--checkpoint-path" if idx + 1 < tokens.len() => {
+                checkpoint_path = PathBuf::from(tokens[idx + 1]);
+                idx += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                idx += 1;
+            }
+            other => {
+                return Err(CliError(format!("unknown option `{other}` for prune")));
+            }
+        }
+    }
+
+    let before =
+        before.ok_or_else(|| CliError("missing required `--before` argument for prune".to_owned()))?;
+
+    Ok(CliCommand::Prune {
+        before,
+        migrations_dir,
+        checkpoint_path,
+        dry_run,
+    })
+}
+
+/// Parses a migration version supplied through `flag`.
+fn parse_version(flag: &str, value: &str) -> Result<MigrationVersion, CliError> {
+    value
+        .parse::<MigrationVersion>()
+        .map_err(|error| CliError(format!("invalid `{flag}` value `{value}`: {error}")))
 }
 
 /// Replaces the userinfo section of a connection URL with `***`.

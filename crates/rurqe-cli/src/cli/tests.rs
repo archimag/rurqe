@@ -139,6 +139,100 @@ fn redacts_credentials_from_connection_urls() {
 }
 
 #[test]
+fn parses_stage_commands() {
+    let init = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "init".into(),
+        "--version".into(),
+        "3.2".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        init,
+        CliCommand::StageInit {
+            stage_dir: PathBuf::from("schema"),
+            version: "3.2".parse().unwrap(),
+            description: "stage".into(),
+            database_url: None,
+        }
+    );
+
+    let verify = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "verify".into(),
+        "--base-stage-dir".into(),
+        "schema-base".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        verify,
+        CliCommand::StageVerify {
+            stage_dir: PathBuf::from("schema"),
+            base_stage_dir: Some(PathBuf::from("schema-base")),
+            migrations_dir: PathBuf::from("migrations"),
+            database_url: None,
+        }
+    );
+
+    let commit = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "commit".into(),
+        "--version".into(),
+        "3.2".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        commit,
+        CliCommand::StageCommit {
+            version: "3.2".parse().unwrap(),
+            database_url: None,
+            lock_path: PathBuf::from("schema.lock"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+        }
+    );
+}
+
+#[test]
+fn parses_prune_command() {
+    let prune = parse_args(&[
+        "rurqe".into(),
+        "prune".into(),
+        "--before".into(),
+        "3.2".into(),
+        "--dry-run".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        prune,
+        CliCommand::Prune {
+            before: "3.2".parse().unwrap(),
+            migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            dry_run: true,
+        }
+    );
+}
+
+#[test]
+fn stage_and_prune_require_their_boundaries() {
+    let missing_version = parse_args(&["rurqe".into(), "stage".into(), "init".into()])
+        .expect_err("the stage version is required");
+    assert!(missing_version.to_string().contains("--version"));
+
+    let missing_action = parse_args(&["rurqe".into(), "stage".into()])
+        .expect_err("the stage action is required");
+    assert!(missing_action.to_string().contains("stage action"));
+
+    let missing_before =
+        parse_args(&["rurqe".into(), "prune".into()]).expect_err("the prune boundary is required");
+    assert!(missing_before.to_string().contains("--before"));
+}
+
+#[test]
 fn parses_codegen_command() {
     let cmd = parse_args(&[
         "cargo-db-codegen".into(),
