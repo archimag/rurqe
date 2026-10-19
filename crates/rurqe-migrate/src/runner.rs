@@ -446,12 +446,10 @@ impl MigrationBackend for InMemoryBackend {
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         let initial_history = self.history.clone();
-        let initial_sql_len = self.executed_sql.len();
         Ok(InMemoryTransaction {
             backend: self,
             staged_history: initial_history,
             staged_sql: Vec::new(),
-            initial_sql_len,
         })
     }
 }
@@ -461,8 +459,6 @@ pub struct InMemoryTransaction<'a> {
     backend: &'a mut InMemoryBackend,
     staged_history: Vec<SchemaHistoryEntry>,
     staged_sql: Vec<String>,
-    #[allow(dead_code)]
-    initial_sql_len: usize,
 }
 
 impl MigrationTransaction for InMemoryTransaction<'_> {
