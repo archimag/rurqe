@@ -162,3 +162,51 @@ fn joined_aggregations_group_rows_by_the_joined_table() {
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(1)]);
 }
+
+#[test]
+fn window_functions_render_over_clause_and_decode_rows() {
+    let window = Window::partition_by(OrderUserId).order_by_desc(OrderTotal);
+
+    let built = SelectQuery::<Postgres<Pg16>>::new()
+        .from::<Order>()
+        .select((
+            OrderId,
+            row_number().over(window.clone()),
+            rank().over(window.clone()),
+            dense_rank().over(window.clone()),
+            lag(OrderTotal).offset(1).over(Window::order_by_asc(OrderId)),
+            lead(OrderTotal).over(Window::order_by_asc(OrderId)),
+            Expr::sum::<OrderTotal>().over(Window::partition_by(OrderUserId)),
+        ))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", ROW_NUMBER() OVER (PARTITION BY \"user_id\" ORDER BY \"total\" DESC), \
+         RANK() OVER (PARTITION BY \"user_id\" ORDER BY \"total\" DESC), \
+         DENSE_RANK() OVER (PARTITION BY \"user_id\" ORDER BY \"total\" DESC), \
+         LAG(\"total\", 1) OVER (ORDER BY \"id\" ASC), \
+         LEAD(\"total\") OVER (ORDER BY \"id\" ASC), \
+         SUM(\"total\") OVER (PARTITION BY \"user_id\") \
+         FROM \"orders\""
+    );
+
+    let row = <(i64, i64, i64, i64, Option<f64>, Option<f64>, f64)>::from_row(&[
+        SqlVal::I64(1),
+        SqlVal::I64(1),
+        SqlVal::I64(1),
+        SqlVal::I64(1),
+        SqlVal::Null,
+        SqlVal::F64(45.0),
+        SqlVal::F64(100.0),
+    ])
+    .expect("window row decodes");
+
+    assert_eq!(row.0, 1);
+    assert_eq!(row.1, 1);
+    assert_eq!(row.2, 1);
+    assert_eq!(row.3, 1);
+    assert_eq!(row.4, None);
+    assert_eq!(row.5, Some(45.0));
+    assert_eq!(row.6, 100.0);
+}

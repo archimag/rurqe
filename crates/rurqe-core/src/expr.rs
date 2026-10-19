@@ -280,9 +280,39 @@ impl<T> Expr<T> {
             rhs: Box::new(ExprKind::Value(value.into())),
         })
     }
+
+    /// Builds a window expression from this expression over `window`.
+    pub fn over(self, window: crate::query::WindowSpec) -> crate::query::WindowExpr<T> {
+        crate::query::WindowExpr::from_expr(self.kind, window)
+    }
+
+    /// Starts a `LAG(C)` window function builder for column `C`.
+    pub fn lag<C: Column<RustType = T>>(_col: C) -> crate::query::LagLeadFn<Option<T>> {
+        crate::query::lag(_col)
+    }
+
+    /// Starts a `LEAD(C)` window function builder for column `C`.
+    pub fn lead<C: Column<RustType = T>>(_col: C) -> crate::query::LagLeadFn<Option<T>> {
+        crate::query::lead(_col)
+    }
 }
 
 impl Expr<i64> {
+    /// Starts a `ROW_NUMBER()` window function builder.
+    pub fn row_number() -> crate::query::WindowFn<i64> {
+        crate::query::row_number()
+    }
+
+    /// Starts a `RANK()` window function builder.
+    pub fn rank() -> crate::query::WindowFn<i64> {
+        crate::query::rank()
+    }
+
+    /// Starts a `DENSE_RANK()` window function builder.
+    pub fn dense_rank() -> crate::query::WindowFn<i64> {
+        crate::query::dense_rank()
+    }
+
     /// Builds a `COUNT(*)` expression.
     pub fn count_all() -> Self {
         Self::new(ExprKind::Aggregate {

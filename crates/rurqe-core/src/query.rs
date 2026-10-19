@@ -34,10 +34,49 @@ use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal};
 use crate::row::FromRow;
 use crate::schema::{Column, Table};
 
+/// A single item projected by a `SELECT` query, such as a column or a window expression.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid projection item",
+    label = "must be a column, nullable column, or window expression",
+    note = "columns, nullable columns, and window expressions (`.over(...)`) can be projected in a selection"
+)]
+pub trait SelectTarget {
+    /// The Rust type produced for this projection.
+    type RustType;
+
+    /// Pushes the identifier name of this target if it is a simple column reference.
+    fn push_column_name(&self, out: &mut Vec<&'static str>) {
+        let _ = out;
+    }
+
+    /// Renders this projection item to the SQL buffer and binds any parameters.
+    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>);
+}
+
+impl<C: Column> SelectTarget for C {
+    type RustType = C::RustType;
+
+    fn push_column_name(&self, out: &mut Vec<&'static str>) {
+        out.push(C::NAME);
+    }
+
+    fn render<D: Dialect>(&self, sql: &mut String, _params: &mut Vec<SqlVal>) {
+        D::push_quoted_identifier(sql, C::NAME);
+    }
+}
+
+impl<T: 'static + Send + Sync> SelectTarget for WindowExpr<T> {
+    type RustType = T;
+
+    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        WindowExpr::render::<D>(self, sql, params);
+    }
+}
+
 /// A list of selected columns whose Rust value types form the query row type.
 ///
-/// The trait is implemented for column tuples, so `(UserId,)` yields a `(i64,)`
-/// row and `(UserId, UserName)` yields a `(i64, String)` row.
+/// The trait is implemented for tuples of projection targets, so `(UserId,)`
+/// yields a `(i64,)` row and `(UserId, row_number().over(w))` yields `(i64, i64)`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a supported selection",
     label = "select a column or a tuple of columns",
@@ -47,41 +86,58 @@ pub trait Selection {
     /// The tuple of Rust values produced for a single row.
     type Row;
 
-    /// Appends the SQL names of the selected columns to `out` in selection order.
-    fn push_column_names(&self, out: &mut Vec<&'static str>);
+    /// Appends the SQL names of simple selected columns to `out`.
+    fn push_column_names(&self, out: &mut Vec<&'static str>) {
+        let _ = out;
+    }
+
+    /// Renders all projection items into `sql`, separating them by commas.
+    fn render_projections<D: Dialect>(&self, sql: &mut String, _params: &mut Vec<SqlVal>) {
+        let mut names = Vec::new();
+        self.push_column_names(&mut names);
+        for (index, name) in names.into_iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            D::push_quoted_identifier(sql, name);
+        }
+    }
 }
 
 macro_rules! impl_selection {
-    ($(($column:ident, $rust_type:ident)),+) => {
-        impl<$($column: Column),+> Selection for ($($column,)+) {
-            type Row = ($($column::$rust_type,)+);
+    ($($target:ident),+) => {
+        #[allow(non_snake_case, unused_assignments)]
+        impl<$($target: SelectTarget),+> Selection for ($($target,)+) {
+            type Row = ($($target::RustType,)+);
 
             fn push_column_names(&self, out: &mut Vec<&'static str>) {
-                $(out.push($column::NAME);)+
+                let ($($target,)+) = self;
+                $($target.push_column_name(out);)+
+            }
+
+            fn render_projections<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+                let ($($target,)+) = self;
+                let mut first = true;
+                $(
+                    if !first {
+                        sql.push_str(", ");
+                    }
+                    first = false;
+                    $target.render::<D>(sql, params);
+                )+
             }
         }
     };
 }
 
-impl_selection!((C1, RustType));
-impl_selection!((C1, RustType), (C2, RustType));
-impl_selection!((C1, RustType), (C2, RustType), (C3, RustType));
-impl_selection!((C1, RustType), (C2, RustType), (C3, RustType), (C4, RustType));
-impl_selection!(
-    (C1, RustType),
-    (C2, RustType),
-    (C3, RustType),
-    (C4, RustType),
-    (C5, RustType)
-);
-impl_selection!(
-    (C1, RustType),
-    (C2, RustType),
-    (C3, RustType),
-    (C4, RustType),
-    (C5, RustType),
-    (C6, RustType)
-);
+impl_selection!(T1);
+impl_selection!(T1, T2);
+impl_selection!(T1, T2, T3);
+impl_selection!(T1, T2, T3, T4);
+impl_selection!(T1, T2, T3, T4, T5);
+impl_selection!(T1, T2, T3, T4, T5, T6);
+impl_selection!(T1, T2, T3, T4, T5, T6, T7);
+impl_selection!(T1, T2, T3, T4, T5, T6, T7, T8);
 
 /// A column or tuple of columns for the `GROUP BY` clause.
 #[diagnostic::on_unimplemented(
@@ -251,7 +307,7 @@ impl OrderDirection {
 /// type, which keeps the builder signature flat while tracking both the scope
 /// and the result type at compile time.
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
-    projections: Vec<&'static str>,
+    projections: Option<ProjectionRenderer>,
     joins: Vec<(JoinKind, ExprKind)>,
     filter: Option<ExprKind>,
     group_by: Vec<&'static str>,
@@ -268,11 +324,13 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
 /// covariant and no drop-check obligations are introduced.
 type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
 
+type ProjectionRenderer = Box<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+
 impl<D: Dialect> SelectQuery<D, (), ()> {
     /// Creates a query without a table, projections, filter, or pagination.
     pub fn new() -> Self {
         SelectQuery {
-            projections: Vec::new(),
+            projections: None,
             joins: Vec::new(),
             filter: None,
             group_by: Vec::new(),
@@ -300,8 +358,13 @@ impl<D: Dialect, Output> SelectQuery<D, (), Output> {
 
 impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
     /// Selects `selection`, fixing the row type of the query to [`Selection::Row`].
-    pub fn select<S: Selection>(mut self, selection: S) -> SelectQuery<D, Tables, S::Row> {
-        selection.push_column_names(&mut self.projections);
+    pub fn select<S: Selection + Send + Sync + 'static>(
+        mut self,
+        selection: S,
+    ) -> SelectQuery<D, Tables, S::Row> {
+        self.projections = Some(Box::new(move |sql, params| {
+            selection.render_projections::<D>(sql, params);
+        }));
         self.retype()
     }
 }
@@ -421,7 +484,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self.retype()
     }
 
-    fn retype<D2: Dialect, Tables2, Output2>(self) -> SelectQuery<D2, Tables2, Output2> {
+    fn retype<Tables2, Output2>(self) -> SelectQuery<D, Tables2, Output2> {
         SelectQuery {
             projections: self.projections,
             joins: self.joins,
@@ -439,9 +502,8 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
 impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     /// Renders the query into SQL text and its ordered parameter list.
     pub fn build(&self) -> BuiltQuery {
-        assert!(
-            !self.projections.is_empty(),
-            "a SELECT query requires at least one projection; call `select` before `build`"
+        let render_projections = self.projections.as_ref().expect(
+            "a SELECT query requires at least one projection; call `select` before `build`",
         );
 
         let mut tables = Vec::new();
@@ -453,17 +515,12 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         );
 
         let mut sql = String::from("SELECT ");
-        for (index, name) in self.projections.iter().enumerate() {
-            if index > 0 {
-                sql.push_str(", ");
-            }
-            D::push_quoted_identifier(&mut sql, name);
-        }
+        let mut params = Vec::new();
+        render_projections(&mut sql, &mut params);
 
         sql.push_str(" FROM ");
         D::push_quoted_identifier(&mut sql, tables[0]);
 
-        let mut params = Vec::new();
         for (index, (kind, on)) in self.joins.iter().enumerate() {
             sql.push(' ');
             sql.push_str(kind.as_str());
@@ -816,6 +873,323 @@ impl TransactionContext {
     /// Ends the innermost block and returns the savepoint name it used.
     pub fn close_savepoint(&mut self) -> Option<String> {
         self.savepoints.pop()
+    }
+}
+
+/// A column or tuple of columns for the `PARTITION BY` clause of a window specification.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid PARTITION BY clause",
+    label = "partition by a column or a tuple of columns",
+    note = "partition by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
+)]
+pub trait PartitionBy {
+    /// Appends the partition column names to `out`.
+    fn push_partition_by(&self, out: &mut Vec<&'static str>);
+}
+
+impl<C: Column> PartitionBy for C {
+    fn push_partition_by(&self, out: &mut Vec<&'static str>) {
+        out.push(C::NAME);
+    }
+}
+
+macro_rules! impl_partition_by {
+    ($($column:ident),+) => {
+        impl<$($column: Column),+> PartitionBy for ($($column,)+) {
+            fn push_partition_by(&self, out: &mut Vec<&'static str>) {
+                $(out.push($column::NAME);)+
+            }
+        }
+    };
+}
+
+impl_partition_by!(C1);
+impl_partition_by!(C1, C2);
+impl_partition_by!(C1, C2, C3);
+impl_partition_by!(C1, C2, C3, C4);
+impl_partition_by!(C1, C2, C3, C4, C5);
+impl_partition_by!(C1, C2, C3, C4, C5, C6);
+impl_partition_by!(C1, C2, C3, C4, C5, C6, C7);
+impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
+
+/// A specification of an `OVER (...)` window partition and ordering.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowSpec {
+    partition_by: Vec<&'static str>,
+    order_by: Vec<(&'static str, OrderDirection)>,
+}
+
+impl WindowSpec {
+    /// Creates an empty window specification (`OVER ()`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates an empty window specification (`OVER ()`).
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Partitions the window by `partition`.
+    pub fn partition_by<P: PartitionBy>(mut self, partition: P) -> Self {
+        partition.push_partition_by(&mut self.partition_by);
+        self
+    }
+
+    /// Appends an ordering criterion with `direction` to the window.
+    pub fn order_by<C: Column>(mut self, _col: C, direction: OrderDirection) -> Self {
+        self.order_by.push((C::NAME, direction));
+        self
+    }
+
+    /// Appends an ascending ordering criterion for column `col`.
+    pub fn order_by_asc<C: Column>(self, col: C) -> Self {
+        self.order_by(col, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for column `col`.
+    pub fn order_by_desc<C: Column>(self, col: C) -> Self {
+        self.order_by(col, OrderDirection::Desc)
+    }
+
+    /// Renders the window contents inside `OVER (...)`.
+    pub fn render<D: Dialect>(&self, sql: &mut String) {
+        let mut has_part = false;
+        if !self.partition_by.is_empty() {
+            has_part = true;
+            sql.push_str("PARTITION BY ");
+            for (i, name) in self.partition_by.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, name);
+            }
+        }
+        if !self.order_by.is_empty() {
+            if has_part {
+                sql.push(' ');
+            }
+            sql.push_str("ORDER BY ");
+            for (i, (name, dir)) in self.order_by.iter().enumerate() {
+                if i > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, name);
+                sql.push(' ');
+                sql.push_str(dir.as_str());
+            }
+        }
+    }
+}
+
+/// Entry point for constructing window specifications.
+pub struct Window;
+
+impl Window {
+    /// Creates a new empty window specification.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> WindowSpec {
+        WindowSpec::new()
+    }
+
+    /// Creates a new empty window specification.
+    pub fn empty() -> WindowSpec {
+        WindowSpec::empty()
+    }
+
+    /// Starts a window specification partitioned by `partition`.
+    pub fn partition_by<P: PartitionBy>(partition: P) -> WindowSpec {
+        WindowSpec::empty().partition_by(partition)
+    }
+
+    /// Starts a window specification ordered by `col` with `direction`.
+    pub fn order_by<C: Column>(col: C, direction: OrderDirection) -> WindowSpec {
+        WindowSpec::empty().order_by(col, direction)
+    }
+
+    /// Starts a window specification with ascending ordering for `col`.
+    pub fn order_by_asc<C: Column>(col: C) -> WindowSpec {
+        WindowSpec::empty().order_by_asc(col)
+    }
+
+    /// Starts a window specification with descending ordering for `col`.
+    pub fn order_by_desc<C: Column>(col: C) -> WindowSpec {
+        WindowSpec::empty().order_by_desc(col)
+    }
+}
+
+/// The internal representation of a window function call.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowExprKind {
+    /// `ROW_NUMBER()`
+    RowNumber,
+    /// `RANK()`
+    Rank,
+    /// `DENSE_RANK()`
+    DenseRank,
+    /// `LAG(column [, offset])`
+    Lag {
+        /// The target column name.
+        column: &'static str,
+        /// The optional row offset.
+        offset: Option<u32>,
+    },
+    /// `LEAD(column [, offset])`
+    Lead {
+        /// The target column name.
+        column: &'static str,
+        /// The optional row offset.
+        offset: Option<u32>,
+    },
+    /// An arbitrary expression (such as an aggregate) evaluated over the window.
+    Expr(ExprKind),
+}
+
+/// A typed window expression evaluated with an `OVER (...)` clause.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowExpr<T> {
+    kind: WindowExprKind,
+    window: WindowSpec,
+    _result: PhantomData<fn() -> T>,
+}
+
+impl<T> WindowExpr<T> {
+    /// Creates a window expression wrapping `kind` over `window`.
+    pub fn from_expr(kind: ExprKind, window: WindowSpec) -> Self {
+        Self {
+            kind: WindowExprKind::Expr(kind),
+            window,
+            _result: PhantomData,
+        }
+    }
+
+    /// Renders this window function and its `OVER (...)` clause to `sql`.
+    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        match &self.kind {
+            WindowExprKind::RowNumber => sql.push_str("ROW_NUMBER()"),
+            WindowExprKind::Rank => sql.push_str("RANK()"),
+            WindowExprKind::DenseRank => sql.push_str("DENSE_RANK()"),
+            WindowExprKind::Lag { column, offset } => {
+                sql.push_str("LAG(");
+                D::push_quoted_identifier(sql, column);
+                if let Some(off) = offset {
+                    let _ = write!(sql, ", {off}");
+                }
+                sql.push(')');
+            }
+            WindowExprKind::Lead { column, offset } => {
+                sql.push_str("LEAD(");
+                D::push_quoted_identifier(sql, column);
+                if let Some(off) = offset {
+                    let _ = write!(sql, ", {off}");
+                }
+                sql.push(')');
+            }
+            WindowExprKind::Expr(expr) => {
+                render_expr::<D>(sql, params, expr);
+            }
+        }
+        sql.push_str(" OVER (");
+        self.window.render::<D>(sql);
+        sql.push(')');
+    }
+}
+
+/// A window function awaiting an `OVER (...)` specification.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowFn<T> {
+    kind: WindowExprKind,
+    _result: PhantomData<fn() -> T>,
+}
+
+impl<T> WindowFn<T> {
+    /// Creates a new window function builder.
+    pub fn new(kind: WindowExprKind) -> Self {
+        Self {
+            kind,
+            _result: PhantomData,
+        }
+    }
+
+    /// Evaluates this window function over `window`.
+    pub fn over(self, window: WindowSpec) -> WindowExpr<T> {
+        WindowExpr {
+            kind: self.kind,
+            window,
+            _result: PhantomData,
+        }
+    }
+}
+
+/// A `LAG` or `LEAD` window function builder with optional offset configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LagLeadFn<T> {
+    is_lag: bool,
+    column: &'static str,
+    offset: Option<u32>,
+    _result: PhantomData<fn() -> T>,
+}
+
+impl<T> LagLeadFn<T> {
+    /// Sets the row offset (defaults to 1 if omitted).
+    pub fn offset(mut self, offset: u32) -> Self {
+        self.offset = Some(offset);
+        self
+    }
+
+    /// Evaluates this function over `window`.
+    pub fn over(self, window: WindowSpec) -> WindowExpr<T> {
+        let kind = if self.is_lag {
+            WindowExprKind::Lag {
+                column: self.column,
+                offset: self.offset,
+            }
+        } else {
+            WindowExprKind::Lead {
+                column: self.column,
+                offset: self.offset,
+            }
+        };
+        WindowExpr {
+            kind,
+            window,
+            _result: PhantomData,
+        }
+    }
+}
+
+/// Starts a `ROW_NUMBER()` window function builder.
+pub fn row_number() -> WindowFn<i64> {
+    WindowFn::new(WindowExprKind::RowNumber)
+}
+
+/// Starts a `RANK()` window function builder.
+pub fn rank() -> WindowFn<i64> {
+    WindowFn::new(WindowExprKind::Rank)
+}
+
+/// Starts a `DENSE_RANK()` window function builder.
+pub fn dense_rank() -> WindowFn<i64> {
+    WindowFn::new(WindowExprKind::DenseRank)
+}
+
+/// Starts a `LAG(C)` window function builder for column `C`.
+pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
+    LagLeadFn {
+        is_lag: true,
+        column: C::NAME,
+        offset: None,
+        _result: PhantomData,
+    }
+}
+
+/// Starts a `LEAD(C)` window function builder for column `C`.
+pub fn lead<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
+    LagLeadFn {
+        is_lag: false,
+        column: C::NAME,
+        offset: None,
+        _result: PhantomData,
     }
 }
 
@@ -1388,5 +1762,34 @@ mod tests {
         assert_eq!(context.current_savepoint(), Some(outer.as_str()));
         assert_eq!(context.close_savepoint(), Some(outer));
         assert_eq!(context.close_savepoint(), None);
+    }
+
+    #[test]
+    fn window_functions_render_expected_over_clauses() {
+        let window = Window::partition_by(UserId).order_by_asc(UserName);
+
+        let built = SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((
+                UserId,
+                row_number().over(window.clone()),
+                rank().over(window.clone()),
+                dense_rank().over(window.clone()),
+                lag(UserName).offset(2).over(Window::order_by_desc(UserId)),
+                lead(UserName).over(Window::empty()),
+                Expr::count_all().over(Window::partition_by(UserId)),
+            ))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", ROW_NUMBER() OVER (PARTITION BY \"id\" ORDER BY \"name\" ASC), \
+             RANK() OVER (PARTITION BY \"id\" ORDER BY \"name\" ASC), \
+             DENSE_RANK() OVER (PARTITION BY \"id\" ORDER BY \"name\" ASC), \
+             LAG(\"name\", 2) OVER (ORDER BY \"id\" DESC), \
+             LEAD(\"name\") OVER (), \
+             COUNT(*) OVER (PARTITION BY \"id\") \
+             FROM \"users\""
+        );
     }
 }
