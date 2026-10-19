@@ -21,6 +21,9 @@ uuid = { version = "1", optional = true }
 
 [features]
 postgres = ["dep:postgres", "tokio-postgres"]
-tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "dep:chrono", "dep:serde_json", "dep:uuid"]
+tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "chrono", "serde_json", "uuid"]
 deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
 r2d2 = ["dep:r2d2", "postgres"]
+chrono = ["dep:chrono", "rurqe-core/chrono"]
+serde_json = ["dep:serde_json", "rurqe-core/serde_json"]
+uuid = ["dep:uuid", "rurqe-core/uuid"]

@@ -276,16 +276,19 @@ mod rusqlite_backend {
 
     impl ToSql for SqlValParam<'_> {
         fn to_sql(&self) -> ::rusqlite::Result<ToSqlOutput<'_>> {
-            let value_ref = match self.0 {
-                SqlVal::Null => ValueRef::Null,
-                SqlVal::I32(value) => ValueRef::Integer(i64::from(*value)),
-                SqlVal::I64(value) => ValueRef::Integer(*value),
-                SqlVal::F64(value) => ValueRef::Real(*value),
-                SqlVal::Bool(value) => ValueRef::Integer(*value as i64),
-                SqlVal::Text(value) => ValueRef::Text(value.as_bytes()),
-                SqlVal::Bytes(value) => ValueRef::Blob(value.as_slice()),
-            };
-            Ok(ToSqlOutput::Borrowed(value_ref))
+            match self.0 {
+                SqlVal::Null => Ok(ToSqlOutput::Borrowed(ValueRef::Null)),
+                SqlVal::I32(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(i64::from(*value)))),
+                SqlVal::I64(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value))),
+                SqlVal::F64(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Real(*value))),
+                SqlVal::Bool(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value as i64))),
+                SqlVal::Text(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes()))),
+                SqlVal::Bytes(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Blob(value.as_slice()))),
+                #[allow(unreachable_patterns)]
+                other => Ok(ToSqlOutput::Owned(::rusqlite::types::Value::Text(
+                    other.to_string(),
+                ))),
+            }
         }
     }
 

@@ -229,6 +229,9 @@ impl<T: FromSqlValue> FromSqlValue for Option<T> {
 impl<T: for<'de> serde::Deserialize<'de>> FromSqlValue for crate::expr::Json<T> {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
+            SqlVal::Json(val) => serde_json::from_value(val.clone())
+                .map(crate::expr::Json)
+                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
             SqlVal::Text(text) => serde_json::from_str(text.as_str())
                 .map(crate::expr::Json)
                 .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
@@ -244,6 +247,7 @@ impl<T: for<'de> serde::Deserialize<'de>> FromSqlValue for crate::expr::Json<T> 
 impl FromSqlValue for uuid::Uuid {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
+            SqlVal::Uuid(uuid) => Ok(*uuid),
             SqlVal::Text(text) => uuid::Uuid::parse_str(text.as_str())
                 .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
             SqlVal::Bytes(bytes) => uuid::Uuid::from_slice(bytes.as_slice())
@@ -257,6 +261,7 @@ impl FromSqlValue for uuid::Uuid {
 impl FromSqlValue for serde_json::Value {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
+            SqlVal::Json(val) => Ok(val.clone()),
             SqlVal::Text(text) => serde_json::from_str(text.as_str())
                 .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
             SqlVal::Bytes(bytes) => serde_json::from_slice(bytes.as_slice())
@@ -270,6 +275,8 @@ impl FromSqlValue for serde_json::Value {
 impl FromSqlValue for chrono::NaiveDateTime {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
+            SqlVal::NaiveDateTime(dt) => Ok(*dt),
+            SqlVal::DateTimeUtc(dt) => Ok(dt.naive_utc()),
             SqlVal::Text(text) => chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f"))
                 .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S"))
@@ -284,6 +291,8 @@ impl FromSqlValue for chrono::NaiveDateTime {
 impl FromSqlValue for chrono::DateTime<chrono::Utc> {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
+            SqlVal::DateTimeUtc(dt) => Ok(*dt),
+            SqlVal::NaiveDateTime(ndt) => Ok(chrono::DateTime::from_naive_utc_and_offset(*ndt, chrono::Utc)),
             SqlVal::Text(text) => {
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
                     return Ok(dt.with_timezone(&chrono::Utc));
@@ -304,6 +313,9 @@ impl FromSqlValue for chrono::DateTime<chrono::Utc> {
 impl FromSqlValue for chrono::NaiveDate {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
+            SqlVal::NaiveDate(date) => Ok(*date),
+            SqlVal::NaiveDateTime(dt) => Ok(dt.date()),
+            SqlVal::DateTimeUtc(dt) => Ok(dt.date_naive()),
             SqlVal::Text(text) => chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
                 .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
             _ => Err(type_mismatch::<Self>(value)),

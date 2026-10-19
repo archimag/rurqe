@@ -104,31 +104,6 @@ fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chron
     ))
 }
 
-/// Converts a decoded `UUID` into its canonical text form.
-fn uuid_to_sql_value(value: uuid::Uuid) -> SqlVal {
-    SqlVal::Text(value.to_string())
-}
-
-/// Converts a decoded JSON value into its compact text form.
-fn json_to_sql_value(value: serde_json::Value) -> SqlVal {
-    SqlVal::Text(value.to_string())
-}
-
-/// Converts a decoded `TIMESTAMP` into its text form.
-fn timestamp_to_sql_value(value: chrono::NaiveDateTime) -> SqlVal {
-    SqlVal::Text(value.to_string())
-}
-
-/// Converts a decoded `TIMESTAMPTZ` into its RFC 3339 text form.
-fn timestamptz_to_sql_value(value: chrono::DateTime<chrono::Utc>) -> SqlVal {
-    SqlVal::Text(value.to_rfc3339())
-}
-
-/// Converts a decoded `DATE` into its ISO 8601 text form.
-fn date_to_sql_value(value: chrono::NaiveDate) -> SqlVal {
-    SqlVal::Text(value.to_string())
-}
-
 /// Executes `query` through an asynchronous client without decoding rows.
 ///
 /// The helper accepts any [`tokio_postgres::GenericClient`] — a plain
@@ -183,7 +158,8 @@ where
     rows.iter()
         .enumerate()
         .map(|(row_index, values)| {
-            Q::Row::from_row(values).ok_or(ExecutionError::RowDecode { row_index })
+            Q::Row::try_from_row(values)
+                .map_err(|source| ExecutionError::RowDecode { row_index, source })
         })
         .collect()
 }
@@ -235,6 +211,54 @@ impl ToSql for SqlValParam<'_> {
             SqlVal::F64(value) => value.to_sql(ty, out),
             SqlVal::Text(value) => text_to_sql(value, ty, out),
             SqlVal::Bytes(value) => value.as_slice().to_sql(ty, out),
+            #[cfg(feature = "uuid")]
+            SqlVal::Uuid(value) => {
+                if ty == &Type::UUID {
+                    value.to_sql(ty, out)
+                } else {
+                    value.to_string().to_sql(ty, out)
+                }
+            }
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDateTime(value) => {
+                if ty == &Type::TIMESTAMP {
+                    value.to_sql(ty, out)
+                } else if ty == &Type::TIMESTAMPTZ {
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                        *value,
+                        chrono::Utc,
+                    )
+                    .to_sql(ty, out)
+                } else {
+                    value.to_string().to_sql(ty, out)
+                }
+            }
+            #[cfg(feature = "chrono")]
+            SqlVal::DateTimeUtc(value) => {
+                if ty == &Type::TIMESTAMPTZ {
+                    value.to_sql(ty, out)
+                } else if ty == &Type::TIMESTAMP {
+                    value.naive_utc().to_sql(ty, out)
+                } else {
+                    value.to_rfc3339().to_sql(ty, out)
+                }
+            }
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDate(value) => {
+                if ty == &Type::DATE {
+                    value.to_sql(ty, out)
+                } else {
+                    value.to_string().to_sql(ty, out)
+                }
+            }
+            #[cfg(feature = "serde_json")]
+            SqlVal::Json(value) => {
+                if ty == &Type::JSON || ty == &Type::JSONB {
+                    value.to_sql(ty, out)
+                } else {
+                    value.to_string().to_sql(ty, out)
+                }
+            }
         }
     }
 
@@ -276,19 +300,19 @@ pub(crate) fn row_to_sql_vals(row: &Row) -> Result<Vec<SqlVal>, PgError> {
                 .map_or(SqlVal::Null, SqlVal::F64)
         } else if ty == &Type::UUID {
             row.try_get::<usize, Option<uuid::Uuid>>(index)?
-                .map_or(SqlVal::Null, uuid_to_sql_value)
+                .map_or(SqlVal::Null, SqlVal::Uuid)
         } else if ty == &Type::JSON || ty == &Type::JSONB {
             row.try_get::<usize, Option<serde_json::Value>>(index)?
-                .map_or(SqlVal::Null, json_to_sql_value)
+                .map_or(SqlVal::Null, SqlVal::Json)
         } else if ty == &Type::TIMESTAMP {
             row.try_get::<usize, Option<chrono::NaiveDateTime>>(index)?
-                .map_or(SqlVal::Null, timestamp_to_sql_value)
+                .map_or(SqlVal::Null, SqlVal::NaiveDateTime)
         } else if ty == &Type::TIMESTAMPTZ {
             row.try_get::<usize, Option<chrono::DateTime<chrono::Utc>>>(index)?
-                .map_or(SqlVal::Null, timestamptz_to_sql_value)
+                .map_or(SqlVal::Null, SqlVal::DateTimeUtc)
         } else if ty == &Type::DATE {
             row.try_get::<usize, Option<chrono::NaiveDate>>(index)?
-                .map_or(SqlVal::Null, date_to_sql_value)
+                .map_or(SqlVal::Null, SqlVal::NaiveDate)
         } else if ty == &Type::TEXT
             || ty == &Type::VARCHAR
             || ty == &Type::BPCHAR
@@ -313,31 +337,42 @@ mod tests {
     use rurqe_core::expr::SqlVal;
     use tokio_postgres::types::{IsNull, ToSql, Type};
 
-    use super::{
-        date_to_sql_value, json_to_sql_value, timestamp_to_sql_value, uuid_to_sql_value,
-        SqlValParam,
-    };
+    use super::SqlValParam;
 
     #[test]
-    fn uuid_json_and_temporal_values_decode_as_text() {
-        assert_eq!(
-            uuid_to_sql_value(uuid::Uuid::nil()),
-            SqlVal::Text("00000000-0000-0000-0000-000000000000".to_owned())
-        );
-        assert_eq!(
-            json_to_sql_value(serde_json::json!({ "a": 1 })),
-            SqlVal::Text("{\"a\":1}".to_owned())
-        );
+    fn uuid_json_and_temporal_values_bind_directly() {
+        let mut buffer = BytesMut::new();
+        let uuid_param = SqlValParam(&SqlVal::Uuid(uuid::Uuid::nil()));
+        assert!(matches!(
+            uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
+            IsNull::No
+        ));
+
+        let mut buffer = BytesMut::new();
+        let json_param = SqlValParam(&SqlVal::Json(serde_json::json!({ "a": 1 })));
+        assert!(matches!(
+            json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
+            IsNull::No
+        ));
+
+        let mut buffer = BytesMut::new();
+        let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
+            .unwrap()
+            .and_hms_opt(3, 4, 5)
+            .unwrap();
+        let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
+        assert!(matches!(
+            timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+            IsNull::No
+        ));
+
+        let mut buffer = BytesMut::new();
         let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
-        assert_eq!(
-            date_to_sql_value(date),
-            SqlVal::Text("2024-01-02".to_owned())
-        );
-        let timestamp = date.and_hms_opt(3, 4, 5).unwrap();
-        assert_eq!(
-            timestamp_to_sql_value(timestamp),
-            SqlVal::Text("2024-01-02 03:04:05".to_owned())
-        );
+        let date_param = SqlValParam(&SqlVal::NaiveDate(date));
+        assert!(matches!(
+            date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
+            IsNull::No
+        ));
     }
 
     #[test]

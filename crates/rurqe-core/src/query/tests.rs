@@ -489,7 +489,13 @@ fn fetch_all_reports_the_row_that_fails_to_decode() {
 
     assert_eq!(
         backend.fetch_all(&query),
-        Err(ExecutionError::RowDecode { row_index: 0 })
+        Err(ExecutionError::RowDecode {
+            row_index: 0,
+            source: crate::row::RowDecodeError::TypeMismatch {
+                target: std::any::type_name::<i64>(),
+                found: "text",
+            },
+        })
     );
 }
 
@@ -528,8 +534,15 @@ fn execution_errors_render_actionable_messages() {
         "database backend error: connection lost"
     );
     assert_eq!(
-        ExecutionError::<&str>::RowDecode { row_index: 2 }.to_string(),
-        "failed to decode row 2: values do not match the query row type"
+        ExecutionError::<&str>::RowDecode {
+            row_index: 2,
+            source: crate::row::RowDecodeError::ArityMismatch {
+                expected: 2,
+                actual: 1,
+            },
+        }
+        .to_string(),
+        "failed to decode row 2: cannot decode a row of 1 values into a row type of 2 values"
     );
     assert_eq!(
         ExecutionError::<&str>::NoRows.to_string(),
@@ -565,7 +578,13 @@ fn execution_error_predicates_classify_failures() {
     assert!(!multiple.is_not_found());
     assert!(!multiple.is_row_decode());
 
-    let decode = ExecutionError::<&str>::RowDecode { row_index: 3 };
+    let decode = ExecutionError::<&str>::RowDecode {
+        row_index: 3,
+        source: crate::row::RowDecodeError::TypeMismatch {
+            target: "i64",
+            found: "text",
+        },
+    };
     assert!(decode.is_row_decode());
     assert!(!decode.is_not_found());
     assert!(!decode.is_multiple_rows());
@@ -586,8 +605,24 @@ fn execution_error_backend_accessors_expose_driver_errors() {
     assert_eq!(multiple.as_backend(), None);
     assert_eq!(multiple.into_backend(), None);
 
-    let decode = ExecutionError::<String>::RowDecode { row_index: 0 };
+    let decode = ExecutionError::<String>::RowDecode {
+        row_index: 0,
+        source: crate::row::RowDecodeError::TypeMismatch {
+            target: "i64",
+            found: "text",
+        },
+    };
     assert_eq!(decode.as_backend(), None);
+    assert_eq!(
+        decode.as_row_decode(),
+        Some((
+            0,
+            &crate::row::RowDecodeError::TypeMismatch {
+                target: "i64",
+                found: "text",
+            }
+        ))
+    );
     assert_eq!(decode.into_backend(), None);
 }
 

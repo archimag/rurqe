@@ -103,6 +103,8 @@ pub enum ExecutionError<E> {
     RowDecode {
         /// The zero-based index of the first row that failed to decode.
         row_index: usize,
+        /// The exact reason why row decoding failed.
+        source: crate::row::RowDecodeError,
     },
     /// A single-row query produced no rows.
     NoRows,
@@ -127,6 +129,14 @@ impl<E> ExecutionError<E> {
     /// Returns `true` when a produced row did not match the query row type.
     pub fn is_row_decode(&self) -> bool {
         matches!(self, ExecutionError::RowDecode { .. })
+    }
+
+    /// Borrows the decode error details when the failure came from row decoding.
+    pub fn as_row_decode(&self) -> Option<(usize, &crate::row::RowDecodeError)> {
+        match self {
+            ExecutionError::RowDecode { row_index, source } => Some((*row_index, source)),
+            _ => None,
+        }
     }
 
     /// Borrows the driver error when the failure came from the backend.
@@ -160,10 +170,9 @@ impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExecutionError::Backend(error) => write!(f, "database backend error: {error}"),
-            ExecutionError::RowDecode { row_index } => write!(
-                f,
-                "failed to decode row {row_index}: values do not match the query row type"
-            ),
+            ExecutionError::RowDecode { row_index, source } => {
+                write!(f, "failed to decode row {row_index}: {source}")
+            }
             ExecutionError::NoRows => {
                 f.write_str("expected exactly one row, but the query returned none")
             }
@@ -178,8 +187,8 @@ impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ExecutionError::Backend(error) => Some(error),
-            ExecutionError::RowDecode { .. }
-            | ExecutionError::NoRows
+            ExecutionError::RowDecode { source, .. } => Some(source),
+            ExecutionError::NoRows
             | ExecutionError::MultipleRows { .. } => None,
         }
     }
@@ -203,7 +212,8 @@ pub trait QueryBackendExt: QueryBackend {
         rows.iter()
             .enumerate()
             .map(|(row_index, values)| {
-                Q::Row::from_row(values).ok_or(ExecutionError::RowDecode { row_index })
+                Q::Row::try_from_row(values)
+                    .map_err(|source| ExecutionError::RowDecode { row_index, source })
             })
             .collect()
     }

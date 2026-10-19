@@ -1,5 +1,7 @@
 //! Bound SQL parameter values, conversion contracts, and the primitive operator enums of expressions.
 
+use core::fmt;
+
 /// A SQL literal bound to a single query parameter.
 ///
 /// Values stay in their Rust representation until the dialect renders them, so
@@ -20,6 +22,21 @@ pub enum SqlVal {
     Text(String),
     /// A binary blob.
     Bytes(Vec<u8>),
+    /// A UUID value.
+    #[cfg(feature = "uuid")]
+    Uuid(uuid::Uuid),
+    /// A naive date and time without timezone offset.
+    #[cfg(feature = "chrono")]
+    NaiveDateTime(chrono::NaiveDateTime),
+    /// A UTC date and time.
+    #[cfg(feature = "chrono")]
+    DateTimeUtc(chrono::DateTime<chrono::Utc>),
+    /// A naive date.
+    #[cfg(feature = "chrono")]
+    NaiveDate(chrono::NaiveDate),
+    /// A JSON value.
+    #[cfg(feature = "serde_json")]
+    Json(serde_json::Value),
 }
 
 impl SqlVal {
@@ -33,6 +50,40 @@ impl SqlVal {
             SqlVal::Bool(_) => "boolean",
             SqlVal::Text(_) => "text",
             SqlVal::Bytes(_) => "bytes",
+            #[cfg(feature = "uuid")]
+            SqlVal::Uuid(_) => "uuid",
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDateTime(_) => "timestamp",
+            #[cfg(feature = "chrono")]
+            SqlVal::DateTimeUtc(_) => "timestamptz",
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDate(_) => "date",
+            #[cfg(feature = "serde_json")]
+            SqlVal::Json(_) => "json",
+        }
+    }
+}
+
+impl fmt::Display for SqlVal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SqlVal::Null => f.write_str("NULL"),
+            SqlVal::I32(value) => write!(f, "{value}"),
+            SqlVal::I64(value) => write!(f, "{value}"),
+            SqlVal::F64(value) => write!(f, "{value}"),
+            SqlVal::Bool(value) => write!(f, "{value}"),
+            SqlVal::Text(value) => f.write_str(value),
+            SqlVal::Bytes(value) => write!(f, "{:?}", value),
+            #[cfg(feature = "uuid")]
+            SqlVal::Uuid(value) => write!(f, "{value}"),
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDateTime(value) => write!(f, "{}", value.format("%Y-%m-%d %H:%M:%S%.f")),
+            #[cfg(feature = "chrono")]
+            SqlVal::DateTimeUtc(value) => write!(f, "{}", value.to_rfc3339()),
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDate(value) => write!(f, "{}", value.format("%Y-%m-%d")),
+            #[cfg(feature = "serde_json")]
+            SqlVal::Json(value) => write!(f, "{value}"),
         }
     }
 }
@@ -178,8 +229,8 @@ impl<T> From<T> for Json<T> {
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> ToSqlVal for Json<T> {
     fn to_sql_val(self) -> SqlVal {
-        match serde_json::to_string(&self.0) {
-            Ok(json) => SqlVal::Text(json),
+        match serde_json::to_value(&self.0) {
+            Ok(json) => SqlVal::Json(json),
             Err(_) => SqlVal::Null,
         }
     }
@@ -188,8 +239,8 @@ impl<T: serde::Serialize> ToSqlVal for Json<T> {
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> ToSqlVal for &Json<T> {
     fn to_sql_val(self) -> SqlVal {
-        match serde_json::to_string(&self.0) {
-            Ok(json) => SqlVal::Text(json),
+        match serde_json::to_value(&self.0) {
+            Ok(json) => SqlVal::Json(json),
             Err(_) => SqlVal::Null,
         }
     }
@@ -198,70 +249,70 @@ impl<T: serde::Serialize> ToSqlVal for &Json<T> {
 #[cfg(feature = "uuid")]
 impl ToSqlVal for uuid::Uuid {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.to_string())
+        SqlVal::Uuid(self)
     }
 }
 
 #[cfg(feature = "uuid")]
 impl ToSqlVal for &uuid::Uuid {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.to_string())
+        SqlVal::Uuid(*self)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl ToSqlVal for chrono::NaiveDateTime {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.format("%Y-%m-%d %H:%M:%S%.f").to_string())
+        SqlVal::NaiveDateTime(self)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl ToSqlVal for &chrono::NaiveDateTime {
     fn to_sql_val(self) -> SqlVal {
-        (*self).to_sql_val()
+        SqlVal::NaiveDateTime(*self)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl ToSqlVal for chrono::DateTime<chrono::Utc> {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.to_rfc3339())
+        SqlVal::DateTimeUtc(self)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl ToSqlVal for &chrono::DateTime<chrono::Utc> {
     fn to_sql_val(self) -> SqlVal {
-        (*self).to_sql_val()
+        SqlVal::DateTimeUtc(*self)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl ToSqlVal for chrono::NaiveDate {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.format("%Y-%m-%d").to_string())
+        SqlVal::NaiveDate(self)
     }
 }
 
 #[cfg(feature = "chrono")]
 impl ToSqlVal for &chrono::NaiveDate {
     fn to_sql_val(self) -> SqlVal {
-        (*self).to_sql_val()
+        SqlVal::NaiveDate(*self)
     }
 }
 
 #[cfg(feature = "serde_json")]
 impl ToSqlVal for serde_json::Value {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.to_string())
+        SqlVal::Json(self)
     }
 }
 
 #[cfg(feature = "serde_json")]
 impl ToSqlVal for &serde_json::Value {
     fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.to_string())
+        SqlVal::Json(self.clone())
     }
 }
 
@@ -636,6 +687,25 @@ mod tests {
         assert_eq!(SqlVal::Bool(true).variant_name(), "boolean");
         assert_eq!(SqlVal::Text(String::new()).variant_name(), "text");
         assert_eq!(SqlVal::Bytes(Vec::new()).variant_name(), "bytes");
+        #[cfg(feature = "uuid")]
+        assert_eq!(SqlVal::Uuid(uuid::Uuid::nil()).variant_name(), "uuid");
+        #[cfg(feature = "chrono")]
+        {
+            assert_eq!(
+                SqlVal::NaiveDateTime(chrono::NaiveDateTime::default()).variant_name(),
+                "timestamp"
+            );
+            assert_eq!(
+                SqlVal::DateTimeUtc(chrono::DateTime::default()).variant_name(),
+                "timestamptz"
+            );
+            assert_eq!(
+                SqlVal::NaiveDate(chrono::NaiveDate::default()).variant_name(),
+                "date"
+            );
+        }
+        #[cfg(feature = "serde_json")]
+        assert_eq!(SqlVal::Json(serde_json::Value::Null).variant_name(), "json");
     }
 
     #[test]
