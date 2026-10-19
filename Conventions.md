@@ -1,20 +1,70 @@
-# Project Conventions
+# Rust Engineering Conventions (Concise Edition)
 
-## 0. Language & Tone
-- All source code, identifiers, comments, documentation, and Git commit messages MUST be strictly in English.
+## 1. Architecture and Module Structure
 
-## 1. Architectural Philosophy & Minimalism
-- Strictly adhere to YAGNI (You Aren't Gonna Need It). Implement only what is required by current user goals.
-- Prefer small, cohesive, deterministic modules over speculative abstractions.
-- Do not invent unused configuration options, speculative features, or dead code.
+* **KISS, YAGNI, and DRY:**
+  * No speculative fields, methods, or traits "just in case". Delete dead code immediately; do not leave it commented out.
+  * Single Source of Truth (SSOT) for data structures, serialization formats, and validation rules.
+* **Strict Typing over String Parsing:**
+  * Drive control flow and business logic with strong `enum` types and typed DTOs. Never branch on text prefixes (`starts_with`), regex matching, or keyword searches.
+* **Unidirectional Dependencies:**
+  * Strictly layered architecture (Contracts/Types → Core/Domain Logic → Transport/Interface). Cyclic dependencies are forbidden.
+* **Rust 2018+ Module Layout (No `mod.rs`):**
+  * `mod.rs` files are forbidden. Build hierarchies using a module file alongside a directory of the same name: `foo.rs` and `foo/`.
+* **Minimal Visibility (Information Hiding):**
+  * Private by default. Widen to `pub(crate)` or `pub(super)` only when needed across sibling files. Public `pub` is reserved strictly for external library APIs.
+* **Module Sizing:**
+  * Target size: 150–400 lines of code.
+  * Approaching 600 lines signals mixed responsibilities and warrants decomposition. Hard limit: 800 lines.
 
-## 2. Git Safety & Commits
-- Formulate Git commit summaries in the imperative mood using Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`).
-- Keep commits atomic and self-contained.
+---
 
-## 3. Verification & Quality Gates
-- Ensure all changes compile cleanly and pass project build, test, and lint toolchains without warnings or regressions.
+## 2. Robustness and Panic-Free Invariant
 
-## 4. Documentation & AI Context Integrity (`llms.txt`)
-- Continuously maintain `llms.txt` in an up-to-date, comprehensive, and accurate state whenever library APIs, query builders, DML, migrations, CLI tools, or driver configurations evolve.
-- `llms.txt` must contain all necessary and practical information required to understand and effectively use the RURQE library: architectural patterns, fluent DSL syntax, schema definition, type safety rules, execution backends, transactions, connection pooling, and CLI commands.
+* **No Panics in Production Code:**
+  * Strictly forbid `.unwrap()`, `.expect()`, `panic!()`, `unreachable!()`, and unbounded slice indexing `slice[i]` on external or untrusted data.
+  * Handle every failure path via `Result`, `Option`, the `?` operator, or safe fallback defaults. (`#[test]` modules are the sole exception).
+* **Safe UTF-8 Slicing:**
+  * Never slice strings by arbitrary byte offsets (`&s[..n]`). Slice strictly on Unicode scalar boundaries (`char_indices()`, `floor_char_boundary`, `strip_prefix`).
+* **Graceful Degradation:**
+  * When parsing external payloads (JSON, configuration, user input), log diagnostics and recover rather than aborting the process.
+
+---
+
+## 3. Asynchronous Execution and Blocking I/O (Async / Tokio)
+
+* **No Blocking I/O on Async Worker Threads:**
+  * Never execute synchronous I/O (`std::fs`, `fsync`, process spawning via `std::process`) directly inside async runtime tasks.
+  * Offload blocking operations through `spawn_blocking` (or a dedicated blocking thread pool wrapper).
+
+---
+
+## 4. Code Quality and Testing
+
+* **Zero Warnings Standard:**
+  * Code must compile cleanly without warnings: `cargo clippy` runs strictly with `-D warnings`.
+* **Mandatory Test Coverage:**
+  * Every new feature must be verified by automated unit or integration tests.
+  * Every bug fix must include an accompanying regression test.
+
+---
+
+## 5. Logging and Observability
+
+* **The `tracing` Facade:**
+  * Library code depends solely on the lightweight `tracing` facade (`info!`, `warn!`, `error!`), without dictating file sinks or log rotation policies.
+* **State Transition Logging:**
+  * Record lifecycle milestones: startup/shutdown, external calls, network/provider errors, and validation failures.
+* **Anti-Bloat Invariant:**
+  * Record interaction metadata, compact identifiers, and aggregated metrics. Never dump raw high-volume payloads, full file bodies, or streaming deltas to logs.
+
+---
+
+## 6. Repository Standards
+
+* **Language Standard:**
+  * All identifiers, comments, documentation, and Git commits must be written strictly in plain technical English.
+* **Conventional Commits:**
+  * Format: `<type>(<scope>): <short description>`.
+  * Header: imperative mood, lowercase, no trailing period, maximum 72 characters.
+  * Message body is separated by a blank line and hard-wrapped at 72 characters per line.
