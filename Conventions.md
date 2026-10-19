@@ -14,3 +14,7 @@
 
 ## 3. Verification & Quality Gates
 - Ensure all changes compile cleanly and pass project build, test, and lint toolchains without warnings or regressions.
+
+## 4. Documentation & AI Context Integrity (`llms.txt`)
+- Continuously maintain `llms.txt` in an up-to-date, comprehensive, and accurate state whenever library APIs, query builders, DML, migrations, CLI tools, or driver configurations evolve.
+- `llms.txt` must contain all necessary and practical information required to understand and effectively use the RURQE library: architectural patterns, fluent DSL syntax, schema definition, type safety rules, execution backends, transactions, connection pooling, and CLI commands.
