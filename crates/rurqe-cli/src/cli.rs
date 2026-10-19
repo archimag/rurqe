@@ -5,9 +5,14 @@
 
 use std::path::{Path, PathBuf};
 
+use rurqe_migrate::runner::{MigrationBackend, MigrationStatusKind, Migrator};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::introspect::detect_dialect;
+use crate::codegen::{generate_schema_rs, CodegenOptions};
+use crate::drift::verify_drift;
+use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
+use crate::introspect::{detect_dialect, introspect_database, DatabaseDialect};
+use crate::loader::load_migrations_from_dir;
 
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,48 +292,266 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             println!("rurqe-cli {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        CliCommand::MigrateUp { migrations_dir, .. } => {
-            println!("Applying migrations from {}...", migrations_dir.display());
-            Ok(())
+        CliCommand::MigrateUp {
+            migrations_dir,
+            database_url,
+        } => {
+            let url = resolve_database_url(database_url)?;
+            match detect_dialect(Some(&url)) {
+                DatabaseDialect::Sqlite => {
+                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
+                    apply_migrations(&mut backend, &migrations_dir)
+                }
+                DatabaseDialect::Postgres => {
+                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
+                    apply_migrations(&mut backend, &migrations_dir)
+                }
+            }
         }
-        CliCommand::MigrateStatus { migrations_dir, .. } => {
-            println!("Checking migration status in {}...", migrations_dir.display());
-            Ok(())
+        CliCommand::MigrateStatus {
+            migrations_dir,
+            database_url,
+        } => {
+            let url = resolve_database_url(database_url)?;
+            match detect_dialect(Some(&url)) {
+                DatabaseDialect::Sqlite => {
+                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
+                    report_status(&mut backend, &migrations_dir)
+                }
+                DatabaseDialect::Postgres => {
+                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
+                    report_status(&mut backend, &migrations_dir)
+                }
+            }
         }
-        CliCommand::MigrateRepair { migrations_dir, .. } => {
-            println!("Repairing schema history against {}...", migrations_dir.display());
-            Ok(())
+        CliCommand::MigrateRepair {
+            migrations_dir,
+            database_url,
+        } => {
+            let url = resolve_database_url(database_url)?;
+            match detect_dialect(Some(&url)) {
+                DatabaseDialect::Sqlite => {
+                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
+                    repair_history(&mut backend, &migrations_dir)
+                }
+                DatabaseDialect::Postgres => {
+                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
+                    repair_history(&mut backend, &migrations_dir)
+                }
+            }
         }
-        CliCommand::Baseline { version, description, .. } => {
-            println!("Baselining database at version {version} ({description})...");
-            Ok(())
+        CliCommand::Baseline {
+            version,
+            description,
+            database_url,
+        } => {
+            let url = resolve_database_url(database_url)?;
+            match detect_dialect(Some(&url)) {
+                DatabaseDialect::Sqlite => {
+                    let mut backend = SqliteMigrationBackend::new(open_sqlite(&url)?);
+                    baseline_database(&mut backend, version, &description)
+                }
+                DatabaseDialect::Postgres => {
+                    let mut backend = PostgresMigrationBackend::new(connect_postgres(&url)?);
+                    baseline_database(&mut backend, version, &description)
+                }
+            }
         }
         CliCommand::Codegen {
             database_url,
             output,
             lock_path,
         } => {
-            let dialect = detect_dialect(database_url.as_deref());
+            let url = resolve_database_url(database_url)?;
+            let catalog = introspect_database(&url)?;
+            let code = generate_schema_rs(&catalog, &CodegenOptions::default());
+            write_file(&output, &code)?;
+            write_file(&lock_path, &catalog.to_lock())?;
             println!(
-                "Generating {dialect} schema to {} and snapshot to {}...",
+                "Generated schema to {} and snapshot to {} (hash {})",
                 output.display(),
-                lock_path.display()
+                lock_path.display(),
+                catalog.schema_hash()
             );
             Ok(())
         }
         CliCommand::Verify {
             database_url,
+            schema_path,
             lock_path,
-            ..
         } => {
-            let dialect = detect_dialect(database_url.as_deref());
-            println!(
-                "Verifying {dialect} schema against {}...",
-                lock_path.display()
-            );
+            let url = resolve_database_url(database_url)?;
+            let expected_lock = std::fs::read_to_string(&lock_path).map_err(|e| {
+                CliError(format!(
+                    "failed to read schema lock `{}`: {e}",
+                    lock_path.display()
+                ))
+            })?;
+            let schema_code = match schema_path {
+                Some(path) if path.exists() => Some(std::fs::read_to_string(&path).map_err(|e| {
+                    CliError(format!(
+                        "failed to read schema code `{}`: {e}",
+                        path.display()
+                    ))
+                })?),
+                _ => None,
+            };
+            let catalog = introspect_database(&url)?;
+            verify_drift(&catalog, &expected_lock, schema_code.as_deref())
+                .map_err(|err| CliError(err.to_string()))?;
+            println!("Schema verification passed against {}", lock_path.display());
             Ok(())
         }
     }
+}
+
+fn cli_error(err: impl std::fmt::Display) -> CliError {
+    CliError(err.to_string())
+}
+
+/// Resolves the target database URL from the flag or the `DATABASE_URL` environment variable.
+fn resolve_database_url(supplied: Option<String>) -> Result<String, CliError> {
+    supplied
+        .or_else(|| std::env::var("DATABASE_URL").ok())
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CliError(
+                "no database URL provided: pass `--database-url <url>` or set the \
+                 DATABASE_URL environment variable"
+                    .to_owned(),
+            )
+        })
+}
+
+fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
+    let path = url
+        .strip_prefix("sqlite://")
+        .or_else(|| url.strip_prefix("sqlite:"))
+        .unwrap_or(url);
+
+    let conn = if path == ":memory:" || path.is_empty() {
+        rusqlite::Connection::open_in_memory()
+    } else {
+        rusqlite::Connection::open(path)
+    };
+
+    conn.map_err(|e| CliError(format!("failed to open SQLite database at `{url}`: {e}")))
+}
+
+fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
+    postgres::Client::connect(url, postgres::NoTls)
+        .map_err(|e| CliError(format!("failed to connect to PostgreSQL at `{url}`: {e}")))
+}
+
+fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CliError(format!(
+                    "failed to create directory `{}`: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+    std::fs::write(path, contents)
+        .map_err(|e| CliError(format!("failed to write `{}`: {e}", path.display())))
+}
+
+fn apply_migrations<B: MigrationBackend>(
+    backend: &mut B,
+    migrations_dir: &Path,
+) -> Result<(), CliError> {
+    let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    let report = Migrator::new()
+        .migrate(backend, &migrations)
+        .map_err(cli_error)?;
+
+    println!(
+        "Applied {} migration(s) in {} ms",
+        report.applied_count, report.total_time_ms
+    );
+    for script in &report.applied_scripts {
+        println!("  - {script}");
+    }
+    Ok(())
+}
+
+fn report_status<B: MigrationBackend>(
+    backend: &mut B,
+    migrations_dir: &Path,
+) -> Result<(), CliError> {
+    let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    let statuses = Migrator::new()
+        .status(backend, &migrations)
+        .map_err(cli_error)?;
+
+    if statuses.is_empty() {
+        println!("No migrations found in {}", migrations_dir.display());
+        return Ok(());
+    }
+
+    println!(
+        "{:<40} {:<12} {:<10} STATUS",
+        "SCRIPT", "KIND", "VERSION"
+    );
+    for status in &statuses {
+        let state = match status.status {
+            MigrationStatusKind::Pending => "Pending",
+            MigrationStatusKind::Applied => "Applied",
+            MigrationStatusKind::Modified => "Modified",
+            MigrationStatusKind::IgnoredBaseline => "IgnoredBaseline",
+            MigrationStatusKind::Failed => "Failed",
+        };
+        let version = status
+            .version
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        println!(
+            "{:<40} {:<12} {:<10} {}",
+            status.script,
+            status.kind.as_str(),
+            version,
+            state
+        );
+    }
+    Ok(())
+}
+
+fn repair_history<B: MigrationBackend>(
+    backend: &mut B,
+    migrations_dir: &Path,
+) -> Result<(), CliError> {
+    let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    let report = Migrator::new()
+        .repair(backend, &migrations)
+        .map_err(cli_error)?;
+
+    println!(
+        "Removed {} failed entr(ies), updated {} checksum(s)",
+        report.removed_failed_entries,
+        report.updated_checksums.len()
+    );
+    for script in &report.updated_checksums {
+        println!("  - {script}");
+    }
+    Ok(())
+}
+
+fn baseline_database<B: MigrationBackend>(
+    backend: &mut B,
+    version: MigrationVersion,
+    description: &str,
+) -> Result<(), CliError> {
+    let entry = Migrator::new()
+        .baseline(backend, version, description)
+        .map_err(cli_error)?;
+    println!(
+        "Baselined database at rank {} ({})",
+        entry.installed_rank, entry.description
+    );
+    Ok(())
 }
 
 fn print_help() {
