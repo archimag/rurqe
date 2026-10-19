@@ -7,7 +7,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef};
+use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef};
 
 /// Structural schema diff describing exact discrepancies.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -33,6 +33,7 @@ pub struct TableDiff {
     pub extra_columns: Vec<String>,
     pub altered_columns: Vec<String>,
     pub primary_key_mismatch: bool,
+    pub foreign_key_mismatch: bool,
 }
 
 impl TableDiff {
@@ -41,6 +42,7 @@ impl TableDiff {
             && self.extra_columns.is_empty()
             && self.altered_columns.is_empty()
             && !self.primary_key_mismatch
+            && !self.foreign_key_mismatch
     }
 }
 
@@ -96,6 +98,12 @@ impl fmt::Display for DriftReport {
                 writeln!(
                     f,
                     "  - Table `{table}`: primary key constraint differs between database and snapshot."
+                )?;
+            }
+            if diff.foreign_key_mismatch {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: foreign key constraints differ between database and snapshot."
                 )?;
             }
         }
@@ -184,79 +192,27 @@ pub fn extract_schema_hash(code: &str) -> Option<String> {
 fn compute_catalog_diff(live: &SchemaCatalog, lock_text: &str) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
 
+    let expected_tables = parse_tables_from_lock(lock_text);
     let live_tables: BTreeMap<&str, &TableDef> =
         live.tables.iter().map(|t| (t.name.as_str(), t)).collect();
-
-    let expected_table_names = parse_table_names_from_lock(lock_text);
 
     let all_tables: BTreeSet<&str> = live_tables
         .keys()
         .copied()
-        .chain(expected_table_names.iter().map(|s| s.as_str()))
+        .chain(expected_tables.keys().map(|s| s.as_str()))
         .collect();
 
     for table_name in all_tables {
         let in_live = live_tables.get(table_name);
-        let in_expected = expected_table_names.contains(table_name);
+        let in_expected = expected_tables.get(table_name);
 
         match (in_live, in_expected) {
-            (None, true) => diff.missing_tables.push(table_name.to_owned()),
-            (Some(_), false) => diff.extra_tables.push(table_name.to_owned()),
-            (Some(live_table), true) => {
-                let table_diff = compute_table_diff(live_table, lock_text);
+            (None, Some(_)) => diff.missing_tables.push(table_name.to_owned()),
+            (Some(_), None) => diff.extra_tables.push(table_name.to_owned()),
+            (Some(live_table), Some(expected_table)) => {
+                let table_diff = compute_table_diff(live_table, expected_table);
                 if !table_diff.is_empty() {
                     diff.table_diffs.insert(table_name.to_owned(), table_diff);
-                }
-            }
-            (None, false) => {}
-        }
-    }
-
-    diff
-}
-
-fn parse_table_names_from_lock(lock: &str) -> BTreeSet<String> {
-    let mut set = BTreeSet::new();
-    for line in lock.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("table \"") {
-            if let Some(inner) = rest.strip_suffix("\" {") {
-                set.insert(inner.replace("\"\"", "\""));
-            }
-        }
-    }
-    set
-}
-
-fn compute_table_diff(live: &TableDef, lock_text: &str) -> TableDiff {
-    let mut diff = TableDiff::default();
-
-    let expected_columns = parse_columns_from_lock(lock_text, &live.name);
-    let live_cols: BTreeMap<&str, &ColumnDef> =
-        live.columns.iter().map(|c| (c.name.as_str(), c)).collect();
-
-    let all_cols: BTreeSet<&str> = live_cols
-        .keys()
-        .copied()
-        .chain(expected_columns.keys().copied())
-        .collect();
-
-    for col in all_cols {
-        let in_live = live_cols.get(col);
-        let in_expected = expected_columns.get(col);
-
-        match (in_live, in_expected) {
-            (None, Some(_)) => diff.missing_columns.push(col.to_owned()),
-            (Some(_), None) => diff.extra_columns.push(col.to_owned()),
-            (Some(live_c), Some(exp_str)) => {
-                let live_str = format!(
-                    "{}: {}{}",
-                    live_c.name,
-                    live_c.type_kind.as_str(),
-                    if live_c.nullable { " null" } else { " not null" }
-                );
-                if !exp_str.contains(&live_str) {
-                    diff.altered_columns.push(col.to_owned());
                 }
             }
             (None, None) => {}
@@ -266,31 +222,203 @@ fn compute_table_diff(live: &TableDef, lock_text: &str) -> TableDiff {
     diff
 }
 
-fn parse_columns_from_lock<'a>(lock: &'a str, table_name: &str) -> BTreeMap<&'a str, &'a str> {
-    let mut map = BTreeMap::new();
-    let needle = format!("table \"{table_name}\" {{");
-    let mut in_table = false;
+/// Structurally parsed representation of a `schema.lock` table block.
+#[derive(Debug, Default)]
+struct ExpectedTable {
+    columns: BTreeMap<String, ExpectedColumn>,
+    primary_key: Vec<String>,
+    foreign_keys: BTreeSet<String>,
+}
+
+/// Structurally parsed representation of a `schema.lock` column line.
+#[derive(Debug, PartialEq, Eq)]
+struct ExpectedColumn {
+    type_str: String,
+    nullable: bool,
+    default: Option<String>,
+}
+
+/// Parses every `table "..." { ... }` block of the snapshot.
+fn parse_tables_from_lock(lock: &str) -> BTreeMap<String, ExpectedTable> {
+    let mut tables = BTreeMap::new();
+    let mut current: Option<(String, ExpectedTable)> = None;
 
     for line in lock.lines() {
         let trimmed = line.trim();
-        if trimmed == needle {
-            in_table = true;
+        if let Some(rest) = trimmed.strip_prefix("table ") {
+            if let Some((name, _)) = parse_quoted(rest) {
+                current = Some((name, ExpectedTable::default()));
+            }
             continue;
         }
-        if in_table {
-            if trimmed == "}" {
-                break;
+        if trimmed == "}" {
+            if let Some((name, table)) = current.take() {
+                tables.insert(name, table);
             }
-            if let Some(rest) = trimmed.strip_prefix("column \"") {
-                if let Some(end_quote) = rest.find('"') {
-                    let col_name = &rest[..end_quote];
-                    map.insert(col_name, trimmed);
-                }
-            }
+            continue;
+        }
+        if let Some((_, table)) = current.as_mut() {
+            parse_table_line(trimmed, table);
         }
     }
 
-    map
+    tables
+}
+
+fn parse_table_line(line: &str, table: &mut ExpectedTable) {
+    if let Some(rest) = line.strip_prefix("column ") {
+        if let Some((name, after)) = parse_quoted(rest) {
+            if let Some(definition) = after.strip_prefix(": ").and_then(parse_column_definition) {
+                table.columns.insert(name, definition);
+            }
+        }
+    } else if let Some(rest) = line.strip_prefix("primary key ") {
+        if let Some(columns) = parse_quoted_list(rest) {
+            table.primary_key = columns;
+        }
+    } else if line.starts_with("foreign key ") {
+        table.foreign_keys.insert(line.to_owned());
+    }
+}
+
+fn parse_column_definition(definition: &str) -> Option<ExpectedColumn> {
+    let (head, default) = match definition.find(" default ") {
+        Some(position) => (
+            &definition[..position],
+            Some(definition[position + " default ".len()..].to_owned()),
+        ),
+        None => (definition, None),
+    };
+
+    let (type_str, nullable) = if let Some(ty) = head.strip_suffix(" not null") {
+        (ty, false)
+    } else if let Some(ty) = head.strip_suffix(" null") {
+        (ty, true)
+    } else {
+        (head, false)
+    };
+
+    Some(ExpectedColumn {
+        type_str: type_str.to_owned(),
+        nullable,
+        default,
+    })
+}
+
+fn compute_table_diff(live: &TableDef, expected: &ExpectedTable) -> TableDiff {
+    let mut diff = TableDiff::default();
+
+    let live_cols: BTreeMap<&str, &ColumnDef> =
+        live.columns.iter().map(|c| (c.name.as_str(), c)).collect();
+
+    let all_cols: BTreeSet<&str> = live_cols
+        .keys()
+        .copied()
+        .chain(expected.columns.keys().map(|s| s.as_str()))
+        .collect();
+
+    for col in all_cols {
+        match (live_cols.get(col), expected.columns.get(col)) {
+            (None, Some(_)) => diff.missing_columns.push(col.to_owned()),
+            (Some(_), None) => diff.extra_columns.push(col.to_owned()),
+            (Some(live_col), Some(expected_col)) => {
+                if live_col.type_kind.as_str() != expected_col.type_str
+                    || live_col.nullable != expected_col.nullable
+                    || live_col.default != expected_col.default
+                {
+                    diff.altered_columns.push(col.to_owned());
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    if live.primary_key != expected.primary_key {
+        diff.primary_key_mismatch = true;
+    }
+
+    let live_foreign_keys: BTreeSet<String> =
+        live.foreign_keys.iter().map(render_foreign_key).collect();
+    if live_foreign_keys != expected.foreign_keys {
+        diff.foreign_key_mismatch = true;
+    }
+
+    diff
+}
+
+/// Renders a foreign key exactly as the canonical `schema.lock` snapshot does.
+fn render_foreign_key(foreign_key: &ForeignKeyDef) -> String {
+    format!(
+        "foreign key {} {} references {} {}",
+        quote_ident(&foreign_key.name),
+        quote_list(&foreign_key.columns),
+        quote_ident(&foreign_key.referenced_table),
+        quote_list(&foreign_key.referenced_columns),
+    )
+}
+
+fn quote_ident(ident: &str) -> String {
+    let mut out = String::from("\"");
+    for character in ident.chars() {
+        if character == '"' {
+            out.push('"');
+        }
+        out.push(character);
+    }
+    out.push('"');
+    out
+}
+
+fn quote_list(idents: &[String]) -> String {
+    let rendered: Vec<String> = idents.iter().map(|ident| quote_ident(ident)).collect();
+    format!("({})", rendered.join(", "))
+}
+
+/// Parses a double-quoted identifier, unescaping doubled inner quotes.
+fn parse_quoted(input: &str) -> Option<(String, &str)> {
+    let mut chars = input.char_indices();
+    let (_, first) = chars.next()?;
+    if first != '"' {
+        return None;
+    }
+
+    let mut name = String::new();
+    let mut iter = chars;
+    while let Some((index, character)) = iter.next() {
+        if character == '"' {
+            match iter.next() {
+                Some((_, '"')) => name.push('"'),
+                _ => return Some((name, &input[index + 1..])),
+            }
+        } else {
+            name.push(character);
+        }
+    }
+
+    None
+}
+
+/// Parses a parenthesised, comma-separated list of quoted identifiers.
+fn parse_quoted_list(input: &str) -> Option<Vec<String>> {
+    let inner = input.strip_prefix('(')?.strip_suffix(')')?;
+    let mut idents = Vec::new();
+    let mut cursor = inner;
+
+    loop {
+        let trimmed = cursor.trim_start();
+        if trimmed.is_empty() {
+            break;
+        }
+        let (ident, after) = parse_quoted(trimmed)?;
+        idents.push(ident);
+        let after = after.trim_start();
+        match after.strip_prefix(',') {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+
+    Some(idents)
 }
 
 #[cfg(test)]
@@ -343,5 +471,104 @@ mod tests {
             }
             other => panic!("expected Drift, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn primary_key_drift_is_reported() {
+        let baseline = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            vec!["id".to_owned()],
+        )]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            Vec::new(),
+        )]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert!(
+                    report.diff.table_diffs["users"].primary_key_mismatch,
+                    "primary key drift must be detected"
+                );
+                assert!(report.to_string().contains("primary key"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn foreign_key_drift_is_reported() {
+        use rurqe_migrate::catalog::ForeignKeyDef;
+
+        let with_fk = TableDef::new(
+            "orders",
+            vec![ColumnDef::new("user_id", TypeKind::Int64, false)],
+            Vec::new(),
+        )
+        .with_foreign_key(ForeignKeyDef::new(
+            "orders_user_id_fkey",
+            vec!["user_id".to_owned()],
+            "users",
+            vec!["id".to_owned()],
+        ));
+        let lock = SchemaCatalog::new(vec![with_fk]).to_lock();
+
+        let live = SchemaCatalog::new(vec![TableDef::new(
+            "orders",
+            vec![ColumnDef::new("user_id", TypeKind::Int64, false)],
+            Vec::new(),
+        )]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert!(
+                    report.diff.table_diffs["orders"].foreign_key_mismatch,
+                    "foreign key drift must be detected"
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn altered_column_definition_is_reported() {
+        let baseline = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("email", TypeKind::Text, false)],
+            Vec::new(),
+        )]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("email", TypeKind::Text, true)],
+            Vec::new(),
+        )]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].altered_columns,
+                    vec!["email".to_owned()]
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn escaped_identifiers_are_matched_without_false_drift() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "we\"ird",
+            vec![ColumnDef::new("sel\"ect", TypeKind::Text, false)],
+            vec!["sel\"ect".to_owned()],
+        )]);
+        let lock = catalog.to_lock();
+
+        assert!(verify_drift(&catalog, &lock, None).is_ok());
     }
 }
