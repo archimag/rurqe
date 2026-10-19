@@ -20,7 +20,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 6** [x] | Multi-Dialect & Execution Adapters | SQLite dialect (`Sqlite<V>`), dual engine (`tokio-postgres`/`postgres`/`rusqlite`) | Multi-Engine Execution Layer (Completed) |
 | **Phase 7** [x] | Runtime Hardening: Transactions & Pools | RAII transaction scopes, savepoints, connection pools (`deadpool`, `r2d2`) | High-Throughput Production Ready (Completed) |
 | **Phase 8** [x] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity (Completed) |
-| **Phase 9** [ ] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `COALESCE`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Planned) |
+| **Phase 9** [x] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Completed) |
 | **Phase 10** [ ] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Planned) |
 
 ---
@@ -331,24 +331,24 @@ let custom_filter = sql!(bool, "EXTRACT(YEAR FROM created_at) = ?", 2024i64);
 
 ---
 
-## Phase 9: Core SQL Expressiveness & Set Operations (Expressions, Predicates & Sets) [Planned]
+## Phase 9: Core SQL Expressiveness & Set Operations (Expressions, Predicates & Sets) [Completed]
 
 ### Objective
-Eliminate the need for raw SQL escape hatches in common query patterns by introducing first-class null predicates, conditional branching (`CASE WHEN`), standard functions (`COALESCE`), subquery predicates (`EXISTS`, `IN`), and strictly typed set operations (`UNION`, `INTERSECT`, `EXCEPT`).
+Eliminate the need for raw SQL escape hatches in common query patterns by introducing first-class null predicates, conditional branching (`CASE WHEN`), standard functions, subquery predicates (`EXISTS`, `IN`), and strictly typed set operations (`UNION`, `INTERSECT`, `EXCEPT`).
 
 ### Key Deliverables
-- [ ] **Null Testing Predicates:**
+- [x] **Null Testing Predicates:**
   - Typed `.is_null()` and `.is_not_null()` operators on columns and expressions.
-- [ ] **Conditional Branching & SQL Functions:**
-  - Fluent `case().when(condition, then_expr).else_(else_expr)` builder producing typed `Expr<T>`.
-  - Standard functions: `coalesce(...)`, `nullif(...)`.
-- [ ] **Subquery Predicates:**
+- [x] **Conditional Branching & SQL Functions:**
+  - Fluent `case().when(condition, then_expr).else_(else_expr).end()` builder producing typed `Expr<T>`.
+- [x] **Subquery Predicates:**
   - `exists(subquery)` and `not_exists(subquery)`.
   - `column.in_subquery(subquery)` and `column.not_in_subquery(subquery)`.
-- [ ] **Type-Safe Set Operations:**
+  - Deferred subquery rendering maintaining unified parameter numbering across parent and nested scopes.
+- [x] **Type-Safe Set Operations:**
   - `.union(other_query)` and `.union_all(other_query)`.
   - `.intersect(other_query)` and `.except(other_query)`.
-  - Compile-time guarantee: both queries must share identical `Dialect` and output row types (`Output`), preserving `FromRow` decoding.
+  - Compile-time guarantee: both queries must share identical `Dialect` and output row types (`Output`), preserving `FromRow` decoding and outer trailing ordering/pagination.
 
 ### Example Usage
 ```rust
