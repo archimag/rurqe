@@ -165,6 +165,12 @@ impl BinaryOp {
     }
 }
 
+/// A deferred SQL rendering closure receiving the statement buffers to fill.
+///
+/// Nested statements render on demand into the buffers of their enclosing
+/// statement, so their placeholders continue the outer numbering.
+type SubqueryRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+
 /// A nested query rendered inline within a predicate of an enclosing statement.
 ///
 /// The nested query renders on demand into the buffers of the enclosing
@@ -174,12 +180,6 @@ impl BinaryOp {
 /// ```text
 /// SELECT "id" FROM "users" WHERE ("id" IN (SELECT "user_id" FROM "orders" WHERE ("total" > $1)))
 /// ```
-/// A deferred SQL rendering closure receiving the statement buffers to fill.
-///
-/// Nested statements render on demand into the buffers of their enclosing
-/// statement, so their placeholders continue the outer numbering.
-type SubqueryRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
-
 #[derive(Clone)]
 pub struct Subquery {
     renderer: SubqueryRenderer,
