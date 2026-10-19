@@ -324,6 +324,19 @@ let built = select_from::<Postgres, User>()
 //   INNER JOIN "users" AS "manager" ON ("manager_id" = "manager"."id")
 ```
 
+Column markers are zero-sized values, so the same `AliasedCol<A, C>` marker is produced without turbofish noise through `UserId.alias::<A>()` or `A::col(UserId)`:
+
+```rust
+.select((
+    UserId,
+    UserName,
+    UserId.alias::<ManagerAlias>(),
+    ManagerAlias.col(UserName),
+))
+
+// SELECT "id", "name", "manager"."id", "manager"."name" FROM "users" ...
+```
+
 Columns of an aliased table introduced with `.left_join(...)` are lifted into `Option<T>` through `query.nullable::<AliasedCol<A, C>>()`.
 
 ### 13. LATERAL Joins
@@ -347,6 +360,35 @@ let built = select_from::<Postgres, User>()
 ```
 
 `left_join_lateral` renders `LEFT JOIN LATERAL ... ON true` and keeps outer rows a lateral subquery leaves unmatched, so its columns must be projected through `query.nullable::<...>()` to lift them into `Option<T>`.
+
+### 14. Fluent Predicates (`LIKE`, `BETWEEN`, `IN`)
+
+Pattern matching, range tests, and membership lists are first-class typed predicates available on columns and expressions. Every operand is bound as a parameter, and an incompatible value type fails to compile at the call site:
+
+```rust
+// Pattern matching: `like` is case-sensitive, `ilike` is case-insensitive.
+let by_name = Expr::column::<UserName>()
+    .like("A%")
+    .or(Expr::column::<UserName>().ilike("%admin%"));
+
+// Inclusive range and membership lists.
+let ranged = Expr::column::<UserId>().between(10i64, 20i64);
+let shortlisted = Expr::column::<UserId>().in_list(vec![1i64, 2i64, 3i64]);
+let excluded = Expr::column::<UserName>().not_in_list(vec!["root", "admin"]);
+
+let query = select_from::<Postgres, User>()
+    .select((UserId, UserName))
+    .where_(by_name)
+    .where_(ranged)
+    .where_(shortlisted)
+    .where_(excluded);
+
+// SELECT "id", "name" FROM "users"
+//   WHERE (((("name" LIKE $1) OR ("name" ILIKE $2)) AND ("id" BETWEEN $3 AND $4))
+//     AND ("id" IN ($5, $6, $7))) AND ("name" NOT IN ($8, $9))
+```
+
+`in_list` / `not_in_list` accept any iterator of compatible values and require at least one element; an empty list is a programming error caught by an assertion.
 
 ---
 
