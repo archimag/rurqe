@@ -909,15 +909,20 @@ fn count_raw_placeholders(template: &str) -> (usize, usize) {
 /// Literal question marks can be escaped as `??`. Both placeholder styles may not
 /// be mixed within a single template.
 pub fn parse_raw_sql(template: &str, param_count: usize) -> Vec<String> {
-    if param_count == 0 {
-        return vec![template.replace("??", "?")];
-    }
-
     let (question_marks, braces) = count_raw_placeholders(template);
     assert!(
         !(question_marks > 0 && braces > 0),
         "raw SQL template mixes `?` and `{{}}` placeholders; use one style consistently"
     );
+
+    if param_count == 0 {
+        assert!(
+            question_marks + braces == 0,
+            "raw SQL template expects {} parameter(s), but 0 were provided",
+            question_marks + braces
+        );
+        return vec![template.replace("??", "?")];
+    }
 
     let use_question_mark = question_marks > 0;
 
@@ -1481,7 +1486,7 @@ mod tests {
         let braces_escaped = parse_raw_sql("data ?? 'key' AND age > {}", 1);
         assert_eq!(braces_escaped, vec!["data ? 'key' AND age > ", ""]);
 
-        let zero_params = parse_raw_sql("data ? 'key'", 0);
+        let zero_params = parse_raw_sql("data ?? 'key'", 0);
         assert_eq!(zero_params, vec!["data ? 'key'"]);
     }
 
@@ -1489,6 +1494,18 @@ mod tests {
     #[should_panic(expected = "mixes")]
     fn raw_sql_rejects_mixed_placeholder_styles() {
         parse_raw_sql("a = ? AND b = {}", 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "expects 1 parameter")]
+    fn raw_sql_rejects_question_mark_with_zero_parameters() {
+        parse_raw_sql("a = ?", 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "expects 1 parameter")]
+    fn raw_sql_rejects_brace_placeholder_with_zero_parameters() {
+        parse_raw_sql("a = {}", 0);
     }
 
     #[test]
