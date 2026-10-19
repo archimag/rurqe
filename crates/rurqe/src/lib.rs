@@ -309,7 +309,10 @@ pub mod prelude {
 
     pub use rurqe_core::dialect::SupportsLateralJoin;
 
-    pub use rurqe_core::expr::{CaseBranch, CaseBuilder, Subquery, SubqueryOp};
+    pub use rurqe_core::expr::{
+        avg, coalesce, count, count_all, max, min, sum, CaseBranch, CaseBuilder, Expression,
+        StringExpression, Subquery, SubqueryOp,
+    };
 
     pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, SetOpKind, TableScope};
 

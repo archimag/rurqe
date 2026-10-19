@@ -884,6 +884,226 @@ impl<T> IntoExpr<T> for Expr<T> {
     }
 }
 
+/// A SQL expression of type `T` that can be compared with bound values.
+///
+/// The trait lets the expression be written directly at the call site — a column
+/// marker, an alias-qualified column, or an already built [`Expr`] — without
+/// spelling `Expr::column::<C>()` first:
+///
+/// ```
+/// use rurqe_core::expr::{Expr, Expression};
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// let predicate = UserId.gt(10i64);
+///
+/// assert_eq!(predicate, Expr::column::<UserId>().gt(10i64));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an expression of type `{T}`",
+    label = "neither a column marker nor a built expression",
+    note = "compare a column marker or an `Expr<T>` produced by the expression builders"
+)]
+#[allow(clippy::wrong_self_convention)]
+pub trait Expression<T> {
+    /// Converts `self` into the expression it stands for.
+    fn into_expression(self) -> Expr<T>;
+
+    /// Compares the expression with `value` using the SQL `=` operator.
+    fn eq<V>(self, value: V) -> Expr<bool>
+    where
+        Self: Sized,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().eq(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `<>` operator.
+    fn ne<V>(self, value: V) -> Expr<bool>
+    where
+        Self: Sized,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().ne(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `>` operator.
+    fn gt<V>(self, value: V) -> Expr<bool>
+    where
+        Self: Sized,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().gt(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `<` operator.
+    fn lt<V>(self, value: V) -> Expr<bool>
+    where
+        Self: Sized,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().lt(value)
+    }
+
+    /// Builds an `IS NULL` predicate over the expression.
+    fn is_null(self) -> Expr<bool>
+    where
+        Self: Sized,
+    {
+        // Call the inherent `Expr` method explicitly: `Expr<T>::is_null` takes
+        // `&self`, so a plain method call would resolve back to this by-value
+        // trait method and recurse.
+        Expr::is_null(&self.into_expression())
+    }
+
+    /// Builds an `IS NOT NULL` predicate over the expression.
+    fn is_not_null(self) -> Expr<bool>
+    where
+        Self: Sized,
+    {
+        // See `Expression::is_null` for why the inherent method is called explicitly.
+        Expr::is_not_null(&self.into_expression())
+    }
+
+    /// Builds a `BETWEEN low AND high` range predicate over the expression.
+    ///
+    /// Both bounds are inclusive and must be compatible with the expression type.
+    fn between<L, H>(self, low: L, high: H) -> Expr<bool>
+    where
+        Self: Sized,
+        L: IntoExpr<T>,
+        H: IntoExpr<T>,
+    {
+        self.into_expression().between(low, high)
+    }
+
+    /// Builds an `IN (value, ...)` membership predicate over the expression.
+    fn in_list<I, V>(self, values: I) -> Expr<bool>
+    where
+        Self: Sized,
+        I: IntoIterator<Item = V>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().in_list(values)
+    }
+
+    /// Builds a `NOT IN (value, ...)` negated membership predicate.
+    fn not_in_list<I, V>(self, values: I) -> Expr<bool>
+    where
+        Self: Sized,
+        I: IntoIterator<Item = V>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().not_in_list(values)
+    }
+}
+
+impl<T> Expression<T> for Expr<T> {
+    fn into_expression(self) -> Expr<T> {
+        self
+    }
+}
+
+impl<C: Column> Expression<C::RustType> for C {
+    fn into_expression(self) -> Expr<C::RustType> {
+        Expr::<C::RustType>::column::<C>()
+    }
+}
+
+/// A string expression that can be matched against `LIKE` patterns.
+///
+/// Both a string column marker and an already built [`Expr<String>`] implement
+/// the trait, so pattern predicates can be written directly at the call site.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a string expression",
+    label = "only string columns and `Expr<String>` values accept LIKE patterns",
+    note = "match a column declared as `String` or an `Expr<String>` built from one"
+)]
+pub trait StringExpression {
+    /// Converts `self` into the string expression it stands for.
+    fn into_string_expression(self) -> Expr<String>;
+
+    /// Builds a case-sensitive `LIKE` pattern-matching predicate.
+    fn like<V>(self, pattern: V) -> Expr<bool>
+    where
+        Self: Sized,
+        V: IntoExpr<String>,
+    {
+        self.into_string_expression().like(pattern)
+    }
+
+    /// Builds a case-insensitive `ILIKE` pattern-matching predicate.
+    fn ilike<V>(self, pattern: V) -> Expr<bool>
+    where
+        Self: Sized,
+        V: IntoExpr<String>,
+    {
+        self.into_string_expression().ilike(pattern)
+    }
+}
+
+impl StringExpression for Expr<String> {
+    fn into_string_expression(self) -> Expr<String> {
+        self
+    }
+}
+
+impl<C: Column<RustType = String>> StringExpression for C {
+    fn into_string_expression(self) -> Expr<String> {
+        Expr::<String>::column::<C>()
+    }
+}
+
+/// Builds a `COUNT(*)` expression over the rows of the query.
+pub fn count() -> Expr<i64> {
+    Expr::<i64>::count_all()
+}
+
+/// Builds a `COUNT(*)` expression over the rows of the query.
+pub fn count_all() -> Expr<i64> {
+    Expr::<i64>::count_all()
+}
+
+/// Builds a `SUM(col)` expression for the column `col`.
+pub fn sum<C: Column>(_col: C) -> Expr<C::RustType> {
+    Expr::<C::RustType>::sum::<C>()
+}
+
+/// Builds an `AVG(col)` expression for the column `col`.
+pub fn avg<C: Column>(_col: C) -> Expr<f64> {
+    Expr::<f64>::avg::<C>()
+}
+
+/// Builds a `MIN(col)` expression for the column `col`.
+pub fn min<C: Column>(_col: C) -> Expr<C::RustType> {
+    Expr::<C::RustType>::min::<C>()
+}
+
+/// Builds a `MAX(col)` expression for the column `col`.
+pub fn max<C: Column>(_col: C) -> Expr<C::RustType> {
+    Expr::<C::RustType>::max::<C>()
+}
+
+/// Builds a `COALESCE(col, fallback)` expression for the column `col`.
+///
+/// The fallback is bound as a parameter, so it must be compatible with the
+/// column's Rust type.
+pub fn coalesce<C, V>(_col: C, fallback: V) -> Expr<C::RustType>
+where
+    C: Column,
+    V: IntoExpr<C::RustType>,
+{
+    Expr::new(ExprKind::Function {
+        name: "COALESCE",
+        args: vec![ExprKind::Column { name: C::NAME }, fallback.into_expr_kind()],
+    })
+}
+
 /// Counts unescaped `?` placeholders and `{}` placeholders in a raw SQL template.
 fn count_raw_placeholders(template: &str) -> (usize, usize) {
     let mut question_marks = 0;
@@ -1620,5 +1840,59 @@ mod tests {
     #[should_panic(expected = "at least one value")]
     fn in_list_requires_at_least_one_value() {
         let _ = Expr::column::<UserId>().in_list(Vec::<i64>::new());
+    }
+
+    #[test]
+    fn column_markers_are_expressions() {
+        assert_eq!(UserId.eq(7i64), Expr::column::<UserId>().eq(7i64));
+        assert_eq!(UserId.ne(7i64), Expr::column::<UserId>().ne(7i64));
+        assert_eq!(UserId.gt(7i64), Expr::column::<UserId>().gt(7i64));
+        assert_eq!(UserId.lt(7i64), Expr::column::<UserId>().lt(7i64));
+        assert_eq!(UserName.is_null(), Expr::column::<UserName>().is_null());
+        assert_eq!(
+            UserName.is_not_null(),
+            Expr::column::<UserName>().is_not_null()
+        );
+        assert_eq!(
+            UserId.between(1i64, 9i64),
+            Expr::column::<UserId>().between(1i64, 9i64)
+        );
+        assert_eq!(
+            UserId.in_list(vec![1i64, 2i64]),
+            Expr::column::<UserId>().in_list(vec![1i64, 2i64])
+        );
+        assert_eq!(
+            UserId.not_in_list(vec![1i64]),
+            Expr::column::<UserId>().not_in_list(vec![1i64])
+        );
+    }
+
+    #[test]
+    fn string_columns_match_like_patterns() {
+        assert_eq!(UserName.like("A%"), Expr::column::<UserName>().like("A%"));
+        assert_eq!(
+            UserName.ilike("a%"),
+            Expr::column::<UserName>().ilike("a%")
+        );
+    }
+
+    #[test]
+    fn aggregate_helpers_build_expected_expressions() {
+        assert_eq!(count(), Expr::<i64>::count_all());
+        assert_eq!(count_all(), Expr::<i64>::count_all());
+        assert_eq!(sum(UserId), Expr::<i64>::sum::<UserId>());
+        assert_eq!(avg(UserId), Expr::<f64>::avg::<UserId>());
+        assert_eq!(min(UserId), Expr::<i64>::min::<UserId>());
+        assert_eq!(max(UserName), Expr::<String>::max::<UserName>());
+    }
+
+    #[test]
+    fn coalesce_binds_the_fallback_parameter() {
+        let expr = coalesce(UserName, "anonymous");
+
+        let (sql, params) = render(expr.kind());
+
+        assert_eq!(sql, "COALESCE(\"name\", ?)");
+        assert_eq!(params, vec![SqlVal::Text("anonymous".to_owned())]);
     }
 }
