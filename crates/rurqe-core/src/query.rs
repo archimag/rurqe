@@ -1891,6 +1891,64 @@ pub enum ExecutionError<E> {
     },
 }
 
+impl<E> ExecutionError<E> {
+    /// Returns `true` when the query produced no rows at all.
+    ///
+    /// The predicate lets call sites treat a missing record as a regular
+    /// outcome without matching the error enum by hand:
+    ///
+    /// ```text
+    /// match backend.fetch_optional(&query) {
+    ///     Ok(row) => row,
+    ///     Err(error) if error.is_not_found() => return Ok(None),
+    ///     Err(error) => return Err(error),
+    /// }
+    /// ```
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, ExecutionError::NoRows)
+    }
+
+    /// Returns `true` when a single-row query produced more than one row.
+    pub fn is_multiple_rows(&self) -> bool {
+        matches!(self, ExecutionError::MultipleRows { .. })
+    }
+
+    /// Returns `true` when a produced row did not match the query row type.
+    pub fn is_row_decode(&self) -> bool {
+        matches!(self, ExecutionError::RowDecode { .. })
+    }
+
+    /// Borrows the driver error when the failure came from the backend.
+    ///
+    /// Returns `None` for the decoding and cardinality failures raised by
+    /// [`QueryBackendExt`] itself, so a caller can tell driver failures from
+    /// row-shape failures without matching every variant.
+    pub fn as_backend(&self) -> Option<&E> {
+        match self {
+            ExecutionError::Backend(error) => Some(error),
+            ExecutionError::RowDecode { .. }
+            | ExecutionError::NoRows
+            | ExecutionError::MultipleRows { .. } => None,
+        }
+    }
+
+    /// Takes the driver error when the failure came from the backend.
+    pub fn into_backend(self) -> Option<E> {
+        match self {
+            ExecutionError::Backend(error) => Some(error),
+            ExecutionError::RowDecode { .. }
+            | ExecutionError::NoRows
+            | ExecutionError::MultipleRows { .. } => None,
+        }
+    }
+}
+
+impl<E> From<E> for ExecutionError<E> {
+    fn from(error: E) -> Self {
+        ExecutionError::Backend(error)
+    }
+}
+
 impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -3005,6 +3063,58 @@ mod tests {
         fn assert_error<E: std::error::Error>() {}
 
         assert_error::<ExecutionError<std::io::Error>>();
+    }
+
+    #[test]
+    fn execution_error_predicates_classify_failures() {
+        let backend: ExecutionError<&str> = ExecutionError::Backend("connection lost");
+        assert!(!backend.is_not_found());
+        assert!(!backend.is_multiple_rows());
+        assert!(!backend.is_row_decode());
+
+        let no_rows = ExecutionError::<&str>::NoRows;
+        assert!(no_rows.is_not_found());
+        assert!(!no_rows.is_multiple_rows());
+        assert!(!no_rows.is_row_decode());
+
+        let multiple = ExecutionError::<&str>::MultipleRows { count: 2 };
+        assert!(multiple.is_multiple_rows());
+        assert!(!multiple.is_not_found());
+        assert!(!multiple.is_row_decode());
+
+        let decode = ExecutionError::<&str>::RowDecode { row_index: 3 };
+        assert!(decode.is_row_decode());
+        assert!(!decode.is_not_found());
+        assert!(!decode.is_multiple_rows());
+    }
+
+    #[test]
+    fn execution_error_backend_accessors_expose_driver_errors() {
+        let backend: ExecutionError<String> = ExecutionError::Backend("timeout".to_owned());
+
+        assert_eq!(backend.as_backend(), Some(&"timeout".to_owned()));
+        assert_eq!(backend.into_backend(), Some("timeout".to_owned()));
+
+        let no_rows = ExecutionError::<String>::NoRows;
+        assert_eq!(no_rows.as_backend(), None);
+        assert_eq!(no_rows.into_backend(), None);
+
+        let multiple = ExecutionError::<String>::MultipleRows { count: 2 };
+        assert_eq!(multiple.as_backend(), None);
+        assert_eq!(multiple.into_backend(), None);
+
+        let decode = ExecutionError::<String>::RowDecode { row_index: 0 };
+        assert_eq!(decode.as_backend(), None);
+        assert_eq!(decode.into_backend(), None);
+    }
+
+    #[test]
+    fn backend_errors_convert_into_execution_errors() {
+        let converted: ExecutionError<&str> = "timeout".into();
+
+        assert_eq!(converted, ExecutionError::Backend("timeout"));
+        assert_eq!(converted.as_backend(), Some(&"timeout"));
+        assert!(!converted.is_row_decode());
     }
 
     #[derive(Default)]
