@@ -12,6 +12,11 @@ use crate::expr::SqlVal;
 /// The trait is implemented for the scalar types representable as [`SqlVal`]
 /// variants: `i32`, `i64`, `f64`, `bool`, and `String`. Optional values wrap any
 /// of them and decode the SQL `NULL` value as `None`.
+///
+/// Engines without dedicated boolean or 32-bit integer storage classes (SQLite
+/// reports every `INTEGER` value as [`SqlVal::I64`]) still decode into their
+/// declared Rust types: `i32` narrows a 64-bit value that fits, and `bool`
+/// accepts the `0` / `1` integer encoding of a boolean column.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be decoded from a SQL value",
     label = "unsupported row value type",
@@ -26,6 +31,7 @@ impl FromSqlValue for i32 {
     fn from_sql_value(value: &SqlVal) -> Option<Self> {
         match value {
             SqlVal::I32(value) => Some(*value),
+            SqlVal::I64(value) => i32::try_from(*value).ok(),
             _ => None,
         }
     }
@@ -53,8 +59,19 @@ impl FromSqlValue for bool {
     fn from_sql_value(value: &SqlVal) -> Option<Self> {
         match value {
             SqlVal::Bool(value) => Some(*value),
+            SqlVal::I32(value) => decode_bool_integer(i64::from(*value)),
+            SqlVal::I64(value) => decode_bool_integer(*value),
             _ => None,
         }
+    }
+}
+
+/// Decodes the `0` / `1` integer encoding engines use for boolean columns.
+fn decode_bool_integer(value: i64) -> Option<bool> {
+    match value {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
     }
 }
 
@@ -160,6 +177,19 @@ mod tests {
     fn rejects_values_of_other_variants() {
         assert_eq!(i64::from_sql_value(&SqlVal::Text("7".to_owned())), None);
         assert_eq!(String::from_sql_value(&SqlVal::I64(7)), None);
+    }
+
+    #[test]
+    fn narrow_integers_accept_wide_integer_values() {
+        assert_eq!(i32::from_sql_value(&SqlVal::I64(42)), Some(42));
+        assert_eq!(i32::from_sql_value(&SqlVal::I64(i64::MAX)), None);
+    }
+
+    #[test]
+    fn booleans_accept_integer_encodings() {
+        assert_eq!(bool::from_sql_value(&SqlVal::I64(1)), Some(true));
+        assert_eq!(bool::from_sql_value(&SqlVal::I32(0)), Some(false));
+        assert_eq!(bool::from_sql_value(&SqlVal::I64(2)), None);
     }
 
     #[test]
