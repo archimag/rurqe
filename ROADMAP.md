@@ -22,7 +22,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 8** [x] | Advanced SQL & SQLite Toolchain Parity | Window functions, CTEs (`WITH`), SQLite CLI introspection | Full Expressiveness & Multi-Engine Parity (Completed) |
 | **Phase 9** [x] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Completed) |
 | **Phase 10** [x] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Completed) |
-| **Phase 11** [ ] | Vision Alignment & Semantic Ergonomics | Actionable diagnostics, fluent predicates, ergonomic aliases, multi-table DML | Reference Ergonomics & Soundness (In Progress) |
+| **Phase 11** [x] | Vision Alignment & Semantic Ergonomics | Actionable diagnostics, fluent predicates, ergonomic aliases, multi-table DML | Reference Ergonomics & Soundness (Completed) |
 
 ---
 
@@ -437,22 +437,22 @@ let archived = insert_into::<Postgres, ArchiveUser>()
 
 ---
 
-## Phase 11: Vision Alignment & Semantic Ergonomics [In Progress]
+## Phase 11: Vision Alignment & Semantic Ergonomics [Completed]
 
 ### Objective
 Align all RURQE APIs and compiler behaviors with the core Vision requirements (Absolute SQL Correctness & High-Level SQL DSL): replace cryptic Rust trait errors with domain-level SQL diagnostics via `#[diagnostic::on_unimplemented]`, introduce zero-friction ergonomic addressing for table aliases and fluent predicates, and support multi-table mutations (`UPDATE ... FROM`, `DELETE ... USING`).
 
 ### Key Deliverables
-- [ ] **Semantic Compiler Diagnostics (Human & LLM First):**
-  - Explicit typestate diagnostic on unfiltered mutations (`UpdateQuery`/`DeleteQuery<..., Unfiltered>`) explaining the need for `.where_()` or `.allow_all()`.
+- [x] **Semantic Compiler Diagnostics (Human & LLM First):**
+  - Explicit typestate diagnostic on unfiltered mutations (`UpdateQuery`/`DeleteQuery<..., Unfiltered>`) explaining the need for `.where_()` or `.allow_all()` via `ExecutableMutation`.
   - Actionable diagnostics for missing tables in `FROM`/`JOIN` (`SelectionInScope`, `TableInScope`) and foreign columns in `RETURNING` (`TableSelection`).
   - Clear capability mismatch diagnostics for version-gated features (`SupportsReturning`, `SupportsOnConflict`, `SupportsLateralJoin`).
-- [ ] **High-Level Fluent Predicates:**
+- [x] **High-Level Fluent Predicates:**
   - Inherent methods on columns and expressions: `.like(pat)`, `.ilike(pat)`, `.between(low, high)`, `.in_list(values)`, `.not_in_list(values)`.
-- [ ] **Ergonomic Aliasing DSL:**
-  - Lightweight column and table aliasing syntax (`col.alias::<A>()`, `A::col::<C>()`), eliminating repetitive turbofish wrappers (`AliasedCol::<A, C>::new()`).
-- [ ] **Multi-Table DML Mutations:**
-  - Strictly typed `UPDATE ... SET ... FROM ...` and `DELETE ... USING ...` with compile-time join scope checks.
-- [ ] **Verification & LLM Documentation:**
-  - Negative compile-fail tests asserting actionable error messages.
+- [x] **Ergonomic Aliasing DSL:**
+  - Lightweight column and table aliasing syntax (`col.alias::<A>()`, `A.col(Col)`), eliminating repetitive turbofish wrappers (`AliasedCol::<A, C>::new()`).
+- [x] **Multi-Table DML Mutations:**
+  - Strictly typed `UPDATE ... SET ... FROM ...` and `DELETE ... USING ...` with compile-time join scope checks via `ExtendScope`.
+- [x] **Verification & LLM Documentation:**
+  - Negative compile-fail doctests asserting actionable error messages.
   - Complete update of `llms.txt` reflecting the pure, unencumbered SQL DSL.
