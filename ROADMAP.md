@@ -25,7 +25,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 11** [x] | Vision Alignment & Semantic Ergonomics | Actionable diagnostics, fluent predicates, ergonomic aliases, multi-table DML | Reference Ergonomics & Soundness (Completed) |
 | **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, zero-turbofish queries, automatic nullability, universal record synthesis | Two-Tier Architecture & Reference SQL DSL (Planned) |
 | **Phase 13** [x] | Codebase Hardening & Conventions Refactoring | Large module decomposition (<800 LOC), panic-free typestate | Production Rigor & Standard Compliance (Completed) |
-| **Phase 14** [ ] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Planned) |
+| **Phase 14** [x] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Completed) |
 | **Phase 15** [ ] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Planned) |
 
 ---
@@ -546,29 +546,29 @@ Bring the entire workspace into strict alignment with [`Conventions.md`](Convent
 
 ---
 
-## Phase 14: Rich Types, Custom Domain Types & Observability (Ecosystem Features, Newtypes & Tracing) [Planned]
+## Phase 14: Rich Types, Custom Domain Types & Observability (Ecosystem Features, Newtypes & Tracing) [Completed]
 
 ### Objective
 Expand the RURQE type system beyond primitive scalars to support standard Rust ecosystem types via modular Cargo feature flags (`uuid`, `serde_json`, `chrono`, `time`) without dependency bloat; introduce the lightweight `tracing` observability facade across database drivers, pools, transactions, and migration runners; and provide first-class, zero-boilerplate ergonomics for custom domain types (binary and text newtypes such as `bitcoin::Txid` or `bitcoin::Address`, as well as domain enums) with strict decode validation, zero runtime panics, and CLI code generation support.
 
 ### Key Deliverables
-- [ ] **Observability & Logging Facade (`tracing`):**
+- [x] **Observability & Logging Facade (`tracing`):**
   - Integrate the `tracing` facade (`info!`, `warn!`, `error!`, `trace!`) in `rurqe-postgres`, `rurqe-sqlite`, `rurqe-migrate`, and the `rurqe` facade without adding dependencies to the zero-overhead `rurqe-core`.
   - Instrument connection lifecycles, transaction boundaries (`BEGIN`, `COMMIT`, `ROLLBACK`), savepoints, and migration executions (`V...`, `R...`).
-- [ ] **Modular Cargo Feature Flags:**
+- [x] **Modular Cargo Feature Flags:**
   - `feature = "uuid"`: support for `uuid::Uuid` across AST expressions, DML mutations, row decoding, and zero-allocation binary protocol bindings in Postgres and SQLite.
   - `feature = "serde_json"`: support for `serde_json::Value` and a transparent wrapper `Json<T: Serialize + DeserializeOwned>` for JSON and JSONB columns.
   - `feature = "chrono"`: support for `chrono::NaiveDateTime`, `chrono::DateTime<Utc>`, and `chrono::NaiveDate`.
   - `feature = "time"`: alternative temporal types via `time::OffsetDateTime` and `time::Date`.
-- [ ] **Custom Domain Types & Newtypes Integration Contract:**
+- [x] **Custom Domain Types & Newtypes Integration Contract:**
   - Standardized conversion contracts (`ToSqlVal` and `FromSqlValue`) supporting custom domain types with fail-fast validation and typed error propagation (`ExecutionError::RowDecode`) without runtime panics.
   - Transparent conversion for binary types (`AsRef<[u8]>`, `TryFrom<&[u8]>`) and string-backed types (`Display`, `FromStr`).
-- [ ] **Ergonomic Bridge Macros for Custom Types:**
+- [x] **Ergonomic Bridge Macros for Custom Types:**
   - Declarative helper macros `impl_sql_binary_newtype!(Type, expected_len)` and `impl_sql_text_newtype!(Type)` to instantly connect third-party types (e.g. `bitcoin::Txid`, `bitcoin::Address`, hash digests) with zero boilerplate.
   - Derive macro support (`#[derive(SqlType)]`) for domain newtypes and string/integer-backed enums.
-- [ ] **CLI Codegen Custom Type Overrides (`rurqe.toml`):**
+- [x] **CLI Codegen Custom Type Overrides (`rurqe.toml`):**
   - Configuration support in CLI codegen (`[codegen.type_overrides]`) to map raw column types (`BYTEA`, `BLOB`, `VARCHAR`) directly to custom Rust types in the generated `schema.rs`.
-- [ ] **Driver Protocol Integration & Verification:**
+- [x] **Driver Protocol Integration & Verification:**
   - High-performance, zero-allocation native driver encoding/decoding where available (e.g. `postgres-types/with-uuid-1`), falling back to typed binary/text representations.
   - End-to-end integration tests covering queries, DML, `select!` projections, and error reporting on invalid payload decoding.
 
