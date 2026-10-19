@@ -277,6 +277,7 @@ mod rusqlite_backend {
                 SqlVal::F64(value) => ValueRef::Real(*value),
                 SqlVal::Bool(value) => ValueRef::Integer(*value as i64),
                 SqlVal::Text(value) => ValueRef::Text(value.as_bytes()),
+                SqlVal::Bytes(value) => ValueRef::Blob(value.as_slice()),
             };
             Ok(ToSqlOutput::Borrowed(value_ref))
         }
@@ -289,7 +290,7 @@ mod rusqlite_backend {
             ValueRef::Integer(value) => SqlVal::I64(value),
             ValueRef::Real(value) => SqlVal::F64(value),
             ValueRef::Text(bytes) => SqlVal::Text(String::from_utf8_lossy(bytes).into_owned()),
-            ValueRef::Blob(bytes) => SqlVal::Text(String::from_utf8_lossy(bytes).into_owned()),
+            ValueRef::Blob(bytes) => SqlVal::Bytes(bytes.to_vec()),
         }
     }
 

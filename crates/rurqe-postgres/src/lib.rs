@@ -220,6 +220,7 @@ mod pg_support {
                 SqlVal::I64(value) => value.to_sql(ty, out),
                 SqlVal::F64(value) => value.to_sql(ty, out),
                 SqlVal::Text(value) => value.as_str().to_sql(ty, out),
+                SqlVal::Bytes(value) => value.as_slice().to_sql(ty, out),
             }
         }
 
@@ -266,6 +267,9 @@ mod pg_support {
             {
                 row.try_get::<usize, Option<String>>(index)?
                     .map_or(SqlVal::Null, SqlVal::Text)
+            } else if ty == &Type::BYTEA {
+                row.try_get::<usize, Option<Vec<u8>>>(index)?
+                    .map_or(SqlVal::Null, SqlVal::Bytes)
             } else {
                 return Err(PgError::UnsupportedType(ty.name().to_owned()));
             };

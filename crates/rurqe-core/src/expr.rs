@@ -30,6 +30,8 @@ pub enum SqlVal {
     Bool(bool),
     /// A UTF-8 string.
     Text(String),
+    /// A binary blob.
+    Bytes(Vec<u8>),
 }
 
 impl From<i32> for SqlVal {
@@ -71,6 +73,18 @@ impl From<&str> for SqlVal {
 impl From<&String> for SqlVal {
     fn from(value: &String) -> Self {
         SqlVal::Text(value.clone())
+    }
+}
+
+impl From<Vec<u8>> for SqlVal {
+    fn from(value: Vec<u8>) -> Self {
+        SqlVal::Bytes(value)
+    }
+}
+
+impl From<&[u8]> for SqlVal {
+    fn from(value: &[u8]) -> Self {
+        SqlVal::Bytes(value.to_vec())
     }
 }
 
@@ -690,6 +704,8 @@ impl<T> SqlCompatible<T, T> for T {}
 
 impl<'a> SqlCompatible<String, &'a str> for &'a str {}
 
+impl<'a> SqlCompatible<Vec<u8>, &'a [u8]> for &'a [u8] {}
+
 impl<T> SqlCompatible<T, Expr<T>> for Expr<T> {}
 
 /// A value or expression that can be compared with an expression of type `T`.
@@ -736,6 +752,18 @@ impl IntoExpr<String> for String {
 impl IntoExpr<String> for &str {
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(SqlVal::Text(self.to_owned()))
+    }
+}
+
+impl IntoExpr<Vec<u8>> for Vec<u8> {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::Bytes(self))
+    }
+}
+
+impl IntoExpr<Vec<u8>> for &[u8] {
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(SqlVal::Bytes(self.to_vec()))
     }
 }
 

@@ -84,6 +84,15 @@ impl FromSqlValue for String {
     }
 }
 
+impl FromSqlValue for Vec<u8> {
+    fn from_sql_value(value: &SqlVal) -> Option<Self> {
+        match value {
+            SqlVal::Bytes(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+}
+
 impl<T: FromSqlValue> FromSqlValue for Option<T> {
     fn from_sql_value(value: &SqlVal) -> Option<Self> {
         match value {
