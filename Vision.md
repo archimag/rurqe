@@ -33,11 +33,13 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 - **Relational Type Invariants:** Mathematically sound compile-time nullability tracking (e.g. automatically lifting non-nullable columns to `Option<T>` in `LEFT JOIN` and outer join operations).
 
 ### 1.3 Stage-Based Evolution & Lifecycle Integrity (AI-First Database Management)
-- **Stage as the Primary Unit of Evolution:** Each stage provides a complete, declarative SQL schema definition across one or multiple files. Any stage can initialize an empty database independently without executing historical migration chains.
-- **Verifiable Transitions:** Explicit transitions connect stages ($A \to B$), combining DDL changes and data transformations. Transitions are mathematically verifiable in CI: $\text{State}(A) + \text{Transition}(A \to B) \equiv \text{State}(B)$.
-- **Current Schema as Single Source of Truth:** Developers and LLMs interact exclusively with the declarative schema of the current stage. Understanding the database never requires mentally reconstructing fragmented migration histories.
-- **Optional History Retention:** Migration history is an operational deployment detail retained only while active environments require it. Obsolete stages and transitions can be pruned cleanly without baseline reconstruction or squashing pain.
-- **Flyway Lifecycle Compatibility:** Proven Flyway-grade standards (versioned `V` and repeatable `R` scripts, SHA-256 checksum audits, baseline and repair workflows) are retained as execution foundations and legacy bridges.
+- **Dual Lifecycle Modes (Zero Compromise):** Uncompromised coexistence of traditional Flyway-style sequential migrations for manual workflows, and the AI-First Stage + Tail lifecycle.
+- **Current Stage as Single Source of Truth (`schema/`):** The repository maintains a single, clean declarative DDL state of the target schema (splittable across domain files like `users.sql`, `orders.sql`). Developers and LLMs interact exclusively with this state without reading historical migration trails.
+- **Active Migration Tail (`migrations/`):** Sequential delta scripts (`V...`, `R...`) transform live existing production databases from an established checkpoint into the current stage, handling both DDL and DML data migrations.
+- **Cold-Start Instant Initialization:** Clean environments (CI, local dev, container spin-up) bypass historical migrations entirely, initializing the database directly from `schema/` in milliseconds with state markers automatically recorded.
+- **Checkpoint Markers & Zero-Pain Pruning:** Cryptographic checkpoint markers (`checkpoint.toml`) anchor active migrations to a base stage hash. Historical migration files older than the checkpoint can be pruned freely (`rm V001..V050`) without squashing or baseline invalidation.
+- **The Golden Equation Verification:** Continuous verification ensures mathematical parity: $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$. Divergence is caught in CI before merging.
+- **Fail-Safe Outdated Target Protection:** The migration runner aborts with an actionable diagnostic if an existing target database is at a version older than the pruned checkpoint boundary.
 
 ### 1.4 Rust Strict Type Safety & Zero-Cost Guarantees
 - **Zero-Cost Abstractions:** Monomorphized query builders and phantom markers compile down to static SQL buffers and direct deserializers with zero virtual calls or reflection overhead.
@@ -96,11 +98,12 @@ Preventing the cryptic, 50-line compiler errors notorious in existing Rust ORMs:
 5. **Explicit Macro Diagnostics:** Macros produce intentional `compile_error!("...")` feedback with actionable guidance.
 
 ### 3.3 Stage-Based Evolution & Deterministic Drift Verification
-1. **Stage-Based Evolution Architecture:** Stages define independently reproducible, verifiable schema states. Upgrades follow verified transition chains recorded in the `__rurqe_stage_history` directed acyclic graph.
-2. **AI-First Declarative Schema Context:** The current stage DDL serves as the single source of truth for both developers and LLMs, eliminating multi-migration context pollution and token waste.
-3. **Continuous Golden Verification (`cargo db-verify`):** Ephemeral CI runs verify that $\text{State}(A) + \text{Transition}(A \to B)$ matches $\text{State}(B)$ bit-for-bit against `schema.lock` and catalog snapshots.
-4. **Zero-Pain History Pruning:** Safe removal of obsolete stages when no deployed database requires them, with no baseline reconstruction needed.
-5. **Flyway-Grade Migration Support:** Full support for versioned migrations (`V...`), repeatable migrations (`R...`), deterministic ordering, SHA-256 integrity, and repair workflows for traditional setups.
+1. **Unified Stage + Migration Tail Architecture:** Combines a clean declarative target schema (`schema/`) with an active sequence of delta migrations (`migrations/`) anchored by a checkpoint marker.
+2. **AI-First Single Source of Truth:** LLMs and developers reason about a single declarative schema snapshot, eliminating token waste and contextual fragmentation from dozens of historical migration scripts.
+3. **Continuous Golden Verification (`cargo db-verify`):** CI spins up ephemeral databases to verify that $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$ bit-for-bit against `schema.lock` and catalog diffs.
+4. **Zero-Pain History Pruning:** Teams safely delete obsolete migrations once all deployed environments have progressed past the checkpoint version, without rewriting baseline checksums.
+5. **Fail-Safe Checkpoint Protection:** If a legacy database lags behind the active checkpoint, the migration engine rejects execution with an actionable remediation guide rather than silently corrupting state.
+6. **Flyway-Grade Traditional Compatibility:** Teams preferring classic sequential migrations continue using versioned (`V...`) and repeatable (`R...`) scripts with SHA-256 audit trails, repair, and baseline facilities.
 
 ---
 

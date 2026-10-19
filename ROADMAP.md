@@ -594,40 +594,42 @@ let tx = select!(
 
 ---
 
-## Phase 15: Stage-Based Schema Evolution (AI-First Database Lifecycle) [Planned]
+## Phase 15: Stage-Based Schema Evolution (Unified Stage + Migration Tail) [Planned]
 
 ### Objective
-Replace traditional migration-centric fragmentation with **Stage-Based Schema Evolution** optimized for AI-first development: every stage contains a complete, declarative SQL schema definition capable of standalone initialization; explicit transitions ($A \to B$) define upgrade paths combining DDL and data transformations; and transitions are mathematically verified in CI ($\text{State}(A) + \text{Transition}(A \to B) \equiv \text{State}(B)$). Obsolete historical stages can be pruned freely once no deployed databases depend on them, eliminating migration squashing and baseline reconstruction debt.
+Unify declarative schema design with sequential migration safety in a **Grand Unified Model**: maintain a single current declarative DDL state (`schema/`) as the Single Source of Truth for developers and AI, alongside an active tail of sequential migrations (`migrations/`) for upgrading existing databases with data transformations. Enable instant cold-start database initialization directly from `schema/` for tests and CI, introduce cryptographic checkpoint markers for zero-pain migration pruning without squashing, mathematically verify consistency via **The Golden Equation** ($\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$), and preserve 100% compatibility for classic Flyway-style workflows.
 
 ### Key Deliverables
-- [ ] **Declarative Stage Architecture:**
-  - Stage directory structure (`stages/<stage_id>/`) containing complete, self-contained declarative SQL schemas (splittable across multiple files, e.g. `schema/users.sql`, `schema/billing.sql`).
-  - Standalone stage initialization: any stage can instantly initialize an empty database (for ephemeral CI runs, local dev, or integration tests) in a single step without playing historical migrations.
-- [ ] **Transition Verification Engine ($\text{State}(A) + \text{Transition} \equiv \text{State}(B)$):**
-  - Verification workflow in `cargo db-verify`:
-    1. Initialize Database 1 directly to Target Stage $B$ via declarative DDL $\to$ snapshot catalog $K_B$.
-    2. Initialize Database 2 to Stage $A$ $\to$ apply `Transition(A -> B)` $\to$ snapshot catalog $K_{A \to B}$.
-    3. Compare $K_B$ and $K_{A \to B}$ bit-for-bit via `SchemaDiff`. Fail with detailed drift diagnostics on any divergence.
-- [ ] **Stage History Graph & Runner (`__rurqe_stage_history`):**
-  - Directed transition history table tracking applied stage IDs, predecessor references, transition SHA-256 checksums, and execution timestamps.
-  - Automated transition path resolution: given the current database stage and target stage, find and sequentially execute the verified transition path.
-- [ ] **Zero-Pain History Retention & Pruning:**
-  - Freedom to prune obsolete stages (`rm -rf stages/001..010`) once all production and staging environments have reached or passed Stage 011.
-  - No baseline rewriting, no checksum invalidation, and no migration squashing required.
-- [ ] **Developer & AI Tooling in `rurqe-cli`:**
-  - `cargo db stage commit -m "..."`: introspects differences between working declarative schema and the previous stage, commits the new stage artifact, and generates a transition template.
-  - Backward compatibility bridge: seamless import/export between classic Flyway versioned scripts and stage definitions.
+- [ ] **Dual Lifecycle Modes (Traditional vs. Stage+Tail):**
+  - Traditional mode: sequential execution of versioned (`V...`) and repeatable (`R...`) scripts directly from `migrations/`.
+  - Stage+Tail mode: cold-start bootstrap from `schema/` for clean databases, or sequential application of `migrations/` for existing databases.
+- [ ] **Declarative Target Schema (`schema/`) & Instant Cold-Start:**
+  - Single Source of Truth directory containing complete declarative DDL (e.g. `schema/users.sql`, `schema/billing.sql`).
+  - Cold-start bootstrap: instant database initialization from `schema/` in a single transaction, recording a synthesized applied marker in `__rurqe_schema_history` matching the active stage checksum.
+- [ ] **Checkpoint Markers & Zero-Pain History Pruning:**
+  - Checkpoint metadata (`checkpoint.toml` or migration header) storing `pruned_up_to_version` and base `stage_hash`.
+  - Freedom to delete historical migration files prior to the checkpoint (`rm -f migrations/V001..V050*.sql`) without rewriting baselines or invalidating checksums.
+  - Fail-safe guard: migration runner aborts with an actionable error if an existing target database version is older than the pruned checkpoint boundary.
+- [ ] **Golden Equation Verification Engine (`cargo db-verify`):**
+  - Verification workflow asserting $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$:
+    1. Spin up ephemeral DB 1 $\to$ apply `schema/` DDL $\to$ snapshot catalog $K_{stage}$.
+    2. Spin up ephemeral DB 2 $\to$ apply Checkpoint base + active `migrations/` $\to$ snapshot catalog $K_{tail}$.
+    3. Compare $K_{stage}$ and $K_{tail}$ bit-for-bit using `SchemaDiff`. Fail with exact divergence report on mismatch.
+- [ ] **Stage & Pruning Developer Tooling in `rurqe-cli`:**
+  - `cargo db stage init`: bootstrap declarative `schema/` and `schema.lock` from an existing database or migration set.
+  - `cargo db stage commit -m "..."`: introspect differences, generate next migration draft in `migrations/`, and synchronize `schema/`.
+  - `cargo db prune --before <version>`: create or advance the checkpoint marker and prune obsolete migration files safely.
 
 ### Conceptual Layout
 ```text
-stages/
-├── 001_initial/
-│   └── schema.sql                # Complete declarative DDL for Stage 1
-├── 002_billing/
-│   ├── schema/                   # Complete declarative DDL for Stage 2
-│   │   ├── users.sql
-│   │   └── billing.sql
-│   └── transitions/
-│       └── from_001.sql          # Verified upgrade instructions (DDL + DML)
-└── current -> 002_billing/       # Active stage: SSOT for developers and LLMs
+project/
+├── schema/                       # Complete declarative target DDL (SSOT for AI & Devs)
+│   ├── users.sql
+│   └── billing.sql
+├── migrations/                   # Active migration tail (Delta for live DBs)
+│   ├── checkpoint.toml           # Pruned up to V050, base_hash = "sha256:..."
+│   ├── V051__add_credits.sql     # Active DDL + DML migration
+│   └── V052__index_billing.sql   # Active DDL migration
+├── schema.lock                   # Deterministic catalog snapshot (SCHEMA_HASH)
+└── rurqe.toml                    # Configuration (mode = "stage_tail" | "migrations")
 ```
