@@ -23,6 +23,7 @@
 //! ```
 
 pub mod catalog;
+pub mod checkpoint;
 pub mod checksum;
 pub mod embedded;
 pub mod error;
@@ -32,6 +33,7 @@ pub mod runner;
 pub mod version;
 
 pub use catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
+pub use checkpoint::{Checkpoint, CHECKPOINT_FILE};
 pub use checksum::{sha256, Checksum};
 pub use embedded::EmbeddedMigrations;
 pub use error::Error;

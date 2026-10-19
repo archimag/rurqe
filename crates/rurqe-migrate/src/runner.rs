@@ -8,9 +8,12 @@
 //! - [`repair`](Migrator::repair): fixes recorded checksums against updated scripts
 //!   and purges failed attempts.
 //! - [`status`](Migrator::status): inspects schema state without mutations.
+//! - [`with_checkpoint`](Migrator::with_checkpoint): attaches a pruning boundary
+//!   that rejects targets older than the pruned history.
 
 use std::collections::BTreeMap;
 
+use crate::checkpoint::Checkpoint;
 use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::{create_schema_history_table_sql, SchemaHistoryEntry};
@@ -106,13 +109,31 @@ pub struct MigrationStatus {
 }
 
 /// Flyway-compatible migration lifecycle runner.
+///
+/// A runner created with [`Migrator::new`] executes the classic sequential
+/// lifecycle. Attaching a marker with [`Migrator::with_checkpoint`] additionally
+/// rejects targets whose recorded history stops below the pruned boundary.
 #[derive(Debug, Default, Clone)]
-pub struct Migrator;
+pub struct Migrator {
+    checkpoint: Option<Checkpoint>,
+}
 
 impl Migrator {
-    /// Creates a new migrator instance.
+    /// Creates a new migrator instance without a checkpoint boundary.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Anchors the runner to a [`Checkpoint`], guarding pruned history.
+    ///
+    /// Every migration run then verifies that the target database already sits at
+    /// or above [`Checkpoint::pruned_up_to_version`]; a target below it can no
+    /// longer be advanced, because the scripts that would bring it forward have
+    /// been pruned.
+    pub fn with_checkpoint(checkpoint: Checkpoint) -> Self {
+        Self {
+            checkpoint: Some(checkpoint),
+        }
     }
 
     /// Sorts and queues migrations: versioned migrations in ascending version order,
@@ -421,6 +442,10 @@ impl Migrator {
         history: &[SchemaHistoryEntry],
         migrations: &[Migration],
     ) -> Result<(), Error> {
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint.validate_history(history)?;
+        }
+
         let migrations_by_script: BTreeMap<&str, &Migration> = migrations
             .iter()
             .map(|m| (m.script.as_str(), m))
@@ -590,7 +615,11 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, format_timestamp};
+    use super::{civil_from_days, format_timestamp, InMemoryBackend, Migrator};
+    use crate::checkpoint::Checkpoint;
+    use crate::checksum::Checksum;
+    use crate::error::Error;
+    use crate::migration::Migration;
 
     #[test]
     fn epoch_converts_to_the_unix_epoch_date() {
@@ -607,5 +636,50 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(59), (1970, 3, 1));
         assert_eq!(format_timestamp(951_782_400), "2000-02-29 00:00:00");
+    }
+
+    fn boundary(version: &str) -> Checkpoint {
+        Checkpoint::new(
+            version.parse().expect("a valid version"),
+            Checksum::of(b"stage"),
+        )
+    }
+
+    #[test]
+    fn checkpoint_rejects_targets_below_the_pruned_boundary() {
+        let mut backend = InMemoryBackend::new();
+        let init = Migration::parse("V1__init.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name");
+        Migrator::new()
+            .migrate(&mut backend, &[init])
+            .expect("the initial run succeeds");
+
+        let tail = Migration::parse("V2__tail.sql", "CREATE TABLE orders (id INTEGER);")
+            .expect("a valid script name");
+        let error = Migrator::with_checkpoint(boundary("2"))
+            .migrate(&mut backend, &[tail])
+            .expect_err("the boundary rejects the outdated target");
+
+        assert!(matches!(error, Error::OutdatedCheckpoint { .. }));
+        assert_eq!(backend.history.len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_allows_targets_at_the_pruned_boundary() {
+        let mut backend = InMemoryBackend::new();
+        let stage = Migration::parse("V3__stage.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name");
+        Migrator::new()
+            .migrate(&mut backend, &[stage])
+            .expect("the initial run succeeds");
+
+        let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
+            .expect("a valid script name");
+        let report = Migrator::with_checkpoint(boundary("3"))
+            .migrate(&mut backend, &[tail])
+            .expect("the target sits at the boundary");
+
+        assert_eq!(report.applied_count, 1);
+        assert_eq!(report.applied_scripts, vec!["V4__tail.sql"]);
     }
 }

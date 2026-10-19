@@ -63,6 +63,20 @@ pub enum Error {
         /// The reason the snapshot could not be parsed.
         message: String,
     },
+    /// A `checkpoint.toml` marker could not be read or parsed.
+    InvalidCheckpoint {
+        /// The reason the marker could not be parsed.
+        message: String,
+    },
+    /// The target database sits below the boundary of the active checkpoint.
+    OutdatedCheckpoint {
+        /// The newest version recorded in the history table, if any.
+        database_version: Option<String>,
+        /// The version the pruned history was cut off at.
+        pruned_up_to_version: String,
+        /// The stage hash anchored by the checkpoint.
+        schema_hash: String,
+    },
     /// An error occurred during database backend interaction.
     Backend(String),
 }
@@ -116,6 +130,21 @@ impl fmt::Display for Error {
                 "failed to execute migration script `{script}`: {source}"
             ),
             Error::InvalidLockFormat { message } => write!(f, "invalid schema lock: {message}"),
+            Error::InvalidCheckpoint { message } => write!(f, "invalid checkpoint: {message}"),
+            Error::OutdatedCheckpoint {
+                database_version,
+                pruned_up_to_version,
+                schema_hash,
+            } => {
+                let database_version = database_version.as_deref().unwrap_or("no recorded version");
+                write!(
+                    f,
+                    "target database is at version `{database_version}` but the checkpoint \
+                     pruned history up to `{pruned_up_to_version}` (stage hash {schema_hash}): \
+                     advance it to the boundary or rebuild it from `schema/` before applying \
+                     the migration tail"
+                )
+            }
             Error::Backend(message) => write!(f, "database backend error: {message}"),
         }
     }
