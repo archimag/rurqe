@@ -24,4 +24,4 @@ pub use builder::Expr;
 pub use functions::{avg, coalesce, count, count_all, max, min, sum};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr};
-pub use val::{AggregateFunc, BinaryOp, SqlVal};
+pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};

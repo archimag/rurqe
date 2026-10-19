@@ -73,7 +73,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #field: #record_param,
         });
         field_reads.extend(quote! {
-            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(values.next()?)?,
+            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(&values[#field_index])?,
         });
         scope_bounds.extend(quote! {
             #element: ::rurqe_core::query::SelectTargetInScope<Tables, #position>,
@@ -163,6 +163,8 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         }
     }
 
+    let arity = Literal::usize_unsuffixed(projections.items.len());
+
     Ok(quote! {
         {
             #[allow(dead_code)]
@@ -175,14 +177,20 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             where
                 #(#record_params: ::rurqe_core::row::FromSqlValue,)*
             {
-                fn from_row(
+                fn try_from_row(
                     values: &[::rurqe_core::expr::SqlVal],
-                ) -> ::core::option::Option<Self> {
-                    let mut values = values.iter();
-                    let record = __RurqeRecord {
+                ) -> ::core::result::Result<Self, ::rurqe_core::row::RowDecodeError> {
+                    if values.len() != #arity {
+                        return ::core::result::Result::Err(
+                            ::rurqe_core::row::RowDecodeError::ArityMismatch {
+                                expected: #arity,
+                                actual: values.len(),
+                            },
+                        );
+                    }
+                    ::core::result::Result::Ok(__RurqeRecord {
                         #field_reads
-                    };
-                    values.next().is_none().then_some(record)
+                    })
                 }
             }
 

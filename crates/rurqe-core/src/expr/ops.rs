@@ -2,7 +2,7 @@
 
 use super::ast::ExprKind;
 use super::builder::Expr;
-use super::val::SqlVal;
+use super::val::ToSqlVal;
 use crate::schema::Column;
 
 /// Statically asserts that a value of type `ValType` may be compared with a
@@ -26,6 +26,12 @@ impl<'a> SqlCompatible<Vec<u8>, &'a [u8]> for &'a [u8] {}
 impl<T> SqlCompatible<T, Expr<T>> for Expr<T> {}
 
 /// A value or expression that can be compared with an expression of type `T`.
+///
+/// Operand values are encoded through [`ToSqlVal`], so the parameter
+/// representation of a comparison is produced by the same contract that binds
+/// standalone query parameters: every literal takes the exact route
+/// [`SqlVal`](crate::expr::SqlVal) construction takes, and an existing [`Expr`]
+/// keeps its own tree instead.
 #[diagnostic::on_unimplemented(
     message = "value of type `{Self}` cannot be compared with a column of type `{T}`",
     label = "incompatible operand types",
@@ -38,49 +44,49 @@ pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
 
 impl IntoExpr<i32> for i32 {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::I32(self))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<i64> for i64 {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::I64(self))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<f64> for f64 {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::F64(self))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<bool> for bool {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::Bool(self))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<String> for String {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::Text(self))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<String> for &str {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::Text(self.to_owned()))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<Vec<u8>> for Vec<u8> {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::Bytes(self))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<Vec<u8>> for &[u8] {
     fn into_expr_kind(self) -> ExprKind {
-        ExprKind::Value(SqlVal::Bytes(self.to_vec()))
+        ExprKind::Value(self.to_sql_val())
     }
 }
 

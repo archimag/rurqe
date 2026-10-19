@@ -251,16 +251,23 @@ fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions
     }
     out.push_str("}\n\n");
 
+    let arity = table.columns.len().to_string();
+
     out.push_str("impl FromRow for ");
     out.push_str(&table.record_ident);
     out.push_str(" {\n");
-    out.push_str("    fn from_row(values: &[SqlVal]) -> Option<Self> {\n");
+    out.push_str("    fn try_from_row(values: &[SqlVal]) -> Result<Self, RowDecodeError> {\n");
     out.push_str("        if values.len() != ");
-    out.push_str(&table.columns.len().to_string());
+    out.push_str(&arity);
     out.push_str(" {\n");
-    out.push_str("            return None;\n");
+    out.push_str("            return Err(RowDecodeError::ArityMismatch {\n");
+    out.push_str("                expected: ");
+    out.push_str(&arity);
+    out.push_str(",\n");
+    out.push_str("                actual: values.len(),\n");
+    out.push_str("            });\n");
     out.push_str("        }\n");
-    out.push_str("        Some(Self {\n");
+    out.push_str("        Ok(Self {\n");
 
     for (index, column) in table.columns.iter().enumerate() {
         out.push_str("            ");
@@ -446,6 +453,10 @@ mod tests {
         assert!(code.contains("UsersEmail => \"email\": Option<String>"));
         assert!(code.contains("pub struct UsersRecord"));
         assert!(code.contains("impl FromRow for UsersRecord"));
+        assert!(
+            code.contains("fn try_from_row(values: &[SqlVal]) -> Result<Self, RowDecodeError>")
+        );
+        assert!(code.contains("RowDecodeError::ArityMismatch"));
     }
 
     #[test]

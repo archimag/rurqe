@@ -623,10 +623,10 @@ pub mod prelude {
         cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, At,
         BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Cte, Dialect, ExecutableQuery,
         ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
-        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, SelectQuery,
-        SelectTarget, Selection, SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict,
-        SupportsReturning, Table, TableInScope, Window, WindowExpr, WindowExprKind, WindowFn,
-        WindowSpec,
+        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, RowDecodeError,
+        SelectQuery, SelectTarget, Selection, SqlCompatible, SqlVal, SupportsDistinctOn,
+        SupportsOnConflict, SupportsReturning, Table, TableInScope, ToSqlVal, Window, WindowExpr,
+        WindowExprKind, WindowFn, WindowSpec,
     };
 
     pub use rurqe_core::{GroupByInScope, SelectionInScope};

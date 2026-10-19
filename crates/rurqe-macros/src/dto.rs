@@ -7,7 +7,7 @@
 //!
 //! [`FromRow`]: rurqe_core::row::FromRow
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Ident, Token, Visibility};
@@ -53,8 +53,10 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     let mut field_defs = TokenStream::new();
     let mut field_reads = TokenStream::new();
+    let arity = Literal::usize_unsuffixed(fields.items.len());
 
-    for item in &fields.items {
+    for (index, item) in fields.items.iter().enumerate() {
+        let field_index = Literal::usize_unsuffixed(index);
         let field_attrs = &item.attrs;
         let field = item.field_ident()?;
         let Some(column) = item.column_path() else {
@@ -70,7 +72,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             #vis #field: <#column as ::rurqe_core::schema::Column>::RustType,
         });
         field_reads.extend(quote! {
-            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(values.next()?)?,
+            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(&values[#field_index])?,
         });
     }
 
@@ -82,12 +84,20 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
 
         impl ::rurqe_core::row::FromRow for #ident {
-            fn from_row(values: &[::rurqe_core::expr::SqlVal]) -> ::core::option::Option<Self> {
-                let mut values = values.iter();
-                let dto = #ident {
+            fn try_from_row(
+                values: &[::rurqe_core::expr::SqlVal],
+            ) -> ::core::result::Result<Self, ::rurqe_core::row::RowDecodeError> {
+                if values.len() != #arity {
+                    return ::core::result::Result::Err(
+                        ::rurqe_core::row::RowDecodeError::ArityMismatch {
+                            expected: #arity,
+                            actual: values.len(),
+                        },
+                    );
+                }
+                ::core::result::Result::Ok(#ident {
                     #field_reads
-                };
-                values.next().is_none().then_some(dto)
+                })
             }
         }
     })
