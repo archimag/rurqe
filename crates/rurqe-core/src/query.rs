@@ -33,7 +33,7 @@ use crate::dialect::{Dialect, SupportsLateralJoin};
 use crate::dml::{DeleteQuery, Filtered, InsertQuery, UpdateQuery};
 use crate::expr::{BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::row::FromRow;
-use crate::schema::{At, Column, ExprScope, Next, Table, TableInScope, TableRef};
+use crate::schema::{At, Column, ColumnBelongsTo, ExprScope, Next, Table, TableInScope, TableRef};
 
 /// A single item projected by a `SELECT` query, such as a column or a window expression.
 #[diagnostic::on_unimplemented(
@@ -207,6 +207,37 @@ impl_selection!(T1, T2, T3, T4, T5);
 impl_selection!(T1, T2, T3, T4, T5, T6);
 impl_selection!(T1, T2, T3, T4, T5, T6, T7);
 impl_selection!(T1, T2, T3, T4, T5, T6, T7, T8);
+
+/// Statically asserts that every projected column belongs to the mutated table `T`.
+///
+/// The trait mirrors [`Selection`] for the `RETURNING` clause and the conflict
+/// target of DML statements: every projected column must belong to the table the
+/// statement mutates, so projecting a column of an unrelated table fails to
+/// compile at the call site.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a selection of table `{T}`",
+    label = "one of the projected columns belongs to another table",
+    note = "project only columns of the mutated table in a RETURNING clause or conflict target"
+)]
+pub trait TableSelection<T: Table>: Selection {}
+
+macro_rules! impl_table_selection {
+    ($($column:ident),+) => {
+        impl<T: Table, $($column: Column + ColumnBelongsTo<T>),+> TableSelection<T>
+            for ($($column,)+)
+        {
+        }
+    };
+}
+
+impl_table_selection!(C1);
+impl_table_selection!(C1, C2);
+impl_table_selection!(C1, C2, C3);
+impl_table_selection!(C1, C2, C3, C4);
+impl_table_selection!(C1, C2, C3, C4, C5);
+impl_table_selection!(C1, C2, C3, C4, C5, C6);
+impl_table_selection!(C1, C2, C3, C4, C5, C6, C7);
+impl_table_selection!(C1, C2, C3, C4, C5, C6, C7, C8);
 
 /// A column or tuple of columns for the `GROUP BY` clause.
 #[diagnostic::on_unimplemented(

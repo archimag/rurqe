@@ -16,7 +16,7 @@ use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::expr::SqlVal;
-use crate::query::{BuiltQuery, SelectQuery, Selection, TableScope};
+use crate::query::{BuiltQuery, SelectQuery, Selection, TableScope, TableSelection};
 use crate::schema::{Column, ColumnBelongsTo, Table};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
@@ -193,8 +193,12 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
     /// columns statically tied to the decoded result. Available only for dialects
-    /// implementing [`SupportsReturning`].
-    pub fn returning<S: Selection>(mut self, selection: S) -> InsertQuery<D, T, Values, S::Row> {
+    /// implementing [`SupportsReturning`]. Every projected column must belong to
+    /// `T`, so projecting a column of another table fails to compile.
+    pub fn returning<S: Selection + TableSelection<T>>(
+        mut self,
+        selection: S,
+    ) -> InsertQuery<D, T, Values, S::Row> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }
@@ -232,8 +236,12 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     ///
     /// The returned [`OnConflict`] builder chooses the action through
     /// [`OnConflict::do_nothing`] or [`OnConflict::do_update`]. Available only for
-    /// dialects implementing [`SupportsOnConflict`].
-    pub fn on_conflict<S: Selection>(self, target: S) -> OnConflict<D, T, Values, Returning> {
+    /// dialects implementing [`SupportsOnConflict`]. Every target column must
+    /// belong to `T`, so a conflict target of another table fails to compile.
+    pub fn on_conflict<S: Selection + TableSelection<T>>(
+        self,
+        target: S,
+    ) -> OnConflict<D, T, Values, Returning> {
         let mut columns = Vec::new();
         target.push_column_names(&mut columns);
         OnConflict {

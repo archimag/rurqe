@@ -17,7 +17,7 @@ use super::{AssignValue, AssignmentSet, Filtered, Unfiltered};
 use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
-use crate::query::{BuiltQuery, Selection};
+use crate::query::{BuiltQuery, Selection, TableSelection};
 use crate::schema::Table;
 
 /// An `UPDATE` statement targeting table `T`.
@@ -124,8 +124,12 @@ impl<D: Dialect + SupportsReturning, T: Table, State> UpdateQuery<D, T, State, (
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
     /// columns statically tied to the decoded result. Available only for dialects
-    /// implementing [`SupportsReturning`].
-    pub fn returning<S: Selection>(mut self, selection: S) -> UpdateQuery<D, T, State, S::Row> {
+    /// implementing [`SupportsReturning`]. Every projected column must belong to
+    /// `T`, so projecting a column of another table fails to compile.
+    pub fn returning<S: Selection + TableSelection<T>>(
+        mut self,
+        selection: S,
+    ) -> UpdateQuery<D, T, State, S::Row> {
         selection.push_column_names(&mut self.returning);
         self.retype()
     }

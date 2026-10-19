@@ -234,7 +234,8 @@ let only_active = by_state(true).except(by_state(false));
 
 ### 11. Type-Safe DML with Typestate Protection
 
-Unfiltered `UPDATE` and `DELETE` queries will not compile without `.where_(...)` or `.allow_all()`:
+Unfiltered `UPDATE` and `DELETE` queries will not compile without `.where_(...)` or `.allow_all()`.
+`RETURNING` projections and `ON CONFLICT` targets may only reference columns of the mutated table, so a projection of an unrelated table fails to compile:
 
 ```rust
 // INSERT with typed assignments and RETURNING

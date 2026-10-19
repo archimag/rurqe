@@ -32,6 +32,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut name_pushes = TokenStream::new();
     let mut render_pushes = TokenStream::new();
     let mut scope_bounds = TokenStream::new();
+    let mut table_selection_bounds = TokenStream::new();
     let mut position_params = Vec::new();
     let mut position_args = Vec::new();
     let mut used_fields = Vec::new();
@@ -54,6 +55,9 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         position_params.push(position.clone());
         scope_bounds.extend(quote! {
             #column: ::rurqe_core::query::SelectTargetInScope<Tables, #position>,
+        });
+        table_selection_bounds.extend(quote! {
+            #column: ::rurqe_core::schema::ColumnBelongsTo<__T>,
         });
 
         field_defs.extend(quote! {
@@ -137,6 +141,13 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 for __RurqeSelection
             where
                 #scope_bounds
+            {
+            }
+
+            impl<__T: ::rurqe_core::schema::Table>
+                ::rurqe_core::query::TableSelection<__T> for __RurqeSelection
+            where
+                #table_selection_bounds
             {
             }
 
