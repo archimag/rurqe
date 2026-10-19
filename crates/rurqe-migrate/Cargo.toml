@@ -8,4 +8,5 @@ repository.workspace = true
 description = "Flyway-compatible migration model, checksums, and schema history tracking for RURQE"
 
 [dependencies]
+sha2 = "0.11"
 tracing = "0.1"
