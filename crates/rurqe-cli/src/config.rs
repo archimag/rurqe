@@ -21,6 +21,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use rurqe_migrate::mini_toml::{section_name, split_entry, strip_comment, TomlError};
+
 /// The configuration file read by default.
 pub const DEFAULT_CONFIG_PATH: &str = "rurqe.toml";
 
@@ -64,7 +66,8 @@ impl CodegenConfig {
             }
 
             if line.starts_with('[') {
-                in_overrides = section_name(line, number)? == TYPE_OVERRIDES_SECTION;
+                in_overrides =
+                    section_name(line, number).map_err(from_toml)? == TYPE_OVERRIDES_SECTION;
                 continue;
             }
 
@@ -141,39 +144,14 @@ fn syntax(line: usize, message: impl Into<String>) -> ConfigError {
     }
 }
 
-/// Removes a trailing `#` comment that is not inside a quoted string.
-fn strip_comment(line: &str) -> &str {
-    let mut quoted = false;
-
-    for (index, character) in line.char_indices() {
-        match character {
-            '"' => quoted = !quoted,
-            '#' if !quoted => return &line[..index],
-            _ => {}
-        }
-    }
-
-    line
-}
-
-/// Extracts the name of a `[section]` header line.
-fn section_name(line: &str, number: usize) -> Result<&str, ConfigError> {
-    let name = line
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-        .ok_or_else(|| syntax(number, "section headers must be written as `[name]`"))?
-        .trim();
-
-    if name.is_empty() {
-        return Err(syntax(number, "section headers cannot be empty"));
-    }
-
-    Ok(name)
+/// Lifts a shared [`TomlError`] into the configuration error type.
+fn from_toml(error: TomlError) -> ConfigError {
+    syntax(error.line, error.message)
 }
 
 /// Splits one `key = value` entry of the overrides table.
 fn entry(line: &str, number: usize) -> Result<(String, String), ConfigError> {
-    let (key, value) = split_entry(line).ok_or_else(|| {
+    let (key, value) = split_entry(line, number).map_err(|_| {
         syntax(
             number,
             "expected `\"table.column\" = \"RustType\"` on every entry",
@@ -192,28 +170,6 @@ fn entry(line: &str, number: usize) -> Result<(String, String), ConfigError> {
     }
 
     Ok((key.to_owned(), value.to_owned()))
-}
-
-/// Splits an entry at the `=` separating the key from its value.
-///
-/// A quoted key is terminated by its closing quote, so a schema path may itself
-/// contain `=` without corrupting the split.
-fn split_entry(line: &str) -> Option<(&str, &str)> {
-    if let Some(rest) = line.strip_prefix('"') {
-        let (key, rest) = rest.split_once('"')?;
-        let value = rest.trim_start().strip_prefix('=')?.trim();
-        return Some((key.trim(), unquote(value)));
-    }
-
-    let (key, value) = line.split_once('=')?;
-    Some((key.trim(), unquote(value.trim())))
-}
-
-/// Removes one pair of surrounding double quotes, keeping bare values intact.
-fn unquote(text: &str) -> &str {
-    text.strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(text)
 }
 
 #[cfg(test)]

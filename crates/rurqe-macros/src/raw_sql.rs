@@ -50,103 +50,40 @@ impl Parse for RawSqlInput {
     }
 }
 
-/// Placeholder census of a raw SQL template.
-struct PlaceholderCounts {
-    question_marks: usize,
-    braces: usize,
-}
-
-impl PlaceholderCounts {
-    fn total(&self) -> usize {
-        self.question_marks + self.braces
-    }
-
-    fn is_mixed(&self) -> bool {
-        self.question_marks > 0 && self.braces > 0
-    }
-}
-
-fn count_placeholders(template: &str) -> PlaceholderCounts {
-    let mut question_marks = 0;
-    let mut braces = 0;
-    let mut chars = template.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '?' {
-            if chars.peek() == Some(&'?') {
-                chars.next();
-            } else {
-                question_marks += 1;
-            }
-        } else if c == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            braces += 1;
-        }
-    }
-
-    PlaceholderCounts {
-        question_marks,
-        braces,
-    }
-}
-
 /// Expands parsed `sql!` / `raw_sql!` macro inputs into an `Expr<T>` construction block.
+///
+/// The placeholder census and the split into literal text fragments are delegated
+/// to `rurqe_core::expr::parse_raw_sql`, the same routine the runtime uses, so the
+/// macro and the query engine can never disagree about what a template means. The
+/// split happens once, at compile time; the generated code only binds the
+/// parameters and hands the ready-made fragments to `Expr::raw_fragments`.
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let parsed: RawSqlInput = syn::parse2(input)?;
-    let template_val = parsed.template.value();
+    let template = parsed.template.value();
     let args_len = parsed.args.len();
-    let counts = count_placeholders(&template_val);
 
-    if counts.is_mixed() {
-        return Err(syn::Error::new_spanned(
-            &parsed.template,
-            "raw SQL template mixes `?` and `{}` placeholders; use one style consistently",
-        ));
-    }
+    let fragments = ::rurqe_core::expr::parse_raw_sql(&template, args_len)
+        .map_err(|error| syn::Error::new_spanned(&parsed.template, error.to_string()))?;
+    let fragments: Vec<LitStr> = fragments
+        .iter()
+        .map(|fragment| LitStr::new(fragment, parsed.template.span()))
+        .collect();
 
-    if counts.total() != args_len {
-        let expected = counts.total();
-        let msg = format!(
-            "raw SQL template expects {expected} parameter(s), but {args_len} were provided"
-        );
-        return Err(syn::Error::new_spanned(&parsed.template, msg));
-    }
-
-    let template = &parsed.template;
-    let args = &parsed.args;
-
-    let ty = match parsed.explicit_type {
+    let ty = match &parsed.explicit_type {
         Some(ty) => quote! { #ty },
         None => quote! { _ },
     };
+    let args = &parsed.args;
 
     Ok(quote! {
         {
             let __rurqe_params: ::std::vec::Vec<::rurqe_core::expr::SqlVal> = ::std::vec![
                 #( ::core::convert::Into::<::rurqe_core::expr::SqlVal>::into(#args) ),*
             ];
-            // The placeholder census above rejects a mismatching template at
-            // compile time, so the expression is built from the checked template.
-            ::rurqe_core::expr::Expr::<#ty>::raw_validated(#template, __rurqe_params)
+            ::rurqe_core::expr::Expr::<#ty>::raw_fragments(
+                ::std::vec![ #( ::std::string::String::from(#fragments) ),* ],
+                __rurqe_params,
+            )
         }
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_census_ignores_escaped_markers() {
-        let counts = count_placeholders("data ?? 'key' AND age > ?");
-        assert_eq!(counts.question_marks, 1);
-        assert_eq!(counts.braces, 0);
-        assert!(!counts.is_mixed());
-    }
-
-    #[test]
-    fn placeholder_census_detects_mixed_styles() {
-        let counts = count_placeholders("a = ? AND b = {}");
-        assert!(counts.is_mixed());
-        assert_eq!(counts.total(), 2);
-    }
 }

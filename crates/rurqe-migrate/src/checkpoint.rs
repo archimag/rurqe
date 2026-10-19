@@ -41,6 +41,7 @@ use std::path::Path;
 use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
+use crate::mini_toml::{section_name, split_entry, strip_comment, TomlError};
 use crate::version::MigrationVersion;
 
 /// The default name of the marker file.
@@ -111,7 +112,7 @@ impl Checkpoint {
             }
 
             if line.starts_with('[') {
-                section = Some(section_name(line, number)?);
+                section = Some(section_name(line, number).map_err(from_toml)?);
                 continue;
             }
 
@@ -119,7 +120,7 @@ impl Checkpoint {
                 continue;
             }
 
-            let (key, value) = split_entry(line, number)?;
+            let (key, value) = split_entry(line, number).map_err(from_toml)?;
             match key {
                 VERSION_KEY => {
                     if pruned_up_to_version.is_some() {
@@ -213,61 +214,9 @@ fn syntax(number: usize, message: impl Into<String>) -> Error {
     invalid(format!("line {number}: {message}"))
 }
 
-/// Removes a trailing `#` comment that is not inside a quoted string.
-fn strip_comment(line: &str) -> &str {
-    let mut quoted = false;
-
-    for (index, character) in line.char_indices() {
-        match character {
-            '"' => quoted = !quoted,
-            '#' if !quoted => return &line[..index],
-            _ => {}
-        }
-    }
-
-    line
-}
-
-/// Extracts the name of a `[section]` header line.
-fn section_name(line: &str, number: usize) -> Result<&str, Error> {
-    let name = line
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-        .ok_or_else(|| syntax(number, "section headers must be written as `[name]`"))?
-        .trim();
-
-    if name.is_empty() {
-        return Err(syntax(number, "section headers cannot be empty"));
-    }
-
-    Ok(name)
-}
-
-/// Splits one `key = value` entry of the checkpoint table.
-fn split_entry(line: &str, number: usize) -> Result<(&str, &str), Error> {
-    if let Some(rest) = line.strip_prefix('"') {
-        let (key, rest) = rest
-            .split_once('"')
-            .ok_or_else(|| syntax(number, "unterminated quoted key"))?;
-        let value = rest
-            .trim_start()
-            .strip_prefix('=')
-            .ok_or_else(|| syntax(number, "expected `=` after the key"))?
-            .trim();
-        return Ok((key.trim(), unquote(value)));
-    }
-
-    let (key, value) = line
-        .split_once('=')
-        .ok_or_else(|| syntax(number, "expected `key = value` on every entry"))?;
-    Ok((key.trim(), unquote(value.trim())))
-}
-
-/// Removes one pair of surrounding double quotes, keeping bare values intact.
-fn unquote(text: &str) -> &str {
-    text.strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(text)
+/// Lifts a shared [`TomlError`] into the migration error type.
+fn from_toml(error: TomlError) -> Error {
+    syntax(error.line, error.message)
 }
 
 #[cfg(test)]

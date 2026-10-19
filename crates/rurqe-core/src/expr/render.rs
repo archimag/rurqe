@@ -97,13 +97,6 @@ pub fn parse_raw_sql(template: &str, param_count: usize) -> Result<Vec<String>, 
     Ok(split_fragments(template, question_marks > 0))
 }
 
-/// Splits a template whose placeholder census was validated by [`parse_raw_sql`]
-/// or by the `sql!` macro at compile time.
-pub(crate) fn split_validated(template: &str) -> Vec<String> {
-    let (question_marks, _) = count_raw_placeholders(template);
-    split_fragments(template, question_marks > 0)
-}
-
 /// Splits `template` at every placeholder of the chosen style, unescaping `??`.
 fn split_fragments(template: &str, use_question_mark: bool) -> Vec<String> {
     let mut fragments = vec![String::new()];

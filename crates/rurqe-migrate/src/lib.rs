@@ -34,6 +34,7 @@ pub mod embedded;
 pub mod error;
 pub mod history;
 pub mod migration;
+pub mod mini_toml;
 pub mod runner;
 pub mod stage;
 pub mod version;

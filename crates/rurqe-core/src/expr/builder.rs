@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::ops::IntoExpr;
-use super::render::{parse_raw_sql, split_validated, RawSqlError};
+use super::render::{parse_raw_sql, RawSqlError};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::{Column, Table};
 
@@ -255,17 +255,15 @@ impl<T> Expr<T, ()> {
         Ok(Self::new(ExprKind::Raw { fragments, params }))
     }
 
-    /// Builds a raw SQL expression from a template validated elsewhere.
+    /// Builds a raw SQL expression from fragments split by the `sql!` macro.
     ///
-    /// The `sql!` and `raw_sql!` macros check the placeholder census of their
-    /// template at compile time and construct the expression through this
-    /// constructor, so no unchecked template reaches the renderer.
+    /// The `sql!` and `raw_sql!` macros validate the placeholder census of their
+    /// template at compile time and split it into literal text fragments, so the
+    /// constructor only binds the parameters and the runtime never re-parses the
+    /// template on each call.
     #[doc(hidden)]
-    pub fn raw_validated(template: &str, params: Vec<SqlVal>) -> Self {
-        Self::new(ExprKind::Raw {
-            fragments: split_validated(template),
-            params,
-        })
+    pub fn raw_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
+        Self::new(ExprKind::Raw { fragments, params })
     }
 
     /// Builds a `SUM(C)` expression for column `C`.
