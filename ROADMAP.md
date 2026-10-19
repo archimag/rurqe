@@ -23,7 +23,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 9** [x] | Core SQL Expressiveness & Set Operations | `IS NULL`, `CASE WHEN`, `EXISTS`, `UNION / ALL` | Rich Expressions & Set Algebra (Completed) |
 | **Phase 10** [x] | Advanced Relational: Aliasing, Lateral Joins & DML | Table aliasing, self-joins, `LATERAL JOIN`, `INSERT INTO SELECT` | Deep Relational Power (Completed) |
 | **Phase 11** [x] | Vision Alignment & Semantic Ergonomics | Actionable diagnostics, fluent predicates, ergonomic aliases, multi-table DML | Reference Ergonomics & Soundness (Completed) |
-| **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, automatic nullability, universal record synthesis, GROUP BY soundness | Two-Tier Architecture & Reference SQL DSL (Planned) |
+| **Phase 12** [ ] | Two-Tier Architecture & High-Level SQL DSL | Value-based schema, zero-turbofish queries, automatic nullability, universal record synthesis | Two-Tier Architecture & Reference SQL DSL (Planned) |
 
 ---
 
@@ -463,14 +463,18 @@ Align all RURQE APIs and compiler behaviors with the core Vision requirements (A
 ## Phase 12: Two-Tier Architecture & High-Level SQL DSL [Planned]
 
 ### Objective
-Establish a clean two-tier architecture separating the internal monomorphized relational IR from the primary public SQL DSL. Eliminate type-system machinery leaks (turbofish on ZST column markers, manual `.nullable()` lifting, tuple projections) in favor of value-based schema instances (`users.id`), automatic nullability inference from relation provenance, universal named record synthesis in `select!`, and systematic relational correctness (such as compile-time `GROUP BY` soundness).
+Establish a clean two-tier architecture separating the internal monomorphized relational IR from the primary public SQL DSL. Eliminate type-system machinery leaks (turbofish on table/column markers, manual `.nullable()` lifting, tuple projections, repeated dialect generics) in favor of value-based schema arguments (`.from(users)`), dialect-scoped modules (`rurqe::postgres::*`), connection-bound query factories, automatic nullability inference from relation provenance, universal named record synthesis in `select!`, and compile-time `GROUP BY` soundness.
 
 ### Key Deliverables
-- [ ] **Tiered Architecture (High-Level DSL over Relational IR):**
-  - High-Level Tier 1 DSL operating strictly in SQL domain concepts without exposing traits or position markers.
-  - Tier 2 typed AST and capability-gated builder retained as the robust relational IR backend.
+- [ ] **Zero-Turbofish Value-Based DSL:**
+  - Query builder methods accept zero-sized table values as arguments: `.from(users)` / `.from(Users)`, `.inner_join(orders, ...)` / `.left_join(orders, ...)`.
+  - Type-safe DML entrypoints taking table arguments: `insert_into(users)`, `update(users)`, `delete_from(users)` without turbofish syntax.
+  - Zero runtime overhead: ZST arguments compile away completely while allowing `rustc` to infer table types immediately.
+- [ ] **Dialect Ergonomics & Connection Integration:**
+  - Specialized dialect modules (`rurqe::postgres::prelude::*`, `rurqe::sqlite::prelude::*`) pre-binding the dialect so application queries never require `<Postgres>` annotations.
+  - Connection and transaction query methods (`conn.select_from(users)`, `conn.update(users)`) inferring dialect directly from the database handle.
 - [ ] **Value-Based Schema & Unified Expression Model:**
-  - Codegen and `table!` generate schema objects/values (`users.id`, `orders.total`) that directly implement `SQLExpression<T>`, eliminating `Expr::column::<Col>()` turbofish calls.
+  - Codegen and `table!` generate schema objects/values (`users.id`, `orders.total`) that directly implement `Expression<T>`, eliminating `Expr::column::<Col>()` turbofish calls.
   - Fluent operator and method calls directly on columns (`users.age.gt(18)`, `users.name.like("%admin%")`).
   - Value-based table aliasing (`let u1 = users.as_alias("u1");`) without raw `AliasedCol<A, C>` wrappers.
 - [ ] **Automatic Nullability Inference on Outer Joins:**
@@ -484,22 +488,30 @@ Establish a clean two-tier architecture separating the internal monomorphized re
 
 ### Example Usage
 ```rust
-use rurqe::prelude::*;
+use rurqe::postgres::prelude::*;
 
-// 1. Value-based schema expressions, automatic outer-join nullability, and GROUP BY validation
+// 1. Pure SQL syntax: no turbofish, no <Postgres> generics, named projections
 let report = select! {
-    users.id,
-    users.name,
+    user_id: users.id,
+    user_name: users.name,
     order_count: count(orders.id),
     total_spent: coalesce(sum(orders.total), 0.0),
 }
 .from(users)
 .left_join(orders, orders.user_id.eq(users.id))
+.where_(users.age.gt(18).and(users.email.like("%@company.com")))
 .group_by((users.id, users.name))
 .having(count(orders.id).gt(0))
-.fetch_all(&db)?;
+.order_by_desc(count(orders.id))
+.fetch_all(&mut conn)?;
 
 for r in report {
-    println!("User {} (id: {}) spent {}", r.name, r.id, r.total_spent);
+    println!("User {} (id: {}) spent {}", r.user_name, r.user_id, r.total_spent);
 }
+
+// 2. Zero-turbofish DML with compile-time safety
+update(users)
+    .set(users.name.set("Alice"))
+    .where_(users.id.eq(42i64))
+    .execute(&mut conn)?;
 ```
