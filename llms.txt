@@ -16,6 +16,7 @@
 ## Workspace Architecture & Feature Flags
 
 - **`rurqe`**: Facade crate re-exporting the prelude, entrypoints, and runtime drivers.
+  - Dialect preludes `rurqe::postgres::prelude::*` and `rurqe::sqlite::prelude::*` re-export the shared prelude with dialect-pinned, turbofish-free query entry points.
   - Feature `sqlite`: enables `rurqe-sqlite` and synchronous `rusqlite` integration.
   - Feature `postgres`: enables `rurqe-postgres` and synchronous `postgres` integration.
   - Feature `tokio-postgres`: enables asynchronous `tokio-postgres` client integration.
@@ -389,6 +390,65 @@ let query = select_from::<Postgres, User>()
 ```
 
 `in_list` / `not_in_list` accept any iterator of compatible values and require at least one element; an empty list is a programming error caught by an assertion.
+
+### 15. Turbofish-Free Value-Based DSL (`rurqe::postgres::prelude`)
+
+Schema markers are zero-sized values, so tables are passed as arguments instead of generic parameters, and the dialect preludes fix the dialect once. A single glob import makes application queries free of `Postgres` annotations and turbofish:
+
+```rust
+use rurqe::postgres::prelude::*;
+
+table! {
+    /// The `users` table.
+    Users => "users" {
+        UsersId => "id": i64,
+        UsersName => "name": String,
+    }
+}
+
+table! {
+    /// The `orders` table.
+    Orders => "orders" {
+        OrdersUserId => "user_id": i64,
+        OrdersTotal => "total": f64,
+    }
+}
+
+let built = select_from(Users)
+    .inner_join_table(Orders, OrdersUserId.eq(Expr::column::<UsersId>()))
+    .select(cols!(UsersId, UsersName, OrdersTotal))
+    .where_(UsersId.gt(10i64))
+    .order_by_asc(UsersId)
+    .limit(20)
+    .build();
+
+// SELECT "users"."id", "users"."name", "orders"."total" FROM "users"
+//   INNER JOIN "orders" ON ("user_id" = "id") WHERE ("id" > $1) ORDER BY "id" ASC LIMIT 20
+```
+
+Projections are checked against the scope built so far, so every join is introduced before `.select(...)`; columns of a `left_join_table(...)` relation still lift into `Option<T>` automatically.
+
+DML entry points take the table value as well, and keep their compile-time guards (`update` / `delete_from` still require `.where_(...)` or `.allow_all()`):
+
+```rust
+let inserted = insert_into(Users)
+    .values((UsersId::set(1i64), UsersName::set("root")))
+    .build();
+
+let updated = update(Users)
+    .set(UsersName::set("root"))
+    .where_(UsersId.eq(1i64))
+    .build();
+
+let deleted = delete_from(Users)
+    .where_(UsersId.eq(1i64))
+    .returning((UsersName,))
+    .build();
+```
+
+- `rurqe::postgres::prelude::*` re-exports the whole facade prelude and replaces its dialect-generic entry points with PostgreSQL ones, so the dialect is `Postgres<Pg16>` unless a type annotation says otherwise.
+- `rurqe::sqlite::prelude::*` provides the identical SQLite entry points (`Sqlite<Sqlite3_35>`).
+- The dialect-generic constructors stay available for driver-agnostic code: `select_from::<D, T>()`, `SelectQuery::from_table(table)`, `SelectQuery::inner_join_table(table, on)`, `SelectQuery::left_join_table(table, on)`, `InsertQuery::into_table(table)`, `UpdateQuery::table(table)`, and `DeleteQuery::from_table(table)`.
 
 ---
 

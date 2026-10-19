@@ -23,8 +23,9 @@ pub use rurqe_core::{GroupByInScope, SelectionInScope};
 /// PostgreSQL dialect, version markers, and the runtime driver adapters.
 ///
 /// The module mirrors the `rurqe-postgres` crate, so paths such as
-/// `rurqe::postgres::PgConnection` stay reachable, and adds a [`prelude`] with
-/// the PostgreSQL items of the shared facade prelude:
+/// `rurqe::postgres::PgConnection` stay reachable, and adds PostgreSQL-pinned
+/// query entry points together with a [`prelude`] that re-exports the shared
+/// facade prelude, so a single glob import makes queries dialect-free:
 ///
 /// ```text
 /// use rurqe::postgres::prelude::*;
@@ -33,9 +34,52 @@ pub use rurqe_core::{GroupByInScope, SelectionInScope};
 pub mod postgres {
     pub use rurqe_postgres::*;
 
-    /// PostgreSQL dialect, version markers, and the synchronous driver adapter.
+    use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+    use rurqe_core::{SelectQuery, Table};
+
+    /// Starts a `SELECT` over `table` with the dialect pinned to PostgreSQL.
+    ///
+    /// Table markers are zero-sized values, so the table is passed as an
+    /// argument and neither the table nor the dialect needs a turbofish:
+    ///
+    /// ```text
+    /// select_from(Users).select(cols!(UsersId)).build()
+    /// ```
+    pub fn select_from<T: Table>(table: T) -> SelectQuery<Postgres, T, ()> {
+        SelectQuery::new().from_table(table)
+    }
+
+    /// Starts an `INSERT` into `table` with the dialect pinned to PostgreSQL.
+    pub fn insert_into<T: Table>(table: T) -> InsertQuery<Postgres, T, (), ()> {
+        InsertQuery::into_table(table)
+    }
+
+    /// Starts an `UPDATE` of `table` with the dialect pinned to PostgreSQL.
+    ///
+    /// The statement starts unfiltered, so it still requires `.where_(...)` or
+    /// `.allow_all()` before it can be built.
+    pub fn update<T: Table>(table: T) -> UpdateQuery<Postgres, T, Unfiltered, ()> {
+        UpdateQuery::table(table)
+    }
+
+    /// Starts a `DELETE` from `table` with the dialect pinned to PostgreSQL.
+    ///
+    /// The statement starts unfiltered, so it still requires `.where_(...)` or
+    /// `.allow_all()` before it can be built.
+    pub fn delete_from<T: Table>(table: T) -> DeleteQuery<Postgres, T, Unfiltered, ()> {
+        DeleteQuery::from_table(table)
+    }
+
+    /// The shared facade prelude with PostgreSQL entry points.
+    ///
+    /// The prelude re-exports the whole facade prelude and replaces its
+    /// dialect-generic entry points with PostgreSQL ones, so `select_from`,
+    /// `insert_into`, `update`, and `delete_from` take a table value and never
+    /// need a dialect annotation.
     pub mod prelude {
-        pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};
+        pub use crate::prelude::*;
+
+        pub use super::{delete_from, insert_into, select_from, update};
     }
 }
 
@@ -45,8 +89,9 @@ pub use rurqe_migrate as migrate;
 /// SQLite dialect, version markers, and the `rusqlite` execution adapter.
 ///
 /// The module mirrors the `rurqe-sqlite` crate, so paths such as
-/// `rurqe::sqlite::rusqlite::Connection` stay reachable, and adds a [`prelude`]
-/// with the SQLite items of the shared facade prelude:
+/// `rurqe::sqlite::rusqlite::Connection` stay reachable, and adds SQLite-pinned
+/// query entry points together with a [`prelude`] that re-exports the shared
+/// facade prelude, so a single glob import makes queries dialect-free:
 ///
 /// ```text
 /// use rurqe::sqlite::prelude::*;
@@ -55,11 +100,52 @@ pub use rurqe_migrate as migrate;
 pub mod sqlite {
     pub use rurqe_sqlite::*;
 
-    /// SQLite dialect, version markers, and the `rusqlite` execution adapter.
+    use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+    use rurqe_core::{SelectQuery, Table};
+
+    /// Starts a `SELECT` over `table` with the dialect pinned to SQLite.
+    ///
+    /// Table markers are zero-sized values, so the table is passed as an
+    /// argument and neither the table nor the dialect needs a turbofish:
+    ///
+    /// ```text
+    /// select_from(Users).select(cols!(UsersId)).build()
+    /// ```
+    pub fn select_from<T: Table>(table: T) -> SelectQuery<Sqlite, T, ()> {
+        SelectQuery::new().from_table(table)
+    }
+
+    /// Starts an `INSERT` into `table` with the dialect pinned to SQLite.
+    pub fn insert_into<T: Table>(table: T) -> InsertQuery<Sqlite, T, (), ()> {
+        InsertQuery::into_table(table)
+    }
+
+    /// Starts an `UPDATE` of `table` with the dialect pinned to SQLite.
+    ///
+    /// The statement starts unfiltered, so it still requires `.where_(...)` or
+    /// `.allow_all()` before it can be built.
+    pub fn update<T: Table>(table: T) -> UpdateQuery<Sqlite, T, Unfiltered, ()> {
+        UpdateQuery::table(table)
+    }
+
+    /// Starts a `DELETE` from `table` with the dialect pinned to SQLite.
+    ///
+    /// The statement starts unfiltered, so it still requires `.where_(...)` or
+    /// `.allow_all()` before it can be built.
+    pub fn delete_from<T: Table>(table: T) -> DeleteQuery<Sqlite, T, Unfiltered, ()> {
+        DeleteQuery::from_table(table)
+    }
+
+    /// The shared facade prelude with SQLite entry points.
+    ///
+    /// The prelude re-exports the whole facade prelude and replaces its
+    /// dialect-generic entry points with SQLite ones, so `select_from`,
+    /// `insert_into`, `update`, and `delete_from` take a table value and never
+    /// need a dialect annotation.
     pub mod prelude {
-        pub use rurqe_sqlite::{
-            Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_35, SqliteConnection, SqliteVersion,
-        };
+        pub use crate::prelude::*;
+
+        pub use super::{delete_from, insert_into, select_from, update};
     }
 }
 

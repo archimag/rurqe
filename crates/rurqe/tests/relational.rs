@@ -587,3 +587,146 @@ fn scope_invariants_accept_only_tables_in_scope() {
     assert_selection_in_scope::<(UserId, OrderTotal), Joined<User, Order>, _>();
     assert_group_by_in_scope::<(UserId, OrderUserId), Joined<User, Order>, _>();
 }
+
+/// End-to-end verification of the turbofish-free, value-based SQL DSL.
+///
+/// The module imports the PostgreSQL dialect prelude only: the dialect is fixed
+/// by the prelude, tables are passed as zero-sized values, and neither the
+/// queries nor their DML counterparts mention `Postgres` or a turbofish.
+mod value_based_dsl {
+    use rurqe::postgres::prelude::*;
+
+    table! {
+        /// The `users` table.
+        User => "users" {
+            UserId => "id": i64,
+            UserName => "name": String,
+            UserActive => "active": bool,
+        }
+    }
+
+    table! {
+        /// The `orders` table.
+        Order => "orders" {
+            OrderId => "id": i64,
+            OrderUserId => "user_id": i64,
+            OrderTotal => "total": f64,
+        }
+    }
+
+    #[test]
+    fn joins_render_without_table_or_dialect_turbofish() {
+        let built = select_from(User)
+            .inner_join_table(Order, OrderUserId.eq(Expr::column::<UserId>()))
+            .select(cols!(UserId, UserName, OrderTotal))
+            .where_(UserId.gt(10i64))
+            .order_by_asc(UserId)
+            .limit(20)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"total\" FROM \"users\" \
+             INNER JOIN \"orders\" ON (\"user_id\" = \"id\") WHERE (\"id\" > $1) \
+             ORDER BY \"id\" ASC LIMIT 20"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(10)]);
+    }
+
+    #[test]
+    fn left_joined_columns_lift_into_options_without_explicit_markers() {
+        let built = select_from(User)
+            .left_join_table(Order, OrderUserId.eq(Expr::column::<UserId>()))
+            .select(cols!(UserId, OrderTotal))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" \
+             LEFT JOIN \"orders\" ON (\"user_id\" = \"id\")"
+        );
+        assert!(built.params.is_empty());
+
+        let missing = <(i64, Option<f64>)>::from_row(&[SqlVal::I64(1), SqlVal::Null])
+            .expect("unmatched rows decode");
+        assert_eq!(missing, (1, None));
+    }
+
+    #[test]
+    fn grouped_windows_and_set_operations_stay_dialect_free() {
+        let grouped = select_from(Order)
+            .group_by(OrderUserId)
+            .select((OrderUserId, Expr::count_all()))
+            .having(Expr::count_all().gt(1i64))
+            .order_by_desc(OrderUserId)
+            .build();
+
+        assert_eq!(
+            grouped.sql,
+            "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+             HAVING (COUNT(*) > $1) ORDER BY \"user_id\" DESC"
+        );
+        assert_eq!(grouped.params, vec![SqlVal::I64(1)]);
+
+        let ranked = select_from(Order)
+            .select((
+                OrderId,
+                row_number().over(Window::partition_by(OrderUserId).order_by_desc(OrderTotal)),
+            ))
+            .build();
+
+        assert_eq!(
+            ranked.sql,
+            "SELECT \"id\", ROW_NUMBER() OVER (PARTITION BY \"user_id\" ORDER BY \"total\" DESC) \
+             FROM \"orders\""
+        );
+
+        fn active() -> SelectQuery<Postgres, User, (i64,)> {
+            select_from(User).select((UserId,)).where_(UserActive.eq(true))
+        }
+
+        assert_eq!(
+            active().union_all(active()).build().sql,
+            "SELECT \"id\" FROM \"users\" WHERE (\"active\" = $1) \
+             UNION ALL SELECT \"id\" FROM \"users\" WHERE (\"active\" = $2)"
+        );
+    }
+
+    #[test]
+    fn dml_entrypoints_take_table_values() {
+        let inserted = insert_into(User)
+            .values((UserId::set(1i64), UserName::set("root")))
+            .build();
+
+        assert_eq!(
+            inserted.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+        );
+        assert_eq!(
+            inserted.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+
+        let updated = update(User)
+            .set(UserActive::set(false))
+            .where_(UserId.eq(1i64))
+            .build();
+
+        assert_eq!(
+            updated.sql,
+            "UPDATE \"users\" SET \"active\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(updated.params, vec![SqlVal::Bool(false), SqlVal::I64(1)]);
+
+        let deleted = delete_from(User)
+            .where_(UserId.eq(1i64))
+            .returning((UserName,))
+            .build();
+
+        assert_eq!(
+            deleted.sql,
+            "DELETE FROM \"users\" WHERE (\"id\" = $1) RETURNING \"name\""
+        );
+        assert_eq!(deleted.params, vec![SqlVal::I64(1)]);
+    }
+}
