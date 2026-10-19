@@ -56,8 +56,14 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     for item in &fields.items {
         let field_attrs = &item.attrs;
-        let field = item.field_ident();
-        let column = &item.column;
+        let field = item.field_ident()?;
+        let Some(column) = item.column_path() else {
+            return Err(syn::Error::new_spanned(
+                item.target.tokens(),
+                "`dto!` fields must be schema column markers; \
+                 use `select!` for computed projections",
+            ));
+        };
 
         field_defs.extend(quote! {
             #(#field_attrs)*

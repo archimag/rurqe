@@ -10,18 +10,24 @@ use proc_macro::TokenStream;
 
 /// Builds an ad-hoc named-field projection for `SELECT` queries.
 ///
-/// The macro expands into an anonymous record whose fields are named after the
-/// projected columns (or their `as alias`), typed through
-/// `<Column as Column>::RustType`, and implements both `Selection` and
-/// `FromRow` for it. The expansion evaluates to a zero-sized selection marker
-/// that can be passed straight to a query builder, while the produced row is
-/// exposed through inference so callers never index by tuple position:
+/// Every projection names a field of the produced record, so callers never index
+/// rows by tuple position. A schema column marker (`UserId`, `users::EMAIL`)
+/// derives its field from the column name and projects as `"table"."column"`,
+/// while a computed projection keeps its own type and is named explicitly:
 ///
 /// ```ignore
 /// let query = SelectQuery::<Postgres>::new()
 ///     .from::<User>()
-///     .select(select!(UserId, UserEmail as contact_email));
+///     .select(select!(
+///         UserId,
+///         UserEmail as contact_email,
+///         order_count: Expr::count_all(),
+///     ));
 /// ```
+///
+/// The synthesized record is generic over its field types, so a `LEFT JOIN`ed
+/// table lifts its projected fields into `Option<T>` at the call site. The
+/// selection can also start a query directly with `select!(..).from::<D, T>()`.
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     crate::select::expand(input.into())

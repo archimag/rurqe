@@ -1,9 +1,12 @@
 //! AST representations and parsing logic for query projections and aliases.
 
-use proc_macro2::Span;
+use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
+use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Ident, Path, Token};
+use syn::{
+    Attribute, Expr, GenericArgument, Ident, Member, Path, PathArguments, PathSegment, Token, Type,
+};
 
 /// Converts an identifier name (e.g. PascalCase or SCREAMING_SNAKE_CASE) to snake_case.
 pub fn to_snake_case(s: &str) -> String {
@@ -29,83 +32,217 @@ pub fn to_snake_case(s: &str) -> String {
     result
 }
 
+/// The SQL projection an item selects from.
+///
+/// A projection is either a schema column marker path (`UserId`, `users::EMAIL`,
+/// `AliasedCol::<A, C>`) or an arbitrary SQL expression producing a value
+/// (`users.id`, `Expr::sum::<OrderTotal>()`, `count(orders.id)`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProjectionTarget {
+    /// A schema column marker, rendered as `"table"."column"`.
+    Column(Path),
+    /// A computed SQL expression, rendered through `SelectTarget`.
+    Expr(Expr),
+}
+
+impl ProjectionTarget {
+    /// Returns the column marker path of the target, if it is a schema column.
+    pub fn column_path(&self) -> Option<&Path> {
+        match self {
+            ProjectionTarget::Column(path) => Some(path),
+            ProjectionTarget::Expr(_) => None,
+        }
+    }
+
+    /// Renders the target back into tokens for diagnostics.
+    pub fn tokens(&self) -> TokenStream {
+        match self {
+            ProjectionTarget::Column(path) => quote!(#path),
+            ProjectionTarget::Expr(expr) => quote!(#expr),
+        }
+    }
+}
+
 /// A single projection entry in a query projection list.
 ///
-/// Can represent either a direct column path (e.g. `users::ID`) or an aliased
-/// projection (e.g. `users::EMAIL as contact_email`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Can represent a schema column (`users::ID`, `UserId`) or an SQL expression
+/// (`users.id`, `Expr::count_all()`), optionally named through `alias: <target>`
+/// or `<target> as alias`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectionItem {
     /// Outer attributes attached to the projection item (if any).
     pub attrs: Vec<Attribute>,
-    /// The path resolving to the column marker type or value.
-    pub column: Path,
-    /// Explicit alias assigned via the `as <ident>` syntax, if present.
+    /// The projected column or expression.
+    pub target: ProjectionTarget,
+    /// Explicit field name assigned via `alias: <target>` or `<target> as alias`.
     pub alias: Option<Ident>,
 }
 
 impl ProjectionItem {
-    /// Creates a new projection item with the given column path and optional alias.
+    /// Creates a new projection item for the column `column` with an optional alias.
     pub fn new(column: Path, alias: Option<Ident>) -> Self {
         Self {
             attrs: Vec::new(),
-            column,
+            target: ProjectionTarget::Column(column),
             alias,
         }
     }
 
-    /// Derives the identifier used as the field name in the synthesized row struct.
+    /// Returns the column marker path of the item, if it projects a schema column.
+    pub fn column_path(&self) -> Option<&Path> {
+        self.target.column_path()
+    }
+
+    /// Derives the identifier used as the field name in the synthesized row record.
     ///
-    /// If an explicit alias is provided, it is used directly. Otherwise, the last
-    /// path segment of the column is converted to snake_case (e.g. `ID` -> `id`,
-    /// `UserId` -> `user_id`). If the resulting identifier is a reserved Rust keyword,
-    /// a raw identifier (e.g. `r#type`) is returned.
-    pub fn field_ident(&self) -> Ident {
-        if let Some(ref alias) = self.alias {
-            return alias.clone();
+    /// An explicit alias always wins. A column marker is named after its column
+    /// (`users::EMAIL` and `users.email` both become `email`), converting the
+    /// marker name to snake_case and falling back to a raw identifier for Rust
+    /// keywords (`users::Type` becomes `r#type`). A computed projection without a
+    /// name has no column to be named after and is reported as a compile error.
+    pub fn field_ident(&self) -> syn::Result<Ident> {
+        if let Some(alias) = &self.alias {
+            return Ok(alias.clone());
         }
 
-        let last_segment = self
-            .column
-            .segments
-            .last()
-            .expect("column path must contain at least one segment");
-
-        let raw_name = last_segment.ident.to_string();
-        let snake_name = to_snake_case(&raw_name);
-
-        syn::parse_str::<Ident>(&snake_name)
-            .unwrap_or_else(|_| Ident::new_raw(&snake_name, last_segment.ident.span()))
+        match &self.target {
+            ProjectionTarget::Column(path) => Ok(column_field_ident(path)),
+            ProjectionTarget::Expr(expr) => expr_field_ident(expr).ok_or_else(|| {
+                syn::Error::new_spanned(
+                    expr,
+                    "projection expression has no column to be named after; \
+                     name it explicitly with `alias: <expr>` or `<expr> as alias`",
+                )
+            }),
+        }
     }
 }
 
 impl Parse for ProjectionItem {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let attrs = input.call(Attribute::parse_outer)?;
-        let column: Path = input.parse()?;
 
-        let alias = if input.peek(Token![as]) {
-            let _as_token: Token![as] = input.parse()?;
-            let alias: Ident = input.parse()?;
-            Some(alias)
-        } else {
-            None
+        // Collect the raw item tokens up to the next top-level comma, so an
+        // `as alias` suffix is distinguished from a Rust cast expression.
+        let mut tokens = Vec::new();
+        while !input.is_empty() && !input.peek(Token![,]) {
+            tokens.push(input.parse::<TokenTree>()?);
+        }
+
+        if tokens.is_empty() {
+            return Err(input.error("expected a projection column or expression"));
+        }
+
+        let (alias, target_tokens) = split_naming(tokens)?;
+        let target: Expr = syn::parse2(target_tokens)?;
+        let target = match target {
+            Expr::Path(path) if path.qself.is_none() => ProjectionTarget::Column(path.path),
+            other => ProjectionTarget::Expr(other),
         };
 
         Ok(Self {
             attrs,
-            column,
+            target,
             alias,
         })
     }
 }
 
+/// Splits the leading `alias:` or trailing `as alias` naming from an item body.
+fn split_naming(tokens: Vec<TokenTree>) -> syn::Result<(Option<Ident>, TokenStream)> {
+    if let [TokenTree::Ident(alias), TokenTree::Punct(colon), rest @ ..] = tokens.as_slice() {
+        // A single `:` names the projection, while `::` continues a module path.
+        if colon.as_char() == ':' && colon.spacing() == Spacing::Alone && !rest.is_empty() {
+            let target: TokenStream = rest.iter().cloned().collect();
+            return Ok((Some(alias.clone()), target));
+        }
+    }
+
+    let len = tokens.len();
+    if len >= 3 {
+        if let (TokenTree::Ident(alias), TokenTree::Ident(keyword)) =
+            (&tokens[len - 1], &tokens[len - 2])
+        {
+            if keyword == "as" {
+                let target: TokenStream = tokens[..len - 2].iter().cloned().collect();
+                if !target.is_empty() {
+                    return Ok((Some(alias.clone()), target));
+                }
+            }
+        }
+    }
+
+    Ok((None, tokens.into_iter().collect()))
+}
+
+/// Derives the field identifier of a schema column marker path.
+fn column_field_ident(path: &Path) -> Ident {
+    match path.segments.last() {
+        Some(segment) => match segment_label(segment) {
+            Some(label) => to_ident(&label, segment.ident.span()),
+            None => to_ident("column", Span::call_site()),
+        },
+        None => to_ident("column", Span::call_site()),
+    }
+}
+
+/// Derives the field identifier of an expression, if it names a column.
+fn expr_field_ident(expr: &Expr) -> Option<Ident> {
+    match expr {
+        Expr::Field(field) => match &field.member {
+            Member::Named(name) => Some(to_ident(&to_snake_case(&name.to_string()), name.span())),
+            Member::Unnamed(_) => None,
+        },
+        Expr::Path(path) if path.qself.is_none() => Some(column_field_ident(&path.path)),
+        Expr::Paren(paren) => expr_field_ident(&paren.expr),
+        Expr::Group(group) => expr_field_ident(&group.expr),
+        _ => None,
+    }
+}
+
+/// Derives the snake_case field label of a column type path segment.
+///
+/// A plain segment (`UserId`) labels itself, a transparent wrapper with a single
+/// type argument (`Nullable<C>`) labels as its inner column, and a wrapper
+/// carrying an alias and a column (`AliasedCol<A, C>`) labels as both.
+fn segment_label(segment: &PathSegment) -> Option<String> {
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Some(to_snake_case(&segment.ident.to_string()));
+    };
+
+    let mut labels = Vec::new();
+    for argument in &arguments.args {
+        if let GenericArgument::Type(ty) = argument {
+            labels.push(type_label(ty)?);
+        }
+    }
+
+    Some(match labels.as_slice() {
+        [] => to_snake_case(&segment.ident.to_string()),
+        [single] => single.clone(),
+        _ => labels.join("_"),
+    })
+}
+
+fn type_label(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Path(path) => path.path.segments.last().and_then(segment_label),
+        _ => None,
+    }
+}
+
+/// Parses `label` as an identifier, falling back to a raw identifier for keywords.
+fn to_ident(label: &str, span: Span) -> Ident {
+    syn::parse_str::<Ident>(label).unwrap_or_else(|_| Ident::new_raw(label, span))
+}
+
 /// A list or tuple of projection items.
 ///
 /// Supports flat comma-separated lists, parenthesized tuples, and braced groups:
-/// - `users::ID, users::EMAIL as contact_email`
-/// - `(users::ID, users::EMAIL)`
+/// - `users::ID, total: Expr::count_all()`
+/// - `(users::ID, users::EMAIL as contact_email)`
 /// - `{ users::ID, users::NAME }`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProjectionList {
     pub items: Vec<ProjectionItem>,
 }
@@ -194,15 +331,43 @@ mod tests {
     fn parses_single_column_without_alias() {
         let item: ProjectionItem = parse_str("users::ID").expect("valid projection");
         assert_eq!(item.alias, None);
-        assert_eq!(item.field_ident(), "id");
+        assert!(matches!(item.target, ProjectionTarget::Column(_)));
+        assert_eq!(item.field_ident().expect("named"), "id");
     }
 
     #[test]
     fn parses_single_column_with_alias() {
         let item: ProjectionItem =
             parse_str("users::EMAIL as contact_email").expect("valid projection");
-        assert_eq!(item.alias.as_ref().map(|a| a.to_string()), Some("contact_email".into()));
-        assert_eq!(item.field_ident(), "contact_email");
+        assert_eq!(
+            item.alias.as_ref().map(|a| a.to_string()),
+            Some("contact_email".into())
+        );
+        assert_eq!(item.field_ident().expect("named"), "contact_email");
+    }
+
+    #[test]
+    fn parses_named_expression_projections() {
+        let item: ProjectionItem =
+            parse_str("total: Expr::count_all()").expect("valid projection");
+        assert_eq!(item.alias.as_ref().map(|a| a.to_string()), Some("total".into()));
+        assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+        assert_eq!(item.field_ident().expect("named"), "total");
+    }
+
+    #[test]
+    fn parses_expression_projections_with_trailing_alias() {
+        let item: ProjectionItem =
+            parse_str("Expr::sum::<UserId>() as total").expect("valid projection");
+        assert_eq!(item.alias.as_ref().map(|a| a.to_string()), Some("total".into()));
+        assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+    }
+
+    #[test]
+    fn parses_schema_field_access_projections() {
+        let item: ProjectionItem = parse_str("users.email").expect("valid projection");
+        assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+        assert_eq!(item.field_ident().expect("named"), "email");
     }
 
     #[test]
@@ -211,9 +376,9 @@ mod tests {
             parse_str("users::ID, users::EMAIL as contact_email, is_active")
                 .expect("valid projection list");
         assert_eq!(list.len(), 3);
-        assert_eq!(list.items[0].field_ident(), "id");
-        assert_eq!(list.items[1].field_ident(), "contact_email");
-        assert_eq!(list.items[2].field_ident(), "is_active");
+        assert_eq!(list.items[0].field_ident().expect("named"), "id");
+        assert_eq!(list.items[1].field_ident().expect("named"), "contact_email");
+        assert_eq!(list.items[2].field_ident().expect("named"), "is_active");
     }
 
     #[test]
@@ -221,15 +386,15 @@ mod tests {
         let list: ProjectionList =
             parse_str("(users::ID, users::EMAIL)").expect("valid parenthesized list");
         assert_eq!(list.len(), 2);
-        assert_eq!(list.items[0].field_ident(), "id");
-        assert_eq!(list.items[1].field_ident(), "email");
+        assert_eq!(list.items[0].field_ident().expect("named"), "id");
+        assert_eq!(list.items[1].field_ident().expect("named"), "email");
     }
 
     #[test]
     fn parses_with_trailing_comma() {
         let list: ProjectionList = parse_str("users::ID,").expect("trailing comma should be valid");
         assert_eq!(list.len(), 1);
-        assert_eq!(list.items[0].field_ident(), "id");
+        assert_eq!(list.items[0].field_ident().expect("named"), "id");
     }
 
     #[test]
@@ -245,6 +410,13 @@ mod tests {
     }
 
     #[test]
+    fn anonymous_computed_expressions_have_no_inferred_name() {
+        let item: ProjectionItem = parse_str("Expr::count_all()").expect("valid projection");
+        let error = item.field_ident().expect_err("no column to be named after");
+        assert!(error.to_string().contains("name it explicitly"));
+    }
+
+    #[test]
     fn converts_various_naming_styles_to_snake_case() {
         assert_eq!(to_snake_case("ID"), "id");
         assert_eq!(to_snake_case("UserId"), "user_id");
@@ -257,7 +429,7 @@ mod tests {
     #[test]
     fn handles_reserved_rust_keywords_as_raw_ident() {
         let item: ProjectionItem = parse_str("users::Type").expect("valid projection");
-        let ident = item.field_ident();
+        let ident = item.field_ident().expect("named");
         assert_eq!(ident.to_string(), "r#type");
     }
 }
