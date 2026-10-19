@@ -68,6 +68,11 @@ pub enum Error {
         /// The reason the marker could not be parsed.
         message: String,
     },
+    /// The declarative stage could not be read or parsed.
+    InvalidStage {
+        /// The reason the stage could not be read.
+        message: String,
+    },
     /// The target database sits below the boundary of the active checkpoint.
     OutdatedCheckpoint {
         /// The newest version recorded in the history table, if any.
@@ -131,6 +136,7 @@ impl fmt::Display for Error {
             ),
             Error::InvalidLockFormat { message } => write!(f, "invalid schema lock: {message}"),
             Error::InvalidCheckpoint { message } => write!(f, "invalid checkpoint: {message}"),
+            Error::InvalidStage { message } => write!(f, "invalid stage: {message}"),
             Error::OutdatedCheckpoint {
                 database_version,
                 pruned_up_to_version,

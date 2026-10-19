@@ -10,6 +10,11 @@
 //! Applied migrations are recorded as [`SchemaHistoryEntry`] rows of the
 //! [`SCHEMA_HISTORY_TABLE`] metadata table.
 //!
+//! A cold environment can instead be initialised straight from a declarative
+//! stage with [`cold_start`]: the `schema/` DDL is applied in a single
+//! transaction and anchored by a synthetic baseline entry, so the historical
+//! tail never runs.
+//!
 //! ```
 //! use rurqe_migrate::{Migration, MigrationKind};
 //!
@@ -30,6 +35,7 @@ pub mod error;
 pub mod history;
 pub mod migration;
 pub mod runner;
+pub mod stage;
 pub mod version;
 
 pub use catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
@@ -42,5 +48,8 @@ pub use migration::{Migration, MigrationKind};
 pub use runner::{
     InMemoryBackend, InMemoryTransaction, MigrationBackend, MigrationReport, MigrationStatus,
     MigrationStatusKind, MigrationTransaction, Migrator, RepairReport,
+};
+pub use stage::{
+    cold_start, ColdStartReport, DeclarativeStage, StageMarker, StageScript, STAGE_SCRIPT,
 };
 pub use version::MigrationVersion;

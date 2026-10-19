@@ -479,7 +479,7 @@ impl Migrator {
 /// The history table stores `installed_on` as a plain string, so the runner has to
 /// produce a concrete timestamp instead of delegating to `CURRENT_TIMESTAMP`.
 /// The crate stays dependency-free, hence the epoch-to-civil conversion below.
-fn current_timestamp() -> String {
+pub(crate) fn current_timestamp() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
