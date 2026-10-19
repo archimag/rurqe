@@ -77,6 +77,36 @@ pub trait Column {
     fn expr_kind() -> crate::expr::ExprKind {
         crate::expr::ExprKind::Column { name: Self::NAME }
     }
+
+    /// Addresses this column through the table alias `A`.
+    ///
+    /// Column markers are zero-sized values, so the method only fixes the alias
+    /// the column is referenced by and returns the matching [`AliasedCol`]
+    /// marker without any turbofish-heavy construction:
+    ///
+    /// ```
+    /// use rurqe_core::schema::{AliasedCol, Column, TableAlias};
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table_alias! {
+    ///     /// The `u` alias.
+    ///     U1 => "u"
+    /// }
+    ///
+    /// let through_column: AliasedCol<U1, UserId> = UserId.alias::<U1>();
+    /// let through_alias: AliasedCol<U1, UserId> = U1.col(UserId);
+    /// ```
+    fn alias<A: TableAlias>(self) -> AliasedCol<A, Self>
+    where
+        Self: Sized,
+    {
+        AliasedCol::new()
+    }
 }
 
 /// Statically asserts that a [`Column`] belongs to the table `T`.
@@ -107,9 +137,36 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 ///
 /// assert_eq!(UserAlias::NAME, "u");
 /// ```
-pub trait TableAlias {
+pub trait TableAlias: Sized {
     /// The SQL identifier of the alias, known at compile time.
     const NAME: &'static str;
+
+    /// Addresses the column `C` through this alias.
+    ///
+    /// Alias markers are zero-sized values, so the method only fixes the column
+    /// referenced through the alias and returns the matching [`AliasedCol`]
+    /// marker:
+    ///
+    /// ```
+    /// use rurqe_core::schema::{AliasedCol, Column, TableAlias};
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table_alias! {
+    ///     /// The `u` alias.
+    ///     U1 => "u"
+    /// }
+    ///
+    /// let aliased: AliasedCol<U1, UserId> = U1.col(UserId);
+    /// let through_column: AliasedCol<U1, UserId> = UserId.alias::<U1>();
+    /// ```
+    fn col<C: Column>(self, _column: C) -> AliasedCol<Self, C> {
+        AliasedCol::new()
+    }
 }
 
 /// Declares a table alias marker type together with its SQL name.
@@ -498,6 +555,22 @@ mod tests {
         fn takes_rust_type<C: Column<RustType = String>>() {}
 
         takes_rust_type::<AliasedCol<UserAlias, UserEmail>>();
+    }
+
+    #[test]
+    fn alias_helpers_produce_aliased_column_markers() {
+        let through_column: AliasedCol<UserAlias, UserId> = UserId.alias::<UserAlias>();
+        let through_alias: AliasedCol<UserAlias, UserId> = UserAlias.col(UserId);
+        let _ = (through_column, through_alias);
+
+        assert_eq!(<AliasedCol<UserAlias, UserId> as Column>::NAME, "id");
+        assert_eq!(
+            <AliasedCol<UserAlias, UserId> as Column>::expr_kind(),
+            crate::expr::ExprKind::QualifiedColumn {
+                table: "u",
+                column: "id",
+            }
+        );
     }
 
     #[test]
