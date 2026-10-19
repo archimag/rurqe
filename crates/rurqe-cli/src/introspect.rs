@@ -119,14 +119,29 @@ ORDER BY name;
 "#;
 
     /// Builds the `PRAGMA table_info` query for `table`.
+    ///
+    /// The table name is wrapped in double quotes and every embedded `"` is
+    /// doubled, so legal-but-unusual table names neither break the statement nor
+    /// smuggle additional SQL into it.
     pub fn sqlite_table_info(table: &str) -> String {
-        format!("PRAGMA table_info(\"{table}\");")
+        format!(
+            "PRAGMA table_info(\"{}\");",
+            escape_sqlite_identifier(table)
+        )
     }
 
     /// Builds the `PRAGMA foreign_key_list` query for `table`.
     pub fn sqlite_foreign_key_list(table: &str) -> String {
-        format!("PRAGMA foreign_key_list(\"{table}\");")
+        format!(
+            "PRAGMA foreign_key_list(\"{}\");",
+            escape_sqlite_identifier(table)
+        )
     }
+}
+
+/// Escapes a SQLite identifier for use inside a double-quoted name literal.
+fn escape_sqlite_identifier(identifier: &str) -> String {
+    identifier.replace('"', "\"\"")
 }
 
 /// The database engine a connection string targets.
@@ -798,6 +813,57 @@ mod tests {
 
         let catalog = introspect_database("sqlite::memory:").unwrap();
         assert!(catalog.tables.is_empty());
+    }
+
+    #[test]
+    fn sqlite_pragma_queries_escape_embedded_quotes() {
+        assert_eq!(
+            IntrospectQueries::sqlite_table_info(r#"weird"name"#),
+            "PRAGMA table_info(\"weird\"\"name\");"
+        );
+        assert_eq!(
+            IntrospectQueries::sqlite_foreign_key_list(r#"weird"name"#),
+            "PRAGMA foreign_key_list(\"weird\"\"name\");"
+        );
+    }
+
+    #[test]
+    fn introspect_sqlite_handles_table_names_with_double_quotes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE "weird""name" (
+                id INTEGER PRIMARY KEY,
+                label TEXT NOT NULL
+            );
+            CREATE TABLE "child""table" (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER NOT NULL,
+                FOREIGN KEY (parent_id) REFERENCES "weird""name"(id)
+            );
+            "#,
+        )
+        .unwrap();
+
+        let catalog = introspect_sqlite(&conn).unwrap();
+        assert_eq!(catalog.tables.len(), 2);
+
+        let parent = catalog
+            .tables
+            .iter()
+            .find(|t| t.name == r#"weird"name"#)
+            .expect("table with a double quote in its name is introspected");
+        assert_eq!(parent.primary_key, vec!["id"]);
+        assert_eq!(parent.columns.len(), 2);
+
+        let child = catalog
+            .tables
+            .iter()
+            .find(|t| t.name == r#"child"table"#)
+            .expect("child table with a double quote in its name is introspected");
+        assert_eq!(child.foreign_keys.len(), 1);
+        assert_eq!(child.foreign_keys[0].referenced_table, r#"weird"name"#);
+        assert_eq!(child.foreign_keys[0].columns, vec!["parent_id"]);
     }
 
     #[test]
