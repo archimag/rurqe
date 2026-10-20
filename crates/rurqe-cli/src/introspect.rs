@@ -20,7 +20,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use postgres::introspect_postgres;
+pub use postgres::{introspect_postgres, introspect_postgres_schema};
 pub use sqlite::{
     catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
     RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,

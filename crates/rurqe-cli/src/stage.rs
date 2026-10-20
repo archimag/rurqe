@@ -17,10 +17,11 @@
 //! defaults, nullability, and keys that drifted are reported as an actionable
 //! diagnostic instead of surfacing as a production incident.
 //!
-//! The scratch state starts from nothing, so `database_url` must address an empty
-//! database; SQLite is always materialised in memory and never touches the file
-//! behind the URL, while a PostgreSQL database is only borrowed inside a
-//! transaction that is rolled back. The tail passed to [`GoldenEquation::new`] is
+//! The scratch state starts from nothing: SQLite is materialised in memory and
+//! never touches the file behind the URL, while PostgreSQL builds both sides in a
+//! dedicated scratch schema of a transaction that is rolled back, so the existing
+//! contents of the target database stay untouched. The tail passed to
+//! [`GoldenEquation::new`] is
 //! the active set of scripts: migrations pruned below the checkpoint are already
 //! folded into the base stage, so replaying them would collide with it. A project
 //! that still keeps the stage snapshot of its checkpoint anchors the replay with
@@ -48,6 +49,7 @@
 //! ```
 
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rurqe_migrate::catalog::SchemaCatalog;
 use rurqe_migrate::migration::Migration;
@@ -56,7 +58,9 @@ use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::{connect, redact_database_url, Connection};
 use crate::drift::{compute_catalog_diff, SchemaDiff};
-use crate::introspect::{detect_dialect, introspect_postgres, introspect_sqlite, DatabaseDialect};
+use crate::introspect::{
+    detect_dialect, introspect_postgres_schema, introspect_sqlite, DatabaseDialect,
+};
 
 /// One labelled SQL fragment applied to a scratch state.
 struct Script<'a> {
@@ -102,12 +106,29 @@ impl Sandbox for SqliteSandbox {
 }
 
 /// Scratch state backed by a PostgreSQL transaction that is always rolled back.
+///
+/// Every verification owns a schema of its own inside the transaction and steers
+/// the replayed DDL into it through `search_path`, so both sides of the equation
+/// are materialised from nothing against a database of any size. The rollback
+/// drops the scratch schema together with everything built inside it.
 struct PostgresSandbox {
     client: postgres::Client,
+    schema: String,
+}
+
+/// Hands out a scratch schema name no concurrent verification can collide with.
+fn scratch_schema_name() -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    format!(
+        "rurqe_scratch_{}_{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 impl PostgresSandbox {
-    /// Connects to `url` and opens the transaction the verification runs inside.
+    /// Connects to `url` and opens the scratch transaction the verification runs inside.
     fn connect(url: &str) -> Result<Self, String> {
         let mut client = match connect(url).map_err(|error| error.to_string())? {
             Connection::Postgres(client) => client,
@@ -123,7 +144,16 @@ impl PostgresSandbox {
             .batch_execute("BEGIN")
             .map_err(|error| format!("failed to open a scratch transaction: {error}"))?;
 
-        Ok(Self { client })
+        // Schema names cannot be bound as parameters, but the generated name only
+        // carries ASCII digits and underscores, so rendering it is injection-free.
+        let schema = scratch_schema_name();
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema};"
+            ))
+            .map_err(|error| format!("failed to open a scratch schema: {error}"))?;
+
+        Ok(Self { client, schema })
     }
 }
 
@@ -135,7 +165,8 @@ impl Sandbox for PostgresSandbox {
     }
 
     fn catalog(&mut self) -> Result<SchemaCatalog, String> {
-        introspect_postgres(&mut self.client).map_err(|error| error.to_string())
+        introspect_postgres_schema(&mut self.client, &self.schema)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -371,33 +402,9 @@ fn open_sandbox(database_url: &str) -> Result<Box<dyn Sandbox>, StageError> {
     }
 }
 
-/// Verifies that the scratch state starts empty.
-///
-/// The equation is materialised from nothing, so replaying it over an already
-/// initialised database would collide with the existing schema; the check turns
-/// that collision into an actionable message.
-fn require_empty(sandbox: &mut dyn Sandbox) -> Result<(), StageError> {
-    let existing = sandbox
-        .catalog()
-        .map_err(|message| StageError::Sandbox { message })?;
-
-    if existing.tables.is_empty() {
-        return Ok(());
-    }
-
-    Err(StageError::Sandbox {
-        message: format!(
-            "the scratch database already contains {} table(s); the golden equation is \
-             materialised from an empty state, so point the verification at an empty database",
-            existing.tables.len()
-        ),
-    })
-}
-
 /// Materialises `scripts` in a fresh scratch state and introspects the result.
 fn materialise(database_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalog, StageError> {
     let mut sandbox = open_sandbox(database_url)?;
-    require_empty(sandbox.as_mut())?;
 
     for script in scripts {
         sandbox

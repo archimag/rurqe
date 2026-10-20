@@ -1,4 +1,8 @@
 //! PostgreSQL catalog introspection through `information_schema` and `pg_catalog`.
+//!
+//! Every statement binds the introspected schema name as its first parameter, so
+//! the same catalog text serves the user-facing `public` schema and the
+//! disposable scratch schema the golden equation is verified in.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
@@ -9,21 +13,21 @@ use super::types::{
     RawTableMetadata,
 };
 
-/// Query to fetch all user tables in `public` schema.
+/// Query to fetch all user tables of the introspected schema.
 pub(crate) const POSTGRES_TABLES: &str = r#"
 SELECT table_name
 FROM information_schema.tables
-WHERE table_schema = 'public'
+WHERE table_schema = $1
   AND table_type = 'BASE TABLE'
   AND table_name != '__rurqe_schema_history'
 ORDER BY table_name;
 "#;
 
-/// Query to fetch all columns in user tables.
+/// Query to fetch all columns of the introspected schema.
 pub(crate) const POSTGRES_COLUMNS: &str = r#"
 SELECT table_name, column_name, data_type, (is_nullable = 'YES') as is_nullable, column_default
 FROM information_schema.columns
-WHERE table_schema = 'public'
+WHERE table_schema = $1
   AND table_name != '__rurqe_schema_history'
 ORDER BY table_name, ordinal_position;
 "#;
@@ -36,7 +40,7 @@ JOIN information_schema.key_column_usage kcu
   ON tc.constraint_name = kcu.constraint_name
  AND tc.table_schema = kcu.table_schema
 WHERE tc.constraint_type = 'PRIMARY KEY'
-  AND tc.table_schema = 'public'
+  AND tc.table_schema = $1
 ORDER BY kcu.table_name, kcu.ordinal_position;
 "#;
 
@@ -65,14 +69,25 @@ JOIN pg_attribute referenced_column
   ON referenced_column.attrelid = constraint_row.confrelid
  AND referenced_column.attnum = constraint_row.confkey[position.index]
 WHERE constraint_row.contype = 'f'
-  AND namespace.nspname = 'public'
+  AND namespace.nspname = $1
 ORDER BY owning.relname, constraint_row.conname, position.index;
 "#;
 
-/// Introspects a live PostgreSQL database client and returns the normalized [`SchemaCatalog`].
+/// Introspects the `public` schema of a live PostgreSQL database client.
 pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalog, CliError> {
+    introspect_postgres_schema(client, "public")
+}
+
+/// Introspects `schema` of a live PostgreSQL database client.
+///
+/// The schema name is bound as a parameter rather than being rendered into the
+/// statement text, so no caller can smuggle SQL into the catalog queries.
+pub fn introspect_postgres_schema(
+    client: &mut postgres::Client,
+    schema: &str,
+) -> Result<SchemaCatalog, CliError> {
     let table_rows = client
-        .query(POSTGRES_TABLES, &[])
+        .query(POSTGRES_TABLES, &[&schema])
         .map_err(|e| CliError(format!("failed to query PostgreSQL tables: {e}")))?;
     let raw_tables: Vec<RawTableMetadata> = table_rows
         .into_iter()
@@ -80,7 +95,7 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
         .collect();
 
     let col_rows = client
-        .query(POSTGRES_COLUMNS, &[])
+        .query(POSTGRES_COLUMNS, &[&schema])
         .map_err(|e| CliError(format!("failed to query PostgreSQL columns: {e}")))?;
     let raw_columns: Vec<RawColumnMetadata> = col_rows
         .into_iter()
@@ -94,7 +109,7 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
         .collect();
 
     let pk_rows = client
-        .query(POSTGRES_PRIMARY_KEYS, &[])
+        .query(POSTGRES_PRIMARY_KEYS, &[&schema])
         .map_err(|e| CliError(format!("failed to query PostgreSQL primary keys: {e}")))?;
     let raw_pks: Vec<RawPrimaryKeyMetadata> = pk_rows
         .into_iter()
@@ -105,7 +120,7 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
         .collect();
 
     let fk_rows = client
-        .query(POSTGRES_FOREIGN_KEYS, &[])
+        .query(POSTGRES_FOREIGN_KEYS, &[&schema])
         .map_err(|e| CliError(format!("failed to query PostgreSQL foreign keys: {e}")))?;
     let raw_fks: Vec<RawForeignKeyMetadata> = fk_rows
         .into_iter()
