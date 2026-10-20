@@ -76,14 +76,22 @@ pub struct RawSqliteForeignKeyMetadata {
 /// by their position in the key. `PRAGMA foreign_key_list` rows sharing a constraint
 /// id are folded into one [`ForeignKeyDef`] named after the owning table and that id,
 /// so composite foreign keys stay a single constraint.
+///
+/// `PRAGMA foreign_key_list` reports a `NULL` target column for a key that
+/// references the implicit primary key of its parent table; such a target is
+/// resolved against the parent key columns by position instead of being kept as
+/// an empty name.
 pub fn catalog_from_sqlite_metadata(
     tables: &[RawSqliteTableMetadata],
     columns: &[RawSqliteColumnMetadata],
     foreign_keys: &[RawSqliteForeignKeyMetadata],
 ) -> SchemaCatalog {
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
-    let mut pk_by_table: BTreeMap<String, Vec<(i64, String)>> = BTreeMap::new();
     let mut fks_by_table: BTreeMap<String, BTreeMap<i64, ForeignKeyDef>> = BTreeMap::new();
+
+    // Key columns in key order: they name both the assembled primary keys and
+    // the target of a foreign key that references an implicit parent key.
+    let mut primary_keys: BTreeMap<&str, Vec<(i64, &str)>> = BTreeMap::new();
 
     for column in columns {
         let kind = map_sql_type_to_kind(&column.data_type);
@@ -97,11 +105,15 @@ pub fn catalog_from_sqlite_metadata(
             .push(def);
 
         if column.pk_position > 0 {
-            pk_by_table
-                .entry(column.table_name.clone())
+            primary_keys
+                .entry(column.table_name.as_str())
                 .or_default()
-                .push((column.pk_position, column.column_name.clone()));
+                .push((column.pk_position, column.column_name.as_str()));
         }
+    }
+
+    for key in primary_keys.values_mut() {
+        key.sort_by_key(|(position, _)| *position);
     }
 
     for fk in foreign_keys {
@@ -117,16 +129,31 @@ pub fn catalog_from_sqlite_metadata(
                     Vec::new(),
                 )
             });
+
+        // `PRAGMA foreign_key_list` reports a NULL target column for a key that
+        // references the implicit primary key of the parent table, so the name
+        // is recovered from the introspected key columns by position.
+        let referenced_column = if fk.to_column.is_empty() {
+            implicit_referenced_column(
+                &primary_keys,
+                &fk.referenced_table,
+                constraint.columns.len(),
+            )
+            .unwrap_or_default()
+        } else {
+            fk.to_column.clone()
+        };
         constraint.columns.push(fk.from_column.clone());
-        constraint.referenced_columns.push(fk.to_column.clone());
+        constraint.referenced_columns.push(referenced_column);
     }
 
     let mut result_tables = Vec::new();
     for table in tables {
         let table_columns = columns_by_table.remove(&table.name).unwrap_or_default();
-        let mut key_columns = pk_by_table.remove(&table.name).unwrap_or_default();
-        key_columns.sort_by_key(|(position, _)| *position);
-        let primary_key = key_columns.into_iter().map(|(_, name)| name).collect();
+        let primary_key: Vec<String> = primary_keys
+            .get(table.name.as_str())
+            .map(|key| key.iter().map(|(_, name)| (*name).to_owned()).collect())
+            .unwrap_or_default();
         let table_foreign_keys: Vec<ForeignKeyDef> = fks_by_table
             .remove(&table.name)
             .map(|constraints| constraints.into_values().collect())
@@ -140,6 +167,21 @@ pub fn catalog_from_sqlite_metadata(
     }
 
     SchemaCatalog::new(result_tables)
+}
+
+/// Names the column a foreign key references when SQLite omits it.
+///
+/// A key that targets the implicit primary key of its parent table is reported
+/// without a target column, and `ordinal` selects the matching key column.
+fn implicit_referenced_column(
+    primary_keys: &BTreeMap<&str, Vec<(i64, &str)>>,
+    referenced_table: &str,
+    ordinal: usize,
+) -> Option<String> {
+    primary_keys
+        .get(referenced_table)
+        .and_then(|key| key.get(ordinal))
+        .map(|(_, name)| (*name).to_owned())
 }
 
 /// Introspects a live SQLite database connection and returns the normalized [`SchemaCatalog`].
@@ -219,4 +261,97 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
         &raw_columns,
         &raw_foreign_keys,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn column(table: &str, name: &str, pk_position: i64) -> RawSqliteColumnMetadata {
+        RawSqliteColumnMetadata {
+            table_name: table.to_owned(),
+            column_name: name.to_owned(),
+            data_type: "INTEGER".to_owned(),
+            not_null: true,
+            pk_position,
+            default_value: None,
+        }
+    }
+
+    fn key(id: i64, from: &str, to: &str) -> RawSqliteForeignKeyMetadata {
+        RawSqliteForeignKeyMetadata {
+            table_name: "order_lines".to_owned(),
+            id,
+            from_column: from.to_owned(),
+            to_column: to.to_owned(),
+            referenced_table: "orders".to_owned(),
+        }
+    }
+
+    #[test]
+    fn implicit_key_targets_follow_the_parent_key_order() {
+        let tables = vec![
+            RawSqliteTableMetadata {
+                name: "orders".to_owned(),
+            },
+            RawSqliteTableMetadata {
+                name: "order_lines".to_owned(),
+            },
+        ];
+        // The parent key columns arrive out of order, so the resolution has to
+        // follow the declared key positions instead of the introspection order.
+        let columns = vec![
+            column("orders", "region", 2),
+            column("orders", "id", 1),
+            column("order_lines", "order_id", 0),
+            column("order_lines", "order_region", 0),
+        ];
+        let foreign_keys = vec![key(0, "order_id", ""), key(0, "order_region", "")];
+
+        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &foreign_keys);
+
+        let lines = catalog
+            .tables
+            .iter()
+            .find(|table| table.name == "order_lines")
+            .expect("the child table is assembled");
+        assert_eq!(
+            lines.foreign_keys[0].referenced_columns,
+            vec!["id", "region"]
+        );
+
+        let orders = catalog
+            .tables
+            .iter()
+            .find(|table| table.name == "orders")
+            .expect("the parent table is assembled");
+        assert_eq!(orders.primary_key, vec!["id", "region"]);
+    }
+
+    #[test]
+    fn explicit_key_targets_are_preserved() {
+        let tables = vec![
+            RawSqliteTableMetadata {
+                name: "orders".to_owned(),
+            },
+            RawSqliteTableMetadata {
+                name: "order_lines".to_owned(),
+            },
+        ];
+        let columns = vec![
+            column("orders", "id", 1),
+            column("orders", "region", 2),
+            column("order_lines", "order_region", 0),
+        ];
+        let foreign_keys = vec![key(0, "order_region", "region")];
+
+        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &foreign_keys);
+
+        let lines = catalog
+            .tables
+            .iter()
+            .find(|table| table.name == "order_lines")
+            .expect("the child table is assembled");
+        assert_eq!(lines.foreign_keys[0].referenced_columns, vec!["region"]);
+    }
 }
