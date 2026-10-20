@@ -688,10 +688,12 @@ fn transaction_statements_render_expected_sql() {
     backend
         .begin(Some(IsolationLevel::Serializable))
         .expect("begin with isolation");
-    backend.savepoint("rurqe_sp_1").expect("savepoint");
-    backend.release_savepoint("rurqe_sp_1").expect("release");
+    let first = SavepointName::new("rurqe_sp_1").expect("a valid savepoint name");
+    let second = SavepointName::new("rurqe_sp_2").expect("a valid savepoint name");
+    backend.savepoint(&first).expect("savepoint");
+    backend.release_savepoint(&first).expect("release");
     backend
-        .rollback_to_savepoint("rurqe_sp_2")
+        .rollback_to_savepoint(&second)
         .expect("rollback to savepoint");
     backend.commit().expect("commit");
     backend.rollback().expect("rollback");

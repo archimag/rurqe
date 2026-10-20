@@ -10,6 +10,7 @@ use crate::row::FromRow;
 use crate::schema::Table;
 
 use super::group_by::GroupedQuery;
+use super::savepoint::SavepointName;
 use super::scope::TableScope;
 use super::select::{BuiltQuery, SelectQuery};
 
@@ -373,7 +374,7 @@ impl IsolationLevel {
 #[derive(Debug, Clone, Default)]
 pub struct TransactionContext {
     next_savepoint: u32,
-    savepoints: Vec<String>,
+    savepoints: Vec<SavepointName>,
 }
 
 impl TransactionContext {
@@ -394,19 +395,19 @@ impl TransactionContext {
 
     /// The name of the innermost open savepoint, if any.
     pub fn current_savepoint(&self) -> Option<&str> {
-        self.savepoints.last().map(String::as_str)
+        self.savepoints.last().map(SavepointName::as_str)
     }
 
     /// Allocates a fresh savepoint name and makes it the innermost block.
-    pub fn open_savepoint(&mut self) -> String {
+    pub fn open_savepoint(&mut self) -> SavepointName {
         self.next_savepoint += 1;
-        let name = format!("rurqe_sp_{}", self.next_savepoint);
+        let name = SavepointName::generated(self.next_savepoint);
         self.savepoints.push(name.clone());
         name
     }
 
     /// Ends the innermost block and returns the savepoint name it used.
-    pub fn close_savepoint(&mut self) -> Option<String> {
+    pub fn close_savepoint(&mut self) -> Option<SavepointName> {
         self.savepoints.pop()
     }
 }
@@ -449,18 +450,21 @@ pub trait TransactionBackend: QueryBackend {
     }
 
     /// Opens the nested transaction `name` as a savepoint.
-    fn savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
-        execute_statement(self, format!("SAVEPOINT {name}"))
+    ///
+    /// The name is a [`SavepointName`], so it cannot carry characters that
+    /// would escape the rendered statement.
+    fn savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
+        execute_statement(self, format!("SAVEPOINT {}", name.as_str()))
     }
 
     /// Releases the savepoint `name`, keeping its work in the transaction.
-    fn release_savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
-        execute_statement(self, format!("RELEASE SAVEPOINT {name}"))
+    fn release_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
+        execute_statement(self, format!("RELEASE SAVEPOINT {}", name.as_str()))
     }
 
     /// Rolls the transaction back to the savepoint `name`, discarding only the
     /// work done inside the nested block.
-    fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Self::Error> {
-        execute_statement(self, format!("ROLLBACK TO SAVEPOINT {name}"))
+    fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
+        execute_statement(self, format!("ROLLBACK TO SAVEPOINT {}", name.as_str()))
     }
 }

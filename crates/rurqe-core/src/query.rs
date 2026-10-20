@@ -27,6 +27,7 @@
 mod cte;
 mod execution;
 mod group_by;
+mod savepoint;
 mod scope;
 mod select;
 mod selection;
@@ -54,6 +55,7 @@ pub use self::selection::{
     ApplyNullability, ColumnInScope, MakeNullable, Nullable, SelectTarget, SelectTargetInScope,
     Selection, SelectionFor, SelectionInScope, TableSelection,
 };
+pub use self::savepoint::{InvalidSavepointName, SavepointName};
 pub use self::set_ops::SetOpKind;
 pub use self::window::{
     dense_rank, lag, lead, rank, row_number, LagLeadFn, PartitionBy, Window, WindowExpr,

@@ -116,7 +116,8 @@ mod rusqlite_backend {
 
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{
-        BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionContext,
+        BuiltQuery, IsolationLevel, QueryBackend, SavepointName, TransactionBackend,
+        TransactionContext,
     };
 
     /// A `rusqlite` connection that executes RURQE-built queries.
@@ -202,10 +203,10 @@ mod rusqlite_backend {
                         guard.connection.commit().map_err(E::from)?;
                         guard.connection.in_transaction = false;
                         tracing::info!("committed transaction");
-                    } else if let Some(name) = guard.savepoint.as_deref() {
+                    } else if let Some(name) = guard.savepoint.as_ref() {
                         guard.connection.release_savepoint(name).map_err(E::from)?;
                         guard.connection.tx_context.close_savepoint();
-                        tracing::debug!(savepoint = name, "released savepoint");
+                        tracing::debug!(savepoint = %name, "released savepoint");
                     }
                     guard.finished = true;
                     Ok(value)
@@ -223,7 +224,7 @@ mod rusqlite_backend {
     struct TransactionGuard<'a> {
         connection: &'a mut SqliteConnection,
         outer: bool,
-        savepoint: Option<String>,
+        savepoint: Option<SavepointName>,
         finished: bool,
     }
 
@@ -236,11 +237,11 @@ mod rusqlite_backend {
                 let _ = self.connection.rollback();
                 self.connection.in_transaction = false;
                 tracing::warn!("rolled back transaction");
-            } else if let Some(savepoint) = self.savepoint.as_deref() {
+            } else if let Some(savepoint) = self.savepoint.as_ref() {
                 let _ = self.connection.rollback_to_savepoint(savepoint);
                 let _ = self.connection.release_savepoint(savepoint);
                 self.connection.tx_context.close_savepoint();
-                tracing::warn!(savepoint = savepoint, "rolled back to savepoint");
+                tracing::warn!(savepoint = %savepoint, "rolled back to savepoint");
             }
         }
     }
