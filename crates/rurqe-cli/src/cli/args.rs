@@ -177,21 +177,22 @@ fn default_lock_path() -> PathBuf {
 /// Resolves the scratch database URL the golden equation is verified against.
 ///
 /// `--scratch-url` names the scratch database explicitly and wins over
-/// `--database-url`; both fall back through `DATABASE_URL` and, when nothing is
-/// supplied, degrade onto an in-memory SQLite sandbox. The verification only ever
-/// writes into the scratch database, so the fallback is announced on stderr and a
-/// CI log never hides which engine was exercised.
-pub(crate) fn resolve_equation_url(supplied: Option<String>) -> String {
+/// `--database-url`; both fall back through `DATABASE_URL`. No implicit sandbox is
+/// chosen when nothing is supplied: the verification replays schema DDL into that
+/// target, so silently selecting an in-memory SQLite engine would exercise a
+/// different engine than the project targets and hide the substitution from CI.
+pub(crate) fn resolve_equation_url(supplied: Option<String>) -> Result<String, CliError> {
     supplied
         .or_else(|| std::env::var("DATABASE_URL").ok())
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            eprintln!(
-                "warning: no scratch database URL provided; verifying the golden equation \
-                 against an in-memory SQLite sandbox (pass `--scratch-url` or set DATABASE_URL to \
-                 target an empty SQLite file, a PostgreSQL URL, or `:memory:` explicitly)"
-            );
-            ":memory:".to_owned()
+        .ok_or_else(|| {
+            CliError(
+                "no scratch database URL provided: pass `--scratch-url <url>` (or \
+                 `--database-url <url>`, or set the DATABASE_URL environment variable); the \
+                 golden equation needs a disposable target such as `:memory:`, an empty SQLite \
+                 file, or a PostgreSQL URL"
+                    .to_owned(),
+            )
         })
 }
 

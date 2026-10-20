@@ -164,13 +164,31 @@ fn redacts_credentials_from_connection_urls() {
 #[test]
 fn an_explicit_equation_url_is_used_verbatim() {
     assert_eq!(
-        resolve_equation_url(Some("postgres://db.internal:5432/app".to_owned())),
+        resolve_equation_url(Some("postgres://db.internal:5432/app".to_owned()))
+            .expect("an explicit postgres URL is accepted"),
         "postgres://db.internal:5432/app"
     );
     assert_eq!(
-        resolve_equation_url(Some(":memory:".to_owned())),
+        resolve_equation_url(Some(":memory:".to_owned()))
+            .expect("an explicit in-memory URL is accepted"),
         ":memory:"
     );
+}
+
+#[test]
+fn the_equation_demands_an_explicit_scratch_url() {
+    // A non-empty `DATABASE_URL` is an explicit choice of the environment, so the
+    // fail-fast expectation only applies when nothing addresses a scratch database.
+    if std::env::var("DATABASE_URL").is_ok_and(|value| !value.trim().is_empty()) {
+        return;
+    }
+
+    let missing = resolve_equation_url(None).expect_err("no scratch database is configured");
+    assert!(missing.to_string().contains("--scratch-url"), "got {missing}");
+
+    let blank = resolve_equation_url(Some("   ".to_owned()))
+        .expect_err("a blank scratch database URL is not a target");
+    assert!(blank.to_string().contains("--scratch-url"), "got {blank}");
 }
 
 #[test]

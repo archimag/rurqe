@@ -517,6 +517,8 @@ fn the_golden_equation_holds_for_a_consistent_stage_and_tail() {
         &stage,
         "--migrations-dir",
         &dir,
+        "--scratch-url",
+        ":memory:",
     ]))
     .expect("both descriptions of the schema converge");
 }
@@ -542,6 +544,8 @@ fn the_golden_equation_reports_a_tail_that_lost_a_column() {
         &stage,
         "--migrations-dir",
         &dir,
+        "--scratch-url",
+        ":memory:",
     ]))
     .expect_err("the tail never creates the email column");
 
@@ -589,6 +593,8 @@ fn the_base_stage_anchors_an_incremental_tail() {
         &base,
         "--migrations-dir",
         &dir,
+        "--scratch-url",
+        ":memory:",
     ]))
     .expect("the base stage plus the tail reproduces the stage");
 
@@ -599,6 +605,8 @@ fn the_base_stage_anchors_an_incremental_tail() {
         &stage,
         "--migrations-dir",
         &dir,
+        "--scratch-url",
+        ":memory:",
     ]))
     .expect_err("the tail alters a table nothing created");
 
