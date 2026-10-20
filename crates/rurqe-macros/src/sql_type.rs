@@ -371,6 +371,8 @@ fn decode_impl(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStr
 fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
     let owned = quote! {
         impl ::rurqe_core::expr::IntoExpr<#name> for #name {
+            type Scope = ();
+
             fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                 ::rurqe_core::expr::ExprKind::Value(
                     ::rurqe_core::expr::ToSqlVal::to_sql_val(self),
@@ -387,6 +389,8 @@ fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
             impl<'a> ::rurqe_core::expr::SqlCompatible<#name, &'a #name> for &'a #name {}
 
             impl<'a> ::rurqe_core::expr::IntoExpr<#name> for &'a #name {
+                type Scope = ();
+
                 fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                     ::rurqe_core::expr::ExprKind::Value(
                         ::rurqe_core::expr::ToSqlVal::to_sql_val(self),
@@ -400,6 +404,8 @@ fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
             impl<'a> ::rurqe_core::expr::SqlCompatible<#name, &'a #name> for &'a #name {}
 
             impl<'a> ::rurqe_core::expr::IntoExpr<#name> for &'a #name {
+                type Scope = ();
+
                 fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                     ::rurqe_core::expr::ExprKind::Value(
                         ::rurqe_core::expr::ToSqlVal::to_sql_val(self),
@@ -410,6 +416,8 @@ fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
             impl<'a> ::rurqe_core::expr::SqlCompatible<#name, &'a str> for &'a str {}
 
             impl<'a> ::rurqe_core::expr::IntoExpr<#name> for &'a str {
+                type Scope = ();
+
                 fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                     ::rurqe_core::expr::ExprKind::Value(
                         ::rurqe_core::expr::SqlVal::Text(self.to_owned()),
@@ -423,6 +431,8 @@ fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
             }
 
             impl ::rurqe_core::expr::IntoExpr<#name> for ::std::string::String {
+                type Scope = ();
+
                 fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                     ::rurqe_core::expr::ExprKind::Value(
                         ::rurqe_core::expr::SqlVal::Text(self),

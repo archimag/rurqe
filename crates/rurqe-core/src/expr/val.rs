@@ -492,6 +492,8 @@ macro_rules! impl_sql_binary_newtype {
         }
 
         impl $crate::expr::IntoExpr<$ty> for $ty {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
             }
@@ -500,6 +502,8 @@ macro_rules! impl_sql_binary_newtype {
         impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
 
         impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
             }
@@ -544,6 +548,8 @@ macro_rules! impl_sql_binary_newtype {
         }
 
         impl $crate::expr::IntoExpr<$ty> for $ty {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
             }
@@ -552,6 +558,8 @@ macro_rules! impl_sql_binary_newtype {
         impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
 
         impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
             }
@@ -602,6 +610,8 @@ macro_rules! impl_sql_text_newtype {
         }
 
         impl $crate::expr::IntoExpr<$ty> for $ty {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
             }
@@ -610,6 +620,8 @@ macro_rules! impl_sql_text_newtype {
         impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
 
         impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
             }
@@ -618,6 +630,8 @@ macro_rules! impl_sql_text_newtype {
         impl<'a> $crate::expr::SqlCompatible<$ty, &'a str> for &'a str {}
 
         impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self.to_owned()))
             }
@@ -626,6 +640,8 @@ macro_rules! impl_sql_text_newtype {
         impl $crate::expr::SqlCompatible<$ty, ::std::string::String> for ::std::string::String {}
 
         impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
+            type Scope = ();
+
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self))
             }

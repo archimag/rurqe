@@ -38,59 +38,83 @@ impl<T, Scope> SqlCompatible<T, Expr<T, Scope>> for Expr<T, Scope> {}
     note = "convert the value to the column's `Column::RustType` before comparing"
 )]
 pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
+    /// The scope of the tables the operand references.
+    ///
+    /// Bound values reference no table and keep the empty scope `()`, while a
+    /// built expression keeps the scope of its columns.
+    type Scope;
+
     /// Converts `self` into an expression AST node.
     fn into_expr_kind(self) -> ExprKind;
 }
 
 impl IntoExpr<i32> for i32 {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<i64> for i64 {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<f64> for f64 {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<bool> for bool {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<String> for String {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<String> for &str {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<Vec<u8>> for Vec<u8> {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl IntoExpr<Vec<u8>> for &[u8] {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
 impl<T, Scope> IntoExpr<T> for Expr<T, Scope> {
+    type Scope = Scope;
+
     fn into_expr_kind(self) -> ExprKind {
         self.into_kind()
     }
@@ -101,6 +125,8 @@ impl SqlCompatible<uuid::Uuid, &uuid::Uuid> for &uuid::Uuid {}
 
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for uuid::Uuid {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -108,6 +134,8 @@ impl IntoExpr<uuid::Uuid> for uuid::Uuid {
 
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for &uuid::Uuid {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -118,6 +146,8 @@ impl<'a> SqlCompatible<uuid::Uuid, &'a str> for &'a str {}
 
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for &str {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -128,6 +158,8 @@ impl SqlCompatible<chrono::NaiveDateTime, &chrono::NaiveDateTime> for &chrono::N
 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -135,6 +167,8 @@ impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDateTime> for &chrono::NaiveDateTime {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -148,6 +182,8 @@ impl SqlCompatible<chrono::DateTime<chrono::Utc>, &chrono::DateTime<chrono::Utc>
 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -155,6 +191,8 @@ impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::DateTime<chrono::Utc>> for &chrono::DateTime<chrono::Utc> {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -165,6 +203,8 @@ impl SqlCompatible<chrono::NaiveDate, &chrono::NaiveDate> for &chrono::NaiveDate
 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -172,6 +212,8 @@ impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDate> for &chrono::NaiveDate {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -182,6 +224,8 @@ impl SqlCompatible<serde_json::Value, &serde_json::Value> for &serde_json::Value
 
 #[cfg(feature = "serde_json")]
 impl IntoExpr<serde_json::Value> for serde_json::Value {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -189,6 +233,8 @@ impl IntoExpr<serde_json::Value> for serde_json::Value {
 
 #[cfg(feature = "serde_json")]
 impl IntoExpr<serde_json::Value> for &serde_json::Value {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -196,6 +242,8 @@ impl IntoExpr<serde_json::Value> for &serde_json::Value {
 
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for crate::expr::Json<T> {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -209,6 +257,8 @@ impl<'a, T: serde::Serialize> SqlCompatible<crate::expr::Json<T>, &'a crate::exp
 
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<T> {
+    type Scope = ();
+
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
@@ -241,8 +291,11 @@ impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<
 )]
 #[allow(clippy::wrong_self_convention)]
 pub trait Expression<T> {
+    /// The scope of the tables the expression references.
+    type Scope;
+
     /// Converts `self` into the expression it stands for.
-    fn into_expression(self) -> Expr<T>;
+    fn into_expression(self) -> Expr<T, Self::Scope>;
 
     /// Compares the expression with `value` using the SQL `=` operator.
     fn eq<V>(self, value: V) -> Expr<bool>
@@ -333,15 +386,19 @@ pub trait Expression<T> {
     }
 }
 
-impl<T> Expression<T> for Expr<T> {
-    fn into_expression(self) -> Expr<T> {
+impl<T, Scope> Expression<T> for Expr<T, Scope> {
+    type Scope = Scope;
+
+    fn into_expression(self) -> Expr<T, Scope> {
         self
     }
 }
 
 impl<C: Column> Expression<C::RustType> for C {
-    fn into_expression(self) -> Expr<C::RustType> {
-        Expr::<C::RustType, ()>::new(C::expr_kind())
+    type Scope = C::Table;
+
+    fn into_expression(self) -> Expr<C::RustType, C::Table> {
+        Expr::<C::RustType, C::Table>::new(C::expr_kind())
     }
 }
 
@@ -355,8 +412,11 @@ impl<C: Column> Expression<C::RustType> for C {
     note = "match a column declared as `String` or an `Expr<String>` built from one"
 )]
 pub trait StringExpression {
+    /// The scope of the tables the expression references.
+    type Scope;
+
     /// Converts `self` into the string expression it stands for.
-    fn into_string_expression(self) -> Expr<String>;
+    fn into_string_expression(self) -> Expr<String, Self::Scope>;
 
     /// Builds a case-sensitive `LIKE` pattern-matching predicate.
     fn like<V>(self, pattern: V) -> Expr<bool>
@@ -378,13 +438,17 @@ pub trait StringExpression {
 }
 
 impl<Scope> StringExpression for Expr<String, Scope> {
-    fn into_string_expression(self) -> Expr<String> {
-        Expr::<String, ()>::new(self.into_kind())
+    type Scope = Scope;
+
+    fn into_string_expression(self) -> Expr<String, Scope> {
+        self
     }
 }
 
 impl<C: Column<RustType = String>> StringExpression for C {
-    fn into_string_expression(self) -> Expr<String> {
-        Expr::<String, ()>::new(C::expr_kind())
+    type Scope = C::Table;
+
+    fn into_string_expression(self) -> Expr<String, C::Table> {
+        Expr::<String, C::Table>::new(C::expr_kind())
     }
 }

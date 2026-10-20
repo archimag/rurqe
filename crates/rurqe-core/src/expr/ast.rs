@@ -312,7 +312,7 @@ impl Expr<f64> {
     }
 }
 
-impl Expr<String> {
+impl<Scope> Expr<String, Scope> {
     /// Builds a case-sensitive `LIKE` pattern-matching predicate over this expression.
     ///
     /// In the pattern, `%` matches any sequence of characters and `_` matches a
