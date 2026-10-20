@@ -11,18 +11,20 @@
 //! ```
 //!
 //! [`GoldenEquation::verify`] materialises both sides in a disposable scratch
-//! state — an in-memory SQLite database, or a dedicated PostgreSQL scratch schema
-//! that is dropped afterwards — introspects the resulting catalogs, and compares
-//! them through the structural [`SchemaDiff`] of the drift verifier. Tables,
-//! columns, defaults, nullability, keys, and indexes that drifted are reported as
-//! an actionable diagnostic instead of surfacing as a production incident.
+//! state — an in-memory SQLite database, or an ephemeral PostgreSQL database that
+//! is dropped afterwards — introspects the resulting catalogs, and compares them
+//! through the structural [`SchemaDiff`] of the drift verifier. Tables, columns,
+//! defaults, nullability, keys, and indexes that drifted are reported as an
+//! actionable diagnostic instead of surfacing as a production incident.
 //!
 //! The scratch state starts from nothing: SQLite is materialised in memory and
-//! never touches the file behind the URL, while PostgreSQL builds both sides in a
-//! scratch schema of its own connection, steered through `search_path` and dropped
-//! once the verification ends. Neither side runs inside a transaction block, so
-//! statements such as `CREATE INDEX CONCURRENTLY` stay replayable, and the
-//! existing contents of the target database stay untouched. The tail passed to
+//! never touches the file behind the URL, while PostgreSQL creates a throwaway
+//! `rurqe_scratch_…` database on the server behind the URL, builds both sides
+//! inside it, and drops it once the verification ends. Neither side runs inside a
+//! transaction block, so statements such as `CREATE INDEX CONCURRENTLY` stay
+//! replayable, and the existing contents of the target database stay untouched.
+//! The connected role therefore needs the `CREATEDB` privilege for the duration of
+//! the verification. The tail passed to
 //! [`GoldenEquation::new`] is the active set of scripts: migrations pruned below
 //! the checkpoint are already folded into the base stage, so replaying them would
 //! collide with it. A project that still keeps the stage snapshot of its
@@ -60,7 +62,7 @@ use rurqe_migrate::stage::DeclarativeStage;
 use crate::cli::{connect, redact_database_url, Connection};
 use crate::drift::{compute_catalog_diff, SchemaDiff};
 use crate::introspect::{
-    detect_dialect, introspect_postgres_schema, introspect_sqlite, DatabaseDialect,
+    detect_dialect, introspect_postgres, introspect_sqlite, DatabaseDialect,
 };
 
 /// One labelled SQL fragment applied to a scratch state.
@@ -78,9 +80,9 @@ struct Script<'a> {
 enum SandboxKind {
     /// An in-memory SQLite database, so the file behind the URL is untouched.
     Sqlite(rusqlite::Connection),
-    /// A PostgreSQL scratch schema, dropped once the verification ends.
+    /// An ephemeral PostgreSQL database, dropped once the verification ends.
     ///
-    /// The sandbox carries a live client and a schema name, so it is boxed to
+    /// The sandbox carries live clients and a database name, so it is boxed to
     /// keep every value of this enum small regardless of the targeted engine.
     Postgres(Box<PostgresSandbox>),
 }
@@ -122,32 +124,50 @@ impl SandboxKind {
     }
 }
 
-/// Scratch state backed by a PostgreSQL scratch schema of a dedicated connection.
+/// Scratch state backed by an ephemeral PostgreSQL database of its own.
 ///
-/// Every verification owns a schema of its own and steers the replayed DDL into
-/// it through `search_path`, so both sides of the equation are materialised from
-/// nothing against a database of any size. Dropping the sandbox removes the
-/// schema together with everything built inside it.
+/// Every verification creates a freshly named database on the server behind the
+/// configured URL, connects to it, and replays both sides of the equation there.
+/// A database is a hard isolation boundary, so nothing the replay does can reach
+/// the user's data and no other session observes the scratch tables. Dropping the
+/// sandbox removes the database together with everything built inside it.
+///
+/// Creating a database is a server-level operation, so the connected role needs
+/// the `CREATEDB` privilege; a missing privilege is reported as an actionable
+/// message instead of an opaque driver error.
 struct PostgresSandbox {
-    client: postgres::Client,
-    schema: String,
+    /// The server-level connection the scratch database is created and dropped through.
+    admin: postgres::Client,
+    /// The replay connection, closed before the scratch database is dropped.
+    client: Option<postgres::Client>,
+    /// The generated name of the scratch database.
+    database: String,
 }
 
-/// Hands out a scratch schema name no concurrent verification can collide with.
-fn scratch_schema_name() -> String {
+/// Hands out a scratch database name no concurrent verification can collide with.
+///
+/// The process id and the monotonic counter separate the verifications of one
+/// process, while the nanosecond timestamp separates concurrent processes that
+/// happen to share a process id on different hosts.
+fn scratch_database_name() -> String {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+
     format!(
-        "rurqe_scratch_{}_{}",
+        "rurqe_scratch_{}_{nanos}_{}",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
 }
 
 impl PostgresSandbox {
-    /// Connects to `url` and opens the scratch schema the verification runs inside.
+    /// Connects to `url` and creates the scratch database the verification runs in.
     fn connect(url: &str) -> Result<Self, String> {
-        let mut client = match connect(url).map_err(|error| error.to_string())? {
+        let mut admin = match connect(url).map_err(|error| error.to_string())? {
             Connection::Postgres(client) => client,
             Connection::Sqlite(_) => {
                 return Err(format!(
@@ -157,44 +177,105 @@ impl PostgresSandbox {
             }
         };
 
-        // Schema names cannot be bound as parameters, but the generated name only
-        // carries ASCII digits and underscores, so rendering it is injection-free.
-        let schema = scratch_schema_name();
-        client
-            .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET search_path TO {schema};"
-            ))
-            .map_err(|error| format!("failed to open a scratch schema: {error}"))?;
+        let config: postgres::Config = url.parse().map_err(|error| {
+            format!(
+                "failed to read `{}` as a PostgreSQL connection URL: {error}",
+                redact_database_url(url)
+            )
+        })?;
 
-        Ok(Self { client, schema })
+        let database = scratch_database_name();
+        let create = format!("CREATE DATABASE \"{database}\"");
+
+        // Database names cannot be bound as parameters, but the generated name only
+        // carries ASCII alphanumerics and underscores, so rendering it is
+        // injection-free.
+        if let Err(error) = admin.batch_execute(&create) {
+            return Err(format!(
+                "failed to create the scratch database on `{}`: {error}; the connected role \
+                 needs the CREATEDB privilege",
+                redact_database_url(url)
+            ));
+        }
+
+        match attach_scratch_database(config, &database) {
+            Ok(client) => Ok(Self {
+                admin,
+                client: Some(client),
+                database,
+            }),
+            Err(message) => {
+                drop_scratch_database(&mut admin, &database);
+                Err(message)
+            }
+        }
     }
 
-    /// Applies one SQL script inside the scratch schema.
+    /// Applies one SQL script inside the scratch database.
     fn apply(&mut self, sql: &str) -> Result<(), String> {
-        self.client
+        self.replay_connection()?
             .batch_execute(sql)
             .map_err(|error| error.to_string())
     }
 
-    /// Introspects the scratch schema only, ignoring every other schema.
+    /// Introspects the `public` schema of the scratch database only.
     fn catalog(&mut self) -> Result<SchemaCatalog, String> {
-        introspect_postgres_schema(&mut self.client, &self.schema)
-            .map_err(|error| error.to_string())
+        introspect_postgres(self.replay_connection()?).map_err(|error| error.to_string())
+    }
+
+    /// The still-open replay connection.
+    fn replay_connection(&mut self) -> Result<&mut postgres::Client, String> {
+        self.client
+            .as_mut()
+            .ok_or_else(|| format!("the scratch database `{}` is already closed", self.database))
+    }
+}
+
+/// Opens the replay connection to the freshly created scratch database.
+///
+/// The replay is introspected through the `public` schema of the scratch
+/// database, so the search path is pinned instead of following a schema named
+/// after the connected role.
+fn attach_scratch_database(
+    mut config: postgres::Config,
+    database: &str,
+) -> Result<postgres::Client, String> {
+    config.dbname(database);
+
+    let mut client = config
+        .connect(postgres::NoTls)
+        .map_err(|error| format!("failed to connect to the scratch database: {error}"))?;
+
+    client
+        .batch_execute("SET search_path TO public")
+        .map_err(|error| format!("failed to prepare the scratch database: {error}"))?;
+
+    Ok(client)
+}
+
+/// Drops a scratch database, removing the data the verification built inside it.
+///
+/// `WITH (FORCE)` terminates sessions still attached to the database and needs
+/// PostgreSQL 13 or newer, so a plain drop is the fallback for older servers.
+fn drop_scratch_database(admin: &mut postgres::Client, database: &str) {
+    let forced = format!("DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)");
+
+    if admin.batch_execute(&forced).is_err() {
+        let plain = format!("DROP DATABASE IF EXISTS \"{database}\"");
+        let _ = admin.batch_execute(&plain);
     }
 }
 
 impl Drop for PostgresSandbox {
     fn drop(&mut self) {
-        // A failed replay may leave a transaction block open, so it is cancelled
-        // first; the schema itself is then dropped, because the verification never
-        // commits anything into the target database. The identifier is generated
-        // from ASCII digits and underscores only, which keeps it injection-free.
-        let _ = self.client.batch_execute("ROLLBACK");
+        // The replay connection is closed first, so a failed replay that left a
+        // transaction open cannot keep the database alive on servers without the
+        // `WITH (FORCE)` clause.
+        if let Some(client) = self.client.take() {
+            let _ = client.close();
+        }
 
-        let schema = &self.schema;
-        let _ = self.client.batch_execute(&format!(
-            "RESET search_path; DROP SCHEMA IF EXISTS {schema} CASCADE;"
-        ));
+        drop_scratch_database(&mut self.admin, &self.database);
     }
 }
 
