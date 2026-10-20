@@ -59,6 +59,7 @@ pub enum CliCommand {
         stage_dir: PathBuf,
         base_stage_dir: Option<PathBuf>,
         migrations_dir: PathBuf,
+        scratch_url: Option<String>,
         database_url: Option<String>,
     },
     StageCommit {
@@ -173,22 +174,22 @@ fn default_lock_path() -> PathBuf {
     PathBuf::from(DEFAULT_LOCK_PATH)
 }
 
-/// Resolves the database URL the golden equation is verified against.
+/// Resolves the scratch database URL the golden equation is verified against.
 ///
-/// The verification materialises both descriptions of the schema in a disposable
-/// scratch sandbox, so it never mutates the tagged database. The flag therefore
-/// falls back through `DATABASE_URL` and, when neither is supplied, degrades onto
-/// an in-memory SQLite sandbox. The fallback is announced on stderr, so a CI log
-/// never hides which engine was exercised.
+/// `--scratch-url` names the scratch database explicitly and wins over
+/// `--database-url`; both fall back through `DATABASE_URL` and, when nothing is
+/// supplied, degrade onto an in-memory SQLite sandbox. The verification only ever
+/// writes into the scratch database, so the fallback is announced on stderr and a
+/// CI log never hides which engine was exercised.
 pub(crate) fn resolve_equation_url(supplied: Option<String>) -> String {
     supplied
         .or_else(|| std::env::var("DATABASE_URL").ok())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
             eprintln!(
-                "warning: no database URL provided; verifying the golden equation against an \
-                 in-memory SQLite sandbox (pass `--database-url` or set DATABASE_URL to target a \
-                 SQLite file path, a PostgreSQL URL, or `:memory:` explicitly)"
+                "warning: no scratch database URL provided; verifying the golden equation \
+                 against an in-memory SQLite sandbox (pass `--scratch-url` or set DATABASE_URL to \
+                 target an empty SQLite file, a PostgreSQL URL, or `:memory:` explicitly)"
             );
             ":memory:".to_owned()
         })
@@ -475,6 +476,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut stage_dir = default_stage_dir();
     let mut base_stage_dir = None;
     let mut migrations_dir = default_migrations_dir();
+    let mut scratch_url = None;
     let mut database_url = None;
 
     let mut idx = 0;
@@ -486,6 +488,9 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
             }
             "--base-stage-dir" => {
                 base_stage_dir = Some(PathBuf::from(take_value(tokens, &mut idx, flag)?));
+            }
+            "--scratch-url" => {
+                scratch_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             "--migrations-dir" => {
                 migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
@@ -505,6 +510,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
         stage_dir,
         base_stage_dir,
         migrations_dir,
+        scratch_url,
         database_url,
     })
 }

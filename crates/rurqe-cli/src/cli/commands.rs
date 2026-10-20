@@ -118,6 +118,7 @@ COMMANDS:
 STAGE OPTIONS:
     stage init       --version <version> [--stage-dir <dir>] [--description <desc>]
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
+                     [--scratch-url <url>]
     stage commit     --version <version> [--lock-path <path>] [--checkpoint-path <path>]
     prune            --before <version> [--migrations-dir <dir>] [--dry-run]
 

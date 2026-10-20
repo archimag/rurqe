@@ -153,9 +153,10 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             stage_dir,
             base_stage_dir,
             migrations_dir,
+            scratch_url,
             database_url,
         } => {
-            let url = resolve_equation_url(database_url);
+            let url = resolve_equation_url(scratch_url.or(database_url));
             verify_stage(
                 &stage_dir,
                 base_stage_dir.as_deref(),

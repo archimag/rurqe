@@ -207,6 +207,7 @@ fn parses_stage_commands() {
             stage_dir: PathBuf::from("schema"),
             base_stage_dir: Some(PathBuf::from("schema-base")),
             migrations_dir: PathBuf::from("migrations"),
+            scratch_url: None,
             database_url: None,
         }
     );
@@ -226,6 +227,29 @@ fn parses_stage_commands() {
             database_url: None,
             lock_path: PathBuf::from("schema.lock"),
             checkpoint_path: PathBuf::from("checkpoint.toml"),
+        }
+    );
+}
+
+#[test]
+fn parses_an_explicit_scratch_url() {
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "verify".into(),
+        "--scratch-url".into(),
+        "postgres://db.internal:5432/scratch".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::StageVerify {
+            stage_dir: PathBuf::from("schema"),
+            base_stage_dir: None,
+            migrations_dir: PathBuf::from("migrations"),
+            scratch_url: Some("postgres://db.internal:5432/scratch".into()),
+            database_url: None,
         }
     );
 }

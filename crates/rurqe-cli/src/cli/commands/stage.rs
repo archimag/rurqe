@@ -7,7 +7,7 @@ use rurqe_migrate::runner::MigrationBackend;
 use rurqe_migrate::stage::{cold_start, DeclarativeStage, StageMarker};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::cli::CliError;
+use crate::cli::{redact_database_url, CliError};
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::GoldenEquation;
@@ -64,11 +64,14 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 }
 
 /// Verifies the golden equation between the declarative stage and the tail.
+///
+/// `scratch_url` names the scratch database both sides are materialised in; see
+/// [`GoldenEquation`](crate::stage::GoldenEquation) for its emptiness contract.
 pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
     migrations_dir: &Path,
-    database_url: &str,
+    scratch_url: &str,
 ) -> Result<(), CliError> {
     let stage = load_stage(stage_dir)?;
     let base = base_stage_dir.map(load_stage).transpose()?;
@@ -78,13 +81,14 @@ pub(crate) fn verify_stage(
         Some(base) => GoldenEquation::new(&stage, &tail).with_base(base),
         None => GoldenEquation::new(&stage, &tail),
     };
-    let report = equation.verify(database_url).map_err(cli_error)?;
+    let report = equation.verify(scratch_url).map_err(cli_error)?;
 
     println!(
-        "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {})",
+        "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {}, scratch `{}`)",
         stage_dir.display(),
         migrations_dir.display(),
-        report.stage_hash()
+        report.stage_hash(),
+        redact_database_url(scratch_url)
     );
     Ok(())
 }
