@@ -3,16 +3,18 @@
 #[cfg(feature = "deadpool-postgres")]
 mod deadpool_impl {
     use rurqe_core::expr::SqlVal;
-    use rurqe_core::query::{BuiltQuery, ExecutableQuery, ExecutionError};
-    use rurqe_core::row::FromRow;
+    use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 
-    use crate::backend::types::{execute_raw_async, fetch_all_async, fetch_raw_async, PgError};
+    use crate::backend::types::{execute_raw_async, fetch_raw_async, PgError};
 
     /// A `deadpool-postgres` pool executing RURQE queries asynchronously.
     ///
-    /// Each method checks a connection out of the pool, awaits the statement, and
-    /// returns the connection, so the helpers mirror the asynchronous methods of
-    /// [`PgAsyncConnection`](crate::PgAsyncConnection) without manual extraction.
+    /// The pool implements the asynchronous
+    /// [`AsyncQueryBackend`](rurqe_core::query::AsyncQueryBackend) contract, so
+    /// the `fetch_all`, `fetch_one`, `fetch_optional`, and `execute` helpers of
+    /// [`AsyncQueryBackendExt`](rurqe_core::query::AsyncQueryBackendExt) become
+    /// available directly on the pool: every call checks a connection out,
+    /// awaits the statement, and returns the connection to the pool.
     #[derive(Clone)]
     pub struct PgAsyncPool {
         pool: deadpool_postgres::Pool,
@@ -28,70 +30,19 @@ mod deadpool_impl {
         pub fn pool(&self) -> &deadpool_postgres::Pool {
             &self.pool
         }
+    }
 
-        /// Executes `query` and returns every produced row as ordered values.
-        pub async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
-            let client = self.pool.get().await.map_err(PgError::Pool)?;
+    impl AsyncQueryBackend for PgAsyncPool {
+        type Error = PgError;
+
+        async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+            let client = self.pool.get().await?;
             fetch_raw_async(&*client, query).await
         }
 
-        /// Executes `query` without decoding rows and returns the affected rows.
-        pub async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
-            let client = self.pool.get().await.map_err(PgError::Pool)?;
+        async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
+            let client = self.pool.get().await?;
             execute_raw_async(&*client, query).await
-        }
-
-        /// Executes `query` and decodes every produced row.
-        pub async fn fetch_all<Q>(&self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<PgError>>
-        where
-            Q: ExecutableQuery,
-            Q::Row: FromRow,
-        {
-            let client = self
-                .pool
-                .get()
-                .await
-                .map_err(|error| ExecutionError::Backend(PgError::Pool(error)))?;
-            fetch_all_async(&*client, query).await
-        }
-
-        /// Executes `query` and decodes at most one row.
-        pub async fn fetch_optional<Q>(
-            &self,
-            query: &Q,
-        ) -> Result<Option<Q::Row>, ExecutionError<PgError>>
-        where
-            Q: ExecutableQuery,
-            Q::Row: FromRow,
-        {
-            let rows = self.fetch_all(query).await?;
-            match rows.len() {
-                0 => Ok(None),
-                1 => Ok(rows.into_iter().next()),
-                count => Err(ExecutionError::MultipleRows { count }),
-            }
-        }
-
-        /// Executes `query` and decodes exactly one row.
-        pub async fn fetch_one<Q>(&self, query: &Q) -> Result<Q::Row, ExecutionError<PgError>>
-        where
-            Q: ExecutableQuery,
-            Q::Row: FromRow,
-        {
-            self.fetch_optional(query)
-                .await?
-                .ok_or(ExecutionError::NoRows)
-        }
-
-        /// Executes `query` and returns the number of affected rows.
-        pub async fn execute<Q>(&self, query: &Q) -> Result<u64, ExecutionError<PgError>>
-        where
-            Q: ExecutableQuery,
-        {
-            let built = query.build_query();
-            self.execute_raw(&built)
-                .await
-                .map_err(ExecutionError::Backend)
         }
     }
 }

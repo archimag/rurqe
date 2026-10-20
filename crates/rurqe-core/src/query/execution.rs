@@ -253,6 +253,100 @@ pub trait QueryBackendExt: QueryBackend {
 
 impl<B: QueryBackend + ?Sized> QueryBackendExt for B {}
 
+/// An asynchronous database driver capable of executing rendered queries.
+///
+/// This is the asynchronous counterpart of [`QueryBackend`]: the adapter
+/// translates the typed [`crate::expr::SqlVal`] parameters into native driver
+/// values and awaits the statement. The trait deliberately exposes only the two
+/// raw entry points; decoding lives in [`AsyncQueryBackendExt`], so every
+/// adapter shares a single implementation of `fetch_all`, `fetch_optional`,
+/// `fetch_one`, and `execute`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot execute RURQE queries asynchronously",
+    label = "unsupported asynchronous query backend",
+    note = "asynchronous driver adapters implement `AsyncQueryBackend`; `AsyncQueryBackendExt` is then available for free"
+)]
+#[allow(async_fn_in_trait)]
+pub trait AsyncQueryBackend {
+    /// The error raised by the driver.
+    type Error;
+
+    /// Executes `query` and returns every produced row as ordered values.
+    async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error>;
+
+    /// Executes `query` without decoding rows and returns the affected row count.
+    async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, Self::Error>;
+}
+
+/// Asynchronous execution helpers decoding query rows through [`FromRow`].
+///
+/// The helpers mirror [`QueryBackendExt`] for [`AsyncQueryBackend`] adapters,
+/// so an asynchronous connection, transaction, or pool never re-implements the
+/// single-row policy.
+#[allow(async_fn_in_trait)]
+pub trait AsyncQueryBackendExt: AsyncQueryBackend {
+    /// Executes `query` and decodes every produced row.
+    async fn fetch_all<Q>(&self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        let built = query.build_query();
+        let rows = self
+            .fetch_raw(&built)
+            .await
+            .map_err(ExecutionError::Backend)?;
+        rows.iter()
+            .enumerate()
+            .map(|(row_index, values)| {
+                Q::Row::try_from_row(values)
+                    .map_err(|source| ExecutionError::RowDecode { row_index, source })
+            })
+            .collect()
+    }
+
+    /// Executes `query` and decodes at most one row.
+    async fn fetch_optional<Q>(
+        &self,
+        query: &Q,
+    ) -> Result<Option<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        let rows = self.fetch_all(query).await?;
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(rows.into_iter().next()),
+            count => Err(ExecutionError::MultipleRows { count }),
+        }
+    }
+
+    /// Executes `query` and decodes exactly one row.
+    async fn fetch_one<Q>(&self, query: &Q) -> Result<Q::Row, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        self.fetch_optional(query)
+            .await?
+            .ok_or(ExecutionError::NoRows)
+    }
+
+    /// Executes `query` and returns the number of affected rows.
+    async fn execute<Q>(&self, query: &Q) -> Result<u64, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+    {
+        let built = query.build_query();
+        self.execute_raw(&built)
+            .await
+            .map_err(ExecutionError::Backend)
+    }
+}
+
+impl<B: AsyncQueryBackend + ?Sized> AsyncQueryBackendExt for B {}
+
 /// The isolation level a transaction runs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IsolationLevel {

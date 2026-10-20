@@ -5,8 +5,7 @@ use std::fmt;
 
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
-use rurqe_core::query::{BuiltQuery, ExecutableQuery, ExecutionError};
-use rurqe_core::row::FromRow;
+use rurqe_core::query::BuiltQuery;
 use tokio_postgres::types::{IsNull, ToSql, Type};
 use tokio_postgres::Row;
 
@@ -139,29 +138,6 @@ where
         .map(|param| param as &(dyn ToSql + Sync))
         .collect();
     Ok(client.execute(query.sql.as_str(), &refs).await?)
-}
-
-/// Executes `query` through an asynchronous client and decodes every row.
-pub(crate) async fn fetch_all_async<Q, C>(
-    client: &C,
-    query: &Q,
-) -> Result<Vec<Q::Row>, ExecutionError<PgError>>
-where
-    C: tokio_postgres::GenericClient,
-    Q: ExecutableQuery,
-    Q::Row: FromRow,
-{
-    let built = query.build_query();
-    let rows = fetch_raw_async(client, &built)
-        .await
-        .map_err(ExecutionError::Backend)?;
-    rows.iter()
-        .enumerate()
-        .map(|(row_index, values)| {
-            Q::Row::try_from_row(values)
-                .map_err(|source| ExecutionError::RowDecode { row_index, source })
-        })
-        .collect()
 }
 
 /// Executes `query` through a synchronous client without decoding rows.

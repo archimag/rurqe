@@ -38,8 +38,8 @@ mod tests;
 
 pub use self::cte::{cte, cte_named, lateral, Cte, Lateral};
 pub use self::execution::{
-    ExecutableQuery, ExecutionError, IsolationLevel, QueryBackend, QueryBackendExt,
-    TransactionBackend, TransactionContext,
+    AsyncQueryBackend, AsyncQueryBackendExt, ExecutableQuery, ExecutionError, IsolationLevel,
+    QueryBackend, QueryBackendExt, TransactionBackend, TransactionContext,
 };
 pub use self::group_by::{
     ColumnInGroupBy, EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupSet, GroupedQuery,

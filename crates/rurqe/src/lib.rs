@@ -647,7 +647,10 @@ pub mod prelude {
         StringExpression, Subquery, SubqueryOp,
     };
 
-    pub use rurqe_core::query::{JoinKind, Joined, LeftJoined, Nullable, SetOpKind, TableScope};
+    pub use rurqe_core::query::{
+        AsyncQueryBackend, AsyncQueryBackendExt, JoinKind, Joined, LeftJoined, Nullable, SetOpKind,
+        TableScope,
+    };
 
     pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};
 
