@@ -17,6 +17,7 @@ mod connection;
 mod tests;
 
 pub use args::{parse_args, redact_database_url, CliCommand, CliError};
+pub(crate) use args::resolve_equation_url;
 pub(crate) use connection::{connect, Connection};
 
 use self::commands::{
@@ -154,7 +155,7 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             migrations_dir,
             database_url,
         } => {
-            let url = database_url.unwrap_or_else(|| ":memory:".to_owned());
+            let url = resolve_equation_url(database_url);
             verify_stage(
                 &stage_dir,
                 base_stage_dir.as_deref(),

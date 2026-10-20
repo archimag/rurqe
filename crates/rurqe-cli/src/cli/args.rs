@@ -173,6 +173,27 @@ fn default_lock_path() -> PathBuf {
     PathBuf::from(DEFAULT_LOCK_PATH)
 }
 
+/// Resolves the database URL the golden equation is verified against.
+///
+/// The verification materialises both descriptions of the schema in a disposable
+/// scratch sandbox, so it never mutates the tagged database. The flag therefore
+/// falls back through `DATABASE_URL` and, when neither is supplied, degrades onto
+/// an in-memory SQLite sandbox. The fallback is announced on stderr, so a CI log
+/// never hides which engine was exercised.
+pub(crate) fn resolve_equation_url(supplied: Option<String>) -> String {
+    supplied
+        .or_else(|| std::env::var("DATABASE_URL").ok())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "warning: no database URL provided; verifying the golden equation against an \
+                 in-memory SQLite sandbox (pass `--database-url` or set DATABASE_URL to target a \
+                 SQLite file path, a PostgreSQL URL, or `:memory:` explicitly)"
+            );
+            ":memory:".to_owned()
+        })
+}
+
 /// Borrows the value following the flag at `*idx`, advancing past both.
 ///
 /// A missing value is reported against the flag itself instead of degrading

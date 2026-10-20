@@ -162,6 +162,18 @@ fn redacts_credentials_from_connection_urls() {
 }
 
 #[test]
+fn an_explicit_equation_url_is_used_verbatim() {
+    assert_eq!(
+        resolve_equation_url(Some("postgres://db.internal:5432/app".to_owned())),
+        "postgres://db.internal:5432/app"
+    );
+    assert_eq!(
+        resolve_equation_url(Some(":memory:".to_owned())),
+        ":memory:"
+    );
+}
+
+#[test]
 fn parses_stage_commands() {
     let init = parse_args(&[
         "rurqe".into(),
