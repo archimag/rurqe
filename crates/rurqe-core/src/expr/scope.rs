@@ -53,90 +53,55 @@ impl_tuple_merge_scope!(T1, T2, T3, T4, T5);
 impl_tuple_merge_scope!(T1, T2, T3, T4, T5, T6);
 impl_tuple_merge_scope!(T1, T2, T3, T4, T5, T6, T7);
 
-// A right operand spanning several tables folds into the left scope one table
-// at a time, so combining two compound predicates keeps every referenced table.
-impl<L, A: Table, B: Table> MergeScope<(A, B)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-{
-    type Output = Merged<Merged<L, A>, B>;
+// A right operand spanning several tables is appended to the left scope as a
+// whole, so combining two compound predicates keeps every referenced table.
+//
+// Every combination of a supported left scope and a right scope of up to four
+// tables is spelled out instead of being folded through a recursive bound: a
+// recursive definition makes the compiler diverge while it probes a method call
+// whose argument types are not inferred yet, which surfaces as a trait-selection
+// overflow at the call site rather than as a diagnostic about the query.
+
+macro_rules! impl_empty_left_merge_scope {
+    ($($right:ident),+) => {
+        impl<$($right: Table),+> MergeScope<($($right,)+)> for () {
+            type Output = ($($right,)+);
+        }
+    };
 }
 
-impl<L, A: Table, B: Table, C: Table> MergeScope<(A, B, C)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-    Merged<Merged<L, A>, B>: MergeScope<C>,
-{
-    type Output = Merged<Merged<Merged<L, A>, B>, C>;
+macro_rules! impl_table_left_merge_scope {
+    ($($right:ident),+) => {
+        impl<L: Table, $($right: Table),+> MergeScope<($($right,)+)> for L {
+            type Output = (L, $($right,)+);
+        }
+    };
 }
 
-impl<L, A: Table, B: Table, C: Table, D: Table> MergeScope<(A, B, C, D)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-    Merged<Merged<L, A>, B>: MergeScope<C>,
-    Merged<Merged<Merged<L, A>, B>, C>: MergeScope<D>,
-{
-    type Output = Merged<Merged<Merged<Merged<L, A>, B>, C>, D>;
+macro_rules! impl_tuple_left_merge_scope {
+    ([$($left:ident),+] [$($right:ident),+]) => {
+        impl<$($left: Table,)+ $($right: Table),+> MergeScope<($($right,)+)>
+            for ($($left,)+)
+        {
+            type Output = ($($left,)+ $($right,)+);
+        }
+    };
 }
 
-impl<L, A: Table, B: Table, C: Table, D: Table, E: Table> MergeScope<(A, B, C, D, E)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-    Merged<Merged<L, A>, B>: MergeScope<C>,
-    Merged<Merged<Merged<L, A>, B>, C>: MergeScope<D>,
-    Merged<Merged<Merged<Merged<L, A>, B>, C>, D>: MergeScope<E>,
-{
-    type Output = Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>;
+macro_rules! impl_merged_tuple_scopes {
+    ($($right:ident),+) => {
+        impl_empty_left_merge_scope!($($right),+);
+        impl_table_left_merge_scope!($($right),+);
+        impl_tuple_left_merge_scope!([T1] [$($right),+]);
+        impl_tuple_left_merge_scope!([T1, T2] [$($right),+]);
+        impl_tuple_left_merge_scope!([T1, T2, T3] [$($right),+]);
+    };
 }
 
-impl<L, A: Table, B: Table, C: Table, D: Table, E: Table, F: Table>
-    MergeScope<(A, B, C, D, E, F)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-    Merged<Merged<L, A>, B>: MergeScope<C>,
-    Merged<Merged<Merged<L, A>, B>, C>: MergeScope<D>,
-    Merged<Merged<Merged<Merged<L, A>, B>, C>, D>: MergeScope<E>,
-    Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>: MergeScope<F>,
-{
-    type Output = Merged<Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>, F>;
-}
-
-impl<L, A: Table, B: Table, C: Table, D: Table, E: Table, F: Table, G: Table>
-    MergeScope<(A, B, C, D, E, F, G)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-    Merged<Merged<L, A>, B>: MergeScope<C>,
-    Merged<Merged<Merged<L, A>, B>, C>: MergeScope<D>,
-    Merged<Merged<Merged<Merged<L, A>, B>, C>, D>: MergeScope<E>,
-    Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>: MergeScope<F>,
-    Merged<Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>, F>: MergeScope<G>,
-{
-    type Output = Merged<Merged<Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>, F>, G>;
-}
-
-impl<L, A: Table, B: Table, C: Table, D: Table, E: Table, F: Table, G: Table, H: Table>
-    MergeScope<(A, B, C, D, E, F, G, H)> for L
-where
-    L: MergeScope<A>,
-    Merged<L, A>: MergeScope<B>,
-    Merged<Merged<L, A>, B>: MergeScope<C>,
-    Merged<Merged<Merged<L, A>, B>, C>: MergeScope<D>,
-    Merged<Merged<Merged<Merged<L, A>, B>, C>, D>: MergeScope<E>,
-    Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>: MergeScope<F>,
-    Merged<Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>, F>: MergeScope<G>,
-    Merged<Merged<Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>, F>, G>: MergeScope<H>,
-{
-    type Output = Merged<
-        Merged<Merged<Merged<Merged<Merged<Merged<Merged<L, A>, B>, C>, D>, E>, F>, G>,
-        H,
-    >;
-}
+impl_merged_tuple_scopes!(R1);
+impl_merged_tuple_scopes!(R1, R2);
+impl_merged_tuple_scopes!(R1, R2, R3);
+impl_merged_tuple_scopes!(R1, R2, R3, R4);
 
 #[cfg(test)]
 mod tests {

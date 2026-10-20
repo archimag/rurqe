@@ -4,14 +4,20 @@
 //! [`ExprKind`] instead of a bare identifier, so a column addressed through a
 //! table alias keeps its `"alias"."column"` reference inside `PARTITION BY`,
 //! `ORDER BY`, `LAG`, and `LEAD` just like it does in the projection list.
+//!
+//! Beside the rendered clauses, a specification and the window expressions built
+//! over it carry the tables their columns belong to. A window reading a table the
+//! query does not select from is therefore rejected at the call site instead of
+//! rendering a statement the database cannot resolve.
 
-use core::fmt::Write;
+use core::fmt::{self, Write};
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{render_expr, ExprKind, SqlVal};
-use crate::schema::{At, Column};
+use crate::expr::{render_expr, ExprKind, MergeScope, Merged, SqlVal};
+use crate::schema::{Column, ExprInScope};
 
+use super::scope::ScopePositions;
 use super::select::OrderDirection;
 use super::selection::{SelectTarget, SelectTargetInScope};
 
@@ -22,11 +28,16 @@ use super::selection::{SelectTarget, SelectTargetInScope};
     note = "partition by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
 )]
 pub trait PartitionBy {
+    /// The tables the partitioned columns belong to.
+    type Scope;
+
     /// Appends the partition column expressions to `out`.
     fn push_partition_by(&self, out: &mut Vec<ExprKind>);
 }
 
 impl<C: Column> PartitionBy for C {
+    type Scope = C::Table;
+
     fn push_partition_by(&self, out: &mut Vec<ExprKind>) {
         out.push(C::expr_kind());
     }
@@ -35,6 +46,8 @@ impl<C: Column> PartitionBy for C {
 macro_rules! impl_partition_by {
     ($($column:ident),+) => {
         impl<$($column: Column),+> PartitionBy for ($($column,)+) {
+            type Scope = ($($column::Table,)+);
+
             fn push_partition_by(&self, out: &mut Vec<ExprKind>) {
                 $(out.push($column::expr_kind());)+
             }
@@ -52,13 +65,52 @@ impl_partition_by!(C1, C2, C3, C4, C5, C6, C7);
 impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 
 /// A specification of an `OVER (...)` window partition and ordering.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct WindowSpec {
+///
+/// The specification carries the tables `Scope` its partitioned and ordered
+/// columns belong to, so a window function evaluated over it is only projectable
+/// from a query selecting from those tables.
+pub struct WindowSpec<Scope = ()> {
     partition_by: Vec<ExprKind>,
     order_by: Vec<(ExprKind, OrderDirection)>,
+    _scope: PhantomData<fn() -> Scope>,
 }
 
-impl WindowSpec {
+impl<Scope> Default for WindowSpec<Scope> {
+    fn default() -> Self {
+        Self {
+            partition_by: Vec::new(),
+            order_by: Vec::new(),
+            _scope: PhantomData,
+        }
+    }
+}
+
+impl<Scope> Clone for WindowSpec<Scope> {
+    fn clone(&self) -> Self {
+        Self {
+            partition_by: self.partition_by.clone(),
+            order_by: self.order_by.clone(),
+            _scope: PhantomData,
+        }
+    }
+}
+
+impl<Scope> PartialEq for WindowSpec<Scope> {
+    fn eq(&self, other: &Self) -> bool {
+        self.partition_by == other.partition_by && self.order_by == other.order_by
+    }
+}
+
+impl<Scope> fmt::Debug for WindowSpec<Scope> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowSpec")
+            .field("partition_by", &self.partition_by)
+            .field("order_by", &self.order_by)
+            .finish()
+    }
+}
+
+impl<Scope> WindowSpec<Scope> {
     /// Creates an empty window specification (`OVER ()`).
     pub fn new() -> Self {
         Self::default()
@@ -69,26 +121,50 @@ impl WindowSpec {
         Self::default()
     }
 
-    /// Partitions the window by `partition`.
-    pub fn partition_by<P: PartitionBy>(mut self, partition: P) -> Self {
-        partition.push_partition_by(&mut self.partition_by);
-        self
+    /// Partitions the window by `partition`, extending the scope by its tables.
+    pub fn partition_by<P>(self, partition: P) -> WindowSpec<Merged<Scope, P::Scope>>
+    where
+        P: PartitionBy,
+        Scope: MergeScope<P::Scope>,
+    {
+        let mut partition_by = self.partition_by;
+        partition.push_partition_by(&mut partition_by);
+        WindowSpec {
+            partition_by,
+            order_by: self.order_by,
+            _scope: PhantomData,
+        }
     }
 
     /// Appends an ordering criterion with `direction` to the window.
-    pub fn order_by<C: Column>(mut self, _col: C, direction: OrderDirection) -> Self {
+    pub fn order_by<C: Column>(
+        mut self,
+        _col: C,
+        direction: OrderDirection,
+    ) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
         self.order_by.push((C::expr_kind(), direction));
-        self
+        self.retype()
     }
 
     /// Appends an ascending ordering criterion for column `col`.
-    pub fn order_by_asc<C: Column>(self, col: C) -> Self {
-        self.order_by(col, OrderDirection::Asc)
+    pub fn order_by_asc<C: Column>(mut self, _col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.order_by.push((C::expr_kind(), OrderDirection::Asc));
+        self.retype()
     }
 
     /// Appends a descending ordering criterion for column `col`.
-    pub fn order_by_desc<C: Column>(self, col: C) -> Self {
-        self.order_by(col, OrderDirection::Desc)
+    pub fn order_by_desc<C: Column>(mut self, _col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.order_by.push((C::expr_kind(), OrderDirection::Desc));
+        self.retype()
     }
 
     /// Renders the window contents inside `OVER (...)`.
@@ -119,41 +195,71 @@ impl WindowSpec {
             }
         }
     }
+
+    /// Re-types the specification to `NewScope` while keeping the rendered clauses.
+    ///
+    /// The builders extend the clauses in place and only change the scope marker,
+    /// so the transition between scopes is expressed exactly once.
+    fn retype<NewScope>(self) -> WindowSpec<NewScope> {
+        WindowSpec {
+            partition_by: self.partition_by,
+            order_by: self.order_by,
+            _scope: PhantomData,
+        }
+    }
+
+    /// Drops the scope marker while keeping the rendered clauses.
+    ///
+    /// A window expression carries the union of its own scope and the scope of
+    /// its specification, so the stored specification does not need to repeat it.
+    fn without_scope(self) -> WindowSpec<()> {
+        self.retype()
+    }
 }
 
 /// Entry point for constructing window specifications.
 pub struct Window;
 
 impl Window {
-    /// Creates a new empty window specification.
+    /// Creates a window specification referencing no table.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> WindowSpec {
-        WindowSpec::new()
+    pub fn new() -> WindowSpec<()> {
+        WindowSpec::default()
     }
 
-    /// Creates a new empty window specification.
-    pub fn empty() -> WindowSpec {
-        WindowSpec::empty()
+    /// Creates a window specification referencing no table.
+    pub fn empty() -> WindowSpec<()> {
+        WindowSpec::default()
     }
 
     /// Starts a window specification partitioned by `partition`.
-    pub fn partition_by<P: PartitionBy>(partition: P) -> WindowSpec {
-        WindowSpec::empty().partition_by(partition)
+    pub fn partition_by<P: PartitionBy>(partition: P) -> WindowSpec<P::Scope> {
+        let mut partition_by = Vec::new();
+        partition.push_partition_by(&mut partition_by);
+        WindowSpec {
+            partition_by,
+            order_by: Vec::new(),
+            _scope: PhantomData,
+        }
     }
 
     /// Starts a window specification ordered by `col` with `direction`.
-    pub fn order_by<C: Column>(col: C, direction: OrderDirection) -> WindowSpec {
-        WindowSpec::empty().order_by(col, direction)
+    pub fn order_by<C: Column>(_col: C, direction: OrderDirection) -> WindowSpec<C::Table> {
+        WindowSpec {
+            partition_by: Vec::new(),
+            order_by: vec![(C::expr_kind(), direction)],
+            _scope: PhantomData,
+        }
     }
 
     /// Starts a window specification with ascending ordering for `col`.
-    pub fn order_by_asc<C: Column>(col: C) -> WindowSpec {
-        WindowSpec::empty().order_by_asc(col)
+    pub fn order_by_asc<C: Column>(col: C) -> WindowSpec<C::Table> {
+        Window::order_by(col, OrderDirection::Asc)
     }
 
     /// Starts a window specification with descending ordering for `col`.
-    pub fn order_by_desc<C: Column>(col: C) -> WindowSpec {
-        WindowSpec::empty().order_by_desc(col)
+    pub fn order_by_desc<C: Column>(col: C) -> WindowSpec<C::Table> {
+        Window::order_by(col, OrderDirection::Desc)
     }
 }
 
@@ -185,19 +291,50 @@ pub enum WindowExprKind {
 }
 
 /// A typed window expression evaluated with an `OVER (...)` clause.
-#[derive(Debug, Clone, PartialEq)]
-pub struct WindowExpr<T> {
+///
+/// The expression carries the tables `Scope` referenced by the wrapped
+/// expression and by its window specification.
+pub struct WindowExpr<T, Scope = ()> {
     kind: WindowExprKind,
-    window: WindowSpec,
-    _result: PhantomData<fn() -> T>,
+    window: WindowSpec<()>,
+    _result: PhantomData<fn() -> (T, Scope)>,
 }
 
-impl<T> WindowExpr<T> {
-    /// Creates a window expression wrapping `kind` over `window`.
-    pub fn from_expr(kind: ExprKind, window: WindowSpec) -> Self {
+impl<T, Scope> Clone for WindowExpr<T, Scope> {
+    fn clone(&self) -> Self {
         Self {
-            kind: WindowExprKind::Expr(kind),
-            window,
+            kind: self.kind.clone(),
+            window: self.window.clone(),
+            _result: PhantomData,
+        }
+    }
+}
+
+impl<T, Scope> PartialEq for WindowExpr<T, Scope> {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.window == other.window
+    }
+}
+
+impl<T, Scope> fmt::Debug for WindowExpr<T, Scope> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowExpr")
+            .field("kind", &self.kind)
+            .field("window", &self.window)
+            .finish()
+    }
+}
+
+impl<T, Scope> WindowExpr<T, Scope> {
+    /// Creates a window expression of scope `Scope` over `window`.
+    ///
+    /// The caller is responsible for `Scope` covering both the wrapped
+    /// expression and the window specification, which is exactly what the
+    /// `over` builders of the expressions and of `LAG` / `LEAD` arrange for.
+    pub(crate) fn of_window<WinScope>(kind: WindowExprKind, window: WindowSpec<WinScope>) -> Self {
+        Self {
+            kind,
+            window: window.without_scope(),
             _result: PhantomData,
         }
     }
@@ -234,7 +371,19 @@ impl<T> WindowExpr<T> {
     }
 }
 
-impl<T: 'static + Send + Sync> SelectTarget for WindowExpr<T> {
+impl<T> WindowExpr<T, ()> {
+    /// Creates a window expression wrapping the expression `kind` over `window`.
+    ///
+    /// The window must reference no table, so a specification partitioned or
+    /// ordered by a column is wrapped through the `over` builders instead.
+    pub fn from_expr(kind: ExprKind, window: WindowSpec<()>) -> Self {
+        Self::of_window(WindowExprKind::Expr(kind), window)
+    }
+}
+
+impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget
+    for WindowExpr<T, Scope>
+{
     type RustType = T;
 
     fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
@@ -242,7 +391,10 @@ impl<T: 'static + Send + Sync> SelectTarget for WindowExpr<T> {
     }
 }
 
-impl<Tables, T> SelectTargetInScope<Tables, At<0>> for WindowExpr<T> {
+impl<Tables, T, Scope, P> SelectTargetInScope<Tables, P> for WindowExpr<T, Scope>
+where
+    Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+{
     type Output = T;
 }
 
@@ -263,25 +415,24 @@ impl<T> WindowFn<T> {
     }
 
     /// Evaluates this window function over `window`.
-    pub fn over(self, window: WindowSpec) -> WindowExpr<T> {
-        WindowExpr {
-            kind: self.kind,
-            window,
-            _result: PhantomData,
-        }
+    pub fn over<WinScope>(self, window: WindowSpec<WinScope>) -> WindowExpr<T, WinScope> {
+        WindowExpr::of_window(self.kind, window)
     }
 }
 
 /// A `LAG` or `LEAD` window function builder with optional offset configuration.
+///
+/// The builder carries the table of the column it reads as `Scope`, which the
+/// resulting window expression merges with the scope of its specification.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LagLeadFn<T> {
+pub struct LagLeadFn<T, Scope = ()> {
     is_lag: bool,
     column: ExprKind,
     offset: Option<u32>,
-    _result: PhantomData<fn() -> T>,
+    _result: PhantomData<fn() -> (T, Scope)>,
 }
 
-impl<T> LagLeadFn<T> {
+impl<T, Scope> LagLeadFn<T, Scope> {
     /// Sets the row offset (defaults to 1 if omitted).
     pub fn offset(mut self, offset: u32) -> Self {
         self.offset = Some(offset);
@@ -289,7 +440,13 @@ impl<T> LagLeadFn<T> {
     }
 
     /// Evaluates this function over `window`.
-    pub fn over(self, window: WindowSpec) -> WindowExpr<T> {
+    pub fn over<WinScope>(
+        self,
+        window: WindowSpec<WinScope>,
+    ) -> WindowExpr<T, Merged<Scope, WinScope>>
+    where
+        Scope: MergeScope<WinScope>,
+    {
         let kind = if self.is_lag {
             WindowExprKind::Lag {
                 column: self.column,
@@ -301,11 +458,7 @@ impl<T> LagLeadFn<T> {
                 offset: self.offset,
             }
         };
-        WindowExpr {
-            kind,
-            window,
-            _result: PhantomData,
-        }
+        WindowExpr::of_window(kind, window)
     }
 }
 
@@ -325,7 +478,7 @@ pub fn dense_rank() -> WindowFn<i64> {
 }
 
 /// Starts a `LAG(C)` window function builder for column `C`.
-pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
+pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table> {
     LagLeadFn {
         is_lag: true,
         column: C::expr_kind(),
@@ -335,7 +488,7 @@ pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
 }
 
 /// Starts a `LEAD(C)` window function builder for column `C`.
-pub fn lead<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
+pub fn lead<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table> {
     LagLeadFn {
         is_lag: false,
         column: C::expr_kind(),

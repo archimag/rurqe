@@ -234,8 +234,8 @@ impl<GroupByCols, T: 'static + Send + Sync>
     type Output = T;
 }
 
-impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>>
-    for WindowExpr<T>
+impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
+    GroupedSelectTarget<GroupByCols, At<0>> for WindowExpr<T, Scope>
 {
     type Output = T;
 }

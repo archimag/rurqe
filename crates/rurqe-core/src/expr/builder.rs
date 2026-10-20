@@ -5,6 +5,7 @@ use core::marker::PhantomData;
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::ops::IntoExpr;
 use super::render::{parse_raw_sql, RawSqlError};
+use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::{Column, Table};
 
@@ -231,18 +232,37 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     }
 
     /// Builds a window expression from this expression over `window`.
-    pub fn over(self, window: crate::query::WindowSpec) -> crate::query::WindowExpr<T> {
-        crate::query::WindowExpr::from_expr(self.kind, window)
+    ///
+    /// The produced expression references the tables of both this expression and
+    /// the window specification, so a window reading a table the query does not
+    /// select from is rejected at the call site.
+    pub fn over<WinScope>(
+        self,
+        window: crate::query::WindowSpec<WinScope>,
+    ) -> crate::query::WindowExpr<T, Merged<Scope, WinScope>>
+    where
+        Scope: MergeScope<WinScope>,
+    {
+        crate::query::WindowExpr::of_window(
+            crate::query::WindowExprKind::Expr(self.kind),
+            window,
+        )
     }
 
     /// Starts a `LAG(C)` window function builder for column `C`.
-    pub fn lag<C: Column<RustType = T>>(_col: C) -> crate::query::LagLeadFn<Option<T>> {
-        crate::query::lag(_col)
+    ///
+    /// The builder carries the table of `C`, which the resulting window
+    /// expression merges with the scope of its `OVER` specification.
+    pub fn lag<C: Column<RustType = T>>(col: C) -> crate::query::LagLeadFn<Option<T>, C::Table> {
+        crate::query::lag(col)
     }
 
     /// Starts a `LEAD(C)` window function builder for column `C`.
-    pub fn lead<C: Column<RustType = T>>(_col: C) -> crate::query::LagLeadFn<Option<T>> {
-        crate::query::lead(_col)
+    ///
+    /// The builder carries the table of `C`, which the resulting window
+    /// expression merges with the scope of its `OVER` specification.
+    pub fn lead<C: Column<RustType = T>>(col: C) -> crate::query::LagLeadFn<Option<T>, C::Table> {
+        crate::query::lead(col)
     }
 }
 
