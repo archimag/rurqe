@@ -4,7 +4,7 @@ use core::fmt;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
-use super::builder::Expr;
+use super::builder::{Aggregate, Expr};
 use super::ops::IntoExpr;
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::Column;
@@ -286,16 +286,22 @@ impl Expr<i64> {
     }
 
     /// Builds a `COUNT(*)` expression.
-    pub fn count_all() -> Self {
-        Self::new(ExprKind::Aggregate {
+    ///
+    /// The produced expression carries the [`Aggregate`] marker, so it stays
+    /// projectable from a grouped query.
+    pub fn count_all() -> Expr<i64, (), Aggregate> {
+        Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             arg: None,
         })
     }
 
     /// Builds a `COUNT(C)` expression for column `C`.
-    pub fn count<C: Column>() -> Self {
-        Self::new(ExprKind::Aggregate {
+    ///
+    /// The produced expression carries the [`Aggregate`] marker, so it stays
+    /// projectable from a grouped query even when `C` is not grouped.
+    pub fn count<C: Column>() -> Expr<i64, (), Aggregate> {
+        Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })
@@ -304,15 +310,18 @@ impl Expr<i64> {
 
 impl Expr<f64> {
     /// Builds an `AVG(C)` expression for column `C`.
-    pub fn avg<C: Column>() -> Self {
-        Self::new(ExprKind::Aggregate {
+    ///
+    /// The produced expression carries the [`Aggregate`] marker, so it stays
+    /// projectable from a grouped query even when `C` is not grouped.
+    pub fn avg<C: Column>() -> Expr<f64, (), Aggregate> {
+        Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
             arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })
     }
 }
 
-impl<Scope> Expr<String, Scope> {
+impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     /// Builds a case-sensitive `LIKE` pattern-matching predicate over this expression.
     ///
     /// In the pattern, `%` matches any sequence of characters and `_` matches a

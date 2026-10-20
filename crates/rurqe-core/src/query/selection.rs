@@ -39,7 +39,9 @@ impl<C: Column> SelectTarget for C {
     }
 }
 
-impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget for Expr<T, Scope> {
+impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
+    for Expr<T, Scope, Aggr>
+{
     type RustType = T;
 
     fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
@@ -133,7 +135,7 @@ where
     type Output = <C as ColumnInScope<Tables, P>>::Output;
 }
 
-impl<Tables, T, Scope, P> SelectTargetInScope<Tables, P> for Expr<T, Scope>
+impl<Tables, T, Scope, Aggr, P> SelectTargetInScope<Tables, P> for Expr<T, Scope, Aggr>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
 {

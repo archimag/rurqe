@@ -8,13 +8,31 @@ use super::render::{parse_raw_sql, RawSqlError};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::{Column, Table};
 
-/// A SQL expression whose result has the Rust type `T` and which references the
-/// tables named by `Scope`.
+/// Marker of an expression that does not aggregate the rows of the query.
+///
+/// Column references, literals, raw SQL, and the composite expressions built
+/// from them keep this marker. A grouped query therefore accepts them only when
+/// they reference no table, where they stay constant within a group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NonAggregate;
+
+/// Marker of an expression produced by an aggregate function such as `SUM` or `COUNT`.
+///
+/// Aggregates collapse the rows of a group into a single value, so a grouped
+/// query accepts them even when they reference a column the query does not group
+/// by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Aggregate;
+
+/// A SQL expression whose result has the Rust type `T`, which references the
+/// tables named by `Scope`, and which carries the aggregation marker `Aggr`.
 ///
 /// Column references carry the table of their column, so a projection built from
 /// a column of another table is rejected at the call site. Constructed values
-/// (literals, raw SQL, aggregates, `CASE` branches) reference no table and keep
-/// the default scope `()`.
+/// (literals, raw SQL, `CASE` branches) reference no table and keep the default
+/// scope `()`. Aggregate functions produce [`Aggregate`] expressions instead of
+/// the default [`NonAggregate`] ones, which is what admits them into the
+/// projection of a grouped query.
 ///
 /// ```
 /// use rurqe_core::expr::{BinaryOp, Expr, ExprKind, SqlVal};
@@ -37,13 +55,20 @@ use crate::schema::{Column, Table};
 ///     }
 /// );
 /// ```
+/// Phantom marker carrying the result type, referenced scope, and aggregation
+/// marker of an [`Expr`].
+///
+/// The alias keeps the phantom field readable at its declaration site, mirroring
+/// the query and statement markers of the surrounding modules.
+type ExprMarker<T, Scope, Aggr> = PhantomData<fn() -> (T, Scope, Aggr)>;
+
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expr<T, Scope = ()> {
+pub struct Expr<T, Scope = (), Aggr = NonAggregate> {
     pub(super) kind: ExprKind,
-    _result: PhantomData<fn() -> (T, Scope)>,
+    _result: ExprMarker<T, Scope, Aggr>,
 }
 
-impl<T, Scope> Expr<T, Scope> {
+impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     pub(super) fn new(kind: ExprKind) -> Self {
         Self {
             kind,
@@ -267,33 +292,42 @@ impl<T> Expr<T, ()> {
     }
 
     /// Builds a `SUM(C)` expression for column `C`.
-    pub fn sum<C>() -> Self
+    ///
+    /// The produced expression carries the [`Aggregate`] marker, so it stays
+    /// projectable from a grouped query even when `C` is not grouped.
+    pub fn sum<C>() -> Expr<T, (), Aggregate>
     where
         C: Column<RustType = T>,
     {
-        Self::new(ExprKind::Aggregate {
+        Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Sum,
             arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })
     }
 
     /// Builds a `MIN(C)` expression for column `C`.
-    pub fn min<C>() -> Self
+    ///
+    /// The produced expression carries the [`Aggregate`] marker, so it stays
+    /// projectable from a grouped query even when `C` is not grouped.
+    pub fn min<C>() -> Expr<T, (), Aggregate>
     where
         C: Column<RustType = T>,
     {
-        Self::new(ExprKind::Aggregate {
+        Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Min,
             arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })
     }
 
     /// Builds a `MAX(C)` expression for column `C`.
-    pub fn max<C>() -> Self
+    ///
+    /// The produced expression carries the [`Aggregate`] marker, so it stays
+    /// projectable from a grouped query even when `C` is not grouped.
+    pub fn max<C>() -> Expr<T, (), Aggregate>
     where
         C: Column<RustType = T>,
     {
-        Self::new(ExprKind::Aggregate {
+        Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Max,
             arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
         })

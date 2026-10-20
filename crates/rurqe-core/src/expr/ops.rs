@@ -23,7 +23,7 @@ impl<'a> SqlCompatible<String, &'a str> for &'a str {}
 
 impl<'a> SqlCompatible<Vec<u8>, &'a [u8]> for &'a [u8] {}
 
-impl<T, Scope> SqlCompatible<T, Expr<T, Scope>> for Expr<T, Scope> {}
+impl<T, Scope, Aggr> SqlCompatible<T, Expr<T, Scope, Aggr>> for Expr<T, Scope, Aggr> {}
 
 /// A value or expression that can be compared with an expression of type `T`.
 ///
@@ -112,7 +112,7 @@ impl IntoExpr<Vec<u8>> for &[u8] {
     }
 }
 
-impl<T, Scope> IntoExpr<T> for Expr<T, Scope> {
+impl<T, Scope, Aggr> IntoExpr<T> for Expr<T, Scope, Aggr> {
     type Scope = Scope;
 
     fn into_expr_kind(self) -> ExprKind {

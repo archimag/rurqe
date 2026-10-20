@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{Expr, ExprKind};
+use crate::expr::{Aggregate, Expr, ExprKind, NonAggregate};
 use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 
 use super::cte::Cte;
@@ -211,8 +211,25 @@ where
     type Output = C::RustType;
 }
 
+/// Derives the row item produced by an aggregate in a `GROUP BY` query.
+///
+/// An aggregate collapses the rows of a group into a single value, so it may
+/// reference a column the query does not group by.
 impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
-    GroupedSelectTarget<GroupByCols, At<0>> for Expr<T, Scope>
+    GroupedSelectTarget<GroupByCols, At<0>> for Expr<T, Scope, Aggregate>
+{
+    type Output = T;
+}
+
+/// Derives the row item produced by a constant expression in a `GROUP BY` query.
+///
+/// An expression referencing no table — a literal, a raw SQL fragment such as
+/// `sql!(<i64> "COUNT(*)")`, or a comparison between them — is constant within a
+/// group, so a grouped query accepts it even though it is not an aggregate.
+/// An expression that references a column keeps the scope of its table, so it
+/// stays rejected unless that column is grouped.
+impl<GroupByCols, T: 'static + Send + Sync>
+    GroupedSelectTarget<GroupByCols, At<0>> for Expr<T, (), NonAggregate>
 {
     type Output = T;
 }
@@ -259,6 +276,77 @@ pub struct GroupedQuery<D: Dialect, Tables = (), Output = (), GroupByCols = Empt
 
 impl<D: Dialect, Tables, GroupByCols> GroupedQuery<D, Tables, (), GroupByCols> {
     /// Selects `selection`, requiring every projected column to be grouped or aggregated.
+    ///
+    /// An aggregate collapses the rows of a group into a single value, so it is
+    /// accepted even when it references a column the query does not group by:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderId => "id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// let built = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .group_by(OrderId)
+    ///     .select((OrderId, Expr::sum::<OrderTotal>()))
+    ///     .build();
+    ///
+    /// assert_eq!(built.sql, "SELECT id, SUM(total) FROM orders GROUP BY id");
+    /// ```
+    ///
+    /// A column reference is not constant within a group, so it stays rejected
+    /// unless its column is grouped — the `Expr` escape hatch no longer bypasses
+    /// the `GROUP BY` rule:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderId => "id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: the projection is neither grouped nor an aggregate.
+    /// let _ = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .group_by(OrderId)
+    ///     .select((OrderId, Expr::column::<OrderTotal>()));
+    /// ```
     pub fn select<S, Positions, GroupPositions>(
         self,
         selection: S,

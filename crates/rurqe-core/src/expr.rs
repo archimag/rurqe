@@ -21,7 +21,7 @@ mod val;
 mod tests;
 
 pub use ast::{CaseBranch, CaseBuilder, ExprKind, HasBranches, NoBranches, Subquery, SubqueryOp};
-pub use builder::Expr;
+pub use builder::{Aggregate, Expr, NonAggregate};
 pub use functions::{avg, coalesce, count, count_all, max, min, sum};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
