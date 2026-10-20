@@ -7,7 +7,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef};
+use rurqe_migrate::catalog::{ColumnDef, IndexDef, SchemaCatalog, TableDef};
 
 /// Structural schema diff describing exact discrepancies.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -70,6 +70,24 @@ impl SchemaDiff {
                     "  - Table `{table}`: foreign key constraints differ between database and snapshot."
                 )?;
             }
+            for index in &diff.missing_indexes {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: index `{index}` is in snapshot but missing from database."
+                )?;
+            }
+            for index in &diff.extra_indexes {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: index `{index}` exists in database but is missing from snapshot."
+                )?;
+            }
+            for index in &diff.altered_indexes {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: index `{index}` definition differs between database and snapshot."
+                )?;
+            }
         }
         Ok(())
     }
@@ -83,6 +101,9 @@ pub struct TableDiff {
     pub altered_columns: Vec<String>,
     pub primary_key_mismatch: bool,
     pub foreign_key_mismatch: bool,
+    pub missing_indexes: Vec<String>,
+    pub extra_indexes: Vec<String>,
+    pub altered_indexes: Vec<String>,
 }
 
 impl TableDiff {
@@ -92,6 +113,9 @@ impl TableDiff {
             && self.altered_columns.is_empty()
             && !self.primary_key_mismatch
             && !self.foreign_key_mismatch
+            && self.missing_indexes.is_empty()
+            && self.extra_indexes.is_empty()
+            && self.altered_indexes.is_empty()
     }
 }
 
@@ -385,24 +409,68 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
         diff.foreign_key_mismatch = true;
     }
 
+    let live_indexes: BTreeMap<&str, &IndexDef> = live
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index))
+        .collect();
+    let expected_indexes: BTreeMap<&str, &IndexDef> = expected
+        .indexes
+        .iter()
+        .map(|index| (index.name.as_str(), index))
+        .collect();
+
+    let all_indexes: BTreeSet<&str> = live_indexes
+        .keys()
+        .copied()
+        .chain(expected_indexes.keys().copied())
+        .collect();
+
+    for index in all_indexes {
+        match (live_indexes.get(index), expected_indexes.get(index)) {
+            (None, Some(_)) => diff.missing_indexes.push(index.to_owned()),
+            (Some(_), None) => diff.extra_indexes.push(index.to_owned()),
+            (Some(live_index), Some(expected_index)) => {
+                if live_index.unique != expected_index.unique
+                    || live_index.columns != expected_index.columns
+                {
+                    diff.altered_indexes.push(index.to_owned());
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
     diff
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rurqe_migrate::catalog::{ForeignKeyDef, TypeKind};
+    use rurqe_migrate::catalog::{ForeignKeyDef, IndexDef, TypeKind};
 
-    #[test]
-    fn identical_catalogs_produce_no_drift() {
-        let catalog = SchemaCatalog::new(vec![TableDef::new(
+    fn users_table(indexes: Vec<IndexDef>) -> TableDef {
+        let mut table = TableDef::new(
             "users",
             vec![
                 ColumnDef::new("id", TypeKind::Int64, false),
                 ColumnDef::new("email", TypeKind::Text, false),
             ],
             vec!["id".to_owned()],
-        )]);
+        );
+        for index in indexes {
+            table = table.with_index(index);
+        }
+        table
+    }
+
+    #[test]
+    fn identical_catalogs_produce_no_drift() {
+        let catalog = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            true,
+        )])]);
 
         let lock = catalog.to_lock();
         let code = format!("pub const SCHEMA_HASH: &str = \"{}\";", catalog.schema_hash());
@@ -537,6 +605,104 @@ mod tests {
                 assert!(
                     report.diff.table_diffs["orders"].foreign_key_mismatch,
                     "column-level foreign key drift must be detected"
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_indexes_are_reported() {
+        let snapshot = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            true,
+        )])]);
+        let lock = snapshot.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(Vec::new())]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].missing_indexes,
+                    vec!["users_email_idx".to_owned()]
+                );
+                assert!(report.to_string().contains("users_email_idx"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extra_indexes_are_reported() {
+        let snapshot = SchemaCatalog::new(vec![users_table(Vec::new())]);
+        let lock = snapshot.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            false,
+        )])]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].extra_indexes,
+                    vec!["users_email_idx".to_owned()]
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_uniqueness_changes_are_reported() {
+        let snapshot = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            true,
+        )])]);
+        let lock = snapshot.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            false,
+        )])]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].altered_indexes,
+                    vec!["users_email_idx".to_owned()]
+                );
+                assert!(report.to_string().contains("index"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_column_changes_are_reported() {
+        let snapshot = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            false,
+        )])]);
+        let lock = snapshot.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned(), "id".to_owned()],
+            false,
+        )])]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].altered_indexes,
+                    vec!["users_email_idx".to_owned()]
                 );
             }
             other => panic!("expected Drift, got {other:?}"),

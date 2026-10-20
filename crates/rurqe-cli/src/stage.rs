@@ -11,21 +11,22 @@
 //! ```
 //!
 //! [`GoldenEquation::verify`] materialises both sides in a disposable scratch
-//! state — an in-memory SQLite database, or a PostgreSQL transaction that is
-//! rolled back afterwards — introspects the resulting catalogs, and compares them
-//! through the structural [`SchemaDiff`] of the drift verifier. Tables, columns,
-//! defaults, nullability, and keys that drifted are reported as an actionable
-//! diagnostic instead of surfacing as a production incident.
+//! state — an in-memory SQLite database, or a dedicated PostgreSQL scratch schema
+//! that is dropped afterwards — introspects the resulting catalogs, and compares
+//! them through the structural [`SchemaDiff`] of the drift verifier. Tables,
+//! columns, defaults, nullability, keys, and indexes that drifted are reported as
+//! an actionable diagnostic instead of surfacing as a production incident.
 //!
 //! The scratch state starts from nothing: SQLite is materialised in memory and
 //! never touches the file behind the URL, while PostgreSQL builds both sides in a
-//! dedicated scratch schema of a transaction that is rolled back, so the existing
-//! contents of the target database stay untouched. The tail passed to
-//! [`GoldenEquation::new`] is
-//! the active set of scripts: migrations pruned below the checkpoint are already
-//! folded into the base stage, so replaying them would collide with it. A project
-//! that still keeps the stage snapshot of its checkpoint anchors the replay with
-//! [`GoldenEquation::with_base`].
+//! scratch schema of its own connection, steered through `search_path` and dropped
+//! once the verification ends. Neither side runs inside a transaction block, so
+//! statements such as `CREATE INDEX CONCURRENTLY` stay replayable, and the
+//! existing contents of the target database stay untouched. The tail passed to
+//! [`GoldenEquation::new`] is the active set of scripts: migrations pruned below
+//! the checkpoint are already folded into the base stage, so replaying them would
+//! collide with it. A project that still keeps the stage snapshot of its
+//! checkpoint anchors the replay with [`GoldenEquation::with_base`].
 //!
 //! ```
 //! use rurqe_cli::stage::GoldenEquation;
@@ -70,47 +71,63 @@ struct Script<'a> {
     sql: &'a str,
 }
 
-/// A disposable database state one side of the equation is materialised in.
-trait Sandbox {
+/// The disposable database state one side of the equation is materialised in.
+///
+/// The variants are dispatched statically, so a verification pays for exactly
+/// the engine it targets and no trait object sits on the hot path.
+enum SandboxKind {
+    /// An in-memory SQLite database, so the file behind the URL is untouched.
+    Sqlite(rusqlite::Connection),
+    /// A PostgreSQL scratch schema, dropped once the verification ends.
+    ///
+    /// The sandbox carries a live client and a schema name, so it is boxed to
+    /// keep every value of this enum small regardless of the targeted engine.
+    Postgres(Box<PostgresSandbox>),
+}
+
+impl SandboxKind {
+    /// Opens the scratch state matching the dialect of `database_url`.
+    fn open(database_url: &str) -> Result<Self, StageError> {
+        match detect_dialect(Some(database_url)) {
+            DatabaseDialect::Sqlite => rusqlite::Connection::open_in_memory()
+                .map(SandboxKind::Sqlite)
+                .map_err(|error| StageError::Sandbox {
+                    message: format!("failed to open an in-memory SQLite database: {error}"),
+                }),
+            DatabaseDialect::Postgres => PostgresSandbox::connect(database_url)
+                .map(Box::new)
+                .map(SandboxKind::Postgres)
+                .map_err(|message| StageError::Sandbox { message }),
+        }
+    }
+
     /// Applies one SQL script to the scratch state.
-    fn apply(&mut self, sql: &str) -> Result<(), String>;
+    fn apply(&mut self, sql: &str) -> Result<(), String> {
+        match self {
+            SandboxKind::Sqlite(connection) => {
+                connection.execute_batch(sql).map_err(|error| error.to_string())
+            }
+            SandboxKind::Postgres(sandbox) => sandbox.apply(sql),
+        }
+    }
 
     /// Introspects the catalog currently materialised by the scratch state.
-    fn catalog(&mut self) -> Result<SchemaCatalog, String>;
-}
-
-/// Scratch state backed by an in-memory SQLite database.
-struct SqliteSandbox {
-    connection: rusqlite::Connection,
-}
-
-impl SqliteSandbox {
-    /// Opens a fresh in-memory database, so the file behind the URL is untouched.
-    fn new() -> Result<Self, String> {
-        rusqlite::Connection::open_in_memory()
-            .map(|connection| Self { connection })
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl Sandbox for SqliteSandbox {
-    fn apply(&mut self, sql: &str) -> Result<(), String> {
-        self.connection
-            .execute_batch(sql)
-            .map_err(|error| error.to_string())
-    }
-
     fn catalog(&mut self) -> Result<SchemaCatalog, String> {
-        introspect_sqlite(&self.connection).map_err(|error| error.to_string())
+        match self {
+            SandboxKind::Sqlite(connection) => {
+                introspect_sqlite(connection).map_err(|error| error.to_string())
+            }
+            SandboxKind::Postgres(sandbox) => sandbox.catalog(),
+        }
     }
 }
 
-/// Scratch state backed by a PostgreSQL transaction that is always rolled back.
+/// Scratch state backed by a PostgreSQL scratch schema of a dedicated connection.
 ///
-/// Every verification owns a schema of its own inside the transaction and steers
-/// the replayed DDL into it through `search_path`, so both sides of the equation
-/// are materialised from nothing against a database of any size. The rollback
-/// drops the scratch schema together with everything built inside it.
+/// Every verification owns a schema of its own and steers the replayed DDL into
+/// it through `search_path`, so both sides of the equation are materialised from
+/// nothing against a database of any size. Dropping the sandbox removes the
+/// schema together with everything built inside it.
 struct PostgresSandbox {
     client: postgres::Client,
     schema: String,
@@ -128,7 +145,7 @@ fn scratch_schema_name() -> String {
 }
 
 impl PostgresSandbox {
-    /// Connects to `url` and opens the scratch transaction the verification runs inside.
+    /// Connects to `url` and opens the scratch schema the verification runs inside.
     fn connect(url: &str) -> Result<Self, String> {
         let mut client = match connect(url).map_err(|error| error.to_string())? {
             Connection::Postgres(client) => client,
@@ -140,30 +157,26 @@ impl PostgresSandbox {
             }
         };
 
-        client
-            .batch_execute("BEGIN")
-            .map_err(|error| format!("failed to open a scratch transaction: {error}"))?;
-
         // Schema names cannot be bound as parameters, but the generated name only
         // carries ASCII digits and underscores, so rendering it is injection-free.
         let schema = scratch_schema_name();
         client
             .batch_execute(&format!(
-                "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema};"
+                "CREATE SCHEMA {schema}; SET search_path TO {schema};"
             ))
             .map_err(|error| format!("failed to open a scratch schema: {error}"))?;
 
         Ok(Self { client, schema })
     }
-}
 
-impl Sandbox for PostgresSandbox {
+    /// Applies one SQL script inside the scratch schema.
     fn apply(&mut self, sql: &str) -> Result<(), String> {
         self.client
             .batch_execute(sql)
             .map_err(|error| error.to_string())
     }
 
+    /// Introspects the scratch schema only, ignoring every other schema.
     fn catalog(&mut self) -> Result<SchemaCatalog, String> {
         introspect_postgres_schema(&mut self.client, &self.schema)
             .map_err(|error| error.to_string())
@@ -172,10 +185,16 @@ impl Sandbox for PostgresSandbox {
 
 impl Drop for PostgresSandbox {
     fn drop(&mut self) {
-        // Dropping the client closes the connection, which makes the server
-        // discard the transaction anyway; the explicit rollback keeps the scratch
-        // database untouched for as long as the connection stays open.
+        // A failed replay may leave a transaction block open, so it is cancelled
+        // first; the schema itself is then dropped, because the verification never
+        // commits anything into the target database. The identifier is generated
+        // from ASCII digits and underscores only, which keeps it injection-free.
         let _ = self.client.batch_execute("ROLLBACK");
+
+        let schema = &self.schema;
+        let _ = self.client.batch_execute(&format!(
+            "RESET search_path; DROP SCHEMA IF EXISTS {schema} CASCADE;"
+        ));
     }
 }
 
@@ -331,6 +350,24 @@ impl GoldenReport {
                     "  - table `{table}`: the foreign keys differ between the stage and the tail."
                 )?;
             }
+            for index in &table_diff.missing_indexes {
+                writeln!(
+                    f,
+                    "  - table `{table}`: index `{index}` is declared by the stage but missing from the tail."
+                )?;
+            }
+            for index in &table_diff.extra_indexes {
+                writeln!(
+                    f,
+                    "  - table `{table}`: index `{index}` is created by the tail but missing from the stage."
+                )?;
+            }
+            for index in &table_diff.altered_indexes {
+                writeln!(
+                    f,
+                    "  - table `{table}`: index `{index}` differs between the stage and the tail."
+                )?;
+            }
         }
 
         Ok(())
@@ -385,26 +422,9 @@ impl fmt::Display for StageError {
 
 impl std::error::Error for StageError {}
 
-/// Opens the scratch state matching the dialect of `database_url`.
-fn open_sandbox(database_url: &str) -> Result<Box<dyn Sandbox>, StageError> {
-    match detect_dialect(Some(database_url)) {
-        DatabaseDialect::Sqlite => {
-            let sandbox = SqliteSandbox::new().map_err(|message| StageError::Sandbox {
-                message: format!("failed to open an in-memory SQLite database: {message}"),
-            })?;
-            Ok(Box::new(sandbox))
-        }
-        DatabaseDialect::Postgres => {
-            let sandbox = PostgresSandbox::connect(database_url)
-                .map_err(|message| StageError::Sandbox { message })?;
-            Ok(Box::new(sandbox))
-        }
-    }
-}
-
 /// Materialises `scripts` in a fresh scratch state and introspects the result.
 fn materialise(database_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalog, StageError> {
-    let mut sandbox = open_sandbox(database_url)?;
+    let mut sandbox = SandboxKind::open(database_url)?;
 
     for script in scripts {
         sandbox
@@ -424,6 +444,8 @@ fn materialise(database_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatal
 mod tests {
     use super::*;
     use rurqe_migrate::stage::StageScript;
+
+    use crate::drift::TableDiff;
 
     const USERS: &str = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
 
@@ -581,5 +603,34 @@ mod tests {
 
         assert!(matches!(error, StageError::Script { .. }), "got {error:?}");
         assert!(error.to_string().contains("users.sql"));
+    }
+
+    #[test]
+    fn index_divergences_are_reported_by_name() {
+        let catalog = SchemaCatalog::new(Vec::new());
+        let mut diff = SchemaDiff::default();
+        diff.table_diffs.insert(
+            "users".to_owned(),
+            TableDiff {
+                missing_indexes: vec!["users_email_idx".to_owned()],
+                extra_indexes: vec!["users_legacy_idx".to_owned()],
+                altered_indexes: vec!["users_name_idx".to_owned()],
+                ..TableDiff::default()
+            },
+        );
+
+        let report = GoldenReport {
+            stage_catalog: catalog.clone(),
+            tail_catalog: catalog,
+            diff,
+        };
+
+        assert!(!report.is_equivalent());
+
+        let message = StageError::Diverged(Box::new(report)).to_string();
+        assert!(message.contains("index"), "unexpected message: {message}");
+        assert!(message.contains("users_email_idx"));
+        assert!(message.contains("users_legacy_idx"));
+        assert!(message.contains("users_name_idx"));
     }
 }
