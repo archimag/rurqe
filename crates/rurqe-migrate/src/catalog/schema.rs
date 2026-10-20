@@ -4,7 +4,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 
 use super::lock;
-use super::types::{ColumnDef, ForeignKeyDef, TableDef, TypeKind};
+use super::types::{ColumnDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
 
 /// The complete schema of a database as an engine-neutral catalog.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -21,9 +21,9 @@ impl SchemaCatalog {
 
     /// Renders the canonical `schema.lock` snapshot.
     ///
-    /// Tables, columns, and foreign keys are emitted sorted by name, so the
-    /// snapshot depends only on the schema content and never on the declaration
-    /// order of the catalog.
+    /// Tables, columns, foreign keys, and indexes are emitted sorted by name, so
+    /// the snapshot depends only on the schema content and never on the
+    /// declaration order of the catalog.
     pub fn to_lock(&self) -> String {
         lock::render_lock(&self.tables)
     }
@@ -47,8 +47,8 @@ impl SchemaCatalog {
     ///
     /// The parser accepts exactly the representation produced by
     /// [`SchemaCatalog::to_lock`] and returns the catalog sorted by table,
-    /// column, and foreign-key name, so the result equals the catalog that
-    /// generated the snapshot.
+    /// column, foreign-key, and index name, so the result equals the catalog
+    /// that generated the snapshot.
     pub fn from_lock(lock: &str) -> Result<SchemaCatalog, Error> {
         let mut lines = lock.lines();
         match lines.next() {
@@ -93,7 +93,9 @@ impl SchemaCatalog {
             let is_close = trimmed == "}";
             let is_item = trimmed.starts_with("column ")
                 || trimmed.starts_with("primary key ")
-                || trimmed.starts_with("foreign key ");
+                || trimmed.starts_with("foreign key ")
+                || trimmed.starts_with("index ")
+                || trimmed.starts_with("unique index ");
 
             if is_close || is_item {
                 if !item_lines.is_empty() {
@@ -135,6 +137,7 @@ struct TableBuilder {
     columns: Vec<ColumnDef>,
     primary_key: Vec<String>,
     foreign_keys: Vec<ForeignKeyDef>,
+    indexes: Vec<IndexDef>,
 }
 
 impl TableBuilder {
@@ -144,21 +147,24 @@ impl TableBuilder {
             columns: Vec::new(),
             primary_key: Vec::new(),
             foreign_keys: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 
-    /// Finalizes the table, sorting columns and foreign keys by name so the
-    /// result matches the canonical ordering used by the renderer.
+    /// Finalizes the table, sorting columns, foreign keys, and indexes by name
+    /// so the result matches the canonical ordering used by the renderer.
     fn finish(mut self) -> TableDef {
         self.columns
             .sort_by(|left, right| left.name.cmp(&right.name));
         self.foreign_keys
             .sort_by(|left, right| left.name.cmp(&right.name));
+        self.indexes.sort_by(|left, right| left.name.cmp(&right.name));
         TableDef {
             name: self.name,
             columns: self.columns,
             primary_key: self.primary_key,
             foreign_keys: self.foreign_keys,
+            indexes: self.indexes,
         }
     }
 }
@@ -187,6 +193,10 @@ fn apply_table_item(table: &mut TableBuilder, item: &str) -> Result<(), Error> {
         table.primary_key = parse_primary_key(item)?;
     } else if item.starts_with("foreign key ") {
         table.foreign_keys.push(parse_foreign_key(item)?);
+    } else if item.starts_with("unique index ") {
+        table.indexes.push(parse_index(item, true)?);
+    } else if item.starts_with("index ") {
+        table.indexes.push(parse_index(item, false)?);
     } else {
         return Err(lock_error("unrecognised table-body item"));
     }
@@ -273,6 +283,23 @@ fn parse_foreign_key(item: &str) -> Result<ForeignKeyDef, Error> {
         referenced_table,
         referenced_columns,
     })
+}
+
+/// Parses an `index "<name>" (...)` or `unique index "<name>" (...)` declaration,
+/// depending on the `unique` keyword detected by the caller.
+fn parse_index(item: &str, unique: bool) -> Result<IndexDef, Error> {
+    let rest = item
+        .strip_prefix(if unique { "unique index " } else { "index " })
+        .ok_or_else(|| lock_error("expected `index` keyword"))?;
+    let (name, rest) = parse_quoted_prefix(rest)?;
+    let rest = rest
+        .strip_prefix(' ')
+        .ok_or_else(|| lock_error("expected a space before the indexed columns"))?;
+    let (columns, rest) = parse_quoted_list(rest)?;
+    if !rest.is_empty() {
+        return Err(lock_error("unexpected text after the index declaration"));
+    }
+    Ok(IndexDef::new(name, columns, unique))
 }
 
 /// Parses a leading `"..."` identifier, decoding doubled quotes.

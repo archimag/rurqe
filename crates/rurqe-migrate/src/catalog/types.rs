@@ -119,6 +119,32 @@ impl ForeignKeyDef {
     }
 }
 
+/// A secondary index of a [`TableDef`].
+///
+/// Both plain and `UNIQUE` secondary indexes share this representation, so the
+/// snapshot distinguishes them solely by [`IndexDef::unique`]. Primary keys are
+/// not indexes in this sense and stay in [`TableDef::primary_key`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexDef {
+    /// The SQL identifier of the index.
+    pub name: String,
+    /// The indexed columns, in declaration order.
+    pub columns: Vec<String>,
+    /// Whether the index is declared `UNIQUE`.
+    pub unique: bool,
+}
+
+impl IndexDef {
+    /// Creates an index definition from its name and indexed columns.
+    pub fn new(name: impl Into<String>, columns: Vec<String>, unique: bool) -> Self {
+        Self {
+            name: name.into(),
+            columns,
+            unique,
+        }
+    }
+}
+
 /// A table of the schema together with its columns and keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableDef {
@@ -130,10 +156,12 @@ pub struct TableDef {
     pub primary_key: Vec<String>,
     /// The foreign keys declared by the table.
     pub foreign_keys: Vec<ForeignKeyDef>,
+    /// The secondary and unique indexes declared on the table.
+    pub indexes: Vec<IndexDef>,
 }
 
 impl TableDef {
-    /// Creates a table definition without foreign keys.
+    /// Creates a table definition without foreign keys and indexes.
     pub fn new(
         name: impl Into<String>,
         columns: Vec<ColumnDef>,
@@ -144,12 +172,19 @@ impl TableDef {
             columns,
             primary_key,
             foreign_keys: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 
     /// Appends `foreign_key` to the table.
     pub fn with_foreign_key(mut self, foreign_key: ForeignKeyDef) -> Self {
         self.foreign_keys.push(foreign_key);
+        self
+    }
+
+    /// Appends `index` to the table.
+    pub fn with_index(mut self, index: IndexDef) -> Self {
+        self.indexes.push(index);
         self
     }
 }

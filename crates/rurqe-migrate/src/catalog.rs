@@ -2,12 +2,13 @@
 //!
 //! The catalog is the single source of truth shared by introspection, code
 //! generation, and drift verification: it records tables, columns, primary keys,
-//! and foreign keys in an engine-independent form and renders them into a
-//! deterministic textual snapshot.
+//! foreign keys, and secondary or unique indexes in an engine-independent form
+//! and renders them into a deterministic textual snapshot.
 //!
-//! Determinism is achieved by sorting tables, columns, and foreign keys by name,
-//! so two catalogs built in a different declaration order still produce the very
-//! same snapshot — and therefore the very same [`SchemaCatalog::schema_hash`].
+//! Determinism is achieved by sorting tables, columns, foreign keys, and indexes
+//! by name, so two catalogs built in a different declaration order still produce
+//! the very same snapshot — and therefore the very same
+//! [`SchemaCatalog::schema_hash`].
 //!
 //! ```
 //! use rurqe_migrate::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
@@ -42,7 +43,7 @@ mod schema;
 mod types;
 
 pub use schema::SchemaCatalog;
-pub use types::{ColumnDef, ForeignKeyDef, TableDef, TypeKind};
+pub use types::{ColumnDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
 
 #[cfg(test)]
 mod tests;

@@ -1,15 +1,15 @@
 //! Canonical rendering of the `schema.lock` snapshot.
 
-use super::types::{ColumnDef, ForeignKeyDef, TableDef};
+use super::types::{ColumnDef, ForeignKeyDef, IndexDef, TableDef};
 
 /// Version marker written into every `schema.lock` snapshot.
 pub(super) const LOCK_HEADER: &str = "schema lock v1";
 
 /// Renders the canonical `schema.lock` snapshot for `tables`.
 ///
-/// Tables, columns, and foreign keys are emitted sorted by name, so the snapshot
-/// depends only on the schema content and never on the declaration order of the
-/// catalog.
+/// Tables, columns, foreign keys, and indexes are emitted sorted by name, so the
+/// snapshot depends only on the schema content and never on the declaration
+/// order of the catalog.
 pub(super) fn render_lock(tables: &[TableDef]) -> String {
     let mut out = String::new();
     out.push_str(LOCK_HEADER);
@@ -56,6 +56,20 @@ pub(super) fn render_lock(tables: &[TableDef]) -> String {
             push_quoted(&mut out, &foreign_key.referenced_table);
             out.push(' ');
             push_quoted_list(&mut out, &foreign_key.referenced_columns);
+            out.push('\n');
+        }
+
+        let mut indexes: Vec<&IndexDef> = table.indexes.iter().collect();
+        indexes.sort_by(|left, right| left.name.cmp(&right.name));
+        for index in indexes {
+            out.push_str(if index.unique {
+                "  unique index "
+            } else {
+                "  index "
+            });
+            push_quoted(&mut out, &index.name);
+            out.push(' ');
+            push_quoted_list(&mut out, &index.columns);
             out.push('\n');
         }
 
