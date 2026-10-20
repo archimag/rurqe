@@ -32,17 +32,17 @@ scribe = "~anthropic/claude-haiku-latest"    # history compaction, git squash co
 # never switches to Architect, preserving the What vs How role isolation.
 coder = [
   "~deepseek/deepseek-flash-latest",
-  { model = "~google/gemini-flash-latest", effort = "medium" },
+  { model = "~google/gemini-flash-latest", effort = "medium" }
 ]
 architect = [
   { model = "~google/gemini-flash-latest", effort = "high", alias = "Gemini Flash" },
-  { model = "google/gemini-4-argon", alias = "Gemini Argon" },
-  { model = "~anthropic/claude-sonnet-latest", alias = "Sonnet" }
+  { model = "google/gemini-4-argon", alias = "Gemini Argon" }
 ]    # conceptual design, plan refinement, blocked-step replanning
 reviewer = [
   { model = "~google/gemini-flash-latest", effort = "high", alias = "Gemini Flash" },
   "google/gemini-4-argon",
-  { model = "~anthropic/claude-sonnet-latest", alias = "Sonnet" }
+  { model = "~anthropic/claude-sonnet-latest", alias = "Sonnet" },
+  "~anthropic/claude-opus-latest",  
 ]   # automated code review of active context files
 
 # Automatically escalate the Coder along its ladder when verification healing stalls,

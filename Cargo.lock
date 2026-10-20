@@ -643,6 +643,7 @@ dependencies = [
  "rurqe-migrate",
  "rurqe-postgres",
  "rurqe-sqlite",
+ "tracing",
 ]
 
 [[package]]
@@ -655,11 +656,18 @@ dependencies = [
  "rurqe-postgres",
  "rurqe-sqlite",
  "rusqlite",
+ "tracing",
 ]
 
 [[package]]
 name = "rurqe-core"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "uuid",
+]
 
 [[package]]
 name = "rurqe-macros"
@@ -674,6 +682,10 @@ dependencies = [
 [[package]]
 name = "rurqe-migrate"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+ "tracing",
+]
 
 [[package]]
 name = "rurqe-postgres"
@@ -687,6 +699,7 @@ dependencies = [
  "rurqe-core",
  "serde_json",
  "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 
@@ -697,6 +710,7 @@ dependencies = [
  "r2d2",
  "rurqe-core",
  "rusqlite",
+ "tracing",
 ]
 
 [[package]]
