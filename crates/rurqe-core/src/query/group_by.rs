@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::Expr;
+use crate::expr::{Expr, ExprKind};
 use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 
 use super::cte::Cte;
@@ -19,21 +19,21 @@ use super::window::WindowExpr;
     note = "group by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
 )]
 pub trait GroupBy {
-    /// Appends the column names to `out` in grouping order.
-    fn push_column_names(&self, out: &mut Vec<&'static str>);
+    /// Appends the grouped column expressions to `out` in grouping order.
+    fn push_column_names(&self, out: &mut Vec<ExprKind>);
 }
 
 impl<C: Column> GroupBy for C {
-    fn push_column_names(&self, out: &mut Vec<&'static str>) {
-        out.push(C::NAME);
+    fn push_column_names(&self, out: &mut Vec<ExprKind>) {
+        out.push(C::expr_kind());
     }
 }
 
 macro_rules! impl_group_by {
     ($($column:ident),+) => {
         impl<$($column: Column),+> GroupBy for ($($column,)+) {
-            fn push_column_names(&self, out: &mut Vec<&'static str>) {
-                $(out.push($column::NAME);)+
+            fn push_column_names(&self, out: &mut Vec<ExprKind>) {
+                $(out.push($column::expr_kind());)+
             }
         }
     };

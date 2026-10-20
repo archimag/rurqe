@@ -1,4 +1,9 @@
 //! Window function builders, `OVER` specifications, and window expressions.
+//!
+//! Every column a window specification references is carried as an
+//! [`ExprKind`] instead of a bare identifier, so a column addressed through a
+//! table alias keeps its `"alias"."column"` reference inside `PARTITION BY`,
+//! `ORDER BY`, `LAG`, and `LEAD` just like it does in the projection list.
 
 use core::fmt::Write;
 use core::marker::PhantomData;
@@ -17,21 +22,21 @@ use super::selection::{SelectTarget, SelectTargetInScope};
     note = "partition by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
 )]
 pub trait PartitionBy {
-    /// Appends the partition column names to `out`.
-    fn push_partition_by(&self, out: &mut Vec<&'static str>);
+    /// Appends the partition column expressions to `out`.
+    fn push_partition_by(&self, out: &mut Vec<ExprKind>);
 }
 
 impl<C: Column> PartitionBy for C {
-    fn push_partition_by(&self, out: &mut Vec<&'static str>) {
-        out.push(C::NAME);
+    fn push_partition_by(&self, out: &mut Vec<ExprKind>) {
+        out.push(C::expr_kind());
     }
 }
 
 macro_rules! impl_partition_by {
     ($($column:ident),+) => {
         impl<$($column: Column),+> PartitionBy for ($($column,)+) {
-            fn push_partition_by(&self, out: &mut Vec<&'static str>) {
-                $(out.push($column::NAME);)+
+            fn push_partition_by(&self, out: &mut Vec<ExprKind>) {
+                $(out.push($column::expr_kind());)+
             }
         }
     };
@@ -47,10 +52,10 @@ impl_partition_by!(C1, C2, C3, C4, C5, C6, C7);
 impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 
 /// A specification of an `OVER (...)` window partition and ordering.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WindowSpec {
-    partition_by: Vec<&'static str>,
-    order_by: Vec<(&'static str, OrderDirection)>,
+    partition_by: Vec<ExprKind>,
+    order_by: Vec<(ExprKind, OrderDirection)>,
 }
 
 impl WindowSpec {
@@ -72,7 +77,7 @@ impl WindowSpec {
 
     /// Appends an ordering criterion with `direction` to the window.
     pub fn order_by<C: Column>(mut self, _col: C, direction: OrderDirection) -> Self {
-        self.order_by.push((C::NAME, direction));
+        self.order_by.push((C::expr_kind(), direction));
         self
     }
 
@@ -87,16 +92,16 @@ impl WindowSpec {
     }
 
     /// Renders the window contents inside `OVER (...)`.
-    pub fn render<D: Dialect>(&self, sql: &mut String) {
+    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
         let mut has_part = false;
         if !self.partition_by.is_empty() {
             has_part = true;
             sql.push_str("PARTITION BY ");
-            for (i, name) in self.partition_by.iter().enumerate() {
+            for (i, expression) in self.partition_by.iter().enumerate() {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(sql, name);
+                render_expr::<D>(sql, params, expression);
             }
         }
         if !self.order_by.is_empty() {
@@ -104,11 +109,11 @@ impl WindowSpec {
                 sql.push(' ');
             }
             sql.push_str("ORDER BY ");
-            for (i, (name, dir)) in self.order_by.iter().enumerate() {
+            for (i, (expression, dir)) in self.order_by.iter().enumerate() {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(sql, name);
+                render_expr::<D>(sql, params, expression);
                 sql.push(' ');
                 sql.push_str(dir.as_str());
             }
@@ -163,15 +168,15 @@ pub enum WindowExprKind {
     DenseRank,
     /// `LAG(column [, offset])`
     Lag {
-        /// The target column name.
-        column: &'static str,
+        /// The target column expression.
+        column: ExprKind,
         /// The optional row offset.
         offset: Option<u32>,
     },
     /// `LEAD(column [, offset])`
     Lead {
-        /// The target column name.
-        column: &'static str,
+        /// The target column expression.
+        column: ExprKind,
         /// The optional row offset.
         offset: Option<u32>,
     },
@@ -205,7 +210,7 @@ impl<T> WindowExpr<T> {
             WindowExprKind::DenseRank => sql.push_str("DENSE_RANK()"),
             WindowExprKind::Lag { column, offset } => {
                 sql.push_str("LAG(");
-                D::push_quoted_identifier(sql, column);
+                render_expr::<D>(sql, params, column);
                 if let Some(off) = offset {
                     let _ = write!(sql, ", {off}");
                 }
@@ -213,7 +218,7 @@ impl<T> WindowExpr<T> {
             }
             WindowExprKind::Lead { column, offset } => {
                 sql.push_str("LEAD(");
-                D::push_quoted_identifier(sql, column);
+                render_expr::<D>(sql, params, column);
                 if let Some(off) = offset {
                     let _ = write!(sql, ", {off}");
                 }
@@ -224,7 +229,7 @@ impl<T> WindowExpr<T> {
             }
         }
         sql.push_str(" OVER (");
-        self.window.render::<D>(sql);
+        self.window.render::<D>(sql, params);
         sql.push(')');
     }
 }
@@ -271,7 +276,7 @@ impl<T> WindowFn<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LagLeadFn<T> {
     is_lag: bool,
-    column: &'static str,
+    column: ExprKind,
     offset: Option<u32>,
     _result: PhantomData<fn() -> T>,
 }
@@ -323,7 +328,7 @@ pub fn dense_rank() -> WindowFn<i64> {
 pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
     LagLeadFn {
         is_lag: true,
-        column: C::NAME,
+        column: C::expr_kind(),
         offset: None,
         _result: PhantomData,
     }
@@ -333,7 +338,7 @@ pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
 pub fn lead<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>> {
     LagLeadFn {
         is_lag: false,
-        column: C::NAME,
+        column: C::expr_kind(),
         offset: None,
         _result: PhantomData,
     }

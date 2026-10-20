@@ -73,14 +73,14 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     projections: Option<ProjectionRenderer>,
     joins: Vec<JoinClause>,
     filter: Option<ExprKind>,
-    pub(crate) group_by: Vec<&'static str>,
+    pub(crate) group_by: Vec<ExprKind>,
     having: Option<ExprKind>,
-    order_by: Vec<(&'static str, OrderDirection)>,
+    order_by: Vec<(ExprKind, OrderDirection)>,
     limit: Option<u32>,
     offset: Option<u32>,
     set_operations: Vec<SetOperation>,
     distinct: bool,
-    distinct_on: Vec<&'static str>,
+    distinct_on: Vec<ExprKind>,
     _marker: QueryMarker<D, Tables, Output>,
 }
 
@@ -211,7 +211,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         D: SupportsDistinctOn,
         Tables: TableInScope<C::Table, P>,
     {
-        self.distinct_on.push(C::NAME);
+        self.distinct_on.push(C::expr_kind());
         self
     }
 
@@ -277,7 +277,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     where
         Tables: TableInScope<C::Table, P>,
     {
-        self.order_by.push((C::NAME, direction));
+        self.order_by.push((C::expr_kind(), direction));
         self
     }
 
@@ -506,11 +506,11 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         sql.push_str("SELECT ");
         if !self.distinct_on.is_empty() {
             sql.push_str("DISTINCT ON (");
-            for (index, name) in self.distinct_on.iter().enumerate() {
+            for (index, expression) in self.distinct_on.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(sql, name);
+                render_expr::<D>(sql, params, expression);
             }
             sql.push_str(") ");
         } else if self.distinct {
@@ -556,11 +556,11 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
 
         if !self.group_by.is_empty() {
             sql.push_str(" GROUP BY ");
-            for (index, name) in self.group_by.iter().enumerate() {
+            for (index, expression) in self.group_by.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(sql, name);
+                render_expr::<D>(sql, params, expression);
             }
         }
 
@@ -578,11 +578,11 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
 
         if !self.order_by.is_empty() {
             sql.push_str(" ORDER BY ");
-            for (index, (name, direction)) in self.order_by.iter().enumerate() {
+            for (index, (expression, direction)) in self.order_by.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(sql, name);
+                render_expr::<D>(sql, params, expression);
                 sql.push(' ');
                 sql.push_str(direction.as_str());
             }

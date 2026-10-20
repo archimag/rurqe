@@ -1275,6 +1275,81 @@ fn group_set_resolves_grouped_column_positions() {
     assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, _>();
 }
 
+crate::table_alias! {
+    /// The `m` alias.
+    ManagerAlias => "m"
+}
+
+#[test]
+fn order_by_and_group_by_qualify_aliased_columns() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<User, UserAlias>>()
+        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+            Expr::column::<AliasedCol<UserAlias, UserId>>()
+                .eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
+        )
+        .select((
+            AliasedCol::<UserAlias, UserId>::new(),
+            AliasedCol::<ManagerAlias, UserName>::new(),
+        ))
+        .order_by(
+            AliasedCol::<UserAlias, UserName>::new(),
+            OrderDirection::Asc,
+        )
+        .group_by(AliasedCol::<ManagerAlias, UserName>::new())
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"u\".\"id\", \"m\".\"name\" FROM \"users\" AS \"u\" \
+         INNER JOIN \"users\" AS \"m\" ON (\"u\".\"id\" = \"m\".\"id\") \
+         GROUP BY \"m\".\"name\" ORDER BY \"u\".\"name\" ASC"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn distinct_on_qualifies_aliased_columns() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<Order, OrderAlias>>()
+        .select((
+            AliasedCol::<OrderAlias, OrderId>::new(),
+            AliasedCol::<OrderAlias, OrderTotal>::new(),
+        ))
+        .distinct_on(AliasedCol::<OrderAlias, OrderUserId>::new())
+        .order_by_asc(AliasedCol::<OrderAlias, OrderTotal>::new())
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT DISTINCT ON (\"o\".\"user_id\") \"o\".\"id\", \"o\".\"total\" \
+         FROM \"orders\" AS \"o\" ORDER BY \"o\".\"total\" ASC"
+    );
+}
+
+#[test]
+fn window_specifications_and_lag_qualify_aliased_columns() {
+    let window = Window::partition_by(AliasedCol::<OrderAlias, OrderUserId>::new())
+        .order_by_desc(AliasedCol::<OrderAlias, OrderId>::new());
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<Order, OrderAlias>>()
+        .select((
+            AliasedCol::<OrderAlias, OrderId>::new(),
+            lag(AliasedCol::<OrderAlias, OrderTotal>::new())
+                .offset(1)
+                .over(window),
+        ))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"o\".\"id\", LAG(\"o\".\"total\", 1) OVER (PARTITION BY \"o\".\"user_id\" \
+         ORDER BY \"o\".\"id\" DESC) FROM \"orders\" AS \"o\""
+    );
+    assert!(built.params.is_empty());
+}
+
 #[test]
 fn value_table_argument_infers_the_from_table() {
     let built = SelectQuery::<MockDialect>::new()
