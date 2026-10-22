@@ -83,6 +83,109 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
 }
 
 /// Lifts a Rust value type into its nullable form.
+///
+/// Projecting a column from the nullable side of an outer join reaches the query
+/// row in its nullable form, so the row type names `Option<T>` instead of `T`
+/// and consuming code has to handle the absent value explicitly. The trait is
+/// implemented for every scalar the SQL value surface supports — integers,
+/// floating point numbers, booleans, text, and blobs — for the optional form
+/// `Option<T>` itself, for `UUID`, temporal, and JSON values when their cargo
+/// features are enabled, and for domain newtypes through
+/// [`impl_sql_binary_newtype!`](crate::impl_sql_binary_newtype),
+/// [`impl_sql_text_newtype!`](crate::impl_sql_text_newtype), and the
+/// `#[derive(SqlType)]` macro.
+///
+/// `LEFT JOIN` and `LEFT JOIN LATERAL` lift every column of the joined relation:
+///
+/// ```
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::{HasProjection, SelectQuery};
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     let query = SelectQuery::<MockDialect>::new()
+///         .from::<User>()
+///         .left_join::<Order, _, _>(
+///             Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+///         )
+///         .select((UserId, OrderTotal));
+///
+///     // `OrderTotal` is read from the nullable side of the join, so the row
+///     // keeps it as `Option<f64>` while `UserId` stays a plain `i64`.
+///     let _: SelectQuery<MockDialect, _, (i64, Option<f64>), HasProjection> = query;
+/// }
+/// ```
+///
+/// Reading the same column as a plain `f64` is rejected at compile time:
+///
+/// ```compile_fail
+/// # use rurqe_core::dialect::Dialect;
+/// # use rurqe_core::expr::Expr;
+/// # use rurqe_core::query::{HasProjection, SelectQuery};
+/// #
+/// # struct MockDialect;
+/// #
+/// # impl Dialect for MockDialect {
+/// #     fn push_quoted_identifier(out: &mut String, ident: &str) {
+/// #         out.push_str(ident);
+/// #     }
+/// #
+/// #     fn push_placeholder(out: &mut String, index: usize) {
+/// #         let _ = index;
+/// #     }
+/// # }
+/// #
+/// # rurqe_core::table! {
+/// #     User => "users" {
+/// #         UserId => "id": i64,
+/// #     }
+/// # }
+/// #
+/// # rurqe_core::table! {
+/// #     Order => "orders" {
+/// #         OrderUserId => "user_id": i64,
+/// #         OrderTotal => "total": f64,
+/// #     }
+/// # }
+/// #
+/// fn main() {
+///     let query = SelectQuery::<MockDialect>::new()
+///         .from::<User>()
+///         .left_join::<Order, _, _>(
+///             Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+///         )
+///         .select((UserId, OrderTotal));
+///
+///     // Fails to compile: the left-joined `OrderTotal` reaches the row as
+///     // `Option<f64>`, so the row cannot be read as a plain `f64`.
+///     let _: SelectQuery<MockDialect, _, (i64, f64), HasProjection> = query;
+/// }
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no nullable form",
     label = "the column type cannot be lifted into `Option<{Self}>`",
@@ -140,6 +243,10 @@ impl<T> MakeNullable for crate::expr::Json<T> {
 }
 
 /// Applies the nullability `N` of a relational context to a Rust value type.
+///
+/// `NonNullableRel` is the identity, while `NullableRel` maps `T` to its
+/// [`MakeNullable::Nullable`] form, which is how an outer join lifts every column
+/// of the relation it may leave unmatched into `Option<T>`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be lifted into the nullability of this relational context",
     label = "unsupported column type",
@@ -390,5 +497,109 @@ impl<C: Column> Column for Nullable<C> {
 
     fn expr_kind() -> ExprKind {
         C::expr_kind()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query::LeftLateralJoined;
+    use crate::schema::At;
+
+    crate::table! {
+        User => "users" {
+            UserId => "id": i64,
+        }
+    }
+
+    crate::table! {
+        OrderStats => "order_stats" {
+            OrderStatsTotal => "total": f64,
+        }
+    }
+
+    /// Statically requires `T` to have `Option<T>` as its nullable form.
+    fn lifts_into_an_option<T>()
+    where
+        T: MakeNullable<Nullable = Option<T>>
+            + ApplyNullability<NullableRel, Output = Option<T>>,
+    {
+    }
+
+    /// Statically requires `T` to keep its declared type inside an inner join.
+    fn stays_non_nullable<T>()
+    where
+        T: ApplyNullability<NonNullableRel, Output = T>,
+    {
+    }
+
+    #[test]
+    fn every_scalar_lifts_into_its_option() {
+        lifts_into_an_option::<i16>();
+        lifts_into_an_option::<i32>();
+        lifts_into_an_option::<u32>();
+        lifts_into_an_option::<i64>();
+        lifts_into_an_option::<usize>();
+        lifts_into_an_option::<f64>();
+        lifts_into_an_option::<bool>();
+        lifts_into_an_option::<String>();
+        lifts_into_an_option::<Vec<u8>>();
+    }
+
+    #[test]
+    fn optional_columns_keep_a_single_option_layer() {
+        fn optional_column<T>()
+        where
+            Option<T>: ApplyNullability<NullableRel, Output = Option<T>>,
+        {
+        }
+
+        optional_column::<i64>();
+        optional_column::<String>();
+    }
+
+    #[test]
+    fn inner_joined_columns_keep_their_declared_type() {
+        stays_non_nullable::<i64>();
+        stays_non_nullable::<Option<String>>();
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn uuid_columns_lift_into_options() {
+        lifts_into_an_option::<uuid::Uuid>();
+    }
+
+    #[cfg(feature = "chrono")]
+    #[test]
+    fn temporal_columns_lift_into_options() {
+        lifts_into_an_option::<chrono::NaiveDateTime>();
+        lifts_into_an_option::<chrono::DateTime<chrono::Utc>>();
+        lifts_into_an_option::<chrono::NaiveDate>();
+    }
+
+    #[cfg(feature = "serde_json")]
+    #[test]
+    fn json_columns_lift_into_options() {
+        lifts_into_an_option::<serde_json::Value>();
+        lifts_into_an_option::<crate::expr::Json<serde_json::Value>>();
+    }
+
+    #[test]
+    fn the_explicit_nullable_marker_lifts_the_column_type() {
+        fn assert_rust_type<C: Column<RustType = Option<i64>>>() {}
+
+        assert_rust_type::<Nullable<UserId>>();
+    }
+
+    #[test]
+    fn lateral_left_joins_expose_their_columns_as_nullable() {
+        fn assert_nullable<T: Table, Tables>()
+        where
+            Tables: TableNullabilityInScope<T, At<0>, Nullability = NullableRel>,
+        {
+        }
+
+        assert_nullable::<OrderStats, LeftLateralJoined<User, OrderStats>>();
     }
 }
