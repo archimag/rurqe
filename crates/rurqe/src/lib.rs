@@ -3,6 +3,7 @@
 //! An ergonomic, strictly type-safe SQL query builder and relational execution engine for Rust.
 
 use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+use rurqe_core::query::NoProjection;
 use rurqe_core::{Dialect, SelectQuery, Table};
 
 pub use rurqe_core as core;
@@ -52,6 +53,7 @@ macro_rules! pin_dialect_version {
             use super::*;
 
             use $crate::core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+            use $crate::core::query::{HasProjection, NoProjection};
             use $crate::core::{SelectQuery, Table};
 
             /// The error type produced by queries pinned to this dialect version.
@@ -65,7 +67,10 @@ macro_rules! pin_dialect_version {
             pub type Result<T, E = Error> = ::core::result::Result<T, E>;
 
             /// Starts a `SELECT` over `table` with the dialect version pinned.
-            pub fn select_from<T: Table>(table: T) -> SelectQuery<$dialect, T, ()> {
+            ///
+            /// The query carries no projection yet, so `.select(...)` must follow
+            /// before it can be built.
+            pub fn select_from<T: Table>(table: T) -> SelectQuery<$dialect, T, (), NoProjection> {
                 SelectQuery::new().from_table(table)
             }
 
@@ -97,7 +102,10 @@ macro_rules! pin_dialect_version {
                 type Row;
 
                 /// Starts a `SELECT` query over `table` projecting `self`.
-                fn from(self, table: T) -> SelectQuery<$dialect, T, Self::Row>;
+                fn from(
+                    self,
+                    table: T,
+                ) -> SelectQuery<$dialect, T, Self::Row, HasProjection>;
             }
 
             impl<S, T, Positions> SelectFrom<T, Positions> for S
@@ -107,7 +115,10 @@ macro_rules! pin_dialect_version {
             {
                 type Row = <S as $crate::core::query::SelectionFor<T, Positions>>::Row;
 
-                fn from(self, table: T) -> SelectQuery<$dialect, T, Self::Row> {
+                fn from(
+                    self,
+                    table: T,
+                ) -> SelectQuery<$dialect, T, Self::Row, HasProjection> {
                     SelectQuery::new()
                         .from_table(table)
                         .select::<S, Positions>(self)
@@ -141,6 +152,7 @@ pub mod postgres {
     pub use rurqe_postgres::*;
 
     use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+    use rurqe_core::query::{HasProjection, NoProjection};
     use rurqe_core::{SelectQuery, Table};
 
     /// The error type produced by PostgreSQL queries and adapters.
@@ -164,7 +176,7 @@ pub mod postgres {
     /// ```text
     /// select_from(Users).select(cols!(UsersId)).build()
     /// ```
-    pub fn select_from<T: Table>(table: T) -> SelectQuery<Postgres, T, ()> {
+    pub fn select_from<T: Table>(table: T) -> SelectQuery<Postgres, T, (), NoProjection> {
         SelectQuery::new().from_table(table)
     }
 
@@ -195,7 +207,7 @@ pub mod postgres {
         type Row;
 
         /// Starts a `SELECT` query over `table` projecting `self`.
-        fn from(self, table: T) -> SelectQuery<Postgres, T, Self::Row>;
+        fn from(self, table: T) -> SelectQuery<Postgres, T, Self::Row, HasProjection>;
     }
 
     impl<S, T, Positions> PostgresSelectFrom<T, Positions> for S
@@ -205,7 +217,7 @@ pub mod postgres {
     {
         type Row = <S as rurqe_core::query::SelectionFor<T, Positions>>::Row;
 
-        fn from(self, table: T) -> SelectQuery<Postgres, T, Self::Row> {
+        fn from(self, table: T) -> SelectQuery<Postgres, T, Self::Row, HasProjection> {
             SelectQuery::<Postgres>::new()
                 .from_table(table)
                 .select::<S, Positions>(self)
@@ -260,6 +272,7 @@ pub mod sqlite {
     pub use rurqe_sqlite::*;
 
     use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+    use rurqe_core::query::{HasProjection, NoProjection};
     use rurqe_core::{SelectQuery, Table};
 
     /// The error type produced by SQLite queries and adapters.
@@ -283,7 +296,7 @@ pub mod sqlite {
     /// ```text
     /// select_from(Users).select(cols!(UsersId)).build()
     /// ```
-    pub fn select_from<T: Table>(table: T) -> SelectQuery<Sqlite, T, ()> {
+    pub fn select_from<T: Table>(table: T) -> SelectQuery<Sqlite, T, (), NoProjection> {
         SelectQuery::new().from_table(table)
     }
 
@@ -314,7 +327,7 @@ pub mod sqlite {
         type Row;
 
         /// Starts a `SELECT` query over `table` projecting `self`.
-        fn from(self, table: T) -> SelectQuery<Sqlite, T, Self::Row>;
+        fn from(self, table: T) -> SelectQuery<Sqlite, T, Self::Row, HasProjection>;
     }
 
     impl<S, T, Positions> SqliteSelectFrom<T, Positions> for S
@@ -324,7 +337,7 @@ pub mod sqlite {
     {
         type Row = <S as rurqe_core::query::SelectionFor<T, Positions>>::Row;
 
-        fn from(self, table: T) -> SelectQuery<Sqlite, T, Self::Row> {
+        fn from(self, table: T) -> SelectQuery<Sqlite, T, Self::Row, HasProjection> {
             SelectQuery::<Sqlite>::new()
                 .from_table(table)
                 .select::<S, Positions>(self)
@@ -563,7 +576,7 @@ pub mod sqlite {
 /// let _ = select_from::<Postgres, User>()
 ///     .select((UserId, lag(OrderTotal).over(Window::empty())));
 /// ```
-pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, ()> {
+pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection> {
     SelectQuery::new().from::<T>()
 }
 
@@ -757,8 +770,8 @@ pub mod prelude {
     };
 
     pub use rurqe_core::query::{
-        AsyncQueryBackend, AsyncQueryBackendExt, JoinKind, Joined, LeftJoined, Nullable, SetOpKind,
-        TableScope,
+        AsyncQueryBackend, AsyncQueryBackendExt, HasProjection, JoinKind, Joined, LeftJoined,
+        NoProjection, Nullable, ProjectionPresent, SetOpKind, TableScope,
     };
 
     pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};
@@ -771,7 +784,8 @@ pub mod prelude {
 
     pub use rurqe_core::dml::{
         AssignColumn, AssignValue, Assignment, AssignmentSet, AssignmentsPresent, ColumnAssign,
-        DeleteQuery, Filtered, HasAssignments, InsertQuery, NoAssignments, Unfiltered, UpdateQuery,
+        DeleteQuery, EmptyRows, Filtered, HasAssignments, InsertQuery, NoAssignments, Unfiltered,
+        UpdateQuery,
     };
 
     #[cfg(feature = "macros")]

@@ -31,8 +31,60 @@ pub struct BuiltQuery {
     pub params: Vec<SqlVal>,
 }
 
-/// Phantom marker carrying the dialect, scope, and row type of a query.
-type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
+/// Typestate marker indicating that a `SELECT` query records no projection yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoProjection;
+
+/// Typestate marker indicating that a `SELECT` query records the rows it projects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HasProjection;
+
+/// Statically asserts that a `SELECT` query records the rows it projects.
+///
+/// A query starts without projections, where rendering it would produce the
+/// invalid `SELECT  FROM "users"` statement. Only [`SelectQuery::select`]
+/// transitions the query into [`HasProjection`], the sole state implementing this
+/// trait, so [`SelectQuery::build`], [`SelectQuery::to_ast`], and
+/// [`SelectQuery::as_cte`] stay unreachable before a projection is given — in
+/// debug and release builds alike.
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: the query records no projection yet.
+/// let _ = SelectQuery::<MockDialect>::new().from::<User>().build();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "refusing to build a SELECT query without a projection",
+    label = "this query does not project any row yet",
+    note = "call `.select(...)` with the columns to project before building, rendering, or embedding the query"
+)]
+pub trait ProjectionPresent {}
+
+impl ProjectionPresent for HasProjection {}
+
+/// Phantom marker carrying the dialect, scope, row type, and projection state of a query.
+type QueryMarker<D, Tables, Output, Projected> =
+    PhantomData<fn() -> (D, Tables, Output, Projected)>;
 
 /// A single join clause recorded on a [`SelectQuery`].
 ///
@@ -53,9 +105,16 @@ struct JoinClause {
 /// the recorded statement. The ordering and pagination of a query chained with a
 /// set operation are recorded separately: they apply to the combined rows rather
 /// than to the left query.
-pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
+///
+/// `Projected` records whether the query already projects the rows it selects: a
+/// fresh query carries [`NoProjection`], and [`SelectQuery::select`] moves it into
+/// [`HasProjection`], the only state whose queries can be rendered. The parameter
+/// defaults to [`NoProjection`], so `SelectQuery::<D>::new()` starts an unprojected
+/// query while a finished query spells
+/// `SelectQuery<D, Tables, Output, HasProjection>`.
+pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProjection> {
     ctes: Vec<CteAst>,
-    projections: Option<Vec<ExprKind>>,
+    projections: Vec<ExprKind>,
     joins: Vec<JoinClause>,
     filter: Option<ExprKind>,
     pub(crate) group_by: Vec<ExprKind>,
@@ -69,10 +128,10 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     compound_order_by: Vec<(ExprKind, OrderDirection)>,
     compound_limit: Option<u32>,
     compound_offset: Option<u32>,
-    _marker: QueryMarker<D, Tables, Output>,
+    _marker: QueryMarker<D, Tables, Output, Projected>,
 }
 
-impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
+impl<D: Dialect, Tables, Output, Projected> Clone for SelectQuery<D, Tables, Output, Projected> {
     fn clone(&self) -> Self {
         Self {
             ctes: self.ctes.clone(),
@@ -95,12 +154,12 @@ impl<D: Dialect, Tables, Output> Clone for SelectQuery<D, Tables, Output> {
     }
 }
 
-impl<D: Dialect> SelectQuery<D, (), ()> {
+impl<D: Dialect> SelectQuery<D, (), (), NoProjection> {
     /// Creates a query without a table, projections, filter, or pagination.
     pub fn new() -> Self {
         SelectQuery {
             ctes: Vec::new(),
-            projections: None,
+            projections: Vec::new(),
             joins: Vec::new(),
             filter: None,
             group_by: Vec::new(),
@@ -119,46 +178,45 @@ impl<D: Dialect> SelectQuery<D, (), ()> {
     }
 }
 
-impl<D: Dialect> Default for SelectQuery<D, (), ()> {
+impl<D: Dialect> Default for SelectQuery<D, (), (), NoProjection> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<D: Dialect, Output> SelectQuery<D, (), Output> {
+impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// Introduces `T` as the table rows are selected from.
-    pub fn from<T: Table>(self) -> SelectQuery<D, T, Output> {
+    pub fn from<T: Table>(self) -> SelectQuery<D, T, Output, Projected> {
         self.retype()
     }
 
     /// Introduces `table` as the table rows are selected from.
-    pub fn from_table<T: Table>(self, _table: T) -> SelectQuery<D, T, Output> {
+    pub fn from_table<T: Table>(self, _table: T) -> SelectQuery<D, T, Output, Projected> {
         self.retype()
     }
 }
 
-impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
+impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Projected> {
     /// Selects `selection`, fixing the row type of the query to the selection row.
     ///
     /// The selection is captured as dialect-neutral AST nodes at the call site,
     /// so the query keeps its projection as plain data and renders it with the
     /// dialect of the statement, exactly like the filter, the joins, and the
-    /// ordering it already carries.
+    /// ordering it already carries. Recording a projection moves the query into
+    /// [`HasProjection`], the only state where it can be rendered.
     pub fn select<S, Positions>(
         mut self,
         selection: S,
-    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
+    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, HasProjection>
     where
         S: SelectionFor<Tables, Positions>,
     {
         let mut projections = Vec::new();
         Selection::push_projections(&selection, &mut projections);
-        self.projections = Some(projections);
+        self.projections = projections;
         self.retype()
     }
-}
 
-impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     /// Adds a Common Table Expression (`WITH cte AS (...)`) to this query.
     ///
     /// The expression was built for the dialect `CteD`, which must be the
@@ -173,30 +231,6 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
             query: cte.query,
         });
         self
-    }
-
-    /// Converts this query into a CTE for the table `T`.
-    pub fn as_cte<T: Table>(self) -> Cte<T, Output, D>
-    where
-        Tables: TableScope,
-    {
-        Cte::new(self)
-    }
-
-    /// Converts this query into a named CTE with alias `name`.
-    pub fn as_named_cte(self, name: &'static str) -> Cte<(), Output, D>
-    where
-        Tables: TableScope,
-    {
-        Cte::named(name, self)
-    }
-
-    /// Converts this query into a `LATERAL` subquery exposed under the table marker `T`.
-    pub fn as_lateral<T: Table>(self) -> Lateral<T, Output, D>
-    where
-        Tables: TableScope,
-    {
-        Lateral::new(self)
     }
 
     /// Marks the query as `DISTINCT`, removing duplicate rows.
@@ -246,7 +280,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     pub fn group_by<G, Positions>(
         mut self,
         columns: G,
-    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<EmptyGroupSet>>::Columns>
+    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<EmptyGroupSet>>::Columns, Projected>
     where
         G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<EmptyGroupSet>,
     {
@@ -339,7 +373,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     pub fn inner_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, Joined<Tables, T>, Output>
+    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected>
     where
         Tables: TableScope,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
@@ -353,7 +387,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self,
         _table: T,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, Joined<Tables, T>, Output>
+    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected>
     where
         Tables: TableScope,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
@@ -366,7 +400,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     pub fn left_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected>
     where
         Tables: TableScope,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
@@ -380,7 +414,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self,
         _table: T,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output>
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected>
     where
         Tables: TableScope,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
@@ -400,7 +434,9 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
         self
     }
 
-    fn retype<Tables2, Output2>(self) -> SelectQuery<D, Tables2, Output2> {
+    fn retype<D2: Dialect, Tables2, Output2, Projected2>(
+        self,
+    ) -> SelectQuery<D2, Tables2, Output2, Projected2> {
         SelectQuery {
             ctes: self.ctes,
             projections: self.projections,
@@ -422,12 +458,14 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 }
 
-impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
+impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
+    SelectQuery<D, Tables, Output, Projected>
+{
     /// Joins `lateral` to the query with a `CROSS JOIN LATERAL`.
     pub fn cross_join_lateral<T: Table, Row, LatD>(
         mut self,
         lateral: Lateral<T, Row, LatD>,
-    ) -> SelectQuery<D, CrossLateralJoined<Tables, T>, Output>
+    ) -> SelectQuery<D, CrossLateralJoined<Tables, T>, Output, Projected>
     where
         LatD: DialectInScope<D>,
     {
@@ -443,7 +481,7 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output> SelectQuery<D
     pub fn left_join_lateral<T: Table, Row, LatD>(
         mut self,
         lateral: Lateral<T, Row, LatD>,
-    ) -> SelectQuery<D, LeftLateralJoined<Tables, T>, Output>
+    ) -> SelectQuery<D, LeftLateralJoined<Tables, T>, Output, Projected>
     where
         LatD: DialectInScope<D>,
     {
@@ -459,31 +497,43 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output> SelectQuery<D
     }
 }
 
-impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
+impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
     /// Combines this query with `other` using `UNION`, removing duplicate rows.
-    pub fn union<Tables2: TableScope>(self, other: SelectQuery<D, Tables2, Output>) -> Self {
+    pub fn union<Tables2: TableScope>(
+        self,
+        other: SelectQuery<D, Tables2, Output, HasProjection>,
+    ) -> Self {
         self.with_set_operation(SetOpKind::Union, other)
     }
 
     /// Combines this query with `other` using `UNION ALL`, keeping duplicates.
-    pub fn union_all<Tables2: TableScope>(self, other: SelectQuery<D, Tables2, Output>) -> Self {
+    pub fn union_all<Tables2: TableScope>(
+        self,
+        other: SelectQuery<D, Tables2, Output, HasProjection>,
+    ) -> Self {
         self.with_set_operation(SetOpKind::UnionAll, other)
     }
 
     /// Keeps only the rows produced by both this query and `other` (`INTERSECT`).
-    pub fn intersect<Tables2: TableScope>(self, other: SelectQuery<D, Tables2, Output>) -> Self {
+    pub fn intersect<Tables2: TableScope>(
+        self,
+        other: SelectQuery<D, Tables2, Output, HasProjection>,
+    ) -> Self {
         self.with_set_operation(SetOpKind::Intersect, other)
     }
 
     /// Keeps the rows of this query that are absent from `other` (`EXCEPT`).
-    pub fn except<Tables2: TableScope>(self, other: SelectQuery<D, Tables2, Output>) -> Self {
+    pub fn except<Tables2: TableScope>(
+        self,
+        other: SelectQuery<D, Tables2, Output, HasProjection>,
+    ) -> Self {
         self.with_set_operation(SetOpKind::Except, other)
     }
 
     fn with_set_operation<Tables2: TableScope>(
         mut self,
         kind: SetOpKind,
-        other: SelectQuery<D, Tables2, Output>,
+        other: SelectQuery<D, Tables2, Output, HasProjection>,
     ) -> Self {
         self.set_operations.push(SetOpAst {
             kind,
@@ -493,58 +543,38 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output> {
     }
 }
 
-impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
+impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent>
+    SelectQuery<D, Tables, Output, P>
+{
     /// Describes the query as a dialect-neutral statement AST.
     ///
-    /// A query without projections cannot be described as a statement, so it is
-    /// rejected through a debug assertion that the release path degrades into an
-    /// empty projection list rather than a panic.
+    /// The relations of the statement follow the scope of the query: the table
+    /// the rows are selected from comes first, and every join appends the relation
+    /// it introduced in the same order. Joins are paired with the relations of the
+    /// scope instead of being indexed by them, so a join without a matching
+    /// relation is dropped rather than aborting the renderer.
     pub fn to_ast(&self) -> SelectAst {
-        let projections = match self.projections.as_ref() {
-            Some(projections) => projections.clone(),
-            None => {
-                debug_assert!(
-                    false,
-                    "a SELECT query requires at least one projection; call `select` before `build`"
-                );
-                Vec::new()
-            }
-        };
-
-        // The relations of the statement follow the scope of the query: the
-        // table the rows are selected from comes first, and every join appends
-        // the relation it introduced in the same order.
         let mut tables: Vec<TableRef> = Vec::new();
         Tables::push_table_refs(&mut tables);
-        debug_assert_eq!(
-            tables.len(),
-            self.joins.len() + 1,
-            "every joined table requires an ON condition"
-        );
 
-        if tables.is_empty() {
-            debug_assert!(false, "a SELECT query requires a source table");
-        }
-
-        let mut joins = Vec::with_capacity(self.joins.len());
-        for (index, join) in self.joins.iter().enumerate() {
-            let Some(table) = tables.get(index + 1).copied() else {
-                debug_assert!(false, "every joined table requires an ON condition");
-                break;
-            };
-            joins.push(JoinAst {
+        let joins = tables
+            .iter()
+            .skip(1)
+            .copied()
+            .zip(self.joins.iter())
+            .map(|(table, join)| JoinAst {
                 kind: join.kind,
                 table,
                 lateral: join.lateral.clone(),
                 on: join.on.clone(),
-            });
-        }
+            })
+            .collect();
 
         SelectAst {
             ctes: self.ctes.clone(),
             distinct: self.distinct,
             distinct_on: self.distinct_on.clone(),
-            projections,
+            projections: self.projections.clone(),
             from: tables.first().copied(),
             joins,
             filter: self.filter.clone(),
@@ -566,15 +596,17 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     }
 
     /// Renders the query into SQL text and its ordered parameter list.
+    ///
+    /// The method is reachable only once the query records a projection, so a
+    /// query rendered without `select` is rejected at compile time in debug and
+    /// release builds alike; see [`ProjectionPresent`].
     pub fn build(&self) -> BuiltQuery {
         let mut sql = String::new();
         let mut params = Vec::new();
         self.render_into(&mut sql, &mut params);
         BuiltQuery { sql, params }
     }
-}
 
-impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     /// Wraps the query into a [`Subquery`] carrying this statement as plain data.
     pub fn into_subquery(self) -> Subquery {
         Subquery::new(self.to_ast())
@@ -582,17 +614,36 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
 
     /// Builds an `EXISTS (subquery)` predicate over this query.
     pub fn exists(&self) -> Expr<bool> {
-        Expr::exists(self.clone())
+        Expr::exists(Subquery::new(self.to_ast()))
     }
 
     /// Builds a `NOT EXISTS (subquery)` predicate over this query.
     pub fn not_exists(&self) -> Expr<bool> {
-        Expr::not_exists(self.clone())
+        Expr::not_exists(Subquery::new(self.to_ast()))
     }
 }
 
-impl<D: Dialect, Tables: TableScope, Output> From<SelectQuery<D, Tables, Output>> for Subquery {
-    fn from(query: SelectQuery<D, Tables, Output>) -> Self {
+impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output, HasProjection> {
+    /// Converts this query into a CTE for the table `T`.
+    pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {
+        Cte::new(self)
+    }
+
+    /// Converts this query into a named CTE with alias `name`.
+    pub fn as_named_cte(self, name: &'static str) -> Cte<(), Output, D> {
+        Cte::named(name, self)
+    }
+
+    /// Converts this query into a `LATERAL` subquery exposed under the table marker `T`.
+    pub fn as_lateral<T: Table>(self) -> Lateral<T, Output, D> {
+        Lateral::new(self)
+    }
+}
+
+impl<D: Dialect, Tables: TableScope, Output> From<SelectQuery<D, Tables, Output, HasProjection>>
+    for Subquery
+{
+    fn from(query: SelectQuery<D, Tables, Output, HasProjection>) -> Self {
         query.into_subquery()
     }
 }

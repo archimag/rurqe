@@ -12,7 +12,7 @@ use crate::schema::Table;
 use super::group_by::GroupedQuery;
 use super::savepoint::SavepointName;
 use super::scope::TableScope;
-use super::select::{BuiltQuery, SelectQuery};
+use super::select::{BuiltQuery, HasProjection, SelectQuery};
 
 /// A query whose statement can be rendered and whose rows decode into `Row`.
 #[diagnostic::on_unimplemented(
@@ -28,7 +28,9 @@ pub trait ExecutableQuery {
     fn build_query(&self) -> BuiltQuery;
 }
 
-impl<D: Dialect, Tables: TableScope, Output> ExecutableQuery for SelectQuery<D, Tables, Output> {
+impl<D: Dialect, Tables: TableScope, Output> ExecutableQuery
+    for SelectQuery<D, Tables, Output, HasProjection>
+{
     type Row = Output;
 
     fn build_query(&self) -> BuiltQuery {

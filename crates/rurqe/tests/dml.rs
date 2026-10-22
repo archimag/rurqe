@@ -73,6 +73,7 @@ fn bulk_insert_renders_one_row_per_assignment_set() {
             (UserId::set(1i64), UserName::set("a")),
             (UserId::set(2i64), UserName::set("b")),
         ])
+        .expect("the row source is not empty")
         .build();
 
     assert_eq!(

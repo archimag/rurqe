@@ -9,13 +9,16 @@
 //! INSERT INTO "users" ("id", "name") VALUES ($1, $2), ($3, $4)
 //! ```
 
+use core::fmt;
 use core::marker::PhantomData;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::expr::SelectAst;
-use crate::query::{BuiltQuery, SelectQuery, Selection, TableScope, TableSelection};
+use crate::query::{
+    BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
+};
 use crate::schema::{Column, ColumnBelongsTo, Table};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
@@ -25,6 +28,23 @@ pub struct InsertedSelect<Row>(PhantomData<fn() -> Row>);
 /// Marker representing target columns configured for an `INSERT INTO ... SELECT` statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InsertColumnsTarget<Cols>(PhantomData<fn() -> Cols>);
+
+/// The error returned when an `INSERT` is given no row to insert.
+///
+/// An `INSERT` without rows could only render the syntactically invalid
+/// `INSERT INTO "users" () VALUES` statement, so [`InsertQuery::values_many`]
+/// rejects an empty row source instead of moving the query into the
+/// [`InsertSource`] state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptyRows;
+
+impl fmt::Display for EmptyRows {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("refusing to build an INSERT without rows: the row source is empty")
+    }
+}
+
+impl std::error::Error for EmptyRows {}
 
 /// A column or tuple of columns for the target column list of an `INSERT INTO ... SELECT` statement.
 ///
@@ -193,7 +213,14 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     }
 
     /// Inserts every row produced by `rows` as a single multi-row statement.
-    pub fn values_many<I, S>(mut self, rows: I) -> InsertQuery<D, T, S, Returning>
+    ///
+    /// The query only moves into the [`InsertSource`] state once at least one row
+    /// was recorded, so an empty row source is reported as [`EmptyRows`] instead
+    /// of rendering the invalid `INSERT INTO "users" () VALUES` statement.
+    pub fn values_many<I, S>(
+        mut self,
+        rows: I,
+    ) -> Result<InsertQuery<D, T, S, Returning>, EmptyRows>
     where
         I: IntoIterator<Item = S>,
         S: AssignmentSet<T>,
@@ -201,7 +228,12 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         for set in rows {
             self.push_row(&set);
         }
-        self.retype()
+
+        if self.rows.is_empty() {
+            return Err(EmptyRows);
+        }
+
+        Ok(self.retype())
     }
 
     /// Specifies the target columns for an `INSERT INTO ... SELECT` statement.
@@ -221,7 +253,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     pub fn from_select<Cols, S>(
         mut self,
         columns: Cols,
-        select: SelectQuery<D, S, Cols::Row>,
+        select: SelectQuery<D, S, Cols::Row, HasProjection>,
     ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning>
     where
         Cols: InsertColumns<T>,
@@ -239,7 +271,7 @@ impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
     /// Configures the statement to insert rows produced by `select` into the specified columns.
     pub fn from_select<S: TableScope>(
         mut self,
-        select: SelectQuery<D, S, Cols::Row>,
+        select: SelectQuery<D, S, Cols::Row, HasProjection>,
     ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning> {
         self.select = Some(select.to_ast());
         self.retype()
@@ -385,34 +417,18 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
 
 impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
     fn push_row<S: AssignmentSet<T>>(&mut self, set: &S) {
-        debug_assert!(
-            self.select.is_none(),
-            "cannot add VALUES rows to an INSERT statement configured with `from_select`"
-        );
         let mut assignments = Vec::new();
         set.extend_assignments(&mut assignments);
-        debug_assert!(
-            !assignments.is_empty(),
-            "an INSERT row requires at least one column assignment"
-        );
 
+        // Every row of one statement is typed by the same `AssignmentSet`, and a
+        // `VALUES` source is only recordable in the state that carries no source
+        // yet, so all rows assign the same columns in the same order and the
+        // column list only has to be recorded for the first row.
         if self.rows.is_empty() {
             self.columns = assignments
                 .iter()
                 .map(|assignment| assignment.column)
                 .collect();
-        } else {
-            debug_assert_eq!(
-                assignments.len(),
-                self.columns.len(),
-                "all inserted rows must assign the same columns"
-            );
-            for (assignment, expected) in assignments.iter().zip(self.columns.iter()) {
-                debug_assert_eq!(
-                    assignment.column, *expected,
-                    "all inserted rows must assign the same columns in the same order"
-                );
-            }
         }
 
         self.rows.push(
@@ -509,6 +525,7 @@ mod tests {
                 (UserId::set(1i64), UserName::set("a")),
                 (UserId::set(2i64), UserName::set("b")),
             ])
+            .expect("the row source is not empty")
             .build();
 
         assert_eq!(
@@ -524,6 +541,17 @@ mod tests {
                 SqlVal::Text("b".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn an_empty_row_source_is_rejected() {
+        let result = InsertQuery::<MockDialect, User>::new()
+            .values_many(std::iter::empty::<(Assignment<UserId, i64>,)>());
+
+        let error = result.err().expect("an empty row source is rejected");
+
+        assert_eq!(error, EmptyRows);
+        assert!(error.to_string().contains("empty"));
     }
 
     #[test]

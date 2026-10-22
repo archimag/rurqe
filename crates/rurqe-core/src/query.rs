@@ -50,7 +50,9 @@ pub use self::scope::{
     CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, NonNullableRel,
     NullableRel, ScopePositions, TableNullabilityInScope, TableScope,
 };
-pub use self::select::{BuiltQuery, OrderDirection, SelectQuery};
+pub use self::select::{
+    BuiltQuery, HasProjection, NoProjection, OrderDirection, ProjectionPresent, SelectQuery,
+};
 pub use self::selection::{
     ApplyNullability, ColumnInScope, MakeNullable, Nullable, SelectTarget, SelectTargetInScope,
     Selection, SelectionFor, SelectionInScope, TableSelection,

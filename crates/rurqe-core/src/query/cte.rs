@@ -8,7 +8,7 @@ use crate::expr::SelectAst;
 use crate::schema::Table;
 
 use super::scope::TableScope;
-use super::select::SelectQuery;
+use super::select::{HasProjection, SelectQuery};
 
 /// Phantom marker carrying the table, row type, and dialect of a subquery.
 ///
@@ -55,7 +55,7 @@ impl<T, Row, D> fmt::Debug for Cte<T, Row, D> {
 
 impl<T: Table, Row, D: Dialect> Cte<T, Row, D> {
     /// Creates a CTE for the table `T` from a `SelectQuery`.
-    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row>) -> Self {
+    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
         Self {
             name: T::NAME,
             query: query.to_ast(),
@@ -66,7 +66,10 @@ impl<T: Table, Row, D: Dialect> Cte<T, Row, D> {
 
 impl<Row, D: Dialect> Cte<(), Row, D> {
     /// Creates a CTE with an explicit alias `name` from a `SelectQuery`.
-    pub fn named<S: TableScope>(name: &'static str, query: SelectQuery<D, S, Row>) -> Self {
+    pub fn named<S: TableScope>(
+        name: &'static str,
+        query: SelectQuery<D, S, Row, HasProjection>,
+    ) -> Self {
         Self {
             name,
             query: query.to_ast(),
@@ -88,7 +91,7 @@ impl<T: Table, Row: 'static, D: 'static> Table for Cte<T, Row, D> {
 
 /// Starts a CTE definition for the table marker `T` from `query`.
 pub fn cte<T: Table, D: Dialect, S: TableScope, Row>(
-    query: SelectQuery<D, S, Row>,
+    query: SelectQuery<D, S, Row, HasProjection>,
 ) -> Cte<T, Row, D> {
     Cte::new(query)
 }
@@ -96,7 +99,7 @@ pub fn cte<T: Table, D: Dialect, S: TableScope, Row>(
 /// Starts a CTE definition with an explicit alias `name` from `query`.
 pub fn cte_named<D: Dialect, S: TableScope, Row>(
     name: &'static str,
-    query: SelectQuery<D, S, Row>,
+    query: SelectQuery<D, S, Row, HasProjection>,
 ) -> Cte<(), Row, D> {
     Cte::named(name, query)
 }
@@ -132,7 +135,7 @@ impl<T, Row, D> fmt::Debug for Lateral<T, Row, D> {
 
 impl<T: Table, Row, D: Dialect> Lateral<T, Row, D> {
     /// Wraps `query` into a `LATERAL` subquery exposed under the table `T`.
-    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row>) -> Self {
+    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
         Self {
             query: query.to_ast(),
             _marker: PhantomData,
@@ -142,7 +145,7 @@ impl<T: Table, Row, D: Dialect> Lateral<T, Row, D> {
 
 /// Wraps `query` into a `LATERAL` subquery exposing its rows under the table marker `T`.
 pub fn lateral<T: Table, D: Dialect, S: TableScope, Row>(
-    query: SelectQuery<D, S, Row>,
+    query: SelectQuery<D, S, Row, HasProjection>,
 ) -> Lateral<T, Row, D> {
     Lateral::new(query)
 }

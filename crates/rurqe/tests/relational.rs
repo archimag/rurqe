@@ -451,7 +451,7 @@ fn subquery_predicates_filter_rows_and_bind_parameters_in_order() {
 }
 
 /// Builds a `CASE`-labelled customer query guarded by a correlated `EXISTS` predicate.
-fn active_customers() -> SelectQuery<Postgres<Pg16>, User, (i64, String)> {
+fn active_customers() -> SelectQuery<Postgres<Pg16>, User, (i64, String), HasProjection> {
     select_from::<Postgres<Pg16>, User>()
         .select((
             UserId,
@@ -490,7 +490,7 @@ fn set_operations_combine_case_and_exists_queries() {
         ]
     );
 
-    fn base() -> SelectQuery<Postgres<Pg16>, Order, (i64,)> {
+    fn base() -> SelectQuery<Postgres<Pg16>, Order, (i64,), HasProjection> {
         select_from::<Postgres<Pg16>, Order>().select((OrderUserId,))
     }
 
@@ -505,7 +505,7 @@ fn set_operations_combine_case_and_exists_queries() {
 }
 
 /// Builds the most recent order of the outer `users` row.
-fn latest_order_per_user() -> SelectQuery<Postgres<Pg16>, Order, (f64,)> {
+fn latest_order_per_user() -> SelectQuery<Postgres<Pg16>, Order, (f64,), HasProjection> {
     select_from::<Postgres<Pg16>, Order>()
         .select((OrderTotal,))
         .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
@@ -686,7 +686,7 @@ mod value_based_dsl {
              FROM \"orders\""
         );
 
-        fn active() -> SelectQuery<Postgres, User, (i64,)> {
+        fn active() -> SelectQuery<Postgres, User, (i64,), HasProjection> {
             select_from(User).select((UserId,)).where_(UserActive.eq(true))
         }
 

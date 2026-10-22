@@ -8,7 +8,7 @@
 
 use rurqe_core::dialect::Dialect;
 use rurqe_core::expr::{Expr, SqlVal};
-use rurqe_core::query::{LeftJoined, SelectQuery, Selection, SelectionFor};
+use rurqe_core::query::{HasProjection, LeftJoined, SelectQuery, Selection, SelectionFor};
 use rurqe_core::row::FromRow;
 use rurqe_macros::select;
 
@@ -43,7 +43,7 @@ impl Dialect for TestDialect {
 
 trait TestSelectFrom<T: rurqe_core::schema::Table, Positions>: Sized {
     type Row;
-    fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row>;
+    fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row, HasProjection>;
 }
 
 impl<S, T, Positions> TestSelectFrom<T, Positions> for S
@@ -53,7 +53,7 @@ where
 {
     type Row = <S as SelectionFor<T, Positions>>::Row;
 
-    fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row> {
+    fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row, HasProjection> {
         SelectQuery::<TestDialect>::new()
             .from_table(table)
             .select::<S, Positions>(self)
@@ -210,7 +210,7 @@ fn selection_feeds_the_query_builder() {
 mod question_mark_dialect_scope {
     use rurqe_core::dialect::Dialect;
     use rurqe_core::expr::{Expr, SqlVal};
-    use rurqe_core::query::{SelectQuery, SelectionFor};
+    use rurqe_core::query::{HasProjection, SelectQuery, SelectionFor};
     use rurqe_core::schema::Table;
     use rurqe_macros::select;
 
@@ -238,7 +238,7 @@ mod question_mark_dialect_scope {
 
     trait QuestionSelectFrom<T: Table, Positions>: Sized {
         type Row;
-        fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row>;
+        fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row, HasProjection>;
     }
 
     impl<S, T, Positions> QuestionSelectFrom<T, Positions> for S
@@ -248,7 +248,7 @@ mod question_mark_dialect_scope {
     {
         type Row = <S as SelectionFor<T, Positions>>::Row;
 
-        fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row> {
+        fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row, HasProjection> {
             SelectQuery::<QuestionDialect>::new()
                 .from_table(table)
                 .select::<S, Positions>(self)

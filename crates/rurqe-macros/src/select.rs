@@ -252,6 +252,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                     __D,
                     __T,
                     <Self as ::rurqe_core::query::SelectionFor<__T, (#from_positions)>>::Row,
+                    ::rurqe_core::query::HasProjection,
                 >
                 where
                     __D: ::rurqe_core::dialect::Dialect,

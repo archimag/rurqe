@@ -9,7 +9,7 @@ use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 use super::cte::Cte;
 use super::scope::{ScopePositions, TableScope};
 use super::selection::{Selection, SelectionFor, SelectTarget};
-use super::select::{BuiltQuery, OrderDirection, SelectQuery};
+use super::select::{BuiltQuery, HasProjection, OrderDirection, ProjectionPresent, SelectQuery};
 use super::window::WindowExpr;
 
 /// A column or tuple of columns for the `GROUP BY` clause.
@@ -269,88 +269,40 @@ impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
 impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
 
 /// A `SELECT` query whose rows are grouped by the columns recorded in `GroupByCols`.
-pub struct GroupedQuery<D: Dialect, Tables = (), Output = (), GroupByCols = EmptyGroupSet> {
-    pub(crate) query: SelectQuery<D, Tables, Output>,
+///
+/// `Projected` mirrors [`SelectQuery`]: a grouped query is renderable only once
+/// it projects its rows through [`GroupedQuery::select`].
+pub struct GroupedQuery<
+    D: Dialect,
+    Tables = (),
+    Output = (),
+    GroupByCols = EmptyGroupSet,
+    Projected = HasProjection,
+> {
+    pub(crate) query: SelectQuery<D, Tables, Output, Projected>,
     pub(crate) _marker: PhantomData<fn() -> GroupByCols>,
 }
 
-impl<D: Dialect, Tables, GroupByCols> GroupedQuery<D, Tables, (), GroupByCols> {
+impl<D: Dialect, Tables, GroupByCols, Projected>
+    GroupedQuery<D, Tables, (), GroupByCols, Projected>
+{
     /// Selects `selection`, requiring every projected column to be grouped or aggregated.
     ///
-    /// An aggregate collapses the rows of a group into a single value, so it is
-    /// accepted even when it references a column the query does not group by:
-    ///
-    /// ```
-    /// use rurqe_core::dialect::Dialect;
-    /// use rurqe_core::expr::Expr;
-    /// use rurqe_core::query::SelectQuery;
-    ///
-    /// struct MockDialect;
-    ///
-    /// impl Dialect for MockDialect {
-    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
-    ///         out.push_str(ident);
-    ///     }
-    ///
-    ///     fn push_placeholder(out: &mut String, index: usize) {
-    ///         let _ = index;
-    ///     }
-    /// }
-    ///
-    /// rurqe_core::table! {
-    ///     Order => "orders" {
-    ///         OrderId => "id": i64,
-    ///         OrderTotal => "total": f64,
-    ///     }
-    /// }
-    ///
-    /// let built = SelectQuery::<MockDialect>::new()
-    ///     .from::<Order>()
-    ///     .group_by(OrderId)
-    ///     .select((OrderId, Expr::sum::<OrderTotal>()))
-    ///     .build();
-    ///
-    /// assert_eq!(built.sql, "SELECT id, SUM(total) FROM orders GROUP BY id");
-    /// ```
-    ///
-    /// A column reference is not constant within a group, so it stays rejected
-    /// unless its column is grouped — the `Expr` escape hatch no longer bypasses
-    /// the `GROUP BY` rule:
-    ///
-    /// ```compile_fail
-    /// use rurqe_core::dialect::Dialect;
-    /// use rurqe_core::expr::Expr;
-    /// use rurqe_core::query::SelectQuery;
-    ///
-    /// struct MockDialect;
-    ///
-    /// impl Dialect for MockDialect {
-    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
-    ///         out.push_str(ident);
-    ///     }
-    ///
-    ///     fn push_placeholder(out: &mut String, index: usize) {
-    ///         let _ = index;
-    ///     }
-    /// }
-    ///
-    /// rurqe_core::table! {
-    ///     Order => "orders" {
-    ///         OrderId => "id": i64,
-    ///         OrderTotal => "total": f64,
-    ///     }
-    /// }
-    ///
-    /// // Fails to compile: the projection is neither grouped nor an aggregate.
-    /// let _ = SelectQuery::<MockDialect>::new()
-    ///     .from::<Order>()
-    ///     .group_by(OrderId)
-    ///     .select((OrderId, Expr::column::<OrderTotal>()));
-    /// ```
+    /// A column reference must therefore be part of the `GROUP BY` clause, while
+    /// an aggregate such as `count`, `sum`, `avg`, `min`, or `max` may reference
+    /// any column of the query scope. An `Expr` escape hatch does not bypass the
+    /// rule: an expression that references a column keeps the scope of its table
+    /// and stays rejected unless the column is grouped.
     pub fn select<S, Positions, GroupPositions>(
         self,
         selection: S,
-    ) -> GroupedQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, GroupByCols>
+    ) -> GroupedQuery<
+        D,
+        Tables,
+        <S as SelectionFor<Tables, Positions>>::Row,
+        GroupByCols,
+        HasProjection,
+    >
     where
         S: SelectionFor<Tables, Positions>
             + GroupedSelection<GroupByCols, GroupPositions>
@@ -365,12 +317,14 @@ impl<D: Dialect, Tables, GroupByCols> GroupedQuery<D, Tables, (), GroupByCols> {
     }
 }
 
-impl<D: Dialect, Tables, Output, GroupByCols> GroupedQuery<D, Tables, Output, GroupByCols> {
+impl<D: Dialect, Tables, Output, GroupByCols, Projected>
+    GroupedQuery<D, Tables, Output, GroupByCols, Projected>
+{
     /// Groups the rows further by `columns`, appending them to the grouping.
     pub fn group_by<G, Positions>(
         self,
         columns: G,
-    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<GroupByCols>>::Columns>
+    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<GroupByCols>>::Columns, Projected>
     where
         G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<GroupByCols>,
     {
@@ -429,22 +383,25 @@ impl<D: Dialect, Tables, Output, GroupByCols> GroupedQuery<D, Tables, Output, Gr
     }
 
     /// Returns the query of this state, dropping the grouping marker.
-    pub fn into_select(self) -> SelectQuery<D, Tables, Output> {
+    pub fn into_select(self) -> SelectQuery<D, Tables, Output, Projected> {
         self.query
     }
 }
 
-impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
-    GroupedQuery<D, Tables, Output, GroupByCols>
+impl<D: Dialect, Tables: TableScope, Output, GroupByCols, P: ProjectionPresent>
+    GroupedQuery<D, Tables, Output, GroupByCols, P>
 {
     /// Renders the grouped statement into SQL text and its ordered parameter list.
+    ///
+    /// Like [`SelectQuery::build`], the method is reachable only once the query
+    /// projects its rows, so a grouped query without a projection never renders.
     pub fn build(&self) -> BuiltQuery {
         self.query.build()
     }
 }
 
 impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
-    GroupedQuery<D, Tables, Output, GroupByCols>
+    GroupedQuery<D, Tables, Output, GroupByCols, HasProjection>
 {
     /// Converts this grouped query into a CTE for the table `T`.
     pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {

@@ -105,7 +105,7 @@ fn renders_selection_from_filter_and_pagination() {
 
 #[test]
 fn selection_determines_row_type() {
-    let query: SelectQuery<MockDialect, User, (i64,)> =
+    let query: SelectQuery<MockDialect, User, (i64,), HasProjection> =
         SelectQuery::<MockDialect>::new().from::<User>().select((UserId,));
 
     assert_eq!(query.build().sql, "SELECT \"id\" FROM \"users\"");
@@ -156,14 +156,25 @@ fn order_by_renders_asc_and_desc() {
 }
 
 #[test]
-#[should_panic(expected = "at least one projection")]
-fn building_without_projections_panics() {
-    let _ = SelectQuery::<MockDialect>::new().from::<User>().build();
+fn the_projection_typestate_gates_the_statement_renderer() {
+    fn assert_projected<P: ProjectionPresent>() {}
+
+    // `HasProjection` is the only state whose queries reach the renderer, so a
+    // query without a projection is rejected at compile time in every profile;
+    // the `compile_fail` example on `SelectQuery::build` pins that contract.
+    assert_projected::<HasProjection>();
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,))
+        .build();
+
+    assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
 }
 
 #[test]
 fn inner_join_renders_join_clause_before_filter() {
-    let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64)> =
+    let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64), HasProjection> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
@@ -275,11 +286,15 @@ fn nullable_column_keeps_name_and_lifts_rust_type() {
 
 #[test]
 fn left_joined_columns_are_lifted_without_explicit_markers() {
-    let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
-        SelectQuery::<MockDialect>::new()
-            .from::<User>()
-            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
-            .select((UserId, OrderTotal));
+    let query: SelectQuery<
+        MockDialect,
+        LeftJoined<User, Order>,
+        (i64, Option<f64>),
+        HasProjection,
+    > = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
+        .select((UserId, OrderTotal));
 
     let built = query.build();
 
@@ -293,7 +308,7 @@ fn left_joined_columns_are_lifted_without_explicit_markers() {
 
 #[test]
 fn inner_joined_columns_keep_their_declared_types() {
-    let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64, f64)> =
+    let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64, f64), HasProjection> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .inner_join::<Order, _, _>(Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
@@ -310,7 +325,7 @@ fn inner_joined_columns_keep_their_declared_types() {
 fn nested_left_join_stays_nullable_inside_an_inner_join() {
     type NestedScope = Joined<LeftJoined<User, Order>, User>;
 
-    let query: SelectQuery<MockDialect, NestedScope, (Option<i64>,)> =
+    let query: SelectQuery<MockDialect, NestedScope, (Option<i64>,), HasProjection> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
@@ -326,7 +341,8 @@ fn nested_left_join_stays_nullable_inside_an_inner_join() {
 
 #[test]
 fn explicit_nullable_marker_matches_automatic_lifting() {
-    fn nullable_scope() -> SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> {
+    fn nullable_scope(
+    ) -> SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>), HasProjection> {
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64))
@@ -339,15 +355,24 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
             .from::<User>()
             .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64));
         let total = query.nullable::<OrderTotal>();
-        let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
-            query.select((UserId, total));
+        let query: SelectQuery<
+            MockDialect,
+            LeftJoined<User, Order>,
+            (i64, Option<f64>),
+            HasProjection,
+        > = query.select((UserId, total));
         query
     };
 
     assert_eq!(automatic.build(), explicit.build());
 
     // An already nullable column keeps a single layer of `Option`.
-    let single_layer: SelectQuery<MockDialect, LeftJoined<User, Order>, (Option<f64>,)> =
+    let single_layer: SelectQuery<
+        MockDialect,
+        LeftJoined<User, Order>,
+        (Option<f64>,),
+        HasProjection,
+    > =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64))
@@ -549,7 +574,7 @@ fn executable_queries_expose_built_sql_and_row_type() {
 
     fn assert_row<Q: ExecutableQuery<Row = (i64, String)>>() {}
 
-    assert_row::<SelectQuery<MockDialect, User, (i64, String)>>();
+    assert_row::<SelectQuery<MockDialect, User, (i64, String), HasProjection>>();
     assert_row::<InsertQuery<MockDialect, User, InsertedSelect<(i64, String)>, (i64, String)>>();
     assert_row::<UpdateQuery<MockDialect, User, Filtered, (i64, String), User, HasAssignments>>();
     assert_row::<DeleteQuery<MockDialect, User, Filtered, (i64, String)>>();
@@ -960,7 +985,7 @@ fn union_renders_combined_query_and_binds_parameters_in_order() {
 
 #[test]
 fn set_operation_keywords_render_expected_sql() {
-    fn base() -> SelectQuery<MockDialect, User, (i64,)> {
+    fn base() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .select((UserId,))
@@ -986,7 +1011,7 @@ fn set_operation_keywords_render_expected_sql() {
 
 #[test]
 fn chained_set_operations_keep_trailing_order_by_and_limit_on_the_union() {
-    fn base() -> SelectQuery<MockDialect, User, (i64,)> {
+    fn base() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .select((UserId,))
@@ -1098,7 +1123,7 @@ crate::table! {
     }
 }
 
-fn latest_order_per_user_scope() -> SelectQuery<MockDialect, Order, (f64,)> {
+fn latest_order_per_user_scope() -> SelectQuery<MockDialect, Order, (f64,), HasProjection> {
     SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderTotal,))
@@ -1387,11 +1412,15 @@ fn value_join_arguments_infer_joined_tables() {
 
 #[test]
 fn value_left_join_arguments_lift_columns_into_options() {
-    let query: SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<f64>)> =
-        SelectQuery::<MockDialect>::new()
-            .from_table(User)
-            .left_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
-            .select((UserId, OrderTotal));
+    let query: SelectQuery<
+        MockDialect,
+        LeftJoined<User, Order>,
+        (i64, Option<f64>),
+        HasProjection,
+    > = SelectQuery::<MockDialect>::new()
+        .from_table(User)
+        .left_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
+        .select((UserId, OrderTotal));
 
     assert_eq!(
         query.build().sql,

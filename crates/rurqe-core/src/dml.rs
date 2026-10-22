@@ -20,7 +20,7 @@ pub mod update;
 
 pub use conflict::{Conflict, ConflictAction, OnConflict};
 pub use delete::DeleteQuery;
-pub use insert::InsertQuery;
+pub use insert::{EmptyRows, InsertQuery};
 pub use update::UpdateQuery;
 
 use core::marker::PhantomData;
