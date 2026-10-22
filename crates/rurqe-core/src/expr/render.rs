@@ -458,8 +458,20 @@ impl SelectAst {
     /// then the operation keywords, and finally the ordering and pagination of
     /// the compound result. An operand carrying its own `WITH` clause, ordering,
     /// pagination, or nested set operations is parenthesised, so its clauses stay
-    /// attached to it instead of binding to the compound statement.
+    /// attached to it instead of binding to the compound statement. A statement
+    /// requesting a row-level lock renders it after every other clause.
     pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        self.render_statement::<D>(sql, params);
+
+        // `FOR UPDATE` and `FOR SHARE` close the statement: SQL binds the lock
+        // after the ordering and pagination of the rows it locks.
+        if let Some(lock) = self.lock {
+            lock.render_into(sql);
+        }
+    }
+
+    /// Renders every clause of the statement up to the locking clause.
+    fn render_statement<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
         let relations = self.relations();
 
         if self.set_operations.is_empty() {

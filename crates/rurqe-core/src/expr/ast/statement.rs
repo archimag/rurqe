@@ -82,6 +82,100 @@ impl SetOpKind {
     }
 }
 
+/// The strength of the row-level lock a statement requests over its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LockStrength {
+    /// `FOR UPDATE`, an exclusive lock on the selected rows.
+    Update,
+    /// `FOR SHARE`, a shared lock leaving readers concurrent.
+    Share,
+}
+
+impl LockStrength {
+    /// The SQL text of the lock clause.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            LockStrength::Update => "FOR UPDATE",
+            LockStrength::Share => "FOR SHARE",
+        }
+    }
+}
+
+/// How a statement behaves when a selected row is already locked elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LockWait {
+    /// Wait for the concurrent transaction to finish before locking the row.
+    Block,
+    /// Fail immediately instead of waiting (`NOWAIT`).
+    NoWait,
+    /// Skip the locked rows and lock the rest (`SKIP LOCKED`).
+    SkipLocked,
+}
+
+impl LockWait {
+    /// The SQL text appended to the lock clause, prefixed by a space.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            LockWait::Block => "",
+            LockWait::NoWait => " NOWAIT",
+            LockWait::SkipLocked => " SKIP LOCKED",
+        }
+    }
+}
+
+/// The row-level lock a statement requests over the rows it selects.
+///
+/// The clause closes the statement, so a locked query reads as
+/// `SELECT ... LIMIT 1 FOR UPDATE SKIP LOCKED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LockClause {
+    strength: LockStrength,
+    wait: LockWait,
+}
+
+impl LockClause {
+    /// Requests `strength` while waiting for rows locked elsewhere.
+    pub const fn new(strength: LockStrength) -> Self {
+        Self {
+            strength,
+            wait: LockWait::Block,
+        }
+    }
+
+    /// The strength of the requested lock.
+    pub const fn strength(self) -> LockStrength {
+        self.strength
+    }
+
+    /// The wait behaviour of the requested lock.
+    pub const fn wait(self) -> LockWait {
+        self.wait
+    }
+
+    /// Fails instead of waiting for rows locked elsewhere (`NOWAIT`).
+    pub const fn nowait(self) -> Self {
+        Self {
+            strength: self.strength,
+            wait: LockWait::NoWait,
+        }
+    }
+
+    /// Skips rows locked elsewhere and locks the rest (`SKIP LOCKED`).
+    pub const fn skip_locked(self) -> Self {
+        Self {
+            strength: self.strength,
+            wait: LockWait::SkipLocked,
+        }
+    }
+
+    /// Appends the clause to `sql`, prefixed by a space.
+    pub fn render_into(self, sql: &mut String) {
+        sql.push(' ');
+        sql.push_str(self.strength.as_str());
+        sql.push_str(self.wait.as_str());
+    }
+}
+
 /// The shape of a window function call evaluated over an `OVER (...)` clause.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowExprKind {
@@ -153,6 +247,8 @@ pub struct SelectAst {
     pub compound_limit: Option<u32>,
     /// The row offset of the compound result, applied after a set operation.
     pub compound_offset: Option<u32>,
+    /// The row-level lock requested over the selected rows, if any.
+    pub lock: Option<LockClause>,
 }
 
 /// A Common Table Expression (`WITH name AS (...)`) contributing to a statement.

@@ -9,7 +9,7 @@ pub mod schema;
 
 pub use dialect::{
     Dialect, SupportsDeleteUsing, SupportsDistinctOn, SupportsOnConflict, SupportsReturning,
-    SupportsUpdateFrom,
+    SupportsRowLocking, SupportsUpdateFrom,
 };
 pub use dml::{AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign};
 pub use expr::{

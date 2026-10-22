@@ -519,6 +519,47 @@ crate::pin_dialect_version! {
 /// // Fails to compile: the query records no projection yet.
 /// let _ = select_from::<Postgres, User>().build();
 /// ```
+///
+/// A query may lock the rows it selects, keeping them from concurrent writers
+/// until the transaction ends:
+///
+/// ```
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `jobs` table.
+///     Job => "jobs" {
+///         JobId => "id": i64,
+///     }
+/// }
+///
+/// let built = select_from::<Postgres, Job>()
+///     .select((JobId,))
+///     .for_update()
+///     .skip_locked()
+///     .build();
+///
+/// assert_eq!(built.sql, "SELECT \"id\" FROM \"jobs\" FOR UPDATE SKIP LOCKED");
+/// ```
+///
+/// Row-level locking is a dialect capability, so a query pinned to SQLite —
+/// which locks the whole database instead — cannot request it:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `jobs` table.
+///     Job => "jobs" {
+///         JobId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: SQLite has no `FOR UPDATE` clause.
+/// let _ = select_from::<Sqlite, Job>()
+///     .select((JobId,))
+///     .for_update();
+/// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection> {
     SelectQuery::new().from::<T>()
 }
@@ -783,17 +824,18 @@ pub mod prelude {
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 
     pub use rurqe_core::dialect::{
-        SupportsDeleteUsing, SupportsLateralJoin, SupportsUpdateFrom,
+        SupportsDeleteUsing, SupportsLateralJoin, SupportsRowLocking, SupportsUpdateFrom,
     };
 
     pub use rurqe_core::expr::{
         avg, coalesce, count, count_all, max, min, sum, CaseBranch, CaseBuilder, Expression,
-        RowExpr, RowValues, StringExpression, Subquery, SubqueryOp,
+        LockClause, LockStrength, LockWait, RowExpr, RowValues, StringExpression, Subquery,
+        SubqueryOp,
     };
 
     pub use rurqe_core::query::{
         AsyncQueryBackend, AsyncQueryBackendExt, HasProjection, JoinKind, Joined, LeftJoined,
-        NoProjection, Nullable, ProjectionPresent, SetOpKind, TableScope,
+        Locked, NoLock, NoProjection, Nullable, ProjectionPresent, SetOpKind, TableScope,
     };
 
     pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};

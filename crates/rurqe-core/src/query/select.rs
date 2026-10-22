@@ -2,9 +2,10 @@
 
 use core::marker::PhantomData;
 
-use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin};
+use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin, SupportsRowLocking};
 use crate::expr::{
-    BinaryOp, CteAst, DialectInScope, Expr, ExprKind, JoinAst, SelectAst, SqlVal, Subquery,
+    BinaryOp, CteAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause, LockStrength,
+    SelectAst, SqlVal, Subquery,
 };
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
@@ -38,6 +39,18 @@ pub struct NoProjection;
 /// Typestate marker indicating that a `SELECT` query records the rows it projects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HasProjection;
+
+/// Typestate marker indicating that a `SELECT` query requests no row-level lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoLock;
+
+/// Typestate marker indicating that a `SELECT` query requests a row-level lock.
+///
+/// The state is reached through [`SelectQuery::for_update`] or
+/// [`SelectQuery::for_share`], the only builders of the marker, so a locking
+/// clause can neither be requested twice nor modified before it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Locked;
 
 /// Statically asserts that a `SELECT` query records the rows it projects.
 ///
@@ -83,8 +96,8 @@ pub trait ProjectionPresent {}
 impl ProjectionPresent for HasProjection {}
 
 /// Phantom marker carrying the dialect, scope, row type, and projection state of a query.
-type QueryMarker<D, Tables, Output, Projected> =
-    PhantomData<fn() -> (D, Tables, Output, Projected)>;
+type QueryMarker<D, Tables, Output, Projected, Lock> =
+    PhantomData<fn() -> (D, Tables, Output, Projected, Lock)>;
 
 /// A single join clause recorded on a [`SelectQuery`].
 ///
@@ -112,7 +125,15 @@ struct JoinClause {
 /// defaults to [`NoProjection`], so `SelectQuery::<D>::new()` starts an unprojected
 /// query while a finished query spells
 /// `SelectQuery<D, Tables, Output, HasProjection>`.
-pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProjection> {
+///
+/// `Lock` records whether the query requests a row-level lock: a plain query
+/// carries [`NoLock`], and [`SelectQuery::for_update`] or
+/// [`SelectQuery::for_share`] move it into [`Locked`], where the closing
+/// [`SelectQuery::nowait`] and [`SelectQuery::skip_locked`] modifiers stay
+/// reachable. The requested clause is copied into the rendered statement, so a
+/// locked query executes like any other.
+pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProjection, Lock = NoLock>
+{
     ctes: Vec<CteAst>,
     projections: Vec<ExprKind>,
     joins: Vec<JoinClause>,
@@ -128,10 +149,13 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProje
     compound_order_by: Vec<(ExprKind, OrderDirection)>,
     compound_limit: Option<u32>,
     compound_offset: Option<u32>,
-    _marker: QueryMarker<D, Tables, Output, Projected>,
+    lock: Option<LockClause>,
+    _marker: QueryMarker<D, Tables, Output, Projected, Lock>,
 }
 
-impl<D: Dialect, Tables, Output, Projected> Clone for SelectQuery<D, Tables, Output, Projected> {
+impl<D: Dialect, Tables, Output, Projected, Lock> Clone
+    for SelectQuery<D, Tables, Output, Projected, Lock>
+{
     fn clone(&self) -> Self {
         Self {
             ctes: self.ctes.clone(),
@@ -149,6 +173,7 @@ impl<D: Dialect, Tables, Output, Projected> Clone for SelectQuery<D, Tables, Out
             compound_order_by: self.compound_order_by.clone(),
             compound_limit: self.compound_limit,
             compound_offset: self.compound_offset,
+            lock: self.lock,
             _marker: PhantomData,
         }
     }
@@ -173,6 +198,7 @@ impl<D: Dialect> SelectQuery<D, (), (), NoProjection> {
             compound_order_by: Vec::new(),
             compound_limit: None,
             compound_offset: None,
+            lock: None,
             _marker: PhantomData,
         }
     }
@@ -441,9 +467,9 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         self
     }
 
-    fn retype<D2: Dialect, Tables2, Output2, Projected2>(
+    fn retype<D2: Dialect, Tables2, Output2, Projected2, Lock2>(
         self,
-    ) -> SelectQuery<D2, Tables2, Output2, Projected2> {
+    ) -> SelectQuery<D2, Tables2, Output2, Projected2, Lock2> {
         SelectQuery {
             ctes: self.ctes,
             projections: self.projections,
@@ -460,6 +486,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
             compound_order_by: self.compound_order_by,
             compound_limit: self.compound_limit,
             compound_offset: self.compound_offset,
+            lock: self.lock,
             _marker: PhantomData,
         }
     }
@@ -501,6 +528,138 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
             lateral: Some(lateral.query),
         });
         self.retype()
+    }
+}
+
+impl<D: Dialect + SupportsRowLocking, Tables, Output>
+    SelectQuery<D, Tables, Output, HasProjection>
+{
+    /// Locks the selected rows for the rest of the transaction (`FOR UPDATE`).
+    ///
+    /// The clause closes the statement, so it is requested once the query
+    /// projects its rows; the resulting [`Locked`] state then keeps the closing
+    /// [`nowait`](SelectQuery::nowait) and [`skip_locked`](SelectQuery::skip_locked)
+    /// modifiers available. Row-level locking is a dialect capability, so a query
+    /// built for a dialect without it — SQLite, which locks the whole database
+    /// instead — does not compile.
+    ///
+    /// ```
+    /// use rurqe_core::dialect::{Dialect, SupportsRowLocking};
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsRowLocking for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `jobs` table.
+    ///     Job => "jobs" {
+    ///         JobId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// let built = SelectQuery::<MockDialect>::new()
+    ///     .from::<Job>()
+    ///     .select((JobId,))
+    ///     .limit(1)
+    ///     .for_update()
+    ///     .skip_locked()
+    ///     .build();
+    ///
+    /// assert_eq!(
+    ///     built.sql,
+    ///     "SELECT \"id\" FROM \"jobs\" LIMIT 1 FOR UPDATE SKIP LOCKED"
+    /// );
+    /// ```
+    pub fn for_update(mut self) -> SelectQuery<D, Tables, Output, HasProjection, Locked> {
+        self.lock = Some(LockClause::new(LockStrength::Update));
+        self.retype()
+    }
+
+    /// Locks the selected rows in shared mode (`FOR SHARE`).
+    ///
+    /// Concurrent transactions may still read and share-lock the rows, but none
+    /// of them can update or delete them until this transaction ends.
+    ///
+    /// ```
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl rurqe_core::dialect::Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         out.push('$');
+    ///         out.push_str(&index.to_string());
+    ///     }
+    /// }
+    ///
+    /// impl rurqe_core::dialect::SupportsRowLocking for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `jobs` table.
+    ///     Job => "jobs" {
+    ///         JobId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// let built = SelectQuery::<MockDialect>::new()
+    ///     .from::<Job>()
+    ///     .select((JobId,))
+    ///     .where_(Expr::column::<JobId>().eq(7i64))
+    ///     .for_share()
+    ///     .nowait()
+    ///     .build();
+    ///
+    /// assert_eq!(
+    ///     built.sql,
+    ///     "SELECT \"id\" FROM \"jobs\" WHERE (\"id\" = $1) FOR SHARE NOWAIT"
+    /// );
+    /// ```
+    pub fn for_share(mut self) -> SelectQuery<D, Tables, Output, HasProjection, Locked> {
+        self.lock = Some(LockClause::new(LockStrength::Share));
+        self.retype()
+    }
+}
+
+impl<D: Dialect + SupportsRowLocking, Tables, Output>
+    SelectQuery<D, Tables, Output, HasProjection, Locked>
+{
+    /// Fails instead of waiting for rows locked by concurrent transactions (`NOWAIT`).
+    ///
+    /// The method modifies the lock the query already requests, so it stays
+    /// unreachable until [`SelectQuery::for_update`] or
+    /// [`SelectQuery::for_share`] was called.
+    pub fn nowait(mut self) -> Self {
+        self.lock = self.lock.map(LockClause::nowait);
+        self
+    }
+
+    /// Skips rows locked by concurrent transactions (`SKIP LOCKED`).
+    ///
+    /// This is how competing workers partition a queue of pending rows between
+    /// themselves: none of them waits for a row another worker already holds.
+    pub fn skip_locked(mut self) -> Self {
+        self.lock = self.lock.map(LockClause::skip_locked);
+        self
     }
 }
 
@@ -550,8 +709,8 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
     }
 }
 
-impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent>
-    SelectQuery<D, Tables, Output, P>
+impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
+    SelectQuery<D, Tables, Output, P, Lock>
 {
     /// Describes the query as a dialect-neutral statement AST.
     ///
@@ -594,6 +753,7 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent>
             compound_order_by: self.compound_order_by.clone(),
             compound_limit: self.compound_limit,
             compound_offset: self.compound_offset,
+            lock: self.lock,
         }
     }
 

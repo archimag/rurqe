@@ -29,8 +29,8 @@ pub trait ExecutableQuery {
     fn build_query(&self) -> BuiltQuery;
 }
 
-impl<D: Dialect, Tables: TableScope, Output> ExecutableQuery
-    for SelectQuery<D, Tables, Output, HasProjection>
+impl<D: Dialect, Tables: TableScope, Output, Lock> ExecutableQuery
+    for SelectQuery<D, Tables, Output, HasProjection, Lock>
 {
     type Row = Output;
 

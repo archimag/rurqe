@@ -27,8 +27,8 @@ mod tests;
 
 pub use ast::{
     CaseBranch, CaseBuilder, CteAst, DialectInScope, ExprKind, HasBranches, JoinAst, JoinKind,
-    MergeDialect, MergedDialect, NoBranches, OrderDirection, SelectAst, SetOpAst, SetOpKind,
-    Subquery, SubqueryOp, WindowExprKind,
+    LockClause, LockStrength, LockWait, MergeDialect, MergedDialect, NoBranches, OrderDirection,
+    SelectAst, SetOpAst, SetOpKind, Subquery, SubqueryOp, WindowExprKind,
 };
 pub use builder::{Aggregate, Expr, NonAggregate};
 pub use functions::{avg, coalesce, count, count_all, max, min, sum};

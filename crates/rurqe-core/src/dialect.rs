@@ -91,6 +91,20 @@ pub trait SupportsDeleteUsing: Dialect {}
 )]
 pub trait SupportsUpdateFrom: Dialect {}
 
+/// Marker trait for dialects supporting row-level locking clauses.
+///
+/// A locking clause makes the statement lock the rows it selects until the
+/// enclosing transaction ends, which is how a worker claims a batch of pending
+/// jobs (`FOR UPDATE SKIP LOCKED`) without contending with its peers. PostgreSQL
+/// implements the clause, while SQLite serialises access by locking the whole
+/// database and therefore has no per-row equivalent.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support row-level locking",
+    label = "`FOR UPDATE` and `FOR SHARE` are not supported by this dialect",
+    note = "locking selected rows requires a dialect that implements `SupportsRowLocking` (such as PostgreSQL)"
+)]
+pub trait SupportsRowLocking: Dialect {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

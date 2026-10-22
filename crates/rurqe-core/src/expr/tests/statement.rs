@@ -2,6 +2,7 @@
 
 use super::*;
 
+use crate::expr::{LockClause, LockStrength, LockWait};
 use crate::schema::{Column, TableRef};
 
 crate::table! {
@@ -30,6 +31,7 @@ fn select(projections: Vec<ExprKind>) -> SelectAst {
         compound_order_by: Vec::new(),
         compound_limit: None,
         compound_offset: None,
+        lock: None,
     }
 }
 
@@ -235,6 +237,56 @@ fn an_aggregate_evaluated_over_a_window_keeps_its_argument() {
 
     assert_eq!(sql, "SUM(\"id\") OVER ()");
     assert!(params.is_empty());
+}
+
+#[test]
+fn a_row_lock_closes_the_statement() {
+    let mut ast = select(vec![UserId::expr_kind()]);
+    ast.limit = Some(1);
+    ast.lock = Some(LockClause::new(LockStrength::Share));
+
+    let (sql, params) = render_statement(&ast);
+
+    assert_eq!(sql, "SELECT \"id\" FROM \"users\" LIMIT 1 FOR SHARE");
+    assert!(params.is_empty());
+}
+
+#[test]
+fn the_lock_clause_renders_strength_and_wait_mode() {
+    assert_eq!(LockStrength::Update.as_str(), "FOR UPDATE");
+    assert_eq!(LockStrength::Share.as_str(), "FOR SHARE");
+    assert_eq!(LockWait::Block.as_str(), "");
+    assert_eq!(LockWait::NoWait.as_str(), " NOWAIT");
+    assert_eq!(LockWait::SkipLocked.as_str(), " SKIP LOCKED");
+
+    let clause = LockClause::new(LockStrength::Update);
+    assert_eq!(clause.strength(), LockStrength::Update);
+    assert_eq!(clause.wait(), LockWait::Block);
+    assert_eq!(clause.nowait().wait(), LockWait::NoWait);
+    assert_eq!(clause.skip_locked().wait(), LockWait::SkipLocked);
+
+    let mut sql = String::new();
+    clause.nowait().render_into(&mut sql);
+    assert_eq!(sql, " FOR UPDATE NOWAIT");
+}
+
+#[test]
+fn a_lock_follows_the_compound_ordering_of_a_set_operation() {
+    let mut ast = select(vec![UserId::expr_kind()]);
+    ast.set_operations = vec![SetOpAst {
+        kind: SetOpKind::Union,
+        query: select(vec![UserId::expr_kind()]),
+    }];
+    ast.compound_order_by = vec![(UserId::expr_kind(), OrderDirection::Asc)];
+    ast.lock = Some(LockClause::new(LockStrength::Update).skip_locked());
+
+    let (sql, _) = render_statement(&ast);
+
+    assert_eq!(
+        sql,
+        "SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\" \
+         ORDER BY \"id\" ASC FOR UPDATE SKIP LOCKED"
+    );
 }
 
 /// A dialect distinct from the mock one, used to check dialect markers.

@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 
 use rurqe_core::dialect::{
     Dialect, SupportsDeleteUsing, SupportsDistinctOn, SupportsLateralJoin, SupportsOnConflict,
-    SupportsReturning, SupportsUpdateFrom,
+    SupportsReturning, SupportsRowLocking, SupportsUpdateFrom,
 };
 
 /// Marker trait representing a PostgreSQL engine version.
@@ -53,6 +53,7 @@ impl<V: PgVersion> SupportsOnConflict for Postgres<V> {}
 impl<V: PgVersion> SupportsLateralJoin for Postgres<V> {}
 impl<V: PgVersion> SupportsDeleteUsing for Postgres<V> {}
 impl<V: PgVersion> SupportsUpdateFrom for Postgres<V> {}
+impl<V: PgVersion> SupportsRowLocking for Postgres<V> {}
 
 #[cfg(test)]
 mod tests {
@@ -89,5 +90,15 @@ mod tests {
         assert_capabilities::<Postgres<Pg15>>();
         assert_capabilities::<Postgres<Pg16>>();
         assert_capabilities::<Postgres>();
+    }
+
+    #[test]
+    fn row_level_locking_is_a_postgres_capability() {
+        fn assert_locking<D: Dialect + SupportsRowLocking>() {}
+
+        assert_locking::<Postgres<Pg14>>();
+        assert_locking::<Postgres<Pg15>>();
+        assert_locking::<Postgres<Pg16>>();
+        assert_locking::<Postgres>();
     }
 }
