@@ -361,3 +361,26 @@ fn postgres_renders_every_capability_gated_clause() {
     );
     assert!(lateral.params.is_empty());
 }
+
+#[test]
+fn an_upsert_copies_the_proposed_row_from_excluded() {
+    use rurqe::postgres::pg16::prelude::*;
+
+    // `EXCLUDED` names the row the statement tried to insert, so the update
+    // copies the proposed name instead of binding it a second time.
+    let built = insert_into(User)
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict((UserId,))
+        .do_update((UserName::set_expr(excluded(UserName)),))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
+         ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+    );
+}

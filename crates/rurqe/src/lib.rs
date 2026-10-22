@@ -566,6 +566,75 @@ crate::pin_dialect_version! {
 ///     .select((JobId,))
 ///     .for_update();
 /// ```
+///
+/// A single-column query is a scalar operand, so it compares with a column of
+/// its type without any explicit conversion:
+///
+/// ```
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderId => "id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// let average = select_from::<Postgres<Pg16>, Order>()
+///     .select((Expr::avg::<OrderTotal>(),));
+///
+/// let built = select_from::<Postgres<Pg16>, Order>()
+///     .select((OrderId,))
+///     .where_(Expr::column::<OrderTotal>().gt(average))
+///     .build();
+///
+/// assert_eq!(
+///     built.sql,
+///     "SELECT \"id\" FROM \"orders\" WHERE (\"total\" > (SELECT AVG(\"total\") FROM \"orders\"))"
+/// );
+/// ```
+///
+/// A query projecting several columns produces a row rather than a single
+/// value, so it is not comparable with a column:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderId => "id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: the nested query projects two columns, not a single value.
+/// let _ = select_from::<Postgres<Pg16>, Order>()
+///     .select((OrderId,))
+///     .where_(Expr::column::<OrderTotal>().gt(
+///         select_from::<Postgres<Pg16>, Order>().select((OrderTotal, OrderId)),
+///     ));
+/// ```
+///
+/// A locking clause closes the statement, so its wait mode cannot be requested
+/// before the lock itself:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `jobs` table.
+///     Job => "jobs" {
+///         JobId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: the query does not request a lock yet.
+/// let _ = select_from::<Postgres<Pg16>, Job>()
+///     .select((JobId,))
+///     .nowait();
+/// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection> {
     SelectQuery::new().from::<T>()
 }
@@ -632,6 +701,58 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 /// let _ = insert_into::<Postgres, User>()
 ///     .values_many(std::iter::empty::<(Assignment<UserId, i64>,)>())
 ///     .build();
+/// ```
+/// An upsert may read the row the statement tried to insert through the
+/// `EXCLUDED` pseudo-relation, so the update copies the proposed value instead of
+/// binding it a second time:
+///
+/// ```
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserName => "name": String,
+///     }
+/// }
+///
+/// let built = insert_into::<Postgres<Pg16>, User>()
+///     .values((UserId::set(1i64), UserName::set("root")))
+///     .on_conflict((UserId,))
+///     .do_update((UserName::set_expr(excluded(UserName)),))
+///     .build();
+///
+/// assert_eq!(
+///     built.sql,
+///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
+///      ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
+/// );
+/// assert_eq!(
+///     built.params,
+///     vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+/// );
+/// ```
+///
+/// The proposed value carries the Rust type of its column, so it only assigns to
+/// a column of that type:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserName => "name": String,
+///     }
+/// }
+///
+/// // Fails to compile: `EXCLUDED."name"` reads a string, not an `i64`.
+/// let _ = insert_into::<Postgres<Pg16>, User>()
+///     .values((UserId::set(1i64),))
+///     .on_conflict((UserId,))
+///     .do_update((UserId::set_expr(excluded(UserName)),));
 /// ```
 pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
     InsertQuery::new()
@@ -805,6 +926,57 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 ///     built.sql,
 ///     "SELECT \"id\" FROM \"users\" WHERE (\"id\" = $1)"
 /// );
+/// ```
+///
+/// The prelude also brings the row value traits into scope, so a tuple of
+/// columns compares as one composite value — the shape a keyset cursor is
+/// walked with:
+///
+/// ```
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderId => "id": i64,
+///         OrderUserId => "user_id": i64,
+///     }
+/// }
+///
+/// let built = select_from::<Postgres<Pg16>, Order>()
+///     .select((OrderId,))
+///     .where_((OrderUserId, OrderId).lt((2i64, 40i64)))
+///     .order_by_desc(OrderUserId)
+///     .order_by_desc(OrderId)
+///     .limit(10)
+///     .build();
+///
+/// assert_eq!(
+///     built.sql,
+///     "SELECT \"id\" FROM \"orders\" WHERE ((\"user_id\", \"id\") < ($1, $2)) \
+///      ORDER BY \"user_id\" DESC, \"id\" DESC LIMIT 10"
+/// );
+/// assert_eq!(built.params, vec![SqlVal::I64(2), SqlVal::I64(40)]);
+/// ```
+///
+/// Both sides of a row comparison carry the same arity, so a pair of columns
+/// never compares with a triple of values:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderId => "id": i64,
+///         OrderUserId => "user_id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: a two-column row is not comparable with three values.
+/// let _ = select_from::<Postgres<Pg16>, Order>()
+///     .select((OrderId,))
+///     .where_((OrderUserId, OrderId).eq((1i64, 2i64, 3i64)));
 /// ```
 pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};

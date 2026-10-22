@@ -621,6 +621,165 @@ fn scope_invariants_accept_only_tables_in_scope() {
 /// The module imports the PostgreSQL dialect prelude only: the dialect is fixed
 /// by the prelude, tables are passed as zero-sized values, and neither the
 /// queries nor their DML counterparts mention `Postgres` or a turbofish.
+#[test]
+fn a_scalar_subquery_compares_without_an_explicit_conversion() {
+    // A single-column query projects exactly one value, so a comparison operator
+    // accepts it directly and no conversion method is spelled out.
+    let average = select_from::<Postgres<Pg16>, Order>()
+        .select((Expr::avg::<OrderTotal>(),))
+        .where_(Expr::column::<OrderId>().gt(0i64));
+
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId,))
+        .where_(Expr::column::<OrderTotal>().gt(average))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"orders\" WHERE (\"total\" > \
+         (SELECT AVG(\"total\") FROM \"orders\" WHERE (\"id\" > $1)))"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(0)]);
+}
+
+#[test]
+fn a_row_value_expression_compares_a_tuple_as_one_value() {
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId,))
+        .where_((OrderUserId, OrderId).gte((2i64, 10i64)))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"orders\" WHERE ((\"user_id\", \"id\") >= ($1, $2))"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(2), SqlVal::I64(10)]);
+}
+
+#[test]
+fn a_row_value_expression_matches_the_rows_of_a_subquery() {
+    let pairs = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId, OrderId))
+        .where_(Expr::column::<OrderTotal>().gt(100.0));
+
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId,))
+        .where_((OrderUserId, OrderId).in_subquery(pairs))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"orders\" WHERE ((\"user_id\", \"id\") IN \
+         (SELECT \"user_id\", \"id\" FROM \"orders\" WHERE (\"total\" > $1)))"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(100.0)]);
+}
+
+#[test]
+fn a_keyset_cursor_walks_a_row_value_ordering() {
+    // The cursor is a row value, so the page after it is one tuple comparison
+    // over the ordered pair instead of a growing chain of `OR` predicates.
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId, OrderUserId))
+        .where_((OrderUserId, OrderId).lt((2i64, 40i64)))
+        .order_by_desc(OrderUserId)
+        .order_by_desc(OrderId)
+        .limit(10)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"user_id\" FROM \"orders\" \
+         WHERE ((\"user_id\", \"id\") < ($1, $2)) \
+         ORDER BY \"user_id\" DESC, \"id\" DESC LIMIT 10"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(2), SqlVal::I64(40)]);
+}
+
+#[test]
+fn a_query_locks_the_rows_it_claims_until_the_transaction_ends() {
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId,))
+        .where_(Expr::column::<OrderTotal>().gt(10.0))
+        .order_by_asc(OrderId)
+        .limit(1)
+        .for_update()
+        .skip_locked()
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"orders\" WHERE (\"total\" > $1) \
+         ORDER BY \"id\" ASC LIMIT 1 FOR UPDATE SKIP LOCKED"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(10.0)]);
+
+    let shared = SelectQuery::<Postgres<Pg14>>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .for_share()
+        .nowait()
+        .build();
+
+    assert_eq!(shared.sql, "SELECT \"id\" FROM \"orders\" FOR SHARE NOWAIT");
+    assert!(shared.params.is_empty());
+}
+
+#[test]
+fn window_frames_restrict_the_rows_a_window_reads() {
+    let built = SelectQuery::<Postgres<Pg16>>::new()
+        .from::<Order>()
+        .select((
+            OrderId,
+            Expr::sum::<OrderTotal>().over(
+                Window::partition_by(OrderUserId)
+                    .order_by_asc(OrderId)
+                    .rows_between(
+                        WindowFrameBound::UnboundedPreceding,
+                        WindowFrameBound::CurrentRow,
+                    ),
+            ),
+            dense_rank().over(
+                Window::order_by_desc(OrderTotal).range_between(
+                    WindowFrameBound::preceding(1),
+                    WindowFrameBound::following(1),
+                ),
+            ),
+        ))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", SUM(\"total\") OVER (PARTITION BY \"user_id\" ORDER BY \"id\" ASC \
+         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), \
+         DENSE_RANK() OVER (ORDER BY \"total\" DESC \
+         RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM \"orders\""
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_filtered_aggregate_restricts_the_rows_it_reads() {
+    let spent = sum(OrderTotal).filter_where(Expr::column::<OrderId>().gt(0i64));
+
+    let built = SelectQuery::<Postgres<Pg16>>::new()
+        .from::<Order>()
+        .select((OrderUserId, spent.clone()))
+        .group_by(OrderUserId)
+        .having(spent.gt(500.0))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", SUM(\"total\") FILTER (WHERE (\"id\" > $1)) FROM \"orders\" \
+         GROUP BY \"user_id\" HAVING (SUM(\"total\") FILTER (WHERE (\"id\" > $2)) > $3)"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(0), SqlVal::I64(0), SqlVal::F64(500.0)]
+    );
+}
+
 mod value_based_dsl {
     use rurqe::postgres::prelude::*;
 
