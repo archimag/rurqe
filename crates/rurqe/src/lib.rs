@@ -377,10 +377,9 @@ pub mod sqlite {
 ///     .select(cols!(UserId))
 ///     .build();
 ///
-/// assert_eq!(
-///     built.sql,
-///     "SELECT \"users\".\"id\" FROM \"users\""
-/// );
+/// // A single-relation statement keeps the bare column name; the reference is
+/// // qualified only once the statement spans several relations.
+/// assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
 /// ```
 ///
 /// Projecting a column of a table the query does not select from is rejected at

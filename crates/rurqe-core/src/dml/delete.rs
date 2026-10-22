@@ -18,7 +18,7 @@ use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
 use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
-use crate::schema::{ExprInScope, ExtendScope, Table};
+use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
 /// A `DELETE` statement targeting table `T`.
 ///
@@ -180,8 +180,15 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
 
         let mut params = Vec::new();
         if let Some(filter) = &self.filter {
+            // The deleted table and every `USING` source are in scope of the
+            // filter, so a column of either one is qualified as soon as the
+            // statement addresses more than the target table.
+            let mut relations = Vec::with_capacity(1 + self.using_tables.len());
+            relations.push(TableRef::plain(T::NAME));
+            relations.extend(self.using_tables.iter().copied().map(TableRef::plain));
+
             sql.push_str(" WHERE ");
-            render_expr::<D>(&mut sql, &mut params, filter);
+            render_expr::<D>(&mut sql, &mut params, filter, &relations);
         }
 
         if !self.returning.is_empty() {
@@ -292,7 +299,8 @@ mod tests {
 
         assert_eq!(
             built.sql,
-            "DELETE FROM \"users\" USING \"accounts\" WHERE (\"id\" = \"id\")"
+            "DELETE FROM \"users\" USING \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert!(built.params.is_empty());
     }

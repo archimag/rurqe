@@ -13,8 +13,10 @@ use proc_macro::TokenStream;
 ///
 /// Every projection names a field of the produced record, so callers never index
 /// rows by tuple position. A schema column marker (`UserId`, `users::EMAIL`)
-/// derives its field from the column name and projects as `"table"."column"`,
-/// while a computed projection keeps its own type and is named explicitly:
+/// derives its field from the column name and projects through the same column
+/// rendering as a tuple selection, which qualifies the reference whenever the
+/// statement spans several relations, while a computed projection keeps its own
+/// type and is named explicitly:
 ///
 /// ```ignore
 /// let query = SelectQuery::<Postgres>::new()
@@ -28,7 +30,7 @@ use proc_macro::TokenStream;
 ///
 /// The synthesized record is generic over its field types, so a `LEFT JOIN`ed
 /// table lifts its projected fields into `Option<T>` at the call site. The
-/// selection can also start a query directly with `select!(..).from::<D, T>()`.
+/// selection can also start a query directly with `select!(..).from(table)`.
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     crate::select::expand(input.into())

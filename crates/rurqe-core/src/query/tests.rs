@@ -173,8 +173,8 @@ fn inner_join_renders_join_clause_before_filter() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"id\" FROM \"users\" INNER JOIN \"orders\" \
-         ON (\"user_id\" = $1) WHERE (\"id\" > $2)"
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" INNER JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1) WHERE (\"users\".\"id\" > $2)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(1)]);
 }
@@ -190,8 +190,8 @@ fn joined_scope_tracks_every_table_in_from_order() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\" FROM \"users\" INNER JOIN \"orders\" ON (\"user_id\" = $1) \
-         INNER JOIN \"users\" ON (\"id\" = $2)"
+        "SELECT \"orders\".\"id\" FROM \"users\" INNER JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" ON (\"users\".\"id\" = $2)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(2)]);
 }
@@ -255,8 +255,8 @@ fn left_join_renders_left_keyword_and_composes_with_inner_join() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1) \
-         INNER JOIN \"users\" ON (\"id\" = $2)"
+        "SELECT \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" ON (\"users\".\"id\" = $2)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(2)]);
 }
@@ -285,7 +285,8 @@ fn left_joined_columns_are_lifted_without_explicit_markers() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
@@ -300,8 +301,8 @@ fn inner_joined_columns_keep_their_declared_types() {
 
     assert_eq!(
         query.build().sql,
-        "SELECT \"id\", \"id\", \"total\" FROM \"users\" \
-         INNER JOIN \"orders\" ON (\"id\" = \"user_id\")"
+        "SELECT \"users\".\"id\", \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" \
+         INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\")"
     );
 }
 
@@ -318,8 +319,8 @@ fn nested_left_join_stays_nullable_inside_an_inner_join() {
 
     assert_eq!(
         query.build().sql,
-        "SELECT \"id\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1) \
-         INNER JOIN \"users\" ON (\"id\" = $2)"
+        "SELECT \"orders\".\"id\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" ON (\"users\".\"id\" = $2)"
     );
 }
 
@@ -354,7 +355,8 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
 
     assert_eq!(
         single_layer.build().sql,
-        "SELECT \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        "SELECT \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1)"
     );
 }
 
@@ -852,9 +854,9 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
     assert_eq!(
         built.sql,
         "WITH \"active_summary\" AS (SELECT \"user_id\", \"total\" FROM \"orders\" WHERE (\"total\" > $1)) \
-         SELECT \"id\", \"name\", \"total\" FROM \"users\" \
-         INNER JOIN \"active_summary\" ON (\"id\" = \"user_id\") \
-         WHERE (\"total\" < $2)"
+         SELECT \"users\".\"id\", \"users\".\"name\", \"active_summary\".\"total\" FROM \"users\" \
+         INNER JOIN \"active_summary\" ON (\"users\".\"id\" = \"active_summary\".\"user_id\") \
+         WHERE (\"active_summary\".\"total\" < $2)"
     );
     assert_eq!(built.params, vec![SqlVal::F64(50.0), SqlVal::F64(500.0)]);
 }
@@ -1059,17 +1061,15 @@ fn aliased_table_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .inner_join::<Aliased<Order, OrderAlias>, _, _>(
-            Expr::column::<OrderUserId>()
-                .without_scope()
-                .eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
+            Expr::column::<UserId>().eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
         )
         .select((UserId, AliasedCol::<OrderAlias, OrderTotal>::new()))
         .build();
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"o\".\"total\" FROM \"users\" \
-         INNER JOIN \"orders\" AS \"o\" ON (\"user_id\" = \"o\".\"user_id\")"
+        "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" \
+         INNER JOIN \"orders\" AS \"o\" ON (\"users\".\"id\" = \"o\".\"user_id\")"
     );
     assert!(built.params.is_empty());
 }
@@ -1079,9 +1079,7 @@ fn left_joined_aliased_table_lifts_columns_into_options() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .left_join::<Aliased<Order, OrderAlias>, _, _>(
-            Expr::column::<OrderUserId>()
-                .without_scope()
-                .eq(Expr::column::<UserId>()),
+            Expr::column::<AliasedCol<OrderAlias, OrderUserId>>().eq(Expr::column::<UserId>()),
         );
     let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
 
@@ -1089,8 +1087,8 @@ fn left_joined_aliased_table_lifts_columns_into_options() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"o\".\"total\" FROM \"users\" \
-         LEFT JOIN \"orders\" AS \"o\" ON (\"user_id\" = \"id\")"
+        "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" \
+         LEFT JOIN \"orders\" AS \"o\" ON (\"o\".\"user_id\" = \"users\".\"id\")"
     );
 }
 
@@ -1118,8 +1116,8 @@ fn cross_join_lateral_renders_inline_correlated_subquery() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" CROSS JOIN LATERAL \
-         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") LIMIT 1) AS \"recent\""
+        "SELECT \"users\".\"id\", \"recent\".\"total\" FROM \"users\" CROSS JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\") LIMIT 1) AS \"recent\""
     );
     assert!(built.params.is_empty());
 }
@@ -1135,8 +1133,9 @@ fn left_join_lateral_renders_on_true_and_lifts_columns_into_options() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN LATERAL \
-         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") LIMIT 1) AS \"recent\" ON true"
+        "SELECT \"users\".\"id\", \"recent\".\"total\" FROM \"users\" LEFT JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\") LIMIT 1) \
+         AS \"recent\" ON true"
     );
 }
 
@@ -1158,9 +1157,10 @@ fn lateral_join_binds_subquery_parameters_before_the_outer_filter() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" CROSS JOIN LATERAL \
-         (SELECT \"total\" FROM \"orders\" WHERE ((\"user_id\" = \"id\") AND (\"total\" > $1)) \
-         LIMIT 1) AS \"recent\" WHERE (\"id\" > $2)"
+        "SELECT \"users\".\"id\", \"recent\".\"total\" FROM \"users\" CROSS JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" \
+         WHERE ((\"user_id\" = \"users\".\"id\") AND (\"total\" > $1)) \
+         LIMIT 1) AS \"recent\" WHERE (\"users\".\"id\" > $2)"
     );
     assert_eq!(built.params, vec![SqlVal::F64(10.0), SqlVal::I64(1)]);
 }
@@ -1379,7 +1379,8 @@ fn value_join_arguments_infer_joined_tables() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" INNER JOIN \"orders\" ON (\"user_id\" = $1)"
+        "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" INNER JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
@@ -1394,6 +1395,7 @@ fn value_left_join_arguments_lift_columns_into_options() {
 
     assert_eq!(
         query.build().sql,
-        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1)"
     );
 }

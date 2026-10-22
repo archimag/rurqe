@@ -4,7 +4,8 @@
 //! fields together with the selection that renders them and types their values:
 //!
 //! - a schema column marker (`UserId`, `users::EMAIL`, `AliasedCol::<A, C>`)
-//!   projects as `"table"."column"` and derives its field from the column name;
+//!   projects through the same column rendering as a tuple selection and derives
+//!   its field from the column name;
 //! - a computed projection (`total: Expr::count_all()`,
 //!   `Expr::sum::<OrderTotal>() as total`, `count(orders.id)`) renders through
 //!   [`SelectTarget`](rurqe_core::query::SelectTarget) and keeps its own type;
@@ -110,33 +111,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 name_pushes.extend(quote! {
                     out.push(<#element as ::rurqe_core::schema::Column>::NAME);
                 });
-                render_pushes.extend(quote! {
-                    {
-                        if !first_projection {
-                            sql.push_str(", ");
-                        }
-                        first_projection = false;
-                        match <#element as ::rurqe_core::schema::Column>::expr_kind() {
-                            ::rurqe_core::expr::ExprKind::QualifiedColumn { table, column } => {
-                                __D::push_quoted_identifier(sql, table);
-                                sql.push('.');
-                                __D::push_quoted_identifier(sql, column);
-                            }
-                            _ => {
-                                __D::push_quoted_identifier(
-                                    sql,
-                                    <<#element as ::rurqe_core::schema::Column>::Table
-                                        as ::rurqe_core::schema::Table>::NAME,
-                                );
-                                sql.push('.');
-                                __D::push_quoted_identifier(
-                                    sql,
-                                    <#element as ::rurqe_core::schema::Column>::NAME,
-                                );
-                            }
-                        }
-                    }
-                });
             }
             ProjectionTarget::Expr(expr) => {
                 element_values.push(quote! { #expr });
@@ -146,21 +120,26 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                         + ::core::marker::Sync
                         + 'static,
                 });
-                render_pushes.extend(quote! {
-                    {
-                        if !first_projection {
-                            sql.push_str(", ");
-                        }
-                        first_projection = false;
-                        ::rurqe_core::query::SelectTarget::render::<__D>(
-                            &self.#field_index,
-                            sql,
-                            params,
-                        );
-                    }
-                });
             }
         }
+
+        // Every projection renders through `SelectTarget`, so a column and a
+        // computed expression follow the same qualification rule as a tuple
+        // selection instead of the macro spelling its own column reference.
+        render_pushes.extend(quote! {
+            {
+                if !first_projection {
+                    sql.push_str(", ");
+                }
+                first_projection = false;
+                ::rurqe_core::query::SelectTarget::render::<__D>(
+                    &self.#field_index,
+                    sql,
+                    params,
+                    relations,
+                );
+            }
+        });
     }
 
     let arity = Literal::usize_unsuffixed(projections.items.len());
@@ -214,6 +193,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                     &self,
                     sql: &mut ::std::string::String,
                     params: &mut ::std::vec::Vec<::rurqe_core::expr::SqlVal>,
+                    relations: &[::rurqe_core::schema::TableRef],
                 ) {
                     let mut first_projection = true;
                     #render_pushes

@@ -2,16 +2,20 @@
 //!
 //! Rendering is a single infallible pass over an already built expression tree:
 //! every literal becomes a bound parameter, every identifier is quoted by the
-//! dialect, and no user text reaches the buffer unescaped. Raw SQL templates are
-//! the only place where user text enters the tree, so they are analysed before
-//! the tree exists: [`parse_raw_sql`] reports a template that mixes placeholder
-//! styles or binds a number of parameters other than it declares, instead of
-//! panicking or rendering invalid SQL.
+//! dialect, and no user text reaches the buffer unescaped. Column references are
+//! qualified against the relations of the enclosing statement, so a statement
+//! spanning several tables never renders an ambiguous bare column name. Raw SQL
+//! templates are the only place where user text enters the tree, so they are
+//! analysed before the tree exists: [`parse_raw_sql`] reports a template that
+//! mixes placeholder styles or binds a number of parameters other than it
+//! declares, instead of panicking or rendering invalid SQL.
 
 use core::fmt;
 
 use super::ast::{ExprKind, SubqueryOp};
 use super::val::SqlVal;
+use crate::dialect::Dialect;
+use crate::schema::TableRef;
 
 /// Why a raw SQL template cannot be paired with the parameters supplied for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,14 +134,62 @@ fn push_char(fragments: &mut [String], character: char) {
     }
 }
 
+/// Appends the reference of `column` of `table` to `sql`, qualified when needed.
+///
+/// A bare column name stays unambiguous only while the statement addresses one
+/// relation, so the reference is written as `"qualifier"."column"` whenever
+///
+/// - the statement addresses more than one relation, where the bare name may
+///   belong to either of them,
+/// - `table` is addressed under an alias, which is then the only valid
+///   qualifier,
+/// - or `table` is not one of the statement's relations, which makes the
+///   reference a correlated one that has to name its own table.
+fn render_column_reference<D: Dialect>(
+    sql: &mut String,
+    relations: &[TableRef],
+    table: &'static str,
+    column: &'static str,
+) {
+    if let Some(qualifier) = qualifier_of(relations, table) {
+        D::push_quoted_identifier(sql, qualifier);
+        sql.push('.');
+    }
+    D::push_quoted_identifier(sql, column);
+}
+
+/// Resolves the qualifier a reference to `table` requires, if any.
+fn qualifier_of(relations: &[TableRef], table: &'static str) -> Option<&'static str> {
+    if relations.is_empty() {
+        return None;
+    }
+
+    match relations.iter().find(|relation| relation.name == table) {
+        // An aliased relation is only reachable through its alias.
+        Some(relation) if relation.alias.is_some() => relation.alias,
+        // A bare name stays unambiguous only while the statement addresses one relation.
+        Some(_) if relations.len() > 1 => Some(table),
+        Some(_) => None,
+        // A table outside the statement belongs to an enclosing one, so the
+        // reference must name it instead of reading as a column of this statement.
+        None => Some(table),
+    }
+}
+
 /// Renders `expr` into `sql`, appending every literal as a bound parameter.
-pub fn render_expr<D: crate::dialect::Dialect>(
+///
+/// `relations` names the relations of the statement being rendered and decides
+/// whether a column reference needs a table qualifier.
+pub fn render_expr<D: Dialect>(
     sql: &mut String,
     params: &mut Vec<SqlVal>,
     expr: &ExprKind,
+    relations: &[TableRef],
 ) {
     match expr {
-        ExprKind::Column { name } => D::push_quoted_identifier(sql, name),
+        ExprKind::Column { table, name } => {
+            render_column_reference::<D>(sql, relations, table, name);
+        }
         ExprKind::QualifiedColumn { table, column } => {
             D::push_quoted_identifier(sql, table);
             sql.push('.');
@@ -149,18 +201,18 @@ pub fn render_expr<D: crate::dialect::Dialect>(
         }
         ExprKind::Binary { op, lhs, rhs } => {
             sql.push('(');
-            render_expr::<D>(sql, params, lhs);
+            render_expr::<D>(sql, params, lhs, relations);
             sql.push(' ');
             sql.push_str(op.as_str());
             sql.push(' ');
-            render_expr::<D>(sql, params, rhs);
+            render_expr::<D>(sql, params, rhs, relations);
             sql.push(')');
         }
         ExprKind::Aggregate { func, arg } => {
             sql.push_str(func.as_str());
             sql.push('(');
             match arg {
-                Some(inner) => render_expr::<D>(sql, params, inner),
+                Some(inner) => render_expr::<D>(sql, params, inner, relations),
                 None => sql.push('*'),
             }
             sql.push(')');
@@ -185,7 +237,7 @@ pub fn render_expr<D: crate::dialect::Dialect>(
         } => {
             sql.push('(');
             if let Some(operand) = operand {
-                render_expr::<D>(sql, params, operand);
+                render_expr::<D>(sql, params, operand, relations);
                 sql.push(' ');
             }
             if *negated {
@@ -200,7 +252,7 @@ pub fn render_expr<D: crate::dialect::Dialect>(
         }
         ExprKind::IsNull { operand, negated } => {
             sql.push('(');
-            render_expr::<D>(sql, params, operand);
+            render_expr::<D>(sql, params, operand, relations);
             sql.push_str(if *negated { " IS NOT NULL)" } else { " IS NULL)" });
         }
         ExprKind::Like {
@@ -209,18 +261,18 @@ pub fn render_expr<D: crate::dialect::Dialect>(
             case_insensitive,
         } => {
             sql.push('(');
-            render_expr::<D>(sql, params, operand);
+            render_expr::<D>(sql, params, operand, relations);
             sql.push_str(if *case_insensitive { " ILIKE " } else { " LIKE " });
-            render_expr::<D>(sql, params, pattern);
+            render_expr::<D>(sql, params, pattern, relations);
             sql.push(')');
         }
         ExprKind::Between { operand, low, high } => {
             sql.push('(');
-            render_expr::<D>(sql, params, operand);
+            render_expr::<D>(sql, params, operand, relations);
             sql.push_str(" BETWEEN ");
-            render_expr::<D>(sql, params, low);
+            render_expr::<D>(sql, params, low, relations);
             sql.push_str(" AND ");
-            render_expr::<D>(sql, params, high);
+            render_expr::<D>(sql, params, high, relations);
             sql.push(')');
         }
         ExprKind::InList {
@@ -229,13 +281,13 @@ pub fn render_expr<D: crate::dialect::Dialect>(
             negated,
         } => {
             sql.push('(');
-            render_expr::<D>(sql, params, operand);
+            render_expr::<D>(sql, params, operand, relations);
             sql.push_str(if *negated { " NOT IN (" } else { " IN (" });
             for (index, value) in values.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, value);
+                render_expr::<D>(sql, params, value, relations);
             }
             sql.push_str("))");
         }
@@ -246,7 +298,7 @@ pub fn render_expr<D: crate::dialect::Dialect>(
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, arg);
+                render_expr::<D>(sql, params, arg, relations);
             }
             sql.push(')');
         }
@@ -257,13 +309,13 @@ pub fn render_expr<D: crate::dialect::Dialect>(
             sql.push_str("CASE");
             for branch in branches {
                 sql.push_str(" WHEN ");
-                render_expr::<D>(sql, params, &branch.condition);
+                render_expr::<D>(sql, params, &branch.condition, relations);
                 sql.push_str(" THEN ");
-                render_expr::<D>(sql, params, &branch.result);
+                render_expr::<D>(sql, params, &branch.result, relations);
             }
             if let Some(fallback) = else_branch {
                 sql.push_str(" ELSE ");
-                render_expr::<D>(sql, params, fallback);
+                render_expr::<D>(sql, params, fallback, relations);
             }
             sql.push_str(" END");
         }

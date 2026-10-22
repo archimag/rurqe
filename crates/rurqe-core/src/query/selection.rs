@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::expr::{render_expr, Expr, ExprKind, SqlVal};
-use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
+use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table, TableRef};
 
 use super::scope::{NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope};
 
@@ -24,7 +24,15 @@ pub trait SelectTarget {
     }
 
     /// Renders this projection item to the SQL buffer and binds any parameters.
-    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>);
+    ///
+    /// `relations` names the relations of the enclosing statement, which decides
+    /// whether a projected column reference needs a table qualifier.
+    fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    );
 }
 
 impl<C: Column> SelectTarget for C {
@@ -34,8 +42,13 @@ impl<C: Column> SelectTarget for C {
         out.push(C::NAME);
     }
 
-    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        render_expr::<D>(sql, params, &C::expr_kind());
+    fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
+        render_expr::<D>(sql, params, &C::expr_kind(), relations);
     }
 }
 
@@ -44,8 +57,13 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
 {
     type RustType = T;
 
-    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        render_expr::<D>(sql, params, self.kind());
+    fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
+        render_expr::<D>(sql, params, self.kind(), relations);
     }
 }
 
@@ -202,7 +220,15 @@ pub trait Selection {
     }
 
     /// Renders all projection items into `sql`, separating them by commas.
-    fn render_projections<D: Dialect>(&self, sql: &mut String, _params: &mut Vec<SqlVal>) {
+    ///
+    /// `relations` is forwarded to every projection item, so a selected column is
+    /// qualified exactly like any other column reference of the same statement.
+    fn render_projections<D: Dialect>(
+        &self,
+        sql: &mut String,
+        _params: &mut Vec<SqlVal>,
+        _relations: &[TableRef],
+    ) {
         let mut names = Vec::new();
         self.push_column_names(&mut names);
         for (index, name) in names.into_iter().enumerate() {
@@ -225,7 +251,12 @@ macro_rules! impl_selection {
                 $($target.push_column_name(out);)+
             }
 
-            fn render_projections<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+            fn render_projections<D: Dialect>(
+                &self,
+                sql: &mut String,
+                params: &mut Vec<SqlVal>,
+                relations: &[TableRef],
+            ) {
                 let ($($target,)+) = self;
                 let mut first = true;
                 $(
@@ -233,7 +264,7 @@ macro_rules! impl_selection {
                         sql.push_str(", ");
                     }
                     first = false;
-                    $target.render::<D>(sql, params);
+                    $target.render::<D>(sql, params, relations);
                 )+
             }
         }

@@ -64,6 +64,6 @@ where
 {
     Expr::new(ExprKind::Function {
         name: "COALESCE",
-        args: vec![ExprKind::Column { name: C::NAME }, fallback.into_expr_kind()],
+        args: vec![C::expr_kind(), fallback.into_expr_kind()],
     })
 }

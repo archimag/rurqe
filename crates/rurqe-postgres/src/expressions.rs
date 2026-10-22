@@ -80,9 +80,11 @@ impl<C: Column> PgExpressions for C {
 /// embedded double quotes are doubled, while an alias-qualified column keeps its
 /// alias prefix (`"u"."id"`).
 fn render_column<C: Column>() -> String {
+    // No relation is in scope, so a bare column stays unqualified while an
+    // alias-qualified one keeps its `"alias"."column"` prefix.
     let mut sql = String::new();
     let mut params = Vec::new();
-    render_expr::<Postgres>(&mut sql, &mut params, &C::expr_kind());
+    render_expr::<Postgres>(&mut sql, &mut params, &C::expr_kind(), &[]);
     sql
 }
 

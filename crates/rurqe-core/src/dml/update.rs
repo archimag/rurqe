@@ -21,7 +21,7 @@ use crate::dialect::{Dialect, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
 use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
-use crate::schema::{ExprInScope, ExtendScope, Table};
+use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
 /// An `UPDATE` statement targeting table `T`.
 ///
@@ -242,8 +242,15 @@ where
         }
 
         if let Some(filter) = &self.filter {
+            // The mutated table and every `FROM` source are in scope of the
+            // filter, so a column of either one is qualified as soon as the
+            // statement addresses more than the target table.
+            let mut relations = Vec::with_capacity(1 + self.from_tables.len());
+            relations.push(TableRef::plain(T::NAME));
+            relations.extend(self.from_tables.iter().copied().map(TableRef::plain));
+
             sql.push_str(" WHERE ");
-            render_expr::<D>(&mut sql, &mut params, filter);
+            render_expr::<D>(&mut sql, &mut params, filter, &relations);
         }
 
         if !self.returning.is_empty() {
@@ -455,7 +462,8 @@ mod tests {
 
         assert_eq!(
             built.sql,
-            "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" WHERE (\"id\" = \"id\")"
+            "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
     }

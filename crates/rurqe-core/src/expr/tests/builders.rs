@@ -4,11 +4,17 @@ use super::*;
 fn column_expression_carries_static_name() {
     assert_eq!(
         Expr::column::<UserId>().kind(),
-        &ExprKind::Column { name: "id" }
+        &ExprKind::Column {
+            table: "users",
+            name: "id",
+        }
     );
     assert_eq!(
         Expr::column::<UserName>().kind(),
-        &ExprKind::Column { name: "name" }
+        &ExprKind::Column {
+            table: "users",
+            name: "name",
+        }
     );
 }
 
@@ -48,7 +54,10 @@ fn comparison_builds_binary_expression() {
         predicate.kind(),
         &ExprKind::Binary {
             op: BinaryOp::Eq,
-            lhs: Box::new(ExprKind::Column { name: "id" }),
+            lhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
             rhs: Box::new(ExprKind::Value(SqlVal::I64(42))),
         }
     );
@@ -62,7 +71,10 @@ fn string_column_accepts_str_literals() {
         predicate.kind(),
         &ExprKind::Binary {
             op: BinaryOp::Ne,
-            lhs: Box::new(ExprKind::Column { name: "name" }),
+            lhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "name",
+            }),
             rhs: Box::new(ExprKind::Value(SqlVal::Text("root".to_owned()))),
         }
     );
@@ -83,7 +95,10 @@ fn predicates_compose_with_and_and_or() {
         &**rhs,
         &ExprKind::Binary {
             op: BinaryOp::Lt,
-            lhs: Box::new(ExprKind::Column { name: "name" }),
+            lhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "name",
+            }),
             rhs: Box::new(ExprKind::Value(SqlVal::Text("zzz".to_owned()))),
         }
     );
@@ -107,35 +122,50 @@ fn aggregate_expressions_build_expected_ast() {
         Expr::count::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Count,
-            arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            })),
         }
     );
     assert_eq!(
         Expr::sum::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Sum,
-            arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            })),
         }
     );
     assert_eq!(
         Expr::avg::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Avg,
-            arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            })),
         }
     );
     assert_eq!(
         Expr::min::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Min,
-            arg: Some(Box::new(ExprKind::Column { name: "id" })),
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            })),
         }
     );
     assert_eq!(
         Expr::max::<UserName>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Max,
-            arg: Some(Box::new(ExprKind::Column { name: "name" })),
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "name",
+            })),
         }
     );
 }
@@ -165,7 +195,10 @@ fn case_expression_builds_searched_branches() {
         branches[1].condition,
         ExprKind::Binary {
             op: BinaryOp::Gt,
-            lhs: Box::new(ExprKind::Column { name: "id" }),
+            lhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
             rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
         }
     );
@@ -219,8 +252,14 @@ fn expressions_can_be_compared_with_other_expressions() {
         predicate.kind(),
         &ExprKind::Binary {
             op: BinaryOp::Eq,
-            lhs: Box::new(ExprKind::Column { name: "id" }),
-            rhs: Box::new(ExprKind::Column { name: "id" }),
+            lhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
         }
     );
 }
@@ -231,7 +270,10 @@ fn like_and_ilike_build_pattern_predicates() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::Like {
-            operand: Box::new(ExprKind::Column { name: "name" }),
+            operand: Box::new(ExprKind::Column {
+                table: "users",
+                name: "name",
+            }),
             pattern: Box::new(ExprKind::Value(SqlVal::Text("A%".to_owned()))),
             case_insensitive: false,
         }
@@ -321,7 +363,10 @@ fn expressions_carry_table_scopes_across_operators() {
         eq_expr.kind(),
         &ExprKind::Binary {
             op: BinaryOp::Eq,
-            lhs: Box::new(ExprKind::Column { name: "id" }),
+            lhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
             rhs: Box::new(ExprKind::Value(SqlVal::I64(42))),
         }
     );

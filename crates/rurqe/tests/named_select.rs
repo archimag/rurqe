@@ -45,7 +45,7 @@ fn select_macro_renders_sql_and_decodes_named_fields() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"users\".\"id\", \"users\".\"name\", \"users\".\"active\" FROM \"users\""
+        "SELECT \"id\", \"name\", \"active\" FROM \"users\""
     );
 
     let record = decode(
@@ -75,7 +75,7 @@ fn named_projection_composes_with_filters_and_pagination() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" \
+        "SELECT \"id\", \"name\" FROM \"users\" \
          WHERE (\"id\" > $1) ORDER BY \"id\" ASC LIMIT 5"
     );
     assert_eq!(built.params, vec![SqlVal::I64(10)]);
@@ -123,7 +123,7 @@ fn postgres_select_macro_starts_query_from_table_without_turbofish() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" > $1)"
+        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
@@ -139,7 +139,7 @@ fn sqlite_select_macro_starts_query_from_table_without_turbofish() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" > ?)"
+        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > ?)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
@@ -157,7 +157,7 @@ fn postgres_versioned_prelude_pins_the_dialect_without_turbofish() {
 
     assert_eq!(
         selected.sql,
-        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" > $1)"
+        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1)"
     );
     assert_eq!(selected.params, vec![SqlVal::I64(1)]);
 
@@ -192,7 +192,7 @@ fn sqlite_3_35_prelude_gates_returning_on_the_pinned_version() {
 
     assert_eq!(
         selected.sql,
-        "SELECT \"users\".\"id\", \"users\".\"name\" FROM \"users\" WHERE (\"id\" = ?)"
+        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" = ?)"
     );
 
     // `RETURNING` is only reachable because the pinned version implements the

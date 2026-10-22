@@ -15,7 +15,7 @@ use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::expr::{render_expr, ExprKind, MergeScope, Merged, SqlVal};
-use crate::schema::{Column, ExprInScope};
+use crate::schema::{Column, ExprInScope, TableRef};
 
 use super::scope::ScopePositions;
 use super::select::OrderDirection;
@@ -167,8 +167,14 @@ impl<Scope> WindowSpec<Scope> {
         self.retype()
     }
 
-    /// Renders the window contents inside `OVER (...)`.
-    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+    /// Renders the window contents inside `OVER (...)`, qualifying the
+    /// partitioned and ordered columns against `relations`.
+    pub fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
         let mut has_part = false;
         if !self.partition_by.is_empty() {
             has_part = true;
@@ -177,7 +183,7 @@ impl<Scope> WindowSpec<Scope> {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, expression);
+                render_expr::<D>(sql, params, expression, relations);
             }
         }
         if !self.order_by.is_empty() {
@@ -189,7 +195,7 @@ impl<Scope> WindowSpec<Scope> {
                 if i > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, expression);
+                render_expr::<D>(sql, params, expression, relations);
                 sql.push(' ');
                 sql.push_str(dir.as_str());
             }
@@ -340,14 +346,22 @@ impl<T, Scope> WindowExpr<T, Scope> {
     }
 
     /// Renders this window function and its `OVER (...)` clause to `sql`.
-    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+    ///
+    /// `relations` names the relations of the enclosing statement and qualifies
+    /// every column the window reads or orders by.
+    pub fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
         match &self.kind {
             WindowExprKind::RowNumber => sql.push_str("ROW_NUMBER()"),
             WindowExprKind::Rank => sql.push_str("RANK()"),
             WindowExprKind::DenseRank => sql.push_str("DENSE_RANK()"),
             WindowExprKind::Lag { column, offset } => {
                 sql.push_str("LAG(");
-                render_expr::<D>(sql, params, column);
+                render_expr::<D>(sql, params, column, relations);
                 if let Some(off) = offset {
                     let _ = write!(sql, ", {off}");
                 }
@@ -355,18 +369,18 @@ impl<T, Scope> WindowExpr<T, Scope> {
             }
             WindowExprKind::Lead { column, offset } => {
                 sql.push_str("LEAD(");
-                render_expr::<D>(sql, params, column);
+                render_expr::<D>(sql, params, column, relations);
                 if let Some(off) = offset {
                     let _ = write!(sql, ", {off}");
                 }
                 sql.push(')');
             }
             WindowExprKind::Expr(expr) => {
-                render_expr::<D>(sql, params, expr);
+                render_expr::<D>(sql, params, expr, relations);
             }
         }
         sql.push_str(" OVER (");
-        self.window.render::<D>(sql, params);
+        self.window.render::<D>(sql, params, relations);
         sql.push(')');
     }
 }
@@ -386,8 +400,8 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget
 {
     type RustType = T;
 
-    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        WindowExpr::render::<D>(self, sql, params);
+    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>, relations: &[TableRef]) {
+        WindowExpr::render::<D>(self, sql, params, relations);
     }
 }
 

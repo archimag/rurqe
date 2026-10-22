@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin};
 use crate::expr::{render_expr, BinaryOp, Expr, ExprKind, SqlVal, Subquery};
-use crate::schema::{Column, ExprInScope, Table, TableInScope};
+use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
 use super::cte::{Cte, CteRenderer, Lateral};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
@@ -50,7 +50,11 @@ impl OrderDirection {
 type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
 
 /// A type-erased renderer producing a list of projection items into the SQL buffer.
-pub(crate) type ProjectionRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
+///
+/// The renderer receives the relations of the statement, so a projected column is
+/// qualified exactly like any other column reference of the same statement.
+pub(crate) type ProjectionRenderer =
+    Arc<dyn Fn(&mut String, &mut Vec<SqlVal>, &[TableRef]) + Send + Sync>;
 
 /// A single join clause recorded on a [`SelectQuery`].
 #[derive(Clone)]
@@ -152,8 +156,8 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
     where
         S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
     {
-        self.projections = Some(Arc::new(move |sql, params| {
-            selection.render_projections::<D>(sql, params);
+        self.projections = Some(Arc::new(move |sql, params, relations| {
+            selection.render_projections::<D>(sql, params, relations);
         }));
         self.retype()
     }
@@ -464,7 +468,7 @@ impl<D: Dialect, Tables, Output: 'static> SelectQuery<D, Tables, Output> {
     ) -> Self {
         self.set_operations.push(SetOperation {
             kind,
-            render: Arc::new(move |sql, params| other.render_into(sql, params)),
+            render: Arc::new(move |sql, params, _relations| other.render_into(sql, params)),
         });
         self
     }
@@ -481,7 +485,10 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
             return;
         };
 
-        let mut tables = Vec::new();
+        // Every clause of the statement is rendered against the same relation
+        // list, so a column reference is qualified consistently across the
+        // projection, the joins, the filter, and the ordering.
+        let mut tables: Vec<TableRef> = Vec::new();
         Tables::push_table_refs(&mut tables);
         debug_assert_eq!(
             tables.len(),
@@ -510,13 +517,13 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, expression);
+                render_expr::<D>(sql, params, expression, &tables);
             }
             sql.push_str(") ");
         } else if self.distinct {
             sql.push_str("DISTINCT ");
         }
-        render_projections(sql, params);
+        render_projections(sql, params, &tables);
 
         sql.push_str(" FROM ");
         match tables.first() {
@@ -545,13 +552,13 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
             }
             if let Some(on) = &join.on {
                 sql.push_str(" ON ");
-                render_expr::<D>(sql, params, on);
+                render_expr::<D>(sql, params, on, &tables);
             }
         }
 
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
-            render_expr::<D>(sql, params, filter);
+            render_expr::<D>(sql, params, filter, &tables);
         }
 
         if !self.group_by.is_empty() {
@@ -560,20 +567,20 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, expression);
+                render_expr::<D>(sql, params, expression, &tables);
             }
         }
 
         if let Some(having) = &self.having {
             sql.push_str(" HAVING ");
-            render_expr::<D>(sql, params, having);
+            render_expr::<D>(sql, params, having, &tables);
         }
 
         for operation in &self.set_operations {
             sql.push(' ');
             sql.push_str(operation.kind.as_str());
             sql.push(' ');
-            (operation.render)(sql, params);
+            (operation.render)(sql, params, &tables);
         }
 
         if !self.order_by.is_empty() {
@@ -582,7 +589,7 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, expression);
+                render_expr::<D>(sql, params, expression, &tables);
                 sql.push(' ');
                 sql.push_str(direction.as_str());
             }

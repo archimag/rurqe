@@ -27,7 +27,7 @@ impl crate::dialect::Dialect for MockDialect {
 fn render(kind: &ExprKind) -> (String, Vec<SqlVal>) {
     let mut sql = String::new();
     let mut params = Vec::new();
-    render_expr::<MockDialect>(&mut sql, &mut params, kind);
+    render_expr::<MockDialect>(&mut sql, &mut params, kind, &[]);
     (sql, params)
 }
 

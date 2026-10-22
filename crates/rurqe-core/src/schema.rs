@@ -26,11 +26,15 @@ pub trait Table {
 
     /// Builds the expression node referencing `column` of this table.
     ///
-    /// The default references the bare column name; tables referenced under an
-    /// alias override it to qualify every reference with their alias, so joins
-    /// over repeated table references stay unambiguous.
+    /// The default carries the SQL name of the table, which lets the renderer
+    /// qualify the reference whenever the statement spans several relations;
+    /// tables referenced under an alias override it to carry their alias, so
+    /// joins over repeated table references stay unambiguous.
     fn column_expr(column: &'static str) -> crate::expr::ExprKind {
-        crate::expr::ExprKind::Column { name: column }
+        crate::expr::ExprKind::Column {
+            table: Self::NAME,
+            name: column,
+        }
     }
 }
 
@@ -81,10 +85,15 @@ pub trait Column {
 
     /// Builds the expression node referencing this column.
     ///
-    /// The default references the bare column name; columns of an [`Aliased`]
-    /// table override it to reference the alias-qualified name.
+    /// The node carries the [`Table::NAME`] of [`Column::Table`], so the renderer
+    /// qualifies the reference whenever a bare name would be ambiguous or
+    /// unresolvable; columns of an [`Aliased`] table override it to reference
+    /// their alias directly.
     fn expr_kind() -> crate::expr::ExprKind {
-        crate::expr::ExprKind::Column { name: Self::NAME }
+        crate::expr::ExprKind::Column {
+            table: <Self::Table as Table>::NAME,
+            name: Self::NAME,
+        }
     }
 
     /// Addresses this column through the table alias `A`.
@@ -235,6 +244,13 @@ impl<T: Table, A: TableAlias> Table for Aliased<T, A> {
 
     fn table_ref() -> TableRef {
         TableRef::aliased(T::NAME, A::NAME)
+    }
+
+    fn column_expr(column: &'static str) -> crate::expr::ExprKind {
+        crate::expr::ExprKind::QualifiedColumn {
+            table: A::NAME,
+            column,
+        }
     }
 }
 
@@ -779,10 +795,13 @@ mod tests {
     }
 
     #[test]
-    fn plain_column_expression_is_unqualified() {
+    fn plain_column_expression_carries_its_owning_table() {
         assert_eq!(
             UserId::expr_kind(),
-            crate::expr::ExprKind::Column { name: "id" }
+            crate::expr::ExprKind::Column {
+                table: "users",
+                name: "id",
+            }
         );
     }
 

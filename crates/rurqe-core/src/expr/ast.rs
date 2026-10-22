@@ -15,6 +15,12 @@ use crate::schema::Column;
 pub enum ExprKind {
     /// A reference to a schema column.
     Column {
+        /// The compile-time SQL identifier of the table owning the column.
+        ///
+        /// The renderer qualifies the reference with it whenever the statement
+        /// spans several relations, addresses the table under an alias, or
+        /// resolves the column through an enclosing statement.
+        table: &'static str,
         /// The compile-time SQL identifier of the column.
         name: &'static str,
     },
@@ -308,7 +314,7 @@ impl Expr<i64> {
     pub fn count<C: Column>() -> Expr<i64, (), Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+            arg: Some(Box::new(C::expr_kind())),
         })
     }
 }
@@ -321,7 +327,7 @@ impl Expr<f64> {
     pub fn avg<C: Column>() -> Expr<f64, (), Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+            arg: Some(Box::new(C::expr_kind())),
         })
     }
 }

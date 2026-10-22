@@ -102,7 +102,7 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
     assert_eq!(
         built.sql,
         "SELECT \"users\".\"id\", \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" \
-         INNER JOIN \"orders\" ON (\"user_id\" = $1) WHERE (\"active\" = $2)"
+         INNER JOIN \"orders\" ON (\"orders\".\"user_id\" = $1) WHERE (\"users\".\"active\" = $2)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::Bool(true)]);
 
@@ -129,7 +129,8 @@ fn left_join_lifts_joined_columns_into_options() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN \"orders\" ON (\"user_id\" = $1)"
+        "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(3)]);
 
@@ -201,8 +202,9 @@ fn joined_aggregations_group_rows_by_the_joined_table() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"name\" FROM \"orders\" INNER JOIN \"users\" ON (\"id\" = $1) \
-         GROUP BY \"name\" HAVING (COUNT(*) > $2) ORDER BY \"name\" ASC"
+        "SELECT \"users\".\"name\" FROM \"orders\" INNER JOIN \"users\" \
+         ON (\"users\".\"id\" = $1) GROUP BY \"users\".\"name\" HAVING (COUNT(*) > $2) \
+         ORDER BY \"users\".\"name\" ASC"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(1)]);
 }
@@ -265,7 +267,9 @@ fn cte_subquery_composes_with_main_query_and_decodes_rows() {
 
     let built = select_from::<Postgres<Pg16>, User>()
         .with(summary_cte)
-        .inner_join::<UserSummary, _, _>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
+        .inner_join::<UserSummary, _, _>(
+            Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()),
+        )
         .select((UserId, UserName, SummaryOrderCount))
         .where_(Expr::column::<SummaryOrderCount>().gt(5i64))
         .build();
@@ -273,9 +277,9 @@ fn cte_subquery_composes_with_main_query_and_decodes_rows() {
     assert_eq!(
         built.sql,
         "WITH \"user_summary\" AS (SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\") \
-         SELECT \"id\", \"name\", \"order_count\" FROM \"users\" \
-         INNER JOIN \"user_summary\" ON (\"id\" = \"user_id\") \
-         WHERE (\"order_count\" > $1)"
+         SELECT \"users\".\"id\", \"users\".\"name\", \"user_summary\".\"order_count\" FROM \"users\" \
+         INNER JOIN \"user_summary\" ON (\"users\".\"id\" = \"user_summary\".\"user_id\") \
+         WHERE (\"user_summary\".\"order_count\" > $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(5)]);
 
@@ -470,9 +474,9 @@ fn set_operations_combine_case_and_exists_queries() {
     assert_eq!(
         built.sql,
         "SELECT \"id\", CASE WHEN (\"active\" = $1) THEN $2 ELSE $3 END FROM \"users\" \
-         WHERE (EXISTS (SELECT \"id\" FROM \"orders\" WHERE (\"user_id\" = \"id\"))) \
+         WHERE (EXISTS (SELECT \"id\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\"))) \
          UNION ALL SELECT \"id\", CASE WHEN (\"active\" = $4) THEN $5 ELSE $6 END FROM \"users\" \
-         WHERE (EXISTS (SELECT \"id\" FROM \"orders\" WHERE (\"user_id\" = \"id\")))"
+         WHERE (EXISTS (SELECT \"id\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\")))"
     );
     assert_eq!(
         built.params,
@@ -525,8 +529,9 @@ fn self_join_with_aliases_qualifies_repeated_table_references() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\", \"manager\".\"id\", \"manager\".\"name\" FROM \"users\" \
-         INNER JOIN \"users\" AS \"manager\" ON (\"manager_id\" = \"manager\".\"id\")"
+        "SELECT \"users\".\"id\", \"users\".\"name\", \"manager\".\"id\", \"manager\".\"name\" \
+         FROM \"users\" INNER JOIN \"users\" AS \"manager\" \
+         ON (\"users\".\"manager_id\" = \"manager\".\"id\")"
     );
     assert!(built.params.is_empty());
 }
@@ -540,9 +545,9 @@ fn cross_join_lateral_renders_correlated_subquery() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" CROSS JOIN LATERAL \
-         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") ORDER BY \"id\" DESC LIMIT 1) \
-         AS \"recent\""
+        "SELECT \"users\".\"id\", \"recent\".\"total\" FROM \"users\" CROSS JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\") \
+         ORDER BY \"id\" DESC LIMIT 1) AS \"recent\""
     );
     assert!(built.params.is_empty());
 }
@@ -557,9 +562,9 @@ fn left_join_lateral_lifts_columns_into_options() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"total\" FROM \"users\" LEFT JOIN LATERAL \
-         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"id\") ORDER BY \"id\" DESC LIMIT 1) \
-         AS \"recent\" ON true"
+        "SELECT \"users\".\"id\", \"recent\".\"total\" FROM \"users\" LEFT JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\") \
+         ORDER BY \"id\" DESC LIMIT 1) AS \"recent\" ON true"
     );
     assert!(built.params.is_empty());
 }
@@ -627,8 +632,8 @@ mod value_based_dsl {
         assert_eq!(
             built.sql,
             "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"total\" FROM \"users\" \
-             INNER JOIN \"orders\" ON (\"user_id\" = \"id\") WHERE (\"id\" > $1) \
-             ORDER BY \"id\" ASC LIMIT 20"
+             INNER JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\") \
+             WHERE (\"users\".\"id\" > $1) ORDER BY \"users\".\"id\" ASC LIMIT 20"
         );
         assert_eq!(built.params, vec![SqlVal::I64(10)]);
     }
@@ -643,7 +648,7 @@ mod value_based_dsl {
         assert_eq!(
             built.sql,
             "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" \
-             LEFT JOIN \"orders\" ON (\"user_id\" = \"id\")"
+             LEFT JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\")"
         );
         assert!(built.params.is_empty());
 

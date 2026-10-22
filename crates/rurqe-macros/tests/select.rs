@@ -139,7 +139,7 @@ fn expressions_render_through_the_select_target_trait() {
         .select(select!(UserId, Expr::sum::<UserId>() as total))
         .build();
 
-    assert_eq!(built.sql, "SELECT users.id, SUM(id) FROM users");
+    assert_eq!(built.sql, "SELECT id, SUM(id) FROM users");
     assert!(built.params.is_empty());
 }
 
@@ -152,7 +152,7 @@ fn selection_starts_a_query_directly_from_a_table() {
 
     assert_eq!(
         built.sql,
-        "SELECT users.id, users.email FROM users WHERE (id > $1)"
+        "SELECT id, email FROM users WHERE (id > $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
@@ -166,7 +166,7 @@ fn selection_starts_a_query_from_a_table_value() {
 
     assert_eq!(
         built.sql,
-        "SELECT users.id, users.email FROM users WHERE (id > $1)"
+        "SELECT id, email FROM users WHERE (id > $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
@@ -201,7 +201,7 @@ fn selection_feeds_the_query_builder() {
         .select(select!(UserId, UserEmail as contact_email))
         .build();
 
-    assert_eq!(built.sql, "SELECT users.id, users.email FROM users");
+    assert_eq!(built.sql, "SELECT id, email FROM users");
 }
 
 /// A second dialect scope proving that the dialect is fixed by the imported
@@ -264,7 +264,7 @@ mod question_mark_dialect_scope {
 
         assert_eq!(
             built.sql,
-            "SELECT \"users\".\"id\", \"users\".\"email\" FROM \"users\" WHERE (\"id\" > ?)"
+            "SELECT \"id\", \"email\" FROM \"users\" WHERE (\"id\" > ?)"
         );
         assert_eq!(built.params, vec![SqlVal::I64(1)]);
     }

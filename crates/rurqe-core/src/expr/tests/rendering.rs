@@ -36,7 +36,10 @@ fn function_calls_render_name_and_arguments() {
     let kind = ExprKind::Function {
         name: "COALESCE",
         args: vec![
-            ExprKind::Column { name: "name" },
+            ExprKind::Column {
+                table: "users",
+                name: "name",
+            },
             ExprKind::Value(SqlVal::Text("anonymous".to_owned())),
         ],
     };
@@ -217,7 +220,7 @@ fn between_builds_and_renders_range_predicate() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::Between {
-            operand: Box::new(ExprKind::Column { name: "id" }),
+            operand: Box::new(ExprKind::Column { table: "users", name: "id" }),
             low: Box::new(ExprKind::Value(SqlVal::I64(10))),
             high: Box::new(ExprKind::Value(SqlVal::I64(20))),
         }
@@ -234,7 +237,7 @@ fn in_list_builds_and_renders_membership() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::InList {
-            operand: Box::new(ExprKind::Column { name: "id" }),
+            operand: Box::new(ExprKind::Column { table: "users", name: "id" }),
             values: vec![
                 ExprKind::Value(SqlVal::I64(1)),
                 ExprKind::Value(SqlVal::I64(2)),

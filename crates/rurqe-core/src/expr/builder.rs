@@ -51,7 +51,7 @@ pub struct Aggregate;
 ///     predicate.kind(),
 ///     &ExprKind::Binary {
 ///         op: BinaryOp::Gt,
-///         lhs: Box::new(ExprKind::Column { name: "id" }),
+///         lhs: Box::new(ExprKind::Column { table: "users", name: "id" }),
 ///         rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
 ///     }
 /// );
@@ -350,7 +350,7 @@ impl<T> Expr<T, ()> {
     {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Sum,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+            arg: Some(Box::new(C::expr_kind())),
         })
     }
 
@@ -364,7 +364,7 @@ impl<T> Expr<T, ()> {
     {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Min,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+            arg: Some(Box::new(C::expr_kind())),
         })
     }
 
@@ -378,7 +378,7 @@ impl<T> Expr<T, ()> {
     {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Max,
-            arg: Some(Box::new(ExprKind::Column { name: C::NAME })),
+            arg: Some(Box::new(C::expr_kind())),
         })
     }
 }
