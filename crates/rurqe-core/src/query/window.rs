@@ -17,6 +17,10 @@ use crate::dialect::Dialect;
 use crate::expr::{render_expr, ExprKind, MergeScope, Merged, SqlVal};
 use crate::schema::{Column, ExprInScope, TableRef};
 
+// `WindowExprKind` describes the window nodes of the statement AST shared with
+// the expression module, so the canonical definition lives there.
+pub use crate::expr::WindowExprKind;
+
 use super::scope::ScopePositions;
 use super::select::OrderDirection;
 use super::selection::{SelectTarget, SelectTargetInScope};
@@ -267,33 +271,6 @@ impl Window {
     pub fn order_by_desc<C: Column>(col: C) -> WindowSpec<C::Table> {
         Window::order_by(col, OrderDirection::Desc)
     }
-}
-
-/// The internal representation of a window function call.
-#[derive(Debug, Clone, PartialEq)]
-pub enum WindowExprKind {
-    /// `ROW_NUMBER()`
-    RowNumber,
-    /// `RANK()`
-    Rank,
-    /// `DENSE_RANK()`
-    DenseRank,
-    /// `LAG(column [, offset])`
-    Lag {
-        /// The target column expression.
-        column: ExprKind,
-        /// The optional row offset.
-        offset: Option<u32>,
-    },
-    /// `LEAD(column [, offset])`
-    Lead {
-        /// The target column expression.
-        column: ExprKind,
-        /// The optional row offset.
-        offset: Option<u32>,
-    },
-    /// An arbitrary expression (such as an aggregate) evaluated over the window.
-    Expr(ExprKind),
 }
 
 /// A typed window expression evaluated with an `OVER (...)` clause.

@@ -1,4 +1,5 @@
-//! Expression AST nodes, nested subqueries, and CASE/typed expression builders.
+//! Expression AST nodes, nested subqueries, CASE/typed expression builders, and
+//! the dialect-neutral statement AST they are rendered into.
 
 use core::fmt;
 use core::marker::PhantomData;
@@ -9,6 +10,13 @@ use super::ops::IntoExpr;
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::Column;
+
+mod statement;
+
+pub use statement::{
+    CteAst, DialectInScope, JoinAst, JoinKind, MergeDialect, MergedDialect, OrderDirection,
+    SelectAst, SetOpAst, SetOpKind, WindowExprKind,
+};
 
 /// The shape of a SQL expression tree.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +122,15 @@ pub enum ExprKind {
         branches: Vec<CaseBranch>,
         /// The optional `ELSE` fallback expression.
         else_branch: Option<Box<ExprKind>>,
+    },
+    /// A window function call evaluated over an `OVER (...)` specification.
+    Window {
+        /// The window function and the operand it reads or aggregates.
+        kind: Box<WindowExprKind>,
+        /// The expressions partitioning the window, in `PARTITION BY` order.
+        partition_by: Vec<ExprKind>,
+        /// The ordering criteria of the window, in `ORDER BY` order.
+        order_by: Vec<(ExprKind, OrderDirection)>,
     },
 }
 

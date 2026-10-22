@@ -6,6 +6,10 @@
 //! compatibility is checked at the call site through [`SqlCompatible`], so a
 //! comparison between unrelated types simply does not compile.
 //!
+//! Beside the expression nodes, the module hosts the dialect-neutral statement
+//! AST ([`SelectAst`]) the query builder renders, so expressions and statements
+//! share one vocabulary of nodes.
+//!
 //! The module is split into focused submodules and re-exported here, so callers
 //! keep using the flat `expr::...` paths.
 
@@ -20,7 +24,11 @@ mod val;
 #[cfg(test)]
 mod tests;
 
-pub use ast::{CaseBranch, CaseBuilder, ExprKind, HasBranches, NoBranches, Subquery, SubqueryOp};
+pub use ast::{
+    CaseBranch, CaseBuilder, CteAst, DialectInScope, ExprKind, HasBranches, JoinAst, JoinKind,
+    MergeDialect, MergedDialect, NoBranches, OrderDirection, SelectAst, SetOpAst, SetOpKind,
+    Subquery, SubqueryOp, WindowExprKind,
+};
 pub use builder::{Aggregate, Expr, NonAggregate};
 pub use functions::{avg, coalesce, count, count_all, max, min, sum};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};

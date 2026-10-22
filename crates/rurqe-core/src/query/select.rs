@@ -8,6 +8,10 @@ use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin};
 use crate::expr::{render_expr, BinaryOp, Expr, ExprKind, SqlVal, Subquery};
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
+// `ORDER BY` directions describe the statement AST shared with the expression
+// module, so the canonical definition lives there and is re-exported here.
+pub use crate::expr::OrderDirection;
+
 use super::cte::{Cte, CteRenderer, Lateral};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
 use super::scope::{
@@ -25,25 +29,6 @@ pub struct BuiltQuery {
 
     /// The parameter values referenced by the placeholders, in placeholder order.
     pub params: Vec<SqlVal>,
-}
-
-/// The direction of an `ORDER BY` clause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum OrderDirection {
-    /// Ascending order (`ASC`).
-    Asc,
-    /// Descending order (`DESC`).
-    Desc,
-}
-
-impl OrderDirection {
-    /// The SQL text of the direction.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            OrderDirection::Asc => "ASC",
-            OrderDirection::Desc => "DESC",
-        }
-    }
 }
 
 /// Phantom marker carrying the dialect, scope, and row type of a query.

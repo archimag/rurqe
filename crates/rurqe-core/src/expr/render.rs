@@ -10,9 +10,9 @@
 //! mixes placeholder styles or binds a number of parameters other than it
 //! declares, instead of panicking or rendering invalid SQL.
 
-use core::fmt;
+use core::fmt::{self, Write};
 
-use super::ast::{ExprKind, SubqueryOp};
+use super::ast::{ExprKind, OrderDirection, SelectAst, SubqueryOp, WindowExprKind};
 use super::val::SqlVal;
 use crate::dialect::Dialect;
 use crate::schema::TableRef;
@@ -319,5 +319,290 @@ pub fn render_expr<D: Dialect>(
             }
             sql.push_str(" END");
         }
+        ExprKind::Window {
+            kind,
+            partition_by,
+            order_by,
+        } => {
+            render_window_kind::<D>(sql, params, kind, relations);
+            sql.push_str(" OVER (");
+            let mut has_partition = false;
+            if !partition_by.is_empty() {
+                has_partition = true;
+                sql.push_str("PARTITION BY ");
+                render_expressions::<D>(sql, params, partition_by, relations);
+            }
+            if !order_by.is_empty() {
+                if has_partition {
+                    sql.push(' ');
+                }
+                sql.push_str("ORDER BY ");
+                render_ordered_expressions::<D>(sql, params, order_by, relations);
+            }
+            sql.push(')');
+        }
+    }
+}
+
+/// Renders the function call of a window expression, without its `OVER` clause.
+fn render_window_kind<D: Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    kind: &WindowExprKind,
+    relations: &[TableRef],
+) {
+    match kind {
+        WindowExprKind::RowNumber => sql.push_str("ROW_NUMBER()"),
+        WindowExprKind::Rank => sql.push_str("RANK()"),
+        WindowExprKind::DenseRank => sql.push_str("DENSE_RANK()"),
+        WindowExprKind::Lag { column, offset } => {
+            sql.push_str("LAG(");
+            render_expr::<D>(sql, params, column, relations);
+            if let Some(offset) = offset {
+                let _ = write!(sql, ", {offset}");
+            }
+            sql.push(')');
+        }
+        WindowExprKind::Lead { column, offset } => {
+            sql.push_str("LEAD(");
+            render_expr::<D>(sql, params, column, relations);
+            if let Some(offset) = offset {
+                let _ = write!(sql, ", {offset}");
+            }
+            sql.push(')');
+        }
+        WindowExprKind::Expr(expr) => render_expr::<D>(sql, params, expr, relations),
+    }
+}
+
+/// Renders the expressions of a list separated by commas.
+fn render_expressions<D: Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    expressions: &[ExprKind],
+    relations: &[TableRef],
+) {
+    for (index, expression) in expressions.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        render_expr::<D>(sql, params, expression, relations);
+    }
+}
+
+/// Renders `ORDER BY`-style criteria, each followed by its direction.
+fn render_ordered_expressions<D: Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    criteria: &[(ExprKind, OrderDirection)],
+    relations: &[TableRef],
+) {
+    for (index, (expression, direction)) in criteria.iter().enumerate() {
+        if index > 0 {
+            sql.push_str(", ");
+        }
+        render_expr::<D>(sql, params, expression, relations);
+        sql.push(' ');
+        sql.push_str(direction.as_str());
+    }
+}
+
+impl SelectAst {
+    /// Renders the statement into `sql`, binding every literal into `params`.
+    ///
+    /// A statement chained with set operations renders its own clauses first,
+    /// then the operation keywords, and finally the ordering and pagination of
+    /// the compound result. An operand carrying its own `WITH` clause, ordering,
+    /// pagination, or nested set operations is parenthesised, so its clauses stay
+    /// attached to it instead of binding to the compound statement.
+    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        let relations = self.relations();
+
+        if self.set_operations.is_empty() {
+            self.render_select::<D>(sql, params, &relations);
+            render_order_and_pagination::<D>(
+                sql,
+                params,
+                &self.order_by,
+                self.limit,
+                self.offset,
+                &relations,
+            );
+            return;
+        }
+
+        // The left operand owns its `WITH` clause, ordering, and pagination, so
+        // it is parenthesised whenever it carries any of them.
+        let wrap_left = !self.ctes.is_empty() || self.has_own_tail();
+        if wrap_left {
+            sql.push('(');
+        }
+        self.render_select::<D>(sql, params, &relations);
+        render_order_and_pagination::<D>(
+            sql,
+            params,
+            &self.order_by,
+            self.limit,
+            self.offset,
+            &relations,
+        );
+        if wrap_left {
+            sql.push(')');
+        }
+
+        for operation in &self.set_operations {
+            sql.push(' ');
+            sql.push_str(operation.kind.as_str());
+            sql.push(' ');
+            operation.query.render_operand::<D>(sql, params);
+        }
+
+        // Ordering and pagination written after a set operation apply to the
+        // combined rows rather than to the left query.
+        render_order_and_pagination::<D>(
+            sql,
+            params,
+            &self.compound_order_by,
+            self.compound_limit,
+            self.compound_offset,
+            &relations,
+        );
+    }
+
+    /// Whether rendering the statement as a set-operation operand needs parentheses.
+    ///
+    /// An operand carrying its own `WITH` clause, ordering, pagination, or nested
+    /// set operations keeps those clauses only inside parentheses.
+    pub fn requires_operand_parentheses(&self) -> bool {
+        !self.ctes.is_empty() || self.has_own_tail() || !self.set_operations.is_empty()
+    }
+
+    /// Renders the statement as one operand of a set operation.
+    fn render_operand<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        if self.requires_operand_parentheses() {
+            sql.push('(');
+            self.render::<D>(sql, params);
+            sql.push(')');
+        } else {
+            self.render::<D>(sql, params);
+        }
+    }
+
+    /// Whether the statement carries its own `ORDER BY`, `LIMIT`, or `OFFSET`.
+    fn has_own_tail(&self) -> bool {
+        !self.order_by.is_empty() || self.limit.is_some() || self.offset.is_some()
+    }
+
+    /// The relations of the statement in `FROM` order, aliases included.
+    fn relations(&self) -> Vec<TableRef> {
+        let mut relations = Vec::with_capacity(self.joins.len() + 1);
+        relations.extend(self.from);
+        relations.extend(self.joins.iter().map(|join| join.table));
+        relations
+    }
+
+    /// Renders the `WITH ... SELECT ... HAVING ...` part of the statement.
+    fn render_select<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
+        if !self.ctes.is_empty() {
+            sql.push_str("WITH ");
+            for (index, cte) in self.ctes.iter().enumerate() {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                D::push_quoted_identifier(sql, cte.name);
+                sql.push_str(" AS (");
+                cte.query.render::<D>(sql, params);
+                sql.push(')');
+            }
+            sql.push(' ');
+        }
+
+        sql.push_str("SELECT ");
+        self.render_projections::<D>(sql, params, relations);
+
+        if let Some(from) = &self.from {
+            sql.push_str(" FROM ");
+            from.render::<D>(sql);
+        }
+
+        for join in &self.joins {
+            sql.push(' ');
+            sql.push_str(join.kind.as_str());
+            sql.push(' ');
+            match &join.lateral {
+                Some(lateral) => {
+                    sql.push('(');
+                    lateral.render::<D>(sql, params);
+                    sql.push_str(") AS ");
+                    D::push_quoted_identifier(sql, join.table.name);
+                }
+                None => join.table.render::<D>(sql),
+            }
+            if let Some(on) = &join.on {
+                sql.push_str(" ON ");
+                render_expr::<D>(sql, params, on, relations);
+            }
+        }
+
+        if let Some(filter) = &self.filter {
+            sql.push_str(" WHERE ");
+            render_expr::<D>(sql, params, filter, relations);
+        }
+
+        if !self.group_by.is_empty() {
+            sql.push_str(" GROUP BY ");
+            render_expressions::<D>(sql, params, &self.group_by, relations);
+        }
+
+        if let Some(having) = &self.having {
+            sql.push_str(" HAVING ");
+            render_expr::<D>(sql, params, having, relations);
+        }
+    }
+
+    /// Renders the projection list, including the `DISTINCT` flavours.
+    fn render_projections<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
+        if !self.distinct_on.is_empty() {
+            sql.push_str("DISTINCT ON (");
+            render_expressions::<D>(sql, params, &self.distinct_on, relations);
+            sql.push_str(") ");
+        } else if self.distinct {
+            sql.push_str("DISTINCT ");
+        }
+
+        render_expressions::<D>(sql, params, &self.projections, relations);
+    }
+}
+
+/// Renders an `ORDER BY` clause followed by the `LIMIT` and `OFFSET` clauses.
+fn render_order_and_pagination<D: Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    order_by: &[(ExprKind, OrderDirection)],
+    limit: Option<u32>,
+    offset: Option<u32>,
+    relations: &[TableRef],
+) {
+    if !order_by.is_empty() {
+        sql.push_str(" ORDER BY ");
+        render_ordered_expressions::<D>(sql, params, order_by, relations);
+    }
+
+    if let Some(limit) = limit {
+        let _ = write!(sql, " LIMIT {limit}");
+    }
+
+    if let Some(offset) = offset {
+        let _ = write!(sql, " OFFSET {offset}");
     }
 }

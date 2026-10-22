@@ -4,6 +4,10 @@ use core::marker::PhantomData;
 
 use crate::schema::{At, ExprScope, Next, Table, TableInScope, TableRef};
 
+// `JoinKind` describes the statement AST shared with the expression module, so
+// the canonical definition lives there and is re-exported here.
+pub use crate::expr::JoinKind;
+
 /// Marks a table whose columns are never `NULL` in the current relational context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NonNullableRel;
@@ -113,32 +117,6 @@ impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5);
 impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6);
 impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
 impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
-
-/// The flavour of join used to bring a table into the query scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum JoinKind {
-    /// `INNER JOIN`, which only keeps rows matched in the joined table.
-    Inner,
-    /// `LEFT JOIN`, which keeps unmatched rows and nulls the joined columns.
-    Left,
-    /// `CROSS JOIN LATERAL`, which joins every outer row with a correlated subquery.
-    CrossLateral,
-    /// `LEFT JOIN LATERAL ... ON true`, which keeps outer rows a lateral subquery
-    /// leaves unmatched.
-    LeftLateral,
-}
-
-impl JoinKind {
-    /// The SQL text of the join keywords.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            JoinKind::Inner => "INNER JOIN",
-            JoinKind::Left => "LEFT JOIN",
-            JoinKind::CrossLateral => "CROSS JOIN LATERAL",
-            JoinKind::LeftLateral => "LEFT JOIN LATERAL",
-        }
-    }
-}
 
 /// A query scope extending `Tables` with the table `T` joined to it.
 pub struct Joined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
