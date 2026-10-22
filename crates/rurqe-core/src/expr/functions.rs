@@ -21,6 +21,11 @@ pub fn count_all() -> Expr<i64, (), Aggregate> {
     Expr::<i64>::count_all()
 }
 
+/// Builds a `COUNT(DISTINCT col)` expression for the column `col`.
+pub fn count_distinct<C: Column>(_col: C) -> Expr<i64, (), Aggregate> {
+    Expr::<i64>::count_distinct::<C>()
+}
+
 /// Builds a `SUM(col)` expression for the column `col`.
 ///
 /// The produced expression carries the [`Aggregate`] marker, so it stays
@@ -29,12 +34,22 @@ pub fn sum<C: Column>(_col: C) -> Expr<C::RustType, (), Aggregate> {
     Expr::<C::RustType>::sum::<C>()
 }
 
+/// Builds a `SUM(DISTINCT col)` expression for the column `col`.
+pub fn sum_distinct<C: Column>(_col: C) -> Expr<C::RustType, (), Aggregate> {
+    Expr::<C::RustType>::sum_distinct::<C>()
+}
+
 /// Builds an `AVG(col)` expression for the column `col`.
 ///
 /// The produced expression carries the [`Aggregate`] marker, so it stays
 /// projectable from a grouped query even when `col` is not grouped.
 pub fn avg<C: Column>(_col: C) -> Expr<f64, (), Aggregate> {
     Expr::<f64>::avg::<C>()
+}
+
+/// Builds an `AVG(DISTINCT col)` expression for the column `col`.
+pub fn avg_distinct<C: Column>(_col: C) -> Expr<f64, (), Aggregate> {
+    Expr::<f64>::avg_distinct::<C>()
 }
 
 /// Builds a `MIN(col)` expression for the column `col`.

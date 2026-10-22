@@ -115,57 +115,69 @@ fn aggregate_expressions_build_expected_ast() {
         Expr::count_all().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Count,
+            distinct: false,
             arg: None,
+            filter: None,
         }
     );
     assert_eq!(
         Expr::count::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Count,
+            distinct: false,
             arg: Some(Box::new(ExprKind::Column {
                 table: "users",
                 name: "id",
             })),
+            filter: None,
         }
     );
     assert_eq!(
         Expr::sum::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Sum,
+            distinct: false,
             arg: Some(Box::new(ExprKind::Column {
                 table: "users",
                 name: "id",
             })),
+            filter: None,
         }
     );
     assert_eq!(
         Expr::avg::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Avg,
+            distinct: false,
             arg: Some(Box::new(ExprKind::Column {
                 table: "users",
                 name: "id",
             })),
+            filter: None,
         }
     );
     assert_eq!(
         Expr::min::<UserId>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Min,
+            distinct: false,
             arg: Some(Box::new(ExprKind::Column {
                 table: "users",
                 name: "id",
             })),
+            filter: None,
         }
     );
     assert_eq!(
         Expr::max::<UserName>().kind(),
         &ExprKind::Aggregate {
             func: AggregateFunc::Max,
+            distinct: false,
             arg: Some(Box::new(ExprKind::Column {
                 table: "users",
                 name: "name",
             })),
+            filter: None,
         }
     );
 }
@@ -349,10 +361,67 @@ fn string_columns_match_like_patterns() {
 fn aggregate_helpers_build_expected_expressions() {
     assert_eq!(count(), Expr::<i64>::count_all());
     assert_eq!(count_all(), Expr::<i64>::count_all());
+    assert_eq!(count_distinct(UserId), Expr::<i64>::count_distinct::<UserId>());
     assert_eq!(sum(UserId), Expr::<i64>::sum::<UserId>());
+    assert_eq!(sum_distinct(UserId), Expr::<i64>::sum_distinct::<UserId>());
     assert_eq!(avg(UserId), Expr::<f64>::avg::<UserId>());
+    assert_eq!(avg_distinct(UserId), Expr::<f64>::avg_distinct::<UserId>());
     assert_eq!(min(UserId), Expr::<i64>::min::<UserId>());
     assert_eq!(max(UserName), Expr::<String>::max::<UserName>());
+}
+
+#[test]
+fn distinct_and_filtered_aggregates_build_expected_ast() {
+    let distinct_count = Expr::count::<UserId>().distinct();
+    assert_eq!(
+        distinct_count.kind(),
+        &ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            distinct: true,
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            })),
+            filter: None,
+        }
+    );
+
+    let filtered = sum(UserId).filter_where(UserId.gt(10i64));
+    assert_eq!(
+        filtered.kind(),
+        &ExprKind::Aggregate {
+            func: AggregateFunc::Sum,
+            distinct: false,
+            arg: Some(Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            })),
+            filter: Some(Box::new(ExprKind::Binary {
+                op: BinaryOp::Gt,
+                lhs: Box::new(ExprKind::Column {
+                    table: "users",
+                    name: "id",
+                }),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
+            })),
+        }
+    );
+
+    let chained = Expr::count::<UserId>()
+        .distinct()
+        .filter_where(UserId.gt(0i64))
+        .filter_where(UserId.lt(100i64));
+
+    let ExprKind::Aggregate {
+        distinct,
+        filter: Some(filter),
+        ..
+    } = chained.kind()
+    else {
+        panic!("expected aggregate with filter");
+    };
+    assert!(*distinct);
+    assert!(matches!(**filter, ExprKind::Binary { op: BinaryOp::And, .. }));
 }
 
 #[test]

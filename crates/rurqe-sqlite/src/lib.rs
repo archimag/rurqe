@@ -19,7 +19,9 @@
 use core::marker::PhantomData;
 
 pub use rurqe_core;
-use rurqe_core::dialect::{Dialect, SupportsOnConflict, SupportsReturning, SupportsUpdateFrom};
+use rurqe_core::dialect::{
+    Dialect, SupportsAggregateFilter, SupportsOnConflict, SupportsReturning, SupportsUpdateFrom,
+};
 
 /// Marker trait representing a SQLite engine version.
 pub trait SqliteVersion: 'static + Send + Sync {}
@@ -43,12 +45,21 @@ impl SqliteVersion for Sqlite3_24 {}
 impl SqliteVersionAtLeast<3, 0> for Sqlite3_24 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_24 {}
 
+/// SQLite 3.30 marker: introduces `FILTER (WHERE ...)` clauses on aggregate functions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Sqlite3_30;
+impl SqliteVersion for Sqlite3_30 {}
+impl SqliteVersionAtLeast<3, 0> for Sqlite3_30 {}
+impl SqliteVersionAtLeast<3, 24> for Sqlite3_30 {}
+impl SqliteVersionAtLeast<3, 30> for Sqlite3_30 {}
+
 /// SQLite 3.35 marker: introduces the `RETURNING` clause on DML statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sqlite3_35;
 impl SqliteVersion for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 0> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_35 {}
+impl SqliteVersionAtLeast<3, 30> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 
 /// SQLite dialect parameterised by engine version (defaulting to [`Sqlite3_35`]).
@@ -136,6 +147,8 @@ impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsOnConflict for Sqli
 // the first one that satisfies it. SQLite has no `DELETE ... USING` clause at all,
 // so `SupportsDeleteUsing` stays unimplemented for every version.
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsUpdateFrom for Sqlite<V> {}
+
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 30>> SupportsAggregateFilter for Sqlite<V> {}
 
 /// Re-export of the underlying `rusqlite` crate for adapter users.
 #[cfg(feature = "rusqlite")]
@@ -457,13 +470,19 @@ mod tests {
         fn assert_returning<D: Dialect + SupportsReturning>() {}
         fn assert_on_conflict<D: Dialect + SupportsOnConflict>() {}
         fn assert_update_from<D: Dialect + SupportsUpdateFrom>() {}
+        fn assert_aggregate_filter<D: Dialect + SupportsAggregateFilter>() {}
 
         assert_on_conflict::<Sqlite<Sqlite3_24>>();
+        assert_on_conflict::<Sqlite<Sqlite3_30>>();
         assert_on_conflict::<Sqlite<Sqlite3_35>>();
 
         assert_returning::<Sqlite<Sqlite3_35>>();
         assert_returning::<Sqlite>();
         assert_on_conflict::<Sqlite>();
+
+        assert_aggregate_filter::<Sqlite<Sqlite3_30>>();
+        assert_aggregate_filter::<Sqlite<Sqlite3_35>>();
+        assert_aggregate_filter::<Sqlite>();
 
         assert_update_from::<Sqlite<Sqlite3_35>>();
         assert_update_from::<Sqlite>();

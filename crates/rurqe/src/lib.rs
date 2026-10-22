@@ -238,6 +238,11 @@ crate::pin_dialect_version! {
         }
 
         crate::pin_dialect_version! {
+            /// Query entry points pinned to SQLite 3.30.
+            pub mod sqlite3_30 => Sqlite<Sqlite3_30>, rusqlite::Error;
+        }
+
+        crate::pin_dialect_version! {
             /// Query entry points pinned to SQLite 3.35.
             pub mod sqlite3_35 => Sqlite<Sqlite3_35>, rusqlite::Error;
         }
@@ -824,13 +829,15 @@ pub mod prelude {
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 
     pub use rurqe_core::dialect::{
-        SupportsDeleteUsing, SupportsLateralJoin, SupportsRowLocking, SupportsUpdateFrom,
+        SupportsAggregateFilter, SupportsDeleteUsing, SupportsLateralJoin, SupportsRowLocking,
+        SupportsUpdateFrom,
     };
 
     pub use rurqe_core::expr::{
-        avg, coalesce, count, count_all, max, min, sum, CaseBranch, CaseBuilder, Expression,
-        LockClause, LockStrength, LockWait, RowExpr, RowValues, StringExpression, Subquery,
-        SubqueryOp, WindowFrame, WindowFrameBound, WindowFrameKind,
+        avg, avg_distinct, coalesce, count, count_all, count_distinct, max, min, sum, sum_distinct,
+        CaseBranch, CaseBuilder, Expression, LockClause, LockStrength, LockWait, RowExpr,
+        RowValues, StringExpression, Subquery, SubqueryOp, WindowFrame, WindowFrameBound,
+        WindowFrameKind,
     };
 
     pub use rurqe_core::query::{
@@ -863,7 +870,7 @@ pub mod prelude {
 
     #[cfg(feature = "sqlite")]
     pub use rurqe_sqlite::{
-        Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_35, SqliteConnection, SqliteVersion,
+        Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_30, Sqlite3_35, SqliteConnection, SqliteVersion,
     };
 
     #[cfg(feature = "r2d2")]

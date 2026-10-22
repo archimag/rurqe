@@ -105,6 +105,14 @@ pub trait SupportsUpdateFrom: Dialect {}
 )]
 pub trait SupportsRowLocking: Dialect {}
 
+/// Marker trait for dialects supporting aggregate `FILTER (WHERE ...)` clauses.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support aggregate FILTER (WHERE ...)",
+    label = "`FILTER (WHERE ...)` is not supported by this dialect",
+    note = "aggregate filters require a dialect that implements `SupportsAggregateFilter` (such as PostgreSQL or SQLite 3.30+)"
+)]
+pub trait SupportsAggregateFilter: Dialect {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -230,7 +230,9 @@ fn an_aggregate_evaluated_over_a_window_keeps_its_argument() {
     let summed = ExprKind::Window {
         kind: Box::new(WindowExprKind::Expr(ExprKind::Aggregate {
             func: AggregateFunc::Sum,
+            distinct: false,
             arg: Some(Box::new(UserId::expr_kind())),
+            filter: None,
         })),
         partition_by: Vec::new(),
         order_by: Vec::new(),

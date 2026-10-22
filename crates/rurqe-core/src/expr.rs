@@ -32,7 +32,9 @@ pub use ast::{
     WindowFrameBound, WindowFrameKind,
 };
 pub use builder::{Aggregate, Expr, NonAggregate};
-pub use functions::{avg, coalesce, count, count_all, max, min, sum};
+pub use functions::{
+    avg, avg_distinct, coalesce, count, count_all, count_distinct, max, min, sum, sum_distinct,
+};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use row::{RowExpr, RowValues};

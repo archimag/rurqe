@@ -168,6 +168,29 @@ fn aggregates_compose_with_group_by_and_having() {
 }
 
 #[test]
+fn aggregate_filter_where_and_distinct_aggregates_render_expected_sql() {
+    let built = SelectQuery::<Postgres<Pg16>>::new()
+        .from::<Order>()
+        .select((
+            OrderUserId,
+            count_distinct(OrderId),
+            sum(OrderTotal).filter_where(Expr::column::<OrderTotal>().gt(100.0)),
+            avg_distinct(OrderTotal).filter_where(Expr::column::<OrderId>().gt(0i64)),
+        ))
+        .group_by(OrderUserId)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(DISTINCT \"id\"), \
+         SUM(\"total\") FILTER (WHERE (\"total\" > $1)), \
+         AVG(DISTINCT \"total\") FILTER (WHERE (\"id\" > $2)) \
+         FROM \"orders\" GROUP BY \"user_id\""
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(100.0), SqlVal::I64(0)]);
+}
+
+#[test]
 fn aggregate_functions_cover_avg_min_and_max() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()

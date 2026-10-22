@@ -223,14 +223,27 @@ pub fn render_expr<D: Dialect>(
             render_expr::<D>(sql, params, rhs, relations);
             sql.push(')');
         }
-        ExprKind::Aggregate { func, arg } => {
+        ExprKind::Aggregate {
+            func,
+            distinct,
+            arg,
+            filter,
+        } => {
             sql.push_str(func.as_str());
             sql.push('(');
+            if *distinct {
+                sql.push_str("DISTINCT ");
+            }
             match arg {
                 Some(inner) => render_expr::<D>(sql, params, inner, relations),
                 None => sql.push('*'),
             }
             sql.push(')');
+            if let Some(cond) = filter {
+                sql.push_str(" FILTER (WHERE ");
+                render_expr::<D>(sql, params, cond, relations);
+                sql.push(')');
+            }
         }
         ExprKind::Raw {
             fragments,

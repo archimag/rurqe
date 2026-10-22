@@ -469,7 +469,22 @@ impl<T> Expr<T, ()> {
     {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Sum,
+            distinct: false,
             arg: Some(Box::new(C::expr_kind())),
+            filter: None,
+        })
+    }
+
+    /// Builds a `SUM(DISTINCT C)` expression for column `C`.
+    pub fn sum_distinct<C>() -> Expr<T, (), Aggregate>
+    where
+        C: Column<RustType = T>,
+    {
+        Expr::new(ExprKind::Aggregate {
+            func: AggregateFunc::Sum,
+            distinct: true,
+            arg: Some(Box::new(C::expr_kind())),
+            filter: None,
         })
     }
 
@@ -483,7 +498,9 @@ impl<T> Expr<T, ()> {
     {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Min,
+            distinct: false,
             arg: Some(Box::new(C::expr_kind())),
+            filter: None,
         })
     }
 
@@ -497,7 +514,56 @@ impl<T> Expr<T, ()> {
     {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Max,
+            distinct: false,
             arg: Some(Box::new(C::expr_kind())),
+            filter: None,
+        })
+    }
+}
+
+impl<T, Scope> Expr<T, Scope, Aggregate> {
+    /// Marks the aggregate expression to evaluate only over `DISTINCT` values.
+    pub fn distinct(mut self) -> Self {
+        if let ExprKind::Aggregate {
+            ref mut distinct, ..
+        } = self.kind
+        {
+            *distinct = true;
+        }
+        self
+    }
+
+    /// Adds a `FILTER (WHERE ...)` clause restricting the rows this aggregate evaluates.
+    ///
+    /// Multiple calls combine their conditions with the SQL `AND` operator.
+    pub fn filter_where<P>(self, predicate: Expr<bool, P>) -> Expr<T, Merged<Scope, P>, Aggregate>
+    where
+        Scope: MergeScope<P>,
+    {
+        let ExprKind::Aggregate {
+            func,
+            distinct,
+            arg,
+            filter,
+        } = self.kind
+        else {
+            return Expr::new(self.kind);
+        };
+
+        let new_filter = match filter {
+            Some(existing) => Box::new(ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs: existing,
+                rhs: Box::new(predicate.into_kind()),
+            }),
+            None => Box::new(predicate.into_kind()),
+        };
+
+        Expr::new(ExprKind::Aggregate {
+            func,
+            distinct,
+            arg,
+            filter: Some(new_filter),
         })
     }
 }

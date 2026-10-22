@@ -20,6 +20,29 @@ fn aggregate_names_render_sql_identifiers() {
 }
 
 #[test]
+fn filtered_and_distinct_aggregates_render_sql() {
+    let (sql, params) = render(count_distinct(UserId).kind());
+    assert_eq!(sql, "COUNT(DISTINCT \"id\")");
+    assert!(params.is_empty());
+
+    let (sql, params) = render(Expr::count::<UserId>().filter_where(UserId.gt(10i64)).kind());
+    assert_eq!(sql, "COUNT(\"id\") FILTER (WHERE (\"id\" > ?))");
+    assert_eq!(params, vec![SqlVal::I64(10)]);
+
+    let (sql, params) = render(
+        sum_distinct(UserId)
+            .filter_where(UserId.gt(5i64))
+            .filter_where(UserId.lt(50i64))
+            .kind(),
+    );
+    assert_eq!(
+        sql,
+        "SUM(DISTINCT \"id\") FILTER (WHERE ((\"id\" > ?) AND (\"id\" < ?)))"
+    );
+    assert_eq!(params, vec![SqlVal::I64(5), SqlVal::I64(50)]);
+}
+
+#[test]
 fn null_predicates_render_is_null_and_is_not_null() {
     assert_eq!(
         render(Expr::column::<UserName>().is_null().kind()).0,

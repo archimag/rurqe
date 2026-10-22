@@ -64,8 +64,12 @@ pub enum ExprKind {
     Aggregate {
         /// The aggregate function being applied.
         func: AggregateFunc,
+        /// Whether the aggregate applies only to distinct values.
+        distinct: bool,
         /// The optional operand; `None` represents `*` (as in `COUNT(*)`).
         arg: Option<Box<ExprKind>>,
+        /// The optional `FILTER (WHERE ...)` condition restricting aggregated rows.
+        filter: Option<Box<ExprKind>>,
     },
     /// A raw SQL expression with bound parameters and dialect-aware placeholder rendering.
     Raw {
@@ -346,7 +350,9 @@ impl Expr<i64> {
     pub fn count_all() -> Expr<i64, (), Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
+            distinct: false,
             arg: None,
+            filter: None,
         })
     }
 
@@ -357,7 +363,19 @@ impl Expr<i64> {
     pub fn count<C: Column>() -> Expr<i64, (), Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
+            distinct: false,
             arg: Some(Box::new(C::expr_kind())),
+            filter: None,
+        })
+    }
+
+    /// Builds a `COUNT(DISTINCT C)` expression for column `C`.
+    pub fn count_distinct<C: Column>() -> Expr<i64, (), Aggregate> {
+        Expr::new(ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            distinct: true,
+            arg: Some(Box::new(C::expr_kind())),
+            filter: None,
         })
     }
 }
@@ -370,7 +388,19 @@ impl Expr<f64> {
     pub fn avg<C: Column>() -> Expr<f64, (), Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
+            distinct: false,
             arg: Some(Box::new(C::expr_kind())),
+            filter: None,
+        })
+    }
+
+    /// Builds an `AVG(DISTINCT C)` expression for column `C`.
+    pub fn avg_distinct<C: Column>() -> Expr<f64, (), Aggregate> {
+        Expr::new(ExprKind::Aggregate {
+            func: AggregateFunc::Avg,
+            distinct: true,
+            arg: Some(Box::new(C::expr_kind())),
+            filter: None,
         })
     }
 }
