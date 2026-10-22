@@ -2,6 +2,14 @@
 
 /// A SQL dialect specifying identifier quoting and parameter placeholder formatting.
 pub trait Dialect: 'static + Send + Sync {
+    /// Whether the dialect renders `ILIKE` directly.
+    ///
+    /// `ILIKE` is a PostgreSQL extension: SQLite only knows the case-sensitive
+    /// `LIKE`. A dialect without it keeps the same case-insensitive semantics by
+    /// folding both operands with `LOWER` when the predicate is rendered, so an
+    /// `ilike` call never renders SQL the engine cannot parse.
+    const SUPPORTS_ILIKE: bool = true;
+
     /// Appends a quoted identifier to the output SQL buffer.
     fn push_quoted_identifier(out: &mut String, ident: &str);
 
