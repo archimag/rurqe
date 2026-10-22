@@ -1,9 +1,11 @@
 //! Operand compatibility, conversion, and call-site expression traits.
 
-use super::ast::ExprKind;
+use super::ast::{ExprKind, SubqueryOp};
 use super::builder::Expr;
 use super::scope::{MergeScope, Merged, Merged3};
 use super::val::ToSqlVal;
+use crate::dialect::Dialect;
+use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::schema::Column;
 
 /// Statically asserts that a value of type `ValType` may be compared with a
@@ -118,6 +120,35 @@ impl<T, Scope, Aggr> IntoExpr<T> for Expr<T, Scope, Aggr> {
 
     fn into_expr_kind(self) -> ExprKind {
         self.into_kind()
+    }
+}
+
+// A single-column query projects exactly one value, so it is comparable with a
+// column of that value's type. Queries projecting several columns have no
+// `(T,)` output and therefore no such implementation, which is what rejects
+// them as operands at the call site.
+impl<D, Tables, T> SqlCompatible<T, SelectQuery<D, Tables, (T,), HasProjection>>
+    for SelectQuery<D, Tables, (T,), HasProjection>
+where
+    D: Dialect,
+    Tables: TableScope,
+{
+}
+
+impl<D, Tables, T> IntoExpr<T> for SelectQuery<D, Tables, (T,), HasProjection>
+where
+    D: Dialect,
+    Tables: TableScope,
+{
+    type Scope = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Subquery {
+            op: SubqueryOp::Scalar,
+            operand: None,
+            query: self.into_subquery(),
+            negated: false,
+        }
     }
 }
 

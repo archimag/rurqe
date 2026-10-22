@@ -255,19 +255,29 @@ pub fn render_expr<D: Dialect>(
             negated,
         } => {
             sql.push('(');
-            if let Some(operand) = operand {
-                render_expr::<D>(sql, params, operand, relations);
-                sql.push(' ');
-            }
-            if *negated {
-                sql.push_str("NOT ");
-            }
             match op {
-                SubqueryOp::Exists => sql.push_str("EXISTS ("),
-                SubqueryOp::In => sql.push_str("IN ("),
+                SubqueryOp::Scalar => {
+                    // A scalar subquery is the parenthesised statement itself.
+                    query.render::<D>(sql, params);
+                }
+                SubqueryOp::Exists | SubqueryOp::In => {
+                    if let Some(operand) = operand {
+                        render_expr::<D>(sql, params, operand, relations);
+                        sql.push(' ');
+                    }
+                    if *negated {
+                        sql.push_str("NOT ");
+                    }
+                    if matches!(op, SubqueryOp::Exists) {
+                        sql.push_str("EXISTS (");
+                    } else {
+                        sql.push_str("IN (");
+                    }
+                    query.render::<D>(sql, params);
+                    sql.push(')');
+                }
             }
-            query.render::<D>(sql, params);
-            sql.push_str("))");
+            sql.push(')');
         }
         ExprKind::IsNull { operand, negated } => {
             sql.push('(');

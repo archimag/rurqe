@@ -200,6 +200,11 @@ impl Subquery {
 /// The predicate operator applied to a [`Subquery`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SubqueryOp {
+    /// A parenthesised `(subquery)` read as a single scalar value.
+    ///
+    /// Produced when a single-column `SelectQuery` is converted into an operand,
+    /// so the nested statement can be compared like any other value.
+    Scalar,
     /// `EXISTS (subquery)`
     Exists,
     /// `operand IN (subquery)`

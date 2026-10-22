@@ -7,6 +7,8 @@ use super::ops::IntoExpr;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
+use crate::dialect::Dialect;
+use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::schema::{Column, Table};
 
 /// Marker of an expression that does not aggregate the rows of the query.
@@ -317,6 +319,112 @@ impl<T> Expr<T, ()> {
     /// declared, so a `CASE` expression without branches does not compile.
     pub fn case() -> CaseBuilder<T> {
         CaseBuilder::new()
+    }
+
+    /// Builds a scalar subquery expression producing values of type `T`.
+    ///
+    /// The wrapped query must project exactly one column, so its output is the
+    /// single-element tuple `(T,)`. A single-column `SelectQuery` converts into a
+    /// scalar operand on its own, so most code passes the query directly to a
+    /// comparison operator; this constructor spells the equivalent conversion out
+    /// explicitly. The nested statement renders inline with the enclosing one, so
+    /// its parameters continue the placeholder numbering of the outer query:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         out.push('$');
+    ///         out.push_str(&index.to_string());
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///         UserScore => "score": f64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// let biggest = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .select((OrderTotal,))
+    ///     .where_(Expr::column::<OrderUserId>().eq(1i64));
+    ///
+    /// let query = SelectQuery::<MockDialect>::new()
+    ///     .from::<User>()
+    ///     .select((UserId,))
+    ///     .where_(Expr::column::<UserScore>().eq(biggest));
+    ///
+    /// assert_eq!(
+    ///     query.build().sql,
+    ///     "SELECT \"id\" FROM \"users\" WHERE (\"score\" = (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = $1)))"
+    /// );
+    /// ```
+    ///
+    /// A query projecting several columns is not a single value, so it does not
+    /// convert into a scalar subquery:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///         UserName => "name": String,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: the subquery projects two columns, not a single value.
+    /// let _ = Expr::<i64>::subquery(
+    ///     SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .select((UserId, UserName)),
+    /// );
+    /// ```
+    pub fn subquery<D, Tables>(query: SelectQuery<D, Tables, (T,), HasProjection>) -> Self
+    where
+        D: Dialect,
+        Tables: TableScope,
+    {
+        Self::new(ExprKind::Subquery {
+            op: SubqueryOp::Scalar,
+            operand: None,
+            query: query.into_subquery(),
+            negated: false,
+        })
     }
 
     /// Builds a raw SQL expression with bound parameters and dialect-aware placeholder rendering.
