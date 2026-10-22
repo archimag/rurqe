@@ -367,6 +367,7 @@ pub fn render_expr<D: Dialect>(
             kind,
             partition_by,
             order_by,
+            frame,
         } => {
             render_window_kind::<D>(sql, params, kind, relations);
             sql.push_str(" OVER (");
@@ -380,8 +381,17 @@ pub fn render_expr<D: Dialect>(
                 if has_partition {
                     sql.push(' ');
                 }
+                has_partition = true;
                 sql.push_str("ORDER BY ");
                 render_ordered_expressions::<D>(sql, params, order_by, relations);
+            }
+            // The frame closes the window contents, so it follows the ordering
+            // of the rows the frame slides over.
+            if let Some(frame) = frame {
+                if has_partition {
+                    sql.push(' ');
+                }
+                frame.render_into(sql);
             }
             sql.push(')');
         }

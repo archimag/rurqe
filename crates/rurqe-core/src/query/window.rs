@@ -14,7 +14,10 @@ use core::fmt::{self, Write};
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{render_expr, ExprKind, MergeScope, Merged, SqlVal};
+use crate::expr::{
+    render_expr, ExprKind, MergeScope, Merged, SqlVal, WindowFrame, WindowFrameBound,
+    WindowFrameKind,
+};
 use crate::schema::{Column, ExprInScope, TableRef};
 
 // `WindowExprKind` describes the window nodes of the statement AST shared with
@@ -24,6 +27,9 @@ pub use crate::expr::WindowExprKind;
 use super::scope::ScopePositions;
 use super::select::OrderDirection;
 use super::selection::{SelectTarget, SelectTargetInScope};
+
+#[cfg(test)]
+mod tests;
 
 /// A column or tuple of columns for the `PARTITION BY` clause of a window specification.
 #[diagnostic::on_unimplemented(
@@ -68,7 +74,7 @@ impl_partition_by!(C1, C2, C3, C4, C5, C6);
 impl_partition_by!(C1, C2, C3, C4, C5, C6, C7);
 impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 
-/// A specification of an `OVER (...)` window partition and ordering.
+/// A specification of an `OVER (...)` window partition, ordering, and frame.
 ///
 /// The specification carries the tables `Scope` its partitioned and ordered
 /// columns belong to, so a window function evaluated over it is only projectable
@@ -76,6 +82,7 @@ impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 pub struct WindowSpec<Scope = ()> {
     partition_by: Vec<ExprKind>,
     order_by: Vec<(ExprKind, OrderDirection)>,
+    frame: Option<WindowFrame>,
     _scope: PhantomData<fn() -> Scope>,
 }
 
@@ -84,6 +91,7 @@ impl<Scope> Default for WindowSpec<Scope> {
         Self {
             partition_by: Vec::new(),
             order_by: Vec::new(),
+            frame: None,
             _scope: PhantomData,
         }
     }
@@ -94,6 +102,7 @@ impl<Scope> Clone for WindowSpec<Scope> {
         Self {
             partition_by: self.partition_by.clone(),
             order_by: self.order_by.clone(),
+            frame: self.frame,
             _scope: PhantomData,
         }
     }
@@ -101,16 +110,9 @@ impl<Scope> Clone for WindowSpec<Scope> {
 
 impl<Scope> PartialEq for WindowSpec<Scope> {
     fn eq(&self, other: &Self) -> bool {
-        self.partition_by == other.partition_by && self.order_by == other.order_by
-    }
-}
-
-impl<Scope> fmt::Debug for WindowSpec<Scope> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WindowSpec")
-            .field("partition_by", &self.partition_by)
-            .field("order_by", &self.order_by)
-            .finish()
+        self.partition_by == other.partition_by
+            && self.order_by == other.order_by
+            && self.frame == other.frame
     }
 }
 
@@ -136,6 +138,7 @@ impl<Scope> WindowSpec<Scope> {
         WindowSpec {
             partition_by,
             order_by: self.order_by,
+            frame: self.frame,
             _scope: PhantomData,
         }
     }
@@ -171,6 +174,31 @@ impl<Scope> WindowSpec<Scope> {
         self.retype()
     }
 
+    /// Restricts the window to the rows between `start` and `end` (`ROWS BETWEEN`).
+    ///
+    /// A `ROWS` frame counts its boundaries in physical rows, so
+    /// `WindowFrameBound::preceding(2)` reaches exactly two rows back regardless
+    /// of the values of the ordered column. The frame references no table, so the
+    /// scope of the specification stays unchanged.
+    pub fn rows_between(mut self, start: WindowFrameBound, end: WindowFrameBound) -> Self {
+        self.frame = Some(WindowFrame::new(WindowFrameKind::Rows, start, end));
+        self
+    }
+
+    /// Restricts the window by value range between `start` and `end` (`RANGE BETWEEN`).
+    ///
+    /// A `RANGE` frame measures its boundaries in values of the ordered column,
+    /// which keeps a trailing window stable when several rows share a timestamp.
+    pub fn range_between(mut self, start: WindowFrameBound, end: WindowFrameBound) -> Self {
+        self.frame = Some(WindowFrame::new(WindowFrameKind::Range, start, end));
+        self
+    }
+
+    /// The frame restricting the rows the window function reads, if any.
+    pub fn frame(&self) -> Option<WindowFrame> {
+        self.frame
+    }
+
     /// Renders the window contents inside `OVER (...)`, qualifying the
     /// partitioned and ordered columns against `relations`.
     pub fn render<D: Dialect>(
@@ -179,30 +207,39 @@ impl<Scope> WindowSpec<Scope> {
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
     ) {
-        let mut has_part = false;
+        let mut written = false;
         if !self.partition_by.is_empty() {
-            has_part = true;
+            written = true;
             sql.push_str("PARTITION BY ");
-            for (i, expression) in self.partition_by.iter().enumerate() {
-                if i > 0 {
+            for (index, expression) in self.partition_by.iter().enumerate() {
+                if index > 0 {
                     sql.push_str(", ");
                 }
                 render_expr::<D>(sql, params, expression, relations);
             }
         }
         if !self.order_by.is_empty() {
-            if has_part {
+            if written {
                 sql.push(' ');
             }
+            written = true;
             sql.push_str("ORDER BY ");
-            for (i, (expression, dir)) in self.order_by.iter().enumerate() {
-                if i > 0 {
+            for (index, (expression, direction)) in self.order_by.iter().enumerate() {
+                if index > 0 {
                     sql.push_str(", ");
                 }
                 render_expr::<D>(sql, params, expression, relations);
                 sql.push(' ');
-                sql.push_str(dir.as_str());
+                sql.push_str(direction.as_str());
             }
+        }
+        // The frame closes the window contents, so it follows the ordering of the
+        // rows the frame slides over.
+        if let Some(frame) = self.frame {
+            if written {
+                sql.push(' ');
+            }
+            frame.render_into(sql);
         }
     }
 
@@ -214,6 +251,7 @@ impl<Scope> WindowSpec<Scope> {
         WindowSpec {
             partition_by: self.partition_by,
             order_by: self.order_by,
+            frame: self.frame,
             _scope: PhantomData,
         }
     }
@@ -249,6 +287,7 @@ impl Window {
         WindowSpec {
             partition_by,
             order_by: Vec::new(),
+            frame: None,
             _scope: PhantomData,
         }
     }
@@ -258,6 +297,7 @@ impl Window {
         WindowSpec {
             partition_by: Vec::new(),
             order_by: vec![(C::expr_kind(), direction)],
+            frame: None,
             _scope: PhantomData,
         }
     }
@@ -270,6 +310,19 @@ impl Window {
     /// Starts a window specification with descending ordering for `col`.
     pub fn order_by_desc<C: Column>(col: C) -> WindowSpec<C::Table> {
         Window::order_by(col, OrderDirection::Desc)
+    }
+
+    /// Starts a window specification restricted to the rows between `start` and `end`.
+    ///
+    /// The specification references no table yet, so `PARTITION BY` and
+    /// `ORDER BY` may still be appended to it.
+    pub fn rows_between(start: WindowFrameBound, end: WindowFrameBound) -> WindowSpec<()> {
+        WindowSpec::default().rows_between(start, end)
+    }
+
+    /// Starts a window specification restricted by value range between `start` and `end`.
+    pub fn range_between(start: WindowFrameBound, end: WindowFrameBound) -> WindowSpec<()> {
+        WindowSpec::default().range_between(start, end)
     }
 }
 
@@ -303,7 +356,9 @@ impl<T, Scope> fmt::Debug for WindowExpr<T, Scope> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowExpr")
             .field("kind", &self.kind)
-            .field("window", &self.window)
+            .field("partition_by", &self.window.partition_by)
+            .field("order_by", &self.window.order_by)
+            .field("frame", &self.window.frame)
             .finish()
     }
 }
@@ -325,13 +380,14 @@ impl<T, Scope> WindowExpr<T, Scope> {
     /// Builds the dialect-neutral AST node of this window expression.
     ///
     /// The node carries the window function together with its `OVER (...)`
-    /// partition and ordering clauses, so the expression is rendered through the
-    /// statement AST exactly like every other expression node.
+    /// partition, ordering, and frame clauses, so the expression is rendered
+    /// through the statement AST exactly like every other expression node.
     pub fn to_expr_kind(&self) -> ExprKind {
         ExprKind::Window {
             kind: Box::new(self.kind.clone()),
             partition_by: self.window.partition_by.clone(),
             order_by: self.window.order_by.clone(),
+            frame: self.window.frame,
         }
     }
 

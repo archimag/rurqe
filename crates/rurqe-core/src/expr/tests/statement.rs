@@ -188,6 +188,7 @@ fn a_window_expression_renders_its_partition_and_ordering() {
         kind: Box::new(WindowExprKind::RowNumber),
         partition_by: vec![UserId::expr_kind()],
         order_by: vec![(UserId::expr_kind(), OrderDirection::Desc)],
+        frame: None,
     };
 
     let (sql, params) = render(&window);
@@ -208,6 +209,7 @@ fn lag_and_lead_render_their_offsets() {
         }),
         partition_by: Vec::new(),
         order_by: Vec::new(),
+        frame: None,
     };
     assert_eq!(render(&lag).0, "LAG(\"id\", 2) OVER ()");
 
@@ -218,6 +220,7 @@ fn lag_and_lead_render_their_offsets() {
         }),
         partition_by: Vec::new(),
         order_by: vec![(UserId::expr_kind(), OrderDirection::Asc)],
+        frame: None,
     };
     assert_eq!(render(&lead).0, "LEAD(\"id\") OVER (ORDER BY \"id\" ASC)");
 }
@@ -231,6 +234,7 @@ fn an_aggregate_evaluated_over_a_window_keeps_its_argument() {
         })),
         partition_by: Vec::new(),
         order_by: Vec::new(),
+        frame: None,
     };
 
     let (sql, params) = render(&summed);

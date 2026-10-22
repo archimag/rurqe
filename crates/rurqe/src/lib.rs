@@ -830,7 +830,7 @@ pub mod prelude {
     pub use rurqe_core::expr::{
         avg, coalesce, count, count_all, max, min, sum, CaseBranch, CaseBuilder, Expression,
         LockClause, LockStrength, LockWait, RowExpr, RowValues, StringExpression, Subquery,
-        SubqueryOp,
+        SubqueryOp, WindowFrame, WindowFrameBound, WindowFrameKind,
     };
 
     pub use rurqe_core::query::{

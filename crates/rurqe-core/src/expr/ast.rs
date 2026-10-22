@@ -14,7 +14,8 @@ mod statement;
 
 pub use statement::{
     CteAst, DialectInScope, JoinAst, JoinKind, LockClause, LockStrength, LockWait, MergeDialect,
-    MergedDialect, OrderDirection, SelectAst, SetOpAst, SetOpKind, WindowExprKind,
+    MergedDialect, OrderDirection, SelectAst, SetOpAst, SetOpKind, WindowExprKind, WindowFrame,
+    WindowFrameBound, WindowFrameKind,
 };
 
 /// The shape of a SQL expression tree.
@@ -155,6 +156,8 @@ pub enum ExprKind {
         partition_by: Vec<ExprKind>,
         /// The ordering criteria of the window, in `ORDER BY` order.
         order_by: Vec<(ExprKind, OrderDirection)>,
+        /// The frame restricting the rows the function reads, if any.
+        frame: Option<WindowFrame>,
     },
 }
 

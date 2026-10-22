@@ -7,6 +7,8 @@
 //! statement shape live here as well, so the expression AST and the query builder
 //! share one definition of every node.
 
+use core::fmt::Write;
+
 use crate::dialect::Dialect;
 use crate::schema::TableRef;
 
@@ -173,6 +175,118 @@ impl LockClause {
         sql.push(' ');
         sql.push_str(self.strength.as_str());
         sql.push_str(self.wait.as_str());
+    }
+}
+
+/// The flavour of a window frame restricting the rows a window function reads.
+///
+/// `ROWS` counts the offset of a boundary in physical rows, while `RANGE`
+/// measures it in values of the ordered column, so the same boundary renders
+/// under either mode but selects a different set of rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowFrameKind {
+    /// `ROWS`, counting boundaries in physical rows.
+    Rows,
+    /// `RANGE`, measuring boundaries in values of the ordered column.
+    Range,
+}
+
+impl WindowFrameKind {
+    /// The SQL keyword of the frame mode.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WindowFrameKind::Rows => "ROWS",
+            WindowFrameKind::Range => "RANGE",
+        }
+    }
+}
+
+/// One boundary of a window frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowFrameBound {
+    /// The frame reaches back to the start of the partition (`UNBOUNDED PRECEDING`).
+    UnboundedPreceding,
+    /// The boundary lies `offset` rows (or range units) before the current row.
+    Preceding(u32),
+    /// The boundary is the current row itself (`CURRENT ROW`).
+    CurrentRow,
+    /// The boundary lies `offset` rows (or range units) after the current row.
+    Following(u32),
+    /// The frame reaches forward to the end of the partition (`UNBOUNDED FOLLOWING`).
+    UnboundedFollowing,
+}
+
+impl WindowFrameBound {
+    /// Builds a boundary `offset` rows (or range units) before the current row.
+    pub const fn preceding(offset: u32) -> Self {
+        WindowFrameBound::Preceding(offset)
+    }
+
+    /// Builds a boundary `offset` rows (or range units) after the current row.
+    pub const fn following(offset: u32) -> Self {
+        WindowFrameBound::Following(offset)
+    }
+
+    /// Appends the boundary to `out`, prefixed by nothing.
+    pub fn render_into(self, out: &mut String) {
+        match self {
+            WindowFrameBound::UnboundedPreceding => out.push_str("UNBOUNDED PRECEDING"),
+            WindowFrameBound::Preceding(offset) => {
+                let _ = write!(out, "{offset} PRECEDING");
+            }
+            WindowFrameBound::CurrentRow => out.push_str("CURRENT ROW"),
+            WindowFrameBound::Following(offset) => {
+                let _ = write!(out, "{offset} FOLLOWING");
+            }
+            WindowFrameBound::UnboundedFollowing => out.push_str("UNBOUNDED FOLLOWING"),
+        }
+    }
+}
+
+/// The `ROWS` or `RANGE` frame restricting the rows a window function reads.
+///
+/// The frame closes the contents of an `OVER (...)` clause, so a sliding window
+/// reads as `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` after the
+/// partition and ordering of the specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WindowFrame {
+    kind: WindowFrameKind,
+    start: WindowFrameBound,
+    end: WindowFrameBound,
+}
+
+impl WindowFrame {
+    /// Creates a frame of `kind` spanning `start` through `end`.
+    pub const fn new(
+        kind: WindowFrameKind,
+        start: WindowFrameBound,
+        end: WindowFrameBound,
+    ) -> Self {
+        Self { kind, start, end }
+    }
+
+    /// The mode of the frame.
+    pub const fn kind(self) -> WindowFrameKind {
+        self.kind
+    }
+
+    /// The boundary the frame starts at.
+    pub const fn start(self) -> WindowFrameBound {
+        self.start
+    }
+
+    /// The boundary the frame ends at.
+    pub const fn end(self) -> WindowFrameBound {
+        self.end
+    }
+
+    /// Appends the frame clause, such as `ROWS BETWEEN ... AND ...`, to `out`.
+    pub fn render_into(self, out: &mut String) {
+        out.push_str(self.kind.as_str());
+        out.push_str(" BETWEEN ");
+        self.start.render_into(out);
+        out.push_str(" AND ");
+        self.end.render_into(out);
     }
 }
 
