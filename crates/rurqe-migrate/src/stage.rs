@@ -40,7 +40,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::MigrationKind;
-use crate::runner::{current_timestamp, MigrationBackend, MigrationTransaction};
+use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
 use crate::version::MigrationVersion;
 
 /// The synthetic script name the cold-start marker is recorded under.
@@ -267,8 +267,9 @@ pub fn cold_start<B: MigrationBackend>(
     stage: &DeclarativeStage,
     marker: &StageMarker,
 ) -> Result<ColdStartReport, Error> {
-    backend.ensure_schema_history_table()?;
-    let history = backend.read_history()?;
+    let mut guard = LockGuard::acquire(backend)?;
+    guard.ensure_schema_history_table()?;
+    let history = guard.read_history()?;
 
     let recorded = history
         .iter()
@@ -294,7 +295,7 @@ pub fn cold_start<B: MigrationBackend>(
         });
     }
 
-    let mut tx = backend.begin()?;
+    let mut tx = guard.begin()?;
     let start_time = std::time::Instant::now();
 
     for script in stage.scripts() {
@@ -537,5 +538,30 @@ mod tests {
         assert_eq!(marker.version().to_string(), "3.2");
         assert_eq!(marker.description(), StageMarker::DESCRIPTION);
         assert_eq!(marker.checksum(), catalog.checksum());
+    }
+
+    #[test]
+    fn cold_start_acquires_and_releases_the_backend_lock() {
+        let mut backend = InMemoryBackend::new();
+        assert!(!backend.locked);
+
+        let report = cold_start(&mut backend, &stage(), &marker()).expect("cold start succeeds");
+        assert_eq!(report.installed_rank, Some(1));
+        assert!(!backend.locked);
+
+        backend.acquire_lock().expect("lock acquired");
+        let error = cold_start(&mut backend, &stage(), &marker())
+            .expect_err("cold start must fail when backend is locked");
+        assert!(matches!(error, Error::Backend(_)));
+        backend.release_lock().expect("lock released");
+        assert!(!backend.locked);
+
+        let mut failing_backend = InMemoryBackend::new();
+        failing_backend.failure_script = Some("BOOM".to_owned());
+        let failing = DeclarativeStage::new(vec![StageScript::new("users.sql", "BOOM;")]);
+        let error = cold_start(&mut failing_backend, &failing, &marker())
+            .expect_err("cold start fails on bad script");
+        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+        assert!(!failing_backend.locked);
     }
 }
