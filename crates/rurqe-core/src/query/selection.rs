@@ -103,10 +103,40 @@ macro_rules! impl_make_nullable {
     };
 }
 
-impl_make_nullable!(i32, i64, f64, bool, String, Vec<u8>);
+impl_make_nullable!(i16, i32, u32, i64, usize, f64, bool, String, Vec<u8>);
 
 impl<T> MakeNullable for Option<T> {
     type Nullable = Option<T>;
+}
+
+#[cfg(feature = "uuid")]
+impl MakeNullable for uuid::Uuid {
+    type Nullable = Option<uuid::Uuid>;
+}
+
+#[cfg(feature = "chrono")]
+impl MakeNullable for chrono::NaiveDateTime {
+    type Nullable = Option<chrono::NaiveDateTime>;
+}
+
+#[cfg(feature = "chrono")]
+impl MakeNullable for chrono::DateTime<chrono::Utc> {
+    type Nullable = Option<chrono::DateTime<chrono::Utc>>;
+}
+
+#[cfg(feature = "chrono")]
+impl MakeNullable for chrono::NaiveDate {
+    type Nullable = Option<chrono::NaiveDate>;
+}
+
+#[cfg(feature = "serde_json")]
+impl MakeNullable for serde_json::Value {
+    type Nullable = Option<serde_json::Value>;
+}
+
+#[cfg(feature = "serde_json")]
+impl<T> MakeNullable for crate::expr::Json<T> {
+    type Nullable = Option<crate::expr::Json<T>>;
 }
 
 /// Applies the nullability `N` of a relational context to a Rust value type.

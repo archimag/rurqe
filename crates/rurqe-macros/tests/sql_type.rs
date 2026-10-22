@@ -3,12 +3,16 @@
 //! The tests cover the three storage modes: delegation to a wrapped value,
 //! binary encoding through `AsRef<[u8]>` / `TryFrom<&[u8]>`, and textual
 //! encoding through `Display` / `FromStr`. Every mode is checked on both the
-//! parameter-encoding and the row-decoding path.
+//! parameter-encoding and the row-decoding path, and the derived newtypes are
+//! verified to compose with the expression builders and the outer-join
+//! nullability lifting of the query builder.
 
 use std::fmt;
 use std::str::FromStr;
 
+use rurqe_core::dialect::Dialect;
 use rurqe_core::expr::{Expr, Expression, SqlVal, ToSqlVal};
+use rurqe_core::query::{HasProjection, LeftJoined, MakeNullable, SelectQuery};
 use rurqe_core::row::{FromSqlValue, RowDecodeError};
 use rurqe_macros::SqlType;
 
@@ -68,6 +72,30 @@ rurqe_core::table! {
     Account => "accounts" {
         AccountId => "id": UserId,
         AccountEmail => "email": Email,
+    }
+}
+
+rurqe_core::table! {
+    /// The `account_audit` table referencing an account by its domain identifier.
+    AccountAudit => "account_audit" {
+        AuditId => "id": i64,
+        AuditAccountId => "account_id": UserId,
+    }
+}
+
+/// A dialect rendering named placeholders, enough to build a query in these tests.
+struct MockDialect;
+
+impl Dialect for MockDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        use core::fmt::Write;
+        let _ = write!(out, "${index}");
     }
 }
 
@@ -165,6 +193,38 @@ fn derived_newtypes_compose_with_the_expression_builders() {
         AccountEmail.eq(email.clone()),
         Expr::column::<AccountEmail>().eq(email)
     );
+}
+
+#[test]
+fn derived_newtypes_expose_a_single_nullable_layer() {
+    fn assert_nullable<T: MakeNullable<Nullable = Option<T>>>() {}
+
+    assert_nullable::<UserId>();
+    assert_nullable::<Email>();
+    assert_nullable::<Txid>();
+    assert_nullable::<Address>();
+}
+
+#[test]
+fn outer_joins_lift_newtype_columns_into_options() {
+    let query: SelectQuery<
+        MockDialect,
+        LeftJoined<Account, AccountAudit>,
+        (UserId, Option<UserId>),
+        HasProjection,
+    > = SelectQuery::<MockDialect>::new()
+        .from::<Account>()
+        .left_join::<AccountAudit, _, _>(Expr::column::<AuditAccountId>().eq(UserId(7)))
+        .select((AccountId, AuditAccountId));
+
+    let built = query.build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"accounts\".\"id\", \"account_audit\".\"account_id\" FROM \"accounts\" \
+         LEFT JOIN \"account_audit\" ON (\"account_audit\".\"account_id\" = $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
 
 #[test]

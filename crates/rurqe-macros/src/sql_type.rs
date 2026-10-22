@@ -11,9 +11,10 @@
 //!   `TryFrom<&[u8]>`, optionally validating the blob length with `len = N`;
 //! - `#[sql(as = Text)]` encodes through `Display` and decodes through `FromStr`.
 //!
-//! Every mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`, and the
-//! expression-compatibility impls, so a derived newtype composes with the
-//! expression builders exactly like a built-in scalar.
+//! Every mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`,
+//! `MakeNullable`, and the expression-compatibility impls, so a derived newtype
+//! composes with the expression builders exactly like a built-in scalar and is
+//! lifted into `Option<Self>` when it is projected from an outer join.
 //!
 //! [`impl_sql_binary_newtype!`]: rurqe_core::impl_sql_binary_newtype
 //! [`impl_sql_text_newtype!`]: rurqe_core::impl_sql_text_newtype
@@ -76,6 +77,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let encode = encode_impls(name, &storage, &field);
     let decode = decode_impl(name, &storage, &field);
+    let expressions = expression_impls(name, &storage);
     let conversions = quote! {
         impl ::core::convert::From<#name> for ::rurqe_core::expr::SqlVal {
             fn from(value: #name) -> Self {
@@ -83,11 +85,16 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             }
         }
     };
-    let expressions = expression_impls(name, &storage);
+    let nullability = quote! {
+        impl ::rurqe_core::query::MakeNullable for #name {
+            type Nullable = ::core::option::Option<#name>;
+        }
+    };
 
     Ok(quote! {
         #encode
         #conversions
+        #nullability
         #decode
         #expressions
     })

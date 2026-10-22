@@ -547,6 +547,10 @@ macro_rules! impl_sql_newtype {
             }
         }
 
+        impl $crate::query::MakeNullable for $ty {
+            type Nullable = ::core::option::Option<$ty>;
+        }
+
         impl $crate::row::FromSqlValue for $ty {
             fn from_sql_value(
                 $value: &$crate::expr::SqlVal,
