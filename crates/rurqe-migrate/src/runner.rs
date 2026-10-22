@@ -744,7 +744,8 @@ mod tests {
     use crate::checkpoint::Checkpoint;
     use crate::checksum::Checksum;
     use crate::error::Error;
-    use crate::migration::Migration;
+    use crate::history::SchemaHistoryEntry;
+    use crate::migration::{Migration, MigrationKind};
 
     #[test]
     fn epoch_converts_to_the_unix_epoch_date() {
@@ -806,5 +807,31 @@ mod tests {
 
         assert_eq!(report.applied_count, 1);
         assert_eq!(report.applied_scripts, vec!["V4__tail.sql"]);
+    }
+
+    #[test]
+    fn checkpoint_rejects_diverged_stage_marker_hash() {
+        let mut backend = InMemoryBackend::new();
+        let stage_entry = SchemaHistoryEntry {
+            installed_rank: 1,
+            version: Some("3".parse().expect("a valid version")),
+            description: "stage".to_owned(),
+            kind: MigrationKind::Baseline,
+            script: crate::stage::STAGE_SCRIPT.to_owned(),
+            checksum: Some(Checksum::of(b"different_stage")),
+            installed_on: "2024-01-01 00:00:00".to_owned(),
+            execution_time_ms: 0,
+            success: true,
+        };
+        backend.history.push(stage_entry);
+
+        let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
+            .expect("a valid script name");
+        let error = Migrator::with_checkpoint(boundary("3"))
+            .migrate(&mut backend, &[tail])
+            .expect_err("the diverged stage marker hash must be rejected");
+
+        assert!(matches!(error, Error::CheckpointHashMismatch { .. }));
+        assert_eq!(backend.history.len(), 1);
     }
 }

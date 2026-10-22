@@ -42,6 +42,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::mini_toml::{section_name, split_entry, strip_comment, TomlError};
+use crate::stage::STAGE_SCRIPT;
 use crate::version::MigrationVersion;
 
 /// The default name of the marker file.
@@ -184,6 +185,25 @@ impl Checkpoint {
     /// is rejected, because the scripts that would bring it forward have been
     /// pruned.
     pub fn validate_history(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
+        let stage_marker = history.iter().find(|entry| {
+            entry.success
+                && entry.script == STAGE_SCRIPT
+                && entry.version.as_ref() == Some(&self.pruned_up_to_version)
+        });
+
+        if let Some(entry) = stage_marker {
+            if entry.checksum != Some(self.schema_hash) {
+                return Err(Error::CheckpointHashMismatch {
+                    pruned_up_to_version: self.pruned_up_to_version.to_string(),
+                    recorded_hash: entry
+                        .checksum
+                        .map(|checksum| checksum.to_hex())
+                        .unwrap_or_default(),
+                    expected_hash: self.schema_hash.to_hex(),
+                });
+            }
+        }
+
         let recorded = history
             .iter()
             .filter(|entry| entry.success)
@@ -346,6 +366,57 @@ mod tests {
         );
 
         assert_eq!(checkpoint.validate_history(&[baseline]), Ok(()));
+    }
+
+    #[test]
+    fn stage_marker_with_matching_hash_is_accepted() {
+        let checkpoint = marker("3.2");
+        let stage = SchemaHistoryEntry {
+            installed_rank: 1,
+            version: Some("3.2".parse().expect("a valid version")),
+            description: "stage".to_owned(),
+            kind: crate::migration::MigrationKind::Baseline,
+            script: STAGE_SCRIPT.to_owned(),
+            checksum: Some(checkpoint.schema_hash()),
+            installed_on: "2024-01-01 00:00:00".to_owned(),
+            execution_time_ms: 0,
+            success: true,
+        };
+
+        assert_eq!(checkpoint.validate_history(&[stage]), Ok(()));
+    }
+
+    #[test]
+    fn stage_marker_with_diverged_hash_is_rejected() {
+        let checkpoint = marker("3.2");
+        let stage = SchemaHistoryEntry {
+            installed_rank: 1,
+            version: Some("3.2".parse().expect("a valid version")),
+            description: "stage".to_owned(),
+            kind: crate::migration::MigrationKind::Baseline,
+            script: STAGE_SCRIPT.to_owned(),
+            checksum: Some(Checksum::of(b"diverged")),
+            installed_on: "2024-01-01 00:00:00".to_owned(),
+            execution_time_ms: 0,
+            success: true,
+        };
+
+        let error = checkpoint
+            .validate_history(&[stage])
+            .expect_err("mismatched stage hash must be rejected");
+
+        match error {
+            Error::CheckpointHashMismatch {
+                pruned_up_to_version,
+                recorded_hash,
+                expected_hash,
+            } => {
+                assert_eq!(pruned_up_to_version, "3.2");
+                assert_eq!(recorded_hash, Checksum::of(b"diverged").to_hex());
+                assert_eq!(expected_hash, checkpoint.schema_hash().to_hex());
+            }
+            other => panic!("expected CheckpointHashMismatch, got {other:?}"),
+        }
     }
 
     #[test]
