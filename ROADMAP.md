@@ -27,6 +27,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 13** [x] | Codebase Hardening & Conventions Refactoring | Large module decomposition (<800 LOC), panic-free typestate | Production Rigor & Standard Compliance (Completed) |
 | **Phase 14** [x] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Completed) |
 | **Phase 15** [x] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Completed) |
+| **Phase 16** [x] | Compile-Fail Hardening & Negative Test Suite | Compile-time rejection of every scope, nullability, typestate, capability, and grouping violation | Absolute SQL Correctness (Completed) |
 
 ---
 
@@ -633,3 +634,82 @@ project/
 ├── schema.lock                   # Deterministic catalog snapshot (SCHEMA_HASH)
 └── rurqe.toml                    # Configuration (mode = "stage_tail" | "migrations")
 ```
+
+---
+
+## Phase 16: Compile-Fail Hardening & Negative Test Suite [Completed]
+
+### Objective
+Make the type system the only gatekeeper of **Absolute SQL Correctness**: every query that is syntactically or semantically invalid for the target dialect and version must be rejected by `rustc`, and every rejection must name the violated SQL rule through `#[diagnostic::on_unimplemented]` instead of exposing trait cascades. The phase consolidates the guarantees delivered by the preceding slices into one auditable catalogue of `compile_fail` doc-tests, so weakening an invariant breaks `cargo test --doc` instead of reaching a database.
+
+### Key Deliverables
+- [x] **Relational scope isolation (`#c-relational-scope`):**
+  - Every expression reachable from `select`, `where_`, `inner_join` / `left_join` `ON`, `having`, `group_by`, `order_by`, `distinct_on`, window specifications, `SET` assignments, and `RETURNING` is checked against the relations the statement actually introduces (`FROM` plus every join).
+  - Referencing a column of an unjoined table, comparing columns of unrelated relations, and projecting or returning a foreign table's column are rejected at the call site with the `TableInScope` / `ExprInScope` diagnostics.
+- [x] **Outer-join nullability soundness (`#c-nullability-soundness`):**
+  - Columns reachable through `LEFT JOIN` and `LEFT JOIN LATERAL` are strictly typed as `Option<T>`, enforced by `TableNullabilityInScope`, `ApplyNullability`, and `MakeNullable` for every scalar, domain newtype, and optional column.
+  - Reading such a column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field.
+- [x] **Typestate guards (`#c-typestate-soundness`):**
+  - `SELECT` without a projection (`ProjectionPresent`), `UPDATE` / `DELETE` without `WHERE` or an explicit `.allow_all()` (`ExecutableMutation`), `UPDATE` without `SET` (`AssignmentsPresent`), `INSERT` without rows or a source `SELECT` (`InsertSource`), an empty row source (`EmptyRows`), and a `CASE` finalised without a `WHEN` branch (`NoBranches`) are all unreachable by construction.
+- [x] **Capability gating (`#c-capability-gating`):**
+  - `RETURNING`, `ON CONFLICT`, `UPDATE ... FROM`, `DELETE ... USING`, `DISTINCT ON`, and `LATERAL` exist only for dialects and versions implementing the corresponding capability marker, so an unsupported clause cannot even be named on an incompatible target.
+- [x] **Aggregation soundness (`#c-group-by-soundness`):**
+  - After `.group_by(...)` moves the query into `GroupedQuery`, only grouped columns, aggregates, and constant or window expressions are projectable; the `Expr::column` escape hatch does not bypass `GroupedSelectTarget`.
+- [x] **Unified negative suite (`#c-negative-test-suite`):**
+  - 36 `compile_fail` doc-tests catalogue every rejection class below, each one paired with a positive example of the accepted form.
+  - The workspace compiles cleanly under `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --doc` runs the whole catalogue as part of the standard test surface.
+
+### Compile-Fail Catalogue
+
+| Invariant | Guard traits | Cases | Rejected at compile time |
+|---|---|---|---|
+| `#c-relational-scope` | `TableInScope`, `ExprInScope`, `ScopePositions`, `ColumnInScope`, `SelectTargetInScope`, `GroupByInScope`, `TableSelection`, `ColumnBelongsTo` | 14 | projecting, filtering, grouping, ordering, windowing, joining, assigning, or returning a column of a relation absent from `FROM` / `JOIN`; comparing columns of two unrelated relations |
+| `#c-nullability-soundness` | `TableNullabilityInScope`, `ApplyNullability`, `MakeNullable` | 1 | reading a `LEFT JOIN` / `LEFT JOIN LATERAL` column as `T` instead of `Option<T>` |
+| `#c-typestate-soundness` | `ProjectionPresent`, `ExecutableMutation`, `AssignmentsPresent`, `InsertSource`, `EmptyRows` | 13 | `SELECT` without projection, unguarded `UPDATE` / `DELETE`, `INSERT` without a row source, `INSERT` from an empty row source, `UPDATE` without `SET`, `CASE` without `WHEN` |
+| `#c-capability-gating` | `SupportsReturning`, `SupportsOnConflict`, `SupportsUpdateFrom`, `SupportsDeleteUsing`, `SupportsLateralJoin` | 5 | `RETURNING` and `ON CONFLICT` below their SQLite version thresholds, `UPDATE ... FROM` below 3.35, `DELETE ... USING` and `LATERAL` on SQLite at all |
+| `#c-group-by-soundness` | `GroupedSelectTarget`, `ColumnInGroupBy` | 3 | projecting a column that is neither grouped nor an aggregate, including attempts routed through `Expr::column` |
+
+The catalogue is distributed across the API surface it protects:
+
+| Doc-test host | Cases | Focus |
+|---|---|---|
+| `crates/rurqe/src/lib.rs` | 17 | facade entry points: scope, typestate, mutation scope |
+| `crates/rurqe-core/src/schema.rs` | 2 | `TableInScope` and `ExprInScope` contracts |
+| `crates/rurqe-core/src/query/selection.rs` | 1 | outer-join nullability lifting |
+| `crates/rurqe-core/src/query/group_by.rs` | 3 | grouped projections and window scope |
+| `crates/rurqe-core/src/query/select.rs` | 1 | projection typestate |
+| `crates/rurqe-core/src/dml.rs` | 2 | `ExecutableMutation`, `AssignmentsPresent` |
+| `crates/rurqe-core/src/dml/insert.rs` | 2 | `InsertSource` |
+| `crates/rurqe-core/src/dml/update.rs` | 1 | unfiltered `UPDATE` |
+| `crates/rurqe-core/src/dml/delete.rs` | 1 | unfiltered `DELETE` |
+| `crates/rurqe-core/src/expr/ast.rs` | 1 | `CASE` builder typestate |
+| `crates/rurqe-sqlite/src/lib.rs` | 5 | version-gated SQLite capabilities |
+
+### Example Usage
+```rust
+use rurqe::prelude::*;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+    }
+}
+
+table! {
+    Order => "orders" {
+        OrderTotal => "total": f64,
+    }
+}
+
+// Rejected at compile time: `OrderTotal` belongs to `Order`, which the query
+// never introduces, so the error names the missing relation instead of leaking
+// a trait resolution cascade.
+let _ = select_from::<Postgres, User>()
+    .select((UserId, OrderTotal));
+```
+
+```text
+error[E0277]: column `OrderTotal` cannot be projected from this query's scope
+  = note: introduce the column's table with `from` or a join before projecting it
+```
+
