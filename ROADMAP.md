@@ -727,10 +727,11 @@ Deliver deep relational expressiveness and strict transactional concurrency with
   - Column tuples as first-class operands: `(col_a, col_b).eq((val_a, val_b))`, `(col_a, col_b).gt((val_a, val_b))`.
   - Tuple membership predicates: `(col_a, col_b).in_subquery(subquery)`.
   - High-level keyset/cursor pagination DSL: `.paginate_after((created_at, id), cursor)` translating directly into native tuple ordering comparisons (`>` / `<`) with deterministic index utilization in PostgreSQL and SQLite.
-- [ ] **Scalar Subqueries as First-Class Expressions (`Expr<T>`):**
-  - A `SelectQuery` projecting a single column of Rust type `T` seamlessly converts into `Expr<T>` via `.into_scalar_expr()`.
-  - Usable in arbitrary expressions and filters (`ProductPrice.gt(select_from(Products).select(avg(ProductPrice)).into_scalar_expr())`).
-  - Static invariant: subqueries projecting multi-column tuples cannot be converted to scalar expressions (rejected at compile time).
+- [ ] **Scalar Subqueries as First-Class Expressions (`IntoExpr<T>` & `Expr<T>`):**
+  - Direct implementation of `IntoExpr<T>` and `SqlCompatible<T, SelectQuery<...>>` for single-column `SelectQuery`: subqueries pass directly into comparison operators without any conversion method (`ProductPrice.gt(select_from(Products).select(avg(ProductPrice)))`).
+  - Standard `From<SelectQuery<...>> for Expr<T>` implementation enabling `.into()` whenever the target expression type is unambiguously inferred.
+  - Explicit `Expr::subquery(query)` constructor for unconstrained syntactic positions (`CASE WHEN`, tuple comparisons).
+  - Static invariant: subqueries projecting multi-column tuples do not implement `IntoExpr<T>` and are rejected at compile time.
 - [ ] **Pessimistic Row-Level Locking (`SupportsRowLocking`):**
   - Gated by the `SupportsRowLocking` capability trait (implemented for `Postgres<V>`, absent for `Sqlite`).
   - Query locking methods: `.for_update()`, `.for_share()`, `.for_no_key_update()`, `.for_key_share()`.
@@ -770,7 +771,15 @@ let next_page = select_from(Events)
     .limit(50)
     .fetch_all(&mut conn)?;
 
-// 3. Aggregate FILTER (WHERE ...)
+// 3. Direct scalar subquery in comparison operator without .into_scalar_expr()
+let above_average = select_from(Products)
+    .select(cols!(ProductId, ProductName, ProductPrice))
+    .where_(ProductPrice.gt(
+        select_from(Products).select(avg(ProductPrice))
+    ))
+    .fetch_all(&mut conn)?;
+
+// 4. Aggregate FILTER (WHERE ...)
 let stats = select_from(Orders)
     .select((
         count_all().filter_where(OrderStatus.eq("completed")),
