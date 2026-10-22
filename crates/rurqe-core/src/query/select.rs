@@ -18,7 +18,7 @@ use super::scope::{
     CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, ScopePositions,
     TableScope,
 };
-use super::selection::{Nullable, SelectionFor};
+use super::selection::{Nullable, Selection, SelectionFor};
 use super::set_ops::{SetOpKind, SetOperation};
 
 /// The rendered SQL text of a query together with its bound parameters.
@@ -34,10 +34,11 @@ pub struct BuiltQuery {
 /// Phantom marker carrying the dialect, scope, and row type of a query.
 type QueryMarker<D, Tables, Output> = PhantomData<fn() -> (D, Tables, Output)>;
 
-/// A type-erased renderer producing a list of projection items into the SQL buffer.
+/// A type-erased renderer producing a nested statement into the SQL buffer.
 ///
-/// The renderer receives the relations of the statement, so a projected column is
-/// qualified exactly like any other column reference of the same statement.
+/// The renderer receives the relations of the enclosing statement, so a column
+/// reference of a combined query is qualified exactly like any other column
+/// reference of the same statement.
 pub(crate) type ProjectionRenderer =
     Arc<dyn Fn(&mut String, &mut Vec<SqlVal>, &[TableRef]) + Send + Sync>;
 
@@ -59,7 +60,7 @@ struct CteDefinition {
 /// A `SELECT` query over the table `Tables` producing rows of type `Output`.
 pub struct SelectQuery<D: Dialect, Tables = (), Output = ()> {
     ctes: Vec<CteDefinition>,
-    projections: Option<ProjectionRenderer>,
+    projections: Option<Vec<ExprKind>>,
     joins: Vec<JoinClause>,
     filter: Option<ExprKind>,
     pub(crate) group_by: Vec<ExprKind>,
@@ -134,16 +135,21 @@ impl<D: Dialect, Output> SelectQuery<D, (), Output> {
 
 impl<D: Dialect, Tables> SelectQuery<D, Tables, ()> {
     /// Selects `selection`, fixing the row type of the query to the selection row.
+    ///
+    /// The selection is captured as dialect-neutral AST nodes at the call site,
+    /// so the query keeps its projection as plain data and renders it with the
+    /// dialect of the statement, exactly like the filter, the joins, and the
+    /// ordering it already carries.
     pub fn select<S, Positions>(
         mut self,
         selection: S,
     ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row>
     where
-        S: SelectionFor<Tables, Positions> + Send + Sync + 'static,
+        S: SelectionFor<Tables, Positions>,
     {
-        self.projections = Some(Arc::new(move |sql, params, relations| {
-            selection.render_projections::<D>(sql, params, relations);
-        }));
+        let mut projections = Vec::new();
+        Selection::push_projections(&selection, &mut projections);
+        self.projections = Some(projections);
         self.retype()
     }
 }
@@ -462,7 +468,7 @@ impl<D: Dialect, Tables, Output: 'static> SelectQuery<D, Tables, Output> {
 impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     /// Renders the query statement and parameters into the target buffers.
     pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        let Some(render_projections) = self.projections.as_ref() else {
+        let Some(projections) = self.projections.as_ref() else {
             debug_assert!(
                 false,
                 "a SELECT query requires at least one projection; call `select` before `build`"
@@ -508,7 +514,12 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
         } else if self.distinct {
             sql.push_str("DISTINCT ");
         }
-        render_projections(sql, params, &tables);
+        for (index, projection) in projections.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            render_expr::<D>(sql, params, projection, &tables);
+        }
 
         sql.push_str(" FROM ");
         match tables.first() {
