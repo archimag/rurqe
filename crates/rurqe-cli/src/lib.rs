@@ -18,7 +18,7 @@ pub use driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 pub use introspect::{
     catalog_from_metadata, catalog_from_sqlite_metadata, detect_dialect, map_sql_type_to_kind,
     DatabaseDialect, IntrospectQueries, RawColumnMetadata, RawForeignKeyMetadata,
-    RawPrimaryKeyMetadata, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
+    RawIndexMetadata, RawPrimaryKeyMetadata, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
     RawSqliteTableMetadata, RawTableMetadata,
 };
 pub use loader::{load_migrations_from_dir, read_migration_files};

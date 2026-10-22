@@ -128,7 +128,7 @@ fn catalog_introspected_from_raw_metadata() {
         column_name: "id".to_owned(),
     }];
 
-    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[]);
+    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[], &[]);
 
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].columns.len(), 2);

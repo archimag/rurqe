@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
+use rurqe_migrate::catalog::{
+    ColumnDef, ForeignKeyDef, IndexDef, SchemaCatalog, TableDef, TypeKind,
+};
 
 /// Raw table metadata row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +37,15 @@ pub struct RawForeignKeyMetadata {
     pub column_name: String,
     pub referenced_table: String,
     pub referenced_column: String,
+}
+
+/// Raw secondary index row, one per indexed column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawIndexMetadata {
+    pub table_name: String,
+    pub index_name: String,
+    pub column_name: String,
+    pub unique: bool,
 }
 
 /// Maps a raw SQL database data type string to an engine-neutral [`TypeKind`].
@@ -135,19 +146,46 @@ fn strip_type_parameters(sql_type: &str) -> &str {
     }
 }
 
+/// Folds flat index rows into one [`IndexDef`] per index.
+///
+/// Both `pg_index` and the SQLite `PRAGMA index_list` report one row per indexed
+/// column, so the rows are collected in arrival order and a composite index keeps
+/// the column order it was declared in. The returned map is keyed by owning table.
+pub(super) fn fold_indexes(indexes: &[RawIndexMetadata]) -> BTreeMap<String, Vec<IndexDef>> {
+    let mut by_table: BTreeMap<String, BTreeMap<String, IndexDef>> = BTreeMap::new();
+
+    for row in indexes {
+        by_table
+            .entry(row.table_name.clone())
+            .or_default()
+            .entry(row.index_name.clone())
+            .or_insert_with(|| IndexDef::new(&row.index_name, Vec::new(), row.unique))
+            .columns
+            .push(row.column_name.clone());
+    }
+
+    by_table
+        .into_iter()
+        .map(|(table, indexes)| (table, indexes.into_values().collect()))
+        .collect()
+}
+
 /// Assembles a normalized [`SchemaCatalog`] from introspected metadata collections.
 ///
 /// Foreign key rows sharing a constraint name on the same table are folded into a
 /// single [`ForeignKeyDef`], preserving the order of the columns inside the key.
+/// Index rows are folded the same way into one [`IndexDef`] per index.
 pub fn catalog_from_metadata(
     tables: &[RawTableMetadata],
     columns: &[RawColumnMetadata],
     pks: &[RawPrimaryKeyMetadata],
     fks: &[RawForeignKeyMetadata],
+    indexes: &[RawIndexMetadata],
 ) -> SchemaCatalog {
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut pks_by_table: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut fks_by_table: BTreeMap<String, BTreeMap<String, ForeignKeyDef>> = BTreeMap::new();
+    let mut indexes_by_table = fold_indexes(indexes);
 
     for col in columns {
         let kind = map_sql_type_to_kind(&col.data_type);
@@ -189,9 +227,14 @@ pub fn catalog_from_metadata(
             .map(|constraints| constraints.into_values().collect())
             .unwrap_or_default();
 
+        let table_indexes = indexes_by_table.remove(&table.name).unwrap_or_default();
+
         let mut def = TableDef::new(&table.name, table_cols, table_pk);
         for fk in table_fks {
             def = def.with_foreign_key(fk);
+        }
+        for index in table_indexes {
+            def = def.with_index(index);
         }
         result_tables.push(def);
     }

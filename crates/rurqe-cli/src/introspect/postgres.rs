@@ -13,8 +13,8 @@ use rurqe_migrate::catalog::SchemaCatalog;
 use crate::cli::CliError;
 
 use super::types::{
-    catalog_from_metadata, RawColumnMetadata, RawForeignKeyMetadata, RawPrimaryKeyMetadata,
-    RawTableMetadata,
+    catalog_from_metadata, RawColumnMetadata, RawForeignKeyMetadata, RawIndexMetadata,
+    RawPrimaryKeyMetadata, RawTableMetadata,
 };
 
 /// Query to fetch all user tables of the introspected schema.
@@ -77,6 +77,33 @@ WHERE constraint_row.contype = 'f'
 ORDER BY owning.relname, constraint_row.conname, position.index;
 "#;
 
+/// Query to fetch the secondary indexes of the introspected schema.
+///
+/// `pg_index.indkey` is an `int2vector`, so it is cast to `int2[]` before its
+/// subscripts are generated: an ordinary SQL array is one-based, which keeps the
+/// positional lookup of the indexed attribute aligned with the generated
+/// subscript. Primary-key indexes are excluded through `indisprimary`, because a
+/// primary key is already described by the key columns of its table, and an index
+/// over an expression contributes no attribute name and is skipped as well.
+pub(crate) const POSTGRES_INDEXES: &str = r#"
+SELECT
+  index_table.relname AS table_name,
+  index_class.relname AS index_name,
+  index_row.indisunique AS is_unique,
+  attribute.attname AS column_name
+FROM pg_index index_row
+JOIN pg_class index_class ON index_class.oid = index_row.indexrelid
+JOIN pg_class index_table ON index_table.oid = index_row.indrelid
+JOIN pg_namespace namespace ON namespace.oid = index_table.relnamespace
+JOIN generate_subscripts(index_row.indkey::int2[], 1) AS position(index) ON TRUE
+JOIN pg_attribute attribute
+  ON attribute.attrelid = index_row.indrelid
+ AND attribute.attnum = (index_row.indkey::int2[])[position.index]
+WHERE namespace.nspname = $1
+  AND NOT index_row.indisprimary
+ORDER BY index_table.relname, index_class.relname, position.index;
+"#;
+
 /// Introspects the `public` schema of a live PostgreSQL database client.
 pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalog, CliError> {
     introspect_postgres_schema(client, "public")
@@ -123,11 +150,21 @@ pub fn introspect_postgres_schema(
         })
     })?;
 
+    let raw_indexes = query_catalog(client, POSTGRES_INDEXES, schema, "indexes", |row| {
+        Ok(RawIndexMetadata {
+            table_name: read_column(row, 0, "indexes", "table_name")?,
+            index_name: read_column(row, 1, "indexes", "index_name")?,
+            unique: read_column(row, 2, "indexes", "is_unique")?,
+            column_name: read_column(row, 3, "indexes", "column_name")?,
+        })
+    })?;
+
     Ok(catalog_from_metadata(
         &raw_tables,
         &raw_columns,
         &raw_pks,
         &raw_fks,
+        &raw_indexes,
     ))
 }
 

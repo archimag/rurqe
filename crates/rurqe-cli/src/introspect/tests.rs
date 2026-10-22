@@ -28,7 +28,7 @@ fn metadata_assembly_builds_catalog() {
         column_name: "id".to_owned(),
     }];
 
-    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[]);
+    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[], &[]);
 
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].name, "users");
@@ -76,7 +76,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
         },
     ];
 
-    let catalog = catalog_from_metadata(&tables, &cols, &[], &fks);
+    let catalog = catalog_from_metadata(&tables, &cols, &[], &fks, &[]);
 
     let table = &catalog.tables[0];
     assert_eq!(table.foreign_keys.len(), 1);
@@ -127,7 +127,7 @@ fn sqlite_composite_foreign_key_rows_fold_into_one_constraint() {
         },
     ];
 
-    let catalog = catalog_from_sqlite_metadata(&tables, &columns, &fks);
+    let catalog = catalog_from_sqlite_metadata(&tables, &columns, &fks, &[]);
 
     let table = &catalog.tables[0];
     assert_eq!(table.foreign_keys.len(), 1);
@@ -191,9 +191,10 @@ fn sqlite_metadata_assembly_builds_catalog_with_keys() {
         referenced_table: "users".to_owned(),
     }];
 
-    let catalog = catalog_from_sqlite_metadata(&tables, &columns, &fks);
+    let catalog = catalog_from_sqlite_metadata(&tables, &columns, &fks, &[]);
 
     assert_eq!(catalog.tables.len(), 2);
+
     let users = catalog.tables.iter().find(|t| t.name == "users").unwrap();
     assert_eq!(users.primary_key, vec!["id"]);
     assert_eq!(users.columns.len(), 2);
@@ -245,16 +246,25 @@ fn unknown_types_keep_their_declared_precision() {
 #[test]
 fn sqlite_declared_types_follow_the_affinity_rules() {
     assert_eq!(map_sqlite_declared_type_to_kind("INTEGER"), TypeKind::Int64);
-    assert_eq!(map_sqlite_declared_type_to_kind("UNSIGNED BIG INT"), TypeKind::Int64);
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("UNSIGNED BIG INT"),
+        TypeKind::Int64
+    );
     assert_eq!(map_sqlite_declared_type_to_kind("VARCHAR(255)"), TypeKind::Text);
     assert_eq!(map_sqlite_declared_type_to_kind("CLOB"), TypeKind::Text);
     assert_eq!(map_sqlite_declared_type_to_kind("BLOB"), TypeKind::Bytes);
     assert_eq!(map_sqlite_declared_type_to_kind(""), TypeKind::Bytes);
     assert_eq!(map_sqlite_declared_type_to_kind("REAL"), TypeKind::Float64);
-    assert_eq!(map_sqlite_declared_type_to_kind("DOUBLE PRECISION"), TypeKind::Float64);
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("DOUBLE PRECISION"),
+        TypeKind::Float64
+    );
     assert_eq!(map_sqlite_declared_type_to_kind("BOOLEAN"), TypeKind::Boolean);
     assert_eq!(map_sqlite_declared_type_to_kind("UUID"), TypeKind::Uuid);
-    assert_eq!(map_sqlite_declared_type_to_kind("DATETIME"), TypeKind::Timestamp);
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("DATETIME"),
+        TypeKind::Timestamp
+    );
     assert_eq!(map_sqlite_declared_type_to_kind("DATE"), TypeKind::Date);
 }
 
@@ -347,6 +357,14 @@ fn sqlite_pragma_queries_escape_embedded_quotes() {
         IntrospectQueries::sqlite_foreign_key_list(r#"weird"name"#),
         "PRAGMA foreign_key_list(\"weird\"\"name\");"
     );
+    assert_eq!(
+        IntrospectQueries::sqlite_index_list(r#"weird"name"#),
+        "PRAGMA index_list(\"weird\"\"name\");"
+    );
+    assert_eq!(
+        IntrospectQueries::sqlite_index_info(r#"weird"name"#),
+        "PRAGMA index_info(\"weird\"\"name\");"
+    );
 }
 
 #[test]
@@ -386,6 +404,71 @@ fn introspect_sqlite_handles_table_names_with_double_quotes() {
     assert_eq!(child.foreign_keys.len(), 1);
     assert_eq!(child.foreign_keys[0].referenced_table, r#"weird"name"#);
     assert_eq!(child.foreign_keys[0].columns, vec!["parent_id"]);
+}
+
+#[test]
+fn index_rows_fold_into_composite_indexes() {
+    let tables = vec![RawTableMetadata {
+        name: "users".to_owned(),
+    }];
+    let indexes = vec![
+        RawIndexMetadata {
+            table_name: "users".to_owned(),
+            index_name: "users_tenant_email_idx".to_owned(),
+            column_name: "tenant".to_owned(),
+            unique: false,
+        },
+        RawIndexMetadata {
+            table_name: "users".to_owned(),
+            index_name: "users_tenant_email_idx".to_owned(),
+            column_name: "email".to_owned(),
+            unique: false,
+        },
+    ];
+
+    let catalog = catalog_from_metadata(&tables, &[], &[], &[], &indexes);
+
+    let table = &catalog.tables[0];
+    assert_eq!(table.indexes.len(), 1);
+    assert_eq!(table.indexes[0].name, "users_tenant_email_idx");
+    assert_eq!(table.indexes[0].columns, vec!["tenant", "email"]);
+    assert!(!table.indexes[0].unique);
+}
+
+#[test]
+fn sqlite_indexes_are_introspected_without_the_primary_key_index() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE users (
+             id TEXT PRIMARY KEY,
+             email TEXT NOT NULL,
+             tenant TEXT NOT NULL
+         );
+         CREATE UNIQUE INDEX users_email_idx ON users (email);
+         CREATE INDEX users_tenant_email_idx ON users (tenant, email);",
+    )
+    .unwrap();
+
+    let catalog = introspect_sqlite(&conn).unwrap();
+    let table = &catalog.tables[0];
+    let index = |name: &str| {
+        table
+            .indexes
+            .iter()
+            .find(|index| index.name == name)
+            .expect("the index is introspected")
+    };
+
+    // The implicit index of a primary key carries the `pk` origin and never
+    // reaches the catalog, so only the two declared indexes remain.
+    assert_eq!(table.indexes.len(), 2);
+    assert_eq!(index("users_email_idx").columns, vec!["email"]);
+    assert!(index("users_email_idx").unique);
+    assert_eq!(
+        index("users_tenant_email_idx").columns,
+        vec!["tenant", "email"]
+    );
+    assert!(!index("users_tenant_email_idx").unique);
 }
 
 #[test]

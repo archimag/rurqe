@@ -27,7 +27,8 @@ pub use sqlite::{
 };
 pub use types::{
     catalog_from_metadata, map_sql_type_to_kind, map_sqlite_declared_type_to_kind,
-    RawColumnMetadata, RawForeignKeyMetadata, RawPrimaryKeyMetadata, RawTableMetadata,
+    RawColumnMetadata, RawForeignKeyMetadata, RawIndexMetadata, RawPrimaryKeyMetadata,
+    RawTableMetadata,
 };
 
 /// The database engine a connection string targets.
@@ -94,6 +95,9 @@ pub(crate) fn introspect_connection(
 pub struct IntrospectQueries;
 
 impl IntrospectQueries {
+    /// Query to fetch user tables from the SQLite `sqlite_master` catalog.
+    pub const SQLITE_TABLES: &'static str = sqlite::SQLITE_TABLES;
+
     /// Query to fetch all user tables in `public` schema.
     pub const POSTGRES_TABLES: &'static str = postgres::POSTGRES_TABLES;
 
@@ -106,8 +110,8 @@ impl IntrospectQueries {
     /// Query to fetch all foreign key columns in key order.
     pub const POSTGRES_FOREIGN_KEYS: &'static str = postgres::POSTGRES_FOREIGN_KEYS;
 
-    /// Query to fetch user tables from the SQLite `sqlite_master` catalog.
-    pub const SQLITE_TABLES: &'static str = sqlite::SQLITE_TABLES;
+    /// Query to fetch the secondary indexes of user tables, one row per column.
+    pub const POSTGRES_INDEXES: &'static str = postgres::POSTGRES_INDEXES;
 
     /// Builds the `PRAGMA table_info` query for `table`.
     pub fn sqlite_table_info(table: &str) -> String {
@@ -117,5 +121,15 @@ impl IntrospectQueries {
     /// Builds the `PRAGMA foreign_key_list` query for `table`.
     pub fn sqlite_foreign_key_list(table: &str) -> String {
         sqlite::sqlite_foreign_key_list(table)
+    }
+
+    /// Builds the `PRAGMA index_list` query for `table`.
+    pub fn sqlite_index_list(table: &str) -> String {
+        sqlite::sqlite_index_list(table)
+    }
+
+    /// Builds the `PRAGMA index_info` query for `index`.
+    pub fn sqlite_index_info(index: &str) -> String {
+        sqlite::sqlite_index_info(index)
     }
 }

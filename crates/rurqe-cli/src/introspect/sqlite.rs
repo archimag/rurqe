@@ -6,7 +6,7 @@ use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef};
 
 use crate::cli::CliError;
 
-use super::types::map_sqlite_declared_type_to_kind;
+use super::types::{fold_indexes, map_sqlite_declared_type_to_kind, RawIndexMetadata};
 
 /// Query to fetch user tables from the SQLite `sqlite_master` catalog.
 pub(crate) const SQLITE_TABLES: &str = r#"
@@ -35,6 +35,19 @@ pub(crate) fn sqlite_foreign_key_list(table: &str) -> String {
     format!(
         "PRAGMA foreign_key_list(\"{}\");",
         escape_sqlite_identifier(table)
+    )
+}
+
+/// Builds the `PRAGMA index_list` query for `table`.
+pub(crate) fn sqlite_index_list(table: &str) -> String {
+    format!("PRAGMA index_list(\"{}\");", escape_sqlite_identifier(table))
+}
+
+/// Builds the `PRAGMA index_info` query for `index`.
+pub(crate) fn sqlite_index_info(index: &str) -> String {
+    format!(
+        "PRAGMA index_info(\"{}\");",
+        escape_sqlite_identifier(index)
     )
 }
 
@@ -82,6 +95,9 @@ pub struct RawSqliteForeignKeyMetadata {
 /// constraint id are folded into one [`ForeignKeyDef`] named after the owning
 /// table and that id, so composite foreign keys stay a single constraint.
 ///
+/// Index rows are folded into one [`IndexDef`](rurqe_migrate::catalog::IndexDef)
+/// per index, keeping the column order of the index declaration.
+///
 /// `PRAGMA foreign_key_list` reports a `NULL` target column for a key that
 /// references the implicit primary key of its parent table; such a target is
 /// resolved against the parent key columns by position instead of being kept as
@@ -90,9 +106,11 @@ pub fn catalog_from_sqlite_metadata(
     tables: &[RawSqliteTableMetadata],
     columns: &[RawSqliteColumnMetadata],
     foreign_keys: &[RawSqliteForeignKeyMetadata],
+    indexes: &[RawIndexMetadata],
 ) -> SchemaCatalog {
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut fks_by_table: BTreeMap<String, BTreeMap<i64, ForeignKeyDef>> = BTreeMap::new();
+    let mut indexes_by_table = fold_indexes(indexes);
 
     // Key columns in key order: they name both the assembled primary keys and
     // the target of a foreign key that references an implicit parent key.
@@ -163,10 +181,14 @@ pub fn catalog_from_sqlite_metadata(
             .remove(&table.name)
             .map(|constraints| constraints.into_values().collect())
             .unwrap_or_default();
+        let table_indexes = indexes_by_table.remove(&table.name).unwrap_or_default();
 
         let mut def = TableDef::new(&table.name, table_columns, primary_key);
         for fk in table_foreign_keys {
             def = def.with_foreign_key(fk);
+        }
+        for index in table_indexes {
+            def = def.with_index(index);
         }
         result_tables.push(def);
     }
@@ -207,6 +229,7 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
 
     let mut raw_columns = Vec::new();
     let mut raw_foreign_keys = Vec::new();
+    let mut raw_indexes = Vec::new();
 
     for table in &table_names {
         let col_sql = sqlite_table_info(table);
@@ -269,13 +292,84 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
         // even when the pragma emits its rows in another one.
         fks.sort_by_key(|(position, _)| *position);
         raw_foreign_keys.extend(fks.into_iter().map(|(_, row)| row));
+
+        raw_indexes.extend(sqlite_indexes(conn, table)?);
     }
 
     Ok(catalog_from_sqlite_metadata(
         &raw_tables,
         &raw_columns,
         &raw_foreign_keys,
+        &raw_indexes,
     ))
+}
+
+/// Collects the secondary indexes declared on `table`.
+///
+/// `PRAGMA index_list` also reports the implicit index SQLite builds for a
+/// primary key; it carries the `pk` origin and is skipped, because a primary key
+/// is already described by the key columns of its table. An index over an
+/// expression reports an unnamed column, so it is dropped entirely instead of
+/// being recorded with a partial column list.
+fn sqlite_indexes(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> Result<Vec<RawIndexMetadata>, CliError> {
+    let mut statement = conn
+        .prepare(&sqlite_index_list(table))
+        .map_err(|e| CliError(format!("failed to prepare index_list for `{table}`: {e}")))?;
+
+    let declared = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| CliError(format!("failed to inspect indexes for `{table}`: {e}")))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError(format!("failed to read index for `{table}`: {e}")))?;
+
+    let mut rows = Vec::new();
+    for (index_name, unique, origin) in declared {
+        if origin == "pk" {
+            continue;
+        }
+
+        let Some(columns) = sqlite_index_columns(conn, &index_name)? else {
+            continue;
+        };
+
+        for column_name in columns {
+            rows.push(RawIndexMetadata {
+                table_name: table.to_owned(),
+                index_name: index_name.clone(),
+                column_name,
+                unique,
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
+/// The indexed columns of `index` in key order, or `None` for an expression index.
+fn sqlite_index_columns(
+    conn: &rusqlite::Connection,
+    index: &str,
+) -> Result<Option<Vec<String>>, CliError> {
+    let mut statement = conn
+        .prepare(&sqlite_index_info(index))
+        .map_err(|e| CliError(format!("failed to prepare index_info for `{index}`: {e}")))?;
+
+    let columns = statement
+        .query_map([], |row| row.get::<_, Option<String>>(2))
+        .map_err(|e| CliError(format!("failed to inspect columns of `{index}`: {e}")))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError(format!("failed to read column of `{index}`: {e}")))?;
+
+    Ok(columns.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -323,7 +417,7 @@ mod tests {
         ];
         let foreign_keys = vec![key(0, "order_id", ""), key(0, "order_region", "")];
 
-        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &foreign_keys);
+        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &foreign_keys, &[]);
 
         let lines = catalog
             .tables
@@ -360,7 +454,7 @@ mod tests {
         ];
         let foreign_keys = vec![key(0, "order_region", "region")];
 
-        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &foreign_keys);
+        let catalog = catalog_from_sqlite_metadata(&tables, &columns, &foreign_keys, &[]);
 
         let lines = catalog
             .tables
