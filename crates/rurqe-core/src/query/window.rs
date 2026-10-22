@@ -322,6 +322,19 @@ impl<T, Scope> WindowExpr<T, Scope> {
         }
     }
 
+    /// Builds the dialect-neutral AST node of this window expression.
+    ///
+    /// The node carries the window function together with its `OVER (...)`
+    /// partition and ordering clauses, so the expression is rendered through the
+    /// statement AST exactly like every other expression node.
+    pub fn to_expr_kind(&self) -> ExprKind {
+        ExprKind::Window {
+            kind: Box::new(self.kind.clone()),
+            partition_by: self.window.partition_by.clone(),
+            order_by: self.window.order_by.clone(),
+        }
+    }
+
     /// Renders this window function and its `OVER (...)` clause to `sql`.
     ///
     /// `relations` names the relations of the enclosing statement and qualifies
@@ -376,6 +389,10 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget
     for WindowExpr<T, Scope>
 {
     type RustType = T;
+
+    fn to_expr_kind(&self) -> ExprKind {
+        WindowExpr::to_expr_kind(self)
+    }
 
     fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>, relations: &[TableRef]) {
         WindowExpr::render::<D>(self, sql, params, relations);

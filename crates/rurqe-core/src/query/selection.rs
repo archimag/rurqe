@@ -23,6 +23,13 @@ pub trait SelectTarget {
         let _ = out;
     }
 
+    /// Builds the dialect-neutral AST node this target renders into.
+    ///
+    /// The node describes the projection as plain data, so the surrounding
+    /// statement can be assembled and rendered from the AST instead of
+    /// re-rendering every projection through its own closure.
+    fn to_expr_kind(&self) -> ExprKind;
+
     /// Renders this projection item to the SQL buffer and binds any parameters.
     ///
     /// `relations` names the relations of the enclosing statement, which decides
@@ -42,6 +49,10 @@ impl<C: Column> SelectTarget for C {
         out.push(C::NAME);
     }
 
+    fn to_expr_kind(&self) -> ExprKind {
+        C::expr_kind()
+    }
+
     fn render<D: Dialect>(
         &self,
         sql: &mut String,
@@ -56,6 +67,10 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
     for Expr<T, Scope, Aggr>
 {
     type RustType = T;
+
+    fn to_expr_kind(&self) -> ExprKind {
+        self.kind().clone()
+    }
 
     fn render<D: Dialect>(
         &self,
@@ -219,6 +234,15 @@ pub trait Selection {
         let _ = out;
     }
 
+    /// Appends the dialect-neutral AST node of every projection item to `out`.
+    ///
+    /// The nodes keep the declaration order of the selection, so a statement
+    /// assembled from them projects exactly the selected items in the order the
+    /// author wrote them.
+    fn push_projections(&self, out: &mut Vec<ExprKind>) {
+        let _ = out;
+    }
+
     /// Renders all projection items into `sql`, separating them by commas.
     ///
     /// `relations` is forwarded to every projection item, so a selected column is
@@ -249,6 +273,11 @@ macro_rules! impl_selection {
             fn push_column_names(&self, out: &mut Vec<&'static str>) {
                 let ($($target,)+) = self;
                 $($target.push_column_name(out);)+
+            }
+
+            fn push_projections(&self, out: &mut Vec<ExprKind>) {
+                let ($($target,)+) = self;
+                $(out.push($target.to_expr_kind());)+
             }
 
             fn render_projections<D: Dialect>(

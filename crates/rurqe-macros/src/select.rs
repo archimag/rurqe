@@ -34,6 +34,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut field_reads = TokenStream::new();
     let mut name_pushes = TokenStream::new();
     let mut render_pushes = TokenStream::new();
+    let mut projection_pushes = TokenStream::new();
     let mut selection_bounds = TokenStream::new();
     let mut scope_bounds = TokenStream::new();
     let mut from_bounds = TokenStream::new();
@@ -126,6 +127,10 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         // Every projection renders through `SelectTarget`, so a column and a
         // computed expression follow the same qualification rule as a tuple
         // selection instead of the macro spelling its own column reference.
+        projection_pushes.extend(quote! {
+            out.push(::rurqe_core::query::SelectTarget::to_expr_kind(&self.#field_index));
+        });
+
         render_pushes.extend(quote! {
             {
                 if !first_projection {
@@ -186,6 +191,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 #[allow(unused_variables)]
                 fn push_column_names(&self, out: &mut ::std::vec::Vec<&'static str>) {
                     #name_pushes
+                }
+
+                #[allow(unused_variables)]
+                fn push_projections(
+                    &self,
+                    out: &mut ::std::vec::Vec<::rurqe_core::expr::ExprKind>,
+                ) {
+                    #projection_pushes
                 }
 
                 #[allow(unused_variables)]
