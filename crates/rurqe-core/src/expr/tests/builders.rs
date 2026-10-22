@@ -312,3 +312,57 @@ fn aggregate_helpers_build_expected_expressions() {
     assert_eq!(min(UserId), Expr::<i64>::min::<UserId>());
     assert_eq!(max(UserName), Expr::<String>::max::<UserName>());
 }
+
+#[test]
+fn expressions_carry_table_scopes_across_operators() {
+    // Single-table comparison carries the table scope
+    let eq_expr: Expr<bool, User> = Expr::column::<UserId>().eq(42i64);
+    assert_eq!(
+        eq_expr.kind(),
+        &ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::Column { name: "id" }),
+            rhs: Box::new(ExprKind::Value(SqlVal::I64(42))),
+        }
+    );
+
+    let marker_eq: Expr<bool, User> = UserId.eq(42i64);
+    assert_eq!(marker_eq, eq_expr);
+
+    crate::table! {
+        Order => "orders" {
+            OrderId => "id": i64,
+            OrderUserId => "user_id": i64,
+        }
+    }
+
+    // Cross-table comparison merges scopes into a tuple
+    let cross_eq: Expr<bool, (User, Order)> =
+        Expr::column::<UserId>().eq(Expr::column::<OrderUserId>());
+    assert!(matches!(cross_eq.kind(), ExprKind::Binary { op: BinaryOp::Eq, .. }));
+
+    // and / or preserve and merge table scopes
+    let and_expr: Expr<bool, (User, Order)> = UserId.eq(1i64).and(OrderUserId.eq(2i64));
+    assert!(matches!(and_expr.kind(), ExprKind::Binary { op: BinaryOp::And, .. }));
+
+    let or_expr: Expr<bool, (User, Order)> = UserId.eq(1i64).or(OrderUserId.eq(2i64));
+    assert!(matches!(or_expr.kind(), ExprKind::Binary { op: BinaryOp::Or, .. }));
+
+    // between preserves table scope
+    let between_expr: Expr<bool, User> = UserId.between(1i64, 10i64);
+    assert!(matches!(between_expr.kind(), ExprKind::Between { .. }));
+
+    // like and ilike preserve table scope
+    let like_expr: Expr<bool, User> = UserName.like("alice%");
+    assert!(matches!(like_expr.kind(), ExprKind::Like { case_insensitive: false, .. }));
+
+    let ilike_expr: Expr<bool, User> = UserName.ilike("alice%");
+    assert!(matches!(ilike_expr.kind(), ExprKind::Like { case_insensitive: true, .. }));
+
+    // is_null and is_not_null preserve table scope
+    let null_expr: Expr<bool, User> = UserName.is_null();
+    assert!(matches!(null_expr.kind(), ExprKind::IsNull { negated: false, .. }));
+
+    let not_null_expr: Expr<bool, User> = UserName.is_not_null();
+    assert!(matches!(not_null_expr.kind(), ExprKind::IsNull { negated: true, .. }));
+}

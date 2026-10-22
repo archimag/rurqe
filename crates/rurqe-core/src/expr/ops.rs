@@ -2,6 +2,7 @@
 
 use super::ast::ExprKind;
 use super::builder::Expr;
+use super::scope::{MergeScope, Merged, Merged3};
 use super::val::ToSqlVal;
 use crate::schema::Column;
 
@@ -297,44 +298,56 @@ pub trait Expression<T> {
     /// Converts `self` into the expression it stands for.
     fn into_expression(self) -> Expr<T, Self::Scope>;
 
-    /// Compares the expression with `value` using the SQL `=` operator.
-    fn eq<V>(self, value: V) -> Expr<bool>
+    /// Drops the relation scope from this expression, enabling use in correlated subqueries.
+    fn without_scope(self) -> Expr<T, ()>
     where
         Self: Sized,
+    {
+        self.into_expression().without_scope()
+    }
+
+    /// Compares the expression with `value` using the SQL `=` operator.
+    fn eq<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().eq(value)
     }
 
     /// Compares the expression with `value` using the SQL `<>` operator.
-    fn ne<V>(self, value: V) -> Expr<bool>
+    fn ne<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
     where
         Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().ne(value)
     }
 
     /// Compares the expression with `value` using the SQL `>` operator.
-    fn gt<V>(self, value: V) -> Expr<bool>
+    fn gt<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
     where
         Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().gt(value)
     }
 
     /// Compares the expression with `value` using the SQL `<` operator.
-    fn lt<V>(self, value: V) -> Expr<bool>
+    fn lt<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
     where
         Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().lt(value)
     }
 
     /// Builds an `IS NULL` predicate over the expression.
-    fn is_null(self) -> Expr<bool>
+    fn is_null(self) -> Expr<bool, Self::Scope>
     where
         Self: Sized,
     {
@@ -345,7 +358,7 @@ pub trait Expression<T> {
     }
 
     /// Builds an `IS NOT NULL` predicate over the expression.
-    fn is_not_null(self) -> Expr<bool>
+    fn is_not_null(self) -> Expr<bool, Self::Scope>
     where
         Self: Sized,
     {
@@ -356,9 +369,16 @@ pub trait Expression<T> {
     /// Builds a `BETWEEN low AND high` range predicate over the expression.
     ///
     /// Both bounds are inclusive and must be compatible with the expression type.
-    fn between<L, H>(self, low: L, high: H) -> Expr<bool>
+    #[allow(clippy::type_complexity)]
+    fn between<L, H>(
+        self,
+        low: L,
+        high: H,
+    ) -> Expr<bool, Merged3<Self::Scope, L::Scope, H::Scope>>
     where
         Self: Sized,
+        Self::Scope: MergeScope<L::Scope>,
+        Merged<Self::Scope, L::Scope>: MergeScope<H::Scope>,
         L: IntoExpr<T>,
         H: IntoExpr<T>,
     {
@@ -366,7 +386,7 @@ pub trait Expression<T> {
     }
 
     /// Builds an `IN (value, ...)` membership predicate over the expression.
-    fn in_list<I, V>(self, values: I) -> Expr<bool>
+    fn in_list<I, V>(self, values: I) -> Expr<bool, Self::Scope>
     where
         Self: Sized,
         I: IntoIterator<Item = V>,
@@ -376,7 +396,7 @@ pub trait Expression<T> {
     }
 
     /// Builds a `NOT IN (value, ...)` negated membership predicate.
-    fn not_in_list<I, V>(self, values: I) -> Expr<bool>
+    fn not_in_list<I, V>(self, values: I) -> Expr<bool, Self::Scope>
     where
         Self: Sized,
         I: IntoIterator<Item = V>,
@@ -419,18 +439,20 @@ pub trait StringExpression {
     fn into_string_expression(self) -> Expr<String, Self::Scope>;
 
     /// Builds a case-sensitive `LIKE` pattern-matching predicate.
-    fn like<V>(self, pattern: V) -> Expr<bool>
+    fn like<V>(self, pattern: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
     where
         Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<String>,
     {
         self.into_string_expression().like(pattern)
     }
 
     /// Builds a case-insensitive `ILIKE` pattern-matching predicate.
-    fn ilike<V>(self, pattern: V) -> Expr<bool>
+    fn ilike<V>(self, pattern: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
     where
         Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<String>,
     {
         self.into_string_expression().ilike(pattern)

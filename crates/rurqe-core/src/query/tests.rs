@@ -184,7 +184,7 @@ fn joined_scope_tracks_every_table_in_from_order() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
-        .inner_join::<User, _, _>(Expr::column::<UserId>().eq(2i64))
+        .inner_join::<User, _, At<0>>(Expr::column::<UserId>().eq(2i64))
         .select((OrderId,))
         .build();
 
@@ -248,7 +248,7 @@ fn left_join_renders_left_keyword_and_composes_with_inner_join() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
-        .inner_join::<User, _, _>(Expr::column::<UserId>().eq(2i64));
+        .inner_join::<User, _, At<0>>(Expr::column::<UserId>().eq(2i64));
     let total = query.nullable::<OrderTotal>();
 
     let built = query.select((OrderId, total)).build();
@@ -313,7 +313,7 @@ fn nested_left_join_stays_nullable_inside_an_inner_join() {
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
-            .inner_join::<User, _, _>(Expr::column::<UserId>().eq(2i64))
+            .inner_join::<User, _, At<0>>(Expr::column::<UserId>().eq(2i64))
             .select((OrderId,));
 
     assert_eq!(
@@ -1059,7 +1059,9 @@ fn aliased_table_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .inner_join::<Aliased<Order, OrderAlias>, _, _>(
-            Expr::column::<OrderUserId>().eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
+            Expr::column::<OrderUserId>()
+                .without_scope()
+                .eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
         )
         .select((UserId, AliasedCol::<OrderAlias, OrderTotal>::new()))
         .build();
@@ -1077,7 +1079,9 @@ fn left_joined_aliased_table_lifts_columns_into_options() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .left_join::<Aliased<Order, OrderAlias>, _, _>(
-            Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+            Expr::column::<OrderUserId>()
+                .without_scope()
+                .eq(Expr::column::<UserId>()),
         );
     let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
 
@@ -1100,7 +1104,7 @@ fn latest_order_per_user_scope() -> SelectQuery<MockDialect, Order, (f64,)> {
     SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderTotal,))
-        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
         .limit(1)
 }
 
@@ -1141,7 +1145,7 @@ fn lateral_join_binds_subquery_parameters_before_the_outer_filter() {
     let sub = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderTotal,))
-        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
         .where_(Expr::column::<OrderTotal>().gt(10.0))
         .limit(1);
 
@@ -1272,7 +1276,7 @@ fn group_set_resolves_grouped_column_positions() {
 
     assert_grouped::<Grouping, UserName, At<0>>();
     assert_grouped::<Grouping, UserId, Next<At<0>>>();
-    assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, _>();
+    assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, (Next<At<0>>, At<0>, At<0>)>();
 }
 
 crate::table_alias! {

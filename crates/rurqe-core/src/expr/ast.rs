@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::builder::{Aggregate, Expr};
 use super::ops::IntoExpr;
+use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::Column;
 
@@ -224,7 +225,11 @@ impl<T, Branches> CaseBuilder<T, Branches> {
     /// Branches are rendered in declaration order, so the first matching
     /// condition determines the produced value. Declaring a branch moves the
     /// builder into [`HasBranches`], the only state that can be finalised.
-    pub fn when<V>(mut self, condition: Expr<bool>, result: V) -> CaseBuilder<T, HasBranches>
+    pub fn when<Scope, V>(
+        mut self,
+        condition: Expr<bool, Scope>,
+        result: V,
+    ) -> CaseBuilder<T, HasBranches>
     where
         V: IntoExpr<T>,
     {
@@ -326,8 +331,9 @@ impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     ///
     /// In the pattern, `%` matches any sequence of characters and `_` matches a
     /// single character, following the SQL `LIKE` semantics.
-    pub fn like<V>(self, pattern: V) -> Expr<bool>
+    pub fn like<V>(self, pattern: V) -> Expr<bool, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<String>,
     {
         Expr::new(ExprKind::Like {
@@ -338,8 +344,9 @@ impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     }
 
     /// Builds a case-insensitive `ILIKE` pattern-matching predicate over this expression.
-    pub fn ilike<V>(self, pattern: V) -> Expr<bool>
+    pub fn ilike<V>(self, pattern: V) -> Expr<bool, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<String>,
     {
         Expr::new(ExprKind::Like {
@@ -350,9 +357,48 @@ impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     }
 }
 
-impl Expr<bool> {
+impl<Scope> Expr<bool, Scope> {
+    /// Combines two predicates with the SQL `AND` operator.
+    pub fn and<OtherScope>(
+        self,
+        other: Expr<bool, OtherScope>,
+    ) -> Expr<bool, Merged<Scope, OtherScope>>
+    where
+        Scope: MergeScope<OtherScope>,
+    {
+        self.combine(BinaryOp::And, other)
+    }
+
+    /// Combines two predicates with the SQL `OR` operator.
+    pub fn or<OtherScope>(
+        self,
+        other: Expr<bool, OtherScope>,
+    ) -> Expr<bool, Merged<Scope, OtherScope>>
+    where
+        Scope: MergeScope<OtherScope>,
+    {
+        self.combine(BinaryOp::Or, other)
+    }
+
+    fn combine<OtherScope>(
+        self,
+        op: BinaryOp,
+        other: Expr<bool, OtherScope>,
+    ) -> Expr<bool, Merged<Scope, OtherScope>>
+    where
+        Scope: MergeScope<OtherScope>,
+    {
+        Expr::new(ExprKind::Binary {
+            op,
+            lhs: Box::new(self.kind),
+            rhs: Box::new(other.kind),
+        })
+    }
+}
+
+impl Expr<bool, ()> {
     /// Builds an `EXISTS (subquery)` predicate.
-    pub fn exists<S: Into<Subquery>>(subquery: S) -> Expr<bool> {
+    pub fn exists<S: Into<Subquery>>(subquery: S) -> Expr<bool, ()> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
@@ -362,30 +408,12 @@ impl Expr<bool> {
     }
 
     /// Builds a `NOT EXISTS (subquery)` predicate.
-    pub fn not_exists<S: Into<Subquery>>(subquery: S) -> Expr<bool> {
+    pub fn not_exists<S: Into<Subquery>>(subquery: S) -> Expr<bool, ()> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
             query: subquery.into(),
             negated: true,
-        })
-    }
-
-    /// Combines two predicates with the SQL `AND` operator.
-    pub fn and(self, other: Expr<bool>) -> Expr<bool> {
-        self.combine(BinaryOp::And, other)
-    }
-
-    /// Combines two predicates with the SQL `OR` operator.
-    pub fn or(self, other: Expr<bool>) -> Expr<bool> {
-        self.combine(BinaryOp::Or, other)
-    }
-
-    fn combine(self, op: BinaryOp, other: Expr<bool>) -> Expr<bool> {
-        Expr::new(ExprKind::Binary {
-            op,
-            lhs: Box::new(self.kind),
-            rhs: Box::new(other.kind),
         })
     }
 }

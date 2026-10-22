@@ -454,6 +454,116 @@ pub mod sqlite {
 ///     .select((UserId,))
 ///     .order_by_desc(OrderTotal);
 /// ```
+///
+/// Referencing a column of an unjoined table in a filter predicate is rejected at
+/// compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId,))
+///     .where_(OrderTotal.gt(1.0));
+/// ```
+///
+/// Comparing columns across unjoined tables in a filter predicate is rejected:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Order => "orders" {
+///         OrderId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderId` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId,))
+///     .where_(Expr::column::<UserId>().eq(Expr::column::<OrderId>()));
+/// ```
+///
+/// Attempting to bypass `GROUP BY` column validation via `Expr::column` is rejected:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     Order => "orders" {
+///         OrderId => "id": i64,
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
+/// let _ = select_from::<Postgres, Order>()
+///     .group_by(OrderUserId)
+///     .select((OrderUserId, Expr::column::<OrderTotal>()));
+/// ```
+///
+/// Window specifications partitioned by an unjoined table are rejected:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId, row_number().over(Window::partition_by(OrderUserId))));
+/// ```
+///
+/// Window functions reading a column of an unjoined table are rejected:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId, lag(OrderTotal).over(Window::empty())));
+/// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, ()> {
     SelectQuery::new().from::<T>()
 }

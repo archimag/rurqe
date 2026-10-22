@@ -6,65 +6,65 @@ use rurqe_core::schema::Column;
 use crate::dialect::Postgres;
 
 /// PostgreSQL-specific expressions and operators.
-pub trait PgExpressions {
+pub trait PgExpressions: Column {
     /// POSIX regex match (`~`).
-    fn regex_match(self, pattern: &str) -> Expr<bool>;
+    fn regex_match(self, pattern: &str) -> Expr<bool, Self::Table>;
 
     /// POSIX regex case-insensitive match (`~*`).
-    fn regex_match_ci(self, pattern: &str) -> Expr<bool>;
+    fn regex_match_ci(self, pattern: &str) -> Expr<bool, Self::Table>;
 
     /// POSIX regex does not match (`!~`).
-    fn regex_not_match(self, pattern: &str) -> Expr<bool>;
+    fn regex_not_match(self, pattern: &str) -> Expr<bool, Self::Table>;
 
     /// POSIX regex case-insensitive does not match (`!~*`).
-    fn regex_not_match_ci(self, pattern: &str) -> Expr<bool>;
+    fn regex_not_match_ci(self, pattern: &str) -> Expr<bool, Self::Table>;
 
     /// JSONB contains (`@>`).
-    fn json_contains(self, other: &str) -> Expr<bool>;
+    fn json_contains(self, other: &str) -> Expr<bool, Self::Table>;
 
     /// JSONB exists / has key (`?`).
-    fn json_has_key(self, key: &str) -> Expr<bool>;
+    fn json_has_key(self, key: &str) -> Expr<bool, Self::Table>;
 
     /// JSONB has any keys (`?|`).
-    fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool>;
+    fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool, Self::Table>;
 
     /// Full-text search match (`@@ to_tsquery(?)`).
-    fn matches_tsquery(self, query: &str) -> Expr<bool>;
+    fn matches_tsquery(self, query: &str) -> Expr<bool, Self::Table>;
 }
 
 impl<C: Column> PgExpressions for C {
-    fn regex_match(self, pattern: &str) -> Expr<bool> {
+    fn regex_match(self, pattern: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("~", pattern)
     }
 
-    fn regex_match_ci(self, pattern: &str) -> Expr<bool> {
+    fn regex_match_ci(self, pattern: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("~*", pattern)
     }
 
-    fn regex_not_match(self, pattern: &str) -> Expr<bool> {
+    fn regex_not_match(self, pattern: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("!~", pattern)
     }
 
-    fn regex_not_match_ci(self, pattern: &str) -> Expr<bool> {
+    fn regex_not_match_ci(self, pattern: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("!~*", pattern)
     }
 
-    fn json_contains(self, other: &str) -> Expr<bool> {
+    fn json_contains(self, other: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("@>", other)
     }
 
-    fn json_has_key(self, key: &str) -> Expr<bool> {
+    fn json_has_key(self, key: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("?", key)
     }
 
-    fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool> {
+    fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool, Self::Table> {
         let elements: Vec<String> = keys.iter().map(|key| quote_array_element(key)).collect();
         let array = format!("{{{}}}", elements.join(","));
         column_binary_op::<C>("?|", &array)
     }
 
-    fn matches_tsquery(self, query: &str) -> Expr<bool> {
-        Expr::raw_fragments(
+    fn matches_tsquery(self, query: &str) -> Expr<bool, Self::Table> {
+        Expr::raw_fragments_with_scope(
             vec![
                 format!("({} @@ to_tsquery(", render_column::<C>()),
                 "))".to_owned(),
@@ -87,8 +87,8 @@ fn render_column<C: Column>() -> String {
 }
 
 /// Builds a `(<column> <op> ?)` predicate over the column `C`.
-fn column_binary_op<C: Column>(op: &str, val: &str) -> Expr<bool> {
-    Expr::raw_fragments(
+fn column_binary_op<C: Column>(op: &str, val: &str) -> Expr<bool, C::Table> {
+    Expr::raw_fragments_with_scope(
         vec![format!("({} {op} ", render_column::<C>()), ")".to_owned()],
         vec![SqlVal::Text(val.to_owned())],
     )
@@ -164,6 +164,33 @@ mod tests {
         assert!(matches!(json.kind(), ExprKind::Raw { .. }));
 
         let ts = DocContent.matches_tsquery("english & rust");
+        assert!(matches!(ts.kind(), ExprKind::Raw { .. }));
+    }
+
+    #[test]
+    fn pg_expressions_carry_column_table_scope() {
+        let regex: Expr<bool, Doc> = DocContent.regex_match("^start");
+        assert!(matches!(regex.kind(), ExprKind::Raw { .. }));
+
+        let regex_ci: Expr<bool, Doc> = DocContent.regex_match_ci("^start");
+        assert!(matches!(regex_ci.kind(), ExprKind::Raw { .. }));
+
+        let not_match: Expr<bool, Doc> = DocContent.regex_not_match("^start");
+        assert!(matches!(not_match.kind(), ExprKind::Raw { .. }));
+
+        let not_match_ci: Expr<bool, Doc> = DocContent.regex_not_match_ci("^start");
+        assert!(matches!(not_match_ci.kind(), ExprKind::Raw { .. }));
+
+        let json: Expr<bool, Doc> = DocMetadata.json_contains(r#"{"active": true}"#);
+        assert!(matches!(json.kind(), ExprKind::Raw { .. }));
+
+        let json_key: Expr<bool, Doc> = DocMetadata.json_has_key("active");
+        assert!(matches!(json_key.kind(), ExprKind::Raw { .. }));
+
+        let json_keys: Expr<bool, Doc> = DocMetadata.json_has_any_keys(&["a", "b"]);
+        assert!(matches!(json_keys.kind(), ExprKind::Raw { .. }));
+
+        let ts: Expr<bool, Doc> = DocContent.matches_tsquery("english & rust");
         assert!(matches!(ts.kind(), ExprKind::Raw { .. }));
     }
 

@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::ops::IntoExpr;
 use super::render::{parse_raw_sql, RawSqlError};
-use super::scope::{MergeScope, Merged};
+use super::scope::{MergeScope, Merged, Merged3};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::schema::{Column, Table};
 
@@ -91,7 +91,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///
     /// The predicate compares against SQL `NULL` itself instead of a bound
     /// parameter, so it works for any expression type, optional or not.
-    pub fn is_null(&self) -> Expr<bool> {
+    pub fn is_null(&self) -> Expr<bool, Scope> {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
             negated: false,
@@ -99,7 +99,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     }
 
     /// Builds an `IS NOT NULL` predicate over this expression.
-    pub fn is_not_null(&self) -> Expr<bool> {
+    pub fn is_not_null(&self) -> Expr<bool, Scope> {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
             negated: true,
@@ -110,7 +110,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///
     /// The nested query renders inline with the enclosing statement, so its
     /// parameters continue the placeholder numbering of the outer query.
-    pub fn in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool> {
+    pub fn in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool, Scope> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::In,
             operand: Some(Box::new(self.kind)),
@@ -120,7 +120,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     }
 
     /// Builds a `NOT IN (subquery)` predicate matching this expression.
-    pub fn not_in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool> {
+    pub fn not_in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool, Scope> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::In,
             operand: Some(Box::new(self.kind)),
@@ -130,32 +130,36 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     }
 
     /// Compares the expression with `value` using the SQL `=` operator.
-    pub fn eq<V>(self, value: V) -> Expr<bool>
+    pub fn eq<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Eq, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `<>` operator.
-    pub fn ne<V>(self, value: V) -> Expr<bool>
+    pub fn ne<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Ne, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `>` operator.
-    pub fn gt<V>(self, value: V) -> Expr<bool>
+    pub fn gt<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Gt, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `<` operator.
-    pub fn lt<V>(self, value: V) -> Expr<bool>
+    pub fn lt<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Lt, value.into_expr_kind())
@@ -164,8 +168,15 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// Builds a `BETWEEN low AND high` range predicate over this expression.
     ///
     /// Both bounds are inclusive and must be compatible with the expression type.
-    pub fn between<L, H>(self, low: L, high: H) -> Expr<bool>
+    #[allow(clippy::type_complexity)]
+    pub fn between<L, H>(
+        self,
+        low: L,
+        high: H,
+    ) -> Expr<bool, Merged3<Scope, L::Scope, H::Scope>>
     where
+        Scope: MergeScope<L::Scope>,
+        Merged<Scope, L::Scope>: MergeScope<H::Scope>,
         L: IntoExpr<T>,
         H: IntoExpr<T>,
     {
@@ -179,7 +190,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// Builds an `IN (value, ...)` membership predicate over this expression.
     ///
     /// Every candidate value must be compatible with the expression type.
-    pub fn in_list<I, V>(self, values: I) -> Expr<bool>
+    pub fn in_list<I, V>(self, values: I) -> Expr<bool, Scope>
     where
         I: IntoIterator<Item = V>,
         V: IntoExpr<T>,
@@ -188,7 +199,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     }
 
     /// Builds a `NOT IN (value, ...)` negated membership predicate over this expression.
-    pub fn not_in_list<I, V>(self, values: I) -> Expr<bool>
+    pub fn not_in_list<I, V>(self, values: I) -> Expr<bool, Scope>
     where
         I: IntoIterator<Item = V>,
         V: IntoExpr<T>,
@@ -196,7 +207,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
         self.membership(values, true)
     }
 
-    fn membership<I, V>(self, values: I, negated: bool) -> Expr<bool>
+    fn membership<I, V>(self, values: I, negated: bool) -> Expr<bool, Scope>
     where
         I: IntoIterator<Item = V>,
         V: IntoExpr<T>,
@@ -223,12 +234,21 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
         })
     }
 
-    fn compare(self, op: BinaryOp, rhs: ExprKind) -> Expr<bool> {
+    fn compare<TargetScope>(self, op: BinaryOp, rhs: ExprKind) -> Expr<bool, TargetScope> {
         Expr::new(ExprKind::Binary {
             op,
             lhs: Box::new(self.kind),
             rhs: Box::new(rhs),
         })
+    }
+
+    /// Drops the scope tracking from this expression, enabling its use in correlated
+    /// subqueries referencing outer query relations.
+    pub fn without_scope(self) -> Expr<T, (), Aggr> {
+        Expr {
+            kind: self.kind,
+            _result: PhantomData,
+        }
     }
 
     /// Builds a window expression from this expression over `window`.
@@ -309,6 +329,15 @@ impl<T> Expr<T, ()> {
     #[doc(hidden)]
     pub fn raw_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
         Self::new(ExprKind::Raw { fragments, params })
+    }
+
+    /// Builds a raw SQL expression carrying an explicit relation scope.
+    #[doc(hidden)]
+    pub fn raw_fragments_with_scope<Scope>(
+        fragments: Vec<String>,
+        params: Vec<SqlVal>,
+    ) -> Expr<T, Scope> {
+        Expr::new(ExprKind::Raw { fragments, params })
     }
 
     /// Builds a `SUM(C)` expression for column `C`.

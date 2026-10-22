@@ -459,7 +459,7 @@ fn active_customers() -> SelectQuery<Postgres<Pg16>, User, (i64, String)> {
         .where_(Expr::exists(
             select_from::<Postgres<Pg16>, Order>()
                 .select((OrderId,))
-                .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>())),
+                .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope())),
         ))
 }
 
@@ -504,7 +504,7 @@ fn set_operations_combine_case_and_exists_queries() {
 fn latest_order_per_user() -> SelectQuery<Postgres<Pg16>, Order, (f64,)> {
     select_from::<Postgres<Pg16>, Order>()
         .select((OrderTotal,))
-        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
         .order_by_desc(OrderId)
         .limit(1)
 }

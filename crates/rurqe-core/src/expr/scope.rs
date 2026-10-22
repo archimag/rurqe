@@ -22,6 +22,9 @@ pub trait MergeScope<R> {
 /// The scope produced by combining the operand scopes `L` and `R`.
 pub type Merged<L, R> = <L as MergeScope<R>>::Output;
 
+/// The scope produced by combining three operand scopes `A`, `B`, and `C`.
+pub type Merged3<A, B, C> = Merged<Merged<A, B>, C>;
+
 // An operand referencing no table adds nothing to the merged scope.
 impl<L> MergeScope<()> for L {
     type Output = L;
