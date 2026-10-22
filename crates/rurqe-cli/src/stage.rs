@@ -434,16 +434,7 @@ impl<'a> GoldenEquation<'a> {
     /// between the two sides. Any divergence is returned as
     /// [`StageError::Diverged`] carrying the full report.
     pub fn verify(&self, scratch_url: &str) -> Result<GoldenReport, StageError> {
-        let stage_scripts: Vec<Script<'a>> = self
-            .stage
-            .scripts()
-            .iter()
-            .map(|script| Script {
-                label: script.name(),
-                sql: script.sql(),
-            })
-            .collect();
-        let stage_catalog = materialise(scratch_url, &stage_scripts)?;
+        let stage_catalog = materialise_stage(self.stage, scratch_url)?;
 
         let replayed = Migrator::sort_migrations(self.tail);
         let mut tail_scripts: Vec<Script<'_>> = Vec::new();
@@ -620,6 +611,23 @@ impl fmt::Display for StageError {
 
 impl std::error::Error for StageError {}
 
+/// Materialises the declarative `stage` in the disposable scratch database
+/// addressed by `scratch_url` and introspects the resulting catalog.
+pub fn materialise_stage(
+    stage: &DeclarativeStage,
+    scratch_url: &str,
+) -> Result<SchemaCatalog, StageError> {
+    let stage_scripts: Vec<Script<'_>> = stage
+        .scripts()
+        .iter()
+        .map(|script| Script {
+            label: script.name(),
+            sql: script.sql(),
+        })
+        .collect();
+    materialise(scratch_url, &stage_scripts)
+}
+
 /// Materialises `scripts` in the scratch state and introspects the result.
 ///
 /// The scratch state is emptied again afterwards, so a file-backed scratch
@@ -668,6 +676,16 @@ mod tests {
             .iter()
             .map(|(name, sql)| Migration::parse(name, sql).expect("a valid script name"))
             .collect()
+    }
+
+    #[test]
+    fn materialise_stage_introspects_catalog() {
+        let stage = stage(&[("users.sql", USERS)]);
+        let catalog = materialise_stage(&stage, ":memory:")
+            .expect("stage materialises in SQLite scratch");
+
+        assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.tables[0].name, "users");
     }
 
     #[test]
