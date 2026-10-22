@@ -3,6 +3,10 @@
 //! Every statement binds the introspected schema name as its first parameter, so
 //! the same catalog text serves the user-facing `public` schema and the
 //! disposable scratch schema the golden equation is verified in.
+//!
+//! Rows are decoded through `Row::try_get`, so a column whose type the driver
+//! cannot read surfaces as a diagnostic naming the catalog query and the column
+//! instead of a panic.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
@@ -86,52 +90,38 @@ pub fn introspect_postgres_schema(
     client: &mut postgres::Client,
     schema: &str,
 ) -> Result<SchemaCatalog, CliError> {
-    let table_rows = client
-        .query(POSTGRES_TABLES, &[&schema])
-        .map_err(|e| CliError(format!("failed to query PostgreSQL tables: {e}")))?;
-    let raw_tables: Vec<RawTableMetadata> = table_rows
-        .into_iter()
-        .map(|row| RawTableMetadata { name: row.get(0) })
-        .collect();
-
-    let col_rows = client
-        .query(POSTGRES_COLUMNS, &[&schema])
-        .map_err(|e| CliError(format!("failed to query PostgreSQL columns: {e}")))?;
-    let raw_columns: Vec<RawColumnMetadata> = col_rows
-        .into_iter()
-        .map(|row| RawColumnMetadata {
-            table_name: row.get(0),
-            column_name: row.get(1),
-            data_type: row.get(2),
-            is_nullable: row.get(3),
-            column_default: row.get(4),
+    let raw_tables = query_catalog(client, POSTGRES_TABLES, schema, "tables", |row| {
+        Ok(RawTableMetadata {
+            name: read_column(row, 0, "tables", "table_name")?,
         })
-        .collect();
+    })?;
 
-    let pk_rows = client
-        .query(POSTGRES_PRIMARY_KEYS, &[&schema])
-        .map_err(|e| CliError(format!("failed to query PostgreSQL primary keys: {e}")))?;
-    let raw_pks: Vec<RawPrimaryKeyMetadata> = pk_rows
-        .into_iter()
-        .map(|row| RawPrimaryKeyMetadata {
-            table_name: row.get(0),
-            column_name: row.get(1),
+    let raw_columns = query_catalog(client, POSTGRES_COLUMNS, schema, "columns", |row| {
+        Ok(RawColumnMetadata {
+            table_name: read_column(row, 0, "columns", "table_name")?,
+            column_name: read_column(row, 1, "columns", "column_name")?,
+            data_type: read_column(row, 2, "columns", "data_type")?,
+            is_nullable: read_column(row, 3, "columns", "is_nullable")?,
+            column_default: read_column(row, 4, "columns", "column_default")?,
         })
-        .collect();
+    })?;
 
-    let fk_rows = client
-        .query(POSTGRES_FOREIGN_KEYS, &[&schema])
-        .map_err(|e| CliError(format!("failed to query PostgreSQL foreign keys: {e}")))?;
-    let raw_fks: Vec<RawForeignKeyMetadata> = fk_rows
-        .into_iter()
-        .map(|row| RawForeignKeyMetadata {
-            name: row.get(0),
-            table_name: row.get(1),
-            column_name: row.get(2),
-            referenced_table: row.get(3),
-            referenced_column: row.get(4),
+    let raw_pks = query_catalog(client, POSTGRES_PRIMARY_KEYS, schema, "primary keys", |row| {
+        Ok(RawPrimaryKeyMetadata {
+            table_name: read_column(row, 0, "primary keys", "table_name")?,
+            column_name: read_column(row, 1, "primary keys", "column_name")?,
         })
-        .collect();
+    })?;
+
+    let raw_fks = query_catalog(client, POSTGRES_FOREIGN_KEYS, schema, "foreign keys", |row| {
+        Ok(RawForeignKeyMetadata {
+            name: read_column(row, 0, "foreign keys", "conname")?,
+            table_name: read_column(row, 1, "foreign keys", "table_name")?,
+            column_name: read_column(row, 2, "foreign keys", "column_name")?,
+            referenced_table: read_column(row, 3, "foreign keys", "referenced_table")?,
+            referenced_column: read_column(row, 4, "foreign keys", "referenced_column")?,
+        })
+    })?;
 
     Ok(catalog_from_metadata(
         &raw_tables,
@@ -139,4 +129,71 @@ pub fn introspect_postgres_schema(
         &raw_pks,
         &raw_fks,
     ))
+}
+
+/// Runs a catalog statement with `schema` bound as its only parameter.
+///
+/// The schema name is bound rather than rendered, so no caller can smuggle SQL
+/// into the catalog queries, and every returned row is decoded by `decode`
+/// without panicking on a column type the driver cannot read.
+fn query_catalog<T>(
+    client: &mut postgres::Client,
+    statement: &str,
+    schema: &str,
+    label: &str,
+    decode: impl Fn(&postgres::Row) -> Result<T, CliError>,
+) -> Result<Vec<T>, CliError> {
+    let rows = client
+        .query(statement, &[&schema])
+        .map_err(|error| CliError(format!("failed to query PostgreSQL {label}: {error}")))?;
+
+    rows.iter().map(decode).collect()
+}
+
+/// Reads the column at `index` of `row` as a `T`, naming the query and column.
+///
+/// A value the driver cannot decode into `T` is reported as a [`CliError`];
+/// `Row::get` would panic instead.
+fn read_column<'a, T>(
+    row: &'a postgres::Row,
+    index: usize,
+    statement: &str,
+    column: &str,
+) -> Result<T, CliError>
+where
+    T: postgres::types::FromSql<'a>,
+{
+    row.try_get(index)
+        .map_err(|error| column_error(statement, column, error))
+}
+
+/// Describes a catalog column the driver could not decode.
+fn column_error(statement: &str, column: &str, error: impl std::fmt::Display) -> CliError {
+    CliError(format!(
+        "failed to read column `{column}` from the PostgreSQL {statement} query: {error}"
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_undecodable_column_names_the_query_and_the_column() {
+        let error = column_error("columns", "column_default", "unexpected type");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("`column_default`"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            message.contains("PostgreSQL columns query"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            message.contains("unexpected type"),
+            "unexpected message: {message}"
+        );
+    }
 }
