@@ -164,12 +164,22 @@ fn qualifier_of(relations: &[TableRef], table: &'static str) -> Option<&'static 
         return None;
     }
 
+    // A plain column reference names its own table, so it always targets an
+    // unaliased relation: aliased columns are rendered through
+    // `ExprKind::QualifiedColumn`, which already carries the alias. An unaliased
+    // instance of the table therefore has to win even when an aliased instance
+    // of the same table precedes it in the statement.
+    if relations
+        .iter()
+        .any(|relation| relation.name == table && relation.alias.is_none())
+    {
+        // A bare name stays unambiguous only while the statement addresses one relation.
+        return if relations.len() > 1 { Some(table) } else { None };
+    }
+
     match relations.iter().find(|relation| relation.name == table) {
         // An aliased relation is only reachable through its alias.
-        Some(relation) if relation.alias.is_some() => relation.alias,
-        // A bare name stays unambiguous only while the statement addresses one relation.
-        Some(_) if relations.len() > 1 => Some(table),
-        Some(_) => None,
+        Some(relation) => relation.alias,
         // A table outside the statement belongs to an enclosing one, so the
         // reference must name it instead of reading as a column of this statement.
         None => Some(table),

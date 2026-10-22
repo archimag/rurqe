@@ -1328,6 +1328,28 @@ fn order_by_and_group_by_qualify_aliased_columns() {
 }
 
 #[test]
+fn unaliased_table_reference_ignores_a_preceding_aliased_instance_of_the_same_table() {
+    // The `FROM` relation is `"users" AS "m"`, and the joined relation is the
+    // unaliased `"users"` table. A plain column reference to `User` must stay
+    // qualified against `"users"`, not be rewritten into the `"m"` alias just
+    // because the aliased instance is encountered first.
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<User, ManagerAlias>>()
+        .inner_join::<User, _, _>(
+            Expr::column::<AliasedCol<ManagerAlias, UserId>>().eq(Expr::column::<UserId>()),
+        )
+        .select((UserId,))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\" FROM \"users\" AS \"m\" INNER JOIN \"users\" \
+         ON (\"m\".\"id\" = \"users\".\"id\")"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
 fn distinct_on_qualifies_aliased_columns() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<Aliased<Order, OrderAlias>>()
