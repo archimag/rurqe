@@ -7,7 +7,9 @@ pub trait Dialect: 'static + Send + Sync {
     /// `ILIKE` is a PostgreSQL extension: SQLite only knows the case-sensitive
     /// `LIKE`. A dialect without it keeps the same case-insensitive semantics by
     /// folding both operands with `LOWER` when the predicate is rendered, so an
-    /// `ilike` call never renders SQL the engine cannot parse.
+    /// `ilike` call never renders SQL the engine cannot parse. `LOWER` folds
+    /// ASCII letters only, which keeps the fallback independent of the database
+    /// collation.
     const SUPPORTS_ILIKE: bool = true;
 
     /// Appends a quoted identifier to the output SQL buffer.
@@ -66,6 +68,28 @@ pub trait SupportsOnConflict: Dialect {}
     note = "LATERAL joins require a dialect that implements `SupportsLateralJoin` (such as PostgreSQL)"
 )]
 pub trait SupportsLateralJoin: Dialect {}
+
+/// Marker trait for dialects supporting the `USING` clause of `DELETE` statements.
+///
+/// `DELETE FROM t USING u` selects the deleted rows through another relation,
+/// which PostgreSQL and MySQL implement while SQLite has no such clause at all.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support the `USING` clause of DELETE",
+    label = "`DELETE ... USING` is not supported by this dialect",
+    note = "deleting rows through another relation requires a dialect that implements `SupportsDeleteUsing` (such as PostgreSQL)"
+)]
+pub trait SupportsDeleteUsing: Dialect {}
+
+/// Marker trait for dialects supporting the `FROM` clause of `UPDATE` statements.
+///
+/// `UPDATE t SET ... FROM u` reads the assigned values from another relation,
+/// which PostgreSQL implements and SQLite gained in 3.33.0.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support the `FROM` clause of UPDATE",
+    label = "`UPDATE ... FROM` is not supported by this dialect",
+    note = "updating rows from another relation requires a dialect that implements `SupportsUpdateFrom` (such as PostgreSQL or SQLite 3.35+)"
+)]
+pub trait SupportsUpdateFrom: Dialect {}
 
 #[cfg(test)]
 mod tests {

@@ -17,7 +17,7 @@ use super::{
     AssignValue, AssignmentSet, AssignmentsPresent, ExecutableMutation, Filtered, HasAssignments,
     NoAssignments, Unfiltered,
 };
-use crate::dialect::{Dialect, SupportsReturning};
+use crate::dialect::{Dialect, SupportsReturning, SupportsUpdateFrom};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
 use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
@@ -103,10 +103,14 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     UpdateQuery<D, T, State, Returning, Scope, Assignments>
 {
     /// Adds a source table to the `FROM` clause of the `UPDATE` statement.
+    ///
+    /// Available only for dialects implementing [`SupportsUpdateFrom`], so the
+    /// clause stays unreachable on an engine that cannot parse it.
     pub fn from<S: Table>(
         mut self,
     ) -> UpdateQuery<D, T, State, Returning, Scope::Output, Assignments>
     where
+        D: SupportsUpdateFrom,
         Scope: ExtendScope<S>,
     {
         self.from_tables.push(S::NAME);
@@ -289,6 +293,8 @@ mod tests {
     }
 
     impl SupportsReturning for MockDialect {}
+
+    impl SupportsUpdateFrom for MockDialect {}
 
     crate::table! {
         User => "users" {

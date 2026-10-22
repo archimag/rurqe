@@ -762,7 +762,9 @@ pub mod prelude {
 
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 
-    pub use rurqe_core::dialect::SupportsLateralJoin;
+    pub use rurqe_core::dialect::{
+        SupportsDeleteUsing, SupportsLateralJoin, SupportsUpdateFrom,
+    };
 
     pub use rurqe_core::expr::{
         avg, coalesce, count, count_all, max, min, sum, CaseBranch, CaseBuilder, Expression,

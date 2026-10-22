@@ -6,7 +6,7 @@
 //!
 //! - [`Sqlite3_0`] — baseline dialect without `ON CONFLICT` or `RETURNING`.
 //! - [`Sqlite3_24`] — adds `ON CONFLICT` upsert syntax.
-//! - [`Sqlite3_35`] — adds the `RETURNING` clause.
+//! - [`Sqlite3_35`] — adds the `RETURNING` clause and `UPDATE ... FROM`.
 //!
 //! ```
 //! use rurqe_core::dialect::Dialect;
@@ -19,7 +19,7 @@
 use core::marker::PhantomData;
 
 pub use rurqe_core;
-use rurqe_core::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
+use rurqe_core::dialect::{Dialect, SupportsOnConflict, SupportsReturning, SupportsUpdateFrom};
 
 /// Marker trait representing a SQLite engine version.
 pub trait SqliteVersion: 'static + Send + Sync {}
@@ -75,6 +75,17 @@ impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 /// fn assert_returning<D: SupportsReturning>() {}
 /// assert_returning::<Sqlite<Sqlite3_24>>();
 /// ```
+///
+/// SQLite has no `DELETE ... USING` clause, so the `SupportsDeleteUsing`
+/// capability is never implemented and the clause stays unreachable:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::SupportsDeleteUsing;
+/// use rurqe_sqlite::{Sqlite, Sqlite3_35};
+///
+/// fn assert_delete_using<D: SupportsDeleteUsing>() {}
+/// assert_delete_using::<Sqlite<Sqlite3_35>>();
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
 
@@ -98,6 +109,11 @@ impl<V: SqliteVersion> Dialect for Sqlite<V> {
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsReturning for Sqlite<V> {}
 
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsOnConflict for Sqlite<V> {}
+
+// `UPDATE ... FROM` belongs to SQLite since 3.33.0, so the newest pinned marker is
+// the first one that satisfies it. SQLite has no `DELETE ... USING` clause at all,
+// so `SupportsDeleteUsing` stays unimplemented for every version.
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsUpdateFrom for Sqlite<V> {}
 
 /// Re-export of the underlying `rusqlite` crate for adapter users.
 #[cfg(feature = "rusqlite")]
@@ -476,6 +492,7 @@ mod tests {
     fn capabilities_are_gated_by_version() {
         fn assert_returning<D: Dialect + SupportsReturning>() {}
         fn assert_on_conflict<D: Dialect + SupportsOnConflict>() {}
+        fn assert_update_from<D: Dialect + SupportsUpdateFrom>() {}
 
         assert_on_conflict::<Sqlite<Sqlite3_24>>();
         assert_on_conflict::<Sqlite<Sqlite3_35>>();
@@ -483,5 +500,8 @@ mod tests {
         assert_returning::<Sqlite<Sqlite3_35>>();
         assert_returning::<Sqlite>();
         assert_on_conflict::<Sqlite>();
+
+        assert_update_from::<Sqlite<Sqlite3_35>>();
+        assert_update_from::<Sqlite>();
     }
 }

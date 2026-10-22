@@ -214,6 +214,38 @@ fn like_and_ilike_render_patterns_with_bound_parameters() {
     assert_eq!(params, vec![SqlVal::Text("a%".to_owned())]);
 }
 
+/// A dialect without `ILIKE`, which folds both operands with `LOWER` instead.
+struct LowerDialect;
+
+impl crate::dialect::Dialect for LowerDialect {
+    const SUPPORTS_ILIKE: bool = false;
+
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, _index: usize) {
+        out.push('?');
+    }
+}
+
+#[test]
+fn ilike_folds_both_operands_on_a_dialect_without_ilike() {
+    let (sql, params) =
+        render_with::<LowerDialect>(Expr::column::<UserName>().ilike("a%").kind());
+
+    assert_eq!(sql, "(LOWER(\"name\") LIKE LOWER(?))");
+    assert_eq!(params, vec![SqlVal::Text("a%".to_owned())]);
+
+    // A case-sensitive `LIKE` is rendered as written.
+    let (sql, params) = render_with::<LowerDialect>(Expr::column::<UserName>().like("A%").kind());
+
+    assert_eq!(sql, "(\"name\" LIKE ?)");
+    assert_eq!(params, vec![SqlVal::Text("A%".to_owned())]);
+}
+
 #[test]
 fn between_builds_and_renders_range_predicate() {
     let predicate = Expr::column::<UserId>().between(10i64, 20i64);

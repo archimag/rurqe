@@ -261,9 +261,19 @@ pub fn render_expr<D: Dialect>(
             case_insensitive,
         } => {
             sql.push('(');
-            render_expr::<D>(sql, params, operand, relations);
-            sql.push_str(if *case_insensitive { " ILIKE " } else { " LIKE " });
-            render_expr::<D>(sql, params, pattern, relations);
+            // `ILIKE` is a PostgreSQL extension, so a dialect without it keeps
+            // the case-insensitive semantics by folding both operands instead.
+            if *case_insensitive && !D::SUPPORTS_ILIKE {
+                sql.push_str("LOWER(");
+                render_expr::<D>(sql, params, operand, relations);
+                sql.push_str(") LIKE LOWER(");
+                render_expr::<D>(sql, params, pattern, relations);
+                sql.push(')');
+            } else {
+                render_expr::<D>(sql, params, operand, relations);
+                sql.push_str(if *case_insensitive { " ILIKE " } else { " LIKE " });
+                render_expr::<D>(sql, params, pattern, relations);
+            }
             sql.push(')');
         }
         ExprKind::Between { operand, low, high } => {

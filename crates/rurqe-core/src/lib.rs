@@ -7,7 +7,10 @@ pub mod query;
 pub mod row;
 pub mod schema;
 
-pub use dialect::{Dialect, SupportsDistinctOn, SupportsOnConflict, SupportsReturning};
+pub use dialect::{
+    Dialect, SupportsDeleteUsing, SupportsDistinctOn, SupportsOnConflict, SupportsReturning,
+    SupportsUpdateFrom,
+};
 pub use dml::{AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign};
 pub use expr::{
     Aggregate, AggregateFunc, BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, SqlCompatible,

@@ -14,7 +14,7 @@
 use core::marker::PhantomData;
 
 use super::{ExecutableMutation, Filtered, Unfiltered};
-use crate::dialect::{Dialect, SupportsReturning};
+use crate::dialect::{Dialect, SupportsDeleteUsing, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, Expr, ExprKind};
 use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
@@ -87,8 +87,12 @@ impl<D: Dialect, T: Table> Default for DeleteQuery<D, T, Unfiltered, (), T> {
 
 impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Returning, Scope> {
     /// Adds a source table to the `USING` clause of the `DELETE` statement.
+    ///
+    /// Available only for dialects implementing [`SupportsDeleteUsing`], so the
+    /// clause stays unreachable on an engine that cannot parse it.
     pub fn using<S: Table>(mut self) -> DeleteQuery<D, T, State, Returning, Scope::Output>
     where
+        D: SupportsDeleteUsing,
         Scope: ExtendScope<S>,
     {
         self.using_tables.push(S::NAME);
@@ -226,6 +230,8 @@ mod tests {
     }
 
     impl SupportsReturning for MockDialect {}
+
+    impl SupportsDeleteUsing for MockDialect {}
 
     crate::table! {
         User => "users" {
