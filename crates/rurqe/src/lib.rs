@@ -500,6 +500,24 @@ crate::pin_dialect_version! {
 ///     .select((UserId,))
 ///     .having(Expr::column::<OrderTotal>().gt(1.0));
 /// ```
+///
+/// The query records no projection until `select` is called, and only a
+/// projected query is renderable, so building it right after the table is
+/// introduced is rejected at compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: the query records no projection yet.
+/// let _ = select_from::<Postgres, User>().build();
+/// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection> {
     SelectQuery::new().from::<T>()
 }
@@ -528,6 +546,44 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 ///     built.sql,
 ///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
 /// );
+/// ```
+///
+/// The statement becomes renderable only once it records a row source, so
+/// building it without values or a source `SELECT` is rejected at compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserName => "name": String,
+///     }
+/// }
+///
+/// // Fails to compile: the statement records no row source.
+/// let _ = insert_into::<Postgres, User>().build();
+/// ```
+///
+/// A row source known to be empty cannot reach the builder either:
+/// `values_many` yields `Result<InsertQuery, EmptyRows>` instead of the query,
+/// so the error has to be handled before the statement can be rendered:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: `values_many` yields a `Result`, which has no `build`.
+/// let _ = insert_into::<Postgres, User>()
+///     .values_many(std::iter::empty::<(Assignment<UserId, i64>,)>())
+///     .build();
 /// ```
 pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
     InsertQuery::new()
@@ -610,6 +666,27 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 ///     .allow_all()
 ///     .returning((OrderTotal,));
 /// ```
+///
+/// The builder starts in the unfiltered typestate, so an accidental full-table
+/// mutation cannot be rendered before the affected rows are restricted with
+/// `where_` or confirmed with `allow_all`:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserName => "name": String,
+///     }
+/// }
+///
+/// // Fails to compile: the statement is still unfiltered.
+/// let _ = update::<Postgres, User>()
+///     .set(UserName::set("root"))
+///     .build();
+/// ```
 pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
     UpdateQuery::new()
 }
@@ -635,6 +712,24 @@ pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
 ///     .build();
 ///
 /// assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+/// ```
+///
+/// The builder starts in the unfiltered typestate, so an accidental full-table
+/// deletion cannot be rendered before the affected rows are restricted with
+/// `where_` or confirmed with `allow_all`:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: the statement is still unfiltered.
+/// let _ = delete_from::<Postgres, User>().build();
 /// ```
 pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> {
     DeleteQuery::new()

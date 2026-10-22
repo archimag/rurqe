@@ -53,6 +53,28 @@ fn assert_update_filtered<R>(
 /// Statically asserts that a `DELETE` reached the filtered typestate.
 fn assert_delete_filtered<R>(_query: &DeleteQuery<Postgres, User, Filtered, R>) {}
 
+/// Statically asserts that a `SELECT` records no projection yet.
+fn assert_unprojected(_query: &SelectQuery<Postgres, User, (), NoProjection>) {}
+
+/// Statically asserts that a `SELECT` records the projected row type.
+fn assert_projected(_query: &SelectQuery<Postgres, User, (i64, String, bool), HasProjection>) {}
+
+#[test]
+fn selecting_moves_the_query_into_the_projected_typestate() {
+    // A fresh query carries `NoProjection`, so `.build()` stays unreachable
+    // until `.select(...)` transitions it into `HasProjection`.
+    let fresh = select_from::<Postgres, User>();
+    assert_unprojected(&fresh);
+
+    let query = fresh.select((UserId, UserName, UserActive));
+    assert_projected(&query);
+
+    assert_eq!(
+        query.build().sql,
+        "SELECT \"id\", \"name\", \"active\" FROM \"users\""
+    );
+}
+
 #[test]
 fn insert_renders_columns_defaults_and_parameters() {
     let built = insert_into::<Postgres, User>()
@@ -89,6 +111,16 @@ fn bulk_insert_renders_one_row_per_assignment_set() {
             SqlVal::Text("b".to_owned()),
         ]
     );
+}
+
+#[test]
+fn an_empty_row_source_never_reaches_the_builder() {
+    // The source is typed as empty, so `values_many` reports `EmptyRows`
+    // instead of the query and the statement cannot be rendered from it.
+    let result = insert_into::<Postgres, User>()
+        .values_many(std::iter::empty::<(Assignment<UserId, i64>,)>());
+
+    assert_eq!(result.err(), Some(EmptyRows));
 }
 
 #[test]
