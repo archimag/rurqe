@@ -95,7 +95,7 @@ pub(super) fn print_help() {
         r#"RURQE Developer CLI
 
 USAGE:
-    cargo db-migrate up [--migrations-dir <dir>] <--checkpoint-path <path>|--no-checkpoint>
+    cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>] [--database-url <url>]
     cargo db-migrate [status|repair] [--migrations-dir <dir>]
     cargo db-baseline --version <version> [--description <desc>]
     cargo db-codegen [--output <path>] [--lock-path <path>]

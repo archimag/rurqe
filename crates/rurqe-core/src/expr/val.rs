@@ -454,166 +454,104 @@ impl From<serde_json::Value> for SqlVal {
 #[macro_export]
 macro_rules! impl_sql_binary_newtype {
     ($ty:ty, $expected_len:expr) => {
-        impl $crate::expr::ToSqlVal for $ty {
-            fn to_sql_val(self) -> $crate::expr::SqlVal {
-                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(&self).to_vec())
-            }
-        }
-
-        impl<'a> $crate::expr::ToSqlVal for &'a $ty {
-            fn to_sql_val(self) -> $crate::expr::SqlVal {
-                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(self).to_vec())
-            }
-        }
-
-        impl From<$ty> for $crate::expr::SqlVal {
-            fn from(val: $ty) -> Self {
-                $crate::expr::ToSqlVal::to_sql_val(val)
-            }
-        }
-
-        impl $crate::row::FromSqlValue for $ty {
-            fn from_sql_value(value: &$crate::expr::SqlVal) -> ::std::result::Result<Self, $crate::row::RowDecodeError> {
-                match value {
-                    $crate::expr::SqlVal::Bytes(bytes) => {
-                        let expected: usize = $expected_len;
-                        if bytes.len() != expected {
-                            return Err($crate::row::RowDecodeError::InvalidValue {
-                                target: ::std::any::type_name::<Self>(),
+        $crate::impl_sql_newtype! {
+            bytes $ty;
+            decode = |value| match value {
+                $crate::expr::SqlVal::Bytes(bytes) => {
+                    let expected: usize = $expected_len;
+                    if bytes.len() != expected {
+                        return ::core::result::Result::Err(
+                            $crate::row::RowDecodeError::InvalidValue {
+                                target: ::std::any::type_name::<$ty>(),
                                 found: "bytes",
-                                detail: format!("expected {expected} bytes, got {}", bytes.len()),
-                            });
-                        }
-                        ::std::convert::TryFrom::try_from(bytes.as_slice())
-                            .map_err(|e| $crate::row::RowDecodeError::InvalidValue {
-                                target: ::std::any::type_name::<Self>(),
-                                found: "bytes",
-                                detail: format!("{e}"),
-                            })
+                                detail: ::std::format!(
+                                    "expected {expected} bytes, got {}",
+                                    bytes.len()
+                                ),
+                            },
+                        );
                     }
-                    _ => Err($crate::row::RowDecodeError::TypeMismatch {
-                        target: ::std::any::type_name::<Self>(),
-                        found: value.variant_name(),
-                    }),
+                    ::core::convert::TryFrom::try_from(bytes.as_slice()).map_err(|error| {
+                        $crate::row::RowDecodeError::InvalidValue {
+                            target: ::std::any::type_name::<$ty>(),
+                            found: "bytes",
+                            detail: ::std::format!("{error}"),
+                        }
+                    })
                 }
-            }
-        }
-
-        impl $crate::expr::IntoExpr<$ty> for $ty {
-            type Scope = ();
-
-            fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
-            }
-        }
-
-        impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
-
-        impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
-            type Scope = ();
-
-            fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
-            }
+                _ => ::core::result::Result::Err($crate::row::RowDecodeError::TypeMismatch {
+                    target: ::std::any::type_name::<$ty>(),
+                    found: value.variant_name(),
+                }),
+            },
+            comparisons {}
         }
     };
     ($ty:ty) => {
-        impl $crate::expr::ToSqlVal for $ty {
-            fn to_sql_val(self) -> $crate::expr::SqlVal {
-                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(&self).to_vec())
-            }
-        }
-
-        impl<'a> $crate::expr::ToSqlVal for &'a $ty {
-            fn to_sql_val(self) -> $crate::expr::SqlVal {
-                $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref(self).to_vec())
-            }
-        }
-
-        impl From<$ty> for $crate::expr::SqlVal {
-            fn from(val: $ty) -> Self {
-                $crate::expr::ToSqlVal::to_sql_val(val)
-            }
-        }
-
-        impl $crate::row::FromSqlValue for $ty {
-            fn from_sql_value(value: &$crate::expr::SqlVal) -> ::std::result::Result<Self, $crate::row::RowDecodeError> {
-                match value {
-                    $crate::expr::SqlVal::Bytes(bytes) => {
-                        ::std::convert::TryFrom::try_from(bytes.as_slice())
-                            .map_err(|e| $crate::row::RowDecodeError::InvalidValue {
-                                target: ::std::any::type_name::<Self>(),
-                                found: "bytes",
-                                detail: format!("{e}"),
-                            })
-                    }
-                    _ => Err($crate::row::RowDecodeError::TypeMismatch {
-                        target: ::std::any::type_name::<Self>(),
-                        found: value.variant_name(),
-                    }),
+        $crate::impl_sql_newtype! {
+            bytes $ty;
+            decode = |value| match value {
+                $crate::expr::SqlVal::Bytes(bytes) => {
+                    ::core::convert::TryFrom::try_from(bytes.as_slice()).map_err(|error| {
+                        $crate::row::RowDecodeError::InvalidValue {
+                            target: ::std::any::type_name::<$ty>(),
+                            found: "bytes",
+                            detail: ::std::format!("{error}"),
+                        }
+                    })
                 }
-            }
-        }
-
-        impl $crate::expr::IntoExpr<$ty> for $ty {
-            type Scope = ();
-
-            fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
-            }
-        }
-
-        impl<'a> $crate::expr::SqlCompatible<$ty, &'a $ty> for &'a $ty {}
-
-        impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
-            type Scope = ();
-
-            fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
-            }
+                _ => ::core::result::Result::Err($crate::row::RowDecodeError::TypeMismatch {
+                    target: ::std::any::type_name::<$ty>(),
+                    found: value.variant_name(),
+                }),
+            },
+            comparisons {}
         }
     };
 }
 
 /// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
 /// and expression compatibility for a text domain newtype.
+/// Generates the conversion impls shared by the domain-newtype macros.
+///
+/// [`impl_sql_binary_newtype!`](crate::impl_sql_binary_newtype) and
+/// [`impl_sql_text_newtype!`](crate::impl_sql_text_newtype) differ only in how a
+/// value is encoded into and decoded from a [`SqlVal`], so every other impl —
+/// owned and borrowed parameter encoding, the `From` conversion, row decoding,
+/// and operand compatibility — is generated once, here. The `$decode` binding
+/// and its body come from the same caller, so the `$value` identifier keeps the
+/// hygiene of the invoking macro.
+#[doc(hidden)]
 #[macro_export]
-macro_rules! impl_sql_text_newtype {
-    ($ty:ty) => {
+macro_rules! impl_sql_newtype {
+    (
+        $storage:ident $ty:ty;
+        decode = |$value:ident| $decode:expr,
+        comparisons { $($extra:item)* }
+    ) => {
         impl $crate::expr::ToSqlVal for $ty {
             fn to_sql_val(self) -> $crate::expr::SqlVal {
-                $crate::expr::SqlVal::Text(::std::string::ToString::to_string(&self))
+                $crate::impl_sql_newtype!(@encode $storage &self)
             }
         }
 
         impl<'a> $crate::expr::ToSqlVal for &'a $ty {
             fn to_sql_val(self) -> $crate::expr::SqlVal {
-                $crate::expr::SqlVal::Text(::std::string::ToString::to_string(self))
+                $crate::impl_sql_newtype!(@encode $storage self)
             }
         }
 
-        impl From<$ty> for $crate::expr::SqlVal {
-            fn from(val: $ty) -> Self {
-                $crate::expr::ToSqlVal::to_sql_val(val)
+        impl ::core::convert::From<$ty> for $crate::expr::SqlVal {
+            fn from(value: $ty) -> Self {
+                $crate::expr::ToSqlVal::to_sql_val(value)
             }
         }
 
         impl $crate::row::FromSqlValue for $ty {
-            fn from_sql_value(value: &$crate::expr::SqlVal) -> ::std::result::Result<Self, $crate::row::RowDecodeError> {
-                match value {
-                    $crate::expr::SqlVal::Text(text) => {
-                        <Self as ::std::str::FromStr>::from_str(text.as_str())
-                            .map_err(|e| $crate::row::RowDecodeError::InvalidValue {
-                                target: ::std::any::type_name::<Self>(),
-                                found: "text",
-                                detail: format!("{e}"),
-                            })
-                    }
-                    _ => Err($crate::row::RowDecodeError::TypeMismatch {
-                        target: ::std::any::type_name::<Self>(),
-                        found: value.variant_name(),
-                    }),
-                }
+            fn from_sql_value(
+                $value: &$crate::expr::SqlVal,
+            ) -> ::core::result::Result<Self, $crate::row::RowDecodeError> {
+                $decode
             }
         }
 
@@ -635,23 +573,59 @@ macro_rules! impl_sql_text_newtype {
             }
         }
 
-        impl<'a> $crate::expr::SqlCompatible<$ty, &'a str> for &'a str {}
+        $($extra)*
+    };
+    (@encode bytes $value:expr) => {
+        $crate::expr::SqlVal::Bytes(::std::convert::AsRef::<[u8]>::as_ref($value).to_vec())
+    };
+    (@encode text $value:expr) => {
+        $crate::expr::SqlVal::Text(::std::string::ToString::to_string($value))
+    };
+}
 
-        impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
-            type Scope = ();
+#[macro_export]
+macro_rules! impl_sql_text_newtype {
+    ($ty:ty) => {
+        $crate::impl_sql_newtype! {
+            text $ty;
+            decode = |value| match value {
+                $crate::expr::SqlVal::Text(text) => {
+                    <$ty as ::std::str::FromStr>::from_str(text.as_str()).map_err(|error| {
+                        $crate::row::RowDecodeError::InvalidValue {
+                            target: ::std::any::type_name::<$ty>(),
+                            found: "text",
+                            detail: ::std::format!("{error}"),
+                        }
+                    })
+                }
+                _ => ::core::result::Result::Err($crate::row::RowDecodeError::TypeMismatch {
+                    target: ::std::any::type_name::<$ty>(),
+                    found: value.variant_name(),
+                }),
+            },
+            comparisons {
+                impl<'a> $crate::expr::SqlCompatible<$ty, &'a str> for &'a str {}
 
-            fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self.to_owned()))
-            }
-        }
+                impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
+                    type Scope = ();
 
-        impl $crate::expr::SqlCompatible<$ty, ::std::string::String> for ::std::string::String {}
+                    fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                        $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self.to_owned()))
+                    }
+                }
 
-        impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
-            type Scope = ();
+                impl $crate::expr::SqlCompatible<$ty, ::std::string::String>
+                    for ::std::string::String
+                {
+                }
 
-            fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self))
+                impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
+                    type Scope = ();
+
+                    fn into_expr_kind(self) -> $crate::expr::ExprKind {
+                        $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self))
+                    }
+                }
             }
         }
     };

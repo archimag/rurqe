@@ -132,8 +132,8 @@ mod rusqlite_backend {
 
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{
-        BuiltQuery, IsolationLevel, QueryBackend, SavepointName, TransactionBackend,
-        TransactionContext,
+        BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionGuard,
+        TransactionStatus, TransactionalConnection,
     };
 
     /// A `rusqlite` connection that executes RURQE-built queries.
@@ -146,8 +146,7 @@ mod rusqlite_backend {
     /// executed directly.
     pub struct SqliteConnection {
         connection: Connection,
-        tx_context: TransactionContext,
-        in_transaction: bool,
+        status: TransactionStatus,
     }
 
     impl SqliteConnection {
@@ -155,8 +154,7 @@ mod rusqlite_backend {
         pub fn new(connection: Connection) -> Self {
             Self {
                 connection,
-                tx_context: TransactionContext::new(),
-                in_transaction: false,
+                status: TransactionStatus::new(),
             }
         }
 
@@ -193,72 +191,16 @@ mod rusqlite_backend {
             F: FnOnce(&mut SqliteConnection) -> Result<T, E>,
             E: From<::rusqlite::Error>,
         {
-            let outer = !self.in_transaction;
-            let savepoint = if outer {
-                tracing::info!("beginning transaction");
-                self.begin(None).map_err(E::from)?;
-                self.in_transaction = true;
-                None
-            } else {
-                let name = self.tx_context.open_savepoint();
-                tracing::debug!(savepoint = %name, "creating savepoint");
-                self.savepoint(&name).map_err(E::from)?;
-                Some(name)
-            };
-
-            let mut guard = TransactionGuard {
-                connection: self,
-                outer,
-                savepoint,
-                finished: false,
-            };
-
-            match f(&mut *guard.connection) {
-                Ok(value) => {
-                    if outer {
-                        guard.connection.commit().map_err(E::from)?;
-                        guard.connection.in_transaction = false;
-                        tracing::info!("committed transaction");
-                    } else if let Some(name) = guard.savepoint.as_ref() {
-                        guard.connection.release_savepoint(name).map_err(E::from)?;
-                        guard.connection.tx_context.close_savepoint();
-                        tracing::debug!(savepoint = %name, "released savepoint");
-                    }
-                    guard.finished = true;
-                    Ok(value)
-                }
-                Err(error) => Err(error),
-            }
+            let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
+            let value = f(&mut guard)?;
+            guard.commit().map_err(E::from)?;
+            Ok(value)
         }
     }
 
-    /// RAII guard that rolls the surrounding block back unless it finished cleanly.
-    ///
-    /// The guard owns the mutable borrow of the connection for the duration of the
-    /// closure, so the closure still receives a reborrow while an unwind discards
-    /// the block through [`Drop`].
-    struct TransactionGuard<'a> {
-        connection: &'a mut SqliteConnection,
-        outer: bool,
-        savepoint: Option<SavepointName>,
-        finished: bool,
-    }
-
-    impl Drop for TransactionGuard<'_> {
-        fn drop(&mut self) {
-            if self.finished {
-                return;
-            }
-            if self.outer {
-                let _ = self.connection.rollback();
-                self.connection.in_transaction = false;
-                tracing::warn!("rolled back transaction");
-            } else if let Some(savepoint) = self.savepoint.as_ref() {
-                let _ = self.connection.rollback_to_savepoint(savepoint);
-                let _ = self.connection.release_savepoint(savepoint);
-                self.connection.tx_context.close_savepoint();
-                tracing::warn!(savepoint = %savepoint, "rolled back to savepoint");
-            }
+    impl TransactionalConnection for SqliteConnection {
+        fn transaction_status(&mut self) -> &mut TransactionStatus {
+            &mut self.status
         }
     }
 

@@ -26,71 +26,108 @@ impl SchemaDiff {
     }
 
     /// Renders every discrepancy as an indented bullet, one line per finding.
-    fn write_details(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///
+    /// The traversal lives here once and takes the `wording` of the verifier, so
+    /// the drift report and the golden-equation report never describe the same
+    /// finding with two drifting implementations.
+    pub fn write_details(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        wording: DiffWording,
+    ) -> fmt::Result {
+        let DiffWording { expected, live } = wording;
+
         for table in &self.missing_tables {
             writeln!(
                 f,
-                "  - Table `{table}` is declared in snapshot but missing from live database."
+                "  - Table `{table}` is declared in {expected} but missing from {live}."
             )?;
         }
         for table in &self.extra_tables {
             writeln!(
                 f,
-                "  - Table `{table}` exists in live database but is missing from snapshot."
+                "  - Table `{table}` exists in {live} but is missing from {expected}."
             )?;
         }
         for (table, diff) in &self.table_diffs {
             for col in &diff.missing_columns {
                 writeln!(
                     f,
-                    "  - Table `{table}`: column `{col}` is in snapshot but missing from database."
+                    "  - Table `{table}`: column `{col}` is in {expected} but missing from {live}."
                 )?;
             }
             for col in &diff.extra_columns {
                 writeln!(
                     f,
-                    "  - Table `{table}`: column `{col}` exists in database but is missing from snapshot."
+                    "  - Table `{table}`: column `{col}` exists in {live} but is missing from {expected}."
                 )?;
             }
             for col in &diff.altered_columns {
                 writeln!(
                     f,
-                    "  - Table `{table}`: column `{col}` definition differs between database and snapshot."
+                    "  - Table `{table}`: column `{col}` definition differs between {live} and {expected}."
                 )?;
             }
             if diff.primary_key_mismatch {
                 writeln!(
                     f,
-                    "  - Table `{table}`: primary key constraint differs between database and snapshot."
+                    "  - Table `{table}`: primary key constraint differs between {live} and {expected}."
                 )?;
             }
             if diff.foreign_key_mismatch {
                 writeln!(
                     f,
-                    "  - Table `{table}`: foreign key constraints differ between database and snapshot."
+                    "  - Table `{table}`: foreign key constraints differ between {live} and {expected}."
                 )?;
             }
             for index in &diff.missing_indexes {
                 writeln!(
                     f,
-                    "  - Table `{table}`: index `{index}` is in snapshot but missing from database."
+                    "  - Table `{table}`: index `{index}` is in {expected} but missing from {live}."
                 )?;
             }
             for index in &diff.extra_indexes {
                 writeln!(
                     f,
-                    "  - Table `{table}`: index `{index}` exists in database but is missing from snapshot."
+                    "  - Table `{table}`: index `{index}` exists in {live} but is missing from {expected}."
                 )?;
             }
             for index in &diff.altered_indexes {
                 writeln!(
                     f,
-                    "  - Table `{table}`: index `{index}` definition differs between database and snapshot."
+                    "  - Table `{table}`: index `{index}` definition differs between {live} and {expected}."
                 )?;
             }
         }
         Ok(())
     }
+}
+
+/// The wording a [`SchemaDiff`] is rendered with.
+///
+/// Both verifiers compare two catalogs, but the drift report names them after
+/// `schema.lock` and the live database while the golden equation names them
+/// after the declarative stage and the migration tail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffWording {
+    /// How the catalog an item is expected in is named.
+    expected: &'static str,
+    /// How the catalog a finding is reported against is named.
+    live: &'static str,
+}
+
+impl DiffWording {
+    /// Wording of the drift verifier: `schema.lock` versus the live database.
+    pub const SNAPSHOT: Self = Self {
+        expected: "snapshot",
+        live: "database",
+    };
+
+    /// Wording of the golden equation: the declarative stage versus the tail.
+    pub const GOLDEN: Self = Self {
+        expected: "the stage",
+        live: "the tail",
+    };
 }
 
 /// Discrepancies within a specific table.
@@ -135,7 +172,7 @@ impl fmt::Display for DriftReport {
             "Expected schema hash: {}\nLive schema hash:     {}",
             self.expected_hash, self.live_hash
         )?;
-        self.diff.write_details(f)?;
+        self.diff.write_details(f, DiffWording::SNAPSHOT)?;
         writeln!(
             f,
             "\nHint: Run `cargo db-codegen` to update code and snapshot."
@@ -173,7 +210,7 @@ impl fmt::Display for DriftError {
                     f,
                     "SCHEMA_HASH mismatch in schema code: expected {expected}, found {found_in_code}"
                 )?;
-                diff.write_details(f)?;
+                diff.write_details(f, DiffWording::SNAPSHOT)?;
                 write!(
                     f,
                     "\nHint: Run `cargo db-codegen` to update code and snapshot."
@@ -217,7 +254,10 @@ pub fn verify_drift(
         return Ok(());
     }
 
-    let expected_hash = rurqe_migrate::checksum::Checksum::of(expected_lock.as_bytes()).to_hex();
+    // The hash identifies the canonical snapshot, so formatting differences of
+    // the lock file (line endings, surrounding whitespace) never surface as a
+    // drift between two equal catalogs.
+    let expected_hash = expected_catalog.schema_hash();
 
     Err(DriftError::Drift(DriftReport {
         expected_hash,

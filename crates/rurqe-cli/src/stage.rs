@@ -62,7 +62,7 @@ use rurqe_migrate::runner::Migrator;
 use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::{connect, redact_database_url, Connection};
-use crate::drift::{compute_catalog_diff, SchemaDiff};
+use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
 use crate::introspect::{
     detect_dialect, introspect_postgres, introspect_sqlite, DatabaseDialect,
 };
@@ -494,72 +494,7 @@ impl GoldenReport {
 
     /// Renders every discrepancy, one finding per line.
     fn write_details(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let diff = &self.diff;
-
-        for table in &diff.missing_tables {
-            writeln!(
-                f,
-                "  - table `{table}` is declared by the stage but never created by the tail."
-            )?;
-        }
-        for table in &diff.extra_tables {
-            writeln!(
-                f,
-                "  - table `{table}` is created by the tail but missing from the stage."
-            )?;
-        }
-        for (table, table_diff) in &diff.table_diffs {
-            for column in &table_diff.missing_columns {
-                writeln!(
-                    f,
-                    "  - table `{table}`: column `{column}` is declared by the stage but missing from the tail."
-                )?;
-            }
-            for column in &table_diff.extra_columns {
-                writeln!(
-                    f,
-                    "  - table `{table}`: column `{column}` is created by the tail but missing from the stage."
-                )?;
-            }
-            for column in &table_diff.altered_columns {
-                writeln!(
-                    f,
-                    "  - table `{table}`: column `{column}` differs between the stage and the tail."
-                )?;
-            }
-            if table_diff.primary_key_mismatch {
-                writeln!(
-                    f,
-                    "  - table `{table}`: the primary key differs between the stage and the tail."
-                )?;
-            }
-            if table_diff.foreign_key_mismatch {
-                writeln!(
-                    f,
-                    "  - table `{table}`: the foreign keys differ between the stage and the tail."
-                )?;
-            }
-            for index in &table_diff.missing_indexes {
-                writeln!(
-                    f,
-                    "  - table `{table}`: index `{index}` is declared by the stage but missing from the tail."
-                )?;
-            }
-            for index in &table_diff.extra_indexes {
-                writeln!(
-                    f,
-                    "  - table `{table}`: index `{index}` is created by the tail but missing from the stage."
-                )?;
-            }
-            for index in &table_diff.altered_indexes {
-                writeln!(
-                    f,
-                    "  - table `{table}`: index `{index}` differs between the stage and the tail."
-                )?;
-            }
-        }
-
-        Ok(())
+        self.diff.write_details(f, DiffWording::GOLDEN)
     }
 }
 

@@ -2,7 +2,8 @@
 
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
-    BuiltQuery, QueryBackend, SavepointName, TransactionBackend, TransactionContext,
+    BuiltQuery, QueryBackend, TransactionBackend, TransactionGuard, TransactionStatus,
+    TransactionalConnection,
 };
 
 use super::types::{execute_raw_sync, fetch_raw_sync, PgError};
@@ -15,8 +16,7 @@ use super::types::{execute_raw_sync, fetch_raw_sync, PgError};
 /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available.
 pub struct PgConnection {
     client: postgres::Client,
-    tx_context: TransactionContext,
-    in_transaction: bool,
+    status: TransactionStatus,
 }
 
 impl PgConnection {
@@ -24,8 +24,7 @@ impl PgConnection {
     pub fn new(client: postgres::Client) -> Self {
         Self {
             client,
-            tx_context: TransactionContext::new(),
-            in_transaction: false,
+            status: TransactionStatus::new(),
         }
     }
 
@@ -58,72 +57,10 @@ impl PgConnection {
         F: FnOnce(&mut PgConnection) -> Result<T, E>,
         E: From<PgError>,
     {
-        let outer = !self.in_transaction;
-        let savepoint = if outer {
-            tracing::info!("beginning transaction");
-            self.begin(None).map_err(E::from)?;
-            self.in_transaction = true;
-            None
-        } else {
-            let name = self.tx_context.open_savepoint();
-            tracing::debug!(savepoint = %name, "creating savepoint");
-            self.savepoint(&name).map_err(E::from)?;
-            Some(name)
-        };
-
-        let mut guard = PgTransactionGuard {
-            connection: self,
-            outer,
-            savepoint,
-            finished: false,
-        };
-
-        match f(&mut *guard.connection) {
-            Ok(value) => {
-                if outer {
-                    guard.connection.commit().map_err(E::from)?;
-                    guard.connection.in_transaction = false;
-                    tracing::info!("committed transaction");
-                } else if let Some(name) = guard.savepoint.as_ref() {
-                    guard.connection.release_savepoint(name).map_err(E::from)?;
-                    guard.connection.tx_context.close_savepoint();
-                    tracing::debug!(savepoint = %name, "released savepoint");
-                }
-                guard.finished = true;
-                Ok(value)
-            }
-            Err(error) => Err(error),
-        }
-    }
-}
-
-/// RAII guard that rolls the surrounding block back unless it finished cleanly.
-///
-/// The guard owns the mutable borrow of the connection for the duration of the
-/// closure, so the closure still receives a reborrow while an unwind discards
-/// the block through [`Drop`].
-struct PgTransactionGuard<'a> {
-    connection: &'a mut PgConnection,
-    outer: bool,
-    savepoint: Option<SavepointName>,
-    finished: bool,
-}
-
-impl Drop for PgTransactionGuard<'_> {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        if self.outer {
-            let _ = self.connection.rollback();
-            self.connection.in_transaction = false;
-            tracing::warn!("rolled back transaction");
-        } else if let Some(savepoint) = self.savepoint.as_ref() {
-            let _ = self.connection.rollback_to_savepoint(savepoint);
-            let _ = self.connection.release_savepoint(savepoint);
-            self.connection.tx_context.close_savepoint();
-            tracing::warn!(savepoint = %savepoint, "rolled back to savepoint");
-        }
+        let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
+        let value = f(&mut guard)?;
+        guard.commit().map_err(E::from)?;
+        Ok(value)
     }
 }
 
@@ -140,3 +77,9 @@ impl QueryBackend for PgConnection {
 }
 
 impl TransactionBackend for PgConnection {}
+
+impl TransactionalConnection for PgConnection {
+    fn transaction_status(&mut self) -> &mut TransactionStatus {
+        &mut self.status
+    }
+}
