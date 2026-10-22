@@ -204,11 +204,18 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     /// dialect of the statement, exactly like the filter, the joins, and the
     /// ordering it already carries. Recording a projection moves the query into
     /// [`HasProjection`], the only state where it can be rendered.
+    ///
+    /// The query must already select from a table, so the row type is derived
+    /// from the scope the projection is read from: a column of a `LEFT JOIN`ed
+    /// table reaches the row as `Option<T>`. Selecting before the first `from`
+    /// is therefore rejected at compile time, which also rules out a projection
+    /// fixed before an outer join could lift it; see [`TableScope`].
     pub fn select<S, Positions>(
         mut self,
         selection: S,
     ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, HasProjection>
     where
+        Tables: TableScope,
         S: SelectionFor<Tables, Positions>,
     {
         let mut projections = Vec::new();

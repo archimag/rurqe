@@ -283,7 +283,7 @@ pub struct GroupedQuery<
     pub(crate) _marker: PhantomData<fn() -> GroupByCols>,
 }
 
-impl<D: Dialect, Tables, GroupByCols, Projected>
+impl<D: Dialect, Tables: TableScope, GroupByCols, Projected>
     GroupedQuery<D, Tables, (), GroupByCols, Projected>
 {
     /// Selects `selection`, requiring every projected column to be grouped or aggregated.

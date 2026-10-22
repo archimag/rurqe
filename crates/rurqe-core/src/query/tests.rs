@@ -112,16 +112,6 @@ fn selection_determines_row_type() {
 }
 
 #[test]
-fn projections_and_table_may_be_declared_in_any_order() {
-    let built = SelectQuery::<MockDialect>::new()
-        .select((UserId,))
-        .from::<User>()
-        .build();
-
-    assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
-}
-
-#[test]
 fn repeated_predicates_are_combined_with_and() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()

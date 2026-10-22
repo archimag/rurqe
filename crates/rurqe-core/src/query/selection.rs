@@ -194,9 +194,10 @@ impl<Tables, Positions, S> SelectionInScope<Tables, Positions> for S where
 {
 }
 
-impl<S: Selection> SelectionFor<(), ()> for S {
-    type Row = S::Row;
-}
+// A selection is typed against a query that already introduced its table, so
+// there is deliberately no implementation for the empty scope `()`: the row
+// type follows the real scope, and `.select(...)` cannot precede `.from(...)`
+// and skip the nullability an outer join imposes on the projection.
 
 macro_rules! impl_selection_for {
     ($($target:ident $position:ident),+) => {
