@@ -240,25 +240,35 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
             ))
         })?;
 
-        let fks = fk_stmt
+        let mut fks = fk_stmt
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
+                // `seq` positions the column inside its constraint.
+                let position: i64 = row.get(1)?;
                 let referenced_table: String = row.get(2)?;
                 let from_column: String = row.get(3)?;
                 let to_column: Option<String> = row.get(4)?;
-                Ok(RawSqliteForeignKeyMetadata {
-                    table_name: table.clone(),
-                    id,
-                    from_column,
-                    to_column: to_column.unwrap_or_default(),
-                    referenced_table,
-                })
+                Ok((
+                    (id, position),
+                    RawSqliteForeignKeyMetadata {
+                        table_name: table.clone(),
+                        id,
+                        from_column,
+                        to_column: to_column.unwrap_or_default(),
+                        referenced_table,
+                    },
+                ))
             })
             .map_err(|e| CliError(format!("failed to inspect foreign keys for `{table}`: {e}")))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| CliError(format!("failed to read foreign key for `{table}`: {e}")))?;
 
-        raw_foreign_keys.extend(fks);
+        // `PRAGMA foreign_key_list` reports one row per key column, and `seq`
+        // carries the position of the column inside its constraint. Ordering by
+        // it keeps a composite key assembled in the order it was declared in,
+        // even when the pragma emits its rows in another one.
+        fks.sort_by_key(|(position, _)| *position);
+        raw_foreign_keys.extend(fks.into_iter().map(|(_, row)| row));
     }
 
     Ok(catalog_from_sqlite_metadata(
@@ -358,5 +368,40 @@ mod tests {
             .find(|table| table.name == "order_lines")
             .expect("the child table is assembled");
         assert_eq!(lines.foreign_keys[0].referenced_columns, vec!["region"]);
+    }
+
+    #[test]
+    fn composite_foreign_keys_keep_their_declared_column_order() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+        conn.execute_batch(
+            "CREATE TABLE orders (
+                 id INTEGER NOT NULL,
+                 region TEXT NOT NULL,
+                 PRIMARY KEY (id, region)
+             );
+             CREATE TABLE order_lines (
+                 id INTEGER PRIMARY KEY,
+                 order_id INTEGER NOT NULL,
+                 order_region TEXT NOT NULL,
+                 FOREIGN KEY (order_id, order_region) REFERENCES orders (id, region)
+             );",
+        )
+        .expect("create the schema");
+
+        let catalog = introspect_sqlite(&conn).expect("the catalog is introspected");
+
+        let lines = catalog
+            .tables
+            .iter()
+            .find(|table| table.name == "order_lines")
+            .expect("the child table is assembled");
+        assert_eq!(
+            lines.foreign_keys[0].columns,
+            vec!["order_id", "order_region"]
+        );
+        assert_eq!(
+            lines.foreign_keys[0].referenced_columns,
+            vec!["id", "region"]
+        );
     }
 }
