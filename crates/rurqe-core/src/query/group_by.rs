@@ -193,6 +193,43 @@ where
 }
 
 /// Derives the row item produced by a projection in a `GROUP BY` query.
+///
+/// A plain column reaches the row only once it is part of the `GROUP BY` clause,
+/// while an aggregate collapses the rows of a group and stays projectable even
+/// when it reads a column the query does not group by. Projecting a column that
+/// is neither grouped nor aggregated is therefore rejected at the call site:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((OrderUserId, OrderTotal));
+/// }
+/// ```
 #[diagnostic::on_unimplemented(
     message = "column `{Self}` cannot be selected in a GROUP BY query because it is neither grouped nor an aggregate",
     label = "the projected column is neither part of the GROUP BY clause nor an aggregate",
@@ -228,8 +265,8 @@ impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
 /// group, so a grouped query accepts it even though it is not an aggregate.
 /// An expression that references a column keeps the scope of its table, so it
 /// stays rejected unless that column is grouped.
-impl<GroupByCols, T: 'static + Send + Sync>
-    GroupedSelectTarget<GroupByCols, At<0>> for Expr<T, (), NonAggregate>
+impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>>
+    for Expr<T, (), NonAggregate>
 {
     type Output = T;
 }
@@ -290,9 +327,126 @@ impl<D: Dialect, Tables: TableScope, GroupByCols, Projected>
     ///
     /// A column reference must therefore be part of the `GROUP BY` clause, while
     /// an aggregate such as `count`, `sum`, `avg`, `min`, or `max` may reference
-    /// any column of the query scope. An `Expr` escape hatch does not bypass the
-    /// rule: an expression that references a column keeps the scope of its table
-    /// and stays rejected unless the column is grouped.
+    /// any column of the query scope. Every projected item stays subject to the
+    /// query scope as well, so a window expression partitioned by a table the
+    /// query does not select from is rejected like any other projection.
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let built = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .group_by(OrderUserId)
+    ///         .select((OrderUserId, Expr::sum::<OrderTotal>()))
+    ///         .build();
+    ///
+    ///     assert_eq!(
+    ///         built.sql,
+    ///         "SELECT \"user_id\", SUM(\"total\") FROM \"orders\" GROUP BY \"user_id\""
+    ///     );
+    /// }
+    /// ```
+    ///
+    /// The `Expr` escape hatch does not bypass the rule, because an expression
+    /// referencing a column keeps the scope of its table:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .group_by(OrderUserId)
+    ///         .select((OrderUserId, Expr::column::<OrderTotal>()));
+    /// }
+    /// ```
+    ///
+    /// Window expressions are checked against the scope of the grouped query, so
+    /// a specification referencing an unjoined table is rejected:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::{row_number, SelectQuery, Window};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: `OrderUserId` belongs to `Order`, which the query
+    ///     // does not select from.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .group_by(UserId)
+    ///         .select((UserId, row_number().over(Window::partition_by(OrderUserId))));
+    /// }
+    /// ```
     pub fn select<S, Positions, GroupPositions>(
         self,
         selection: S,
