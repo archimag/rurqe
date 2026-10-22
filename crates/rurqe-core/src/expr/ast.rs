@@ -38,6 +38,16 @@ pub enum ExprKind {
         /// The compile-time SQL identifier of the column.
         column: &'static str,
     },
+    /// A parenthesised row value: a tuple of expressions compared as one value.
+    ///
+    /// SQL:1992 treats a parenthesised tuple of expressions as a single
+    /// composite value, so a row renders as `("a", "b")` and compares
+    /// element-wise against another row, which is what keyset pagination is
+    /// written with.
+    Row {
+        /// The element expressions of the row, in declaration order.
+        values: Vec<ExprKind>,
+    },
     /// A bound literal value.
     Value(SqlVal),
     /// A binary operation applied to two sub-expressions.

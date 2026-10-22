@@ -18,6 +18,7 @@ mod builder;
 mod functions;
 mod ops;
 mod render;
+mod row;
 mod scope;
 mod val;
 
@@ -33,6 +34,7 @@ pub use builder::{Aggregate, Expr, NonAggregate};
 pub use functions::{avg, coalesce, count, count_all, max, min, sum};
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
+pub use row::{RowExpr, RowValues};
 pub use scope::{MergeScope, Merged};
 pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};
 #[cfg(feature = "serde_json")]

@@ -674,6 +674,10 @@ pub enum BinaryOp {
     Gt,
     /// `<`
     Lt,
+    /// `>=`
+    Gte,
+    /// `<=`
+    Lte,
     /// `AND`
     And,
     /// `OR`
@@ -688,6 +692,8 @@ impl BinaryOp {
             BinaryOp::Ne => "<>",
             BinaryOp::Gt => ">",
             BinaryOp::Lt => "<",
+            BinaryOp::Gte => ">=",
+            BinaryOp::Lte => "<=",
             BinaryOp::And => "AND",
             BinaryOp::Or => "OR",
         }

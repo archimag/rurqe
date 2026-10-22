@@ -205,6 +205,11 @@ pub fn render_expr<D: Dialect>(
             sql.push('.');
             D::push_quoted_identifier(sql, column);
         }
+        ExprKind::Row { values } => {
+            sql.push('(');
+            render_expressions::<D>(sql, params, values, relations);
+            sql.push(')');
+        }
         ExprKind::Value(value) => {
             params.push(value.clone());
             D::push_placeholder(sql, params.len());
