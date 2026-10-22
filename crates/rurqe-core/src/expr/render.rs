@@ -229,6 +229,15 @@ pub fn render_expr<D: Dialect>(
                 }
             }
         }
+        ExprKind::DialectOp { op, lhs, rhs } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, lhs, relations);
+            sql.push(' ');
+            sql.push_str(op);
+            sql.push(' ');
+            render_expr::<D>(sql, params, rhs, relations);
+            sql.push(')');
+        }
         ExprKind::Subquery {
             op,
             operand,

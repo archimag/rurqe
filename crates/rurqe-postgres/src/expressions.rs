@@ -1,9 +1,7 @@
 //! PostgreSQL-specific expression extensions and text search functions.
 
-use rurqe_core::expr::{render_expr, Expr, SqlVal};
+use rurqe_core::expr::{Expr, ExprKind, SqlVal};
 use rurqe_core::schema::Column;
-
-use crate::dialect::Postgres;
 
 /// PostgreSQL-specific expressions and operators.
 pub trait PgExpressions: Column {
@@ -64,36 +62,26 @@ impl<C: Column> PgExpressions for C {
     }
 
     fn matches_tsquery(self, query: &str) -> Expr<bool, Self::Table> {
-        Expr::raw_fragments_with_scope(
-            vec![
-                format!("({} @@ to_tsquery(", render_column::<C>()),
-                "))".to_owned(),
-            ],
-            vec![SqlVal::Text(query.to_owned())],
-        )
+        Expr::from_kind(ExprKind::DialectOp {
+            op: "@@",
+            lhs: Box::new(C::expr_kind()),
+            rhs: Box::new(to_tsquery(query).into_kind()),
+        })
     }
 }
 
-/// Renders the SQL reference of a column marker through the PostgreSQL dialect.
+/// Builds a `(<column> <op> <value>)` predicate over the column `C`.
 ///
-/// Rendering goes through [`render_expr`], so the identifier is quoted and its
-/// embedded double quotes are doubled, while an alias-qualified column keeps its
-/// alias prefix (`"u"."id"`).
-fn render_column<C: Column>() -> String {
-    // No relation is in scope, so a bare column stays unqualified while an
-    // alias-qualified one keeps its `"alias"."column"` prefix.
-    let mut sql = String::new();
-    let mut params = Vec::new();
-    render_expr::<Postgres>(&mut sql, &mut params, &C::expr_kind(), &[]);
-    sql
-}
-
-/// Builds a `(<column> <op> ?)` predicate over the column `C`.
-fn column_binary_op<C: Column>(op: &str, val: &str) -> Expr<bool, C::Table> {
-    Expr::raw_fragments_with_scope(
-        vec![format!("({} {op} ", render_column::<C>()), ")".to_owned()],
-        vec![SqlVal::Text(val.to_owned())],
-    )
+/// Both the operator and the operands are recorded as an [`ExprKind::DialectOp`]
+/// node, so the column reference is rendered together with the statement that
+/// contains the predicate: it is qualified in a multi-table query, and an
+/// aliased column keeps its `"alias"."column"` prefix.
+fn column_binary_op<C: Column>(op: &'static str, val: &str) -> Expr<bool, C::Table> {
+    Expr::from_kind(ExprKind::DialectOp {
+        op,
+        lhs: Box::new(C::expr_kind()),
+        rhs: Box::new(ExprKind::Value(SqlVal::Text(val.to_owned()))),
+    })
 }
 
 /// Quotes a single element of a PostgreSQL array literal.
@@ -140,8 +128,9 @@ pub fn plainto_tsquery(query: &str) -> Expr<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rurqe_core::expr::ExprKind;
-    use rurqe_core::schema::AliasedCol;
+    use crate::dialect::Postgres;
+    use rurqe_core::expr::render_expr;
+    use rurqe_core::schema::{AliasedCol, TableRef};
     use rurqe_core::table;
 
     table! {
@@ -157,43 +146,60 @@ mod tests {
         DocAlias => "d"
     }
 
+    /// Renders `expr` under the PostgreSQL dialect against `relations`.
+    fn render(expr: &ExprKind, relations: &[TableRef]) -> (String, Vec<SqlVal>) {
+        let mut sql = String::new();
+        let mut params = Vec::new();
+        render_expr::<Postgres>(&mut sql, &mut params, expr, relations);
+        (sql, params)
+    }
+
     #[test]
-    fn pg_expressions_build_expected_raw_ast() {
-        let regex = DocContent.regex_match("^start");
-        assert!(matches!(regex.kind(), ExprKind::Raw { .. }));
-
-        let json = DocMetadata.json_contains(r#"{"active": true}"#);
-        assert!(matches!(json.kind(), ExprKind::Raw { .. }));
-
-        let ts = DocContent.matches_tsquery("english & rust");
-        assert!(matches!(ts.kind(), ExprKind::Raw { .. }));
+    fn pg_expressions_build_dialect_operators() {
+        assert!(matches!(
+            DocContent.regex_match("^start").kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocContent.regex_match_ci("^start").kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocContent.regex_not_match("^start").kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocContent.regex_not_match_ci("^start").kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocMetadata.json_contains(r#"{"active": true}"#).kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocMetadata.json_has_key("active").kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocMetadata.json_has_any_keys(&["a", "b"]).kind(),
+            ExprKind::DialectOp { .. }
+        ));
+        assert!(matches!(
+            DocContent.matches_tsquery("english & rust").kind(),
+            ExprKind::DialectOp { .. }
+        ));
     }
 
     #[test]
     fn pg_expressions_carry_column_table_scope() {
         let regex: Expr<bool, Doc> = DocContent.regex_match("^start");
-        assert!(matches!(regex.kind(), ExprKind::Raw { .. }));
-
-        let regex_ci: Expr<bool, Doc> = DocContent.regex_match_ci("^start");
-        assert!(matches!(regex_ci.kind(), ExprKind::Raw { .. }));
-
-        let not_match: Expr<bool, Doc> = DocContent.regex_not_match("^start");
-        assert!(matches!(not_match.kind(), ExprKind::Raw { .. }));
-
-        let not_match_ci: Expr<bool, Doc> = DocContent.regex_not_match_ci("^start");
-        assert!(matches!(not_match_ci.kind(), ExprKind::Raw { .. }));
+        assert!(matches!(regex.kind(), ExprKind::DialectOp { .. }));
 
         let json: Expr<bool, Doc> = DocMetadata.json_contains(r#"{"active": true}"#);
-        assert!(matches!(json.kind(), ExprKind::Raw { .. }));
-
-        let json_key: Expr<bool, Doc> = DocMetadata.json_has_key("active");
-        assert!(matches!(json_key.kind(), ExprKind::Raw { .. }));
-
-        let json_keys: Expr<bool, Doc> = DocMetadata.json_has_any_keys(&["a", "b"]);
-        assert!(matches!(json_keys.kind(), ExprKind::Raw { .. }));
+        assert!(matches!(json.kind(), ExprKind::DialectOp { .. }));
 
         let ts: Expr<bool, Doc> = DocContent.matches_tsquery("english & rust");
-        assert!(matches!(ts.kind(), ExprKind::Raw { .. }));
+        assert!(matches!(ts.kind(), ExprKind::DialectOp { .. }));
     }
 
     #[test]
@@ -209,17 +215,40 @@ mod tests {
     }
 
     #[test]
+    fn column_references_are_qualified_against_the_statement() {
+        let regex = DocContent.regex_match("^start");
+
+        let (bare, params) = render(regex.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(bare, "(\"content\" ~ $1)");
+        assert_eq!(params, vec![SqlVal::Text("^start".to_owned())]);
+
+        let (qualified, _) = render(
+            regex.kind(),
+            &[TableRef::plain("docs"), TableRef::plain("other")],
+        );
+        assert_eq!(qualified, "(\"docs\".\"content\" ~ $1)");
+    }
+
+    #[test]
     fn column_references_are_quoted_and_escaped() {
-        assert_eq!(render_column::<DocContent>(), "\"content\"");
-        assert_eq!(render_column::<DocQuoted>(), "\"a\"\"b\"");
+        let quoted = DocQuoted.regex_match("^start");
+        let (sql, _) = render(quoted.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"a\"\"b\" ~ $1)");
     }
 
     #[test]
     fn aliased_column_references_keep_their_alias_prefix() {
-        assert_eq!(
-            render_column::<AliasedCol<DocAlias, DocContent>>(),
-            "\"d\".\"content\""
-        );
+        let expr = AliasedCol::<DocAlias, DocContent>::new().regex_match("^start");
+        let (sql, _) = render(expr.kind(), &[TableRef::aliased("docs", "d")]);
+        assert_eq!(sql, "(\"d\".\"content\" ~ $1)");
+    }
+
+    #[test]
+    fn matches_tsquery_binds_the_query_as_a_nested_function_call() {
+        let expr = DocContent.matches_tsquery("english & rust");
+        let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"content\" @@ to_tsquery($1))");
+        assert_eq!(params, vec![SqlVal::Text("english & rust".to_owned())]);
     }
 
     #[test]
@@ -232,15 +261,8 @@ mod tests {
     #[test]
     fn json_has_any_keys_binds_a_quoted_array_literal() {
         let expr = DocMetadata.json_has_any_keys(&["a", "b\"c"]);
-        match expr.kind() {
-            ExprKind::Raw { fragments, params } => {
-                assert_eq!(fragments.first().map(String::as_str), Some("(\"metadata\" ?| "));
-                assert_eq!(
-                    params,
-                    &vec![SqlVal::Text("{\"a\",\"b\\\"c\"}".to_owned())]
-                );
-            }
-            other => panic!("expected a raw expression, got {other:?}"),
-        }
+        let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"metadata\" ?| $1)");
+        assert_eq!(params, vec![SqlVal::Text("{\"a\",\"b\\\"c\"}".to_owned())]);
     }
 }

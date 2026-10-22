@@ -77,6 +77,17 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
         }
     }
 
+    /// Builds an expression from an already assembled tree carrying the scope `Scope`.
+    ///
+    /// Dialect extensions describe their operands as AST nodes instead of
+    /// pre-rendered text, so a column reference keeps following the statement it
+    /// is rendered into: it is qualified in a multi-table query and keeps its
+    /// alias prefix.
+    #[doc(hidden)]
+    pub fn from_kind(kind: ExprKind) -> Self {
+        Self::new(kind)
+    }
+
     /// The expression tree of this expression.
     pub fn kind(&self) -> &ExprKind {
         &self.kind

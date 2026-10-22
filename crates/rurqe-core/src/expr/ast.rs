@@ -63,6 +63,21 @@ pub enum ExprKind {
         /// The bound parameter values to insert between fragments.
         params: Vec<SqlVal>,
     },
+    /// A dialect-specific binary operator applied to two symbolic operands.
+    ///
+    /// Unlike [`ExprKind::Raw`], both operands stay symbolic until the enclosing
+    /// statement is rendered, so a column reference is still qualified against
+    /// the relations of that statement. Extension operators such as the
+    /// PostgreSQL `~` or `@>` build this node instead of pre-rendering their
+    /// column into raw text.
+    DialectOp {
+        /// The operator text, written between the two operands.
+        op: &'static str,
+        /// The left-hand operand.
+        lhs: Box<ExprKind>,
+        /// The right-hand operand.
+        rhs: Box<ExprKind>,
+    },
     /// A nested query used as an `EXISTS` or `IN` predicate.
     Subquery {
         /// The predicate operator applied to the nested query.
