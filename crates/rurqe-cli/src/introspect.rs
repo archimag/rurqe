@@ -26,8 +26,8 @@ pub use sqlite::{
     RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
 };
 pub use types::{
-    catalog_from_metadata, map_sql_type_to_kind, RawColumnMetadata, RawForeignKeyMetadata,
-    RawPrimaryKeyMetadata, RawTableMetadata,
+    catalog_from_metadata, map_sql_type_to_kind, map_sqlite_declared_type_to_kind,
+    RawColumnMetadata, RawForeignKeyMetadata, RawPrimaryKeyMetadata, RawTableMetadata,
 };
 
 /// The database engine a connection string targets.

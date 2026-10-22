@@ -6,7 +6,7 @@ use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef};
 
 use crate::cli::CliError;
 
-use super::types::map_sql_type_to_kind;
+use super::types::map_sqlite_declared_type_to_kind;
 
 /// Query to fetch user tables from the SQLite `sqlite_master` catalog.
 pub(crate) const SQLITE_TABLES: &str = r#"
@@ -72,10 +72,15 @@ pub struct RawSqliteForeignKeyMetadata {
 
 /// Assembles a normalized [`SchemaCatalog`] from SQLite introspection results.
 ///
+/// Column types follow the SQLite affinity rules of
+/// [`map_sqlite_declared_type_to_kind`], so every integer column is reported as
+/// an [`Int64`](rurqe_migrate::catalog::TypeKind::Int64) no matter how its
+/// declared type is spelled.
+///
 /// Columns whose `pk_position` is greater than zero form the primary key, ordered
-/// by their position in the key. `PRAGMA foreign_key_list` rows sharing a constraint
-/// id are folded into one [`ForeignKeyDef`] named after the owning table and that id,
-/// so composite foreign keys stay a single constraint.
+/// by their position in the key. `PRAGMA foreign_key_list` rows sharing a
+/// constraint id are folded into one [`ForeignKeyDef`] named after the owning
+/// table and that id, so composite foreign keys stay a single constraint.
 ///
 /// `PRAGMA foreign_key_list` reports a `NULL` target column for a key that
 /// references the implicit primary key of its parent table; such a target is
@@ -94,7 +99,7 @@ pub fn catalog_from_sqlite_metadata(
     let mut primary_keys: BTreeMap<&str, Vec<(i64, &str)>> = BTreeMap::new();
 
     for column in columns {
-        let kind = map_sql_type_to_kind(&column.data_type);
+        let kind = map_sqlite_declared_type_to_kind(&column.data_type);
         let mut def = ColumnDef::new(&column.column_name, kind, !column.not_null);
         if let Some(ref default) = column.default_value {
             def = def.with_default(default);

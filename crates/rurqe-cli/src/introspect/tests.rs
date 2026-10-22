@@ -226,6 +226,68 @@ fn sql_type_mapping_covers_builtin_kinds() {
 }
 
 #[test]
+fn type_parameters_do_not_hide_the_builtin_kinds() {
+    assert_eq!(map_sql_type_to_kind("varchar(255)"), TypeKind::Text);
+    assert_eq!(map_sql_type_to_kind("character varying(80)"), TypeKind::Text);
+    assert_eq!(map_sql_type_to_kind("smallint"), TypeKind::Int32);
+    assert_eq!(map_sql_type_to_kind("int2"), TypeKind::Int32);
+}
+
+#[test]
+fn unknown_types_keep_their_declared_precision() {
+    let numeric = map_sql_type_to_kind("numeric(18,4)");
+    assert_eq!(numeric, TypeKind::Other("numeric(18,4)".to_owned()));
+
+    let decimal = map_sqlite_declared_type_to_kind("NUMERIC(10,2)");
+    assert_eq!(decimal, TypeKind::Other("numeric(10,2)".to_owned()));
+}
+
+#[test]
+fn sqlite_declared_types_follow_the_affinity_rules() {
+    assert_eq!(map_sqlite_declared_type_to_kind("INTEGER"), TypeKind::Int64);
+    assert_eq!(map_sqlite_declared_type_to_kind("UNSIGNED BIG INT"), TypeKind::Int64);
+    assert_eq!(map_sqlite_declared_type_to_kind("VARCHAR(255)"), TypeKind::Text);
+    assert_eq!(map_sqlite_declared_type_to_kind("CLOB"), TypeKind::Text);
+    assert_eq!(map_sqlite_declared_type_to_kind("BLOB"), TypeKind::Bytes);
+    assert_eq!(map_sqlite_declared_type_to_kind(""), TypeKind::Bytes);
+    assert_eq!(map_sqlite_declared_type_to_kind("REAL"), TypeKind::Float64);
+    assert_eq!(map_sqlite_declared_type_to_kind("DOUBLE PRECISION"), TypeKind::Float64);
+    assert_eq!(map_sqlite_declared_type_to_kind("BOOLEAN"), TypeKind::Boolean);
+    assert_eq!(map_sqlite_declared_type_to_kind("UUID"), TypeKind::Uuid);
+    assert_eq!(map_sqlite_declared_type_to_kind("DATETIME"), TypeKind::Timestamp);
+    assert_eq!(map_sqlite_declared_type_to_kind("DATE"), TypeKind::Date);
+}
+
+#[test]
+fn live_sqlite_integer_columns_are_reported_as_64_bit() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE counters (
+             id INTEGER PRIMARY KEY,
+             hits INT NOT NULL,
+             ratio REAL NOT NULL,
+             label VARCHAR(20) NOT NULL
+         );",
+    )
+    .unwrap();
+
+    let catalog = introspect_sqlite(&conn).unwrap();
+    let table = &catalog.tables[0];
+    let column = |name: &str| {
+        table
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .expect("the column is introspected")
+    };
+
+    assert_eq!(column("id").type_kind, TypeKind::Int64);
+    assert_eq!(column("hits").type_kind, TypeKind::Int64);
+    assert_eq!(column("ratio").type_kind, TypeKind::Float64);
+    assert_eq!(column("label").type_kind, TypeKind::Text);
+}
+
+#[test]
 fn introspect_sqlite_builds_catalog_from_live_tables() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
