@@ -17,6 +17,7 @@ pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 pub use rurqe_core::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
 };
+pub use rurqe_core::expr::{RowExpr, RowValues};
 pub use rurqe_core::query::TableSelection;
 pub use rurqe_core::schema::Next;
 pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
@@ -787,7 +788,7 @@ pub mod prelude {
 
     pub use rurqe_core::expr::{
         avg, coalesce, count, count_all, max, min, sum, CaseBranch, CaseBuilder, Expression,
-        StringExpression, Subquery, SubqueryOp,
+        RowExpr, RowValues, StringExpression, Subquery, SubqueryOp,
     };
 
     pub use rurqe_core::query::{
