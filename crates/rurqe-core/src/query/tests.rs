@@ -1428,3 +1428,171 @@ fn value_left_join_arguments_lift_columns_into_options() {
          ON (\"orders\".\"user_id\" = $1)"
     );
 }
+
+/// An asynchronous backend handing back canned results.
+#[derive(Default)]
+struct MockAsyncBackend {
+    rows: Vec<Vec<SqlVal>>,
+    affected: u64,
+}
+
+impl AsyncQueryBackend for MockAsyncBackend {
+    type Error = &'static str;
+
+    fn fetch_raw(
+        &self,
+        _query: &BuiltQuery,
+    ) -> impl core::future::Future<Output = Result<Vec<Vec<SqlVal>>, Self::Error>> + Send {
+        let rows = self.rows.clone();
+        async move { Ok(rows) }
+    }
+
+    fn execute_raw(
+        &self,
+        _query: &BuiltQuery,
+    ) -> impl core::future::Future<Output = Result<u64, Self::Error>> + Send {
+        let affected = self.affected;
+        async move { Ok(affected) }
+    }
+}
+
+/// Completes the waker of the executor-free test driver.
+struct NoopWake;
+
+impl std::task::Wake for NoopWake {
+    fn wake(self: std::sync::Arc<Self>) {}
+}
+
+/// Drives `future` to completion on the current thread without an executor.
+fn block_on<F: core::future::Future>(future: F) -> F::Output {
+    use core::task::{Context, Poll, Waker};
+
+    let waker = Waker::from(std::sync::Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = core::pin::pin!(future);
+
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
+
+/// Statically asserts that `future` may be moved into a spawned task.
+fn spawnable<F: core::future::Future + Send>(future: F) -> F {
+    future
+}
+
+fn async_user_query() -> SelectQuery<MockDialect, User, (i64, String), HasProjection> {
+    SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName))
+        .where_(Expr::column::<UserId>().gt(10i64))
+}
+
+#[test]
+fn async_helpers_decode_rows_behind_a_send_future() {
+    let backend = MockAsyncBackend {
+        rows: vec![
+            vec![SqlVal::I64(11), SqlVal::Text("root".to_owned())],
+            vec![SqlVal::I64(12), SqlVal::Text("guest".to_owned())],
+        ],
+        ..MockAsyncBackend::default()
+    };
+    let query = async_user_query();
+
+    let rows = block_on(spawnable(backend.fetch_all(&query))).expect("rows decode");
+
+    assert_eq!(
+        rows,
+        vec![(11i64, "root".to_owned()), (12i64, "guest".to_owned())]
+    );
+}
+
+#[test]
+fn async_single_row_helpers_report_missing_and_duplicate_rows() {
+    let absent = MockAsyncBackend::default();
+    assert_eq!(
+        block_on(absent.fetch_one(&async_user_query())),
+        Err(ExecutionError::NoRows)
+    );
+    assert_eq!(
+        block_on(absent.fetch_optional(&async_user_query())),
+        Ok(None)
+    );
+
+    let duplicated = MockAsyncBackend {
+        rows: vec![
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())],
+            vec![SqlVal::I64(2), SqlVal::Text("guest".to_owned())],
+        ],
+        ..MockAsyncBackend::default()
+    };
+    assert_eq!(
+        block_on(duplicated.fetch_one(&async_user_query())),
+        Err(ExecutionError::MultipleRows { count: 2 })
+    );
+
+    let single = MockAsyncBackend {
+        rows: vec![vec![SqlVal::I64(7), SqlVal::Text("root".to_owned())]],
+        ..MockAsyncBackend::default()
+    };
+    assert_eq!(
+        block_on(single.fetch_optional(&async_user_query())),
+        Ok(Some((7i64, "root".to_owned())))
+    );
+}
+
+#[test]
+fn async_helpers_report_the_row_that_fails_to_decode() {
+    let backend = MockAsyncBackend {
+        rows: vec![vec![
+            SqlVal::Text("oops".to_owned()),
+            SqlVal::Text("root".to_owned()),
+        ]],
+        ..MockAsyncBackend::default()
+    };
+
+    assert_eq!(
+        block_on(backend.fetch_all(&async_user_query())),
+        Err(ExecutionError::RowDecode {
+            row_index: 0,
+            source: crate::row::RowDecodeError::TypeMismatch {
+                target: std::any::type_name::<i64>(),
+                found: "text",
+            },
+        })
+    );
+}
+
+#[test]
+fn async_execute_reports_affected_rows_without_decoding() {
+    let backend = MockAsyncBackend {
+        affected: 2,
+        ..MockAsyncBackend::default()
+    };
+    let query = InsertQuery::<MockDialect, User>::new()
+        .values((UserId::set(1i64), UserName::set("root")));
+
+    assert_eq!(block_on(backend.execute(&query)), Ok(2));
+}
+
+#[test]
+fn async_futures_run_on_a_spawned_thread() {
+    let backend = std::sync::Arc::new(MockAsyncBackend {
+        rows: vec![vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]],
+        ..MockAsyncBackend::default()
+    });
+    let worker = backend.clone();
+
+    let rows = std::thread::spawn(move || {
+        let query = async_user_query();
+        block_on(worker.fetch_all(&query))
+    })
+    .join()
+    .expect("the worker thread finishes")
+    .expect("rows decode");
+
+    assert_eq!(rows, vec![(1i64, "root".to_owned())]);
+}

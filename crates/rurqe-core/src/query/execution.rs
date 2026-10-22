@@ -1,6 +1,7 @@
 //! Query execution contracts, typed errors, and synchronous transaction control.
 
 use core::fmt;
+use core::future::Future;
 
 use crate::dialect::Dialect;
 use crate::dml::insert::InsertSource;
@@ -269,82 +270,114 @@ impl<B: QueryBackend + ?Sized> QueryBackendExt for B {}
     label = "unsupported asynchronous query backend",
     note = "asynchronous driver adapters implement `AsyncQueryBackend`; `AsyncQueryBackendExt` is then available for free"
 )]
-#[allow(async_fn_in_trait)]
-pub trait AsyncQueryBackend {
+pub trait AsyncQueryBackend: Sync {
     /// The error raised by the driver.
-    type Error;
+    ///
+    /// The error crosses task boundaries: the returned futures are `Send`, so a
+    /// spawned task must be able to hand the failure back to its caller.
+    type Error: Send;
 
     /// Executes `query` and returns every produced row as ordered values.
-    async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error>;
+    ///
+    /// The returned future borrows the backend only for its own lifetime and is
+    /// `Send`, so it can be moved into a spawned task while the backend stays
+    /// shared through a [`Sync`] reference.
+    fn fetch_raw(
+        &self,
+        query: &BuiltQuery,
+    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, Self::Error>> + Send;
 
     /// Executes `query` without decoding rows and returns the affected row count.
-    async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, Self::Error>;
+    ///
+    /// Like [`fetch_raw`](AsyncQueryBackend::fetch_raw), the future is `Send`, so
+    /// a mutating statement runs inside a spawned task as well.
+    fn execute_raw(
+        &self,
+        query: &BuiltQuery,
+    ) -> impl Future<Output = Result<u64, Self::Error>> + Send;
 }
 
 /// Asynchronous execution helpers decoding query rows through [`FromRow`].
 ///
 /// The helpers mirror [`QueryBackendExt`] for [`AsyncQueryBackend`] adapters,
 /// so an asynchronous connection, transaction, or pool never re-implements the
-/// single-row policy.
-#[allow(async_fn_in_trait)]
+/// single-row policy. Every helper hands back an explicit `Send` future, so
+/// awaiting it inside a task spawned on a multithreaded runtime stays sound.
 pub trait AsyncQueryBackendExt: AsyncQueryBackend {
     /// Executes `query` and decodes every produced row.
-    async fn fetch_all<Q>(&self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<Self::Error>>
+    fn fetch_all<Q>(
+        &self,
+        query: &Q,
+    ) -> impl Future<Output = Result<Vec<Q::Row>, ExecutionError<Self::Error>>> + Send
     where
-        Q: ExecutableQuery,
-        Q::Row: FromRow,
+        Q: ExecutableQuery + Sync,
+        Q::Row: FromRow + Send,
     {
-        let built = query.build_query();
-        let rows = self
-            .fetch_raw(&built)
-            .await
-            .map_err(ExecutionError::Backend)?;
-        rows.iter()
-            .enumerate()
-            .map(|(row_index, values)| {
-                Q::Row::try_from_row(values)
-                    .map_err(|source| ExecutionError::RowDecode { row_index, source })
-            })
-            .collect()
+        async move {
+            let built = query.build_query();
+            let rows = self
+                .fetch_raw(&built)
+                .await
+                .map_err(ExecutionError::Backend)?;
+            rows.iter()
+                .enumerate()
+                .map(|(row_index, values)| {
+                    Q::Row::try_from_row(values)
+                        .map_err(|source| ExecutionError::RowDecode { row_index, source })
+                })
+                .collect()
+        }
     }
 
     /// Executes `query` and decodes at most one row.
-    async fn fetch_optional<Q>(
+    fn fetch_optional<Q>(
         &self,
         query: &Q,
-    ) -> Result<Option<Q::Row>, ExecutionError<Self::Error>>
+    ) -> impl Future<Output = Result<Option<Q::Row>, ExecutionError<Self::Error>>> + Send
     where
-        Q: ExecutableQuery,
-        Q::Row: FromRow,
+        Q: ExecutableQuery + Sync,
+        Q::Row: FromRow + Send,
     {
-        let rows = self.fetch_all(query).await?;
-        match rows.len() {
-            0 => Ok(None),
-            1 => Ok(rows.into_iter().next()),
-            count => Err(ExecutionError::MultipleRows { count }),
+        async move {
+            let rows = self.fetch_all(query).await?;
+            match rows.len() {
+                0 => Ok(None),
+                1 => Ok(rows.into_iter().next()),
+                count => Err(ExecutionError::MultipleRows { count }),
+            }
         }
     }
 
     /// Executes `query` and decodes exactly one row.
-    async fn fetch_one<Q>(&self, query: &Q) -> Result<Q::Row, ExecutionError<Self::Error>>
+    fn fetch_one<Q>(
+        &self,
+        query: &Q,
+    ) -> impl Future<Output = Result<Q::Row, ExecutionError<Self::Error>>> + Send
     where
-        Q: ExecutableQuery,
-        Q::Row: FromRow,
+        Q: ExecutableQuery + Sync,
+        Q::Row: FromRow + Send,
     {
-        self.fetch_optional(query)
-            .await?
-            .ok_or(ExecutionError::NoRows)
+        async move {
+            self.fetch_optional(query)
+                .await?
+                .ok_or(ExecutionError::NoRows)
+        }
     }
 
     /// Executes `query` and returns the number of affected rows.
-    async fn execute<Q>(&self, query: &Q) -> Result<u64, ExecutionError<Self::Error>>
+    fn execute<Q>(
+        &self,
+        query: &Q,
+    ) -> impl Future<Output = Result<u64, ExecutionError<Self::Error>>> + Send
     where
-        Q: ExecutableQuery,
+        Q: ExecutableQuery + Sync,
     {
-        let built = query.build_query();
-        self.execute_raw(&built)
-            .await
-            .map_err(ExecutionError::Backend)
+        async move {
+            let built = query.build_query();
+            self.execute_raw(&built)
+                .await
+                .map_err(ExecutionError::Backend)
+        }
     }
 }
 

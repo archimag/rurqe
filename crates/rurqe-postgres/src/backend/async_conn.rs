@@ -1,5 +1,7 @@
 //! Asynchronous execution adapter over [`tokio_postgres::Client`].
 
+use core::future::Future;
+
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 
@@ -44,12 +46,18 @@ impl PgAsyncConnection {
 impl AsyncQueryBackend for PgAsyncConnection {
     type Error = PgError;
 
-    async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
-        fetch_raw_async(&self.client, query).await
+    fn fetch_raw(
+        &self,
+        query: &BuiltQuery,
+    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
+        fetch_raw_async(&self.client, query)
     }
 
-    async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
-        execute_raw_async(&self.client, query).await
+    fn execute_raw(
+        &self,
+        query: &BuiltQuery,
+    ) -> impl Future<Output = Result<u64, PgError>> + Send {
+        execute_raw_async(&self.client, query)
     }
 }
 
@@ -89,11 +97,17 @@ impl PgAsyncTransaction<'_> {
 impl AsyncQueryBackend for PgAsyncTransaction<'_> {
     type Error = PgError;
 
-    async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
-        fetch_raw_async(&self.inner, query).await
+    fn fetch_raw(
+        &self,
+        query: &BuiltQuery,
+    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
+        fetch_raw_async(&self.inner, query)
     }
 
-    async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
-        execute_raw_async(&self.inner, query).await
+    fn execute_raw(
+        &self,
+        query: &BuiltQuery,
+    ) -> impl Future<Output = Result<u64, PgError>> + Send {
+        execute_raw_async(&self.inner, query)
     }
 }
