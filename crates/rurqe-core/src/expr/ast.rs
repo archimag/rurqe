@@ -1,14 +1,13 @@
 //! Expression AST nodes, nested subqueries, CASE/typed expression builders, and
 //! the dialect-neutral statement AST they are rendered into.
 
-use core::fmt;
 use core::marker::PhantomData;
-use std::sync::Arc;
 
 use super::builder::{Aggregate, Expr};
 use super::ops::IntoExpr;
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
+use crate::dialect::Dialect;
 use crate::schema::Column;
 
 mod statement;
@@ -143,49 +142,43 @@ pub struct CaseBranch {
     pub result: ExprKind,
 }
 
-/// A deferred SQL rendering closure receiving the statement buffers to fill.
-///
-/// Nested statements render on demand into the buffers of their enclosing
-/// statement, so their placeholders continue the outer numbering.
-type SubqueryRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
-
 /// A nested query rendered inline within a predicate of an enclosing statement.
 ///
-/// The nested query renders on demand into the buffers of the enclosing
-/// statement, so its parameters continue the placeholder numbering of the outer
-/// query instead of starting over:
+/// The nested query is described as the same dialect-neutral statement data as
+/// the statement it is embedded into, so two predicates over equal nested
+/// statements are equal as well, and the enclosing statement renders the nested
+/// one with its own dialect. It renders on demand into the buffers of the
+/// enclosing statement, so its parameters continue the placeholder numbering of
+/// the outer query instead of starting over:
 ///
 /// ```text
 /// SELECT "id" FROM "users" WHERE ("id" IN (SELECT "user_id" FROM "orders" WHERE ("total" > $1)))
 /// ```
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Subquery {
-    renderer: SubqueryRenderer,
+    // The statement is boxed because it may itself hold a predicate over a
+    // nested query: `SelectAst` carries `ExprKind` values, and `ExprKind`
+    // carries a `Subquery`. Boxing the statement breaks that value cycle, so
+    // the three types keep a finite size while staying plain comparable data.
+    query: Box<SelectAst>,
 }
 
 impl Subquery {
-    /// Creates a subquery from a deferred rendering closure.
-    pub fn new(renderer: impl Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync + 'static) -> Self {
+    /// Creates a subquery around the statement `query`.
+    pub fn new(query: SelectAst) -> Self {
         Self {
-            renderer: Arc::new(renderer),
+            query: Box::new(query),
         }
     }
 
+    /// The statement the nested query is defined by.
+    pub fn ast(&self) -> &SelectAst {
+        self.query.as_ref()
+    }
+
     /// Renders the nested query into the buffers of the enclosing statement.
-    pub fn render(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        (self.renderer)(sql, params);
-    }
-}
-
-impl fmt::Debug for Subquery {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Subquery(..)")
-    }
-}
-
-impl PartialEq for Subquery {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.renderer, &other.renderer)
+    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        self.query.render::<D>(sql, params);
     }
 }
 

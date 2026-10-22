@@ -574,10 +574,10 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
     }
 }
 
-impl<D: Dialect, Tables: TableScope + 'static, Output: 'static> SelectQuery<D, Tables, Output> {
-    /// Wraps the query into a [`Subquery`] rendered with the enclosing statement's parameters.
+impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output> {
+    /// Wraps the query into a [`Subquery`] carrying this statement as plain data.
     pub fn into_subquery(self) -> Subquery {
-        Subquery::new(move |sql, params| self.render_into(sql, params))
+        Subquery::new(self.to_ast())
     }
 
     /// Builds an `EXISTS (subquery)` predicate over this query.
@@ -591,9 +591,7 @@ impl<D: Dialect, Tables: TableScope + 'static, Output: 'static> SelectQuery<D, T
     }
 }
 
-impl<D: Dialect, Tables: TableScope + 'static, Output: 'static>
-    From<SelectQuery<D, Tables, Output>> for Subquery
-{
+impl<D: Dialect, Tables: TableScope, Output> From<SelectQuery<D, Tables, Output>> for Subquery {
     fn from(query: SelectQuery<D, Tables, Output>) -> Self {
         query.into_subquery()
     }

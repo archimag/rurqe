@@ -77,6 +77,27 @@ fn common_table_expressions_render_before_the_projection() {
 }
 
 #[test]
+fn a_subquery_carries_its_statement_as_comparable_data() {
+    let mut inner = select(vec![UserId::expr_kind()]);
+    inner.filter = Some(Expr::column::<UserId>().eq(1i64).into_kind());
+
+    let left = Subquery::new(inner.clone());
+    let right = Subquery::new(inner.clone());
+
+    assert_eq!(left.ast(), &inner);
+    assert_eq!(left, right, "equal statements yield equal subqueries");
+
+    let predicate = Expr::exists(left).into_kind();
+    let (sql, params) = render(&predicate);
+
+    assert_eq!(
+        sql,
+        "(EXISTS (SELECT \"id\" FROM \"users\" WHERE (\"id\" = ?)))"
+    );
+    assert_eq!(params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
 fn joins_render_their_kind_relation_and_condition() {
     let mut ast = select(vec![UserId::expr_kind(), OrderId::expr_kind()]);
     ast.joins = vec![JoinAst {

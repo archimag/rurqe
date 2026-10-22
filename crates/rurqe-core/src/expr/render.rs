@@ -247,7 +247,7 @@ pub fn render_expr<D: Dialect>(
                 SubqueryOp::Exists => sql.push_str("EXISTS ("),
                 SubqueryOp::In => sql.push_str("IN ("),
             }
-            query.render(sql, params);
+            query.render::<D>(sql, params);
             sql.push_str("))");
         }
         ExprKind::IsNull { operand, negated } => {
