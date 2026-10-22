@@ -10,7 +10,7 @@ use rurqe_migrate::version::MigrationVersion;
 use crate::cli::{redact_database_url, CliError};
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
-use crate::stage::GoldenEquation;
+use crate::stage::{materialise_stage, GoldenEquation};
 
 use super::{cli_error, write_file};
 
@@ -25,11 +25,18 @@ fn load_stage(dir: &Path) -> Result<DeclarativeStage, CliError> {
 }
 
 /// Initialises a cold database from the declarative stage.
+///
+/// The stage is materialised in the disposable database named by `scratch_url`
+/// and introspected first, so the recorded [`StageMarker`] anchors the canonical
+/// catalog digest — the same digest `schema.lock` and `checkpoint.toml` carry —
+/// instead of the raw DDL digest of the stage directory. An absent
+/// `scratch_url` replays the stage in memory.
 pub(crate) fn initialise_stage<B: MigrationBackend>(
     backend: &mut B,
     stage_dir: &Path,
     version: MigrationVersion,
     description: &str,
+    scratch_url: Option<&str>,
 ) -> Result<(), CliError> {
     let stage = load_stage(stage_dir)?;
 
@@ -40,7 +47,10 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
         )));
     }
 
-    let marker = StageMarker::new(version, description, stage.checksum());
+    let catalog =
+        materialise_stage(&stage, scratch_url.unwrap_or(":memory:")).map_err(cli_error)?;
+
+    let marker = StageMarker::new(version, description, catalog.checksum());
     let report = cold_start(backend, &stage, &marker).map_err(cli_error)?;
 
     if report.stage_scripts.is_empty() {

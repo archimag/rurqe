@@ -2,7 +2,11 @@ use std::path::{Path, PathBuf};
 
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::version::MigrationVersion;
-use rurqe_migrate::{Checksum, InMemoryBackend, SchemaCatalog, STAGE_SCRIPT};
+use rurqe_migrate::{
+    Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, STAGE_SCRIPT,
+};
+
+use crate::stage::materialise_stage;
 
 use super::{commit_stage, initialise_stage, prune_migrations};
 
@@ -47,12 +51,39 @@ fn the_stage_is_applied_from_the_declarative_directory() {
     .expect("write the stage script");
 
     let mut backend = InMemoryBackend::new();
-    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage")
+    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage", None)
         .expect("the cold start succeeds");
 
     assert_eq!(backend.history.len(), 1);
     assert_eq!(backend.history[0].script, STAGE_SCRIPT);
     assert_eq!(backend.executed_sql.len(), 2);
+}
+
+#[test]
+fn the_stage_marker_carries_the_canonical_catalog_hash() {
+    let dir = workspace("stage-hash");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    std::fs::write(
+        stage_dir.join("users.sql"),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+    )
+    .expect("write the stage script");
+
+    let mut backend = InMemoryBackend::new();
+    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage", None)
+        .expect("the cold start succeeds");
+
+    let stage = DeclarativeStage::load(&stage_dir)
+        .expect("the stage is readable")
+        .expect("the stage directory exists");
+    let catalog = materialise_stage(&stage, ":memory:").expect("the stage materialises");
+
+    // The marker anchors the canonical catalog digest the checkpoint compares
+    // against, not the raw DDL digest of the stage directory.
+    assert_ne!(catalog.checksum(), stage.checksum());
+    assert_eq!(backend.history.len(), 1);
+    assert_eq!(backend.history[0].checksum, Some(catalog.checksum()));
 }
 
 #[test]
