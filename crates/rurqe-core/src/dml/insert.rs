@@ -10,12 +10,11 @@
 //! ```
 
 use core::marker::PhantomData;
-use std::sync::Arc;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
-use crate::expr::SqlVal;
+use crate::expr::SelectAst;
 use crate::query::{BuiltQuery, SelectQuery, Selection, TableScope, TableSelection};
 use crate::schema::{Column, ColumnBelongsTo, Table};
 
@@ -124,8 +123,6 @@ impl_insert_source_for_tuple!(A, B, C, D, E, F, G, H);
 
 impl<T: Table, Row> InsertSource<T> for InsertedSelect<Row> {}
 
-type SelectRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
-
 /// An `INSERT` statement over the table `T`.
 ///
 /// `Values` is the [`AssignmentSet`] type of a single inserted row or [`InsertedSelect`]
@@ -138,7 +135,7 @@ type SelectRenderer = Arc<dyn Fn(&mut String, &mut Vec<SqlVal>) + Send + Sync>;
 pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
     columns: Vec<&'static str>,
     rows: Vec<Vec<AssignValue>>,
-    select: Option<SelectRenderer>,
+    select: Option<SelectAst>,
     conflict: Option<Conflict>,
     returning: Vec<&'static str>,
     _marker: InsertMarker<D, T, Values, Returning>,
@@ -217,6 +214,10 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     }
 
     /// Configures the statement to insert rows from `select` into `columns`.
+    ///
+    /// The source query is captured as its dialect-neutral statement AST, so the
+    /// `INSERT` is described without a rendering closure and renders with the
+    /// dialect of the statement it belongs to.
     pub fn from_select<Cols, S>(
         mut self,
         columns: Cols,
@@ -224,13 +225,10 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning>
     where
         Cols: InsertColumns<T>,
-        S: TableScope + 'static,
-        Cols::Row: 'static,
+        S: TableScope,
     {
         columns.push_column_names(&mut self.columns);
-        self.select = Some(Arc::new(move |sql, params| {
-            select.render_into(sql, params);
-        }));
+        self.select = Some(select.to_ast());
         self.retype()
     }
 }
@@ -239,16 +237,11 @@ impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
     InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning>
 {
     /// Configures the statement to insert rows produced by `select` into the specified columns.
-    pub fn from_select<S: TableScope + 'static>(
+    pub fn from_select<S: TableScope>(
         mut self,
         select: SelectQuery<D, S, Cols::Row>,
-    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning>
-    where
-        Cols::Row: 'static,
-    {
-        self.select = Some(Arc::new(move |sql, params| {
-            select.render_into(sql, params);
-        }));
+    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning> {
+        self.select = Some(select.to_ast());
         self.retype()
     }
 }
@@ -346,9 +339,9 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
         sql.push(')');
 
         let mut params = Vec::new();
-        if let Some(render_select) = &self.select {
+        if let Some(select) = &self.select {
             sql.push(' ');
-            render_select(&mut sql, &mut params);
+            select.render::<D>(&mut sql, &mut params);
         } else {
             sql.push_str(" VALUES ");
             for (row_index, row) in self.rows.iter().enumerate() {

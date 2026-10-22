@@ -443,11 +443,11 @@ impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
     }
 }
 
-impl<D: Dialect, Tables: TableScope + 'static, Output: 'static, GroupByCols>
+impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
     GroupedQuery<D, Tables, Output, GroupByCols>
 {
     /// Converts this grouped query into a CTE for the table `T`.
-    pub fn as_cte<T: Table>(self) -> Cte<T, Output> {
+    pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {
         Cte::new(self.query)
     }
 }
