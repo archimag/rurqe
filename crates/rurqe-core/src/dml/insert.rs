@@ -385,13 +385,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
                     if value_index > 0 {
                         sql.push_str(", ");
                     }
-                    match value {
-                        AssignValue::Value(inner) => {
-                            params.push(inner.clone());
-                            D::push_placeholder(&mut sql, params.len());
-                        }
-                        AssignValue::Default => sql.push_str("DEFAULT"),
-                    }
+                    value.render::<D>(&mut sql, &mut params);
                 }
                 sql.push(')');
             }
@@ -658,6 +652,26 @@ mod tests {
                 SqlVal::Text("root".to_owned()),
                 SqlVal::Text("upserted".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn on_conflict_do_update_reads_the_proposed_row() {
+        use crate::dml::excluded;
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .do_update(UserName::set_expr(excluded(UserName)))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
         );
     }
 

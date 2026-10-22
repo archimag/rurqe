@@ -15,17 +15,20 @@
 
 pub mod conflict;
 pub mod delete;
+pub mod excluded;
 pub mod insert;
 pub mod update;
 
 pub use conflict::{Conflict, ConflictAction, OnConflict};
 pub use delete::DeleteQuery;
+pub use excluded::{excluded, Excluded};
 pub use insert::{EmptyRows, InsertQuery};
 pub use update::UpdateQuery;
 
 use core::marker::PhantomData;
 
-use crate::expr::{SqlCompatible, SqlVal};
+use crate::dialect::Dialect;
+use crate::expr::{Expr, ExprKind, SqlCompatible, SqlVal};
 use crate::schema::{Column, Table};
 
 /// Typestate marker indicating that a DML mutation does not yet have a filter.
@@ -111,6 +114,26 @@ pub enum AssignValue {
     Value(SqlVal),
     /// The SQL `DEFAULT` keyword, delegating to the column's default definition.
     Default,
+    /// A scalar expression rendered into the statement instead of a parameter.
+    ///
+    /// An expression such as the proposed row of an upsert stays symbolic until
+    /// the statement is rendered, so it renders as `EXCLUDED."column"` without
+    /// binding a parameter of its own.
+    Expr(ExprKind),
+}
+
+impl AssignValue {
+    /// Appends the value to `sql`, binding it to `params` when it carries a parameter.
+    pub(crate) fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        match self {
+            AssignValue::Value(value) => {
+                params.push(value.clone());
+                D::push_placeholder(sql, params.len());
+            }
+            AssignValue::Default => sql.push_str("DEFAULT"),
+            AssignValue::Expr(expr) => render_expr::<D>(sql, params, expr, &[]),
+        }
+    }
 }
 
 /// A typed assignment of a value to the column `C`.
@@ -173,6 +196,27 @@ where
     }
 }
 
+impl<C, Scope> Assignment<C, Expr<C::RustType, Scope>>
+where
+    C: Column,
+{
+    /// Assigns the scalar expression `expr` to the column `C`.
+    ///
+    /// The expression is rendered as SQL instead of being bound as a parameter,
+    /// which is what makes the proposed row of an upsert reachable:
+    ///
+    /// ```text
+    /// ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
+    /// ```
+    pub fn set_expr(expr: Expr<C::RustType, Scope>) -> Self {
+        Self {
+            value: AssignValue::Expr(expr.into_kind()),
+            _column: PhantomData,
+            _value: PhantomData,
+        }
+    }
+}
+
 impl<C, V> Assignment<C, V>
 where
     C: Column,
@@ -204,6 +248,16 @@ pub trait ColumnAssign: Column + Sized {
     /// Assigns the SQL `DEFAULT` keyword to the column.
     fn default_value() -> Assignment<Self, Self::RustType> {
         Assignment::default_value()
+    }
+
+    /// Assigns the scalar expression `expr` to the column, rendering it as SQL.
+    ///
+    /// The expression carries the column's Rust type, so a value of another type
+    /// cannot be assigned, and it stays symbolic until the statement is rendered.
+    fn set_expr<Scope>(
+        expr: Expr<Self::RustType, Scope>,
+    ) -> Assignment<Self, Expr<Self::RustType, Scope>> {
+        Assignment::set_expr(expr)
     }
 }
 

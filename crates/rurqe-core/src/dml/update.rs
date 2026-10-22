@@ -224,15 +224,7 @@ where
             }
             D::push_quoted_identifier(&mut sql, name);
             sql.push_str(" = ");
-            match value {
-                AssignValue::Value(val) => {
-                    params.push(val.clone());
-                    D::push_placeholder(&mut sql, params.len());
-                }
-                AssignValue::Default => {
-                    sql.push_str("DEFAULT");
-                }
-            }
+            value.render::<D>(&mut sql, &mut params);
         }
 
         if !self.from_tables.is_empty() {

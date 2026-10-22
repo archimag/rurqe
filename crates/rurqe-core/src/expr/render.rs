@@ -205,6 +205,12 @@ pub fn render_expr<D: Dialect>(
             sql.push('.');
             D::push_quoted_identifier(sql, column);
         }
+        ExprKind::Excluded { column } => {
+            // `EXCLUDED` names the proposed row of an upsert, so it is a relation
+            // qualifier of its own and never joins the relations of the statement.
+            sql.push_str("EXCLUDED.");
+            D::push_quoted_identifier(sql, column);
+        }
         ExprKind::Row { values } => {
             sql.push('(');
             render_expressions::<D>(sql, params, values, relations);

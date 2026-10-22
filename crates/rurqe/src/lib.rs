@@ -17,6 +17,7 @@ pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 pub use rurqe_core::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
 };
+pub use rurqe_core::dml::{excluded, Excluded};
 pub use rurqe_core::expr::{RowExpr, RowValues};
 pub use rurqe_core::query::TableSelection;
 pub use rurqe_core::schema::Next;
@@ -854,9 +855,9 @@ pub mod prelude {
     };
 
     pub use rurqe_core::dml::{
-        AssignColumn, AssignValue, Assignment, AssignmentSet, AssignmentsPresent, ColumnAssign,
-        DeleteQuery, EmptyRows, Filtered, HasAssignments, InsertQuery, NoAssignments, Unfiltered,
-        UpdateQuery,
+        excluded, AssignColumn, AssignValue, Assignment, AssignmentSet, AssignmentsPresent,
+        ColumnAssign, DeleteQuery, EmptyRows, Excluded, Filtered, HasAssignments, InsertQuery,
+        NoAssignments, Unfiltered, UpdateQuery,
     };
 
     #[cfg(feature = "macros")]

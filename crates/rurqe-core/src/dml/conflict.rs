@@ -63,13 +63,7 @@ impl Conflict {
                     }
                     D::push_quoted_identifier(sql, name);
                     sql.push_str(" = ");
-                    match value {
-                        AssignValue::Value(val) => {
-                            params.push(val.clone());
-                            D::push_placeholder(sql, params.len());
-                        }
-                        AssignValue::Default => sql.push_str("DEFAULT"),
-                    }
+                    value.render::<D>(sql, params);
                 }
             }
         }

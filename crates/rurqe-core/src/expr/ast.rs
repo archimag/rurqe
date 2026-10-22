@@ -39,6 +39,18 @@ pub enum ExprKind {
         /// The compile-time SQL identifier of the column.
         column: &'static str,
     },
+    /// A reference to a column of the `EXCLUDED` pseudo-relation of an upsert.
+    ///
+    /// `EXCLUDED` is the relation holding the row proposed by an `INSERT` while
+    /// its `ON CONFLICT DO UPDATE` branch runs, so `EXCLUDED."name"` reads the
+    /// value the conflicting statement tried to insert. The relation exists only
+    /// inside that clause and is written unqualified by definition, so the
+    /// reference renders as `EXCLUDED."column"` whatever relations the enclosing
+    /// statement addresses.
+    Excluded {
+        /// The compile-time SQL identifier of the referenced column.
+        column: &'static str,
+    },
     /// A parenthesised row value: a tuple of expressions compared as one value.
     ///
     /// SQL:1992 treats a parenthesised tuple of expressions as a single
