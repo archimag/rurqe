@@ -132,6 +132,18 @@ fn history(db: &Path) -> Vec<(String, Option<String>, String)> {
         .expect("read the history rows")
 }
 
+/// The checksum recorded for the synthetic stage marker of the database at `db`.
+fn stage_marker_checksum(db: &Path) -> String {
+    let connection = rusqlite::Connection::open(db).expect("open the sqlite database");
+    connection
+        .query_row(
+            "SELECT checksum FROM __rurqe_schema_history WHERE script = ?1",
+            [STAGE_SCRIPT],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("read the stage marker checksum")
+}
+
 #[test]
 fn cold_start_initialises_the_database_from_the_declarative_stage() {
     let workspace = temp_workspace("init");
@@ -614,4 +626,147 @@ fn the_base_stage_anchors_an_incremental_tail() {
         error.to_string().contains("V2__email.sql"),
         "got {error}"
     );
+}
+
+#[test]
+fn cold_start_records_catalog_checksum_matching_stage_commit() {
+    let workspace = temp_workspace("catalog-checksum");
+    let db = workspace.join("app.db");
+    let stage_dir = workspace.join("schema");
+    let migrations = workspace.join("migrations");
+    write_scripts(&stage_dir, &[("users.sql", USERS)]);
+    write_scripts(&migrations, &[("V4__orders.sql", ORDERS)]);
+
+    let stage = path_string(&stage_dir);
+    let database = path_string(&db);
+    let dir = path_string(&migrations);
+
+    run_cli(argv(&[
+        "stage",
+        "init",
+        "--version",
+        "3.2",
+        "--stage-dir",
+        &stage,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the cold start applies the declarative stage");
+
+    let recorded = stage_marker_checksum(&db);
+
+    let lock = workspace.join("schema.lock");
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    let lock_path = path_string(&lock);
+    let checkpoint = path_string(&checkpoint_path);
+
+    run_cli(argv(&[
+        "stage",
+        "commit",
+        "--version",
+        "3.2",
+        "--database-url",
+        &database,
+        "--lock-path",
+        &lock_path,
+        "--checkpoint-path",
+        &checkpoint,
+    ]))
+    .expect("the live database is sealed as the new stage");
+
+    let marker = Checkpoint::load(&checkpoint_path)
+        .expect("the checkpoint is readable")
+        .expect("the checkpoint exists");
+
+    // The cold start anchored the canonical catalog digest, so sealing the very
+    // same database records the identical hash instead of a raw DDL digest.
+    assert_eq!(marker.schema_hash().to_hex(), recorded);
+
+    run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the active tail advances the cold-started database");
+
+    assert_eq!(tables(&db), vec!["orders".to_owned(), "users".to_owned()]);
+    assert_eq!(
+        history(&db)
+            .into_iter()
+            .map(|(script, _, _)| script)
+            .collect::<Vec<_>>(),
+        vec![STAGE_SCRIPT.to_owned(), "V4__orders.sql".to_owned()]
+    );
+}
+
+#[test]
+fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_hash() {
+    let workspace = temp_workspace("checkpoint-hash-mismatch");
+    let db = workspace.join("app.db");
+    let stage_dir = workspace.join("schema");
+    write_scripts(&stage_dir, &[("users.sql", USERS)]);
+
+    let stage = path_string(&stage_dir);
+    let database = path_string(&db);
+
+    run_cli(argv(&[
+        "stage",
+        "init",
+        "--version",
+        "3.2",
+        "--stage-dir",
+        &stage,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the cold start applies the declarative stage");
+
+    let lock = workspace.join("schema.lock");
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    let lock_path = path_string(&lock);
+    let checkpoint = path_string(&checkpoint_path);
+
+    run_cli(argv(&[
+        "stage",
+        "commit",
+        "--version",
+        "3.2",
+        "--database-url",
+        &database,
+        "--lock-path",
+        &lock_path,
+        "--checkpoint-path",
+        &checkpoint,
+    ]))
+    .expect("the live database is sealed as the new stage");
+
+    // Tamper with the recorded stage hash without touching the database.
+    write_checkpoint(&checkpoint_path, "3.2");
+
+    let migrations = workspace.join("migrations");
+    write_scripts(&migrations, &[("V4__orders.sql", ORDERS)]);
+    let dir = path_string(&migrations);
+
+    let error = run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--database-url",
+        &database,
+    ]))
+    .expect_err("the diverged stage hash blocks the tail");
+
+    assert!(
+        error.to_string().contains("has diverged from the checkpoint"),
+        "got {error}"
+    );
+    assert_eq!(tables(&db), vec!["users".to_owned()]);
 }
