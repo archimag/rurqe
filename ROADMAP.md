@@ -28,6 +28,8 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 14** [x] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Completed) |
 | **Phase 15** [x] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Completed) |
 | **Phase 16** [x] | Compile-Fail Hardening & Negative Test Suite | Compile-time rejection of every scope, nullability, typestate, capability, and grouping violation | Absolute SQL Correctness (Completed) |
+| **Phase 17** [ ] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Planned) |
+| **Phase 18** [ ] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Planned) |
 
 ---
 
@@ -711,5 +713,128 @@ let _ = select_from::<Postgres, User>()
 ```text
 error[E0277]: column `OrderTotal` cannot be projected from this query's scope
   = note: introduce the column's table with `from` or a join before projecting it
+```
+
+---
+
+## Phase 17: Relational Depth, Row Expressions & Locking (jOOQ Parity & Transactional Soundness) [Planned]
+
+### Objective
+Deliver deep relational expressiveness and strict transactional concurrency without synthetic runtime emulation: row value expressions (column tuples in comparisons, predicates, and keyset pagination), scalar subqueries seamlessly lifting into typed `Expr<T>`, pessimistic row-level locking (`FOR UPDATE`, `FOR SHARE`, `SKIP LOCKED`, `NOWAIT`) gated by dialect capability traits, ANSI SQL:2003 aggregate `FILTER (WHERE ...)`, complete window frame specifications (`ROWS/RANGE BETWEEN`), and strictly typed references to the `EXCLUDED` pseudo-relation in `ON CONFLICT DO UPDATE`.
+
+### Key Deliverables
+- [ ] **Row Value Expressions (SQL:1992 Tuple Comparisons & Keyset Pagination):**
+  - Column tuples as first-class operands: `(col_a, col_b).eq((val_a, val_b))`, `(col_a, col_b).gt((val_a, val_b))`.
+  - Tuple membership predicates: `(col_a, col_b).in_subquery(subquery)`.
+  - High-level keyset/cursor pagination DSL: `.paginate_after((created_at, id), cursor)` translating directly into native tuple ordering comparisons (`>` / `<`) with deterministic index utilization in PostgreSQL and SQLite.
+- [ ] **Scalar Subqueries as First-Class Expressions (`Expr<T>`):**
+  - A `SelectQuery` projecting a single column of Rust type `T` seamlessly converts into `Expr<T>` via `.into_scalar_expr()`.
+  - Usable in arbitrary expressions and filters (`ProductPrice.gt(select_from(Products).select(avg(ProductPrice)).into_scalar_expr())`).
+  - Static invariant: subqueries projecting multi-column tuples cannot be converted to scalar expressions (rejected at compile time).
+- [ ] **Pessimistic Row-Level Locking (`SupportsRowLocking`):**
+  - Gated by the `SupportsRowLocking` capability trait (implemented for `Postgres<V>`, absent for `Sqlite`).
+  - Query locking methods: `.for_update()`, `.for_share()`, `.for_no_key_update()`, `.for_key_share()`.
+  - Lock acquisition modifiers: `.nowait()`, `.skip_locked()`.
+  - Zero emulation: SQLite usage rejected at compile time via `#[diagnostic::on_unimplemented]`.
+- [ ] **Aggregate `FILTER (WHERE ...)` (SQL:2003) & Aggregate `DISTINCT`:**
+  - Condition filtering on aggregates: `count_all().filter_where(condition)`, `sum(amount).filter_where(condition)`.
+  - Gated via `SupportsAggregateFilter` (PostgreSQL 9.4+, SQLite 3.30+). Native rendering without `CASE WHEN` emulation.
+  - Typed distinct aggregates: `count_distinct(col)`, `sum_distinct(col)`.
+- [ ] **Window Frame Specifications (`ROWS / RANGE BETWEEN`):**
+  - Complete window framing DSL on `WindowSpec`: `.rows_between(start, end)`, `.range_between(start, end)`.
+  - Frame bounds: `WindowFrame::UnboundedPreceding`, `WindowFrame::Preceding(n)`, `WindowFrame::CurrentRow`, `WindowFrame::Following(n)`, `WindowFrame::UnboundedFollowing`.
+- [ ] **Strictly Typed `EXCLUDED` in `ON CONFLICT DO UPDATE`:**
+  - Typed reference to rejected row values via `excluded(Col)` in upsert assignments:
+    `on_conflict(UserId).do_update((UserName.set(excluded(UserName)), Attempts.set(Attempts.add(1))))`.
+  - Renders `\"users\".\"name\" = EXCLUDED.\"name\"` (native in PostgreSQL and SQLite 3.24+).
+
+### Example Usage
+```rust
+use rurqe::postgres::prelude::*;
+
+// 1. Pessimistic row locking with SKIP LOCKED for transactional job queues
+let next_job = select_from(Jobs)
+    .select(cols!(JobId, JobPayload))
+    .where_(JobStatus.eq("pending"))
+    .order_by_asc(JobCreatedAt)
+    .limit(1)
+    .for_update()
+    .skip_locked()
+    .fetch_optional(&mut conn)?;
+
+// 2. Row value expressions for cursor-based keyset pagination
+let next_page = select_from(Events)
+    .select(cols!(EventId, EventCreatedAt, EventData))
+    .where_((EventCreatedAt, EventId).lt((cursor_time, cursor_id)))
+    .order_by_desc((EventCreatedAt, EventId))
+    .limit(50)
+    .fetch_all(&mut conn)?;
+
+// 3. Aggregate FILTER (WHERE ...)
+let stats = select_from(Orders)
+    .select((
+        count_all().filter_where(OrderStatus.eq("completed")),
+        sum(OrderTotal).filter_where(OrderStatus.eq("refunded")),
+    ))
+    .fetch_one(&mut conn)?;
+```
+
+---
+
+## Phase 18: Kysely DX, Dynamic Builders & Nested DTOs (MULTISET via Native JSON) [Planned]
+
+### Objective
+Achieve Kysely-grade developer ergonomics without runtime type erasure or untyped JSON blobs: typed nested collection/record synthesis (`nest_many` / `nest_one`) directly from SQL using native database JSON aggregates (eliminating N+1 queries and Cartesian join explosions), fluent conditional query construction (`.when`, `.if_some`, `.where_opt`) preserving typestate, typed derived tables (`.as_table(...)` / `from_subquery(...)`), database-first schema enums (PostgreSQL `pg_enum` and SQLite `CHECK`), and first-class PostgreSQL array types (`T[]`).
+
+### Key Deliverables
+- [ ] **Typed Nested Results (MULTISET / Kysely `jsonArrayFrom` & `jsonObjectFrom`):**
+  - First-class `nest_many(subquery)` and `nest_one(subquery)` projection targets in `select!` and `dto!`.
+  - Native single-round-trip SQL generation without Cartesian join multiplication or client-side group-by stitching:
+    - PostgreSQL: `COALESCE(jsonb_agg(to_jsonb(sub)), '[]'::jsonb)` or `json_build_object(...)`.
+    - SQLite: `COALESCE(json_group_array(json_object(...)), '[]')`.
+  - Zero-boilerplate row mapping: synthesizes fields typed as `Vec<ChildDto>` or `Option<ChildDto>` with direct single-pass deserialization.
+- [ ] **Fluent Conditional Query Composition (Typestate-Preserving Dynamic DX):**
+  - Dynamic chaining without breaking method chains or losing compile-time guarantees:
+    - `.when(condition, |q| q.where_(...))`
+    - `.if_some(opt_value, |q, val| q.where_(...))`
+    - `.where_opt(Option<Expr<bool>>)`
+  - Strictly preserves query typestate (`Filtered` remains `Filtered`; transitioning from `Unfiltered` to `Filtered` is seamless).
+- [ ] **Derived Tables (`from_subquery` / `.as_table(...)`):**
+  - Turning a projected `SelectQuery` into a relation: `let top_users = select_from(Users)...as_table("top_users");`.
+  - Participates in `TableScope`, `ExprScope`, and joins with typed column access.
+- [ ] **DB-First Enums (`pg_enum` & SQLite `CHECK`):**
+  - CLI introspection of PostgreSQL `CREATE TYPE ... AS ENUM` and SQLite `CHECK (col IN (...))` constraints into `schema.lock` (`[[enum]]`).
+  - Codegen emits typed `#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)] pub enum ...` with compile-time type checking in expressions: `UserStatus.eq(Status::Active)`.
+- [ ] **Native PostgreSQL Array Types (`T[]`):**
+  - Introspection and mapping of array columns (`_text` $\to$ `Vec<String>`, `_int4` $\to$ `Vec<i32>`).
+  - Dialect extension trait `PgArrayExpressions`: array containment (`@>`), overlap (`&&`), and `col.any(subquery)` / `col.all(subquery)`.
+  - Purely in `rurqe-postgres`, zero pseudo-emulation on SQLite.
+
+### Example Usage
+```rust
+use rurqe::postgres::prelude::*;
+
+// 1. Typed nested DTOs (MULTISET): One query, zero Cartesian joins, typed Vec<OrderSummary>
+let users_with_orders = select_from(Users)
+    .select(dto!(UserWithOrders {
+        user_id: UserId,
+        user_name: UserName,
+        orders: nest_many(
+            select_from(Orders)
+                .select(dto!(OrderSummary {
+                    order_id: OrderId,
+                    total: OrderTotal,
+                }))
+                .where_(OrderUserId.eq(UserId))
+        ),
+    }))
+    .fetch_all(&mut conn)?;
+
+// 2. Fluent dynamic query construction without typestate breakage
+let filtered = select_from(Users)
+    .select(cols!(UserId, UserName))
+    .when(only_active, |q| q.where_(IsActive.eq(true)))
+    .if_some(search_term, |q, term| q.where_(UserName.ilike(format!("%{term}%"))))
+    .fetch_all(&mut conn)?;
 ```
 
