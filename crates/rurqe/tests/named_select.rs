@@ -16,6 +16,21 @@ table! {
     }
 }
 
+table! {
+    /// The `audit_log` table read by the capability-gated mutation clauses.
+    AuditLog => "audit_log" {
+        AuditUserId => "user_id": i64,
+        AuditNote => "note": String,
+    }
+}
+
+table! {
+    /// The alias exposing the latest audit entry of every user.
+    LatestAudit => "latest_audit" {
+        LatestAuditNote => "note": String,
+    }
+}
+
 dto! {
     /// A user projection returned by repository functions.
     pub struct UserSummary {
@@ -240,18 +255,109 @@ fn dialect_versions_gate_capabilities_at_the_type_level() {
     fn assert_dialect<D: Dialect>() {}
     fn assert_returning<D: Dialect + SupportsReturning>() {}
     fn assert_on_conflict<D: Dialect + SupportsOnConflict>() {}
+    fn assert_delete_using<D: Dialect + SupportsDeleteUsing>() {}
+    fn assert_update_from<D: Dialect + SupportsUpdateFrom>() {}
+    fn assert_lateral<D: Dialect + SupportsLateralJoin>() {}
 
-    // PostgreSQL implements both capabilities on every supported version.
+    // PostgreSQL implements every capability on every supported version.
     assert_returning::<Postgres<Pg14>>();
     assert_returning::<Postgres<Pg16>>();
     assert_on_conflict::<Postgres<Pg14>>();
     assert_on_conflict::<Postgres<Pg16>>();
+    assert_delete_using::<Postgres<Pg16>>();
+    assert_update_from::<Postgres<Pg16>>();
+    assert_lateral::<Postgres<Pg16>>();
 
     // SQLite 3.0 is a dialect but predates both capability gates.
     assert_dialect::<Sqlite<Sqlite3_0>>();
 
-    // SQLite 3.35 satisfies both gates, SQLite 3.24 only the conflict gate.
+    // SQLite 3.35 satisfies the returning, conflict, and update-from gates,
+    // SQLite 3.24 only the conflict gate, and no SQLite version offers
+    // `DELETE ... USING` or `LATERAL` joins at all.
     assert_returning::<Sqlite<Sqlite3_35>>();
     assert_on_conflict::<Sqlite<Sqlite3_24>>();
     assert_on_conflict::<Sqlite<Sqlite3_35>>();
+    assert_update_from::<Sqlite<Sqlite3_35>>();
+}
+
+#[test]
+fn postgres_renders_every_capability_gated_clause() {
+    use rurqe::postgres::pg16::prelude::*;
+
+    // `DELETE ... USING` reads the deleted rows through another relation.
+    let deleted = delete_from(User)
+        .using::<AuditLog>()
+        .where_(UserId.eq(Expr::column::<AuditUserId>()))
+        .build();
+
+    assert_eq!(
+        deleted.sql,
+        "DELETE FROM \"users\" USING \"audit_log\" \
+         WHERE (\"users\".\"id\" = \"audit_log\".\"user_id\")"
+    );
+    assert!(deleted.params.is_empty());
+
+    // `UPDATE ... FROM` reads the assigned value from another relation.
+    let updated = update(User)
+        .set(UserName::set("root"))
+        .from::<AuditLog>()
+        .where_(UserId.eq(Expr::column::<AuditUserId>()))
+        .build();
+
+    assert_eq!(
+        updated.sql,
+        "UPDATE \"users\" SET \"name\" = $1 FROM \"audit_log\" \
+         WHERE (\"users\".\"id\" = \"audit_log\".\"user_id\")"
+    );
+    assert_eq!(updated.params, vec![SqlVal::Text("root".to_owned())]);
+
+    // `RETURNING` projects the affected rows back.
+    let updated_returning = delete_from(User)
+        .where_(UserId.eq(1i64))
+        .returning((UserName,))
+        .build();
+
+    assert_eq!(
+        updated_returning.sql,
+        "DELETE FROM \"users\" WHERE (\"id\" = $1) RETURNING \"name\""
+    );
+    assert_eq!(updated_returning.params, vec![SqlVal::I64(1)]);
+
+    // `ON CONFLICT` skips a conflicting row instead of failing the insert.
+    let upserted = insert_into(User)
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict((UserId,))
+        .do_nothing()
+        .build();
+
+    assert_eq!(
+        upserted.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
+         ON CONFLICT (\"id\") DO NOTHING"
+    );
+    assert_eq!(
+        upserted.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+    );
+
+    // `LATERAL` joins every outer row with a correlated subquery.
+    let latest = select_from(AuditLog)
+        .select((AuditNote,))
+        .where_(AuditUserId.eq(Expr::column::<UserId>().without_scope()))
+        .order_by_desc(AuditUserId)
+        .limit(1);
+
+    let lateral = select_from(User)
+        .cross_join_lateral(latest.as_lateral::<LatestAudit>())
+        .select(cols!(UserId, LatestAuditNote))
+        .build();
+
+    assert_eq!(
+        lateral.sql,
+        "SELECT \"users\".\"id\", \"latest_audit\".\"note\" FROM \"users\" \
+         CROSS JOIN LATERAL (SELECT \"note\" FROM \"audit_log\" \
+         WHERE (\"user_id\" = \"users\".\"id\") ORDER BY \"user_id\" DESC LIMIT 1) \
+         AS \"latest_audit\""
+    );
+    assert!(lateral.params.is_empty());
 }

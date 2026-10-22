@@ -86,6 +86,28 @@ impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 /// fn assert_delete_using<D: SupportsDeleteUsing>() {}
 /// assert_delete_using::<Sqlite<Sqlite3_35>>();
 /// ```
+///
+/// SQLite gained `UPDATE ... FROM` in 3.33.0, so versions older than the newest
+/// pinned marker do not implement [`SupportsUpdateFrom`]:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::SupportsUpdateFrom;
+/// use rurqe_sqlite::{Sqlite, Sqlite3_24};
+///
+/// fn assert_update_from<D: SupportsUpdateFrom>() {}
+/// assert_update_from::<Sqlite<Sqlite3_24>>();
+/// ```
+///
+/// SQLite has no `LATERAL` joins, so the `SupportsLateralJoin` capability is
+/// never implemented either:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::SupportsLateralJoin;
+/// use rurqe_sqlite::{Sqlite, Sqlite3_35};
+///
+/// fn assert_lateral<D: SupportsLateralJoin>() {}
+/// assert_lateral::<Sqlite<Sqlite3_35>>();
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
 
