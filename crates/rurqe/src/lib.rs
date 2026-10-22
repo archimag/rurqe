@@ -445,6 +445,61 @@ crate::pin_dialect_version! {
 /// let _ = select_from::<Postgres, User>()
 ///     .select((UserId, lag(OrderTotal).over(Window::empty())));
 /// ```
+///
+/// Restricting a join with an `ON` condition that references a table outside the
+/// joined scope is rejected at compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Profile => "profiles" {
+///         ProfileUserId => "user_id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .inner_join::<Profile, _, _>(
+///         Expr::column::<ProfileUserId>().eq(Expr::column::<OrderUserId>()),
+///     );
+/// ```
+///
+/// Restricting the result with a `HAVING` predicate that references a column of
+/// an unjoined table is rejected at compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// table! {
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
+/// let _ = select_from::<Postgres, User>()
+///     .select((UserId,))
+///     .having(Expr::column::<OrderTotal>().gt(1.0));
+/// ```
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection> {
     SelectQuery::new().from::<T>()
 }
