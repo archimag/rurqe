@@ -298,3 +298,65 @@ fn coalesce_binds_the_fallback_parameter() {
     assert_eq!(sql, "COALESCE(\"name\", ?)");
     assert_eq!(params, vec![SqlVal::Text("anonymous".to_owned())]);
 }
+
+/// A dialect quoting identifiers with brackets and numbering placeholders with
+/// `#`, used to check that an expression tree carries no dialect of its own.
+struct BracketDialect;
+
+impl crate::dialect::Dialect for BracketDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('[');
+        out.push_str(ident);
+        out.push(']');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        use core::fmt::Write;
+        let _ = write!(out, "#{index}");
+    }
+}
+
+/// Renders `kind` with the dialect `D` into its SQL text and parameters.
+fn render_with<D: crate::dialect::Dialect>(kind: &ExprKind) -> (String, Vec<SqlVal>) {
+    let mut sql = String::new();
+    let mut params = Vec::new();
+    render_expr::<D>(&mut sql, &mut params, kind, &[]);
+    (sql, params)
+}
+
+#[test]
+fn one_expression_tree_renders_under_every_dialect() {
+    let predicate = Expr::column::<UserName>().eq("root");
+
+    let (mock_sql, mock_params) = render(predicate.kind());
+    let (bracket_sql, bracket_params) = render_with::<BracketDialect>(predicate.kind());
+
+    assert_eq!(mock_sql, "(\"name\" = ?)");
+    assert_eq!(bracket_sql, "([name] = #1)");
+    assert_eq!(mock_params, vec![SqlVal::Text("root".to_owned())]);
+    assert_eq!(bracket_params, mock_params);
+}
+
+#[test]
+fn a_nested_statement_renders_with_the_dialect_of_its_enclosing_expression() {
+    let inner = crate::query::SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,))
+        .where_(Expr::column::<UserActive>().eq(true));
+
+    let predicate = Expr::exists(inner);
+
+    let (mock_sql, mock_params) = render(predicate.kind());
+    let (bracket_sql, bracket_params) = render_with::<BracketDialect>(predicate.kind());
+
+    assert_eq!(
+        mock_sql,
+        "(EXISTS (SELECT \"id\" FROM \"users\" WHERE (\"active\" = ?)))"
+    );
+    assert_eq!(
+        bracket_sql,
+        "(EXISTS (SELECT [id] FROM [users] WHERE ([active] = #1)))"
+    );
+    assert_eq!(mock_params, vec![SqlVal::Bool(true)]);
+    assert_eq!(bracket_params, mock_params);
+}
