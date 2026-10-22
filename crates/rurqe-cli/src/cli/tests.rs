@@ -162,6 +162,49 @@ fn redacts_credentials_from_connection_urls() {
 }
 
 #[test]
+fn redacts_secrets_from_query_parameters() {
+    assert_eq!(
+        redact_database_url("postgres://app@db.internal:5432/app?password=s3cret&sslmode=require"),
+        "postgres://***@db.internal:5432/app?password=***&sslmode=require"
+    );
+    assert_eq!(
+        redact_database_url(
+            "postgres://db/app?sslmode=require&sslpassword=s3cret&application_name=ci"
+        ),
+        "postgres://db/app?sslmode=require&sslpassword=***&application_name=ci"
+    );
+    assert_eq!(
+        redact_database_url("postgres://db/app?password=s3cret#frag"),
+        "postgres://db/app?password=***#frag"
+    );
+    assert_eq!(
+        redact_database_url("sqlite:/tmp/app.db?password=not-a-secret-here"),
+        "sqlite:/tmp/app.db?password=***"
+    );
+}
+
+#[test]
+fn redacts_secrets_from_libpq_keywords() {
+    assert_eq!(
+        redact_database_url("host=db.internal user=app password=s3cret dbname=app"),
+        "host=db.internal user=app password=*** dbname=app"
+    );
+    assert_eq!(
+        redact_database_url("host=db password='two words' sslpassword=s3cret"),
+        "host=db password='***' sslpassword=***"
+    );
+    assert_eq!(
+        redact_database_url("host=db password='it\\'s' user=app"),
+        "host=db password='***' user=app"
+    );
+    // A path segment that merely looks like a parameter is not a credential.
+    assert_eq!(
+        redact_database_url("sqlite:/tmp/password=looks-like-a-keyword.db"),
+        "sqlite:/tmp/password=looks-like-a-keyword.db"
+    );
+}
+
+#[test]
 fn an_explicit_equation_url_is_used_verbatim() {
     assert_eq!(
         resolve_equation_url(Some("postgres://db.internal:5432/app".to_owned()))
