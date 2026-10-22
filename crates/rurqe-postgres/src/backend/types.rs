@@ -238,6 +238,15 @@ impl ToSql for SqlValParam<'_> {
             SqlVal::EncodingError(message) => {
                 Err(Box::new(::std::io::Error::other(message.clone())))
             }
+            // `SqlVal` is `#[non_exhaustive]` because several of its variants are
+            // gated behind cargo features, so this adapter may observe a value
+            // kind it does not know how to encode. Refusing it keeps the failure
+            // visible instead of binding a misleading textual form.
+            other => Err(Box::new(::std::io::Error::other(format!(
+                "cannot bind a SQL `{}` value to a PostgreSQL column of type `{}`",
+                other.variant_name(),
+                ty.name()
+            )))),
         }
     }
 

@@ -6,7 +6,15 @@ use core::fmt;
 ///
 /// Values stay in their Rust representation until the dialect renders them, so
 /// the produced parameter list remains typed and allocation-free for scalars.
+///
+/// The enumeration is `#[non_exhaustive]` because several of its variants are
+/// gated behind cargo features: `Uuid`, `NaiveDateTime`, `DateTimeUtc`,
+/// `NaiveDate`, and `Json` exist only when their feature is enabled. The set of
+/// variants a downstream crate observes therefore depends on the enabled
+/// features, so matching code outside this crate has to keep a wildcard arm,
+/// which stays correct no matter which features are compiled in.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SqlVal {
     /// The SQL `NULL` value.
     Null,
