@@ -4,7 +4,10 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 
 use super::lock;
-use super::types::{ColumnDef, EnumDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
+use super::types::{
+    CheckDef, ColumnDef, EnumDef, ForeignKeyAction, ForeignKeyDef, IndexDef, TableDef, TriggerDef,
+    TypeKind, ViewDef,
+};
 
 /// The complete schema of a database as an engine-neutral catalog.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -13,14 +16,20 @@ pub struct SchemaCatalog {
     pub tables: Vec<TableDef>,
     /// The enum types declared by the database.
     pub enums: Vec<EnumDef>,
+    /// The views declared by the database.
+    pub views: Vec<ViewDef>,
+    /// The triggers declared by the database.
+    pub triggers: Vec<TriggerDef>,
 }
 
 impl SchemaCatalog {
-    /// Creates a catalog from the given tables and no enum types.
+    /// Creates a catalog from the given tables and no enum types, views, or triggers.
     pub fn new(tables: Vec<TableDef>) -> Self {
         Self {
             tables,
             enums: Vec::new(),
+            views: Vec::new(),
+            triggers: Vec::new(),
         }
     }
 
@@ -30,13 +39,24 @@ impl SchemaCatalog {
         self
     }
 
+    /// Attaches the views `views` to the catalog.
+    pub fn with_views(mut self, views: Vec<ViewDef>) -> Self {
+        self.views = views;
+        self
+    }
+
+    /// Attaches the triggers `triggers` to the catalog.
+    pub fn with_triggers(mut self, triggers: Vec<TriggerDef>) -> Self {
+        self.triggers = triggers;
+        self
+    }
+
     /// Renders the canonical `schema.lock` snapshot.
     ///
-    /// Enum sections and tables, and the columns, foreign keys, and indexes of
-    /// every table, are emitted sorted by name, so the snapshot depends only on
-    /// the schema content and never on the declaration order of the catalog.
+    /// Enum sections, tables, views, and triggers are emitted sorted by name, so
+    /// the snapshot depends only on the schema content and never on declaration order.
     pub fn to_lock(&self) -> String {
-        lock::render_lock(&self.enums, &self.tables)
+        lock::render_lock(&self.enums, &self.tables, &self.views, &self.triggers)
     }
 
     /// The SHA-256 digest of the canonical snapshot.
@@ -69,6 +89,7 @@ impl SchemaCatalog {
         let mut lines = lock.lines();
         let defaults = match lines.next() {
             Some(header) if header == lock::LOCK_HEADER => Defaults::Quoted,
+            Some(header) if header == lock::V2_LOCK_HEADER => Defaults::Quoted,
             Some(header) if header == lock::LEGACY_LOCK_HEADER => Defaults::Verbatim,
             _ => {
                 return Err(lock_error(format!(
@@ -81,6 +102,8 @@ impl SchemaCatalog {
         let lines: Vec<&str> = lines.collect();
         let mut enums: Vec<EnumDef> = Vec::new();
         let mut tables: Vec<TableDef> = Vec::new();
+        let mut views: Vec<ViewDef> = Vec::new();
+        let mut triggers: Vec<TriggerDef> = Vec::new();
         let mut index = 0;
 
         while index < lines.len() {
@@ -101,7 +124,21 @@ impl SchemaCatalog {
                 continue;
             }
 
-            if trimmed.starts_with("table ") {
+            if trimmed == lock::VIEW_HEADER {
+                let (view, next) = parse_view(&lines, index + 1)?;
+                views.push(view);
+                index = next;
+                continue;
+            }
+
+            if trimmed == lock::TRIGGER_HEADER {
+                let (trigger, next) = parse_trigger(&lines, index + 1)?;
+                triggers.push(trigger);
+                index = next;
+                continue;
+            }
+
+            if trimmed.starts_with("table \"") {
                 let (table, next) = parse_table(&lines, index, defaults)?;
                 tables.push(table);
                 index = next;
@@ -109,14 +146,19 @@ impl SchemaCatalog {
             }
 
             return Err(lock_error(
-                "expected a `table` declaration or an `[[enum]]` section",
+                "expected a `table` declaration or an `[[enum]]`, `[[view]]`, or `[[trigger]]` section",
             ));
         }
 
         enums.sort_by(|left, right| left.name.cmp(&right.name));
         tables.sort_by(|left, right| left.name.cmp(&right.name));
+        views.sort_by(|left, right| left.name.cmp(&right.name));
+        triggers.sort_by(|left, right| left.name.cmp(&right.name));
 
-        Ok(SchemaCatalog::new(tables).with_enums(enums))
+        Ok(SchemaCatalog::new(tables)
+            .with_enums(enums)
+            .with_views(views)
+            .with_triggers(triggers))
     }
 }
 
@@ -160,6 +202,7 @@ fn parse_table(
         let is_close = trimmed == "}";
         let is_item = trimmed.starts_with("column ")
             || trimmed.starts_with("primary key ")
+            || trimmed.starts_with("check ")
             || trimmed.starts_with("foreign key ")
             || trimmed.starts_with("index ")
             || trimmed.starts_with("unique index ");
@@ -198,7 +241,11 @@ fn parse_enum(lines: &[&str], start: usize) -> Result<(EnumDef, usize), Error> {
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed == lock::ENUM_HEADER || trimmed.starts_with("table ") {
+        if trimmed == lock::ENUM_HEADER
+            || trimmed == lock::VIEW_HEADER
+            || trimmed == lock::TRIGGER_HEADER
+            || trimmed.starts_with("table \"")
+        {
             return finish_enum(name, variants, start + offset);
         }
 
@@ -231,6 +278,95 @@ fn split_entry(line: &str) -> Result<(&str, &str), Error> {
         Some((key, value)) => Ok((key.trim(), value.trim())),
         None => Err(lock_error("expected a `key = value` entry")),
     }
+}
+
+/// Parses the `[[view]]` section whose entries start at `start`.
+fn parse_view(lines: &[&str], start: usize) -> Result<(ViewDef, usize), Error> {
+    let body = lines.get(start..).unwrap_or_default();
+    let mut name: Option<String> = None;
+    let mut definition: Option<String> = None;
+
+    for (offset, line) in body.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == lock::ENUM_HEADER
+            || trimmed == lock::VIEW_HEADER
+            || trimmed == lock::TRIGGER_HEADER
+            || trimmed.starts_with("table \"")
+        {
+            return finish_view(name, definition, start + offset);
+        }
+
+        let (key, value) = split_entry(trimmed)?;
+        match key {
+            "name" => name = Some(parse_quoted_value(value)?),
+            "definition" => definition = Some(parse_quoted_default(value)?),
+            _ => return Err(lock_error("unrecognised view entry")),
+        }
+    }
+
+    finish_view(name, definition, start + body.len())
+}
+
+/// Builds the parsed view, reporting missing entries.
+fn finish_view(
+    name: Option<String>,
+    definition: Option<String>,
+    next: usize,
+) -> Result<(ViewDef, usize), Error> {
+    let name = name.ok_or_else(|| lock_error("view section is missing a `name` entry"))?;
+    let definition = definition
+        .ok_or_else(|| lock_error("view section is missing a `definition` entry"))?;
+    Ok((ViewDef::new(name, definition), next))
+}
+
+/// Parses the `[[trigger]]` section whose entries start at `start`.
+fn parse_trigger(lines: &[&str], start: usize) -> Result<(TriggerDef, usize), Error> {
+    let body = lines.get(start..).unwrap_or_default();
+    let mut name: Option<String> = None;
+    let mut table_name: Option<String> = None;
+    let mut definition: Option<String> = None;
+
+    for (offset, line) in body.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == lock::ENUM_HEADER
+            || trimmed == lock::VIEW_HEADER
+            || trimmed == lock::TRIGGER_HEADER
+            || trimmed.starts_with("table \"")
+        {
+            return finish_trigger(name, table_name, definition, start + offset);
+        }
+
+        let (key, value) = split_entry(trimmed)?;
+        match key {
+            "name" => name = Some(parse_quoted_value(value)?),
+            "table" => table_name = Some(parse_quoted_value(value)?),
+            "definition" => definition = Some(parse_quoted_default(value)?),
+            _ => return Err(lock_error("unrecognised trigger entry")),
+        }
+    }
+
+    finish_trigger(name, table_name, definition, start + body.len())
+}
+
+/// Builds the parsed trigger, reporting missing entries.
+fn finish_trigger(
+    name: Option<String>,
+    table_name: Option<String>,
+    definition: Option<String>,
+    next: usize,
+) -> Result<(TriggerDef, usize), Error> {
+    let name = name.ok_or_else(|| lock_error("trigger section is missing a `name` entry"))?;
+    let table_name =
+        table_name.ok_or_else(|| lock_error("trigger section is missing a `table` entry"))?;
+    let definition = definition
+        .ok_or_else(|| lock_error("trigger section is missing a `definition` entry"))?;
+    Ok((TriggerDef::new(name, table_name, definition), next))
 }
 
 /// Parses a quoted value and rejects trailing text.
@@ -282,6 +418,7 @@ struct TableBuilder {
     name: String,
     columns: Vec<ColumnDef>,
     primary_key: Vec<String>,
+    checks: Vec<CheckDef>,
     foreign_keys: Vec<ForeignKeyDef>,
     indexes: Vec<IndexDef>,
 }
@@ -292,15 +429,18 @@ impl TableBuilder {
             name,
             columns: Vec::new(),
             primary_key: Vec::new(),
+            checks: Vec::new(),
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
         }
     }
 
-    /// Finalizes the table, sorting columns, foreign keys, and indexes by name
+    /// Finalizes the table, sorting columns, checks, foreign keys, and indexes by name
     /// so the result matches the canonical ordering used by the renderer.
     fn finish(mut self) -> TableDef {
         self.columns
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        self.checks
             .sort_by(|left, right| left.name.cmp(&right.name));
         self.foreign_keys
             .sort_by(|left, right| left.name.cmp(&right.name));
@@ -309,6 +449,7 @@ impl TableBuilder {
             name: self.name,
             columns: self.columns,
             primary_key: self.primary_key,
+            checks: self.checks,
             foreign_keys: self.foreign_keys,
             indexes: self.indexes,
         }
@@ -341,6 +482,8 @@ fn apply_table_item(
         table.columns.push(parse_column(item, defaults)?);
     } else if item.starts_with("primary key ") {
         table.primary_key = parse_primary_key(item)?;
+    } else if item.starts_with("check ") {
+        table.checks.push(parse_check(item)?);
     } else if item.starts_with("foreign key ") {
         table.foreign_keys.push(parse_foreign_key(item)?);
     } else if item.starts_with("unique index ") {
@@ -414,7 +557,25 @@ fn parse_primary_key(item: &str) -> Result<Vec<String>, Error> {
     Ok(columns)
 }
 
-/// Parses a `foreign key "<name>" (...) references "<table>" (...)` declaration.
+/// Parses a `check "<name>" "<expression>"` declaration.
+fn parse_check(item: &str) -> Result<CheckDef, Error> {
+    let rest = item
+        .strip_prefix("check ")
+        .ok_or_else(|| lock_error("expected `check` keyword"))?;
+    let (name, rest) = parse_quoted_prefix(rest)?;
+    let rest = rest
+        .strip_prefix(' ')
+        .ok_or_else(|| lock_error("expected a space before the check expression"))?;
+    let (expression, rest) = parse_escaped_quoted_prefix(rest)?;
+    if !rest.trim().is_empty() {
+        return Err(lock_error(
+            "unexpected text after the check constraint declaration",
+        ));
+    }
+    Ok(CheckDef::new(name, expression))
+}
+
+/// Parses a `foreign key "<name>" (...) references "<table>" (...) [on delete <act>] [on update <act>]` declaration.
 fn parse_foreign_key(item: &str) -> Result<ForeignKeyDef, Error> {
     let rest = item
         .strip_prefix("foreign key ")
@@ -431,22 +592,58 @@ fn parse_foreign_key(item: &str) -> Result<ForeignKeyDef, Error> {
     let rest = rest
         .strip_prefix(' ')
         .ok_or_else(|| lock_error("expected a space before the referenced columns"))?;
-    let (referenced_columns, rest) = parse_quoted_list(rest)?;
-    if !rest.trim().is_empty() {
-        return Err(lock_error(
-            "unexpected text after the foreign key declaration",
-        ));
+    let (referenced_columns, mut rest) = parse_quoted_list(rest)?;
+
+    let mut on_delete = ForeignKeyAction::NoAction;
+    let mut on_update = ForeignKeyAction::NoAction;
+
+    rest = rest.trim_start();
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("on delete ") {
+            let (action, remainder) = parse_fk_action_and_rest(after)?;
+            on_delete = action;
+            rest = remainder.trim_start();
+        } else if let Some(after) = rest.strip_prefix("on update ") {
+            let (action, remainder) = parse_fk_action_and_rest(after)?;
+            on_update = action;
+            rest = remainder.trim_start();
+        } else {
+            return Err(lock_error(format!(
+                "unexpected text after the foreign key declaration: `{rest}`"
+            )));
+        }
     }
+
     Ok(ForeignKeyDef {
         name,
         columns,
         referenced_table,
         referenced_columns,
+        on_delete,
+        on_update,
     })
 }
 
-/// Parses an `index "<name>" (...)` or `unique index "<name>" (...)` declaration,
-/// depending on the `unique` keyword detected by the caller.
+/// Parses a foreign key action name and returns the remaining unparsed input.
+fn parse_fk_action_and_rest(input: &str) -> Result<(ForeignKeyAction, &str), Error> {
+    let input = input.trim_start();
+    let lower = input.to_ascii_lowercase();
+    if let Some(rest) = lower.strip_prefix("no action") {
+        Ok((ForeignKeyAction::NoAction, &input[input.len() - rest.len()..]))
+    } else if let Some(rest) = lower.strip_prefix("set default") {
+        Ok((ForeignKeyAction::SetDefault, &input[input.len() - rest.len()..]))
+    } else if let Some(rest) = lower.strip_prefix("set null") {
+        Ok((ForeignKeyAction::SetNull, &input[input.len() - rest.len()..]))
+    } else if let Some(rest) = lower.strip_prefix("restrict") {
+        Ok((ForeignKeyAction::Restrict, &input[input.len() - rest.len()..]))
+    } else if let Some(rest) = lower.strip_prefix("cascade") {
+        Ok((ForeignKeyAction::Cascade, &input[input.len() - rest.len()..]))
+    } else {
+        Err(lock_error("unrecognised foreign key action"))
+    }
+}
+
+/// Parses an `index "<name>" (...)` or `unique index "<name>" (...)` declaration.
 fn parse_index(item: &str, unique: bool) -> Result<IndexDef, Error> {
     let rest = item
         .strip_prefix(if unique { "unique index " } else { "index " })
@@ -455,11 +652,42 @@ fn parse_index(item: &str, unique: bool) -> Result<IndexDef, Error> {
     let rest = rest
         .strip_prefix(' ')
         .ok_or_else(|| lock_error("expected a space before the indexed columns"))?;
-    let (columns, rest) = parse_quoted_list(rest)?;
-    if !rest.trim().is_empty() {
-        return Err(lock_error("unexpected text after the index declaration"));
+    let (columns, mut rest) = parse_quoted_list(rest)?;
+
+    let mut method = None;
+    let mut expression = None;
+    let mut predicate = None;
+
+    rest = rest.trim_start();
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("using ") {
+            let (m, after_m) = parse_quoted_prefix(after.trim_start())?;
+            method = Some(m);
+            rest = after_m.trim_start();
+        } else if let Some(after) = rest.strip_prefix("expression ") {
+            let (expr, after_expr) = parse_escaped_quoted_prefix(after.trim_start())?;
+            expression = Some(expr);
+            rest = after_expr.trim_start();
+        } else if let Some(after) = rest.strip_prefix("where ") {
+            let (pred, after_pred) = parse_escaped_quoted_prefix(after.trim_start())?;
+            predicate = Some(pred);
+            rest = after_pred.trim_start();
+        } else {
+            return Err(lock_error(format!("unexpected text after index: `{rest}`")));
+        }
     }
-    Ok(IndexDef::new(name, columns, unique))
+
+    let mut index_def = IndexDef::new(name, columns, unique);
+    if let Some(m) = method {
+        index_def = index_def.with_method(m);
+    }
+    if let Some(expr) = expression {
+        index_def = index_def.with_expression(expr);
+    }
+    if let Some(pred) = predicate {
+        index_def = index_def.with_predicate(pred);
+    }
+    Ok(index_def)
 }
 
 /// Parses a leading `"..."` identifier, decoding doubled quotes.
@@ -491,6 +719,10 @@ fn parse_quoted_list(input: &str) -> Result<(Vec<String>, &str), Error> {
         .strip_prefix('(')
         .ok_or_else(|| lock_error("expected `(` to start an identifier list"))?;
     let mut items = Vec::new();
+    let trimmed = rest.trim_start();
+    if let Some(after_close) = trimmed.strip_prefix(')') {
+        return Ok((items, after_close));
+    }
     loop {
         let (name, after) = parse_quoted_prefix(rest)?;
         items.push(name);
@@ -593,16 +825,13 @@ fn has_open_quote(text: &str) -> bool {
     text.chars().filter(|character| *character == '"').count() % 2 == 1
 }
 
-/// Parses a quoted, escaped default value written by a current snapshot.
-///
-/// A doubled quote carries a literal quote, `\\` a backslash, `\n` a line feed,
-/// and `\r` a carriage return; every other character stands for itself.
-fn parse_quoted_default(input: &str) -> Result<String, Error> {
+/// Parses a leading quoted, escaped string prefix.
+fn parse_escaped_quoted_prefix(input: &str) -> Result<(String, &str), Error> {
     let mut characters = input.char_indices();
 
     match characters.next() {
         Some((_, '"')) => {}
-        _ => return Err(lock_error("expected a double-quoted default value")),
+        _ => return Err(lock_error("expected a double-quoted value")),
     }
 
     let mut value = String::new();
@@ -625,21 +854,24 @@ fn parse_quoted_default(input: &str) -> Result<String, Error> {
                 Some((_, '\\')) => value.push('\\'),
                 Some((_, other)) => {
                     return Err(lock_error(format!(
-                        "the escape `\\{other}` is not recognised in a default value"
+                        "the escape `\\{other}` is not recognised in a quoted value"
                     )))
                 }
-                None => return Err(lock_error("a default value ends inside an escape")),
+                None => return Err(lock_error("a quoted value ends inside an escape")),
             },
             other => value.push(other),
         }
     }
 
-    let closing = closing.ok_or_else(|| lock_error("unterminated quoted default value"))?;
-    let rest = &input[closing + 1..];
+    let closing = closing.ok_or_else(|| lock_error("unterminated quoted value"))?;
+    Ok((value, &input[closing + 1..]))
+}
 
+/// Parses a quoted, escaped default value written by a current snapshot.
+fn parse_quoted_default(input: &str) -> Result<String, Error> {
+    let (value, rest) = parse_escaped_quoted_prefix(input)?;
     if !rest.trim().is_empty() {
         return Err(lock_error("unexpected text after a quoted default value"));
     }
-
     Ok(value)
 }

@@ -40,7 +40,10 @@ pub mod scripts;
 pub mod stage;
 pub mod version;
 
-pub use catalog::{ColumnDef, EnumDef, ForeignKeyDef, IndexDef, SchemaCatalog, TableDef, TypeKind};
+pub use catalog::{
+    CheckDef, ColumnDef, EnumDef, ForeignKeyAction, ForeignKeyDef, IndexDef, SchemaCatalog,
+    TableDef, TriggerDef, TypeKind, ViewDef,
+};
 pub use checkpoint::{Checkpoint, CHECKPOINT_FILE};
 pub use checksum::{sha256, Checksum};
 pub use embedded::EmbeddedMigrations;

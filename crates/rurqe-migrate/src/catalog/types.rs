@@ -112,6 +112,41 @@ impl ColumnDef {
     }
 }
 
+/// The action to perform when a foreign key target is deleted or updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum ForeignKeyAction {
+    /// Reject the deletion or update without delay (`NO ACTION`).
+    #[default]
+    NoAction,
+    /// Reject the deletion or update immediately (`RESTRICT`).
+    Restrict,
+    /// Propagate the deletion or update to the referencing row (`CASCADE`).
+    Cascade,
+    /// Set the referencing column to NULL (`SET NULL`).
+    SetNull,
+    /// Set the referencing column to its default value (`SET DEFAULT`).
+    SetDefault,
+}
+
+impl ForeignKeyAction {
+    /// The canonical SQL text of the action.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoAction => "no action",
+            Self::Restrict => "restrict",
+            Self::Cascade => "cascade",
+            Self::SetNull => "set null",
+            Self::SetDefault => "set default",
+        }
+    }
+}
+
+impl fmt::Display for ForeignKeyAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A foreign key constraint of a [`TableDef`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignKeyDef {
@@ -123,6 +158,10 @@ pub struct ForeignKeyDef {
     pub referenced_table: String,
     /// The referenced columns of [`ForeignKeyDef::referenced_table`].
     pub referenced_columns: Vec<String>,
+    /// The action taken when the referenced row is deleted.
+    pub on_delete: ForeignKeyAction,
+    /// The action taken when the referenced row is updated.
+    pub on_update: ForeignKeyAction,
 }
 
 impl ForeignKeyDef {
@@ -138,6 +177,50 @@ impl ForeignKeyDef {
             columns,
             referenced_table: referenced_table.into(),
             referenced_columns,
+            on_delete: ForeignKeyAction::NoAction,
+            on_update: ForeignKeyAction::NoAction,
+        }
+    }
+
+    /// Sets the action taken when the referenced row is deleted.
+    pub fn with_on_delete(mut self, action: ForeignKeyAction) -> Self {
+        self.on_delete = action;
+        self
+    }
+
+    /// Sets the action taken when the referenced row is updated.
+    pub fn with_on_update(mut self, action: ForeignKeyAction) -> Self {
+        self.on_update = action;
+        self
+    }
+
+    /// Sets both the deletion and update actions of the constraint.
+    pub fn with_actions(
+        mut self,
+        on_delete: ForeignKeyAction,
+        on_update: ForeignKeyAction,
+    ) -> Self {
+        self.on_delete = on_delete;
+        self.on_update = on_update;
+        self
+    }
+}
+
+/// A check constraint of a [`TableDef`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckDef {
+    /// The SQL identifier of the constraint.
+    pub name: String,
+    /// The SQL boolean expression that must evaluate to true.
+    pub expression: String,
+}
+
+impl CheckDef {
+    /// Creates a check constraint definition from its name and SQL expression.
+    pub fn new(name: impl Into<String>, expression: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            expression: expression.into(),
         }
     }
 }
@@ -155,6 +238,12 @@ pub struct IndexDef {
     pub columns: Vec<String>,
     /// Whether the index is declared `UNIQUE`.
     pub unique: bool,
+    /// The access method (e.g. `btree`, `gin`, `gist`), if specified.
+    pub method: Option<String>,
+    /// The partial index predicate (WHERE clause expression), if specified.
+    pub predicate: Option<String>,
+    /// The expression for expression-based indexes, if specified.
+    pub expression: Option<String>,
 }
 
 impl IndexDef {
@@ -164,11 +253,32 @@ impl IndexDef {
             name: name.into(),
             columns,
             unique,
+            method: None,
+            predicate: None,
+            expression: None,
         }
+    }
+
+    /// Sets the access method of the index (e.g. `"btree"`, `"gin"`).
+    pub fn with_method(mut self, method: impl Into<String>) -> Self {
+        self.method = Some(method.into());
+        self
+    }
+
+    /// Sets the partial index predicate (WHERE clause expression).
+    pub fn with_predicate(mut self, predicate: impl Into<String>) -> Self {
+        self.predicate = Some(predicate.into());
+        self
+    }
+
+    /// Sets the expression for an expression-based index.
+    pub fn with_expression(mut self, expression: impl Into<String>) -> Self {
+        self.expression = Some(expression.into());
+        self
     }
 }
 
-/// A table of the schema together with its columns and keys.
+/// A table of the schema together with its columns, keys, and constraints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableDef {
     /// The SQL identifier of the table.
@@ -177,6 +287,8 @@ pub struct TableDef {
     pub columns: Vec<ColumnDef>,
     /// The columns forming the primary key, empty when the table has none.
     pub primary_key: Vec<String>,
+    /// The check constraints declared on the table.
+    pub checks: Vec<CheckDef>,
     /// The foreign keys declared by the table.
     pub foreign_keys: Vec<ForeignKeyDef>,
     /// The secondary and unique indexes declared on the table.
@@ -184,7 +296,7 @@ pub struct TableDef {
 }
 
 impl TableDef {
-    /// Creates a table definition without foreign keys and indexes.
+    /// Creates a table definition without foreign keys, indexes, and checks.
     pub fn new(
         name: impl Into<String>,
         columns: Vec<ColumnDef>,
@@ -194,9 +306,16 @@ impl TableDef {
             name: name.into(),
             columns,
             primary_key,
+            checks: Vec::new(),
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
         }
+    }
+
+    /// Appends `check` constraint to the table.
+    pub fn with_check(mut self, check: CheckDef) -> Self {
+        self.checks.push(check);
+        self
     }
 
     /// Appends `foreign_key` to the table.
@@ -230,6 +349,51 @@ impl EnumDef {
         Self {
             name: name.into(),
             variants,
+        }
+    }
+}
+
+/// A database view defined by an SQL query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewDef {
+    /// The SQL identifier of the view.
+    pub name: String,
+    /// The SQL query defining the view.
+    pub definition: String,
+}
+
+impl ViewDef {
+    /// Creates a view definition from its name and SQL query.
+    pub fn new(name: impl Into<String>, definition: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            definition: definition.into(),
+        }
+    }
+}
+
+/// A database trigger attached to a table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerDef {
+    /// The SQL identifier of the trigger.
+    pub name: String,
+    /// The table the trigger is attached to.
+    pub table_name: String,
+    /// The SQL definition or body of the trigger.
+    pub definition: String,
+}
+
+impl TriggerDef {
+    /// Creates a trigger definition from its name, owning table name, and definition.
+    pub fn new(
+        name: impl Into<String>,
+        table_name: impl Into<String>,
+        definition: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            table_name: table_name.into(),
+            definition: definition.into(),
         }
     }
 }

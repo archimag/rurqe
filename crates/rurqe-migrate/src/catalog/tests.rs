@@ -31,14 +31,14 @@ fn orders() -> TableDef {
 }
 
 const EXPECTED_LOCK: &str = concat!(
-    "schema lock v2\n",
+    "schema lock v3\n",
     "\n",
     "table \"orders\" {\n",
     "  column \"id\": int64 not null\n",
     "  column \"total\": float64 null default \"0\"\n",
     "  column \"user_id\": int64 not null\n",
     "  primary key (\"id\")\n",
-    "  foreign key \"orders_user_id_fkey\" (\"user_id\") references \"users\" (\"id\")\n",
+    "  foreign key \"orders_user_id_fkey\" (\"user_id\") references \"users\" (\"id\") on delete no action on update no action\n",
     "}\n",
     "\n",
     "table \"users\" {\n",
@@ -97,7 +97,7 @@ fn identifiers_are_quoted_and_escaped() {
     assert_eq!(
         catalog.to_lock(),
         concat!(
-            "schema lock v2\n",
+            "schema lock v3\n",
             "\n",
             "table \"we\"\"ird\" {\n",
             "  column \"select\": citext null\n",
@@ -108,7 +108,7 @@ fn identifiers_are_quoted_and_escaped() {
 
 #[test]
 fn empty_catalog_renders_only_the_header() {
-    assert_eq!(SchemaCatalog::default().to_lock(), "schema lock v2\n");
+    assert_eq!(SchemaCatalog::default().to_lock(), "schema lock v3\n");
 }
 
 #[test]
@@ -251,8 +251,10 @@ fn from_lock_round_trips_defaults_containing_keywords() {
 #[test]
 fn from_lock_rejects_a_missing_or_wrong_header() {
     assert!(SchemaCatalog::from_lock("").is_err());
-    assert!(SchemaCatalog::from_lock("schema lock v3\n").is_err());
+    assert!(SchemaCatalog::from_lock("schema lock v4\n").is_err());
+    assert!(SchemaCatalog::from_lock("schema lock v3").is_ok());
     assert!(SchemaCatalog::from_lock("schema lock v2").is_ok());
+    assert!(SchemaCatalog::from_lock("schema lock v1").is_ok());
 }
 
 #[test]
@@ -301,7 +303,7 @@ fn lock_renders_enum_sections_before_tables() {
     assert_eq!(
         catalog.to_lock(),
         concat!(
-            "schema lock v2\n",
+            "schema lock v3\n",
             "\n",
             "[[enum]]\n",
             "name = \"mood\"\n",
@@ -335,7 +337,7 @@ fn enum_and_array_column_types_render_canonically() {
     assert_eq!(
         catalog.to_lock(),
         concat!(
-            "schema lock v2\n",
+            "schema lock v3\n",
             "\n",
             "table \"accounts\" {\n",
             "  column \"mood\": enum \"mood\" not null\n",
@@ -404,4 +406,105 @@ fn quoted_defaults_survive_quotes_backslashes_and_line_breaks() {
         "a line break stays escaped inside the default: {line}"
     );
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
+}
+
+#[test]
+fn schema_lock_v3_round_trips_checks_views_triggers_and_attributes() {
+    let catalog = SchemaCatalog::new(vec![
+        TableDef::new(
+            "orders",
+            vec![
+                ColumnDef::new("id", TypeKind::Int64, false),
+                ColumnDef::new("product_id", TypeKind::Int64, false),
+            ],
+            vec!["id".to_owned()],
+        )
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "fk_product",
+                vec!["product_id".to_owned()],
+                "products",
+                vec!["id".to_owned()],
+            )
+            .with_actions(ForeignKeyAction::Cascade, ForeignKeyAction::Restrict),
+        ),
+        TableDef::new(
+            "products",
+            vec![
+                ColumnDef::new("category", TypeKind::Text, false),
+                ColumnDef::new("id", TypeKind::Int64, false),
+                ColumnDef::new("price", TypeKind::Float64, false),
+            ],
+            vec!["id".to_owned()],
+        )
+        .with_check(CheckDef::new("positive_price", "price > 0"))
+        .with_index(
+            IndexDef::new("idx_expr", Vec::new(), false)
+                .with_expression("lower(category)"),
+        )
+        .with_index(
+            IndexDef::new("idx_prod_cat", vec!["category".to_owned()], false)
+                .with_method("btree")
+                .with_predicate("price > 10.0"),
+        ),
+    ])
+    .with_views(vec![ViewDef::new(
+        "expensive_products",
+        "SELECT * FROM products WHERE price > 100",
+    )])
+    .with_triggers(vec![TriggerDef::new(
+        "audit_orders",
+        "orders",
+        "EXECUTE FUNCTION log_order_update()",
+    )]);
+
+    let lock = catalog.to_lock();
+    assert!(lock.starts_with("schema lock v3\n"));
+    assert!(lock.contains("[[view]]\nname = \"expensive_products\""));
+    assert!(lock.contains("[[trigger]]\nname = \"audit_orders\"\ntable = \"orders\""));
+    assert!(lock.contains("check \"positive_price\" \"price > 0\""));
+    assert!(lock.contains("on delete cascade on update restrict"));
+    assert!(lock.contains("using \"btree\" where \"price > 10.0\""));
+    assert!(lock.contains("expression \"lower(category)\""));
+
+    let reparsed = SchemaCatalog::from_lock(&lock).expect("valid v3 round trip");
+    assert_eq!(reparsed, catalog);
+}
+
+#[test]
+fn schema_lock_v2_and_v1_legacy_snapshots_are_parsed_with_defaults() {
+    let v2_snapshot = concat!(
+        "schema lock v2\n",
+        "\n",
+        "table \"orders\" {\n",
+        "  column \"id\": int64 not null\n",
+        "  column \"user_id\": int64 not null\n",
+        "  primary key (\"id\")\n",
+        "  foreign key \"fk_user\" (\"user_id\") references \"users\" (\"id\")\n",
+        "  index \"idx_user\" (\"user_id\")\n",
+        "}\n",
+    );
+
+    let parsed_v2 = SchemaCatalog::from_lock(v2_snapshot).expect("v2 parses cleanly");
+    assert_eq!(parsed_v2.views.len(), 0);
+    assert_eq!(parsed_v2.triggers.len(), 0);
+    let table = &parsed_v2.tables[0];
+    assert_eq!(table.checks.len(), 0);
+    assert_eq!(table.foreign_keys[0].on_delete, ForeignKeyAction::NoAction);
+    assert_eq!(table.foreign_keys[0].on_update, ForeignKeyAction::NoAction);
+    assert_eq!(table.indexes[0].method, None);
+    assert_eq!(table.indexes[0].predicate, None);
+    assert_eq!(table.indexes[0].expression, None);
+
+    let v1_snapshot = concat!(
+        "schema lock v1\n",
+        "\n",
+        "table \"orders\" {\n",
+        "  column \"id\": int64 not null\n",
+        "  foreign key \"fk_user\" (\"user_id\") references \"users\" (\"id\")\n",
+        "}\n",
+    );
+
+    let parsed_v1 = SchemaCatalog::from_lock(v1_snapshot).expect("v1 parses cleanly");
+    assert_eq!(parsed_v1.tables[0].foreign_keys[0].on_delete, ForeignKeyAction::NoAction);
 }

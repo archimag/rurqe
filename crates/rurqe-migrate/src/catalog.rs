@@ -26,7 +26,7 @@
 //! assert_eq!(
 //!     catalog.to_lock(),
 //!     concat!(
-//!         "schema lock v2\n",
+//!         "schema lock v3\n",
 //!         "\n",
 //!         "table \"users\" {\n",
 //!         "  column \"email\": text not null\n",
@@ -44,7 +44,10 @@ mod schema;
 mod types;
 
 pub use schema::SchemaCatalog;
-pub use types::{ColumnDef, EnumDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
+pub use types::{
+    CheckDef, ColumnDef, EnumDef, ForeignKeyAction, ForeignKeyDef, IndexDef, TableDef, TriggerDef,
+    TypeKind, ViewDef,
+};
 
 #[cfg(test)]
 mod tests;
