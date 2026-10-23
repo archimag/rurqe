@@ -30,6 +30,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 16** [x] | Compile-Fail Hardening & Negative Test Suite | Compile-time rejection of every scope, nullability, typestate, capability, and grouping violation | Absolute SQL Correctness (Completed) |
 | **Phase 17** [x] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Completed) |
 | **Phase 18** [x] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Completed) |
+| **Phase 19** [ ] | Expression Polish, Practical DML & Advanced Ordering | Arithmetic `std::ops`, partial upsert `ON CONFLICT WHERE`, `NULLS FIRST/LAST`, `Decimal`, scalar SQL functions, JSONB extraction, `FULL OUTER JOIN` | High-ROI Relational Polish (Planned) |
 
 ---
 
@@ -846,4 +847,72 @@ let filtered = select_from(Users)
     .if_some(search_term, |q, term| q.where_(UserName.ilike(format!("%{term}%"))))
     .fetch_all(&mut conn)?;
 ```
+
+---
+
+## Phase 19: Expression Polish, Practical DML & Advanced Ordering [Planned]
+
+### Objective
+Eliminate the remaining need for untyped raw SQL escape hatches (`sql!`) in common OLTP and fintech workloads: enable intuitive Rust arithmetic operators (`+`, `-`, `*`, `/`, `%`) directly on typed expressions and columns via `std::ops`, complete upsert expressiveness with partial conflict targets and conditional updates (`ON CONFLICT (...) WHERE ... DO UPDATE ... WHERE ...`), provide explicit deterministic null ordering (`NULLS FIRST` / `NULLS LAST`), integrate `rust_decimal::Decimal` under the `decimal` feature flag, implement core ANSI scalar functions (`cast`, `nullif`, `greatest`, `least`, `is_distinct_from`), add PostgreSQL JSONB value extraction operators (`->`, `->>`), and complete relational join coverage with unconditional `CROSS JOIN` and strictly typed `FULL OUTER JOIN` (with bilateral compile-time `Option<T>` nullability lifting).
+
+### Key Deliverables
+- [ ] **Arithmetic Operators via `std::ops` on Expressions & Columns:**
+  - Implementation of `Add`, `Sub`, `Mul`, `Div`, `Rem` for `Expr<T, Scope>` and `Column` markers.
+  - Scope propagation across operands via `MergeScope`. Compile-time numeric type matching (`i32`, `i64`, `f64`, `Decimal`).
+- [ ] **Full Upsert Expressiveness (`ON CONFLICT WHERE` & `DO UPDATE WHERE`):**
+  - Partial unique index target predicates: `on_conflict_where(target, target_predicate)`.
+  - Conditional update predicates: `do_update_where(assignments, update_predicate)`.
+  - Native rendering for PostgreSQL and SQLite 3.24+ without emulation.
+- [ ] **Explicit Null Ordering (`NULLS FIRST / NULLS LAST`):**
+  - Fluent modifiers on `OrderDirection` / `SelectQuery` / `WindowSpec`: `.order_by_asc_nulls_first(...)`, `.order_by_desc_nulls_last(...)`, etc.
+  - Deterministic index and keyset pagination support across varying database defaults.
+- [ ] **Ecosystem Decimal Integration (`rust_decimal` under feature `decimal`):**
+  - Implement `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`, and `MakeNullable` for `rust_decimal::Decimal`.
+  - Connect with the existing base-10000 binary PostgreSQL `NUMERIC` codec in `rurqe-postgres`.
+  - Codegen configuration mapping `TypeKind::Numeric` to `rust_decimal::Decimal` when the feature is enabled.
+- [ ] **Standard SQL Scalar Functions & Null Predicates:**
+  - Type-safe helpers in `expr::functions`: `cast::<Target>(expr)`, `nullif(a, b)`, `greatest(...)`, `least(...)`, `is_distinct_from(a, b)`, `is_not_distinct_from(a, b)`.
+- [ ] **PostgreSQL JSONB Field Extraction Operators:**
+  - Extension methods in `PgExpressions`: `->` (extract JSON object/element), `->>` (extract text scalar), `#>` / `#>>` (extract path).
+- [ ] **Relational Join Completeness (`CROSS JOIN` & `FULL OUTER JOIN`):**
+  - Unconditional `.cross_join(table)`.
+  - `.full_outer_join(table, condition)`: static bilateral nullability lifting (both left and right relations lift to `Option<T>` in result projections).
+
+---
+
+## Backlog: Future Architectural Horizons [Post-0.1.0]
+
+The following capabilities represent valuable, high-utility SQL features that require specialized multi-step type designs, dedicated typestates, or engine-specific handling, and are scheduled for evolution cycles after the 0.1.0 core stabilization:
+
+1. **Recursive Common Table Expressions (`WITH RECURSIVE`):**
+   - Type-safe recursive step validation: self-referential CTE inside `UNION ALL` ensuring strict compile-time column type congruence between anchor and recursive queries.
+2. **Data-Modifying Common Table Expressions:**
+   - CTEs containing `INSERT ... RETURNING`, `UPDATE ... RETURNING`, or `DELETE ... RETURNING` driving the primary query. Capability-gated to PostgreSQL.
+3. **Table Value Constructors (`VALUES` as a Relation):**
+   - Using `FROM (VALUES (...), (...)) AS t(c1, c2)` as an ad-hoc query relation or join source for batch updates.
+4. **Native `MERGE` Statement (SQL:2003 / PostgreSQL 15+):**
+   - Strictly native `MERGE INTO ... USING ... WHEN MATCHED ... WHEN NOT MATCHED` implementation without synthetic emulation.
+5. **PostgreSQL Range Types (`RANGE`):**
+   - Native codecs and operators (`@>`, `<@`, `&&`, `-|-`) for `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`.
+6. **Temporal `TIME` (`chrono::NaiveTime`) and `INTERVAL` Types:**
+   - Dedicated `SqlVal::NaiveTime` variant and structured PostgreSQL interval handling.
+
+---
+
+## Architectural Exclusions & Anti-Patterns [Won't Do / YAGNI]
+
+The following constructs contradict RURQE's foundational principles (**Native-or-Nothing**, **Compile-Time Soundness**, **KISS/YAGNI**) and will **not** be implemented:
+
+1. **Synthetic Runtime Emulation of `MERGE`:**
+   - Emulating `MERGE` on SQLite or older PostgreSQL versions via non-atomic `SELECT` + `INSERT/UPDATE` transactions is strictly forbidden. It creates subtle race conditions and violates the **Native-or-Nothing** principle.
+2. **`ROLLUP`, `CUBE`, and `GROUPING SETS`:**
+   - RURQE is designed for operational OLTP workloads, not analytical BI/OLAP. At the type level, `GROUPING SETS` dynamically injects `NULL` into previously non-nullable grouped columns for subtotal rows, causing a combinatorial explosion of nullability states and destroying `GROUP BY` compile-time soundness.
+3. **`JOIN ... USING (column)` Syntax:**
+   - Relational anti-pattern that merges two relation columns into a single unqualified identifier. This destroys unambiguous static relation qualification in `TableScope`. Explicit `ON a.col = b.col` is strictly preferred.
+4. **Dynamic `when_join` Erasing Relation Types:**
+   - Query relation scope is tracked via compile-time types (`SelectQuery<D, Joined<User, Order>, ...>`). Conditionally adding a table in a runtime `if` statement without boxing or type erasure is mathematically incompatible with static monomorphization. Optional relationships are properly modeled via `LEFT JOIN` or separate typed queries.
+5. **Hundreds of Non-Standard String/Math Functions in Core:**
+   - Bloating `rurqe-core` with niche functions (`LPAD`, `INITCAP`, `COT`, `DEGREES`) violates the 800-line module limit and core cleanliness. Engine-specific extensions belong in adapter crates (`rurqe-postgres`), while one-off functions are cleanly accessed via `sql!(\"custom_func({})\", col)`.
+6. **`GROUPS` Window Frame Specification:**
+   - Unsupported by SQLite and rarely utilized in production PostgreSQL. `ROWS` and `RANGE` cover ANSI SQL:2003 specifications and 100% of practical production windowing needs.
 
