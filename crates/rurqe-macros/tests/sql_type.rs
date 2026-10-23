@@ -67,6 +67,14 @@ impl FromStr for Address {
     }
 }
 
+/// A database enum type stored as the label of its variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SqlType)]
+pub enum Mood {
+    Happy,
+    #[sql(rename = "very_sad")]
+    Sad,
+}
+
 rurqe_core::table! {
     /// The `accounts` table typed with derived domain newtypes.
     Account => "accounts" {
@@ -80,6 +88,14 @@ rurqe_core::table! {
     AccountAudit => "account_audit" {
         AuditId => "id": i64,
         AuditAccountId => "account_id": UserId,
+    }
+}
+
+rurqe_core::table! {
+    /// The `posts` table typed with a database enum column.
+    Post => "posts" {
+        PostId => "id": i64,
+        PostMood => "mood": Mood,
     }
 }
 
@@ -243,6 +259,90 @@ fn optional_newtypes_bind_null_and_decode_from_it() {
     );
     assert_eq!(
         <Option<Txid> as FromSqlValue>::from_sql_value(&SqlVal::Null),
+        Ok(None)
+    );
+}
+
+#[test]
+fn enum_newtypes_render_and_parse_their_labels() {
+    assert_eq!(Mood::Happy.to_sql_val(), SqlVal::Text("Happy".to_owned()));
+    assert_eq!(Mood::Sad.to_sql_val(), SqlVal::Text("very_sad".to_owned()));
+    assert_eq!(SqlVal::from(Mood::Sad), SqlVal::Text("very_sad".to_owned()));
+
+    assert_eq!(Mood::Happy.to_string(), "Happy");
+    assert_eq!(Mood::Sad.to_string(), "very_sad");
+    assert_eq!("Happy".parse::<Mood>(), Ok(Mood::Happy));
+    assert_eq!("very_sad".parse::<Mood>(), Ok(Mood::Sad));
+
+    let unknown = "grumpy"
+        .parse::<Mood>()
+        .expect_err("a label outside the enum is rejected");
+    assert!(unknown.contains("grumpy"));
+    assert!(unknown.contains("very_sad"));
+}
+
+#[test]
+fn enum_newtypes_decode_their_labels() {
+    assert_eq!(
+        Mood::from_sql_value(&SqlVal::Text("Happy".to_owned())),
+        Ok(Mood::Happy)
+    );
+    assert_eq!(
+        Mood::from_sql_value(&SqlVal::Text("very_sad".to_owned())),
+        Ok(Mood::Sad)
+    );
+
+    let unknown = Mood::from_sql_value(&SqlVal::Text("grumpy".to_owned()))
+        .expect_err("a label outside the enum is rejected");
+    assert!(matches!(
+        unknown,
+        RowDecodeError::InvalidValue {
+            found: "text",
+            ..
+        }
+    ));
+    assert!(unknown.to_string().contains("grumpy"));
+
+    assert!(Mood::from_sql_value(&SqlVal::I64(1)).is_err());
+}
+
+#[test]
+fn enum_newtypes_compose_with_the_expression_builders() {
+    assert_eq!(
+        PostMood.eq(Mood::Sad),
+        Expr::column::<PostMood>().eq(Mood::Sad)
+    );
+    assert_eq!(
+        PostMood.eq("very_sad"),
+        Expr::column::<PostMood>().eq("very_sad")
+    );
+    assert_eq!(
+        PostMood.eq(String::from("Happy")),
+        Expr::column::<PostMood>().eq(String::from("Happy"))
+    );
+}
+
+#[test]
+fn enum_newtypes_expose_a_single_nullable_layer() {
+    fn assert_nullable<T: MakeNullable<Nullable = Option<T>>>() {}
+
+    assert_nullable::<Mood>();
+}
+
+#[test]
+fn enum_newtypes_bind_as_parameters_and_decode_from_options() {
+    assert_eq!(
+        Some(Mood::Happy).to_sql_val(),
+        SqlVal::Text("Happy".to_owned())
+    );
+    assert_eq!(None::<Mood>.to_sql_val(), SqlVal::Null);
+
+    assert_eq!(
+        <Option<Mood> as FromSqlValue>::from_sql_value(&SqlVal::Text("very_sad".to_owned())),
+        Ok(Some(Mood::Sad))
+    );
+    assert_eq!(
+        <Option<Mood> as FromSqlValue>::from_sql_value(&SqlVal::Null),
         Ok(None)
     );
 }

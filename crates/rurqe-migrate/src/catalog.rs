@@ -1,13 +1,14 @@
 //! Engine-neutral schema catalog and its canonical `schema.lock` snapshot.
 //!
 //! The catalog is the single source of truth shared by introspection, code
-//! generation, and drift verification: it records tables, columns, primary keys,
-//! foreign keys, and secondary or unique indexes in an engine-independent form
-//! and renders them into a deterministic textual snapshot.
+//! generation, and drift verification: it records enum types, tables, columns,
+//! primary keys, foreign keys, and secondary or unique indexes in an
+//! engine-independent form and renders them into a deterministic textual
+//! snapshot.
 //!
-//! Determinism is achieved by sorting tables, columns, foreign keys, and indexes
-//! by name, so two catalogs built in a different declaration order still produce
-//! the very same snapshot — and therefore the very same
+//! Determinism is achieved by sorting enum types, tables, columns, foreign keys,
+//! and indexes by name, so two catalogs built in a different declaration order
+//! still produce the very same snapshot — and therefore the very same
 //! [`SchemaCatalog::schema_hash`].
 //!
 //! ```
@@ -43,7 +44,7 @@ mod schema;
 mod types;
 
 pub use schema::SchemaCatalog;
-pub use types::{ColumnDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
+pub use types::{ColumnDef, EnumDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
 
 #[cfg(test)]
 mod tests;

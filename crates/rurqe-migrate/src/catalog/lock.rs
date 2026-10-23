@@ -1,19 +1,43 @@
 //! Canonical rendering of the `schema.lock` snapshot.
+//!
+//! The snapshot starts with the enum sections of the schema and continues with
+//! its tables, so the enum type a column refers to is declared before the column
+//! that references it.
 
-use super::types::{ColumnDef, ForeignKeyDef, IndexDef, TableDef};
+use super::types::{push_quoted, ColumnDef, EnumDef, ForeignKeyDef, IndexDef, TableDef};
 
 /// Version marker written into every `schema.lock` snapshot.
 pub(super) const LOCK_HEADER: &str = "schema lock v1";
 
-/// Renders the canonical `schema.lock` snapshot for `tables`.
+/// Section header introducing one enum declaration.
+pub(super) const ENUM_HEADER: &str = "[[enum]]";
+
+/// Renders the canonical `schema.lock` snapshot for `enums` and `tables`.
 ///
-/// Tables, columns, foreign keys, and indexes are emitted sorted by name, so the
-/// snapshot depends only on the schema content and never on the declaration
-/// order of the catalog.
-pub(super) fn render_lock(tables: &[TableDef]) -> String {
+/// Enum sections and tables, and the columns, foreign keys, and indexes of every
+/// table, are emitted sorted by name, so the snapshot depends only on the schema
+/// content and never on the declaration order of the catalog. The labels of an
+/// enum keep their declared order, because the order of the labels is part of the
+/// enum type itself.
+pub(super) fn render_lock(enums: &[EnumDef], tables: &[TableDef]) -> String {
     let mut out = String::new();
     out.push_str(LOCK_HEADER);
     out.push('\n');
+
+    let mut ordered_enums: Vec<&EnumDef> = enums.iter().collect();
+    ordered_enums.sort_by(|left, right| left.name.cmp(&right.name));
+
+    for enum_def in ordered_enums {
+        out.push('\n');
+        out.push_str(ENUM_HEADER);
+        out.push('\n');
+        out.push_str("name = ");
+        push_quoted(&mut out, &enum_def.name);
+        out.push('\n');
+        out.push_str("variants = ");
+        push_variants(&mut out, &enum_def.variants);
+        out.push('\n');
+    }
 
     let mut ordered: Vec<&TableDef> = tables.iter().collect();
     ordered.sort_by(|left, right| left.name.cmp(&right.name));
@@ -30,7 +54,7 @@ pub(super) fn render_lock(tables: &[TableDef]) -> String {
             out.push_str("  column ");
             push_quoted(&mut out, &column.name);
             out.push_str(": ");
-            out.push_str(column.type_kind.as_str());
+            out.push_str(&column.type_kind.canonical());
             out.push_str(if column.nullable { " null" } else { " not null" });
             if let Some(default) = &column.default {
                 out.push_str(" default ");
@@ -79,17 +103,16 @@ pub(super) fn render_lock(tables: &[TableDef]) -> String {
     out
 }
 
-/// Appends `ident` to `out` as a double-quoted SQL identifier, doubling any
-/// embedded quote so the rendering stays unambiguous.
-fn push_quoted(out: &mut String, ident: &str) {
-    out.push('"');
-    for character in ident.chars() {
-        if character == '"' {
-            out.push('"');
+/// Appends a bracketed, comma-separated list of quoted enum labels.
+fn push_variants(out: &mut String, variants: &[String]) {
+    out.push('[');
+    for (index, variant) in variants.iter().enumerate() {
+        if index > 0 {
+            out.push_str(", ");
         }
-        out.push(character);
+        push_quoted(out, variant);
     }
-    out.push('"');
+    out.push(']');
 }
 
 /// Appends a parenthesised, comma-separated list of quoted identifiers.

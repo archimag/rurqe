@@ -148,12 +148,25 @@ fn apply_nullability(rust_type: &str, nullable: bool) -> String {
 /// `Int64`, while PostgreSQL distinguishes `Int32` from `Int64`, so an `i32`
 /// column is never widened silently.
 ///
+/// An array column is represented as `Vec<..>` of its element type, and an enum
+/// column as the element type it is declared over.
+///
 /// `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific `Other` columns are
 /// represented as `String` by default, because the generated module then compiles
 /// without extra dependencies. With [`CodegenOptions::domain_types`] enabled they
 /// map onto `uuid::Uuid`, `serde_json::Value`, `chrono::NaiveDateTime`, and
 /// `chrono::NaiveDate` instead.
 fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -> String {
+    if let TypeKind::Array(inner) = kind {
+        let element = type_kind_to_rust_type(inner, false, domain_types);
+        let base = format!("Vec<{element}>");
+        return if nullable {
+            format!("Option<{base}>")
+        } else {
+            base
+        };
+    }
+
     let base = match kind {
         TypeKind::Boolean => "bool",
         TypeKind::Int32 => "i32",
@@ -166,7 +179,12 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime",
         TypeKind::Date if domain_types => "chrono::NaiveDate",
         TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String",
+        // A database enum is represented as `String` until the generated module
+        // carries the enum itself.
+        TypeKind::Enum(_) => "String",
         TypeKind::Other(_) => "String",
+        // An array is wrapped into `Vec<..>` before this mapping is reached.
+        TypeKind::Array(_) => "String",
     };
 
     if nullable {

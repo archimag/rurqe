@@ -145,7 +145,7 @@ fn type_kinds_render_canonical_names() {
         TypeKind::Date,
     ];
 
-    let rendered: Vec<&str> = kinds.iter().map(TypeKind::as_str).collect();
+    let rendered: Vec<String> = kinds.iter().map(TypeKind::canonical).collect();
 
     assert_eq!(
         rendered,
@@ -156,6 +156,15 @@ fn type_kinds_render_canonical_names() {
     );
     assert_eq!(TypeKind::Uuid.to_string(), "uuid");
     assert_eq!(TypeKind::Other("inet".to_owned()).to_string(), "inet");
+    assert_eq!(
+        TypeKind::Enum("mood".to_owned()).to_string(),
+        "enum \"mood\""
+    );
+    assert_eq!(TypeKind::Array(Box::new(TypeKind::Int64)).to_string(), "int64[]");
+    assert_eq!(
+        TypeKind::Array(Box::new(TypeKind::Enum("mood".to_owned()))).to_string(),
+        "enum \"mood\"[]"
+    );
 }
 
 #[test]
@@ -262,4 +271,97 @@ fn from_lock_rejects_unknown_table_body_lines() {
 fn from_lock_rejects_columns_without_a_nullability_marker() {
     let lock = "schema lock v1\n\ntable \"t\" {\n  column \"id\": int64\n}\n";
     assert!(SchemaCatalog::from_lock(lock).is_err());
+}
+
+#[test]
+fn lock_renders_enum_sections_before_tables() {
+    let catalog = SchemaCatalog::new(vec![users()]).with_enums(vec![EnumDef::new(
+        "mood",
+        vec!["happy".to_owned(), "sad".to_owned()],
+    )]);
+
+    assert_eq!(
+        catalog.to_lock(),
+        concat!(
+            "schema lock v1\n",
+            "\n",
+            "[[enum]]\n",
+            "name = \"mood\"\n",
+            "variants = [\"happy\", \"sad\"]\n",
+            "\n",
+            "table \"users\" {\n",
+            "  column \"email\": text not null\n",
+            "  column \"id\": int64 not null\n",
+            "  primary key (\"id\")\n",
+            "}\n",
+        )
+    );
+}
+
+#[test]
+fn enum_and_array_column_types_render_canonically() {
+    let catalog = SchemaCatalog::new(vec![TableDef::new(
+        "accounts",
+        vec![
+            ColumnDef::new("mood", TypeKind::Enum("mood".to_owned()), false),
+            ColumnDef::new(
+                "moods",
+                TypeKind::Array(Box::new(TypeKind::Enum("mood".to_owned()))),
+                true,
+            ),
+            ColumnDef::new("tags", TypeKind::Array(Box::new(TypeKind::Text)), true),
+        ],
+        Vec::new(),
+    )]);
+
+    assert_eq!(
+        catalog.to_lock(),
+        concat!(
+            "schema lock v1\n",
+            "\n",
+            "table \"accounts\" {\n",
+            "  column \"mood\": enum \"mood\" not null\n",
+            "  column \"moods\": enum \"mood\"[] null\n",
+            "  column \"tags\": text[] null\n",
+            "}\n",
+        )
+    );
+}
+
+#[test]
+fn from_lock_round_trips_enum_sections_and_enum_columns() {
+    let catalog = SchemaCatalog::new(vec![TableDef::new(
+        "accounts",
+        vec![
+            ColumnDef::new("mood", TypeKind::Enum("mood".to_owned()), false),
+            ColumnDef::new(
+                "moods",
+                TypeKind::Array(Box::new(TypeKind::Enum("mood".to_owned()))),
+                true,
+            ),
+        ],
+        Vec::new(),
+    )])
+    .with_enums(vec![
+        EnumDef::new("mood", vec!["happy".to_owned(), "sad".to_owned()]),
+        EnumDef::new("we\"ird", vec!["a[]".to_owned(), "b\"c".to_owned()]),
+    ]);
+
+    let reparsed = SchemaCatalog::from_lock(&catalog.to_lock()).unwrap();
+
+    assert_eq!(reparsed, catalog);
+}
+
+#[test]
+fn from_lock_rejects_malformed_enum_sections() {
+    assert!(SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nvariants = [\"a\"]\n").is_err());
+    assert!(SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nname = \"m\"\n").is_err());
+    assert!(
+        SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nname = \"m\"\nnonsense = 1\n")
+            .is_err()
+    );
+    assert!(
+        SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nname = \"m\"\nvariants = [\"a\"\n")
+            .is_err()
+    );
 }

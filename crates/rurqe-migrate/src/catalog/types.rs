@@ -29,32 +29,55 @@ pub enum TypeKind {
     Timestamp,
     /// `DATE`.
     Date,
+    /// A database enum type, named after the type it was declared as.
+    Enum(String),
+    /// An array whose elements have the wrapped type.
+    Array(Box<TypeKind>),
     /// A type outside the built-in set, kept verbatim.
     Other(String),
 }
 
 impl TypeKind {
     /// The canonical text of the type inside `schema.lock`.
-    pub fn as_str(&self) -> &str {
+    ///
+    /// The built-in variants render their canonical name, an enum renders the
+    /// quoted name of its type (`enum "mood"`), and an array renders its element
+    /// type followed by `[]`, so `int64[]` and `enum "mood"[]` are distinct.
+    pub fn canonical(&self) -> String {
+        let mut out = String::new();
+        self.write_canonical(&mut out);
+        out
+    }
+
+    /// Appends the canonical text of the type to `out`.
+    fn write_canonical(&self, out: &mut String) {
         match self {
-            TypeKind::Boolean => "boolean",
-            TypeKind::Int32 => "int32",
-            TypeKind::Int64 => "int64",
-            TypeKind::Float64 => "float64",
-            TypeKind::Text => "text",
-            TypeKind::Bytes => "bytes",
-            TypeKind::Uuid => "uuid",
-            TypeKind::Json => "json",
-            TypeKind::Timestamp => "timestamp",
-            TypeKind::Date => "date",
-            TypeKind::Other(raw) => raw,
+            TypeKind::Boolean => out.push_str("boolean"),
+            TypeKind::Int32 => out.push_str("int32"),
+            TypeKind::Int64 => out.push_str("int64"),
+            TypeKind::Float64 => out.push_str("float64"),
+            TypeKind::Text => out.push_str("text"),
+            TypeKind::Bytes => out.push_str("bytes"),
+            TypeKind::Uuid => out.push_str("uuid"),
+            TypeKind::Json => out.push_str("json"),
+            TypeKind::Timestamp => out.push_str("timestamp"),
+            TypeKind::Date => out.push_str("date"),
+            TypeKind::Other(raw) => out.push_str(raw),
+            TypeKind::Enum(name) => {
+                out.push_str("enum ");
+                push_quoted(out, name);
+            }
+            TypeKind::Array(inner) => {
+                inner.write_canonical(out);
+                out.push_str("[]");
+            }
         }
     }
 }
 
 impl fmt::Display for TypeKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.canonical())
     }
 }
 
@@ -187,4 +210,39 @@ impl TableDef {
         self.indexes.push(index);
         self
     }
+}
+
+/// An enum type declared by the database.
+///
+/// The labels keep their declared order, because the order of the labels is part
+/// of the enum type itself: PostgreSQL orders the values of an enum by it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDef {
+    /// The SQL identifier of the enum type.
+    pub name: String,
+    /// The labels of the enum, in declaration order.
+    pub variants: Vec<String>,
+}
+
+impl EnumDef {
+    /// Creates an enum definition from its type name and labels.
+    pub fn new(name: impl Into<String>, variants: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            variants,
+        }
+    }
+}
+
+/// Appends `ident` to `out` as a double-quoted SQL identifier, doubling any
+/// embedded quote so the rendering stays unambiguous.
+pub(super) fn push_quoted(out: &mut String, ident: &str) {
+    out.push('"');
+    for character in ident.chars() {
+        if character == '"' {
+            out.push('"');
+        }
+        out.push(character);
+    }
+    out.push('"');
 }

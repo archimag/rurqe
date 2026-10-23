@@ -4,28 +4,39 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 
 use super::lock;
-use super::types::{ColumnDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
+use super::types::{ColumnDef, EnumDef, ForeignKeyDef, IndexDef, TableDef, TypeKind};
 
 /// The complete schema of a database as an engine-neutral catalog.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SchemaCatalog {
     /// The tables of the schema.
     pub tables: Vec<TableDef>,
+    /// The enum types declared by the database.
+    pub enums: Vec<EnumDef>,
 }
 
 impl SchemaCatalog {
-    /// Creates a catalog from the given tables.
+    /// Creates a catalog from the given tables and no enum types.
     pub fn new(tables: Vec<TableDef>) -> Self {
-        Self { tables }
+        Self {
+            tables,
+            enums: Vec::new(),
+        }
+    }
+
+    /// Attaches the enum types `enums` to the catalog.
+    pub fn with_enums(mut self, enums: Vec<EnumDef>) -> Self {
+        self.enums = enums;
+        self
     }
 
     /// Renders the canonical `schema.lock` snapshot.
     ///
-    /// Tables, columns, foreign keys, and indexes are emitted sorted by name, so
-    /// the snapshot depends only on the schema content and never on the
-    /// declaration order of the catalog.
+    /// Enum sections and tables, and the columns, foreign keys, and indexes of
+    /// every table, are emitted sorted by name, so the snapshot depends only on
+    /// the schema content and never on the declaration order of the catalog.
     pub fn to_lock(&self) -> String {
-        lock::render_lock(&self.tables)
+        lock::render_lock(&self.enums, &self.tables)
     }
 
     /// The SHA-256 digest of the canonical snapshot.
@@ -46,9 +57,10 @@ impl SchemaCatalog {
     /// Parses a canonical `schema.lock` snapshot back into a catalog.
     ///
     /// The parser accepts exactly the representation produced by
-    /// [`SchemaCatalog::to_lock`] and returns the catalog sorted by table,
-    /// column, foreign-key, and index name, so the result equals the catalog
-    /// that generated the snapshot.
+    /// [`SchemaCatalog::to_lock`] and returns the catalog sorted by enum name,
+    /// table name, column name, foreign-key name, and index name, so the result
+    /// equals the catalog that generated the snapshot. The labels of an enum keep
+    /// the order they were rendered in.
     pub fn from_lock(lock: &str) -> Result<SchemaCatalog, Error> {
         let mut lines = lock.lines();
         match lines.next() {
@@ -61,74 +73,188 @@ impl SchemaCatalog {
             }
         }
 
+        let lines: Vec<&str> = lines.collect();
+        let mut enums: Vec<EnumDef> = Vec::new();
         let mut tables: Vec<TableDef> = Vec::new();
-        let mut current: Option<TableBuilder> = None;
-        // Buffer of raw lines belonging to the body item being parsed. A
-        // column default may span multiple lines, so items are collected until
-        // the next item keyword or the closing brace is reached.
-        let mut item_lines: Vec<String> = Vec::new();
+        let mut index = 0;
 
-        for line in lines {
+        while index < lines.len() {
+            let Some(line) = lines.get(index).copied() else {
+                break;
+            };
             let trimmed = line.trim_start();
 
-            if current.is_none() {
-                if trimmed.is_empty() {
-                    continue;
-                }
-                if trimmed.starts_with("table ") {
-                    current = Some(TableBuilder::new(parse_table_header(trimmed)?));
-                    continue;
-                }
-                return Err(lock_error("expected a `table` declaration between tables"));
-            }
-
             if trimmed.is_empty() {
-                if item_lines.is_empty() {
-                    return Err(lock_error("unexpected blank line inside a table block"));
-                }
-                item_lines.push(line.to_owned());
+                index += 1;
                 continue;
             }
 
-            let is_close = trimmed == "}";
-            let is_item = trimmed.starts_with("column ")
-                || trimmed.starts_with("primary key ")
-                || trimmed.starts_with("foreign key ")
-                || trimmed.starts_with("index ")
-                || trimmed.starts_with("unique index ");
+            if trimmed == lock::ENUM_HEADER {
+                let (definition, next) = parse_enum(&lines, index + 1)?;
+                enums.push(definition);
+                index = next;
+                continue;
+            }
 
-            if is_close || is_item {
-                if !item_lines.is_empty() {
-                    let item = item_lines.join("\n");
-                    let table = current.as_mut().ok_or_else(|| {
-                        lock_error("expected a `table` declaration before a table-body item")
-                    })?;
-                    apply_table_item(table, &item)?;
-                    item_lines.clear();
+            if trimmed.starts_with("table ") {
+                let (table, next) = parse_table(&lines, index)?;
+                tables.push(table);
+                index = next;
+                continue;
+            }
+
+            return Err(lock_error(
+                "expected a `table` declaration or an `[[enum]]` section",
+            ));
+        }
+
+        enums.sort_by(|left, right| left.name.cmp(&right.name));
+        tables.sort_by(|left, right| left.name.cmp(&right.name));
+
+        Ok(SchemaCatalog::new(tables).with_enums(enums))
+    }
+}
+
+/// Parses the `[[enum]]` section whose entries start at `start`.
+///
+/// The section ends at the next section header or at the end of the snapshot, so
+/// the returned index points at the line that follows it.
+fn parse_enum(lines: &[&str], start: usize) -> Result<(EnumDef, usize), Error> {
+    let body = lines.get(start..).unwrap_or_default();
+    let mut name: Option<String> = None;
+    let mut variants: Option<Vec<String>> = None;
+
+    for (offset, line) in body.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == lock::ENUM_HEADER || trimmed.starts_with("table ") {
+            return finish_enum(name, variants, start + offset);
+        }
+
+        let (key, value) = split_entry(trimmed)?;
+        match key {
+            "name" => name = Some(parse_quoted_value(value)?),
+            "variants" => variants = Some(parse_variant_list(value)?),
+            _ => return Err(lock_error("unrecognised enum entry")),
+        }
+    }
+
+    finish_enum(name, variants, start + body.len())
+}
+
+/// Builds the parsed enum, reporting the entries a section is missing.
+fn finish_enum(
+    name: Option<String>,
+    variants: Option<Vec<String>>,
+    next: usize,
+) -> Result<(EnumDef, usize), Error> {
+    let name = name.ok_or_else(|| lock_error("enum section is missing a `name` entry"))?;
+    let variants =
+        variants.ok_or_else(|| lock_error("enum section is missing a `variants` entry"))?;
+    Ok((EnumDef::new(name, variants), next))
+}
+
+/// Splits a `key = value` entry of an enum section.
+fn split_entry(line: &str) -> Result<(&str, &str), Error> {
+    match line.split_once('=') {
+        Some((key, value)) => Ok((key.trim(), value.trim())),
+        None => Err(lock_error("expected a `key = value` entry")),
+    }
+}
+
+/// Parses a quoted value and rejects trailing text.
+fn parse_quoted_value(input: &str) -> Result<String, Error> {
+    let (value, rest) = parse_quoted_prefix(input)?;
+    if !rest.trim().is_empty() {
+        return Err(lock_error("unexpected text after a quoted value"));
+    }
+    Ok(value)
+}
+
+/// Parses the `["a", "b"]` label list of an enum section.
+fn parse_variant_list(input: &str) -> Result<Vec<String>, Error> {
+    let mut rest = input
+        .strip_prefix('[')
+        .ok_or_else(|| lock_error("expected `[` to start an enum label list"))?
+        .trim_start();
+
+    let mut variants = Vec::new();
+    loop {
+        if let Some(empty) = rest.strip_prefix(']') {
+            if !empty.trim().is_empty() {
+                return Err(lock_error("unexpected text after an enum label list"));
+            }
+            return Ok(variants);
+        }
+
+        let (variant, after) = parse_quoted_prefix(rest)?;
+        variants.push(variant);
+
+        let after = after.trim_start();
+        match after.strip_prefix(',') {
+            Some(remainder) => rest = remainder.trim_start(),
+            None => {
+                let trailing = after
+                    .strip_prefix(']')
+                    .ok_or_else(|| lock_error("expected `,` or `]` after an enum label"))?;
+                if !trailing.trim().is_empty() {
+                    return Err(lock_error("unexpected text after an enum label list"));
                 }
-                if is_close {
-                    let table = current
-                        .take()
-                        .ok_or_else(|| lock_error("unexpected `}` outside a table block"))?;
-                    tables.push(table.finish());
-                    continue;
-                }
-                item_lines.push(line.to_owned());
-            } else {
-                if item_lines.is_empty() {
-                    return Err(lock_error("unexpected line inside a table block"));
-                }
-                item_lines.push(line.to_owned());
+                return Ok(variants);
             }
         }
+    }
+}
 
-        if current.is_some() {
-            return Err(lock_error("unterminated table block: missing `}`"));
+/// Parses the `table "<name>" { ... }` block starting at `start`.
+fn parse_table(lines: &[&str], start: usize) -> Result<(TableDef, usize), Error> {
+    let header = lines.get(start).copied().unwrap_or_default();
+    let mut table = TableBuilder::new(parse_table_header(header.trim_start())?);
+
+    // Buffer of raw lines belonging to the body item being parsed. A column
+    // default may span multiple lines, so items are collected until the next item
+    // keyword or the closing brace is reached.
+    let mut item_lines: Vec<String> = Vec::new();
+    let body = lines.get(start + 1..).unwrap_or_default();
+
+    for (offset, line) in body.iter().enumerate() {
+        let trimmed = line.trim_start();
+
+        if trimmed.is_empty() {
+            if item_lines.is_empty() {
+                return Err(lock_error("unexpected blank line inside a table block"));
+            }
+            item_lines.push((*line).to_owned());
+            continue;
         }
 
-        tables.sort_by(|left, right| left.name.cmp(&right.name));
-        Ok(SchemaCatalog::new(tables))
+        let is_close = trimmed == "}";
+        let is_item = trimmed.starts_with("column ")
+            || trimmed.starts_with("primary key ")
+            || trimmed.starts_with("foreign key ")
+            || trimmed.starts_with("index ")
+            || trimmed.starts_with("unique index ");
+
+        if is_close || is_item {
+            if !item_lines.is_empty() {
+                apply_table_item(&mut table, &item_lines.join("\n"))?;
+                item_lines.clear();
+            }
+            if is_close {
+                return Ok((table.finish(), start + offset + 2));
+            }
+            item_lines.push((*line).to_owned());
+        } else {
+            if item_lines.is_empty() {
+                return Err(lock_error("unexpected line inside a table block"));
+            }
+            item_lines.push((*line).to_owned());
+        }
     }
+
+    Err(lock_error("unterminated table block: missing `}`"))
 }
 
 /// Builds a [`TableDef`] while a `table` block is being parsed.
@@ -229,7 +355,7 @@ fn parse_column(item: &str) -> Result<ColumnDef, Error> {
         .ok_or_else(|| lock_error("expected `: ` after a column name"))?;
 
     let marker = find_nullability_marker(rest)?;
-    let type_kind = type_kind_from_str(&rest[..marker.start]);
+    let type_kind = parse_type_kind(&rest[..marker.start])?;
     let default = if marker.has_default {
         Some(rest[marker.start + marker.len..].to_owned())
     } else {
@@ -251,7 +377,9 @@ fn parse_primary_key(item: &str) -> Result<Vec<String>, Error> {
         .ok_or_else(|| lock_error("expected `primary key` keyword"))?;
     let (columns, rest) = parse_quoted_list(rest)?;
     if !rest.is_empty() {
-        return Err(lock_error("unexpected text after the primary key declaration"));
+        return Err(lock_error(
+            "unexpected text after the primary key declaration",
+        ));
     }
     Ok(columns)
 }
@@ -275,7 +403,9 @@ fn parse_foreign_key(item: &str) -> Result<ForeignKeyDef, Error> {
         .ok_or_else(|| lock_error("expected a space before the referenced columns"))?;
     let (referenced_columns, rest) = parse_quoted_list(rest)?;
     if !rest.is_empty() {
-        return Err(lock_error("unexpected text after the foreign key declaration"));
+        return Err(lock_error(
+            "unexpected text after the foreign key declaration",
+        ));
     }
     Ok(ForeignKeyDef {
         name,
@@ -393,10 +523,24 @@ fn find_nullability_marker(rest: &str) -> Result<NullabilityMarker, Error> {
         .ok_or_else(|| lock_error("column definition is missing a nullability marker"))
 }
 
-/// Maps canonical type text back to a [`TypeKind`], falling back to
-/// [`TypeKind::Other`] for unknown engines' types.
-fn type_kind_from_str(text: &str) -> TypeKind {
-    match text {
+/// Parses the canonical type text of a column back into a [`TypeKind`].
+fn parse_type_kind(text: &str) -> Result<TypeKind, Error> {
+    let text = text.trim();
+
+    // An array renders its element type followed by `[]`, while the name of an
+    // enum may end with the very same characters, so the suffix only marks an
+    // array when it does not leave a quoted name open.
+    if let Some(element) = text.strip_suffix("[]") {
+        if !has_open_quote(element) {
+            return Ok(TypeKind::Array(Box::new(parse_type_kind(element)?)));
+        }
+    }
+
+    if let Some(rest) = text.strip_prefix("enum ") {
+        return Ok(TypeKind::Enum(parse_quoted_value(rest.trim_start())?));
+    }
+
+    Ok(match text {
         "boolean" => TypeKind::Boolean,
         "int32" => TypeKind::Int32,
         "int64" => TypeKind::Int64,
@@ -408,5 +552,13 @@ fn type_kind_from_str(text: &str) -> TypeKind {
         "timestamp" => TypeKind::Timestamp,
         "date" => TypeKind::Date,
         other => TypeKind::Other(other.to_owned()),
-    }
+    })
+}
+
+/// Reports whether `text` leaves a double quote open.
+///
+/// A doubled quote inside a name counts as two, so a complete name always has an
+/// even number of quotes.
+fn has_open_quote(text: &str) -> bool {
+    text.chars().filter(|character| *character == '"').count() % 2 == 1
 }

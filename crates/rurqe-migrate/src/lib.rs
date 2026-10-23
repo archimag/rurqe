@@ -39,7 +39,7 @@ pub mod runner;
 pub mod stage;
 pub mod version;
 
-pub use catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
+pub use catalog::{ColumnDef, EnumDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
 pub use checkpoint::{Checkpoint, CHECKPOINT_FILE};
 pub use checksum::{sha256, Checksum};
 pub use embedded::EmbeddedMigrations;
