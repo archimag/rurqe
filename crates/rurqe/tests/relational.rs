@@ -919,3 +919,77 @@ mod value_based_dsl {
         assert_eq!(deleted.params, vec![SqlVal::I64(1)]);
     }
 }
+
+#[test]
+fn an_optional_select_predicate_keeps_the_query_renderable() {
+    fn build(name: Option<&str>, only_active: bool) -> BuiltQuery {
+        select_from::<Postgres<Pg16>, User>()
+            .select((UserId,))
+            .when(only_active, |query| {
+                query.where_(Expr::column::<UserActive>().eq(true))
+            })
+            .if_some(name, |query, name| {
+                query.where_(Expr::column::<UserName>().eq(name))
+            })
+            .build()
+    }
+
+    let filtered = build(Some("alice"), true);
+
+    assert_eq!(
+        filtered.sql,
+        "SELECT \"id\" FROM \"users\" WHERE ((\"active\" = $1) AND (\"name\" = $2))"
+    );
+    assert_eq!(
+        filtered.params,
+        vec![SqlVal::Bool(true), SqlVal::Text("alice".to_owned())]
+    );
+
+    let unfiltered = build(None, false);
+
+    assert_eq!(unfiltered.sql, "SELECT \"id\" FROM \"users\"");
+    assert!(unfiltered.params.is_empty());
+}
+
+#[test]
+fn an_absent_optional_select_predicate_leaves_the_query_unfiltered() {
+    let built = select_from::<Postgres<Pg16>, User>()
+        .select((UserId,))
+        .where_opt(None::<Expr<bool, User>>)
+        .build();
+
+    assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
+    let updated = update::<Postgres<Pg16>, User>()
+        .set(UserName::set("root"))
+        .where_opt(None::<Expr<bool, User>>)
+        .build();
+
+    assert_eq!(updated.sql, "UPDATE \"users\" SET \"name\" = $1");
+    assert_eq!(updated.params, vec![SqlVal::Text("root".to_owned())]);
+
+    let filtered = update::<Postgres<Pg16>, User>()
+        .set(UserName::set("root"))
+        .where_opt(Some(Expr::column::<UserId>().eq(1i64)))
+        .build();
+
+    assert_eq!(
+        filtered.sql,
+        "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+    );
+    assert_eq!(
+        filtered.params,
+        vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
+    );
+
+    let deleted = delete_from::<Postgres<Pg16>, User>()
+        .where_opt(None::<Expr<bool, User>>)
+        .build();
+
+    assert_eq!(deleted.sql, "DELETE FROM \"users\"");
+    assert!(deleted.params.is_empty());
+}

@@ -295,7 +295,68 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
     {
-        let predicate = predicate.into_kind();
+        self.push_filter(predicate.into_kind());
+        self
+    }
+
+    /// Restricts the query to rows matching `predicate` when one is given.
+    ///
+    /// A `SELECT` records its filter as statement data rather than as a typestate,
+    /// so an absent predicate leaves the query unchanged and the returned query
+    /// type stays the same. The method is the entry point for a filter assembled
+    /// from optional caller input:
+    ///
+    /// ```text
+    /// let query = select_from(Users)
+    ///     .select(cols!(UsersId))
+    ///     .where_opt(search.map(|search| UsersName.eq(search)));
+    /// ```
+    pub fn where_opt<Scope, P>(self, predicate: Option<Expr<bool, Scope>>) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
+        match predicate {
+            Some(predicate) => self.where_(predicate),
+            None => self,
+        }
+    }
+
+    /// Applies `build` to the query when `condition` holds.
+    ///
+    /// The closure returns the query it receives, so it restricts, orders, or
+    /// paginates the statement, while a clause that changes the query type — a
+    /// projection, a join, or a row lock — stays outside the conditional:
+    ///
+    /// ```text
+    /// let query = select_from(Users)
+    ///     .select(cols!(UsersId))
+    ///     .when(only_active, |query| query.where_(UsersActive.eq(true)))
+    ///     .when(page_size > 0, |query| query.limit(page_size));
+    /// ```
+    pub fn when(self, condition: bool, build: impl FnOnce(Self) -> Self) -> Self {
+        if condition {
+            build(self)
+        } else {
+            self
+        }
+    }
+
+    /// Applies `build` to the query when `value` is present, handing it over.
+    ///
+    /// ```text
+    /// let query = select_from(Users)
+    ///     .select(cols!(UsersId))
+    ///     .if_some(name, |query, name| query.where_(UsersName.eq(name)));
+    /// ```
+    pub fn if_some<T>(self, value: Option<T>, build: impl FnOnce(Self, T) -> Self) -> Self {
+        match value {
+            Some(value) => build(self, value),
+            None => self,
+        }
+    }
+
+    /// Merges `predicate` into the recorded filter with a boolean `AND`.
+    fn push_filter(&mut self, predicate: ExprKind) {
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {
                 op: BinaryOp::And,
@@ -305,7 +366,6 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
             None => predicate,
         };
         self.filter = Some(filter);
-        self
     }
 
     /// Groups query results by `columns`, moving the query into the

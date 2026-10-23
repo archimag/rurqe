@@ -150,7 +150,36 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
     {
-        let predicate = predicate.into_kind();
+        self.push_filter(predicate.into_kind());
+        self.retype()
+    }
+
+    /// Restricts the update to rows matching `predicate` when one is given.
+    ///
+    /// An absent predicate leaves the matching rows untouched, yet the statement
+    /// still moves into [`Filtered`], so a filter assembled from optional caller
+    /// input keeps [`UpdateQuery::build`] reachable:
+    ///
+    /// ```text
+    /// let query = update(Users)
+    ///     .set(UsersName::set("root"))
+    ///     .where_opt(target.map(|target| UsersId.eq(target)));
+    /// ```
+    pub fn where_opt<PredicateScope, P>(
+        self,
+        predicate: Option<Expr<bool, PredicateScope>>,
+    ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+    {
+        match predicate {
+            Some(predicate) => self.where_(predicate),
+            None => self.retype(),
+        }
+    }
+
+    /// Merges `predicate` into the recorded filter with a boolean `AND`.
+    fn push_filter(&mut self, predicate: ExprKind) {
         let filter = match self.filter.take() {
             Some(existing) => ExprKind::Binary {
                 op: BinaryOp::And,
@@ -160,7 +189,6 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
             None => predicate,
         };
         self.filter = Some(filter);
-        self.retype()
     }
 
     /// Explicitly allows the update to execute without a `WHERE` clause.
