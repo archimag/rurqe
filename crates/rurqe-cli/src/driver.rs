@@ -2,7 +2,7 @@
 //!
 //! [`SqliteMigrationBackend`] and [`PostgresMigrationBackend`] translate the
 //! engine-neutral [`MigrationBackend`] contract into driver calls. Every step
-//! opens a native driver transaction, so a migration script and its
+//! runs inside a driver transaction, so a migration script and its
 //! `__rurqe_schema_history` row are always applied or discarded together.
 //!
 //! Both adapters also report the canonical digest of the catalog they hold, so a
@@ -34,6 +34,12 @@ const DEFAULT_ADVISORY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Delay between two attempts to take the PostgreSQL advisory lock.
 const ADVISORY_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Time a migration run waits for the SQLite write lock.
+const DEFAULT_SQLITE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Savepoint wrapping one migration step inside the SQLite run lock.
+const SQLITE_STEP_SAVEPOINT: &str = "rurqe_migration_step";
 
 /// A raw `__rurqe_schema_history` row before decoding into domain types.
 struct RawHistoryRow {
@@ -119,6 +125,16 @@ fn backend_error(err: impl std::fmt::Display) -> Error {
     Error::Backend(err.to_string())
 }
 
+fn release_savepoint_sql() -> String {
+    format!("RELEASE SAVEPOINT {SQLITE_STEP_SAVEPOINT}")
+}
+
+fn rollback_savepoint_sql() -> String {
+    format!(
+        "ROLLBACK TO SAVEPOINT {SQLITE_STEP_SAVEPOINT}; RELEASE SAVEPOINT {SQLITE_STEP_SAVEPOINT}"
+    )
+}
+
 /// Polls the advisory lock `lock_id` until one round takes it or the wait expires.
 ///
 /// The loop carries no driver call of its own: `attempt` reports whether one
@@ -161,12 +177,29 @@ where
 /// [`MigrationBackend`] over a `rusqlite` connection.
 pub struct SqliteMigrationBackend {
     conn: rusqlite::Connection,
+    lock_held: bool,
+    lock_timeout: Duration,
 }
 
 impl SqliteMigrationBackend {
     /// Wraps an open SQLite connection.
     pub fn new(conn: rusqlite::Connection) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            lock_held: false,
+            lock_timeout: DEFAULT_SQLITE_LOCK_TIMEOUT,
+        }
+    }
+
+    /// Overrides how long a run waits for the write lock before giving up.
+    ///
+    /// SQLite serialises writers through a single lock on the database file. A
+    /// run that cannot take it within the timeout is rejected with a diagnostic
+    /// naming the wait, so a runner blocked by a stuck peer fails fast instead
+    /// of hanging forever.
+    pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
+        self.lock_timeout = timeout;
+        self
     }
 
     /// Introspects the schema catalog of the wrapped connection.
@@ -221,41 +254,98 @@ impl MigrationBackend for SqliteMigrationBackend {
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        if self.lock_held {
+            self.conn
+                .execute_batch(&format!("SAVEPOINT {SQLITE_STEP_SAVEPOINT}"))
+                .map_err(backend_error)?;
+            return Ok(SqliteMigrationTransaction {
+                step: Some(SqliteStep::Savepoint(&mut self.conn)),
+            });
+        }
+
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(backend_error)?;
-        Ok(SqliteMigrationTransaction { tx: Some(tx) })
+        Ok(SqliteMigrationTransaction {
+            step: Some(SqliteStep::Transaction(tx)),
+        })
     }
 
     fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
         self.conn.execute_batch(sql).map_err(backend_error)
     }
+
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        let timeout = self.lock_timeout;
+        self.conn.busy_timeout(timeout).map_err(backend_error)?;
+        self.conn.execute_batch("BEGIN IMMEDIATE").map_err(|err| {
+            Error::Backend(format!(
+                "could not acquire the SQLite write lock within {timeout:?}: {err}; another \
+                 migration runner may be holding it, retry once that run finishes"
+            ))
+        })?;
+        self.lock_held = true;
+        Ok(())
+    }
+
+    fn release_lock(&mut self) -> Result<(), Error> {
+        // The flag is cleared before the statement runs: a connection that is
+        // already unusable cannot commit, and the file lock is released by the
+        // driver once the connection closes.
+        self.lock_held = false;
+        self.conn.execute_batch("COMMIT").map_err(backend_error)
+    }
+}
+
+impl Drop for SqliteMigrationBackend {
+    fn drop(&mut self) {
+        if !self.lock_held {
+            return;
+        }
+        if let Err(err) = self.release_lock() {
+            tracing::warn!(error = %err, "failed to release the SQLite migration lock");
+        }
+    }
+}
+
+/// One step of a SQLite migration run.
+enum SqliteStep<'a> {
+    /// A step that owns its native transaction.
+    Transaction(rusqlite::Transaction<'a>),
+    /// A step nested in the transaction that holds the run lock.
+    Savepoint(&'a mut rusqlite::Connection),
 }
 
 /// Transactional boundary of a [`SqliteMigrationBackend`] step.
 pub struct SqliteMigrationTransaction<'a> {
-    tx: Option<rusqlite::Transaction<'a>>,
+    step: Option<SqliteStep<'a>>,
 }
 
 impl<'a> SqliteMigrationTransaction<'a> {
-    fn transaction(&mut self) -> Result<&mut rusqlite::Transaction<'a>, Error> {
-        self.tx.as_mut().ok_or_else(|| {
+    fn current(&mut self) -> Result<&mut SqliteStep<'a>, Error> {
+        self.step.as_mut().ok_or_else(|| {
             Error::Backend("sqlite migration transaction already finished".to_owned())
         })
     }
 
-    /// Introspects the schema catalog the open transaction sees.
+    fn connection(&mut self) -> Result<&rusqlite::Connection, Error> {
+        match self.current()? {
+            SqliteStep::Transaction(tx) => Ok(&**tx),
+            SqliteStep::Savepoint(conn) => Ok(&**conn),
+        }
+    }
+
+    /// Introspects the schema catalog the step sees.
     ///
-    /// The catalog is read over the connection of the transaction, so a step
+    /// The catalog is read over the connection of the step, so a migration
     /// observes the changes it has already applied without committing them.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
-        let tx = self.transaction()?;
-        introspect_sqlite(&*tx).map_err(backend_error)
+        introspect_sqlite(self.connection()?).map_err(backend_error)
     }
 
     fn run(&mut self, sql: &str, params: impl rusqlite::Params) -> Result<(), Error> {
-        self.transaction()?
+        self.connection()?
             .execute(sql, params)
             .map(|_| ())
             .map_err(backend_error)
@@ -264,7 +354,9 @@ impl<'a> SqliteMigrationTransaction<'a> {
 
 impl MigrationTransaction for SqliteMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
-        self.transaction()?.execute_batch(sql).map_err(backend_error)
+        self.connection()?
+            .execute_batch(sql)
+            .map_err(backend_error)
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
@@ -304,26 +396,45 @@ impl MigrationTransaction for SqliteMigrationTransaction<'_> {
     }
 
     fn commit(mut self) -> Result<(), Error> {
-        let tx = self.tx.take().ok_or_else(|| {
+        let step = self.step.take().ok_or_else(|| {
             Error::Backend("sqlite migration transaction already finished".to_owned())
         })?;
-        tx.commit().map_err(backend_error)
+
+        match step {
+            SqliteStep::Transaction(tx) => tx.commit().map_err(backend_error),
+            SqliteStep::Savepoint(conn) => conn
+                .execute_batch(&release_savepoint_sql())
+                .map_err(backend_error),
+        }
     }
 
     fn rollback(mut self) -> Result<(), Error> {
-        let tx = self.tx.take().ok_or_else(|| {
+        let step = self.step.take().ok_or_else(|| {
             Error::Backend("sqlite migration transaction already finished".to_owned())
         })?;
-        tx.rollback().map_err(backend_error)
+
+        match step {
+            SqliteStep::Transaction(tx) => tx.rollback().map_err(backend_error),
+            SqliteStep::Savepoint(conn) => conn
+                .execute_batch(&rollback_savepoint_sql())
+                .map_err(backend_error),
+        }
     }
 }
 
 impl Drop for SqliteMigrationTransaction<'_> {
     fn drop(&mut self) {
-        if let Some(tx) = self.tx.take() {
-            if let Err(err) = tx.rollback() {
-                tracing::warn!(error = %err, "failed to rollback sqlite migration transaction");
-            }
+        let Some(step) = self.step.take() else {
+            return;
+        };
+
+        let outcome = match step {
+            SqliteStep::Transaction(tx) => tx.rollback(),
+            SqliteStep::Savepoint(conn) => conn.execute_batch(&rollback_savepoint_sql()),
+        };
+
+        if let Err(err) = outcome {
+            tracing::warn!(error = %err, "failed to rollback sqlite migration transaction");
         }
     }
 }
@@ -707,6 +818,100 @@ mod tests {
         );
 
         tx.rollback().expect("the transaction is rolled back");
+    }
+
+    #[test]
+    fn the_run_lock_nests_every_step_in_a_savepoint() {
+        let mut backend = backend();
+        backend.acquire_lock().expect("the write lock is taken");
+
+        {
+            let mut step = backend.begin().expect("a step opens inside the lock");
+            step.execute("CREATE TABLE users (id INTEGER NOT NULL);")
+                .expect("the step applies");
+            step.commit().expect("the step is released");
+        }
+
+        {
+            let mut step = backend.begin().expect("a second step opens inside the lock");
+            step.execute("CREATE TABLE oops (;")
+                .expect_err("the broken statement fails");
+            step.rollback().expect("the step is rolled back");
+        }
+
+        backend.release_lock().expect("the lock commits the run");
+
+        let users: i64 = backend
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'users'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the committed table is visible");
+        assert_eq!(users, 1);
+
+        let oops: i64 = backend
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'oops'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the rolled back table stays absent");
+        assert_eq!(oops, 0);
+    }
+
+    /// A fresh database file no concurrent test can collide with.
+    fn scratch_database(label: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "rurqe-driver-{label}-{}-{sequence}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn the_write_lock_excludes_a_second_runner_on_the_same_database() {
+        let path = scratch_database("lock");
+
+        let mut first = SqliteMigrationBackend::new(
+            rusqlite::Connection::open(&path).expect("the first connection opens"),
+        );
+        let mut second = SqliteMigrationBackend::new(
+            rusqlite::Connection::open(&path).expect("the second connection opens"),
+        )
+        .with_lock_timeout(Duration::ZERO);
+
+        first
+            .acquire_lock()
+            .expect("the first runner takes the write lock");
+
+        let error = second
+            .acquire_lock()
+            .expect_err("the second runner cannot take a held write lock");
+        match &error {
+            Error::Backend(message) => assert!(message.contains("write lock"), "{message}"),
+            other => panic!("expected a backend failure, got {other:?}"),
+        }
+
+        first
+            .release_lock()
+            .expect("the first runner publishes and releases the lock");
+        second
+            .acquire_lock()
+            .expect("the released lock is handed to the second runner");
+        second
+            .release_lock()
+            .expect("the second runner releases the lock");
+
+        drop(first);
+        drop(second);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
