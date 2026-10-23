@@ -22,11 +22,13 @@
 //! `*.sqlite3` path is materialised in memory (`:memory:`) or in a file the
 //! verification requires to be empty, while a PostgreSQL URL creates a throwaway
 //! `rurqe_scratch_…` database on the server behind the URL, builds both sides
-//! inside it, and drops it once the verification ends. Neither side runs inside a
-//! transaction block, so statements such as `CREATE INDEX CONCURRENTLY` stay
-//! replayable, and the existing contents of any other database stay untouched. The
-//! connected role therefore needs the `CREATEDB` privilege for the duration of the
-//! verification. The tail passed to
+//! inside it, and drops it once the verification ends. Every script is replayed
+//! under the transactionality it declares, so a `-- rurqe:no-transaction` script
+//! commits statement by statement exactly as it does in production. Neither side
+//! runs inside a transaction block of its own, so statements such as
+//! `CREATE INDEX CONCURRENTLY` stay replayable, and the existing contents of any
+//! other database stay untouched. The connected role therefore needs the
+//! `CREATEDB` privilege for the duration of the verification. The tail passed to
 //! [`GoldenEquation::new`] is the active set of scripts: migrations pruned below
 //! the checkpoint are already folded into the base stage, so replaying them would
 //! collide with it. A project that still keeps the stage snapshot of its
@@ -75,6 +77,8 @@ struct Script<'a> {
     label: &'a str,
     /// The SQL the fragment contributes.
     sql: &'a str,
+    /// Whether the fragment is replayed inside a transaction.
+    transactional: bool,
 }
 
 /// The disposable database state one side of the equation is materialised in.
@@ -122,12 +126,20 @@ impl SandboxKind {
     }
 
     /// Applies one SQL script to the scratch state.
-    fn apply(&mut self, sql: &str) -> Result<(), String> {
+    ///
+    /// A transactional script runs inside a transaction, so its statements commit
+    /// together or not at all; a non-transactional one commits every statement on
+    /// its own, exactly as the migration runner replays it in production.
+    fn apply(&mut self, sql: &str, transactional: bool) -> Result<(), String> {
         match self {
-            SandboxKind::Sqlite(connection) => {
-                connection.execute_batch(sql).map_err(|error| error.to_string())
+            SandboxKind::Sqlite(connection) => apply_sqlite(connection, sql, transactional),
+            SandboxKind::Postgres(sandbox) => {
+                if transactional {
+                    sandbox.apply_transactional(sql)
+                } else {
+                    sandbox.apply_non_transactional(sql)
+                }
             }
-            SandboxKind::Postgres(sandbox) => sandbox.apply(sql),
         }
     }
 
@@ -146,6 +158,29 @@ impl SandboxKind {
 const SQLITE_SCRATCH_OBJECTS: &str = "SELECT type, name FROM sqlite_master \
      WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
      ORDER BY name";
+
+/// Applies one SQL script to a SQLite scratch database under the declared mode.
+fn apply_sqlite(
+    connection: &mut rusqlite::Connection,
+    sql: &str,
+    transactional: bool,
+) -> Result<(), String> {
+    if !transactional {
+        return connection
+            .execute_batch(sql)
+            .map_err(|error| error.to_string());
+    }
+
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+
+    transaction
+        .execute_batch(sql)
+        .map_err(|error| error.to_string())?;
+
+    transaction.commit().map_err(|error| error.to_string())
+}
 
 /// Opens the SQLite scratch database the classified `target` names.
 ///
@@ -259,7 +294,9 @@ fn reset_sqlite_scratch(connection: &rusqlite::Connection) -> Result<(), StageEr
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|error| StageError::Sandbox {
-                message: format!("failed to restore foreign keys in the SQLite scratch database: {error}"),
+                message: format!(
+                    "failed to restore foreign keys in the SQLite scratch database: {error}"
+                ),
             })
     } else {
         Ok(())
@@ -316,11 +353,13 @@ impl<'a> GoldenEquation<'a> {
             tail_scripts.extend(base.scripts().iter().map(|script| Script {
                 label: script.name(),
                 sql: script.sql(),
+                transactional: script.is_transactional(),
             }));
         }
         tail_scripts.extend(replayed.iter().map(|migration| Script {
             label: migration.script.as_str(),
             sql: migration.sql.as_str(),
+            transactional: migration.is_transactional(),
         }));
         let tail_catalog = materialise(scratch_url, &tail_scripts)?;
 
@@ -432,6 +471,7 @@ pub fn materialise_stage(
         .map(|script| Script {
             label: script.name(),
             sql: script.sql(),
+            transactional: script.is_transactional(),
         })
         .collect();
     materialise(scratch_url, &stage_scripts)
@@ -465,7 +505,7 @@ fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalo
 fn apply_scripts(sandbox: &mut SandboxKind, scripts: &[Script<'_>]) -> Result<(), StageError> {
     for script in scripts {
         sandbox
-            .apply(script.sql)
+            .apply(script.sql, script.transactional)
             .map_err(|message| StageError::Script {
                 script: script.label.to_owned(),
                 message,
@@ -780,5 +820,61 @@ mod tests {
         assert!(error.to_string().contains("leftover"), "got {error}");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// SQL whose first statement succeeds and whose second one always fails.
+    const HALF_BROKEN: &str = "CREATE TABLE kept (id INTEGER PRIMARY KEY);\n\
+                               CREATE TABLE kept (id INTEGER PRIMARY KEY);";
+
+    #[test]
+    fn a_failed_transactional_script_rolls_back_its_statements() {
+        let mut sandbox = SandboxKind::open(":memory:").expect("an in-memory scratch opens");
+
+        let error = sandbox
+            .apply(HALF_BROKEN, true)
+            .expect_err("the script cannot create the same table twice");
+        assert!(error.contains("kept"), "unexpected message: {error}");
+
+        let catalog = sandbox.catalog().expect("the scratch is introspectable");
+        assert!(
+            catalog.tables.is_empty(),
+            "a transactional replay leaves nothing behind: {:?}",
+            catalog.tables
+        );
+    }
+
+    #[test]
+    fn a_failed_non_transactional_script_keeps_what_it_committed() {
+        let mut sandbox = SandboxKind::open(":memory:").expect("an in-memory scratch opens");
+
+        sandbox
+            .apply(HALF_BROKEN, false)
+            .expect_err("the script cannot create the same table twice");
+
+        let catalog = sandbox.catalog().expect("the scratch is introspectable");
+        let names: Vec<&str> = catalog
+            .tables
+            .iter()
+            .map(|table| table.name.as_str())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["kept"],
+            "a non-transactional replay commits statement by statement"
+        );
+    }
+
+    #[test]
+    fn a_non_transactional_stage_script_is_materialised() {
+        let stage = DeclarativeStage::new(vec![
+            StageScript::new("users.sql", USERS).with_transactional(false)
+        ]);
+
+        let catalog =
+            materialise_stage(&stage, ":memory:").expect("the stage materialises in a scratch");
+
+        assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.tables[0].name, "users");
     }
 }

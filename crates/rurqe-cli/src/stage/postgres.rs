@@ -124,8 +124,29 @@ impl PostgresSandbox {
         }
     }
 
-    /// Applies one SQL script inside the scratch database.
-    pub(super) fn apply(&mut self, sql: &str) -> Result<(), String> {
+    /// Applies one SQL script inside a transaction of the scratch database.
+    ///
+    /// A transactional script is atomic, so a failing statement rolls back every
+    /// statement that preceded it inside the same script.
+    pub(super) fn apply_transactional(&mut self, sql: &str) -> Result<(), String> {
+        let mut transaction = self
+            .replay_connection()?
+            .transaction()
+            .map_err(|error| error.to_string())?;
+
+        transaction
+            .batch_execute(sql)
+            .map_err(|error| error.to_string())?;
+
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    /// Applies one SQL script outside any transaction of the scratch database.
+    ///
+    /// A non-transactional script mirrors the real execution path: every
+    /// statement commits on its own, so a failure leaves the statements that
+    /// preceded it in place.
+    pub(super) fn apply_non_transactional(&mut self, sql: &str) -> Result<(), String> {
         self.replay_connection()?
             .batch_execute(sql)
             .map_err(|error| error.to_string())
