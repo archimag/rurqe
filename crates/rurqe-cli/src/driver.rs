@@ -5,6 +5,7 @@
 //! opens a native driver transaction, so a migration script and its
 //! `__rurqe_schema_history` row are always applied or discarded together.
 
+use rurqe_migrate::catalog::SchemaCatalog;
 use rurqe_migrate::checksum::Checksum;
 use rurqe_migrate::error::Error;
 use rurqe_migrate::history::{
@@ -13,6 +14,8 @@ use rurqe_migrate::history::{
 use rurqe_migrate::migration::MigrationKind;
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_migrate::version::MigrationVersion;
+
+use crate::introspect::{introspect_postgres, introspect_postgres_schema, introspect_sqlite};
 
 /// Number of columns written by [`SchemaHistoryEntry`].
 const HISTORY_COLUMN_COUNT: usize = 9;
@@ -114,6 +117,15 @@ impl SqliteMigrationBackend {
     pub fn new(conn: rusqlite::Connection) -> Self {
         Self { conn }
     }
+
+    /// Introspects the schema catalog of the wrapped connection.
+    ///
+    /// The catalog is read through the very introspection the rest of the
+    /// toolchain uses, so the history table stays out of it and the reported
+    /// types follow the SQLite affinity rules.
+    pub fn introspect_catalog(&self) -> Result<SchemaCatalog, Error> {
+        introspect_sqlite(&self.conn).map_err(backend_error)
+    }
 }
 
 impl MigrationBackend for SqliteMigrationBackend {
@@ -171,6 +183,15 @@ impl<'a> SqliteMigrationTransaction<'a> {
         self.tx.as_mut().ok_or_else(|| {
             Error::Backend("sqlite migration transaction already finished".to_owned())
         })
+    }
+
+    /// Introspects the schema catalog the open transaction sees.
+    ///
+    /// The catalog is read over the connection of the transaction, so a step
+    /// observes the changes it has already applied without committing them.
+    pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
+        let tx = self.transaction()?;
+        introspect_sqlite(&*tx).map_err(backend_error)
     }
 
     fn run(&mut self, sql: &str, params: impl rusqlite::Params) -> Result<(), Error> {
@@ -256,6 +277,11 @@ impl PostgresMigrationBackend {
             lock_held: false,
         }
     }
+
+    /// Introspects the schema catalog of the `public` schema.
+    pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
+        introspect_postgres(&mut self.client).map_err(backend_error)
+    }
 }
 
 impl MigrationBackend for PostgresMigrationBackend {
@@ -339,6 +365,15 @@ impl<'a> PostgresMigrationTransaction<'a> {
         self.tx.as_mut().ok_or_else(|| {
             Error::Backend("postgres migration transaction already finished".to_owned())
         })
+    }
+
+    /// Introspects the `public` schema as the open transaction sees it.
+    ///
+    /// The catalog statements run over the transaction itself, so a step reads
+    /// the changes it has applied so far and nobody else observes them until the
+    /// transaction commits.
+    pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
+        introspect_postgres_schema(self.transaction()?, "public").map_err(backend_error)
     }
 }
 
@@ -482,5 +517,42 @@ mod tests {
             .migrate(&mut backend, &fixed)
             .expect("the fixed script applies");
         assert_eq!(report.applied_count, 1);
+    }
+
+    #[test]
+    fn sqlite_backend_introspects_the_catalog_it_migrated() {
+        let mut backend = backend();
+        let scripts = migrations(
+            "V1__users.sql",
+            "CREATE TABLE users (id INTEGER NOT NULL PRIMARY KEY, email TEXT NOT NULL);",
+        );
+        Migrator::new()
+            .migrate(&mut backend, &scripts)
+            .expect("the script applies");
+
+        let catalog = backend
+            .introspect_catalog()
+            .expect("the catalog of the connection is introspected");
+
+        assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.tables[0].name, "users");
+        assert_eq!(catalog.tables[0].primary_key, vec!["id".to_owned()]);
+    }
+
+    #[test]
+    fn sqlite_transaction_introspects_the_catalog_it_sees() {
+        let mut backend = backend();
+        let scripts = migrations("V1__users.sql", "CREATE TABLE users (id INTEGER NOT NULL);");
+        Migrator::new()
+            .migrate(&mut backend, &scripts)
+            .expect("the script applies");
+
+        let mut tx = backend.begin().expect("the migration transaction opens");
+        let catalog = tx
+            .introspect_catalog()
+            .expect("the catalog of the transaction is introspected");
+        assert_eq!(catalog.tables.len(), 1);
+
+        tx.rollback().expect("the transaction is rolled back");
     }
 }

@@ -168,14 +168,19 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
     introspect_postgres_schema(client, "public")
 }
 
-/// Introspects `schema` of a live PostgreSQL database client.
+/// Introspects `schema` over any PostgreSQL connection.
 ///
 /// The schema name is bound as a parameter rather than being rendered into the
 /// statement text, so no caller can smuggle SQL into the catalog queries.
-pub fn introspect_postgres_schema(
-    client: &mut postgres::Client,
-    schema: &str,
-) -> Result<SchemaCatalog, CliError> {
+///
+/// The connection is named through [`postgres::GenericClient`], so the same
+/// catalog statements run both on a bare client and inside an open transaction:
+/// a scratch schema can therefore be introspected before its transaction
+/// commits, and the golden equation reads it through the same queries.
+pub fn introspect_postgres_schema<C>(client: &mut C, schema: &str) -> Result<SchemaCatalog, CliError>
+where
+    C: postgres::GenericClient,
+{
     let raw_tables = query_catalog(client, POSTGRES_TABLES, schema, "tables", |row| {
         Ok(RawTableMetadata {
             name: read_column(row, 0, "tables", "table_name")?,
@@ -241,13 +246,16 @@ pub fn introspect_postgres_schema(
 /// The schema name is bound rather than rendered, so no caller can smuggle SQL
 /// into the catalog queries, and every returned row is decoded by `decode`
 /// without panicking on a column type the driver cannot read.
-fn query_catalog<T>(
-    client: &mut postgres::Client,
+fn query_catalog<T, C>(
+    client: &mut C,
     statement: &str,
     schema: &str,
     label: &str,
     decode: impl Fn(&postgres::Row) -> Result<T, CliError>,
-) -> Result<Vec<T>, CliError> {
+) -> Result<Vec<T>, CliError>
+where
+    C: postgres::GenericClient,
+{
     let rows = client
         .query(statement, &[&schema])
         .map_err(|error| CliError(format!("failed to query PostgreSQL {label}: {error}")))?;
