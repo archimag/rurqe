@@ -40,8 +40,8 @@ pub use functions::{
     is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, SqlCastTarget,
 };
 pub use ops::{
-    CombineAggr, CombinedAggr, Expression, IntoExpr, Numeric, NumericOperand, SqlCompatible,
-    StringExpression,
+    CombineAggr, CombinedAggr, Expression, InSubquery, IntoExpr, IntoExprList, Numeric,
+    NumericOperand, SqlCompatible, StringExpression,
 };
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use row::{RowExpr, RowValues};

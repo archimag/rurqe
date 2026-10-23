@@ -5,7 +5,7 @@ use core::ops::{Add, Div, Mul, Rem, Sub};
 
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::functions::SqlCastTarget;
-use super::ops::{CombineAggr, CombinedAggr, IntoExpr, Numeric, NumericOperand};
+use super::ops::{CombineAggr, CombinedAggr, IntoExpr, IntoExprList, Numeric, NumericOperand};
 use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
@@ -205,35 +205,41 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
 
     /// Builds an `IN (value, ...)` membership predicate over this expression.
     ///
-    /// Every candidate value must be compatible with the expression type.
-    pub fn in_list<I, V>(self, values: I) -> Expr<bool, Scope>
+    /// Every candidate value must be compatible with the expression type, and the
+    /// tables the candidates reference join the scope of the predicate: a list of
+    /// bound values references no table and leaves the scope unchanged, while a
+    /// candidate reading a column of another table extends it, so the enclosing
+    /// query has to select from that table as well.
+    pub fn in_list<I>(self, values: I) -> Expr<bool, Merged<Scope, I::Scope>>
     where
-        I: IntoIterator<Item = V>,
-        V: IntoExpr<T>,
+        Scope: MergeScope<I::Scope>,
+        I: IntoExprList<T>,
     {
         self.membership(values, false)
     }
 
     /// Builds a `NOT IN (value, ...)` negated membership predicate over this expression.
-    pub fn not_in_list<I, V>(self, values: I) -> Expr<bool, Scope>
+    ///
+    /// The negation keeps the scope of the positive form: every candidate value
+    /// still has to be comparable with the expression, and the tables it
+    /// references still join the scope of the predicate.
+    pub fn not_in_list<I>(self, values: I) -> Expr<bool, Merged<Scope, I::Scope>>
     where
-        I: IntoIterator<Item = V>,
-        V: IntoExpr<T>,
+        Scope: MergeScope<I::Scope>,
+        I: IntoExprList<T>,
     {
         self.membership(values, true)
     }
 
-    fn membership<I, V>(self, values: I, negated: bool) -> Expr<bool, Scope>
+    fn membership<I>(self, values: I, negated: bool) -> Expr<bool, Merged<Scope, I::Scope>>
     where
-        I: IntoIterator<Item = V>,
-        V: IntoExpr<T>,
+        Scope: MergeScope<I::Scope>,
+        I: IntoExprList<T>,
     {
-        let values: Vec<ExprKind> = values
-            .into_iter()
-            .map(|value| value.into_expr_kind())
-            .collect();
+        let mut candidates = Vec::new();
+        values.push_expr_kinds(&mut candidates);
 
-        if values.is_empty() {
+        if candidates.is_empty() {
             // `x IN ()` is a syntax error in every dialect, so an empty
             // membership degrades into a constant predicate: nothing is a member
             // of an empty set, and everything is absent from it.
@@ -245,7 +251,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
 
         Expr::new(ExprKind::InList {
             operand: Box::new(self.kind),
-            values,
+            values: candidates,
             negated,
         })
     }

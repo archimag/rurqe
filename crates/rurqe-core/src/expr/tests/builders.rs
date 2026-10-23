@@ -250,6 +250,32 @@ fn empty_membership_lists_degrade_into_a_constant_predicate() {
 }
 
 #[test]
+fn a_membership_list_carries_the_tables_its_candidates_read() {
+    // A list of bound values references no table, so the predicate keeps the
+    // scope of the tested column.
+    let values: Expr<bool, User> = UserId.in_list(vec![1i64, 2i64]);
+    assert!(matches!(
+        values.kind(),
+        ExprKind::InList { negated: false, .. }
+    ));
+
+    // A candidate reading a column of another table extends the scope with that
+    // table, so the enclosing query has to select from it as well.
+    let candidates: Expr<bool, (User, Order)> = UserId.in_list(vec![Expr::column::<OrderQty>()]);
+    assert!(matches!(
+        candidates.kind(),
+        ExprKind::InList { negated: false, .. }
+    ));
+
+    let negated: Expr<bool, (User, Order)> =
+        UserId.not_in_list(vec![Expr::column::<OrderQty>()]);
+    assert!(matches!(
+        negated.kind(),
+        ExprKind::InList { negated: true, .. }
+    ));
+}
+
+#[test]
 fn compatible_operands_are_accepted() {
     fn assert_compatible<ColType, ValType>()
     where

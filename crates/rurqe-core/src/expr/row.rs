@@ -21,8 +21,9 @@ mod impls;
 #[cfg(test)]
 mod tests;
 
-use super::ast::{ExprKind, Subquery, SubqueryOp};
+use super::ast::{ExprKind, SubqueryOp};
 use super::builder::Expr;
+use super::ops::InSubquery;
 use super::scope::{MergeScope, Merged};
 use super::val::BinaryOp;
 
@@ -174,7 +175,7 @@ pub trait RowExpr<Row> {
     fn in_subquery<S>(self, subquery: S) -> Expr<bool, Self::Scope>
     where
         Self: Sized,
-        S: Into<Subquery>,
+        S: InSubquery,
     {
         Expr::new(row_membership::<Row, Self, S>(self, subquery, false))
     }
@@ -183,7 +184,7 @@ pub trait RowExpr<Row> {
     fn not_in_subquery<S>(self, subquery: S) -> Expr<bool, Self::Scope>
     where
         Self: Sized,
-        S: Into<Subquery>,
+        S: InSubquery,
     {
         Expr::new(row_membership::<Row, Self, S>(self, subquery, true))
     }
@@ -233,7 +234,7 @@ where
 fn row_membership<Row, L, S>(lhs: L, subquery: S, negated: bool) -> ExprKind
 where
     L: RowExpr<Row>,
-    S: Into<Subquery>,
+    S: InSubquery,
 {
     let mut elements = Vec::new();
     lhs.push_elements(&mut elements);
@@ -241,7 +242,7 @@ where
     ExprKind::Subquery {
         op: SubqueryOp::In,
         operand: Some(Box::new(ExprKind::Row { values: elements })),
-        query: subquery.into(),
+        query: subquery.into_subquery(),
         negated,
     }
 }

@@ -1014,9 +1014,9 @@ pub mod prelude {
 
     pub use rurqe_core::expr::{
         avg, avg_distinct, coalesce, count, count_all, count_distinct, max, min, sum, sum_distinct,
-        CaseBranch, CaseBuilder, Expression, LockClause, LockStrength, LockWait, RowExpr,
-        RowValues, StringExpression, Subquery, SubqueryOp, WindowFrame, WindowFrameBound,
-        WindowFrameKind,
+        CaseBranch, CaseBuilder, Expression, InSubquery, IntoExprList, LockClause, LockStrength,
+        LockWait, RowExpr, RowValues, StringExpression, Subquery, SubqueryOp, WindowFrame,
+        WindowFrameBound, WindowFrameKind,
     };
 
     pub use rurqe_core::query::{

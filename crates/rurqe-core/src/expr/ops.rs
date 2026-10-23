@@ -7,7 +7,7 @@
 //! [`NumericOperand`] admits the right-hand side of arithmetic. [`CombineAggr`]
 //! then derives whether the arithmetic still collapses the rows of a group.
 
-use super::ast::{ExprKind, SubqueryOp};
+use super::ast::{ExprKind, Subquery, SubqueryOp};
 use super::builder::{Aggregate, Expr, NonAggregate};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::ToSqlVal;
@@ -151,6 +151,59 @@ impl<T, Scope, Aggr> IntoExpr<T> for Expr<T, Scope, Aggr> {
     }
 }
 
+/// A collection of candidate values of a membership predicate.
+///
+/// A list is any iterator of values compatible with the tested expression type,
+/// and its candidates carry the tables they reference, so a membership predicate
+/// joins their scope with its own. A list of bound values references no table,
+/// which leaves the scope of the predicate exactly the scope of the tested
+/// expression:
+///
+/// ```
+/// use rurqe_core::expr::{ExprKind, Expression};
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// let predicate = UserId.in_list(vec![1i64, 2i64]);
+///
+/// assert!(matches!(
+///     predicate.kind(),
+///     ExprKind::InList { negated: false, .. }
+/// ));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a list of values comparable with a column of type `{T}`",
+    label = "incompatible membership candidates",
+    note = "pass an iterator of values of the tested column's `Column::RustType`, or of expressions of that type"
+)]
+pub trait IntoExprList<T> {
+    /// The scope of the tables the candidates reference.
+    type Scope;
+
+    /// Appends the candidate expressions to `values`.
+    #[doc(hidden)]
+    fn push_expr_kinds(self, values: &mut Vec<ExprKind>);
+}
+
+impl<I, V, T> IntoExprList<T> for I
+where
+    I: IntoIterator<Item = V>,
+    V: IntoExpr<T>,
+{
+    type Scope = V::Scope;
+
+    fn push_expr_kinds(self, values: &mut Vec<ExprKind>) {
+        for value in self {
+            values.push(value.into_expr_kind());
+        }
+    }
+}
+
 // A single-column query projects exactly one value, so it is comparable with a
 // column of that value's type. Queries projecting several columns have no
 // `(T,)` output and therefore no such implementation, which is what rejects
@@ -177,6 +230,28 @@ where
             query: self.into_subquery(),
             negated: false,
         }
+    }
+}
+
+/// A statement that a predicate of an enclosing statement nests.
+///
+/// Every nested statement — a scalar operand, an `EXISTS` or `IN` predicate, and
+/// the row membership predicate — is accepted through this contract, so a query
+/// has to project its rows before it can be embedded, and a query locking the
+/// rows it selects for its own transaction stays a statement of its own.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a statement a predicate can nest",
+    label = "the nested statement is not a projected query",
+    note = "call `.select(...)` before nesting the query, so the statement projects the compared columns"
+)]
+pub trait InSubquery {
+    /// Converts `self` into the nested statement it stands for.
+    fn into_subquery(self) -> Subquery;
+}
+
+impl<S: Into<Subquery>> InSubquery for S {
+    fn into_subquery(self) -> Subquery {
+        self.into()
     }
 }
 
@@ -644,21 +719,28 @@ pub trait Expression<T> {
     }
 
     /// Builds an `IN (value, ...)` membership predicate over the expression.
-    fn in_list<I, V>(self, values: I) -> Expr<bool, Self::Scope>
+    ///
+    /// The tables the candidates reference join the scope of the predicate, so a
+    /// candidate reading a column of a table the query does not select from is
+    /// rejected at the call site.
+    fn in_list<I>(self, values: I) -> Expr<bool, Merged<Self::Scope, I::Scope>>
     where
         Self: Sized,
-        I: IntoIterator<Item = V>,
-        V: IntoExpr<T>,
+        Self::Scope: MergeScope<I::Scope>,
+        I: IntoExprList<T>,
     {
         self.into_expression().in_list(values)
     }
 
     /// Builds a `NOT IN (value, ...)` negated membership predicate.
-    fn not_in_list<I, V>(self, values: I) -> Expr<bool, Self::Scope>
+    ///
+    /// The negation keeps the scope of the positive form: every candidate value
+    /// still has to be comparable with the expression.
+    fn not_in_list<I>(self, values: I) -> Expr<bool, Merged<Self::Scope, I::Scope>>
     where
         Self: Sized,
-        I: IntoIterator<Item = V>,
-        V: IntoExpr<T>,
+        Self::Scope: MergeScope<I::Scope>,
+        I: IntoExprList<T>,
     {
         self.into_expression().not_in_list(values)
     }

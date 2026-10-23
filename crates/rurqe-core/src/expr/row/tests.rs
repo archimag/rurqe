@@ -158,7 +158,7 @@ fn a_row_matches_the_rows_of_a_subquery() {
 }
 
 #[test]
-fn a_row_rejects_membership_with_a_negated_subquery() {
+fn a_row_membership_predicate_can_be_negated() {
     let subquery = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderId, OrderName));
