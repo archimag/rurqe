@@ -6,8 +6,8 @@
 //! expressions read instead of degrading into that empty scope.
 
 use crate::dialect::Dialect;
-use crate::expr::{coalesce, Expr, Unscoped};
-use crate::SelectQuery;
+use crate::expr::{coalesce, Aggregate, Expr, SqlVal, Unscoped};
+use crate::{row_number, SelectQuery, Window};
 
 struct MockDialect;
 
@@ -98,4 +98,57 @@ fn a_grouped_query_accepts_a_constant_projection() {
         built.sql,
         "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\""
     );
+}
+
+#[test]
+fn aggregate_comparisons_keep_the_aggregation_marker() {
+    // An aggregate collapses the rows of a group into one value, so a comparison
+    // written over it stays a valid HAVING predicate instead of degrading into a
+    // comparison evaluated per row.
+    let _: Expr<bool, (), Aggregate> = Expr::count_all().gt(5i64);
+    let _: Expr<bool, Order, Aggregate> = Expr::sum::<OrderTotal>().lt(100.0);
+
+    // A bare column comparison is evaluated per row, so it keeps the table of its
+    // column and carries no aggregation marker.
+    let _: Expr<bool, Order> = Expr::column::<OrderTotal>().gt(10.0);
+}
+
+#[test]
+fn a_grouped_query_accepts_aggregates_over_ungrouped_columns() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all(), Expr::sum::<OrderTotal>()))
+        .having(Expr::count_all().gt(1i64))
+        .order_by_expr_desc(Expr::sum::<OrderTotal>())
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(*), SUM(\"total\") FROM \"orders\" GROUP BY \"user_id\" \
+         HAVING (COUNT(*) > $1) ORDER BY SUM(\"total\") DESC"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
+fn a_grouped_query_accepts_a_window_over_its_grouped_columns() {
+    // A window function is evaluated once the rows are grouped, so a
+    // specification partitioning and ordering by grouped columns stays
+    // projectable from the grouped query.
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by((OrderUserId, OrderTotal))
+        .select((
+            OrderUserId,
+            row_number().over(Window::partition_by(OrderUserId).order_by_asc(OrderTotal)),
+        ))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", ROW_NUMBER() OVER (PARTITION BY \"user_id\" ORDER BY \"total\" ASC) \
+         FROM \"orders\" GROUP BY \"user_id\", \"total\""
+    );
+    assert!(built.params.is_empty());
 }
