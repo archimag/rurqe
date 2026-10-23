@@ -398,6 +398,24 @@ pub fn render_expr<D: Dialect>(
             }
             sql.push(')');
         }
+        ExprKind::Cast { operand, target } => {
+            sql.push_str("CAST(");
+            render_expr::<D>(sql, params, operand, relations);
+            sql.push_str(" AS ");
+            sql.push_str(target);
+            sql.push(')');
+        }
+        ExprKind::DistinctFrom { lhs, rhs, negated } => {
+            sql.push('(');
+            render_expr::<D>(sql, params, lhs, relations);
+            sql.push_str(if *negated {
+                " IS NOT DISTINCT FROM "
+            } else {
+                " IS DISTINCT FROM "
+            });
+            render_expr::<D>(sql, params, rhs, relations);
+            sql.push(')');
+        }
         ExprKind::Case {
             branches,
             else_branch,

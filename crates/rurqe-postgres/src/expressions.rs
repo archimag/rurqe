@@ -30,6 +30,20 @@ pub trait PgExpressions: Column {
 
     /// Full-text search match (`@@ to_tsquery(?)`).
     fn matches_tsquery(self, query: &str) -> Expr<bool, Self::Table>;
+
+    /// JSONB value at an object key or an array index (`->`).
+    ///
+    /// The result is the `jsonb` sub-document the path addresses, so the operator
+    /// feeds further JSON predicates and operators of the column. A missing path
+    /// yields SQL `NULL`. Read the addressed member as text with
+    /// [`json_get_text`](PgExpressions::json_get_text).
+    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Table>;
+
+    /// JSONB value at an object key or an array index, rendered as text (`->>`).
+    ///
+    /// The operator reads the addressed member as `text`, which is how a scalar
+    /// member reaches a `String` column. A missing path yields SQL `NULL`.
+    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Table>;
 }
 
 impl<C: Column> PgExpressions for C {
@@ -70,6 +84,68 @@ impl<C: Column> PgExpressions for C {
             rhs: Box::new(to_tsquery(query).into_kind()),
         })
     }
+
+    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Table> {
+        json_extract::<C>("->", key.into())
+    }
+
+    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Table> {
+        json_extract::<C>("->>", key.into())
+    }
+}
+
+/// The path component a JSONB extraction operator addresses.
+///
+/// `->` and `->>` address an object member by its key and an array element by its
+/// zero-based index, so both operators accept either form where a path component
+/// is written: `metadata.json_get("owner")` reads an object member, while
+/// `metadata.json_get(0i32)` reads the first element of an array.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonKey {
+    /// An object member addressed by its key.
+    Key(String),
+    /// An array element addressed by its zero-based index.
+    Index(i32),
+}
+
+impl From<&str> for JsonKey {
+    fn from(key: &str) -> Self {
+        JsonKey::Key(key.to_owned())
+    }
+}
+
+impl From<String> for JsonKey {
+    fn from(key: String) -> Self {
+        JsonKey::Key(key)
+    }
+}
+
+impl From<i32> for JsonKey {
+    fn from(index: i32) -> Self {
+        JsonKey::Index(index)
+    }
+}
+
+impl JsonKey {
+    /// The bound parameter value the operator reads the path component from.
+    fn to_bindable(&self) -> SqlVal {
+        match self {
+            JsonKey::Key(key) => SqlVal::Text(key.clone()),
+            JsonKey::Index(index) => SqlVal::I32(*index),
+        }
+    }
+}
+
+/// Builds a `(<column> -> <path>)` extraction over the JSONB column `C`.
+///
+/// The column stays symbolic, so its reference is qualified against the relations
+/// of the statement the extraction belongs to and quoted by the dialect.
+fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Table> {
+    Expr::from_kind(ExprKind::DialectOp {
+        op,
+        lhs: Box::new(C::expr_kind()),
+        rhs: Box::new(ExprKind::Value(key.to_bindable())),
+    })
 }
 
 /// Builds a `(<column> <op> <value>)` predicate over the column `C`.
@@ -487,5 +563,42 @@ mod tests {
         let (sql, params) = render(all.kind(), &[TableRef::plain("posts")]);
         assert_eq!(sql, "($1 = ALL(\"scores\"))");
         assert_eq!(params, vec![SqlVal::I64(0)]);
+    }
+
+    #[test]
+    fn json_extraction_reads_an_object_key() {
+        let value = DocMetadata.json_get("owner");
+        let (sql, params) = render(value.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"metadata\" -> $1)");
+        assert_eq!(params, vec![SqlVal::Text("owner".to_owned())]);
+
+        let text = DocMetadata.json_get_text("owner");
+        let (sql, params) = render(text.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"metadata\" ->> $1)");
+        assert_eq!(params, vec![SqlVal::Text("owner".to_owned())]);
+    }
+
+    #[test]
+    fn json_extraction_reads_an_array_index() {
+        let value = DocMetadata.json_get(0i32);
+        let (sql, params) = render(value.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"metadata\" -> $1)");
+        assert_eq!(params, vec![SqlVal::I32(0)]);
+
+        let text = DocMetadata.json_get_text(JsonKey::Index(1));
+        let (sql, params) = render(text.kind(), &[TableRef::plain("docs")]);
+        assert_eq!(sql, "(\"metadata\" ->> $1)");
+        assert_eq!(params, vec![SqlVal::I32(1)]);
+    }
+
+    #[test]
+    fn json_extraction_carries_the_column_scope_and_qualifies_it() {
+        let value: Expr<String, Doc> = DocMetadata.json_get("owner");
+        let (sql, _) = render(
+            value.kind(),
+            &[TableRef::plain("docs"), TableRef::plain("posts")],
+        );
+
+        assert_eq!(sql, "(\"docs\".\"metadata\" -> $1)");
     }
 }

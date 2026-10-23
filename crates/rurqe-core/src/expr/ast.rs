@@ -157,6 +157,30 @@ pub enum ExprKind {
         /// The arguments of the call, in declaration order.
         args: Vec<ExprKind>,
     },
+    /// A `CAST(expr AS type)` conversion of a sub-expression.
+    ///
+    /// The target names the SQL type the value is converted to, so the conversion
+    /// is fixed where the expression is written instead of depending on the
+    /// column the value is later projected into.
+    Cast {
+        /// The converted expression.
+        operand: Box<ExprKind>,
+        /// The SQL type name the operand is converted to.
+        target: &'static str,
+    },
+    /// An `IS DISTINCT FROM` (`IS NOT DISTINCT FROM`) null-safe comparison.
+    ///
+    /// The comparison treats two SQL `NULL` values as equal to each other and as
+    /// distinct from every other value, while the plain `=` and `<>` operators
+    /// yield `NULL` for such a pair instead of a truth value.
+    DistinctFrom {
+        /// The left-hand operand.
+        lhs: Box<ExprKind>,
+        /// The right-hand operand.
+        rhs: Box<ExprKind>,
+        /// Whether the predicate is negated, which renders `IS NOT DISTINCT FROM`.
+        negated: bool,
+    },
     /// A searched `CASE` expression with `WHEN` branches and an optional `ELSE` fallback.
     Case {
         /// The `WHEN ... THEN ...` branches in declaration order.

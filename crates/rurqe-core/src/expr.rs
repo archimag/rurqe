@@ -35,7 +35,8 @@ pub use ast::{
 };
 pub use builder::{Aggregate, Expr, NonAggregate};
 pub use functions::{
-    avg, avg_distinct, coalesce, count, count_all, count_distinct, max, min, sum, sum_distinct,
+    avg, avg_distinct, coalesce, count, count_all, count_distinct, greatest, is_distinct_from,
+    is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, SqlCastTarget,
 };
 pub use ops::{Expression, IntoExpr, Numeric, NumericOperand, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr, RawSqlError};

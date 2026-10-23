@@ -4,6 +4,7 @@ use core::marker::PhantomData;
 use core::ops::{Add, Div, Mul, Rem, Sub};
 
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
+use super::functions::SqlCastTarget;
 use super::ops::{IntoExpr, Numeric, NumericOperand};
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
@@ -287,6 +288,43 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
             crate::query::WindowExprKind::Expr(self.kind),
             window,
         )
+    }
+
+    /// Converts the expression to the SQL type named by the cast target `U`.
+    ///
+    /// The conversion is rendered as `CAST(<expr> AS <type>)`, so the database
+    /// performs it, and the expression keeps the tables it reads: a cast stays in
+    /// the scope of its operand and remains projectable from a grouped query when
+    /// that operand is an aggregate.
+    ///
+    /// ```
+    /// use rurqe_core::expr::{Expr, ExprKind};
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// let text = Expr::column::<OrderTotal>().cast::<String>();
+    ///
+    /// assert_eq!(
+    ///     text.kind(),
+    ///     &ExprKind::Cast {
+    ///         operand: Box::new(ExprKind::Column {
+    ///             table: "orders",
+    ///             name: "total",
+    ///         }),
+    ///         target: "TEXT",
+    ///     }
+    /// );
+    /// ```
+    pub fn cast<U: SqlCastTarget>(self) -> Expr<U, Scope, Aggr> {
+        Expr::new(ExprKind::Cast {
+            operand: Box::new(self.kind),
+            target: U::SQL_TYPE,
+        })
     }
 
     /// Starts a `LAG(C)` window function builder for column `C`.
