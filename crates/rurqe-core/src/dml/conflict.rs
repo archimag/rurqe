@@ -319,14 +319,23 @@ where
             "an ON CONFLICT DO UPDATE requires at least one column assignment"
         );
 
+        let mut deduped_assignments: Vec<(&'static str, AssignValue)> = Vec::new();
+        for item in columns {
+            if let Some(existing) = deduped_assignments
+                .iter_mut()
+                .find(|(col, _)| *col == item.column)
+            {
+                existing.1 = item.value.clone();
+            } else {
+                deduped_assignments.push((item.column, item.value.clone()));
+            }
+        }
+
         self.query.with_conflict(Conflict {
             target: self.target,
             target_predicate: self.target_predicate,
             action: ConflictAction::DoUpdate {
-                assignments: columns
-                    .into_iter()
-                    .map(|assignment| (assignment.column, assignment.value.clone()))
-                    .collect(),
+                assignments: deduped_assignments,
                 predicate: self.update_predicate,
             },
         })

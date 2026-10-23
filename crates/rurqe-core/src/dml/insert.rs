@@ -413,8 +413,20 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
 
 impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
     fn push_row<S: AssignmentSet<T>>(&mut self, set: &S) {
-        let mut assignments = Vec::new();
-        set.extend_assignments(&mut assignments);
+        let mut raw_assignments = Vec::new();
+        set.extend_assignments(&mut raw_assignments);
+
+        let mut assignments: Vec<(&'static str, AssignValue)> = Vec::new();
+        for item in raw_assignments {
+            if let Some(existing) = assignments
+                .iter_mut()
+                .find(|(col, _)| *col == item.column)
+            {
+                existing.1 = item.value.clone();
+            } else {
+                assignments.push((item.column, item.value.clone()));
+            }
+        }
 
         // Every row of one statement is typed by the same `AssignmentSet`, and a
         // `VALUES` source is only recordable in the state that carries no source
@@ -423,14 +435,14 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         if self.rows.is_empty() {
             self.columns = assignments
                 .iter()
-                .map(|assignment| assignment.column)
+                .map(|(col, _)| *col)
                 .collect();
         }
 
         self.rows.push(
             assignments
                 .into_iter()
-                .map(|assignment| assignment.value.clone())
+                .map(|(_, value)| value)
                 .collect(),
         );
     }
@@ -486,6 +498,48 @@ mod tests {
             ArchiveId => "old_id": i64,
             ArchiveName => "old_name": String,
         }
+    }
+
+    #[test]
+    fn tuple_with_duplicate_column_normalizes_to_last_value() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((
+                UserId::set(1i64),
+                UserName::set("first"),
+                UserName::set("second"),
+            ))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("second".to_owned())]
+        );
+    }
+
+    #[test]
+    fn on_conflict_do_update_with_duplicate_column_normalizes_to_last_value() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .do_update((UserName::set("first"), UserName::set("second")))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $3"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::Text("second".to_owned()),
+            ]
+        );
     }
 
     #[test]

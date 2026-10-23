@@ -144,7 +144,15 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         let mut columns = Vec::new();
         set.extend_assignments(&mut columns);
         for item in columns {
-            self.assignments.push((item.column, item.value.clone()));
+            if let Some(existing) = self
+                .assignments
+                .iter_mut()
+                .find(|(col, _)| *col == item.column)
+            {
+                existing.1 = item.value.clone();
+            } else {
+                self.assignments.push((item.column, item.value.clone()));
+            }
         }
         self.retype()
     }
@@ -369,6 +377,41 @@ mod tests {
                 SqlVal::Bool(true),
                 SqlVal::I64(10),
             ]
+        );
+    }
+
+    #[test]
+    fn repeated_set_calls_for_same_column_replaces_value() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("first"))
+            .set(UserName::set("second"))
+            .where_(Expr::column::<UserId>().eq(1i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::Text("second".to_owned()), SqlVal::I64(1)]
+        );
+    }
+
+    #[test]
+    fn tuple_assignment_with_duplicate_column_keeps_last_value() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .set((UserName::set("first"), UserName::set("second")))
+            .where_(Expr::column::<UserId>().eq(1i64))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::Text("second".to_owned()), SqlVal::I64(1)]
         );
     }
 
