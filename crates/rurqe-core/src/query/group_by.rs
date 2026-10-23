@@ -3,8 +3,8 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{Aggregate, Expr, ExprKind, NonAggregate, NullsOrder};
-use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
+use crate::expr::{Aggregate, Expr, NonAggregate, NullsOrder, OrderCriterion};
+use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
 use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
@@ -14,210 +14,45 @@ use super::select::{
 };
 use super::window::WindowExpr;
 
-/// A column or tuple of columns for the `GROUP BY` clause.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` is not a valid GROUP BY clause",
-    label = "group by a column or a tuple of columns",
-    note = "group by accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
-)]
-pub trait GroupBy {
-    /// Appends the grouped column expressions to `out` in grouping order.
-    fn push_column_names(&self, out: &mut Vec<ExprKind>);
-}
+// The type-level column sets and the membership checks live in a sibling module, so
+// the grouped query builder keeps one responsibility per file.
+mod sets;
 
-impl<C: Column> GroupBy for C {
-    fn push_column_names(&self, out: &mut Vec<ExprKind>) {
-        out.push(C::expr_kind());
-    }
-}
+pub use self::sets::{
+    ColumnInGroupBy, EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupSet,
+    GroupSetColumns, WindowColsInGroupBy,
+};
 
-macro_rules! impl_group_by {
-    ($($column:ident),+) => {
-        impl<$($column: Column),+> GroupBy for ($($column,)+) {
-            fn push_column_names(&self, out: &mut Vec<ExprKind>) {
-                $(out.push($column::expr_kind());)+
-            }
-        }
-    };
-}
-
-impl_group_by!(C1);
-impl_group_by!(C1, C2);
-impl_group_by!(C1, C2, C3);
-impl_group_by!(C1, C2, C3, C4);
-impl_group_by!(C1, C2, C3, C4, C5);
-impl_group_by!(C1, C2, C3, C4, C5, C6);
-impl_group_by!(C1, C2, C3, C4, C5, C6, C7);
-impl_group_by!(C1, C2, C3, C4, C5, C6, C7, C8);
-
-/// Statically asserts that every grouped column belongs to the query scope.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot be grouped in this query's scope",
-    label = "the grouped column belongs to a table the query does not select from",
-    note = "introduce the column's table with `from` or a join before grouping by it"
-)]
-pub trait GroupByInScope<Tables, Positions>: GroupBy {}
-
-impl<Tables, C, P> GroupByInScope<Tables, P> for C
-where
-    C: Column,
-    Tables: TableInScope<C::Table, P>,
-{
-}
-
-macro_rules! impl_group_by_in_scope {
-    ($($column:ident $position:ident),+) => {
-        impl<Tables, $($column, $position),+> GroupByInScope<Tables, ($($position,)+)>
-            for ($($column,)+)
-        where
-            $($column: Column, Tables: TableInScope<$column::Table, $position>,)+
-        {
-        }
-    };
-}
-
-impl_group_by_in_scope!(C1 P1);
-impl_group_by_in_scope!(C1 P1, C2 P2);
-impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3);
-impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4);
-impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5);
-impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6);
-impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7);
-impl_group_by_in_scope!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7, C8 P8);
-
-/// The empty base of the type-level set of columns a query groups by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EmptyGroupSet;
-
-/// A type-level set of grouped columns, extended one column at a time.
-pub struct GroupSet<Prev, C>(PhantomData<fn() -> (Prev, C)>);
-
-/// Folds a type-level set of columns onto another set.
+/// Statically asserts that a `HAVING` predicate filters the groups of a query.
 ///
-/// A window specification records the columns it partitions by and orders by, one
-/// [`GroupSet`] node per column. A window expression merges that set with its own
-/// columns, so the trait rewrites the appended set on top of the set it is merged
-/// into while keeping the order the columns were declared in.
-pub trait GroupSetColumns<Prev> {
-    /// The set holding the columns of `Prev` followed by the columns of `Self`.
-    type Columns;
-}
-
-// The empty appended set leaves the set it is merged into untouched.
-impl<Prev> GroupSetColumns<Prev> for EmptyGroupSet {
-    type Columns = Prev;
-}
-
-// The appended set contributes its last column on top of the columns folded in so
-// far, so a tuple of window columns keeps its declaration order.
-impl<Prev, Inner, C: Column> GroupSetColumns<Prev> for GroupSet<Inner, C>
-where
-    Inner: GroupSetColumns<Prev>,
-{
-    type Columns = GroupSet<<Inner as GroupSetColumns<Prev>>::Columns, C>;
-}
-
-/// Derives the type-level set of grouped columns from a `GROUP BY` clause.
+/// The rows of a grouped query are collapsed into groups before `HAVING` runs, so
+/// the clause reads either an aggregate computed over a group —
+/// `count_all().gt(5i64)`, for instance — or an expression that is constant within
+/// a group, such as a `sql!` fragment comparing two aggregates. A predicate
+/// reading a bare column is rejected, because the grouping dropped the per-row
+/// value that column would name: such rows are filtered with `where_` before
+/// grouping, and grouped columns are compared through
+/// [`GroupedQuery::having_col`].
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is not a valid GROUP BY clause",
-    label = "group by a column or a tuple of columns",
-    note = "GROUP BY accepts column markers or tuples of column markers, such as `UserId` or `(UserId, UserName)`"
+    message = "`{Self}` is not a valid HAVING predicate",
+    label = "the predicate reads a column that is neither grouped nor aggregated",
+    note = "filter the rows with `where_` before grouping, compare a grouped column with `having_col`, or wrap the column into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
 )]
-pub trait GroupByColumns<Prev> {
-    /// The set of grouped columns, extending `Prev` with the grouped columns.
-    type Columns;
-}
+pub trait HavingPredicate<GroupByCols, Tables, P = At<0>> {}
 
-impl<Prev, C: Column> GroupByColumns<Prev> for C {
-    type Columns = GroupSet<Prev, C>;
-}
-
-impl<Prev, C1: Column> GroupByColumns<Prev> for (C1,) {
-    type Columns = GroupSet<Prev, C1>;
-}
-
-impl<Prev, C1: Column, C2: Column> GroupByColumns<Prev> for (C1, C2) {
-    type Columns = GroupSet<GroupSet<Prev, C1>, C2>;
-}
-
-impl<Prev, C1: Column, C2: Column, C3: Column> GroupByColumns<Prev> for (C1, C2, C3) {
-    type Columns = GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>;
-}
-
-impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column> GroupByColumns<Prev>
-    for (C1, C2, C3, C4)
-{
-    type Columns = GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>;
-}
-
-impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column, C5: Column> GroupByColumns<Prev>
-    for (C1, C2, C3, C4, C5)
-{
-    type Columns = GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>;
-}
-
-impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column, C5: Column, C6: Column>
-    GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6)
-{
-    type Columns =
-        GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>;
-}
-
-impl<
-        Prev,
-        C1: Column,
-        C2: Column,
-        C3: Column,
-        C4: Column,
-        C5: Column,
-        C6: Column,
-        C7: Column,
-    > GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6, C7)
-{
-    type Columns = GroupSet<
-        GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>,
-        C7,
-    >;
-}
-
-impl<
-        Prev,
-        C1: Column,
-        C2: Column,
-        C3: Column,
-        C4: Column,
-        C5: Column,
-        C6: Column,
-        C7: Column,
-        C8: Column,
-    > GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6, C7, C8)
-{
-    type Columns = GroupSet<
-        GroupSet<
-            GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>,
-            C7,
-        >,
-        C8,
-    >;
-}
-
-/// Checks that the column `C` is part of the set of grouped columns at position `P`.
-#[diagnostic::on_unimplemented(
-    message = "column `{C}` cannot be selected in a GROUP BY query because it is neither grouped nor an aggregate",
-    label = "the column is not part of the GROUP BY clause",
-    note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
-)]
-pub trait ColumnInGroupBy<C, P = At<0>> {}
-
-// Base case: the column the set was last extended with sits at `At<0>`.
-impl<Prev, C: Column> ColumnInGroupBy<C, At<0>> for GroupSet<Prev, C> {}
-
-// Inductive case: columns of the inner set sit one position deeper.
-impl<Prev, C: Column, Target: Column, P> ColumnInGroupBy<Target, Next<P>> for GroupSet<Prev, C>
+impl<GroupByCols, Tables, Scope, P> HavingPredicate<GroupByCols, Tables, P>
+    for Expr<bool, Scope, Aggregate>
 where
-    Prev: ColumnInGroupBy<Target, P>,
+    Scope: ExprInScope<Tables, P> + ScopePositions<P>,
 {
 }
+
+impl<GroupByCols, Tables, P> HavingPredicate<GroupByCols, Tables, P>
+    for Expr<bool, (), NonAggregate>
+{
+}
+
+
 
 /// Derives the row item produced by a projection in a `GROUP BY` query.
 ///
@@ -340,12 +175,24 @@ impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<
     type Output = T;
 }
 
+/// Derives the row item produced by a window expression in a `GROUP BY` query.
+///
+/// A window function is evaluated over the rows of a group once the rows are
+/// grouped, so the columns its specification partitions by and orders by have to
+/// survive the grouping as well: the database evaluates `PARTITION BY` and
+/// `ORDER BY` after `GROUP BY` and cannot read a column the grouping dropped. The
+/// column set `Cols` recorded by the window expression is therefore checked
+/// against the grouped columns through [`WindowColsInGroupBy`], so a window
+/// reading an ungrouped column is rejected at the call site.
 impl<
         GroupByCols,
         T: 'static + Send + Sync,
         Scope: 'static + Send + Sync,
         Cols: 'static + Send + Sync,
-    > GroupedSelectTarget<GroupByCols, At<0>> for WindowExpr<T, Scope, Cols>
+        Positions,
+    > GroupedSelectTarget<GroupByCols, Positions> for WindowExpr<T, Scope, Cols>
+where
+    Cols: WindowColsInGroupBy<GroupByCols, Positions>,
 {
     type Output = T;
 }
@@ -604,42 +451,79 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ///
     /// A `HAVING` clause filters the groups an aggregate produced, so the
     /// predicate is written over an aggregate — `count_all().gt(5i64)`, for
-    /// instance — and keeps the aggregation marker of that comparison.
+    /// instance — and keeps the aggregation marker of that comparison. A predicate
+    /// that is constant within a group, such as a `sql!` fragment comparing two
+    /// aggregates, is accepted as well, while a predicate reading a bare column is
+    /// rejected: the grouping dropped the per-row value that column would name.
+    /// Compare grouped columns with [`having_col`](GroupedQuery::having_col)
+    /// instead, and filter rows before grouping with `where_`.
     pub fn having<Scope, Aggr, P>(mut self, predicate: Expr<bool, Scope, Aggr>) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        Expr<bool, Scope, Aggr>: HavingPredicate<GroupByCols, Tables, P>,
     {
         self.query = self.query.having(predicate);
         self
     }
 
-    /// Appends an ordering criterion for column `col` with `direction`.
-    pub fn order_by<C: Column, P>(mut self, col: C, direction: OrderDirection) -> Self
+    /// Restricts grouped rows by `predicate` written over the grouped column `col`.
+    ///
+    /// A grouped column keeps one value per group, so it is compared directly
+    /// instead of through an aggregate:
+    /// `having_col(OrderUserId, OrderUserId.gt(10i64))` keeps the groups of the
+    /// users above ten. The column must be part of the `GROUP BY` clause, which is
+    /// exactly what a bare column reference inside
+    /// [`having`](GroupedQuery::having) lacks.
+    pub fn having_col<C, PGroup, PTable>(
+        mut self,
+        _col: C,
+        predicate: Expr<bool, C::Table>,
+    ) -> Self
+    where
+        C: Column,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
+        Tables: TableInScope<C::Table, PTable>,
+    {
+        self.query = self.query.having(predicate);
+        self
+    }
+
+    /// Appends an ordering criterion for the grouped column `col` with `direction`.
+    ///
+    /// A grouped query produces one row per group, so the values it sorts by are
+    /// either grouped columns — which this method takes — or aggregates computed
+    /// over each group, which [`order_by_expr`](GroupedQuery::order_by_expr) takes.
+    /// Ordering by a column the query does not group by is therefore rejected at
+    /// the call site.
+    pub fn order_by<C: Column, P, PGroup>(mut self, col: C, direction: OrderDirection) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.query = self.query.order_by(col, direction);
         self
     }
 
-    /// Appends an ascending ordering criterion for column `col`.
-    pub fn order_by_asc<C: Column, P>(self, col: C) -> Self
+    /// Appends an ascending ordering criterion for the grouped column `col`.
+    pub fn order_by_asc<C: Column, P, PGroup>(self, col: C) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.order_by(col, OrderDirection::Asc)
     }
 
-    /// Appends a descending ordering criterion for column `col`.
-    pub fn order_by_desc<C: Column, P>(self, col: C) -> Self
+    /// Appends a descending ordering criterion for the grouped column `col`.
+    pub fn order_by_desc<C: Column, P, PGroup>(self, col: C) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.order_by(col, OrderDirection::Desc)
     }
 
     /// Appends an ordering criterion fixing where the NULL values of `col` sort.
-    pub fn order_by_nulls<C: Column, P>(
+    pub fn order_by_nulls<C: Column, P, PGroup>(
         mut self,
         col: C,
         direction: OrderDirection,
@@ -647,41 +531,103 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.query = self.query.order_by_nulls(col, direction, nulls);
         self
     }
 
     /// Appends an ascending ordering criterion putting NULL values first.
-    pub fn order_by_asc_nulls_first<C: Column, P>(self, col: C) -> Self
+    pub fn order_by_asc_nulls_first<C: Column, P, PGroup>(self, col: C) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::First)
     }
 
     /// Appends an ascending ordering criterion putting NULL values last.
-    pub fn order_by_asc_nulls_last<C: Column, P>(self, col: C) -> Self
+    pub fn order_by_asc_nulls_last<C: Column, P, PGroup>(self, col: C) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::Last)
     }
 
     /// Appends a descending ordering criterion putting NULL values first.
-    pub fn order_by_desc_nulls_first<C: Column, P>(self, col: C) -> Self
+    pub fn order_by_desc_nulls_first<C: Column, P, PGroup>(self, col: C) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::First)
     }
 
     /// Appends a descending ordering criterion putting NULL values last.
-    pub fn order_by_desc_nulls_last<C: Column, P>(self, col: C) -> Self
+    pub fn order_by_desc_nulls_last<C: Column, P, PGroup>(self, col: C) -> Self
     where
         Tables: TableInScope<C::Table, P>,
+        GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
         self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::Last)
+    }
+
+    /// Appends an ordering criterion for the aggregate `expression` with `direction`.
+    ///
+    /// The rows of a group are already collapsed when the statement sorts them, so
+    /// the values it orders by are either grouped columns — ordered with
+    /// [`order_by`](GroupedQuery::order_by) — or aggregates computed over each
+    /// group, which is what this method takes:
+    ///
+    /// ```text
+    /// let query = select_from(Order)
+    ///     .group_by(OrderUserId)
+    ///     .select((OrderUserId, Expr::count_all()))
+    ///     .order_by_expr_desc(Expr::count_all());
+    /// ```
+    pub fn order_by_expr<T, Scope, P>(
+        mut self,
+        expression: Expr<T, Scope, Aggregate>,
+        direction: OrderDirection,
+    ) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
+        let criterion = OrderCriterion::new(expression.into_kind(), direction);
+        self.query.push_ordering(criterion);
+        self
+    }
+
+    /// Appends an ordering criterion for `expression` fixing where NULL values sort.
+    pub fn order_by_expr_nulls<T, Scope, P>(
+        mut self,
+        expression: Expr<T, Scope, Aggregate>,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
+        let criterion = OrderCriterion::new(expression.into_kind(), direction).nulls(nulls);
+        self.query.push_ordering(criterion);
+        self
+    }
+
+    /// Appends an ascending ordering criterion for the aggregate `expression`.
+    pub fn order_by_expr_asc<T, Scope, P>(self, expression: Expr<T, Scope, Aggregate>) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
+        self.order_by_expr(expression, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for the aggregate `expression`.
+    pub fn order_by_expr_desc<T, Scope, P>(self, expression: Expr<T, Scope, Aggregate>) -> Self
+    where
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    {
+        self.order_by_expr(expression, OrderDirection::Desc)
     }
 
     /// Limits the number of returned groups to `limit`.

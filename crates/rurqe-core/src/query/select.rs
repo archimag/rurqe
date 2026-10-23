@@ -544,7 +544,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// An ordering written after a set operation belongs to the combined rows
     /// rather than to the left query, so it is recorded on the compound statement.
-    fn push_ordering(&mut self, criterion: OrderCriterion) {
+    pub(crate) fn push_ordering(&mut self, criterion: OrderCriterion) {
         if self.set_operations.is_empty() {
             self.order_by.push(criterion);
         } else {

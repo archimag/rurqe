@@ -1323,17 +1323,49 @@ fn chained_group_by_extends_the_grouped_columns() {
 
 #[test]
 fn grouped_selection_accepts_window_expressions() {
+    // A window is evaluated over the rows of a group, so it reads only the columns
+    // the query groups by: partitioning by the grouped user and ordering by the
+    // grouped identifier stays accepted, while a window reading an ungrouped column
+    // is rejected at the call site.
     let built = SelectQuery::<MockDialect>::new()
         .from::<Order>()
-        .group_by(OrderUserId)
-        .select((OrderUserId, row_number().over(Window::order_by_asc(OrderId))))
+        .group_by((OrderUserId, OrderId))
+        .select((
+            OrderUserId,
+            row_number().over(Window::partition_by(OrderUserId).order_by_asc(OrderId)),
+        ))
         .build();
 
     assert_eq!(
         built.sql,
-        "SELECT \"user_id\", ROW_NUMBER() OVER (ORDER BY \"id\" ASC) FROM \"orders\" \
-         GROUP BY \"user_id\""
+        "SELECT \"user_id\", ROW_NUMBER() OVER (PARTITION BY \"user_id\" ORDER BY \"id\" ASC) \
+         FROM \"orders\" GROUP BY \"user_id\", \"id\""
     );
+}
+
+#[test]
+fn grouped_queries_order_and_filter_by_aggregates_and_grouped_columns() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()))
+        .having_col(OrderUserId, Expr::column::<OrderUserId>().gt(10i64))
+        .having(Expr::count_all().gt(1i64))
+        .order_by_expr_desc(Expr::count_all())
+        .order_by_expr_nulls(
+            Expr::sum::<OrderTotal>(),
+            OrderDirection::Asc,
+            NullsOrder::Last,
+        )
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+         HAVING ((\"user_id\" > $1) AND (COUNT(*) > $2)) \
+         ORDER BY COUNT(*) DESC, SUM(\"total\") ASC NULLS LAST"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(10), SqlVal::I64(1)]);
 }
 
 #[test]
@@ -1399,18 +1431,24 @@ fn order_by_and_group_by_qualify_aliased_columns() {
             AliasedCol::<UserAlias, UserId>::new(),
             AliasedCol::<ManagerAlias, UserName>::new(),
         ))
-        .order_by(
-            AliasedCol::<UserAlias, UserName>::new(),
-            OrderDirection::Asc,
-        )
+        .order_by(AliasedCol::<UserAlias, UserId>::new(), OrderDirection::Asc)
         .build();
 
     assert_eq!(
         built.sql,
         "SELECT \"u\".\"id\", \"m\".\"name\" FROM \"users\" AS \"u\" \
          INNER JOIN \"users\" AS \"m\" ON (\"u\".\"id\" = \"m\".\"id\") \
-         GROUP BY \"u\".\"id\", \"m\".\"name\" ORDER BY \"u\".\"name\" ASC"
-    );
+         GROUP BY \"u\".\"id\", \"m\".\"name\" ORDER BY \"u\".\"id\" ASC"
+    );/*_424152F25FAADF03>
+<replace>        .order_by(AliasedCol::<UserAlias, UserId>::new(), OrderDirection::Asc)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"u\".\"id\", \"m\".\"name\" FROM \"users\" AS \"u\" \
+         INNER JOIN \"users\" AS \"m\" ON (\"u\".\"id\" = \"m\".\"id\") \
+         GROUP BY \"u\".\"id\", \"m\".\"name\" ORDER BY \"u\".\"id\" ASC"
+    );*/
     assert!(built.params.is_empty());
 }
 

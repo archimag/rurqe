@@ -45,7 +45,8 @@ pub use self::execution::{
 };
 pub use self::group_by::{
     ColumnInGroupBy, EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupSet,
-    GroupSetColumns, GroupedQuery, GroupedSelectTarget, GroupedSelection,
+    GroupSetColumns, GroupedQuery, GroupedSelectTarget, GroupedSelection, HavingPredicate,
+    WindowColsInGroupBy,
 };
 pub use self::scope::{
     CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
