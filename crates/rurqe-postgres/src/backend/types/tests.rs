@@ -50,6 +50,113 @@ fn scalar_values_map_to_driver_parameters() {
 }
 
 #[test]
+fn a_smallint_column_binds_two_octets() {
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::I32(7))
+            .to_sql_checked(&Type::INT2, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+
+    // A `smallint` column reads two octets, so the parameter must not carry the
+    // four octets of the 32 bit value it was bound from.
+    assert_eq!(buffer.to_vec(), vec![0u8, 7]);
+}
+
+#[test]
+fn a_real_column_binds_four_octets() {
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::F64(0.5))
+            .to_sql_checked(&Type::FLOAT4, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+
+    assert_eq!(buffer.to_vec(), 0.5f32.to_be_bytes().to_vec());
+}
+
+#[test]
+fn an_integer_binds_at_the_width_of_its_column() {
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::I64(9))
+        .to_sql_checked(&Type::INT4, &mut buffer)
+        .unwrap();
+    assert_eq!(buffer.to_vec(), 9i32.to_be_bytes().to_vec());
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::I32(9))
+        .to_sql_checked(&Type::INT8, &mut buffer)
+        .unwrap();
+    assert_eq!(buffer.to_vec(), 9i64.to_be_bytes().to_vec());
+}
+
+#[test]
+fn a_value_out_of_the_range_of_a_smallint_column_is_rejected() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::I32(i32::from(i16::MAX) + 1))
+        .to_sql_checked(&Type::INT2, &mut buffer)
+    {
+        Ok(_) => panic!("the value does not fit a smallint column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("out of the range"));
+    assert!(error.to_string().contains("int2"));
+}
+
+#[test]
+fn a_value_out_of_the_range_of_a_real_column_is_rejected() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::F64(f64::MAX)).to_sql_checked(&Type::FLOAT4, &mut buffer)
+    {
+        Ok(_) => panic!("the value does not fit a real column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("out of the range"));
+    assert!(error.to_string().contains("float4"));
+}
+
+#[test]
+fn a_domain_binds_the_representation_of_the_type_it_is_declared_over() {
+    let smallint_domain = synthetic("small_count", 65_527, Kind::Domain(Type::INT2));
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::I32(3))
+            .to_sql_checked(&smallint_domain, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+    assert_eq!(buffer.to_vec(), vec![0u8, 3]);
+
+    let decimal_domain = synthetic("rated", 65_526, Kind::Domain(Type::NUMERIC));
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("12.5".to_owned()))
+        .to_sql_checked(&decimal_domain, &mut buffer)
+        .unwrap();
+    assert_eq!(Wire::Numeric.decode(&buffer[..]), Ok("12.5".to_owned()));
+}
+
+#[cfg(feature = "uuid")]
+#[test]
+fn a_domain_over_uuid_binds_its_textual_value() {
+    let uuid_domain = synthetic("user_id", 65_525, Kind::Domain(Type::UUID));
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::Text(
+            "00000000-0000-0000-0000-000000000000".to_owned()
+        ))
+        .to_sql_checked(&uuid_domain, &mut buffer)
+        .unwrap(),
+        IsNull::No
+    ));
+
+    assert_eq!(buffer.to_vec(), vec![0u8; 16]);
+}
+
+#[test]
 fn null_binds_for_any_declared_type() {
     let mut buffer = BytesMut::new();
     assert!(matches!(

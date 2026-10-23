@@ -101,6 +101,10 @@ fn text_to_sql(
     ty: &Type,
     out: &mut BytesMut,
 ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+    // The textual spelling of a value is the one of the type a domain is
+    // declared over, so the domain chain is resolved before the value is parsed.
+    let ty = base_type(ty);
+
     #[cfg(feature = "uuid")]
     {
         if ty == &Type::UUID {
@@ -168,7 +172,14 @@ impl ToSql for SqlValParam<'_> {
             return encode_array(self.0, ty, out);
         }
 
-        match wire_of(ty) {
+        // The binary layout of a value follows the type its column is declared
+        // over: a domain carries the representation of that type. Resolving the
+        // domain chain here keeps a domain column binding the same octets as the
+        // type it is declared over instead of reaching the server under a layout
+        // of its own.
+        let column_ty = base_type(ty);
+
+        match wire_of(column_ty) {
             // Textual columns and plain scalars keep the per-value encoding.
             None | Some(Wire::Text) => {}
             // A column the code generator maps onto `String` has no `SqlVal`
@@ -179,58 +190,58 @@ impl ToSql for SqlValParam<'_> {
 
         match self.0 {
             SqlVal::Null => Ok(IsNull::Yes),
-            SqlVal::Bool(value) => value.to_sql(ty, out),
-            SqlVal::I32(value) => value.to_sql(ty, out),
-            SqlVal::I64(value) => value.to_sql(ty, out),
-            SqlVal::F64(value) => value.to_sql(ty, out),
-            SqlVal::Text(value) => text_to_sql(value, ty, out),
-            SqlVal::Bytes(value) => value.as_slice().to_sql(ty, out),
+            SqlVal::Bool(value) => value.to_sql(column_ty, out),
+            SqlVal::I32(value) => encode_integer(i64::from(*value), self.0, column_ty, out),
+            SqlVal::I64(value) => encode_integer(*value, self.0, column_ty, out),
+            SqlVal::F64(value) => encode_float(*value, self.0, column_ty, out),
+            SqlVal::Text(value) => text_to_sql(value, column_ty, out),
+            SqlVal::Bytes(value) => value.as_slice().to_sql(column_ty, out),
             #[cfg(feature = "uuid")]
             SqlVal::Uuid(value) => {
-                if ty == &Type::UUID {
-                    value.to_sql(ty, out)
+                if column_ty == &Type::UUID {
+                    value.to_sql(column_ty, out)
                 } else {
-                    value.to_string().to_sql(ty, out)
+                    value.to_string().to_sql(column_ty, out)
                 }
             }
             #[cfg(feature = "chrono")]
             SqlVal::NaiveDateTime(value) => {
-                if ty == &Type::TIMESTAMP {
-                    value.to_sql(ty, out)
-                } else if ty == &Type::TIMESTAMPTZ {
+                if column_ty == &Type::TIMESTAMP {
+                    value.to_sql(column_ty, out)
+                } else if column_ty == &Type::TIMESTAMPTZ {
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
                         *value,
                         chrono::Utc,
                     )
-                    .to_sql(ty, out)
+                    .to_sql(column_ty, out)
                 } else {
-                    value.to_string().to_sql(ty, out)
+                    value.to_string().to_sql(column_ty, out)
                 }
             }
             #[cfg(feature = "chrono")]
             SqlVal::DateTimeUtc(value) => {
-                if ty == &Type::TIMESTAMPTZ {
-                    value.to_sql(ty, out)
-                } else if ty == &Type::TIMESTAMP {
-                    value.naive_utc().to_sql(ty, out)
+                if column_ty == &Type::TIMESTAMPTZ {
+                    value.to_sql(column_ty, out)
+                } else if column_ty == &Type::TIMESTAMP {
+                    value.naive_utc().to_sql(column_ty, out)
                 } else {
-                    value.to_rfc3339().to_sql(ty, out)
+                    value.to_rfc3339().to_sql(column_ty, out)
                 }
             }
             #[cfg(feature = "chrono")]
             SqlVal::NaiveDate(value) => {
-                if ty == &Type::DATE {
-                    value.to_sql(ty, out)
+                if column_ty == &Type::DATE {
+                    value.to_sql(column_ty, out)
                 } else {
-                    value.to_string().to_sql(ty, out)
+                    value.to_string().to_sql(column_ty, out)
                 }
             }
             #[cfg(feature = "serde_json")]
             SqlVal::Json(value) => {
-                if ty == &Type::JSON || ty == &Type::JSONB {
-                    value.to_sql(ty, out)
+                if column_ty == &Type::JSON || column_ty == &Type::JSONB {
+                    value.to_sql(column_ty, out)
                 } else {
-                    value.to_string().to_sql(ty, out)
+                    value.to_string().to_sql(column_ty, out)
                 }
             }
             SqlVal::EncodingError(message) => {
@@ -373,6 +384,69 @@ fn decimal_text(value: &SqlVal) -> Option<String> {
         SqlVal::Decimal(decimal) => Some(decimal.to_string()),
         _ => None,
     }
+}
+
+/// Encodes an integer at the width of the column it is bound to.
+///
+/// The payload width follows the column rather than the value: a `SMALLINT`
+/// column reads two octets and a `BIGINT` column eight, so a value that reaches a
+/// column of another width is converted first instead of sending a payload the
+/// server would read as a different number.
+fn encode_integer(
+    number: i64,
+    value: &SqlVal,
+    column_ty: &Type,
+    out: &mut BytesMut,
+) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+    if column_ty == &Type::INT2 {
+        let narrowed = i16::try_from(number).map_err(|_| out_of_range(value, column_ty))?;
+        return narrowed.to_sql(column_ty, out);
+    }
+    if column_ty == &Type::INT4 {
+        let narrowed = i32::try_from(number).map_err(|_| out_of_range(value, column_ty))?;
+        return narrowed.to_sql(column_ty, out);
+    }
+
+    number.to_sql(column_ty, out)
+}
+
+/// Encodes a floating point value at the width of the column it is bound to.
+///
+/// A `REAL` column carries four octets, so a value bound from a 64 bit float is
+/// narrowed to the single precision range the column holds.
+fn encode_float(
+    number: f64,
+    value: &SqlVal,
+    column_ty: &Type,
+    out: &mut BytesMut,
+) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+    if column_ty == &Type::FLOAT4 {
+        let narrowed = narrow_to_f32(number).ok_or_else(|| out_of_range(value, column_ty))?;
+        return narrowed.to_sql(column_ty, out);
+    }
+
+    number.to_sql(column_ty, out)
+}
+
+/// Narrows a 64 bit float to the single precision range.
+///
+/// `f32` declares no fallible conversion from `f64`, so the overflow is detected
+/// by comparing the finiteness of the value with the finiteness of its narrowed
+/// form: a finite value the single precision range cannot hold narrows into an
+/// infinity the column never asked for. An infinite or `NaN` value keeps its own
+/// kind, which a `REAL` column represents faithfully.
+fn narrow_to_f32(number: f64) -> Option<f32> {
+    let narrowed = number as f32;
+    (narrowed.is_finite() == number.is_finite()).then_some(narrowed)
+}
+
+/// Describes a value outside the range of a column of type `ty`.
+fn out_of_range(value: &SqlVal, ty: &Type) -> Box<dyn StdError + Sync + Send> {
+    Box::new(::std::io::Error::other(format!(
+        "a SQL `{}` value is out of the range of a PostgreSQL column of type `{}`",
+        value.variant_name(),
+        ty.name()
+    )))
 }
 
 /// Describes a value that cannot be bound to a column of type `ty`.
