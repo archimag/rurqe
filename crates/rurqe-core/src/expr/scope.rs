@@ -40,6 +40,29 @@ impl<L: Table, R: Table> MergeScope<R> for L {
     type Output = <L as CombineScope<R>>::Combined;
 }
 
+/// Marker of an expression whose relation scope was deliberately dropped.
+///
+/// [`Expr::without_scope`](crate::expr::Expr::without_scope) replaces the tables
+/// an expression references with this marker, so the expression is accepted in
+/// every query scope — which is what a correlated subquery needs when it reads a
+/// column of the statement enclosing it. The empty scope `()` stays reserved for
+/// expressions referencing no table at all, so a check relying on that difference
+/// — the projection rule of a grouped query, for instance — never mistakes a
+/// column read through a dropped scope for a constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Unscoped;
+
+// An unscoped operand declares that its tables are checked elsewhere, so it adds
+// nothing to the merged scope and the scope of the other operand survives.
+impl<L> MergeScope<Unscoped> for L {
+    type Output = L;
+}
+
+// An unscoped operand on the left keeps the scope of its right-hand side.
+impl<R: Table> MergeScope<R> for Unscoped {
+    type Output = R;
+}
+
 macro_rules! impl_tuple_merge_scope {
     ($($member:ident),+) => {
         impl<$($member: Table),+, R: Table> MergeScope<R> for ($($member,)+) {
@@ -143,5 +166,20 @@ mod tests {
         assert_merged::<(), (User, Order), (User, Order)>();
         assert_merged::<User, (Order, User), (User, Order, User)>();
         assert_merged::<(User, Order), (User, Order), (User, Order, User, Order)>();
+    }
+
+    #[test]
+    fn an_unscoped_operand_contributes_no_table() {
+        // The marker names the tables checked elsewhere, so the scope of the
+        // other operand survives unchanged.
+        assert_merged::<User, Unscoped, User>();
+        assert_merged::<(User, Order), Unscoped, (User, Order)>();
+        assert_merged::<(), Unscoped, ()>();
+        assert_merged::<Unscoped, Unscoped, Unscoped>();
+
+        // An unscoped left operand keeps the scope of its right-hand side, and a
+        // constant right operand leaves the marker in place.
+        assert_merged::<Unscoped, User, User>();
+        assert_merged::<Unscoped, (), Unscoped>();
     }
 }

@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::ops::IntoExpr;
 use super::render::{parse_raw_sql, RawSqlError};
-use super::scope::{MergeScope, Merged, Merged3};
+use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
@@ -255,9 +255,15 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
         })
     }
 
-    /// Drops the scope tracking from this expression, enabling its use in correlated
-    /// subqueries referencing outer query relations.
-    pub fn without_scope(self) -> Expr<T, (), Aggr> {
+    /// Drops the relation scope from this expression, enabling its use in
+    /// correlated subqueries referencing outer query relations.
+    ///
+    /// The dropped tables are replaced with the [`Unscoped`] marker, which is
+    /// accepted in every query scope just like the empty scope `()` of a constant
+    /// expression, yet stays distinguishable from it: a check relying on the
+    /// difference — the projection rule of a grouped query, for instance — keeps
+    /// treating the expression as one that reads a column.
+    pub fn without_scope(self) -> Expr<T, Unscoped, Aggr> {
         Expr {
             kind: self.kind,
             _result: PhantomData,

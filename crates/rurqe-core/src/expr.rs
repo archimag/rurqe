@@ -38,7 +38,7 @@ pub use functions::{
 pub use ops::{Expression, IntoExpr, SqlCompatible, StringExpression};
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use row::{RowExpr, RowValues};
-pub use scope::{MergeScope, Merged};
+pub use scope::{MergeScope, Merged, Unscoped};
 pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};
 #[cfg(feature = "serde_json")]
 pub use val::Json;

@@ -263,8 +263,50 @@ impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
 /// An expression referencing no table — a literal, a raw SQL fragment such as
 /// `sql!(<i64> "COUNT(*)")`, or a comparison between them — is constant within a
 /// group, so a grouped query accepts it even though it is not an aggregate.
-/// An expression that references a column keeps the scope of its table, so it
-/// stays rejected unless that column is grouped.
+/// An expression that reads a column keeps the scope of that column instead:
+/// [`coalesce`](crate::expr::coalesce) merges the scope of its column with the
+/// scope of its fallback, and [`Expr::case`](crate::expr::Expr::case) merges the
+/// scopes of the conditions and results of its branches. Both therefore stay
+/// rejected unless the columns they read are grouped.
+///
+/// Dropping the scope with
+/// [`Expr::without_scope`](crate::expr::Expr::without_scope) — the escape hatch
+/// correlated subqueries are written with — replaces the tables with the
+/// [`Unscoped`](crate::expr::Unscoped) marker instead of the empty scope `()`, so
+/// a dropped column reference never turns the expression into a constant:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the expression still reads `total`, which is not grouped.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((OrderUserId, Expr::column::<OrderTotal>().without_scope()));
+/// }
+/// ```
 impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>>
     for Expr<T, (), NonAggregate>
 {
@@ -562,3 +604,6 @@ impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
         Cte::new(self.query)
     }
 }
+
+#[cfg(test)]
+mod tests;

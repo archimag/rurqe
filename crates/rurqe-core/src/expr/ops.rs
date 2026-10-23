@@ -2,7 +2,7 @@
 
 use super::ast::{ExprKind, SubqueryOp};
 use super::builder::Expr;
-use super::scope::{MergeScope, Merged, Merged3};
+use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::ToSqlVal;
 use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
@@ -330,7 +330,11 @@ pub trait Expression<T> {
     fn into_expression(self) -> Expr<T, Self::Scope>;
 
     /// Drops the relation scope from this expression, enabling use in correlated subqueries.
-    fn without_scope(self) -> Expr<T, ()>
+    ///
+    /// The dropped tables are replaced with the [`Unscoped`] marker, so the
+    /// expression is accepted in every query scope without becoming
+    /// indistinguishable from a constant.
+    fn without_scope(self) -> Expr<T, Unscoped>
     where
         Self: Sized,
     {

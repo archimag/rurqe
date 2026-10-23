@@ -2,6 +2,7 @@
 
 use core::marker::PhantomData;
 
+use crate::expr::Unscoped;
 use crate::schema::{At, ExprScope, Next, Table, TableInScope, TableRef};
 
 // `JoinKind` describes the statement AST shared with the expression module, so
@@ -97,6 +98,8 @@ impl<T: Table> TableScope for T {
 pub trait ScopePositions<P = At<0>> {}
 
 impl ScopePositions<At<0>> for () {}
+
+impl ScopePositions<At<0>> for Unscoped {}
 
 impl<T: Table, P> ScopePositions<P> for T {}
 

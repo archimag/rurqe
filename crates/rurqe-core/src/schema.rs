@@ -8,6 +8,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
+use crate::expr::Unscoped;
 
 /// A table of the database schema, represented as a zero-sized marker type.
 ///
@@ -466,6 +467,11 @@ impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7, T8);
 pub trait ExprInScope<Tables, Positions = At<0>> {}
 
 impl<Tables, Positions> ExprInScope<Tables, Positions> for () {}
+
+// An expression whose scope was dropped declares that its tables are checked by
+// the statement enclosing it, so it is accepted in every scope — while staying
+// distinguishable from an expression that references no table at all.
+impl<Tables, Positions> ExprInScope<Tables, Positions> for Unscoped {}
 
 impl<T: Table, Tables, P> ExprInScope<Tables, P> for T where Tables: TableInScope<T, P> {}
 

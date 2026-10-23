@@ -248,7 +248,18 @@ pub struct NoBranches;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HasBranches;
 
+/// Phantom marker carrying the result type, the branch state, and the referenced
+/// scope of a [`CaseBuilder`].
+///
+/// The alias keeps the phantom field of the builder readable and keeps the
+/// declaration from tripping the `type_complexity` lint.
+type CaseMarker<T, Branches, Scope> = PhantomData<fn() -> (T, Branches, Scope)>;
+
 /// Builder for a searched `CASE` expression producing values of type `T`.
+///
+/// The builder carries the tables `Scope` that its conditions and results
+/// reference, so the finished expression keeps the scope of every column it reads
+/// instead of degrading into a constant.
 ///
 /// ```
 /// use rurqe_core::expr::{Expr, ExprKind};
@@ -268,13 +279,13 @@ pub struct HasBranches;
 /// assert!(matches!(tier.kind(), ExprKind::Case { branches, .. } if branches.len() == 1));
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct CaseBuilder<T, Branches = NoBranches> {
+pub struct CaseBuilder<T, Branches = NoBranches, Scope = ()> {
     branches: Vec<CaseBranch>,
     else_branch: Option<ExprKind>,
-    _marker: PhantomData<fn() -> (T, Branches)>,
+    _marker: CaseMarker<T, Branches, Scope>,
 }
 
-impl<T> CaseBuilder<T, NoBranches> {
+impl<T> CaseBuilder<T, NoBranches, ()> {
     pub(super) fn new() -> Self {
         Self {
             branches: Vec::new(),
@@ -284,18 +295,22 @@ impl<T> CaseBuilder<T, NoBranches> {
     }
 }
 
-impl<T, Branches> CaseBuilder<T, Branches> {
+impl<T, Branches, Scope> CaseBuilder<T, Branches, Scope> {
     /// Appends a `WHEN condition THEN result` branch.
     ///
     /// Branches are rendered in declaration order, so the first matching
     /// condition determines the produced value. Declaring a branch moves the
-    /// builder into [`HasBranches`], the only state that can be finalised.
-    pub fn when<Scope, V>(
+    /// builder into [`HasBranches`], the only state that can be finalised, and
+    /// merges the scopes of the condition and of the result into the scope of the
+    /// builder.
+    pub fn when<ConditionScope, V>(
         mut self,
-        condition: Expr<bool, Scope>,
+        condition: Expr<bool, ConditionScope>,
         result: V,
-    ) -> CaseBuilder<T, HasBranches>
+    ) -> CaseBuilder<T, HasBranches, Merged<Merged<Scope, ConditionScope>, V::Scope>>
     where
+        Scope: MergeScope<ConditionScope>,
+        Merged<Scope, ConditionScope>: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.branches.push(CaseBranch {
@@ -310,16 +325,23 @@ impl<T, Branches> CaseBuilder<T, Branches> {
     }
 
     /// Sets the `ELSE` fallback rendered when no branch matches.
-    pub fn else_<V>(mut self, value: V) -> Self
+    ///
+    /// The fallback contributes its own scope to the scope of the builder.
+    pub fn else_<V>(mut self, value: V) -> CaseBuilder<T, Branches, Merged<Scope, V::Scope>>
     where
+        Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>,
     {
         self.else_branch = Some(value.into_expr_kind());
-        self
+        CaseBuilder {
+            branches: self.branches,
+            else_branch: self.else_branch,
+            _marker: PhantomData,
+        }
     }
 }
 
-impl<T> CaseBuilder<T, HasBranches> {
+impl<T, Scope> CaseBuilder<T, HasBranches, Scope> {
     /// Finalises the expression.
     ///
     /// A `CASE` expression without a `WHEN` branch is invalid SQL, so the method
@@ -331,7 +353,7 @@ impl<T> CaseBuilder<T, HasBranches> {
     /// // Fails to compile: the builder holds no WHEN branch yet.
     /// let _ = Expr::<String>::case().else_("regular").end();
     /// ```
-    pub fn end(self) -> Expr<T> {
+    pub fn end(self) -> Expr<T, Scope> {
         Expr::new(ExprKind::Case {
             branches: self.branches,
             else_branch: self.else_branch.map(Box::new),

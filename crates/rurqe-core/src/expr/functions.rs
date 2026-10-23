@@ -3,6 +3,7 @@
 use super::ast::ExprKind;
 use super::builder::{Aggregate, Expr};
 use super::ops::IntoExpr;
+use super::scope::{MergeScope, Merged};
 use crate::schema::Column;
 
 /// Builds a `COUNT(*)` expression over the rows of the query.
@@ -71,10 +72,46 @@ pub fn max<C: Column>(_col: C) -> Expr<C::RustType, (), Aggregate> {
 /// Builds a `COALESCE(col, fallback)` expression for the column `col`.
 ///
 /// The fallback is bound as a parameter, so it must be compatible with the
-/// column's Rust type.
-pub fn coalesce<C, V>(_col: C, fallback: V) -> Expr<C::RustType>
+/// column's Rust type. The produced expression carries the tables of both
+/// operands instead of degrading into a constant, so a grouped query rejects it
+/// unless the column it reads is grouped:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::coalesce;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: `coalesce` reads `total`, which is not grouped.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((OrderUserId, coalesce(OrderTotal, 0.0)));
+/// }
+/// ```
+pub fn coalesce<C, V>(_col: C, fallback: V) -> Expr<C::RustType, Merged<C::Table, V::Scope>>
 where
     C: Column,
+    C::Table: MergeScope<V::Scope>,
     V: IntoExpr<C::RustType>,
 {
     Expr::new(ExprKind::Function {
