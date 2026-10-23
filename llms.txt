@@ -27,99 +27,8 @@
 - **`rurqe-macros`**: Declarative and procedural macros (`table!`, `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`) and the `#[derive(SqlType)]` domain newtype derive.
 - **`rurqe-postgres`**: PostgreSQL dialect (`Postgres<V>`), version markers (`Pg14`, `Pg15`, `Pg16`), sync `PgConnection`, async `PgAsyncConnection`, and pool adapters.
 - **`rurqe-sqlite`**: SQLite dialect (`Sqlite<V>`), version bounds (`Sqlite3_0`, `Sqlite3_24`, `Sqlite3_35`), sync `SqliteConnection`, and `r2d2` pool.
-- **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `embed_migrations!`, `SchemaCatalog`, checkpoint markers (`Checkpoint`), and cold start from the declarative stage (`DeclarativeStage`, `cold_start`).</search_AA278630A6D2621C>
-</edit>
-<edit path="llms.txt">
-<search>- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`) with dual PostgreSQL and SQLite catalog introspection parity.</search>
-<replace>- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`, plus the `cargo rurqe stage init|verify|commit` and `cargo rurqe prune` lifecycle) with dual PostgreSQL and SQLite catalog introspection parity and golden-equation verification.</search_AA278630A6D2621C>
-</edit>
-<edit path="llms.txt">
-<search>migrations.migrate(&mut backend)?;
-```
-
----
-
-## Toolchain CLI Commands</search>
-<replace>migrations.migrate(&mut backend)?;
-```
-
----
-
-## Stage + Migration Tail Lifecycle
-
-A project may describe its schema twice instead of replaying the whole history: the declarative stage (`schema/`) and the active migration tail (`migrations/`). Both descriptions must converge on exactly the same state — the golden equation `State(schema/) == State(Checkpoint + migrations/)`.
-
-```text
-project/
-├── schema/                       # Declarative target DDL (single source of truth)
-│   ├── users.sql
-│   └── orders.sql
-├── migrations/                   # Active tail above the checkpoint boundary
-│   ├── V051__add_credits.sql     # DDL + DML delta
-│   └── V052__index_billing.sql
-├── checkpoint.toml               # pruned_up_to_version + schema_hash of the base stage
-└── schema.lock                   # Deterministic catalog snapshot (SCHEMA_HASH)
-```
-
-Absent `schema/` and `checkpoint.toml`, the runner keeps the classic sequential Flyway behaviour with no configuration at all.
-
-### Cold Start from the Declarative Stage
-
-```rust
-use rurqe::migrate::{
-    cold_start, DeclarativeStage, SchemaCatalog, StageMarker, StageScript,
-};
-
-let stage = DeclarativeStage::new(vec![
-    StageScript::new("orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);"),
-    StageScript::new(
-        "users.sql",
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
-    ),
-]);
-let marker = StageMarker::from_catalog("3.2".parse().expect("a valid version"), &SchemaCatalog::default());
-
-let report = cold_start(&mut backend, &stage, &marker)?;
-```
-
-- `DeclarativeStage::load(Path::new("schema"))` reads every `*.sql` file in name order, so the applied DDL is deterministic; a missing directory is reported as `Ok(None)`.
-- Every script runs inside one transaction and a synthetic `<< Stage >>` baseline marker is recorded, so migrations at or below the marker version are already applied while the tail above it still runs.
-- Repeating the same stage (same version and digest) is a no-op; a diverged digest or an already initialised database fails with `Error::BaselineAlreadyExists` instead of overwriting the schema.
-
-### Checkpoints and Zero-Pain Pruning
-
-```rust
-use rurqe::migrate::{Checkpoint, Checksum, Migrator};
-
-let checkpoint = Checkpoint::new("4".parse().expect("a valid version"), Checksum::of(b"..."));
-let report = Migrator::with_checkpoint(checkpoint).migrate(&mut backend, &tail)?;
-```
-
-- `Checkpoint::parse` / `Checkpoint::load` read the `[checkpoint]` table (`pruned_up_to_version`, `schema_hash`), while `Checkpoint::render` writes it back canonically.
-- `Checkpoint::validate_history` compares the newest recorded version with the boundary: a target at or above it is advanced by the tail, while a target below it — or one that recorded no version at all — fails with `Error::OutdatedCheckpoint` carrying an actionable remedy instead of a partial replay.
-- Because the marker anchors the base stage, migration files below the boundary can be deleted freely (`rm -f migrations/V001...V050*.sql`) without rewriting baselines or invalidating checksums.
-
-### Golden Equation Verification
-
-`rurqe_cli::stage::GoldenEquation` materialises both sides in a disposable scratch state — an in-memory SQLite database, or a PostgreSQL transaction that is always rolled back — introspects the resulting catalogs, and compares them structurally:
-
-```rust
-use rurqe_cli::stage::GoldenEquation;
-
-let report = GoldenEquation::new(&stage, &tail)
-    .with_base(&base_stage) // the stage snapshot the checkpoint was cut at
-    .verify(":memory:")?;
-
-assert!(report.is_equivalent());
-assert_eq!(report.stage_hash(), report.tail_hash());
-```
-
-A divergence is returned as `StageError::Diverged` carrying the full report — missing or extra tables and columns, altered column definitions, and primary/foreign key mismatches — so CI fails with the exact gap instead of a production incident.
-
----
-
-## Toolchain CLI Commands
-- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`) with dual PostgreSQL and SQLite catalog introspection parity.
+- **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `embed_migrations!`, `SchemaCatalog`, checkpoint markers (`Checkpoint`), and cold start from the declarative stage (`DeclarativeStage`, `cold_start`).
+- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`, plus the `cargo rurqe stage init|verify|commit` and `cargo rurqe prune` lifecycle) with dual PostgreSQL and SQLite catalog introspection parity and golden-equation verification.
 
 ---
 
@@ -822,6 +731,79 @@ let migrations = embed_migrations!(
 
 migrations.migrate(&mut backend)?;
 ```
+
+---
+
+## Stage + Migration Tail Lifecycle
+
+A project may describe its schema twice instead of replaying the whole history: the declarative stage (`schema/`) and the active migration tail (`migrations/`). Both descriptions must converge on exactly the same state — the golden equation `State(schema/) == State(Checkpoint + migrations/)`.
+
+```text
+project/
+├── schema/                       # Declarative target DDL (single source of truth)
+│   ├── users.sql
+│   └── orders.sql
+├── migrations/                   # Active tail above the checkpoint boundary
+│   ├── V051__add_credits.sql     # DDL + DML delta
+│   └── V052__index_billing.sql
+├── checkpoint.toml               # pruned_up_to_version + schema_hash of the base stage
+└── schema.lock                   # Deterministic catalog snapshot (SCHEMA_HASH)
+```
+
+Absent `schema/` and `checkpoint.toml`, the runner keeps the classic sequential Flyway behaviour with no configuration at all.
+
+### Cold Start from the Declarative Stage
+
+```rust
+use rurqe::migrate::{
+    cold_start, DeclarativeStage, SchemaCatalog, StageMarker, StageScript,
+};
+
+let stage = DeclarativeStage::new(vec![
+    StageScript::new("orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);"),
+    StageScript::new(
+        "users.sql",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+    ),
+]);
+let marker = StageMarker::from_catalog("3.2".parse().expect("a valid version"), &SchemaCatalog::default());
+
+let report = cold_start(&mut backend, &stage, &marker)?;
+```
+
+- `DeclarativeStage::load(Path::new("schema"))` reads every `*.sql` file in name order, so the applied DDL is deterministic; a missing directory is reported as `Ok(None)`.
+- Every script runs inside one transaction and a synthetic `<< Stage >>` baseline marker is recorded, so migrations at or below the marker version are already applied while the tail above it still runs.
+- Repeating the same stage (same version and digest) is a no-op; a diverged digest or an already initialised database fails with `Error::BaselineAlreadyExists` instead of overwriting the schema.
+
+### Checkpoints and Zero-Pain Pruning
+
+```rust
+use rurqe::migrate::{Checkpoint, Checksum, Migrator};
+
+let checkpoint = Checkpoint::new("4".parse().expect("a valid version"), Checksum::of(b"..."));
+let report = Migrator::with_checkpoint(checkpoint).migrate(&mut backend, &tail)?;
+```
+
+- `Checkpoint::parse` / `Checkpoint::load` read the `[checkpoint]` table (`pruned_up_to_version`, `schema_hash`), while `Checkpoint::render` writes it back canonically.
+- `Checkpoint::validate_history` compares the newest recorded version with the boundary: a target at or above it is advanced by the tail, while a target below it — or one that recorded no version at all — fails with `Error::OutdatedCheckpoint` carrying an actionable remedy instead of a partial replay.
+- Because the marker anchors the base stage, migration files below the boundary can be deleted freely (`rm -f migrations/V001...V050*.sql`) without rewriting baselines or invalidating checksums.
+
+### Golden Equation Verification
+
+`rurqe_cli::stage::GoldenEquation` materialises both sides in a disposable scratch state — an in-memory SQLite database, or a PostgreSQL transaction that is always rolled back — introspects the resulting catalogs, and compares them structurally:
+
+```rust
+use rurqe_cli::stage::GoldenEquation;
+
+let report = GoldenEquation::new(&stage, &tail)
+    .with_base(&base_stage) // the stage snapshot the checkpoint was cut at
+    .verify(":memory:")?;
+
+assert!(report.is_equivalent());
+assert_eq!(report.stage_hash(), report.tail_hash());
+```
+
+A divergence is returned as `StageError::Diverged` carrying the full report — missing or extra tables and columns, altered column definitions, and primary/foreign key mismatches — so CI fails with the exact gap instead of a production incident.
 
 ---
 

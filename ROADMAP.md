@@ -29,7 +29,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 15** [x] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Completed) |
 | **Phase 16** [x] | Compile-Fail Hardening & Negative Test Suite | Compile-time rejection of every scope, nullability, typestate, capability, and grouping violation | Absolute SQL Correctness (Completed) |
 | **Phase 17** [x] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Completed) |
-| **Phase 18** [ ] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Planned) |
+| **Phase 18** [x] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Completed) |
 
 ---
 
@@ -790,31 +790,31 @@ let stats = select_from(Orders)
 
 ---
 
-## Phase 18: Kysely DX, Dynamic Builders & Nested DTOs (MULTISET via Native JSON) [Planned]
+## Phase 18: Kysely DX, Dynamic Builders & Nested DTOs (MULTISET via Native JSON) [Completed]
 
 ### Objective
 Achieve Kysely-grade developer ergonomics without runtime type erasure or untyped JSON blobs: typed nested collection/record synthesis (`nest_many` / `nest_one`) directly from SQL using native database JSON aggregates (eliminating N+1 queries and Cartesian join explosions), fluent conditional query construction (`.when`, `.if_some`, `.where_opt`) preserving typestate, typed derived tables (`.as_table(...)` / `from_subquery(...)`), database-first schema enums (PostgreSQL `pg_enum` and SQLite `CHECK`), and first-class PostgreSQL array types (`T[]`).
 
 ### Key Deliverables
-- [ ] **Typed Nested Results (MULTISET / Kysely `jsonArrayFrom` & `jsonObjectFrom`):**
+- [x] **Typed Nested Results (MULTISET / Kysely `jsonArrayFrom` & `jsonObjectFrom`):**
   - First-class `nest_many(subquery)` and `nest_one(subquery)` projection targets in `select!` and `dto!`.
   - Native single-round-trip SQL generation without Cartesian join multiplication or client-side group-by stitching:
     - PostgreSQL: `COALESCE(jsonb_agg(to_jsonb(sub)), '[]'::jsonb)` or `json_build_object(...)`.
     - SQLite: `COALESCE(json_group_array(json_object(...)), '[]')`.
   - Zero-boilerplate row mapping: synthesizes fields typed as `Vec<ChildDto>` or `Option<ChildDto>` with direct single-pass deserialization.
-- [ ] **Fluent Conditional Query Composition (Typestate-Preserving Dynamic DX):**
+- [x] **Fluent Conditional Query Composition (Typestate-Preserving Dynamic DX):**
   - Dynamic chaining without breaking method chains or losing compile-time guarantees:
     - `.when(condition, |q| q.where_(...))`
     - `.if_some(opt_value, |q, val| q.where_(...))`
     - `.where_opt(Option<Expr<bool>>)`
   - Strictly preserves query typestate (`Filtered` remains `Filtered`; transitioning from `Unfiltered` to `Filtered` is seamless).
-- [ ] **Derived Tables (`from_subquery` / `.as_table(...)`):**
+- [x] **Derived Tables (`from_subquery` / `.as_table(...)`):**
   - Turning a projected `SelectQuery` into a relation: `let top_users = select_from(Users)...as_table("top_users");`.
   - Participates in `TableScope`, `ExprScope`, and joins with typed column access.
-- [ ] **DB-First Enums (`pg_enum` & SQLite `CHECK`):**
+- [x] **DB-First Enums (`pg_enum` & SQLite `CHECK`):**
   - CLI introspection of PostgreSQL `CREATE TYPE ... AS ENUM` and SQLite `CHECK (col IN (...))` constraints into `schema.lock` (`[[enum]]`).
   - Codegen emits typed `#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)] pub enum ...` with compile-time type checking in expressions: `UserStatus.eq(Status::Active)`.
-- [ ] **Native PostgreSQL Array Types (`T[]`):**
+- [x] **Native PostgreSQL Array Types (`T[]`):**
   - Introspection and mapping of array columns (`_text` $\to$ `Vec<String>`, `_int4` $\to$ `Vec<i32>`).
   - Dialect extension trait `PgArrayExpressions`: array containment (`@>`), overlap (`&&`), and `col.any(subquery)` / `col.all(subquery)`.
   - Purely in `rurqe-postgres`, zero pseudo-emulation on SQLite.

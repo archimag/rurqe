@@ -1085,3 +1085,262 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
     assert_eq!(deleted.sql, "DELETE FROM \"users\"");
     assert!(deleted.params.is_empty());
 }
+
+/// End-to-end verification of the relational surface delivered as one group in
+/// Phase 18.
+///
+/// The module drives the features that were added together: dynamic query
+/// composition, a derived table, a database-first enum, the native array
+/// operators of PostgreSQL, and a nested collection read through a JSON
+/// aggregate.
+#[cfg(feature = "serde_json")]
+mod phase18_relational {
+    use rurqe::core::query::SelectionFor;
+    use rurqe::prelude::*;
+
+    /// The lifecycle state of a post, stored as the label of a database enum.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, SqlType)]
+    pub enum Mood {
+        Happy,
+        #[sql(rename = "very_sad")]
+        Sad,
+    }
+
+    table! {
+        /// The `posts` table carrying an enum column and two array columns.
+        Post => "posts" {
+            PostId => "id": i64,
+            PostMood => "mood": Mood,
+            PostTags => "tags": Vec<String>,
+            PostScores => "scores": Option<Vec<i64>>,
+        }
+    }
+
+    table! {
+        /// The `comments` table read as the nested collection of its post.
+        Comment => "comments" {
+            CommentPostId => "post_id": i64,
+            CommentBody => "body": String,
+        }
+    }
+
+    table! {
+        /// The number of comments of one post, produced by a derived table.
+        CommentCount => "comment_count" {
+            CountPostId => "post_id": i64,
+            CountTotal => "total": i64,
+        }
+    }
+
+    /// One nested comment row decoded from the JSON aggregate of its post.
+    #[derive(Debug, Clone, PartialEq)]
+    struct CommentRow {
+        body: String,
+    }
+
+    impl ToSqlVal for CommentRow {
+        fn to_sql_val(self) -> SqlVal {
+            let body = self.body;
+            SqlVal::Text(format!("{{\"body\":\"{body}\"}}"))
+        }
+    }
+
+    impl FromSqlValue for CommentRow {
+        fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+            let object = json_object(value)?;
+            Ok(CommentRow {
+                body: nested_field(&object, "body")?,
+            })
+        }
+    }
+
+    impl SqlArrayElement for CommentRow {}
+
+    impl MultisetRow for CommentRow {
+        const FIELDS: &'static [&'static str] = &["body"];
+    }
+
+    /// The projection of one nested comment row.
+    ///
+    /// The row type of the nested statement is the record the JSON aggregate
+    /// decodes into, so the selection names it instead of a tuple whose fields
+    /// belong to the nested document.
+    struct CommentColumns;
+
+    impl Selection for CommentColumns {
+        type Row = CommentRow;
+
+        fn push_column_names(&self, out: &mut Vec<&'static str>) {
+            out.push(CommentBody::NAME);
+        }
+
+        fn push_projections(&self, out: &mut Vec<ExprKind>) {
+            out.push(CommentBody::expr_kind());
+        }
+    }
+
+    impl SelectionFor<Comment, At<0>> for CommentColumns {
+        type Row = CommentRow;
+    }
+
+    /// The nested statement of the comments of every post.
+    fn comments<D: Dialect>() -> SelectQuery<D, Comment, CommentRow, HasProjection> {
+        SelectQuery::new().from::<Comment>().select(CommentColumns)
+    }
+
+    #[test]
+    fn a_nested_collection_composes_with_enum_and_array_predicates() {
+        let built = select_from::<Postgres<Pg16>, Post>()
+            .select((PostId, nest_many(comments::<Postgres<Pg16>>())))
+            .where_(PostMood.eq(Mood::Happy))
+            .where_(PostTags.any("rust".to_owned()))
+            .order_by_asc(PostId)
+            .limit(5)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", COALESCE((SELECT jsonb_agg(to_jsonb(\"__rurqe_sub\")) FROM \
+             (SELECT \"body\" AS \"body\" FROM \"comments\") AS \"__rurqe_sub\"), '[]'::jsonb) \
+             FROM \"posts\" WHERE ((\"mood\" = $1) AND ($2 = ANY(\"tags\"))) \
+             ORDER BY \"id\" ASC LIMIT 5"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::Text("Happy".to_owned()),
+                SqlVal::Text("rust".to_owned()),
+            ]
+        );
+
+        let rows = Vec::<CommentRow>::from_sql_value(&SqlVal::Text(
+            "[{\"body\":\"first\"},{\"body\":\"second\"}]".to_owned(),
+        ))
+        .expect("the nested collection decodes");
+
+        assert_eq!(
+            rows,
+            vec![
+                CommentRow {
+                    body: "first".to_owned(),
+                },
+                CommentRow {
+                    body: "second".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_nested_row_stops_at_its_first_row() {
+        let built = select_from::<Postgres<Pg16>, Post>()
+            .select((PostId, nest_one(comments::<Postgres<Pg16>>())))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", (SELECT to_jsonb(\"__rurqe_sub\") FROM (SELECT \"body\" AS \"body\" \
+             FROM \"comments\" LIMIT 1) AS \"__rurqe_sub\") FROM \"posts\""
+        );
+        assert!(built.params.is_empty());
+
+        assert_eq!(
+            Option::<CommentRow>::from_sql_value(&SqlVal::Text("{\"body\":\"only\"}".to_owned())),
+            Ok(Some(CommentRow {
+                body: "only".to_owned(),
+            }))
+        );
+        assert_eq!(Option::<CommentRow>::from_sql_value(&SqlVal::Null), Ok(None));
+    }
+
+    #[test]
+    fn a_dynamic_query_joins_a_derived_table_and_filters_on_arrays() {
+        let counts = select_from::<Postgres<Pg16>, Comment>()
+            .select((CommentPostId, Expr::count_all()))
+            .group_by(CommentPostId)
+            .as_table::<CommentCount>();
+
+        // An absent predicate must leave the statement untouched. The predicate
+        // reads a column of one table of the joined scope, so its scope names
+        // that table instead of the join that introduced it.
+        let absent: Option<Expr<bool, Post>> = None;
+
+        let built = select_from::<Postgres<Pg16>, Post>()
+            .inner_join_subquery(
+                counts,
+                Expr::column::<CountPostId>().eq(Expr::column::<PostId>()),
+            )
+            .select((PostId, CountTotal))
+            .when(true, |query| query.where_(PostMood.eq(Mood::Happy)))
+            .if_some(Some("rust"), |query, tag| {
+                query.where_(PostTags.any(tag.to_owned()))
+            })
+            .where_opt(absent)
+            .order_by_desc(CountTotal)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"posts\".\"id\", \"comment_count\".\"total\" FROM \"posts\" \
+             INNER JOIN (SELECT \"post_id\", COUNT(*) FROM \"comments\" GROUP BY \"post_id\") \
+             AS \"comment_count\" ON (\"comment_count\".\"post_id\" = \"posts\".\"id\") \
+             WHERE ((\"posts\".\"mood\" = $1) AND ($2 = ANY(\"posts\".\"tags\"))) \
+             ORDER BY \"comment_count\".\"total\" DESC"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::Text("Happy".to_owned()),
+                SqlVal::Text("rust".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_array_operators_and_enum_labels_render_on_postgres() {
+        let built = select_from::<Postgres<Pg16>, Post>()
+            .select((PostId, PostTags, PostScores))
+            .where_(PostTags.array_contains(vec!["rust".to_owned()]))
+            .where_(PostScores.array_overlaps(vec![1i64, 2i64]))
+            .where_(PostMood.eq("very_sad"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\", \"tags\", \"scores\" FROM \"posts\" WHERE \
+             (((\"tags\" @> $1) AND (\"scores\" && $2)) AND (\"mood\" = $3))"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::Array(vec![SqlVal::Text("rust".to_owned())]),
+                SqlVal::Array(vec![SqlVal::I64(1), SqlVal::I64(2)]),
+                SqlVal::Text("very_sad".to_owned()),
+            ]
+        );
+
+        let quantifier = select_from::<Postgres<Pg16>, Post>()
+            .select((PostId,))
+            .where_(PostScores.all(0i64))
+            .build();
+
+        assert_eq!(
+            quantifier.sql,
+            "SELECT \"id\" FROM \"posts\" WHERE ($1 = ALL(\"scores\"))"
+        );
+        assert_eq!(quantifier.params, vec![SqlVal::I64(0)]);
+
+        let row = <(i64, Vec<String>, Option<Vec<i64>>, Mood)>::from_row(&[
+            SqlVal::I64(7),
+            SqlVal::Array(vec![SqlVal::Text("rust".to_owned())]),
+            SqlVal::Null,
+            SqlVal::Text("very_sad".to_owned()),
+        ])
+        .expect("the row decodes");
+
+        assert_eq!(row.0, 7);
+        assert_eq!(row.1, vec!["rust".to_owned()]);
+        assert_eq!(row.2, None);
+        assert_eq!(row.3, Mood::Sad);
+    }
+}
