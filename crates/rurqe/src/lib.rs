@@ -986,7 +986,8 @@ pub mod prelude {
         BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect, ExecutableQuery,
         ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
         LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, RowDecodeError,
-        SelectQuery, SelectTarget, Selection, SqlCompatible, SqlVal, SupportsDistinctOn,
+        SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible, SqlVal,
+        SupportsDistinctOn,
         SupportsOnConflict, SupportsReturning, Table, TableInScope, ToSqlVal, Window, WindowExpr,
         WindowExprKind, WindowFn, WindowSpec,
     };

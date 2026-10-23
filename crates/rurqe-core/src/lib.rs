@@ -13,8 +13,8 @@ pub use dialect::{
 };
 pub use dml::{AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign};
 pub use expr::{
-    Aggregate, AggregateFunc, BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, SqlCompatible,
-    SqlVal, ToSqlVal,
+    Aggregate, AggregateFunc, BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, SqlArrayElement,
+    SqlCompatible, SqlVal, ToSqlVal,
 };
 pub use query::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, BuiltQuery, Cte, ExecutableQuery,

@@ -30,6 +30,12 @@ pub enum SqlVal {
     Text(String),
     /// A binary blob.
     Bytes(Vec<u8>),
+    /// A SQL array value, carrying one value per element in declaration order.
+    ///
+    /// Every element keeps the [`SqlVal`] representation of its scalar type, so
+    /// the parameter of an array column is described exactly like the parameters
+    /// the same values would be bound with one by one.
+    Array(Vec<SqlVal>),
     /// A UUID value.
     #[cfg(feature = "uuid")]
     Uuid(uuid::Uuid),
@@ -64,6 +70,7 @@ impl SqlVal {
             SqlVal::Bool(_) => "boolean",
             SqlVal::Text(_) => "text",
             SqlVal::Bytes(_) => "bytes",
+            SqlVal::Array(_) => "array",
             #[cfg(feature = "uuid")]
             SqlVal::Uuid(_) => "uuid",
             #[cfg(feature = "chrono")]
@@ -89,6 +96,16 @@ impl fmt::Display for SqlVal {
             SqlVal::Bool(value) => write!(f, "{value}"),
             SqlVal::Text(value) => f.write_str(value),
             SqlVal::Bytes(value) => write!(f, "{:?}", value),
+            SqlVal::Array(values) => {
+                f.write_str("{")?;
+                for (index, value) in values.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{value}")?;
+                }
+                f.write_str("}")
+            }
             #[cfg(feature = "uuid")]
             SqlVal::Uuid(value) => write!(f, "{value}"),
             #[cfg(feature = "chrono")]

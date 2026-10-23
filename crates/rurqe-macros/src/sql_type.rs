@@ -154,12 +154,18 @@ fn conversions_impl(name: &Ident) -> TokenStream {
     }
 }
 
-/// Emits the single nullable layer of the derived type.
+/// Emits the single nullable layer and the array-element marker of the derived type.
+///
+/// The declaration the derive emits already satisfies both value contracts, so
+/// the type is a valid element of an array column as well: `Vec<Self>` binds and
+/// decodes like any other array without a second attribute.
 fn nullability_impl(name: &Ident) -> TokenStream {
     quote! {
         impl ::rurqe_core::query::MakeNullable for #name {
             type Nullable = ::core::option::Option<#name>;
         }
+
+        impl ::rurqe_core::expr::SqlArrayElement for #name {}
     }
 }
 

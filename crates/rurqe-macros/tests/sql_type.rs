@@ -222,6 +222,29 @@ fn derived_newtypes_expose_a_single_nullable_layer() {
 }
 
 #[test]
+fn derived_newtypes_are_array_elements() {
+    fn assert_element<T: rurqe_core::expr::SqlArrayElement>() {}
+
+    assert_element::<UserId>();
+    assert_element::<Email>();
+    assert_element::<Txid>();
+    assert_element::<Address>();
+    assert_element::<Mood>();
+
+    assert_eq!(
+        vec![UserId(1), UserId(2)].to_sql_val(),
+        SqlVal::Array(vec![SqlVal::I64(1), SqlVal::I64(2)])
+    );
+    assert_eq!(
+        <Vec<Mood> as FromSqlValue>::from_sql_value(&SqlVal::Array(vec![
+            SqlVal::Text("Happy".to_owned()),
+            SqlVal::Text("very_sad".to_owned()),
+        ])),
+        Ok(vec![Mood::Happy, Mood::Sad])
+    );
+}
+
+#[test]
 fn outer_joins_lift_newtype_columns_into_options() {
     let query: SelectQuery<
         MockDialect,

@@ -13,6 +13,7 @@
 //! The module is split into focused submodules and re-exported here, so callers
 //! keep using the flat `expr::...` paths.
 
+mod array;
 mod ast;
 mod builder;
 mod functions;
@@ -25,6 +26,7 @@ mod val;
 #[cfg(test)]
 mod tests;
 
+pub use array::SqlArrayElement;
 pub use ast::{
     CaseBranch, CaseBuilder, CteAst, DialectInScope, ExprKind, HasBranches, JoinAst, JoinKind,
     LockClause, LockStrength, LockWait, MergeDialect, MergedDialect, NoBranches, OrderDirection,
