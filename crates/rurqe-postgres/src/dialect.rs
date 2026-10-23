@@ -4,8 +4,9 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 
 use rurqe_core::dialect::{
-    Dialect, SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctOn, SupportsLateralJoin,
-    SupportsOnConflict, SupportsReturning, SupportsRowLocking, SupportsUpdateFrom,
+    Dialect, SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctOn,
+    SupportsFullOuterJoin, SupportsLateralJoin, SupportsOnConflict, SupportsReturning,
+    SupportsRowLocking, SupportsUpdateFrom,
 };
 
 /// Marker trait representing a PostgreSQL engine version.
@@ -58,6 +59,7 @@ impl<V: PgVersion> SupportsOnConflict for Postgres<V> {}
 impl<V: PgVersion> SupportsLateralJoin for Postgres<V> {}
 impl<V: PgVersion> SupportsDeleteUsing for Postgres<V> {}
 impl<V: PgVersion> SupportsUpdateFrom for Postgres<V> {}
+impl<V: PgVersion> SupportsFullOuterJoin for Postgres<V> {}
 impl<V: PgVersion> SupportsRowLocking for Postgres<V> {}
 impl<V: PgVersion> SupportsAggregateFilter for Postgres<V> {}
 
@@ -90,8 +92,10 @@ mod tests {
                 + SupportsLateralJoin
                 + SupportsDeleteUsing
                 + SupportsUpdateFrom
+                + SupportsFullOuterJoin
                 + SupportsAggregateFilter,
-        >() {}
+        >() {
+        }
 
         assert_capabilities::<Postgres<Pg14>>();
         assert_capabilities::<Postgres<Pg15>>();

@@ -124,6 +124,45 @@ fn joins_render_their_kind_relation_and_condition() {
 }
 
 #[test]
+fn a_cross_join_renders_without_a_condition() {
+    let mut ast = select(vec![UserId::expr_kind(), OrderId::expr_kind()]);
+    ast.joins = vec![JoinAst {
+        kind: JoinKind::Cross,
+        table: TableRef::plain("orders"),
+        lateral: None,
+        on: None,
+    }];
+
+    let (sql, params) = render_statement(&ast);
+
+    assert_eq!(
+        sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" CROSS JOIN \"orders\""
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn a_full_outer_join_renders_its_condition() {
+    let mut ast = select(vec![UserId::expr_kind(), OrderId::expr_kind()]);
+    ast.joins = vec![JoinAst {
+        kind: JoinKind::FullOuter,
+        table: TableRef::plain("orders"),
+        lateral: None,
+        on: Some(Expr::column::<OrderUserId>().eq(1i64).into_kind()),
+    }];
+
+    let (sql, params) = render_statement(&ast);
+
+    assert_eq!(
+        sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" \
+         FULL OUTER JOIN \"orders\" ON (\"orders\".\"user_id\" = ?)"
+    );
+    assert_eq!(params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
 fn a_union_of_plain_statements_needs_no_parentheses() {
     let mut ast = select(vec![UserId::expr_kind()]);
     ast.set_operations = vec![SetOpAst {

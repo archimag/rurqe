@@ -98,6 +98,10 @@ pub enum JoinKind {
     Inner,
     /// `LEFT JOIN`, which keeps unmatched rows and nulls the joined columns.
     Left,
+    /// `FULL OUTER JOIN`, which keeps the unmatched rows of both sides.
+    FullOuter,
+    /// `CROSS JOIN`, which pairs every row with every row of the joined relation.
+    Cross,
     /// `CROSS JOIN LATERAL`, which joins every outer row with a correlated subquery.
     CrossLateral,
     /// `LEFT JOIN LATERAL ... ON true`, which keeps outer rows a lateral subquery
@@ -111,6 +115,8 @@ impl JoinKind {
         match self {
             JoinKind::Inner => "INNER JOIN",
             JoinKind::Left => "LEFT JOIN",
+            JoinKind::FullOuter => "FULL OUTER JOIN",
+            JoinKind::Cross => "CROSS JOIN",
             JoinKind::CrossLateral => "CROSS JOIN LATERAL",
             JoinKind::LeftLateral => "LEFT JOIN LATERAL",
         }

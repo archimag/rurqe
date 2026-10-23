@@ -102,6 +102,20 @@ pub trait SupportsDeleteUsing: Dialect {}
 )]
 pub trait SupportsUpdateFrom: Dialect {}
 
+/// Marker trait for dialects supporting `FULL OUTER JOIN`.
+///
+/// A full outer join keeps the unmatched rows of both sides, nulling the columns
+/// of the side that found no match, so a row of either relation may reach the
+/// projection without its counterpart. PostgreSQL implements the join, while
+/// SQLite gained it only in 3.39.0, past the baseline version its dialect
+/// declares, and therefore has no such capability.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support FULL OUTER JOIN",
+    label = "`FULL OUTER JOIN` is not supported by this dialect",
+    note = "a full outer join requires a dialect that implements `SupportsFullOuterJoin` (such as PostgreSQL)"
+)]
+pub trait SupportsFullOuterJoin: Dialect {}
+
 /// Marker trait for dialects supporting row-level locking clauses.
 ///
 /// A locking clause makes the statement lock the rows it selects until the
