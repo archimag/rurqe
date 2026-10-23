@@ -217,6 +217,21 @@ fn json_number(value: f64) -> serde_json::Value {
     }
 }
 
+/// Builds the JSON object of a nested row from the values of its fields.
+///
+/// The keys are the field names the row declares in
+/// [`MultisetRow::FIELDS`](crate::nested::MultisetRow), so a row written through
+/// this helper decodes back through [`nested_field`] and carries exactly the keys
+/// the engine writes for a projected collection.
+#[cfg(feature = "serde_json")]
+pub fn multiset_object(fields: &[(&str, SqlVal)]) -> SqlVal {
+    let mut object = serde_json::Map::with_capacity(fields.len());
+    for (name, value) in fields {
+        object.insert((*name).to_owned(), sql_val_to_json(value));
+    }
+    SqlVal::Json(serde_json::Value::Object(object))
+}
+
 /// Parses the JSON object a nested document holds.
 ///
 /// PostgreSQL reports the object of a nested row as a JSON value, while SQLite
@@ -534,6 +549,19 @@ mod tests {
         assert_eq!(
             OrderLine::from_sql_value(&SqlVal::Json(document)),
             Ok(("a".to_owned(), 2))
+        );
+    }
+
+    #[test]
+    fn a_row_object_carries_one_key_per_field() {
+        let row = multiset_object(&[
+            ("sku", SqlVal::Text("a".to_owned())),
+            ("qty", SqlVal::I64(2)),
+        ]);
+
+        assert_eq!(
+            row,
+            SqlVal::Json(serde_json::json!({ "sku": "a", "qty": 2 }))
         );
     }
 }
