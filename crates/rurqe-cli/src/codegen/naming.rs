@@ -100,6 +100,12 @@ fn sanitize_snake_case(s: &str) -> String {
 }
 
 /// Escapes a schema name for inclusion in a generated Rust string literal.
+///
+/// The quote and the backslash are escaped explicitly, the line, carriage
+/// return, tab, and NUL characters get their short escapes, and every other
+/// control character is escaped through `escape_default`. A name carried over
+/// from a database catalog therefore never breaks the generated literal over
+/// several lines nor embeds a raw control character into it.
 pub(super) fn escape_literal(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
 
@@ -107,6 +113,11 @@ pub(super) fn escape_literal(name: &str) -> String {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            other if other.is_control() => out.extend(other.escape_default()),
             _ => out.push(c),
         }
     }
@@ -163,5 +174,20 @@ mod tests {
         assert_eq!(escape_literal("plain"), "plain");
         assert_eq!(escape_literal("say \"hi\""), "say \\\"hi\\\"");
         assert_eq!(escape_literal("back\\slash"), "back\\\\slash");
+    }
+
+    #[test]
+    fn control_characters_are_escaped() {
+        assert_eq!(escape_literal("line\nbreak"), "line\\nbreak");
+        assert_eq!(escape_literal("carriage\rreturn"), "carriage\\rreturn");
+        assert_eq!(escape_literal("tab\tseparated"), "tab\\tseparated");
+        assert_eq!(escape_literal("nul\0byte"), "nul\\0byte");
+
+        // Any other control character keeps a single-line escape instead of the
+        // raw byte it is spelled with.
+        assert_eq!(escape_literal("bell\u{7}"), "bell\\u{7}");
+
+        // Ordinary text, including multi-byte characters, is left untouched.
+        assert_eq!(escape_literal("Grüße"), "Grüße");
     }
 }
