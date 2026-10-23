@@ -138,6 +138,71 @@ pub trait SupportsRowLocking: Dialect {}
 )]
 pub trait SupportsAggregateFilter: Dialect {}
 
+/// Marker trait for dialects supporting window functions (`OVER (...)`).
+///
+/// A window expression evaluates its function over a partition of the result
+/// rows while keeping every row of the projection, which is how rankings,
+/// running totals, and neighbouring-row lookups are expressed. PostgreSQL has
+/// implemented the clause since 8.4, while SQLite gained it in 3.25.0, so a
+/// dialect only exposes the builders when it declares this capability.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support window functions",
+    label = "`OVER (...)` is not supported by this dialect",
+    note = "window functions require a dialect that implements `SupportsWindowFunctions` (such as PostgreSQL or SQLite 3.25+)"
+)]
+pub trait SupportsWindowFunctions: Dialect {}
+
+/// Marker trait for dialects supporting explicit `NULLS FIRST` and `NULLS LAST`.
+///
+/// An ordering that places nulls explicitly keeps the result stable across
+/// engines whose default null positioning differs. PostgreSQL and SQLite 3.30+
+/// render the modifier, while an older engine only knows its implicit placement
+/// and must not be handed the keyword.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support explicit NULLS FIRST and NULLS LAST",
+    label = "`NULLS FIRST` and `NULLS LAST` are not supported by this dialect",
+    note = "explicit null positioning requires a dialect that implements `SupportsNullsOrdering` (such as PostgreSQL or SQLite 3.30+)"
+)]
+pub trait SupportsNullsOrdering: Dialect {}
+
+/// Marker trait for dialects supporting the `GREATEST` and `LEAST` functions.
+///
+/// The two functions return the largest or smallest operand of their argument
+/// list, which they extend to any number of values. PostgreSQL implements them
+/// natively, while SQLite never gained them, so a dialect only exposes the
+/// helpers when it declares this capability.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support the GREATEST and LEAST functions",
+    label = "`GREATEST` and `LEAST` are not supported by this dialect",
+    note = "the greatest and least helpers require a dialect that implements `SupportsGreatest` (such as PostgreSQL)"
+)]
+pub trait SupportsGreatest: Dialect {}
+
+/// Marker trait for dialects supporting JSON aggregation of a nested row set.
+///
+/// A nested collection renders as `jsonb_agg(to_jsonb(...))` on an engine with
+/// native row aggregation and as `json_group_array` over `json_object` fields on
+/// an engine without it. Both forms produce the same JSON document, but a
+/// dialect must declare which one it can render before the builders emit it.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support JSON aggregation of a row set",
+    label = "JSON array and object aggregation is not supported by this dialect",
+    note = "nested collections and objects require a dialect that implements `SupportsJsonAggregation` (such as PostgreSQL or SQLite 3.38+)"
+)]
+pub trait SupportsJsonAggregation: Dialect {}
+
+/// Marker trait for dialects supporting `IS DISTINCT FROM` and `IS NOT DISTINCT FROM`.
+///
+/// The predicates compare two values by treating null as an ordinary operand, so
+/// they never yield an unknown result. PostgreSQL implements them natively, while
+/// SQLite only knows its own `IS` and `IS NOT` operators for the same purpose.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support IS DISTINCT FROM and IS NOT DISTINCT FROM",
+    label = "`IS DISTINCT FROM` and `IS NOT DISTINCT FROM` are not supported by this dialect",
+    note = "null-safe comparison requires a dialect that implements `SupportsDistinctFrom` (such as PostgreSQL)"
+)]
+pub trait SupportsDistinctFrom: Dialect {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

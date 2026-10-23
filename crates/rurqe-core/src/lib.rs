@@ -9,8 +9,9 @@ pub mod row;
 pub mod schema;
 
 pub use dialect::{
-    Dialect, SupportsDeleteUsing, SupportsDistinctOn, SupportsOnConflict, SupportsReturning,
-    SupportsRowLocking, SupportsUpdateFrom,
+    Dialect, SupportsDeleteUsing, SupportsDistinctFrom, SupportsDistinctOn, SupportsGreatest,
+    SupportsJsonAggregation, SupportsNullsOrdering, SupportsOnConflict, SupportsReturning,
+    SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
 };
 pub use dml::{
     excluded, AssignColumn, AssignValue, Assignment, AssignmentScope, AssignmentSet, ColumnAssign,
