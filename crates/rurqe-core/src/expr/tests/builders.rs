@@ -379,6 +379,49 @@ fn aggregate_helpers_build_expected_expressions() {
 }
 
 #[test]
+fn column_aggregates_carry_the_table_of_their_column() {
+    // An aggregate reading a column references the table of that column, so a
+    // statement whose scope lacks the table rejects it instead of projecting a
+    // value the database cannot compute.
+    let _: Expr<i64, User, Aggregate> = count_distinct(UserId);
+    let _: Expr<i64, User, Aggregate> = sum(UserId);
+    let _: Expr<i64, User, Aggregate> = sum_distinct(UserId);
+    let _: Expr<f64, User, Aggregate> = avg(UserId);
+    let _: Expr<f64, User, Aggregate> = avg_distinct(UserId);
+    let _: Expr<i64, User, Aggregate> = min(UserId);
+    let _: Expr<String, User, Aggregate> = max(UserName);
+
+    // The constructors of `Expr` keep the same scope as the free functions.
+    let _: Expr<i64, User, Aggregate> = Expr::<i64>::count::<UserId>();
+    let _: Expr<i64, User, Aggregate> = Expr::<i64>::count_distinct::<UserId>();
+    let _: Expr<i64, User, Aggregate> = Expr::<i64>::sum::<UserId>();
+    let _: Expr<i64, User, Aggregate> = Expr::<i64>::sum_distinct::<UserId>();
+    let _: Expr<f64, User, Aggregate> = Expr::<f64>::avg::<UserId>();
+    let _: Expr<f64, User, Aggregate> = Expr::<f64>::avg_distinct::<UserId>();
+    let _: Expr<i64, User, Aggregate> = Expr::<i64>::min::<UserId>();
+    let _: Expr<String, User, Aggregate> = Expr::<String>::max::<UserName>();
+
+    // `COUNT(*)` reads no column, so it references no table and stays constant
+    // within every group.
+    let _: Expr<i64, (), Aggregate> = count_all();
+    let _: Expr<i64, (), Aggregate> = count();
+}
+
+#[test]
+fn aggregate_scopes_merge_with_the_columns_their_predicates_read() {
+    let filtered: Expr<i64, (User, User), Aggregate> =
+        sum(UserId).filter_where::<MockDialect, _>(UserId.gt(0i64));
+
+    assert!(matches!(
+        filtered.kind(),
+        ExprKind::Aggregate {
+            filter: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn distinct_and_filtered_aggregates_build_expected_ast() {
     let distinct_count = Expr::count::<UserId>().distinct();
     assert_eq!(
@@ -563,7 +606,8 @@ fn arithmetic_merges_the_scopes_of_its_operands() {
 
 #[test]
 fn arithmetic_preserves_the_aggregation_marker() {
-    let adjusted: Expr<f64, (), Aggregate> = sum(OrderTotal) + 1.0f64;
+    // The aggregate references `orders`, and the bound operand adds no table.
+    let adjusted: Expr<f64, Order, Aggregate> = sum(OrderTotal) + 1.0f64;
 
     assert!(matches!(
         adjusted.kind(),

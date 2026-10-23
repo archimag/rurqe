@@ -444,8 +444,10 @@ impl Expr<i64> {
     /// Builds a `COUNT(C)` expression for column `C`.
     ///
     /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped.
-    pub fn count<C: Column>() -> Expr<i64, (), Aggregate> {
+    /// projectable from a grouped query even when `C` is not grouped. It also
+    /// references the table of `C`, so a statement whose scope lacks that table
+    /// rejects it like any other column reference.
+    pub fn count<C: Column>() -> Expr<i64, C::Table, Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             distinct: false,
@@ -455,7 +457,10 @@ impl Expr<i64> {
     }
 
     /// Builds a `COUNT(DISTINCT C)` expression for column `C`.
-    pub fn count_distinct<C: Column>() -> Expr<i64, (), Aggregate> {
+    ///
+    /// The scope is the table of `C` in both the distinct and the plain form, so
+    /// the aggregate is checked against the statement it is projected into.
+    pub fn count_distinct<C: Column>() -> Expr<i64, C::Table, Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             distinct: true,
@@ -469,8 +474,10 @@ impl Expr<f64> {
     /// Builds an `AVG(C)` expression for column `C`.
     ///
     /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped.
-    pub fn avg<C: Column>() -> Expr<f64, (), Aggregate> {
+    /// projectable from a grouped query even when `C` is not grouped. It also
+    /// references the table of `C`, so a statement whose scope lacks that table
+    /// rejects it like any other column reference.
+    pub fn avg<C: Column>() -> Expr<f64, C::Table, Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
             distinct: false,
@@ -480,7 +487,10 @@ impl Expr<f64> {
     }
 
     /// Builds an `AVG(DISTINCT C)` expression for column `C`.
-    pub fn avg_distinct<C: Column>() -> Expr<f64, (), Aggregate> {
+    ///
+    /// The scope is the table of `C` in both the distinct and the plain form, so
+    /// the aggregate is checked against the statement it is projected into.
+    pub fn avg_distinct<C: Column>() -> Expr<f64, C::Table, Aggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
             distinct: true,

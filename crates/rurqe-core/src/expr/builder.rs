@@ -530,8 +530,10 @@ impl<T> Expr<T, ()> {
     /// Builds a `SUM(C)` expression for column `C`.
     ///
     /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped.
-    pub fn sum<C>() -> Expr<T, (), Aggregate>
+    /// projectable from a grouped query even when `C` is not grouped. It also
+    /// references the table of `C`, so a statement whose scope lacks that table
+    /// rejects it like any other column reference.
+    pub fn sum<C>() -> Expr<T, C::Table, Aggregate>
     where
         C: Column<RustType = T>,
     {
@@ -544,7 +546,10 @@ impl<T> Expr<T, ()> {
     }
 
     /// Builds a `SUM(DISTINCT C)` expression for column `C`.
-    pub fn sum_distinct<C>() -> Expr<T, (), Aggregate>
+    ///
+    /// The scope is the table of `C` in both the distinct and the plain form, so
+    /// the aggregate is checked against the statement it is projected into.
+    pub fn sum_distinct<C>() -> Expr<T, C::Table, Aggregate>
     where
         C: Column<RustType = T>,
     {
@@ -559,8 +564,10 @@ impl<T> Expr<T, ()> {
     /// Builds a `MIN(C)` expression for column `C`.
     ///
     /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped.
-    pub fn min<C>() -> Expr<T, (), Aggregate>
+    /// projectable from a grouped query even when `C` is not grouped. It also
+    /// references the table of `C`, so a statement whose scope lacks that table
+    /// rejects it like any other column reference.
+    pub fn min<C>() -> Expr<T, C::Table, Aggregate>
     where
         C: Column<RustType = T>,
     {
@@ -575,8 +582,10 @@ impl<T> Expr<T, ()> {
     /// Builds a `MAX(C)` expression for column `C`.
     ///
     /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped.
-    pub fn max<C>() -> Expr<T, (), Aggregate>
+    /// projectable from a grouped query even when `C` is not grouped. It also
+    /// references the table of `C`, so a statement whose scope lacks that table
+    /// rejects it like any other column reference.
+    pub fn max<C>() -> Expr<T, C::Table, Aggregate>
     where
         C: Column<RustType = T>,
     {
