@@ -1001,7 +1001,7 @@ pub mod prelude {
     pub use rurqe_core::nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
 
     #[cfg(feature = "serde_json")]
-    pub use rurqe_core::nested::{json_object, json_to_sql_value, nested_field};
+    pub use rurqe_core::nested::{json_object, json_to_sql_value, nested_field, sql_val_to_json};
 
     pub use rurqe_core::table_alias;
 

@@ -178,6 +178,45 @@ pub fn json_to_sql_value(value: &serde_json::Value) -> SqlVal {
     }
 }
 
+/// Converts a SQL value back into the JSON representation of a nested document.
+///
+/// The function is the inverse of [`json_to_sql_value`], so a row type that reads
+/// its fields with [`nested_field`] writes them back into the object of one row:
+/// the document bound as a parameter and the document decoded from a result row
+/// carry the same values whichever engine produced them.
+///
+/// A value of a kind a JSON document cannot carry — a binary blob, an exact
+/// decimal, a UUID, or a temporal value — keeps the text it is displayed with,
+/// which is the scalar form [`FromSqlValue`](crate::row::FromSqlValue) parses back
+/// into the same type. A floating point value JSON cannot represent, `NaN` and the
+/// two infinities, becomes `null` instead of failing the encoding.
+#[cfg(feature = "serde_json")]
+pub fn sql_val_to_json(value: &SqlVal) -> serde_json::Value {
+    match value {
+        SqlVal::Null => serde_json::Value::Null,
+        SqlVal::Bool(flag) => serde_json::Value::Bool(*flag),
+        SqlVal::I32(number) => serde_json::Value::from(*number),
+        SqlVal::I64(number) => serde_json::Value::from(*number),
+        SqlVal::F64(number) => json_number(*number),
+        SqlVal::Text(text) => serde_json::Value::String(text.clone()),
+        SqlVal::Json(document) => document.clone(),
+        SqlVal::Array(values) => {
+            serde_json::Value::Array(values.iter().map(sql_val_to_json).collect())
+        }
+        other => serde_json::Value::String(other.to_string()),
+    }
+}
+
+/// Builds the JSON number of `value`, reporting a value JSON cannot carry as
+/// `null` instead of failing the encoding.
+#[cfg(feature = "serde_json")]
+fn json_number(value: f64) -> serde_json::Value {
+    match serde_json::Number::from_f64(value) {
+        Some(number) => serde_json::Value::Number(number),
+        None => serde_json::Value::Null,
+    }
+}
+
 /// Parses the JSON object a nested document holds.
 ///
 /// PostgreSQL reports the object of a nested row as a JSON value, while SQLite
@@ -436,5 +475,65 @@ mod tests {
             .expect_err("a missing field is reported");
 
         assert!(error.to_string().contains("no `qty` field"));
+    }
+
+    #[test]
+    fn a_scalar_keeps_its_json_form_across_the_helpers() {
+        for document in [
+            serde_json::Value::Null,
+            serde_json::Value::Bool(true),
+            serde_json::Value::from(7i64),
+            serde_json::Value::from(0.5),
+            serde_json::Value::String("root".to_owned()),
+        ] {
+            let value = json_to_sql_value(&document);
+
+            assert_eq!(sql_val_to_json(&value), document, "round trip of {document}");
+        }
+    }
+
+    #[test]
+    fn a_collection_keeps_the_json_form_of_every_element() {
+        let document = serde_json::json!([1, "two", null]);
+
+        let value = json_to_sql_value(&document);
+
+        assert_eq!(sql_val_to_json(&value), document);
+        assert_eq!(
+            sql_val_to_json(&SqlVal::Array(vec![SqlVal::I64(1), SqlVal::Null])),
+            serde_json::json!([1, null])
+        );
+    }
+
+    #[test]
+    fn a_json_document_passes_through_the_helper() {
+        let document = serde_json::json!({ "sku": "a", "qty": 2 });
+
+        assert_eq!(sql_val_to_json(&SqlVal::Json(document.clone())), document);
+    }
+
+    #[test]
+    fn a_value_without_a_json_counterpart_keeps_the_text_it_displays() {
+        assert_eq!(
+            sql_val_to_json(&SqlVal::Bytes(vec![1, 2])),
+            serde_json::json!("[1, 2]")
+        );
+        assert_eq!(
+            sql_val_to_json(&SqlVal::EncodingError("not encodable".to_owned())),
+            serde_json::json!("not encodable")
+        );
+    }
+
+    #[test]
+    fn a_row_object_built_from_sql_values_decodes_back() {
+        let document = serde_json::json!({
+            "sku": sql_val_to_json(&SqlVal::Text("a".to_owned())),
+            "qty": sql_val_to_json(&SqlVal::I64(2)),
+        });
+
+        assert_eq!(
+            OrderLine::from_sql_value(&SqlVal::Json(document)),
+            Ok(("a".to_owned(), 2))
+        );
     }
 }
