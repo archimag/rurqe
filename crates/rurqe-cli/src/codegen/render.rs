@@ -3,7 +3,7 @@
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use super::naming::escape_literal;
-use super::plan::{build_plan, TablePlan};
+use super::plan::{build_plan, EnumPlan, TablePlan};
 use super::{CodegenError, CodegenOptions};
 
 /// Generates Rust schema source code from an engine-neutral [`SchemaCatalog`].
@@ -17,7 +17,7 @@ pub fn generate_schema_rs(
     catalog: &SchemaCatalog,
     options: &CodegenOptions,
 ) -> Result<String, CodegenError> {
-    let tables = build_plan(catalog, options)?;
+    let plan = build_plan(catalog, options)?;
 
     let mut out = String::new();
 
@@ -41,11 +41,39 @@ pub fn generate_schema_rs(
     out.push_str(&catalog.hash_const());
     out.push_str("\n\n");
 
-    for table in &tables {
+    for enum_plan in &plan.enums {
+        write_enum(&mut out, enum_plan);
+    }
+
+    for table in &plan.tables {
         write_table(&mut out, table, options);
     }
 
     Ok(out)
+}
+
+/// Renders one `#[derive(SqlType)]` enum definition.
+fn write_enum(out: &mut String, enum_plan: &EnumPlan<'_>) {
+    out.push_str("/// The `");
+    out.push_str(enum_plan.name);
+    out.push_str("` enum.\n");
+    out.push_str("#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]\n");
+    out.push_str("pub enum ");
+    out.push_str(&enum_plan.ident);
+    out.push_str(" {\n");
+
+    for variant in &enum_plan.variants {
+        if let Some(ref rename) = variant.rename {
+            out.push_str("    #[sql(rename = \"");
+            out.push_str(&escape_literal(rename));
+            out.push_str("\")]\n");
+        }
+        out.push_str("    ");
+        out.push_str(&variant.ident);
+        out.push_str(",\n");
+    }
+
+    out.push_str("}\n\n");
 }
 
 /// Renders one `table!` block and its optional row record.

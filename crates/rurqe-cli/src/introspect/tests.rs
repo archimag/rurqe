@@ -14,6 +14,7 @@ fn metadata_assembly_builds_catalog() {
             data_type: "bigint".to_owned(),
             is_nullable: false,
             column_default: None,
+            udt_name: None,
         },
         RawColumnMetadata {
             table_name: "users".to_owned(),
@@ -21,6 +22,7 @@ fn metadata_assembly_builds_catalog() {
             data_type: "character varying".to_owned(),
             is_nullable: true,
             column_default: None,
+            udt_name: None,
         },
     ];
     let pks = vec![RawPrimaryKeyMetadata {
@@ -28,7 +30,7 @@ fn metadata_assembly_builds_catalog() {
         column_name: "id".to_owned(),
     }];
 
-    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[], &[]);
+    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[], &[], &[]);
 
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].name, "users");
@@ -50,6 +52,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             data_type: "bigint".to_owned(),
             is_nullable: false,
             column_default: None,
+            udt_name: None,
         },
         RawColumnMetadata {
             table_name: "order_items".to_owned(),
@@ -57,6 +60,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             data_type: "bigint".to_owned(),
             is_nullable: false,
             column_default: None,
+            udt_name: None,
         },
     ];
     let fks = vec![
@@ -76,7 +80,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
         },
     ];
 
-    let catalog = catalog_from_metadata(&tables, &cols, &[], &fks, &[]);
+    let catalog = catalog_from_metadata(&tables, &cols, &[], &fks, &[], &[]);
 
     let table = &catalog.tables[0];
     assert_eq!(table.foreign_keys.len(), 1);
@@ -91,6 +95,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
 fn sqlite_composite_foreign_key_rows_fold_into_one_constraint() {
     let tables = vec![RawSqliteTableMetadata {
         name: "order_items".to_owned(),
+        sql: None,
     }];
     let columns = vec![
         RawSqliteColumnMetadata {
@@ -144,9 +149,11 @@ fn sqlite_metadata_assembly_builds_catalog_with_keys() {
     let tables = vec![
         RawSqliteTableMetadata {
             name: "users".to_owned(),
+            sql: None,
         },
         RawSqliteTableMetadata {
             name: "orders".to_owned(),
+            sql: None,
         },
     ];
     let columns = vec![
@@ -426,7 +433,7 @@ fn index_rows_fold_into_composite_indexes() {
         },
     ];
 
-    let catalog = catalog_from_metadata(&tables, &[], &[], &[], &indexes);
+    let catalog = catalog_from_metadata(&tables, &[], &[], &[], &indexes, &[]);
 
     let table = &catalog.tables[0];
     assert_eq!(table.indexes.len(), 1);
@@ -469,6 +476,100 @@ fn sqlite_indexes_are_introspected_without_the_primary_key_index() {
         vec!["tenant", "email"]
     );
     assert!(!index("users_tenant_email_idx").unique);
+}
+
+#[test]
+fn postgres_enum_metadata_assembly_maps_enum_columns() {
+    let tables = vec![RawTableMetadata {
+        name: "posts".to_owned(),
+    }];
+    let cols = vec![
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "id".to_owned(),
+            data_type: "bigint".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("int8".to_owned()),
+        },
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "status".to_owned(),
+            data_type: "USER-DEFINED".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("post_status".to_owned()),
+        },
+    ];
+    let enums = vec![
+        RawEnumMetadata {
+            name: "post_status".to_owned(),
+            variant: "draft".to_owned(),
+        },
+        RawEnumMetadata {
+            name: "post_status".to_owned(),
+            variant: "published".to_owned(),
+        },
+    ];
+
+    let catalog = catalog_from_metadata(&tables, &cols, &[], &[], &[], &enums);
+
+    assert_eq!(catalog.enums.len(), 1);
+    assert_eq!(catalog.enums[0].name, "post_status");
+    assert_eq!(catalog.enums[0].variants, vec!["draft", "published"]);
+
+    let status_col = &catalog.tables[0].columns[1];
+    assert_eq!(
+        status_col.type_kind,
+        TypeKind::Enum("post_status".to_owned())
+    );
+}
+
+#[test]
+fn sqlite_check_enum_parser_extracts_column_and_variants() {
+    let ddl = r#"
+        CREATE TABLE orders (
+            id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'cancelled')),
+            priority TEXT CHECK(priority IN ('low', 'medium', 'high')),
+            amount REAL CHECK (amount > 0)
+        );
+    "#;
+
+    let enums = sqlite::parse_sqlite_check_enums(ddl, &["id", "status", "priority", "amount"]);
+    assert_eq!(enums.len(), 2);
+    assert_eq!(enums[0].0, "status");
+    assert_eq!(enums[0].1, vec!["pending", "completed", "cancelled"]);
+    assert_eq!(enums[1].0, "priority");
+    assert_eq!(enums[1].1, vec!["low", "medium", "high"]);
+}
+
+#[test]
+fn sqlite_introspect_discovers_check_enum_constraints() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY,
+            state TEXT NOT NULL CHECK (state IN ('todo', 'in_progress', 'done'))
+        );
+        "#,
+    )
+    .unwrap();
+
+    let catalog = introspect_sqlite(&conn).unwrap();
+    assert_eq!(catalog.enums.len(), 1);
+    assert_eq!(catalog.enums[0].name, "state");
+    assert_eq!(
+        catalog.enums[0].variants,
+        vec!["todo", "in_progress", "done"]
+    );
+
+    let state_col = &catalog.tables[0].columns[1];
+    assert_eq!(
+        state_col.type_kind,
+        TypeKind::Enum("state".to_owned())
+    );
 }
 
 #[test]

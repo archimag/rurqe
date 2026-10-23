@@ -13,8 +13,8 @@ use rurqe_migrate::catalog::SchemaCatalog;
 use crate::cli::CliError;
 
 use super::types::{
-    catalog_from_metadata, RawColumnMetadata, RawForeignKeyMetadata, RawIndexMetadata,
-    RawPrimaryKeyMetadata, RawTableMetadata,
+    catalog_from_metadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata,
+    RawIndexMetadata, RawPrimaryKeyMetadata, RawTableMetadata,
 };
 
 /// Query to fetch all user tables of the introspected schema.
@@ -29,11 +29,23 @@ ORDER BY table_name;
 
 /// Query to fetch all columns of the introspected schema.
 pub(crate) const POSTGRES_COLUMNS: &str = r#"
-SELECT table_name, column_name, data_type, (is_nullable = 'YES') as is_nullable, column_default
+SELECT table_name, column_name, data_type, (is_nullable = 'YES') as is_nullable, column_default, udt_name
 FROM information_schema.columns
 WHERE table_schema = $1
   AND table_name != '__rurqe_schema_history'
 ORDER BY table_name, ordinal_position;
+"#;
+
+/// Query to fetch all user enum types and their variants in sort order.
+pub(crate) const POSTGRES_ENUMS: &str = r#"
+SELECT
+  t.typname AS enum_name,
+  e.enumlabel AS variant_name
+FROM pg_type t
+JOIN pg_enum e ON t.oid = e.enumtypid
+JOIN pg_namespace n ON n.oid = t.typnamespace
+WHERE n.nspname = $1
+ORDER BY t.typname, e.enumsortorder;
 "#;
 
 /// Query to fetch all primary key constraint columns.
@@ -130,6 +142,7 @@ pub fn introspect_postgres_schema(
             data_type: read_column(row, 2, "columns", "data_type")?,
             is_nullable: read_column(row, 3, "columns", "is_nullable")?,
             column_default: read_column(row, 4, "columns", "column_default")?,
+            udt_name: read_column(row, 5, "columns", "udt_name")?,
         })
     })?;
 
@@ -159,12 +172,20 @@ pub fn introspect_postgres_schema(
         })
     })?;
 
+    let raw_enums = query_catalog(client, POSTGRES_ENUMS, schema, "enums", |row| {
+        Ok(RawEnumMetadata {
+            name: read_column(row, 0, "enums", "enum_name")?,
+            variant: read_column(row, 1, "enums", "variant_name")?,
+        })
+    })?;
+
     Ok(catalog_from_metadata(
         &raw_tables,
         &raw_columns,
         &raw_pks,
         &raw_fks,
         &raw_indexes,
+        &raw_enums,
     ))
 }
 

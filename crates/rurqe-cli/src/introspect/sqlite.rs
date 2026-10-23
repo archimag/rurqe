@@ -1,16 +1,16 @@
 //! SQLite catalog introspection through `PRAGMA` queries and `sqlite_master`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{ColumnDef, ForeignKeyDef, SchemaCatalog, TableDef};
+use rurqe_migrate::catalog::{ColumnDef, EnumDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
 
 use crate::cli::CliError;
 
 use super::types::{fold_indexes, map_sqlite_declared_type_to_kind, RawIndexMetadata};
 
-/// Query to fetch user tables from the SQLite `sqlite_master` catalog.
+/// Query to fetch user tables and their DDL from the SQLite `sqlite_master` catalog.
 pub(crate) const SQLITE_TABLES: &str = r#"
-SELECT name
+SELECT name, sql
 FROM sqlite_master
 WHERE type = 'table'
   AND name NOT LIKE 'sqlite_%'
@@ -60,6 +60,7 @@ fn escape_sqlite_identifier(identifier: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSqliteTableMetadata {
     pub name: String,
+    pub sql: Option<String>,
 }
 
 /// Raw SQLite column metadata row read from `PRAGMA table_info`.
@@ -108,6 +109,33 @@ pub fn catalog_from_sqlite_metadata(
     foreign_keys: &[RawSqliteForeignKeyMetadata],
     indexes: &[RawIndexMetadata],
 ) -> SchemaCatalog {
+    let mut enums_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut check_enums: BTreeMap<(String, String), String> = BTreeMap::new();
+    for table in tables {
+        let table_col_names: Vec<&str> = columns
+            .iter()
+            .filter(|c| c.table_name == table.name)
+            .map(|c| c.column_name.as_str())
+            .collect();
+        if let Some(ref sql) = table.sql {
+            for (col_name, variants) in parse_sqlite_check_enums(sql, &table_col_names) {
+                let candidate = col_name.clone();
+                let enum_name = match enums_by_name.get(&candidate) {
+                    Some(existing_variants) if existing_variants == &variants => candidate,
+                    None => candidate,
+                    Some(_) => format!("{}_{}_enum", table.name, col_name),
+                };
+                enums_by_name
+                    .entry(enum_name.clone())
+                    .or_insert_with(|| variants);
+                check_enums.insert(
+                    (table.name.clone(), col_name),
+                    enum_name,
+                );
+            }
+        }
+    }
+
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut fks_by_table: BTreeMap<String, BTreeMap<i64, ForeignKeyDef>> = BTreeMap::new();
     let mut indexes_by_table = fold_indexes(indexes);
@@ -117,7 +145,13 @@ pub fn catalog_from_sqlite_metadata(
     let mut primary_keys: BTreeMap<&str, Vec<(i64, &str)>> = BTreeMap::new();
 
     for column in columns {
-        let kind = map_sqlite_declared_type_to_kind(&column.data_type);
+        let kind = if let Some(enum_name) =
+            check_enums.get(&(column.table_name.clone(), column.column_name.clone()))
+        {
+            TypeKind::Enum(enum_name.clone())
+        } else {
+            map_sqlite_declared_type_to_kind(&column.data_type)
+        };
         let mut def = ColumnDef::new(&column.column_name, kind, !column.not_null);
         if let Some(ref default) = column.default_value {
             def = def.with_default(default);
@@ -193,7 +227,13 @@ pub fn catalog_from_sqlite_metadata(
         result_tables.push(def);
     }
 
-    SchemaCatalog::new(result_tables)
+    let mut enums: Vec<EnumDef> = enums_by_name
+        .into_iter()
+        .map(|(name, variants)| EnumDef::new(name, variants))
+        .collect();
+    enums.sort_by(|a, b| a.name.cmp(&b.name));
+
+    SchemaCatalog::new(result_tables).with_enums(enums)
 }
 
 /// Names the column a foreign key references when SQLite omits it.
@@ -216,16 +256,18 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
     let mut stmt = conn
         .prepare(SQLITE_TABLES)
         .map_err(|e| CliError(format!("failed to prepare SQLite table query: {e}")))?;
-    let table_names = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+    let raw_tables = stmt
+        .query_map([], |row| {
+            Ok(RawSqliteTableMetadata {
+                name: row.get::<_, String>(0)?,
+                sql: row.get::<_, Option<String>>(1)?,
+            })
+        })
         .map_err(|e| CliError(format!("failed to query SQLite tables: {e}")))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CliError(format!("failed to read SQLite table row: {e}")))?;
 
-    let raw_tables: Vec<RawSqliteTableMetadata> = table_names
-        .iter()
-        .map(|name| RawSqliteTableMetadata { name: name.clone() })
-        .collect();
+    let table_names: Vec<String> = raw_tables.iter().map(|t| t.name.clone()).collect();
 
     let mut raw_columns = Vec::new();
     let mut raw_foreign_keys = Vec::new();
@@ -372,6 +414,332 @@ fn sqlite_index_columns(
     Ok(columns.into_iter().collect())
 }
 
+/// Parses deterministic `CHECK (<col> IN ('val1', 'val2', ...))` enum constraints
+/// from the table DDL `sql`.
+pub fn parse_sqlite_check_enums(
+    sql: &str,
+    known_columns: &[&str],
+) -> Vec<(String, Vec<String>)> {
+    let mut results = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        i += 2;
+                    } else {
+                        i += 1;
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        if i + 5 <= bytes.len() && sql[i..i + 5].eq_ignore_ascii_case("check") {
+            let prev_ok = i == 0
+                || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+            let next_idx = i + 5;
+            let next_ok = next_idx < bytes.len()
+                && (bytes[next_idx].is_ascii_whitespace() || bytes[next_idx] == b'(');
+
+            if prev_ok && next_ok {
+                let mut paren_idx = next_idx;
+                while paren_idx < bytes.len() && bytes[paren_idx].is_ascii_whitespace() {
+                    paren_idx += 1;
+                }
+                if paren_idx < bytes.len() && bytes[paren_idx] == b'(' {
+                    if let Some((inner, end_idx)) = extract_paren_block(&sql[paren_idx..]) {
+                        if let Some((col, variants)) = parse_check_clause(inner, known_columns) {
+                            if seen.insert(col.clone()) {
+                                results.push((col, variants));
+                            }
+                        }
+                        i = paren_idx + end_idx;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    results
+}
+
+/// Extracts the balanced text inside `(...)` starting at `s[0] == '('`.
+/// Returns `Some((inner_slice, total_length_consumed))`.
+fn extract_paren_block(s: &str) -> Option<(&str, usize)> {
+    if !s.starts_with('(') {
+        return None;
+    }
+
+    let bytes = s.as_bytes();
+    let mut depth = 0;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'"' {
+                        if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'[' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b']' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'`' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'`' {
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1;
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return Some((&s[1..i - 1], i));
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    None
+}
+
+/// Parses `<col> IN ('val1', 'val2', ...)` from the inside of a CHECK clause.
+fn parse_check_clause(inner: &str, known_columns: &[&str]) -> Option<(String, Vec<String>)> {
+    let mut expr = inner.trim();
+    while is_enclosed_in_parens(expr) {
+        expr = expr[1..expr.len() - 1].trim();
+    }
+
+    let mut had_open_paren = false;
+    if let Some(rest) = expr.strip_prefix('(') {
+        had_open_paren = true;
+        expr = rest.trim_start();
+    }
+
+    let (col_ident, rest) = parse_column_identifier(expr)?;
+    let mut rest = rest.trim_start();
+
+    if had_open_paren {
+        rest = rest.strip_prefix(')')?.trim_start();
+    }
+
+    if rest.len() < 2 || !rest[..2].eq_ignore_ascii_case("in") {
+        return None;
+    }
+    let after_in = &rest[2..];
+    if !after_in.starts_with(|c: char| c.is_ascii_whitespace() || c == '(') {
+        return None;
+    }
+
+    let after_in = after_in.trim_start();
+    let after_open = after_in.strip_prefix('(')?;
+
+    let (variants, remaining) = parse_in_variant_list(after_open)?;
+    let remaining = remaining.trim();
+    if !remaining.is_empty() && !remaining.chars().all(|c| c == ')') {
+        return None;
+    }
+
+    let matched_col = known_columns
+        .iter()
+        .find(|&&c| c.eq_ignore_ascii_case(&col_ident))?;
+
+    Some(((*matched_col).to_owned(), variants))
+}
+
+fn parse_column_identifier(s: &str) -> Option<(String, &str)> {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = s.strip_prefix('"') {
+        let mut name = String::new();
+        let mut chars = rest.char_indices().peekable();
+        while let Some((idx, ch)) = chars.next() {
+            if ch == '"' {
+                if chars.peek().map(|&(_, next)| next) == Some('"') {
+                    chars.next();
+                    name.push('"');
+                } else {
+                    return Some((name, &rest[idx + 1..]));
+                }
+            } else {
+                name.push(ch);
+            }
+        }
+        return None;
+    }
+
+    if let Some(rest) = s.strip_prefix('[') {
+        let end = rest.find(']')?;
+        return Some((rest[..end].to_owned(), &rest[end + 1..]));
+    }
+
+    if let Some(rest) = s.strip_prefix('`') {
+        let end = rest.find('`')?;
+        return Some((rest[..end].to_owned(), &rest[end + 1..]));
+    }
+
+    let mut end = 0;
+    for (idx, ch) in s.char_indices() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if end == 0 {
+        None
+    } else {
+        Some((s[..end].to_owned(), &s[end..]))
+    }
+}
+
+fn parse_in_variant_list(mut s: &str) -> Option<(Vec<String>, &str)> {
+    let mut variants = Vec::new();
+
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix(')') {
+            if !variants.is_empty() {
+                return Some((variants, rest));
+            }
+            return None;
+        }
+
+        let rest = s.strip_prefix('\'')?;
+        let mut variant = String::new();
+        let mut chars = rest.char_indices().peekable();
+        let mut closed_at = None;
+
+        while let Some((idx, ch)) = chars.next() {
+            if ch == '\'' {
+                if chars.peek().map(|&(_, next)| next) == Some('\'') {
+                    chars.next();
+                    variant.push('\'');
+                } else {
+                    closed_at = Some(idx + 1);
+                    break;
+                }
+            } else {
+                variant.push(ch);
+            }
+        }
+
+        let close_pos = closed_at?;
+        variants.push(variant);
+        s = rest[close_pos..].trim_start();
+
+        if let Some(after_comma) = s.strip_prefix(',') {
+            s = after_comma;
+        } else {
+            let after_close = s.strip_prefix(')')?;
+            return Some((variants, after_close));
+        }
+    }
+}
+
+fn is_enclosed_in_parens(s: &str) -> bool {
+    if !s.starts_with('(') || !s.ends_with(')') {
+        return false;
+    }
+
+    let bytes = s.as_bytes();
+    let mut depth = 0;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 && i < bytes.len() {
+                    return false;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    depth == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,9 +770,11 @@ mod tests {
         let tables = vec![
             RawSqliteTableMetadata {
                 name: "orders".to_owned(),
+                sql: None,
             },
             RawSqliteTableMetadata {
                 name: "order_lines".to_owned(),
+                sql: None,
             },
         ];
         // The parent key columns arrive out of order, so the resolution has to
@@ -442,9 +812,11 @@ mod tests {
         let tables = vec![
             RawSqliteTableMetadata {
                 name: "orders".to_owned(),
+                sql: None,
             },
             RawSqliteTableMetadata {
                 name: "order_lines".to_owned(),
+                sql: None,
             },
         ];
         let columns = vec![

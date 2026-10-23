@@ -7,10 +7,32 @@
 
 use std::collections::BTreeMap;
 
-use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
+use rurqe_migrate::catalog::{ColumnDef, EnumDef, SchemaCatalog, TableDef, TypeKind};
 
 use super::naming::{table_type_ident, to_pascal_case, to_safe_ident};
 use super::{CodegenError, CodegenOptions};
+
+/// The full generation plan for a schema.
+#[derive(Debug)]
+pub(super) struct SchemaPlan<'a> {
+    pub(super) enums: Vec<EnumPlan<'a>>,
+    pub(super) tables: Vec<TablePlan<'a>>,
+}
+
+/// An enum rendered into its Rust identifiers and variants.
+#[derive(Debug)]
+pub(super) struct EnumPlan<'a> {
+    pub(super) name: &'a str,
+    pub(super) ident: String,
+    pub(super) variants: Vec<EnumVariantPlan>,
+}
+
+/// A variant of an enum.
+#[derive(Debug)]
+pub(super) struct EnumVariantPlan {
+    pub(super) ident: String,
+    pub(super) rename: Option<String>,
+}
 
 /// A table rendered into its Rust identifiers.
 #[derive(Debug)]
@@ -34,13 +56,56 @@ pub(super) struct ColumnPlan<'a> {
 pub(super) fn build_plan<'a>(
     catalog: &'a SchemaCatalog,
     options: &CodegenOptions,
-) -> Result<Vec<TablePlan<'a>>, CodegenError> {
+) -> Result<SchemaPlan<'a>, CodegenError> {
+    // The type namespace is global: enum types, table markers, column markers, and records
+    // share one module, so every generated type name must be unique.
+    let mut types: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    let mut enums: Vec<&'a EnumDef> = catalog.enums.iter().collect();
+    enums.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut enum_plans = Vec::with_capacity(enums.len());
+    for enum_def in enums {
+        let ident = table_type_ident(&enum_def.name);
+        claim(&mut types, &ident, format!("enum `{}`", enum_def.name));
+
+        let mut variant_plans = Vec::with_capacity(enum_def.variants.len());
+        let mut variant_idents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+        for variant in &enum_def.variants {
+            let variant_ident = table_type_ident(variant);
+            claim(
+                &mut variant_idents,
+                &variant_ident,
+                format!("variant `{variant}` of enum `{}`", enum_def.name),
+            );
+
+            let rename = if variant != &variant_ident {
+                Some(variant.clone())
+            } else {
+                None
+            };
+
+            variant_plans.push(EnumVariantPlan {
+                ident: variant_ident,
+                rename,
+            });
+        }
+
+        if let Some((ident, sources)) = first_collision(&variant_idents) {
+            return Err(CodegenError::IdentifierCollision { ident, sources });
+        }
+
+        enum_plans.push(EnumPlan {
+            name: enum_def.name.as_str(),
+            ident,
+            variants: variant_plans,
+        });
+    }
+
     let mut tables: Vec<&'a TableDef> = catalog.tables.iter().collect();
     tables.sort_by(|a, b| a.name.cmp(&b.name));
 
-    // The type namespace is global: table markers, column markers, and records
-    // share one module, so every generated type name must be unique.
-    let mut types: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut plan = Vec::with_capacity(tables.len());
 
     for table in tables {
@@ -98,7 +163,10 @@ pub(super) fn build_plan<'a>(
         return Err(CodegenError::IdentifierCollision { ident, sources });
     }
 
-    Ok(plan)
+    Ok(SchemaPlan {
+        enums: enum_plans,
+        tables: plan,
+    })
 }
 
 /// Registers `ident` as produced by `source`, so later claims can detect collisions.
@@ -168,29 +236,26 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
     }
 
     let base = match kind {
-        TypeKind::Boolean => "bool",
-        TypeKind::Int32 => "i32",
-        TypeKind::Int64 => "i64",
-        TypeKind::Float64 => "f64",
-        TypeKind::Text => "String",
-        TypeKind::Bytes => "Vec<u8>",
-        TypeKind::Uuid if domain_types => "uuid::Uuid",
-        TypeKind::Json if domain_types => "serde_json::Value",
-        TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime",
-        TypeKind::Date if domain_types => "chrono::NaiveDate",
-        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String",
-        // A database enum is represented as `String` until the generated module
-        // carries the enum itself.
-        TypeKind::Enum(_) => "String",
-        TypeKind::Other(_) => "String",
-        // An array is wrapped into `Vec<..>` before this mapping is reached.
-        TypeKind::Array(_) => "String",
+        TypeKind::Boolean => "bool".to_owned(),
+        TypeKind::Int32 => "i32".to_owned(),
+        TypeKind::Int64 => "i64".to_owned(),
+        TypeKind::Float64 => "f64".to_owned(),
+        TypeKind::Text => "String".to_owned(),
+        TypeKind::Bytes => "Vec<u8>".to_owned(),
+        TypeKind::Uuid if domain_types => "uuid::Uuid".to_owned(),
+        TypeKind::Json if domain_types => "serde_json::Value".to_owned(),
+        TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime".to_owned(),
+        TypeKind::Date if domain_types => "chrono::NaiveDate".to_owned(),
+        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String".to_owned(),
+        TypeKind::Enum(name) => table_type_ident(name),
+        TypeKind::Other(_) => "String".to_owned(),
+        TypeKind::Array(_) => "String".to_owned(),
     };
 
     if nullable {
         format!("Option<{base}>")
     } else {
-        base.to_owned()
+        base
     }
 }
 
@@ -274,6 +339,23 @@ mod tests {
         match &error {
             CodegenError::IdentifierCollision { ident, .. } => {
                 assert_eq!(ident, "UserProfiles");
+            }
+        }
+    }
+
+    #[test]
+    fn colliding_enum_identifiers_are_rejected() {
+        let catalog = SchemaCatalog::new(Vec::new()).with_enums(vec![
+            EnumDef::new("post_status", vec!["active".to_owned()]),
+            EnumDef::new("post-status", vec!["active".to_owned()]),
+        ]);
+
+        let error = build_plan(&catalog, &CodegenOptions::default())
+            .expect_err("colliding enum identifiers are rejected");
+
+        match &error {
+            CodegenError::IdentifierCollision { ident, .. } => {
+                assert_eq!(ident, "PostStatus");
             }
         }
     }
@@ -387,6 +469,24 @@ mod tests {
         assert_eq!(
             rust_type_of(&ColumnDef::new("id", TypeKind::Uuid, false), &options),
             "EventId"
+        );
+    }
+
+    #[test]
+    fn enum_columns_map_to_their_type_identifiers() {
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("mood", TypeKind::Enum("user_mood".to_owned()), false),
+                &CodegenOptions::default(),
+            ),
+            "UserMood"
+        );
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("mood", TypeKind::Enum("user_mood".to_owned()), true),
+                &CodegenOptions::default(),
+            ),
+            "Option<UserMood>"
         );
     }
 }

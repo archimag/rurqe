@@ -7,7 +7,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{ColumnDef, IndexDef, SchemaCatalog, TableDef};
+use rurqe_migrate::catalog::{ColumnDef, EnumDef, IndexDef, SchemaCatalog, TableDef};
 
 /// Structural schema diff describing exact discrepancies.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -15,6 +15,9 @@ pub struct SchemaDiff {
     pub missing_tables: Vec<String>,
     pub extra_tables: Vec<String>,
     pub table_diffs: BTreeMap<String, TableDiff>,
+    pub missing_enums: Vec<String>,
+    pub extra_enums: Vec<String>,
+    pub altered_enums: Vec<String>,
 }
 
 impl SchemaDiff {
@@ -23,6 +26,9 @@ impl SchemaDiff {
         self.missing_tables.is_empty()
             && self.extra_tables.is_empty()
             && self.table_diffs.is_empty()
+            && self.missing_enums.is_empty()
+            && self.extra_enums.is_empty()
+            && self.altered_enums.is_empty()
     }
 
     /// Renders every discrepancy as an indented bullet, one line per finding.
@@ -37,6 +43,24 @@ impl SchemaDiff {
     ) -> fmt::Result {
         let DiffWording { expected, live } = wording;
 
+        for enum_name in &self.missing_enums {
+            writeln!(
+                f,
+                "  - Enum `{enum_name}` is declared in {expected} but missing from {live}."
+            )?;
+        }
+        for enum_name in &self.extra_enums {
+            writeln!(
+                f,
+                "  - Enum `{enum_name}` exists in {live} but is missing from {expected}."
+            )?;
+        }
+        for enum_name in &self.altered_enums {
+            writeln!(
+                f,
+                "  - Enum `{enum_name}` definition differs between {live} and {expected}."
+            )?;
+        }
         for table in &self.missing_tables {
             writeln!(
                 f,
@@ -185,13 +209,13 @@ impl std::error::Error for DriftReport {}
 /// Error encountered during drift verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DriftError {
-    Drift(DriftReport),
+    Drift(Box<DriftReport>),
     HashMismatch {
         expected: String,
         found_in_code: String,
         /// Structural diff between the live catalog and the lock snapshot, so a
         /// stale `SCHEMA_HASH` still reports exactly what drifted.
-        diff: SchemaDiff,
+        diff: Box<SchemaDiff>,
     },
     InvalidLock(String),
     Io(String),
@@ -244,7 +268,7 @@ pub fn verify_drift(
                 return Err(DriftError::HashMismatch {
                     expected: live_hash,
                     found_in_code: embedded_hash,
-                    diff,
+                    diff: Box::new(diff),
                 });
             }
         }
@@ -259,11 +283,11 @@ pub fn verify_drift(
     // drift between two equal catalogs.
     let expected_hash = expected_catalog.schema_hash();
 
-    Err(DriftError::Drift(DriftReport {
+    Err(DriftError::Drift(Box::new(DriftReport {
         expected_hash,
         live_hash,
         diff,
-    }))
+    })))
 }
 
 /// Extracts the `pub const SCHEMA_HASH: &str = "...";` literal from generated code.
@@ -366,6 +390,33 @@ pub fn extract_schema_hash(code: &str) -> Option<String> {
 /// Computes the structural differences between the `live` and `expected` catalogs.
 pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
+
+    let live_enums: BTreeMap<&str, &EnumDef> =
+        live.enums.iter().map(|e| (e.name.as_str(), e)).collect();
+    let expected_enums: BTreeMap<&str, &EnumDef> = expected
+        .enums
+        .iter()
+        .map(|e| (e.name.as_str(), e))
+        .collect();
+
+    let all_enums: BTreeSet<&str> = live_enums
+        .keys()
+        .copied()
+        .chain(expected_enums.keys().copied())
+        .collect();
+
+    for enum_name in all_enums {
+        match (live_enums.get(enum_name), expected_enums.get(enum_name)) {
+            (None, Some(_)) => diff.missing_enums.push(enum_name.to_owned()),
+            (Some(_), None) => diff.extra_enums.push(enum_name.to_owned()),
+            (Some(live_enum), Some(expected_enum)) => {
+                if live_enum.variants != expected_enum.variants {
+                    diff.altered_enums.push(enum_name.to_owned());
+                }
+            }
+            (None, None) => {}
+        }
+    }
 
     let live_tables: BTreeMap<&str, &TableDef> =
         live.tables.iter().map(|t| (t.name.as_str(), t)).collect();
@@ -502,6 +553,50 @@ mod tests {
             table = table.with_index(index);
         }
         table
+    }
+
+    #[test]
+    fn enum_drift_is_detected_and_reported() {
+        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![
+            EnumDef::new("user_role", vec!["admin".to_owned(), "member".to_owned()]),
+        ]);
+        let lock = baseline.to_lock();
+
+        // Extra enum in live database
+        let live = SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![
+            EnumDef::new("user_role", vec!["admin".to_owned(), "member".to_owned()]),
+            EnumDef::new("task_state", vec!["todo".to_owned(), "done".to_owned()]),
+        ]);
+
+        let err = verify_drift(&live, &lock, None).unwrap_err();
+        match err {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.extra_enums, vec!["task_state".to_owned()]);
+                assert!(report.to_string().contains("Enum `task_state` exists in database but is missing from snapshot."));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        // Altered variants in live database
+        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![
+            EnumDef::new(
+                "user_role",
+                vec![
+                    "admin".to_owned(),
+                    "member".to_owned(),
+                    "guest".to_owned(),
+                ],
+            ),
+        ]);
+
+        let err2 = verify_drift(&live_altered, &lock, None).unwrap_err();
+        match err2 {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.altered_enums, vec!["user_role".to_owned()]);
+                assert!(report.to_string().contains("Enum `user_role` definition differs between database and snapshot."));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
     }
 
     #[test]

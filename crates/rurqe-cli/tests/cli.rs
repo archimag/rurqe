@@ -114,6 +114,7 @@ fn catalog_introspected_from_raw_metadata() {
             data_type: "bigint".to_owned(),
             is_nullable: false,
             column_default: None,
+            udt_name: None,
         },
         RawColumnMetadata {
             table_name: "customers".to_owned(),
@@ -121,6 +122,7 @@ fn catalog_introspected_from_raw_metadata() {
             data_type: "timestamp with time zone".to_owned(),
             is_nullable: false,
             column_default: Some("now()".to_owned()),
+            udt_name: None,
         },
     ];
     let pks = vec![RawPrimaryKeyMetadata {
@@ -128,7 +130,7 @@ fn catalog_introspected_from_raw_metadata() {
         column_name: "id".to_owned(),
     }];
 
-    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[], &[]);
+    let catalog = catalog_from_metadata(&tables, &cols, &pks, &[], &[], &[]);
 
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].columns.len(), 2);
@@ -479,6 +481,65 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
         message.contains("cargo db-codegen"),
         "unexpected error: {message}"
     );
+}
+
+#[test]
+fn run_cli_codegen_and_verify_handles_check_enums_end_to_end() {
+    let workspace = temp_workspace("check-enums");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'done'))
+             );",
+        )
+        .expect("create schema");
+    }
+
+    let schema = workspace.join("src").join("schema.rs");
+    let lock = workspace.join("schema.lock");
+
+    let args = vec![
+        "rurqe".to_owned(),
+        "codegen".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--output".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+    ];
+    run_cli(args).expect("codegen succeeds for check enums");
+
+    let snapshot = fs::read_to_string(&lock).expect("read schema lock");
+    assert!(snapshot.contains("[[enum]]"));
+    assert!(snapshot.contains("name = \"status\""));
+    assert!(snapshot.contains("variants = [\"todo\", \"in_progress\", \"done\"]"));
+    assert!(snapshot.contains("column \"status\": enum \"status\" not null"));
+
+    let code = fs::read_to_string(&schema).expect("read generated schema");
+    assert!(code.contains("#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]"));
+    assert!(code.contains("pub enum Status {"));
+    assert!(code.contains("#[sql(rename = \"todo\")]\n    Todo,"));
+    assert!(code.contains("#[sql(rename = \"in_progress\")]\n    InProgress,"));
+    assert!(code.contains("#[sql(rename = \"done\")]\n    Done,"));
+    assert!(code.contains("TasksStatus => \"status\": Status"));
+    assert!(code.contains("pub status: Status,"));
+
+    let verify_args = vec![
+        "rurqe".to_owned(),
+        "verify".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--schema-path".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+    ];
+    run_cli(verify_args).expect("verification passes for matched check enums");
 }
 
 #[test]

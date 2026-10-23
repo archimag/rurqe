@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use rurqe_migrate::catalog::{
-    ColumnDef, ForeignKeyDef, IndexDef, SchemaCatalog, TableDef, TypeKind,
+    ColumnDef, EnumDef, ForeignKeyDef, IndexDef, SchemaCatalog, TableDef, TypeKind,
 };
 
 /// Raw table metadata row.
@@ -20,6 +20,14 @@ pub struct RawColumnMetadata {
     pub data_type: String,
     pub is_nullable: bool,
     pub column_default: Option<String>,
+    pub udt_name: Option<String>,
+}
+
+/// Raw enum metadata row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawEnumMetadata {
+    pub name: String,
+    pub variant: String,
 }
 
 /// Raw primary key constraint row.
@@ -181,14 +189,35 @@ pub fn catalog_from_metadata(
     pks: &[RawPrimaryKeyMetadata],
     fks: &[RawForeignKeyMetadata],
     indexes: &[RawIndexMetadata],
+    enums: &[RawEnumMetadata],
 ) -> SchemaCatalog {
+    let mut enums_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for e in enums {
+        enums_by_name
+            .entry(e.name.clone())
+            .or_default()
+            .push(e.variant.clone());
+    }
+
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut pks_by_table: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut fks_by_table: BTreeMap<String, BTreeMap<String, ForeignKeyDef>> = BTreeMap::new();
     let mut indexes_by_table = fold_indexes(indexes);
 
     for col in columns {
-        let kind = map_sql_type_to_kind(&col.data_type);
+        let is_enum = col
+            .udt_name
+            .as_ref()
+            .is_some_and(|udt| enums_by_name.contains_key(udt));
+        let kind = if is_enum {
+            TypeKind::Enum(col.udt_name.clone().unwrap_or_default())
+        } else if col.data_type.eq_ignore_ascii_case("USER-DEFINED") {
+            col.udt_name
+                .as_ref()
+                .map_or_else(|| map_sql_type_to_kind(&col.data_type), |udt| map_sql_type_to_kind(udt))
+        } else {
+            map_sql_type_to_kind(&col.data_type)
+        };
         let mut def = ColumnDef::new(&col.column_name, kind, col.is_nullable);
         if let Some(ref default) = col.column_default {
             def = def.with_default(default);
@@ -239,5 +268,10 @@ pub fn catalog_from_metadata(
         result_tables.push(def);
     }
 
-    SchemaCatalog::new(result_tables)
+    let result_enums: Vec<EnumDef> = enums_by_name
+        .into_iter()
+        .map(|(name, variants)| EnumDef::new(name, variants))
+        .collect();
+
+    SchemaCatalog::new(result_tables).with_enums(result_enums)
 }

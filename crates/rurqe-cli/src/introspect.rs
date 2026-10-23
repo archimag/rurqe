@@ -27,8 +27,8 @@ pub use sqlite::{
 };
 pub use types::{
     catalog_from_metadata, map_sql_type_to_kind, map_sqlite_declared_type_to_kind,
-    RawColumnMetadata, RawForeignKeyMetadata, RawIndexMetadata, RawPrimaryKeyMetadata,
-    RawTableMetadata,
+    RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
+    RawPrimaryKeyMetadata, RawTableMetadata,
 };
 
 /// The database engine a connection string targets.
@@ -112,6 +112,9 @@ impl IntrospectQueries {
 
     /// Query to fetch the secondary indexes of user tables, one row per column.
     pub const POSTGRES_INDEXES: &'static str = postgres::POSTGRES_INDEXES;
+
+    /// Query to fetch all user enum types and their variants in sort order.
+    pub const POSTGRES_ENUMS: &'static str = postgres::POSTGRES_ENUMS;
 
     /// Builds the `PRAGMA table_info` query for `table`.
     pub fn sqlite_table_info(table: &str) -> String {
