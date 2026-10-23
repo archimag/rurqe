@@ -28,12 +28,59 @@ ORDER BY table_name;
 "#;
 
 /// Query to fetch all columns of the introspected schema.
+///
+/// A domain is a type of its own, while a column declared over it stores the
+/// values of the type the domain wraps. `information_schema.columns` names the
+/// domain instead of that base type, so the declared type is resolved through
+/// `pg_type.typbasetype` and the base type is reported in its place: the catalog
+/// then carries the type the column really holds rather than a name no
+/// introspection can classify. A column of a plain type is reported as it is,
+/// and a domain declared over another domain is followed to its end.
 pub(crate) const POSTGRES_COLUMNS: &str = r#"
-SELECT table_name, column_name, data_type, (is_nullable = 'YES') as is_nullable, column_default, udt_name
-FROM information_schema.columns
-WHERE table_schema = $1
-  AND table_name != '__rurqe_schema_history'
-ORDER BY table_name, ordinal_position;
+WITH RECURSIVE type_chain AS (
+    SELECT declared.oid AS declared, declared.oid AS resolved, 0 AS depth
+    FROM pg_type declared
+    UNION ALL
+    SELECT chain.declared, base.oid, chain.depth + 1
+    FROM type_chain chain
+    JOIN pg_type domain_type
+      ON domain_type.oid = chain.resolved
+     AND domain_type.typtype = 'd'
+    JOIN pg_type base ON base.oid = domain_type.typbasetype
+),
+resolved_type AS (
+    SELECT DISTINCT ON (declared) declared, resolved
+    FROM type_chain
+    ORDER BY declared, depth DESC
+)
+SELECT
+  column_row.table_name,
+  column_row.column_name,
+  CASE
+    WHEN resolved_type.resolved IS NULL OR resolved_type.resolved = declared_type.oid
+      THEN column_row.data_type
+    ELSE format_type(resolved_type.resolved, NULL)
+  END AS data_type,
+  (column_row.is_nullable = 'YES') AS is_nullable,
+  column_row.column_default,
+  CASE
+    WHEN resolved_type.resolved IS NULL OR resolved_type.resolved = declared_type.oid
+      THEN column_row.udt_name
+    ELSE base_type.typname
+  END AS udt_name
+FROM information_schema.columns column_row
+LEFT JOIN pg_namespace type_namespace
+  ON type_namespace.nspname = column_row.udt_schema
+LEFT JOIN pg_type declared_type
+  ON declared_type.typname = column_row.udt_name
+ AND declared_type.typnamespace = type_namespace.oid
+LEFT JOIN resolved_type
+  ON resolved_type.declared = declared_type.oid
+LEFT JOIN pg_type base_type
+  ON base_type.oid = resolved_type.resolved
+WHERE column_row.table_schema = $1
+  AND column_row.table_name != '__rurqe_schema_history'
+ORDER BY column_row.table_name, column_row.ordinal_position;
 "#;
 
 /// Query to fetch all user enum types and their variants in sort order.

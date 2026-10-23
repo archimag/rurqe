@@ -667,3 +667,24 @@ fn dialect_detection_recognises_sqlite_and_postgres() {
     assert_eq!(detect_dialect(None), DatabaseDialect::Postgres);
     assert_eq!(DatabaseDialect::Sqlite.to_string(), "SQLite");
 }
+
+#[test]
+fn a_domain_column_is_reported_as_the_type_it_is_declared_over() {
+    // The columns query resolves a domain through `pg_type.typbasetype`, so the
+    // catalog receives the base type name and never the domain itself.
+    let tables = vec![RawTableMetadata {
+        name: "users".to_owned(),
+    }];
+    let columns = vec![RawColumnMetadata {
+        table_name: "users".to_owned(),
+        column_name: "email".to_owned(),
+        data_type: "USER-DEFINED".to_owned(),
+        is_nullable: false,
+        column_default: None,
+        udt_name: Some("text".to_owned()),
+    }];
+
+    let catalog = catalog_from_metadata(&tables, &columns, &[], &[], &[], &[]);
+
+    assert_eq!(catalog.tables[0].columns[0].type_kind, TypeKind::Text);
+}
