@@ -16,7 +16,7 @@ rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0", optional = true 
 rurqe-sqlite = { path = "../rurqe-sqlite", version = "0.1.0", optional = true }
 
 [features]
-default = ["postgres", "macros", "migrate", "sqlite", "uuid", "chrono", "serde_json"]
+default = ["postgres", "macros", "migrate", "sqlite", "uuid", "chrono", "serde_json", "decimal"]
 macros = ["dep:rurqe-macros"]
 postgres = ["dep:rurqe-postgres", "rurqe-postgres/postgres"]
 tokio-postgres = ["dep:rurqe-postgres", "rurqe-postgres/tokio-postgres"]
@@ -25,6 +25,7 @@ migrate = ["dep:rurqe-migrate"]
 r2d2 = ["rurqe-sqlite/r2d2", "rurqe-postgres/r2d2"]
 deadpool-postgres = ["rurqe-postgres/deadpool-postgres"]
 uuid = ["rurqe-core/uuid", "rurqe-postgres?/uuid"]
+decimal = ["rurqe-core/decimal", "rurqe-postgres?/decimal"]
 chrono = ["rurqe-core/chrono", "rurqe-postgres?/chrono"]
 serde = ["rurqe-core/serde"]
 serde_json = ["rurqe-core/serde_json", "rurqe-postgres?/serde_json"]

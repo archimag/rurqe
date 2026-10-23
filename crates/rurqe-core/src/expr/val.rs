@@ -8,8 +8,9 @@ use core::fmt;
 /// the produced parameter list remains typed and allocation-free for scalars.
 ///
 /// The enumeration is `#[non_exhaustive]` because several of its variants are
-/// gated behind cargo features: `Uuid`, `NaiveDateTime`, `DateTimeUtc`,
-/// `NaiveDate`, and `Json` exist only when their feature is enabled. The set of
+/// gated behind cargo features: `Decimal`, `Uuid`, `NaiveDateTime`,
+/// `DateTimeUtc`, `NaiveDate`, and `Json` exist only when their feature is
+/// enabled. The set of
 /// variants a downstream crate observes therefore depends on the enabled
 /// features, so matching code outside this crate has to keep a wildcard arm,
 /// which stays correct no matter which features are compiled in.
@@ -24,6 +25,13 @@ pub enum SqlVal {
     I64(i64),
     /// A 64-bit floating point number.
     F64(f64),
+    /// An exact decimal number, carrying the scale it was declared with.
+    ///
+    /// The variant exists only with the `decimal` cargo feature: a `NUMERIC` or
+    /// `DECIMAL` column keeps its exact value instead of passing through a
+    /// floating point number that cannot represent every digit of it.
+    #[cfg(feature = "decimal")]
+    Decimal(rust_decimal::Decimal),
     /// A boolean.
     Bool(bool),
     /// A UTF-8 string.
@@ -67,6 +75,8 @@ impl SqlVal {
             SqlVal::I32(_) => "int32",
             SqlVal::I64(_) => "int64",
             SqlVal::F64(_) => "float64",
+            #[cfg(feature = "decimal")]
+            SqlVal::Decimal(_) => "decimal",
             SqlVal::Bool(_) => "boolean",
             SqlVal::Text(_) => "text",
             SqlVal::Bytes(_) => "bytes",
@@ -93,6 +103,8 @@ impl fmt::Display for SqlVal {
             SqlVal::I32(value) => write!(f, "{value}"),
             SqlVal::I64(value) => write!(f, "{value}"),
             SqlVal::F64(value) => write!(f, "{value}"),
+            #[cfg(feature = "decimal")]
+            SqlVal::Decimal(value) => write!(f, "{value}"),
             SqlVal::Bool(value) => write!(f, "{value}"),
             SqlVal::Text(value) => f.write_str(value),
             SqlVal::Bytes(value) => write!(f, "{:?}", value),
@@ -189,6 +201,27 @@ impl ToSqlVal for f64 {
     fn to_sql_val(self) -> SqlVal {
         SqlVal::F64(self)
     }
+}
+
+#[cfg(feature = "decimal")]
+impl ToSqlVal for rust_decimal::Decimal {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Decimal(self)
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl ToSqlVal for &rust_decimal::Decimal {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Decimal(*self)
+    }
+}
+
+// A decimal column is lifted into its optional form by the same relational rule
+// every other scalar follows, so an outer join keeps the exact type of the value.
+#[cfg(feature = "decimal")]
+impl crate::query::MakeNullable for rust_decimal::Decimal {
+    type Nullable = Option<rust_decimal::Decimal>;
 }
 
 impl ToSqlVal for bool {
@@ -373,6 +406,13 @@ impl From<i64> for SqlVal {
 
 impl From<f64> for SqlVal {
     fn from(value: f64) -> Self {
+        value.to_sql_val()
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl From<rust_decimal::Decimal> for SqlVal {
+    fn from(value: rust_decimal::Decimal) -> Self {
         value.to_sql_val()
     }
 }
@@ -858,5 +898,26 @@ mod tests {
             Json(1i64).to_sql_val(),
             SqlVal::Json(serde_json::json!(1))
         );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn exact_decimals_encode_as_their_own_kind() {
+        let decimal = rust_decimal::Decimal::new(15_005, 3);
+
+        assert_eq!(decimal.to_sql_val(), SqlVal::Decimal(decimal));
+        assert_eq!((&decimal).to_sql_val(), SqlVal::Decimal(decimal));
+        assert_eq!(SqlVal::from(decimal), SqlVal::Decimal(decimal));
+        assert_eq!(Some(decimal).to_sql_val(), SqlVal::Decimal(decimal));
+        assert_eq!(None::<rust_decimal::Decimal>.to_sql_val(), SqlVal::Null);
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn the_decimal_kind_reports_its_name_and_text() {
+        let value = SqlVal::Decimal(rust_decimal::Decimal::new(1500, 3));
+
+        assert_eq!(value.variant_name(), "decimal");
+        assert_eq!(value.to_string(), "1.500");
     }
 }

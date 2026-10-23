@@ -29,6 +29,7 @@ deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
 r2d2 = ["dep:r2d2", "postgres"]
 # A value family is forwarded to the drivers that are compiled in, so a driver
 # receives the encodings of exactly the families this crate enables.
+decimal = ["rurqe-core/decimal"]
 chrono = [
     "dep:chrono",
     "rurqe-core/chrono",

@@ -225,6 +225,29 @@ impl<T: FromSqlValue> FromSqlValue for Option<T> {
     }
 }
 
+#[cfg(feature = "decimal")]
+impl FromSqlValue for rust_decimal::Decimal {
+    fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+        use rust_decimal::Decimal;
+
+        match value {
+            SqlVal::Decimal(decimal) => Ok(*decimal),
+            // An engine without a native decimal type reports the value as the
+            // integer, the real, or the text it stores, so each form is read back
+            // into the exact type.
+            SqlVal::I32(number) => Ok(Decimal::from(*number)),
+            SqlVal::I64(number) => Ok(Decimal::from(*number)),
+            SqlVal::F64(number) => {
+                Decimal::try_from(*number).map_err(|error| invalid_value::<Self>(value, &error.to_string()))
+            }
+            SqlVal::Text(text) => text
+                .parse::<Decimal>()
+                .map_err(|error| invalid_value::<Self>(value, &error.to_string())),
+            _ => Err(type_mismatch::<Self>(value)),
+        }
+    }
+}
+
 #[cfg(feature = "serde_json")]
 impl<T: for<'de> serde::Deserialize<'de>> FromSqlValue for crate::expr::Json<T> {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
@@ -704,5 +727,28 @@ mod tests {
         fn assert_from_row<R: FromRow>() {}
 
         assert_from_row::<<(UserId, UserName, UserActive) as Selection>::Row>();
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_values_decode_exactly() {
+        use rust_decimal::Decimal;
+
+        let exact = Decimal::new(1500, 3);
+
+        assert_eq!(Decimal::from_sql_value(&SqlVal::Decimal(exact)), Ok(exact));
+        assert_eq!(
+            Decimal::from_sql_value(&SqlVal::I64(7)),
+            Ok(Decimal::from(7i64))
+        );
+        assert_eq!(
+            Decimal::from_sql_value(&SqlVal::Text("1.500".to_owned())),
+            Ok(exact)
+        );
+        assert_eq!(
+            Decimal::from_sql_value(&SqlVal::F64(1.5)),
+            Ok(Decimal::new(15, 1))
+        );
+        assert!(Decimal::from_sql_value(&SqlVal::Bool(true)).is_err());
     }
 }

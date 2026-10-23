@@ -67,6 +67,9 @@ impl_array_element!(
 #[cfg(feature = "serde_json")]
 impl_array_element!(serde_json::Value);
 
+#[cfg(feature = "decimal")]
+impl_array_element!(rust_decimal::Decimal);
+
 impl<T: SqlArrayElement> ToSqlVal for Vec<T> {
     fn to_sql_val(self) -> SqlVal {
         SqlVal::Array(self.into_iter().map(ToSqlVal::to_sql_val).collect())
@@ -247,6 +250,21 @@ mod tests {
         assert_eq!(
             vec![1i64, 2].into_expr_kind(),
             ExprKind::Value(SqlVal::Array(vec![SqlVal::I64(1), SqlVal::I64(2)]))
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn decimal_arrays_round_trip_through_their_elements() {
+        let element = rust_decimal::Decimal::new(1500, 3);
+        let column = vec![element];
+
+        let encoded = column.clone().to_sql_val();
+
+        assert_eq!(encoded, SqlVal::Array(vec![SqlVal::Decimal(element)]));
+        assert_eq!(
+            Vec::<rust_decimal::Decimal>::from_sql_value(&encoded),
+            Ok(column)
         );
     }
 }

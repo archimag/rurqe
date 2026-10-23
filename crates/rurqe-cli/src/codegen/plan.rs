@@ -247,6 +247,9 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime".to_owned(),
         TypeKind::Date if domain_types => "chrono::NaiveDate".to_owned(),
         TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String".to_owned(),
+        TypeKind::Other(name) if domain_types && names_exact_decimal(name) => {
+            "rust_decimal::Decimal".to_owned()
+        }
         TypeKind::Enum(name) => table_type_ident(name),
         TypeKind::Other(_) => "String".to_owned(),
         TypeKind::Array(_) => "String".to_owned(),
@@ -257,6 +260,21 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
     } else {
         base
     }
+}
+
+/// Reports whether a catalog type spelling names an exact decimal type.
+///
+/// PostgreSQL reports `NUMERIC` and `DECIMAL` through `information_schema` with
+/// the precision they were declared with, and the catalog keeps such a spelling
+/// as [`TypeKind::Other`], so the type parameters are cut before the name is
+/// compared.
+fn names_exact_decimal(name: &str) -> bool {
+    let base = match name.find('(') {
+        Some(index) => name.get(..index).unwrap_or(name),
+        None => name,
+    };
+
+    matches!(base.trim(), "numeric" | "decimal")
 }
 
 #[cfg(test)]
@@ -509,6 +527,37 @@ mod tests {
                 &options,
             ),
             "Option<Vec<UserMood>>"
+        );
+    }
+
+    #[test]
+    fn decimal_columns_map_to_an_exact_type_under_domain_types() {
+        let options = CodegenOptions {
+            domain_types: true,
+            ..CodegenOptions::default()
+        };
+
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("total", TypeKind::Other("numeric".to_owned()), false),
+                &options,
+            ),
+            "rust_decimal::Decimal"
+        );
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("total", TypeKind::Other("numeric(10,2)".to_owned()), true),
+                &options,
+            ),
+            "Option<rust_decimal::Decimal>"
+        );
+        // Without the domain mapping the column keeps the dependency-free type.
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("total", TypeKind::Other("numeric".to_owned()), false),
+                &CodegenOptions::default(),
+            ),
+            "String"
         );
     }
 }

@@ -359,12 +359,18 @@ fn encode_wire(
 }
 
 /// Renders the decimal form of a value bound to a `NUMERIC` column.
+///
+/// An exact decimal reaches the codec through its textual form, which is what
+/// keeps every digit of the value in the binary payload instead of routing it
+/// through a floating point number.
 fn decimal_text(value: &SqlVal) -> Option<String> {
     match value {
         SqlVal::Text(text) => Some(text.clone()),
         SqlVal::I32(number) => Some(number.to_string()),
         SqlVal::I64(number) => Some(number.to_string()),
         SqlVal::F64(number) => Some(number.to_string()),
+        #[cfg(feature = "decimal")]
+        SqlVal::Decimal(decimal) => Some(decimal.to_string()),
         _ => None,
     }
 }

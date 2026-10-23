@@ -75,6 +75,27 @@ impl IntoExpr<f64> for f64 {
     }
 }
 
+#[cfg(feature = "decimal")]
+impl IntoExpr<rust_decimal::Decimal> for rust_decimal::Decimal {
+    type Scope = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl SqlCompatible<rust_decimal::Decimal, &rust_decimal::Decimal> for &rust_decimal::Decimal {}
+
+#[cfg(feature = "decimal")]
+impl IntoExpr<rust_decimal::Decimal> for &rust_decimal::Decimal {
+    type Scope = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
 impl IntoExpr<bool> for bool {
     type Scope = ();
 

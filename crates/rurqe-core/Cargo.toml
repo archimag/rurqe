@@ -9,6 +9,7 @@ description = "Core type-safe SQL AST, schema traits, and dialect abstractions f
 
 [dependencies]
 chrono = { version = "0.4", optional = true, default-features = false, features = ["std"] }
+rust_decimal = { version = "1", optional = true }
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 tracing = "0.1"
@@ -16,6 +17,7 @@ uuid = { version = "1", optional = true }
 
 [features]
 chrono = ["dep:chrono"]
+decimal = ["dep:rust_decimal"]
 serde = ["dep:serde"]
 serde_json = ["dep:serde_json", "dep:serde"]
 uuid = ["dep:uuid"]
