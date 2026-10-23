@@ -55,12 +55,14 @@ pub trait MigrationBackend {
     /// history row is then written by a separate transaction, so work the engine
     /// already committed is never reported as pending again.
     ///
-    /// The default refuses the call: a backend that cannot run a script on its
-    /// own keeps supporting transactional scripts only.
-    fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
-        Err(Error::Backend(format!(
-            "the migration backend cannot execute `{sql}` outside a transaction"
-        )))
+    /// The default refuses the call with
+    /// [`Error::NonTransactionalUnsupported`]: a backend that cannot run a script
+    /// on its own keeps supporting transactional scripts only. The refusal is
+    /// raised before anything reaches the database, so the runner names the script
+    /// and returns it untouched instead of recording a failure the database never
+    /// produced — a failed entry would demand a `repair` for work that never ran.
+    fn execute_non_transactional(&mut self, _sql: &str) -> Result<(), Error> {
+        Err(Error::NonTransactionalUnsupported { script: None })
     }
 
     /// Acquires an exclusive migration lock.
@@ -595,6 +597,14 @@ fn apply_migration<B: MigrationBackend>(
 
     let elapsed_ms = match guard.execute_non_transactional(&migration.sql) {
         Ok(()) => start_time.elapsed().as_millis() as i64,
+        // The backend refused the script before it touched the database, so there
+        // is no work to undo and no failure to record: a failed history entry
+        // would demand a repair for a migration that never ran.
+        Err(Error::NonTransactionalUnsupported { script }) => {
+            return Err(Error::NonTransactionalUnsupported {
+                script: Some(script.unwrap_or_else(|| migration.script.clone())),
+            });
+        }
         Err(error) => {
             let elapsed_ms = start_time.elapsed().as_millis() as i64;
             tracing::error!(
@@ -843,6 +853,7 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use super::{civil_from_days, format_timestamp, InMemoryBackend, LockGuard, Migrator};
+    use super::{InMemoryTransaction, MigrationBackend};
 
     #[test]
     fn lock_guard_manages_backend_locking_lifecycle() {
@@ -1007,5 +1018,66 @@ mod tests {
         assert_eq!(backend.history.len(), 1);
         assert!(!backend.history[0].success);
         assert!(!backend.locked);
+    }
+
+    /// A backend that keeps every script inside a transaction.
+    ///
+    /// It leaves `execute_non_transactional` at its default, so it behaves exactly
+    /// like a driver that cannot commit a statement outside the runner's
+    /// transaction.
+    struct TransactionOnlyBackend(InMemoryBackend);
+
+    impl MigrationBackend for TransactionOnlyBackend {
+        type Transaction<'a> = InMemoryTransaction<'a> where Self: 'a;
+
+        fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+            self.0.ensure_schema_history_table()
+        }
+
+        fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+            self.0.read_history()
+        }
+
+        fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+            self.0.begin()
+        }
+    }
+
+    #[test]
+    fn a_backend_without_non_transactional_support_names_the_refused_script() {
+        let mut backend = TransactionOnlyBackend(InMemoryBackend::new());
+        let first = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name");
+        let index = Migration::parse(
+            "V2__index.notx.sql",
+            "CREATE INDEX CONCURRENTLY users_id ON users (id);",
+        )
+        .expect("a valid script name");
+
+        let error = Migrator::new()
+            .migrate(&mut backend, &[first, index])
+            .expect_err("the backend keeps the script inside a transaction");
+
+        match &error {
+            Error::NonTransactionalUnsupported { script } => {
+                assert_eq!(script.as_deref(), Some("V2__index.notx.sql"));
+            }
+            other => panic!("expected NonTransactionalUnsupported, got {other:?}"),
+        }
+        assert!(
+            !error.to_string().contains("CREATE INDEX"),
+            "the diagnostic never echoes the script body: {error}"
+        );
+        assert_eq!(
+            backend.0.history.len(),
+            1,
+            "the refused script leaves no failed entry behind"
+        );
+        assert!(backend.0.history[0].success);
+        assert!(
+            backend.0.non_transactional_sql.is_empty(),
+            "the refused script never reached the backend"
+        );
+        assert!(!backend.0.locked, "the lock is released on the way out");
     }
 }

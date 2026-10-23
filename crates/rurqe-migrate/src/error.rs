@@ -58,6 +58,15 @@ pub enum Error {
         /// The underlying error message.
         source: String,
     },
+    /// The migration backend cannot execute a script outside a transaction.
+    ///
+    /// The refusal is raised before the script reaches the database, so the runner
+    /// reports it as a capability gap rather than as a migration that failed:
+    /// nothing was committed and no failed history entry is recorded.
+    NonTransactionalUnsupported {
+        /// The refused script, when the reporter knows its name.
+        script: Option<String>,
+    },
     /// A `schema.lock` snapshot could not be parsed back into a catalog.
     InvalidLockFormat {
         /// The reason the snapshot could not be parsed.
@@ -143,6 +152,20 @@ impl fmt::Display for Error {
                 f,
                 "failed to execute migration script `{script}`: {source}"
             ),
+            Error::NonTransactionalUnsupported { script } => match script {
+                Some(script) => write!(
+                    f,
+                    "the migration backend cannot execute `{script}` outside a transaction: \
+                     keep the script transactional or run it on a backend that supports \
+                     non-transactional execution"
+                ),
+                None => write!(
+                    f,
+                    "the migration backend cannot execute scripts outside a transaction: \
+                     keep the script transactional or run it on a backend that supports \
+                     non-transactional execution"
+                ),
+            },
             Error::InvalidLockFormat { message } => write!(f, "invalid schema lock: {message}"),
             Error::InvalidCheckpoint { message } => write!(f, "invalid checkpoint: {message}"),
             Error::InvalidStage { message } => write!(f, "invalid stage: {message}"),
