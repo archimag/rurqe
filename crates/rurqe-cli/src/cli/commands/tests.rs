@@ -1,20 +1,17 @@
 use std::path::{Path, PathBuf};
 
 use rurqe_migrate::checkpoint::Checkpoint;
+use rurqe_migrate::runner::MigrationBackend;
 use rurqe_migrate::version::MigrationVersion;
-use rurqe_migrate::{
-    Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, STAGE_SCRIPT,
-};
+use rurqe_migrate::{Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, STAGE_SCRIPT};
 
+use crate::driver::SqliteMigrationBackend;
 use crate::stage::materialise_stage;
 
 use super::{commit_stage, initialise_stage, prune_migrations};
 
 fn workspace(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "rurqe-commands-{}-{name}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("rurqe-commands-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("create the workspace");
     path
@@ -70,7 +67,10 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     )
     .expect("write the stage script");
 
-    let mut backend = InMemoryBackend::new();
+    // The marker is written by the backend that really applies the stage, so its
+    // digest is read from the catalog that backend introspects.
+    let connection = rusqlite::Connection::open_in_memory().expect("open the in-memory database");
+    let mut backend = SqliteMigrationBackend::new(connection);
     initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage")
         .expect("the cold start succeeds");
 
@@ -82,8 +82,9 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     // The marker anchors the canonical catalog digest the checkpoint compares
     // against, not the raw DDL digest of the stage directory.
     assert_ne!(catalog.checksum(), stage.checksum());
-    assert_eq!(backend.history.len(), 1);
-    assert_eq!(backend.history[0].checksum, Some(catalog.checksum()));
+    let history = backend.read_history().expect("the history is readable");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].checksum, Some(catalog.checksum()));
 }
 
 #[test]

@@ -4,6 +4,10 @@
 //! engine-neutral [`MigrationBackend`] contract into driver calls. Every step
 //! opens a native driver transaction, so a migration script and its
 //! `__rurqe_schema_history` row are always applied or discarded together.
+//!
+//! Both adapters also report the canonical digest of the catalog they hold, so a
+//! cold start anchors the very digest `schema.lock` and `checkpoint.toml` carry
+//! whatever engine executed the declarative stage.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 use rurqe_migrate::checksum::Checksum;
@@ -164,6 +168,11 @@ impl MigrationBackend for SqliteMigrationBackend {
         rows.into_iter().map(RawHistoryRow::decode).collect()
     }
 
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        self.introspect_catalog()
+            .map(|catalog| Some(catalog.checksum()))
+    }
+
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         let tx = self
             .conn
@@ -205,6 +214,11 @@ impl<'a> SqliteMigrationTransaction<'a> {
 impl MigrationTransaction for SqliteMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
         self.transaction()?.execute_batch(sql).map_err(backend_error)
+    }
+
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        self.introspect_catalog()
+            .map(|catalog| Some(catalog.checksum()))
     }
 
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
@@ -318,6 +332,11 @@ impl MigrationBackend for PostgresMigrationBackend {
         Ok(history)
     }
 
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        self.introspect_catalog()
+            .map(|catalog| Some(catalog.checksum()))
+    }
+
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         let tx = self.client.transaction().map_err(backend_error)?;
         Ok(PostgresMigrationTransaction { tx: Some(tx) })
@@ -380,6 +399,11 @@ impl<'a> PostgresMigrationTransaction<'a> {
 impl MigrationTransaction for PostgresMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
         self.transaction()?.batch_execute(sql).map_err(backend_error)
+    }
+
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        self.introspect_catalog()
+            .map(|catalog| Some(catalog.checksum()))
     }
 
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
@@ -520,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_backend_introspects_the_catalog_it_migrated() {
+    fn sqlite_backend_reports_the_digest_of_its_catalog() {
         let mut backend = backend();
         let scripts = migrations(
             "V1__users.sql",
@@ -533,10 +557,16 @@ mod tests {
         let catalog = backend
             .introspect_catalog()
             .expect("the catalog of the connection is introspected");
-
         assert_eq!(catalog.tables.len(), 1);
         assert_eq!(catalog.tables[0].name, "users");
-        assert_eq!(catalog.tables[0].primary_key, vec!["id".to_owned()]);
+
+        // The history table stays outside the catalog the digest describes.
+        assert_eq!(
+            backend
+                .catalog_checksum()
+                .expect("the digest of the connection"),
+            Some(catalog.checksum())
+        );
     }
 
     #[test]
@@ -552,6 +582,18 @@ mod tests {
             .introspect_catalog()
             .expect("the catalog of the transaction is introspected");
         assert_eq!(catalog.tables.len(), 1);
+        assert_eq!(catalog.tables[0].name, "users");
+
+        // A change applied by the very transaction is visible to its own catalog.
+        tx.execute("CREATE TABLE orders (id INTEGER NOT NULL);")
+            .expect("the transaction applies the step");
+        assert_eq!(
+            tx.introspect_catalog()
+                .expect("the catalog of the transaction is introspected")
+                .tables
+                .len(),
+            2
+        );
 
         tx.rollback().expect("the transaction is rolled back");
     }

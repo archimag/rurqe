@@ -223,15 +223,20 @@ impl StageMarker {
         self.checksum
     }
 
-    /// Builds the history row recorded by a cold start.
-    fn entry(&self, installed_rank: i64, installed_on: impl Into<String>) -> SchemaHistoryEntry {
+    /// Builds the history row a cold start records over `checksum`.
+    fn entry_with_checksum(
+        &self,
+        installed_rank: i64,
+        installed_on: impl Into<String>,
+        checksum: Checksum,
+    ) -> SchemaHistoryEntry {
         SchemaHistoryEntry {
             installed_rank,
             version: Some(self.version.clone()),
             description: self.description.clone(),
             kind: MigrationKind::Baseline,
             script: STAGE_SCRIPT.to_owned(),
-            checksum: Some(self.checksum),
+            checksum: Some(checksum),
             installed_on: installed_on.into(),
             execution_time_ms: 0,
             success: true,
@@ -259,9 +264,15 @@ pub struct ColdStartReport {
 /// [`StageMarker::version`] is reported as applied while the active tail above
 /// it still runs.
 ///
-/// A database that already carries a stage marker with the same version and
-/// checksum is left untouched and reported as a no-op; any other history is
-/// rejected, because a cold start never overwrites an initialised database.
+/// The digest the marker anchors is the one the backend derives from the catalog
+/// the stage produced — see [`MigrationTransaction::catalog_checksum`] — so it
+/// matches the checkpoint `stage commit` writes whatever engine executed the
+/// DDL. A backend that cannot introspect itself keeps the digest of the marker.
+///
+/// A database that already carries a stage marker for the same version and the
+/// same catalog digest is left untouched and reported as a no-op; any other
+/// history is rejected, because a cold start never overwrites an initialised
+/// database.
 pub fn cold_start<B: MigrationBackend>(
     backend: &mut B,
     stage: &DeclarativeStage,
@@ -277,9 +288,17 @@ pub fn cold_start<B: MigrationBackend>(
         .max_by_key(|entry| entry.installed_rank);
 
     if let Some(existing) = recorded {
-        if existing.checksum == Some(marker.checksum)
-            && existing.version.as_ref() == Some(&marker.version)
-        {
+        // The backend reports the digest of the catalog really present, so a
+        // database whose schema drifted from the recorded marker is rejected
+        // instead of being reported as initialised. A backend that cannot
+        // introspect itself keeps the digest the caller supplied.
+        let current = match guard.catalog_checksum() {
+            Ok(Some(checksum)) => checksum,
+            Ok(None) => marker.checksum(),
+            Err(error) => return Err(error),
+        };
+
+        if existing.checksum == Some(current) && existing.version.as_ref() == Some(&marker.version) {
             tracing::debug!(version = %marker.version, "stage is already recorded");
             return Ok(ColdStartReport::default());
         }
@@ -323,7 +342,21 @@ pub fn cold_start<B: MigrationBackend>(
     }
 
     let elapsed_ms = start_time.elapsed().as_millis() as i64;
-    let entry = marker.entry(1, current_timestamp());
+
+    // The marker anchors the digest of the catalog the stage produced, so the
+    // checkpoint written by `stage commit` recognises the initialised database
+    // whatever engine executed the DDL. A backend that cannot introspect itself
+    // keeps the digest the caller supplied.
+    let checksum = match tx.catalog_checksum() {
+        Ok(Some(checksum)) => checksum,
+        Ok(None) => marker.checksum(),
+        Err(error) => {
+            let _ = tx.rollback();
+            return Err(error);
+        }
+    };
+
+    let entry = marker.entry_with_checksum(1, current_timestamp(), checksum);
 
     if let Err(error) = tx.record_entry(&entry) {
         let _ = tx.rollback();

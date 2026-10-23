@@ -33,6 +33,17 @@ pub trait MigrationBackend {
     /// Reads all entries recorded in `__rurqe_schema_history`.
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error>;
 
+    /// Reports the canonical digest of the catalog the backend currently holds.
+    ///
+    /// A backend able to introspect its own schema — a live SQLite or PostgreSQL
+    /// connection — reports the digest the `schema.lock` snapshot carries, so a
+    /// cold start compares the marker it recorded against the catalog really
+    /// present in the database. The default reports `None`, which leaves the
+    /// digest of the stage marker authoritative.
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        Ok(None)
+    }
+
     /// Begins a transactional boundary.
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error>;
 
@@ -97,6 +108,16 @@ impl<B: MigrationBackend + ?Sized> Drop for LockGuard<'_, B> {
 pub trait MigrationTransaction {
     /// Executes a raw SQL script within the transaction.
     fn execute(&mut self, sql: &str) -> Result<(), Error>;
+
+    /// Reports the canonical digest of the catalog the transaction sees.
+    ///
+    /// A cold start reads it after the stage scripts ran inside the transaction,
+    /// so the marker anchors the digest of the schema the stage produced under
+    /// the very engine that executes it. The default reports `None`, which keeps
+    /// the digest the caller supplied.
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        Ok(None)
+    }
 
     /// Inserts a new entry into the schema history table.
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error>;

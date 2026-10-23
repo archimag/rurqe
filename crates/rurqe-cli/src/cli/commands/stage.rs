@@ -10,27 +10,31 @@ use rurqe_migrate::version::MigrationVersion;
 use crate::cli::{redact_database_url, CliError};
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
-use crate::stage::{materialise_stage, GoldenEquation};
+use crate::stage::GoldenEquation;
 
 use super::{cli_error, write_file};
 
 /// Loads the declarative stage from `dir`, rejecting an absent directory.
 fn load_stage(dir: &Path) -> Result<DeclarativeStage, CliError> {
-    DeclarativeStage::load(dir).map_err(cli_error)?.ok_or_else(|| {
-        CliError(format!(
-            "declarative stage `{}` does not exist; it holds the `*.sql` DDL of the target schema",
-            dir.display()
-        ))
-    })
+    DeclarativeStage::load(dir)
+        .map_err(cli_error)?
+        .ok_or_else(|| {
+            CliError(format!(
+                "declarative stage `{}` does not exist; it holds the `*.sql` DDL of the target \
+                 schema",
+                dir.display()
+            ))
+        })
 }
 
 /// Initialises a cold database from the declarative stage.
 ///
 /// The recorded [`StageMarker`] anchors the canonical catalog digest — the same
 /// digest `schema.lock` and `checkpoint.toml` carry — instead of the raw DDL
-/// digest of the stage directory. The digest is derived by replaying the stage in
-/// memory, degrading to the stage digest when even that is unavailable; a backend
-/// that introspects its own catalog overrides it.
+/// digest of the stage directory. The backend derives that digest from the
+/// catalog the stage produced under the engine that really executes it, so a
+/// PostgreSQL stage is never measured through SQLite; only a backend that cannot
+/// introspect itself keeps the stage digest supplied here as its fallback.
 pub(crate) fn initialise_stage<B: MigrationBackend>(
     backend: &mut B,
     stage_dir: &Path,
@@ -46,11 +50,7 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
         )));
     }
 
-    let checksum = materialise_stage(&stage, ":memory:")
-        .map(|catalog| catalog.checksum())
-        .unwrap_or_else(|_| stage.checksum());
-
-    let marker = StageMarker::new(version, description, checksum);
+    let marker = StageMarker::new(version, description, stage.checksum());
     let report = cold_start(backend, &stage, &marker).map_err(cli_error)?;
 
     if report.stage_scripts.is_empty() {
@@ -76,7 +76,7 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 /// Verifies the golden equation between the declarative stage and the tail.
 ///
 /// `scratch_url` names the scratch database both sides are materialised in; see
-/// [`GoldenEquation`](crate::stage::GoldenEquation) for its emptiness contract.
+/// [`GoldenEquation`] for its emptiness contract.
 pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
