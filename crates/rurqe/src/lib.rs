@@ -1063,7 +1063,9 @@ pub mod prelude {
 
     #[cfg(feature = "postgres")]
     pub use rurqe_postgres::{
-        Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions, PgConnection, PgVersion, Postgres,
+        Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions, PgConnection, PgJson,
+        PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
+        PgTextSearchValue, PgTextValue, PgVersion, Postgres,
     };
 
     #[cfg(feature = "tokio-postgres")]

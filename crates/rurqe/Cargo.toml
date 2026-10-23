@@ -29,3 +29,8 @@ decimal = ["rurqe-core/decimal", "rurqe-postgres?/decimal"]
 chrono = ["rurqe-core/chrono", "rurqe-postgres?/chrono"]
 serde = ["rurqe-core/serde"]
 serde_json = ["rurqe-core/serde_json", "rurqe-postgres?/serde_json"]
+
+[dev-dependencies]
+# The facade tests name `serde_json::Value` as a column type, which a feature
+# forwarding the family to the drivers cannot provide on its own.
+serde_json = "1"

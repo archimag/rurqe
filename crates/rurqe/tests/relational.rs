@@ -1373,3 +1373,170 @@ mod phase18_relational {
         assert_eq!(row.3, Mood::Sad);
     }
 }
+
+/// End-to-end verification of the bounded PostgreSQL expression extensions.
+///
+/// The module imports the facade prelude only: the extension traits, the markers
+/// naming the value kinds they read, and the `PgJson` document wrapper all arrive
+/// through it, so an application never names `rurqe-postgres` to reach them.
+mod postgres_extension_traits {
+    use rurqe::prelude::*;
+
+    table! {
+        /// The `docs` table holding a text column and a JSON document.
+        Doc => "docs" {
+            DocId => "id": i64,
+            DocContent => "content": String,
+            DocMetadata => "metadata": PgJson,
+        }
+    }
+
+    /// Renders `predicate` as the filter of a single-relation query.
+    fn rendered(predicate: Expr<bool, Doc>) -> BuiltQuery {
+        select_from::<Postgres<Pg16>, Doc>()
+            .select((DocId,))
+            .where_(predicate)
+            .build()
+    }
+
+    #[test]
+    fn the_bounded_value_markers_are_reachable_through_the_prelude() {
+        fn assert_text_value<T: PgTextValue + PgTextSearchValue>() {}
+        fn assert_json_value<T: PgJsonValue>() {}
+
+        assert_text_value::<String>();
+        assert_text_value::<Option<String>>();
+        assert_text_value::<&'static str>();
+        assert_json_value::<PgJson>();
+        assert_json_value::<Option<PgJson>>();
+    }
+
+    #[test]
+    fn regex_operators_render_against_a_text_column() {
+        let matched = rendered(DocContent.regex_match("^start"));
+        assert_eq!(
+            matched.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"content\" ~ $1)"
+        );
+        assert_eq!(matched.params, vec![SqlVal::Text("^start".to_owned())]);
+
+        let insensitive = rendered(DocContent.regex_match_ci("^start"));
+        assert_eq!(
+            insensitive.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"content\" ~* $1)"
+        );
+        assert_eq!(insensitive.params, vec![SqlVal::Text("^start".to_owned())]);
+
+        let negated = rendered(DocContent.regex_not_match("^start"));
+        assert_eq!(
+            negated.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"content\" !~ $1)"
+        );
+        assert_eq!(negated.params, vec![SqlVal::Text("^start".to_owned())]);
+
+        let negated_insensitive = rendered(DocContent.regex_not_match_ci("^start"));
+        assert_eq!(
+            negated_insensitive.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"content\" !~* $1)"
+        );
+        assert_eq!(
+            negated_insensitive.params,
+            vec![SqlVal::Text("^start".to_owned())]
+        );
+    }
+
+    #[test]
+    fn full_text_search_renders_a_tsquery_call() {
+        let built = rendered(DocContent.matches_tsquery("rust & sql"));
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"content\" @@ to_tsquery($1))"
+        );
+        assert_eq!(built.params, vec![SqlVal::Text("rust & sql".to_owned())]);
+    }
+
+    #[test]
+    fn json_operators_render_against_a_pg_json_column() {
+        let contains = rendered(DocMetadata.json_contains("{\"active\": true}"));
+        assert_eq!(
+            contains.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"metadata\" @> $1)"
+        );
+        assert_eq!(
+            contains.params,
+            vec![SqlVal::Text("{\"active\": true}".to_owned())]
+        );
+
+        let key = rendered(DocMetadata.json_has_key("active"));
+        assert_eq!(
+            key.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"metadata\" ? $1)"
+        );
+        assert_eq!(key.params, vec![SqlVal::Text("active".to_owned())]);
+
+        let any_keys = rendered(DocMetadata.json_has_any_keys(&["a", "b"]));
+        assert_eq!(
+            any_keys.sql,
+            "SELECT \"id\" FROM \"docs\" WHERE (\"metadata\" ?| $1)"
+        );
+        assert_eq!(
+            any_keys.params,
+            vec![SqlVal::Text("{\"a\",\"b\"}".to_owned())]
+        );
+    }
+
+    #[test]
+    fn json_extraction_projects_the_addressed_member() {
+        let member = select_from::<Postgres<Pg16>, Doc>()
+            .select((DocId, DocMetadata.json_get_text("owner")))
+            .build();
+
+        assert_eq!(
+            member.sql,
+            "SELECT \"id\", (\"metadata\" ->> $1) FROM \"docs\""
+        );
+        assert_eq!(member.params, vec![SqlVal::Text("owner".to_owned())]);
+
+        let indexed = select_from::<Postgres<Pg16>, Doc>()
+            .select((DocMetadata.json_get(0i32),))
+            .build();
+
+        assert_eq!(indexed.sql, "SELECT (\"metadata\" -> $1) FROM \"docs\"");
+        assert_eq!(indexed.params, vec![SqlVal::I32(0)]);
+    }
+
+    #[cfg(feature = "serde_json")]
+    table! {
+        /// The `payloads` table holding a document of the optional JSON crate.
+        Payload => "payloads" {
+            PayloadId => "id": i64,
+            PayloadData => "data": serde_json::Value,
+        }
+    }
+
+    #[cfg(feature = "serde_json")]
+    #[test]
+    fn json_operators_read_a_serde_json_document() {
+        fn assert_json_value<T: PgJsonValue>() {}
+        assert_json_value::<serde_json::Value>();
+
+        let built = select_from::<Postgres<Pg16>, Payload>()
+            .select((PayloadId,))
+            .where_(PayloadData.json_contains("{\"a\": 1}"))
+            .where_(PayloadData.json_has_key("a"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "SELECT \"id\" FROM \"payloads\" WHERE ((\"data\" @> $1) AND (\"data\" ? $2))"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::Text("{\"a\": 1}".to_owned()),
+                SqlVal::Text("a".to_owned()),
+            ]
+        );
+    }
+}
