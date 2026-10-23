@@ -46,24 +46,12 @@ reviewer = [
 auto_level_up = true
 
 [project]
-runner = "none"
+runner = "just"
 
 [project.verify]
-command = "cargo"
-args = ["test", "--workspace"]
+command = "just"
+args = ["verify"]
 timeout_secs = 600
-
-[project.commands.check]
-command = "cargo"
-args = ["check", "--workspace", "--all-targets"]
-
-[project.commands.clippy]
-command = "cargo"
-args = ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
-
-[project.commands.test]
-command = "cargo"
-args = ["test", "--workspace"]
 
 [develop]
 max_retries = 5
