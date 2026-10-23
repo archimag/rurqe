@@ -1,73 +1,80 @@
 [providers.openrouter]
 models = [
-  "~google/gemini-flash-latest",
-  "google/gemini-4-argon",
-  "~openai/gpt-luna-latest",
-  "~openai/gpt-sol-latest",
-  "~anthropic/claude-opus-latest",
-  "~anthropic/claude-sonnet-latest",
-  "~anthropic/claude-haiku-latest",
-  "~deepseek/deepseek-flash-latest",
-  "qwen/qwen3-coder-next"
+  { model = "~google/gemini-flash-latest", alias = "Gemini Flash" },
+  { model = "google/gemini-4-argon", alias = "Gemini Argon" },
+  { model = "~openai/gpt-luna-latest", alias = "GPT-5 Luna" },
+  { model = "~openai/gpt-sol-latest", alias = "GPT-5 Sol" },
+  { model = "~anthropic/claude-opus-latest", alias = "Claude Opus" },
+  { model = "~anthropic/claude-sonnet-latest", alias = "Claude Sonnet" },
+  { model = "~anthropic/claude-haiku-latest", alias = "Claude Haiku" },
+  { model = "~deepseek/deepseek-flash-latest", alias = "DeepSeek" },
+  { model = "qwen/qwen3-coder-next", alias = "Qwen Coder" }
 ]
 
 [models]
 # Semantic model roles: specialized domain roles instead of generic difficulty tiers.
 # `primary` is mandatory and must list at least one model; its first entry is the
 # active model in the idle state and the deterministic default for the other roles.
-# If coder, architect or reviewer are omitted, they inherit the entire primary list.
-# `scribe` is a single utility model and defaults to the first primary model.
-# Every entry accepts either a bare model string ("~provider/model") or a table
-# ({ model = "...", effort = "high", alias = "Alias" }). An optional `alias`
-# replaces the raw model name in the model picker; `effort` sets the reasoning
-# depth ("low", "medium", "high", "xhigh") for that entry.
 primary = [
-  { model = "~google/gemini-flash-latest", alias = "Gemini Flash" },
-  "~deepseek/deepseek-flash-latest",
+  "Gemini Flash",
+  "DeepSeek"
 ]
-scribe = "~anthropic/claude-haiku-latest"    # history compaction, git squash commit messages, diff summarization
-# The coder list is the natural escalation ladder (level up): on verification
-# healing stalls or exhausted retries the turn advances to the next coder entry,
-# saturating on the last one. Escalation stays strictly within the Coder role and
-# never switches to Architect, preserving the What vs How role isolation.
-coder = [
-  "~deepseek/deepseek-flash-latest",
-  { model = "~google/gemini-flash-latest", effort = "medium" }
-]
-architect = [
-  { model = "~google/gemini-flash-latest", effort = "high", alias = "Gemini Flash" },
-  { model = "google/gemini-4-argon", alias = "Gemini Argon" }
-]    # conceptual design, plan refinement, blocked-step replanning
-reviewer = [
-  { model = "~google/gemini-flash-latest", effort = "high", alias = "Gemini Flash" },
-  "google/gemini-4-argon",
-  { model = "~anthropic/claude-sonnet-latest", alias = "Sonnet" },
-  "~anthropic/claude-opus-latest",  
-]   # automated code review of active context files
+scribe = "Claude Haiku"    # history compaction, git squash commit messages, diff summarization
 
-# Automatically escalate the Coder along its ladder when verification healing stalls,
-# when a patch retry budget is exceeded, or when a plan step must be re-prompted after
-# protocol drift. Escalation advances one rung at a time within the Coder role and never
-# switches to Architect, preserving the strict What vs How role isolation. A terminal
-# <blocked> report short-circuits escalation entirely.
+# The coder list is the natural escalation ladder (level up): on verification
+# healing stalls or exhausted retries the turn advances to the next coder entry.
+coder = [
+  "DeepSeek",
+  { model = "Gemini Flash", effort = "medium" }
+]
+
+# Conceptual design, plan refinement, blocked-step replanning.
+architect = [
+  { model = "Gemini Flash", effort = "high" },
+  "Gemini Argon"
+]
+
+# Automated code review of active context files.
+reviewer = [
+  { model = "Gemini Flash", effort = "high" },
+  "Gemini Argon",
+  "Claude Sonnet",
+  "Claude Opus"
+]
+
+# Automatically escalate the Coder along its ladder when verification healing stalls.
 auto_level_up = true
 
+[project]
+runner = "none"
+
+[project.verify]
+command = "cargo"
+args = ["test", "--workspace"]
+timeout_secs = 600
+
+[project.commands.check]
+command = "cargo"
+args = ["check", "--workspace", "--all-targets"]
+
+[project.commands.clippy]
+command = "cargo"
+args = ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]
+
+[project.commands.test]
+command = "cargo"
+args = ["test", "--workspace"]
+
 [develop]
-# Retry budget for failed edit staging and for the plan step reprompt loop
-# (corrective re-runs of a step turn that produced no verified edits and no terminal
-# success tag).
 max_retries = 5
-# Maximum automated replanning cycles triggered by a blocked coder step before
-# requiring manual developer intervention (default: 2).
 # max_replans = 2
 # workflow = "git"   # edit workflow: "git", "naive" (default: "git")
 # protocol = "xml"   # active edit protocol: "xml" (default: "xml")
 
 [toolchain]
-# check_command = ""   # custom project verification command (auto-detected by default)
+# timeout_secs = 600   # wall-clock timeout in seconds for each verification command (default: 600)
 # max_retries = 5      # maximum retry attempts for compiler/linter self-healing
 # auto_heal = true     # automatically trigger the verification healing loop on check failures (default: true)
-# timeout_secs = 600   # wall-clock timeout in seconds for each verification command (default: 600)
 # auto_verify = true   # automatically run toolchain verification on turns with applied edits (default: true)
 # target = "all"       # default verification target when omitted: "all", "check", "clippy", "test" (default: "all")
 
@@ -80,29 +87,11 @@ budget_tokens = 20000  # session history token budget before compaction is trigg
 # tail_turns = 10        # number of recent turns kept uncompressed in original form (default: 10)
 
 [context]
-max_discovery_rounds = 8  # maximum rounds for autonomous context discovery
+max_discovery_rounds = 8     # maximum rounds for autonomous context discovery
 files_token_budget = 500000  # token budget for files in active context (default: 300000)
-repomap_token_budget = 40000  # token budget for the repository map (default: 4000)
-# max_pattern_batch = 150  # maximum files added per glob pattern request (default: 150)
+repomap_token_budget = 40000 # token budget for the repository map (default: 4000)
+# max_pattern_batch = 150     # maximum files admitted by one glob request (default: 150)
 pinned = [
     "Conventions.md",
-    "Vision.md",
-    "docs/src/SUMMARY.md"
+    "Vision.md"
 ]
-
-# ---------------------------------------------------------------------------
-# Terminal appearance (themes) is a personal workstation preference and lives
-# in the user configuration, never in this project file (see Conventions.md,
-# section 7.2). Built-in presets are selected in $XDG_CONFIG_HOME/tauqe/tui.toml:
-#
-#   [theme]
-#   # Named preset; it takes precedence over `mode` when set:
-#   #   "tauqe-dark" (default) | "tauqe-light" | "catppuccin" |
-#   #   "gruvbox" | "solarized-dark"
-#   # name = "tauqe-dark"
-#   # Legacy light/dark fallback, used when `name` is unset:
-#   # mode = "auto"
-#   # Color depth: "auto" (detected) | "truecolor" | "ansi256" | "ansi16"
-#   # color_depth = "auto"
-#
-# See docs/src/ch05-interface/tui-ux.md (section 5.10) for the design system.
