@@ -13,13 +13,13 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
-use super::{AssignValue, Assignment, AssignmentSet};
+use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::expr::SelectAst;
 use crate::query::{
     BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
-use crate::schema::{Column, ColumnBelongsTo, Table, TableRef};
+use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table, TableRef};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -204,9 +204,36 @@ impl<D: Dialect, T: Table> Default for InsertQuery<D, T, (), ()> {
 
 impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     /// Inserts a single row described by the assignment set `set`.
+    ///
+    /// An assigned value is rendered inside the `VALUES` list of the statement,
+    /// which addresses no relation at all, so an expression assignment can only
+    /// read constants (or reference its own columns explicitly through
+    /// [`without_scope`](crate::expr::Expr::without_scope)). An assignment reading
+    /// a table would render as `VALUES ("accounts"."id")`, which no engine
+    /// accepts, so it is rejected at compile time:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    /// use rurqe_core::expr::Expr;
+    /// # use rurqe_core::dialect::Dialect;
+    /// # struct MockDialect;
+    /// # impl Dialect for MockDialect {
+    /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+    /// #     fn push_placeholder(_: &mut String, _: usize) {}
+    /// # }
+    /// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+    /// # rurqe_core::table! { Account => "accounts" { AccountId => "id": i64, } }
+    /// // Fails to compile: the assigned expression reads `Account`, which the
+    /// // `VALUES` list cannot reference.
+    /// let _ = InsertQuery::<MockDialect, User>::new()
+    ///     .values(UserId::set_expr(Expr::column::<AccountId>()));
+    /// ```
     pub fn values<S>(mut self, set: S) -> InsertQuery<D, T, S, Returning>
     where
-        S: AssignmentSet<T>,
+        S: AssignmentSet<T> + AssignmentScope,
+        // A `VALUES` list addresses no relation at all, so an assigned
+        // expression may read constants only.
+        <S as AssignmentScope>::Scope: ExprInScope<()>,
     {
         self.push_row(&set);
         self.retype()
@@ -223,7 +250,8 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     ) -> Result<InsertQuery<D, T, S, Returning>, EmptyRows>
     where
         I: IntoIterator<Item = S>,
-        S: AssignmentSet<T>,
+        S: AssignmentSet<T> + AssignmentScope,
+        <S as AssignmentScope>::Scope: ExprInScope<()>,
     {
         for set in rows {
             self.push_row(&set);

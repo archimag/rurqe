@@ -25,7 +25,7 @@ use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::expr::{render_expr, Expr, ExprKind, SqlVal, Unscoped};
 use crate::schema::Table;
 
-use super::{AssignValue, AssignmentSet, Excluded, InsertQuery};
+use super::{AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery};
 
 /// The action executed when an inserted row violates the conflict target.
 #[derive(Debug, Clone, PartialEq)]
@@ -308,9 +308,55 @@ where
     ///
     /// The assignments are typed column assignments of the target table `T`, so a
     /// conflicting row can only be updated through columns of that table.
+    ///
+    /// The branch addresses the stored row of `T` and the row the statement
+    /// proposed for it (`EXCLUDED`), so an expression assignment may read exactly
+    /// those two relations — the same rule
+    /// [`update_where`](OnConflict::update_where) follows. Reading any other
+    /// table would render a reference the upsert branch cannot resolve, so it is
+    /// rejected at compile time:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::{Dialect, SupportsOnConflict};
+    /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    /// use rurqe_core::expr::Expr;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsOnConflict for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Account => "accounts" {
+    ///         AccountId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: the branch reads `Account`, which it cannot reach.
+    /// let _ = InsertQuery::<MockDialect, User>::new()
+    ///     .values(UserId::set(1i64))
+    ///     .on_conflict((UserId,))
+    ///     .do_update(UserId::set_expr(Expr::column::<AccountId>()));
+    /// ```
     pub fn do_update<A>(self, assignments: A) -> InsertQuery<D, T, Values, Returning>
     where
-        A: AssignmentSet<T>,
+        A: AssignmentSet<T> + AssignmentScope,
+        <A as AssignmentScope>::Scope: ConflictUpdateScope<T>,
     {
         let mut columns = Vec::new();
         assignments.extend_assignments(&mut columns);
