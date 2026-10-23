@@ -81,12 +81,11 @@ impl<T: SqlArrayElement> FromSqlValue for Vec<T> {
             SqlVal::Array(elements) => elements.iter().map(T::from_sql_value).collect(),
             // A nested collection arrives as JSON: PostgreSQL aggregates it into
             // a `jsonb` array while SQLite renders it as JSON text, and every item
-            // of such an array is the JSON object of one row.
+            // of such an array carries one scalar or the object of one row.
             #[cfg(feature = "serde_json")]
-            SqlVal::Json(serde_json::Value::Array(items)) => items
-                .iter()
-                .map(|item| T::from_sql_value(&SqlVal::Json(item.clone())))
-                .collect(),
+            SqlVal::Json(serde_json::Value::Array(items)) => {
+                items.iter().map(decode_json_item::<T>).collect()
+            }
             #[cfg(feature = "serde_json")]
             SqlVal::Text(text) => {
                 Vec::<T>::from_sql_value(&SqlVal::Json(parse_json_document(text)?))
@@ -107,6 +106,33 @@ fn parse_json_document(text: &str) -> Result<serde_json::Value, RowDecodeError> 
         found: "text",
         detail: error.to_string(),
     })
+}
+
+/// Decodes one item of a JSON collection into the element type `T`.
+///
+/// An engine without an array column hands a collected row set over as JSON, so
+/// the item is first read as the scalar it encodes: a collected integer column
+/// decodes through the same [`SqlVal::I64`] a native array element uses, and a
+/// collected text column through [`SqlVal::Text`]. An item that stays JSON — the
+/// object of one nested row — reaches `T` as it is, and a scalar `T` refuses is
+/// retried against the item as the engine sent it, so an element type reading the
+/// document directly keeps seeing that document.
+#[cfg(feature = "serde_json")]
+fn decode_json_item<T: FromSqlValue>(item: &serde_json::Value) -> Result<T, RowDecodeError> {
+    let value = crate::nested::json_to_sql_value(item);
+
+    let error = match T::from_sql_value(&value) {
+        Ok(decoded) => return Ok(decoded),
+        Err(error) => error,
+    };
+
+    // A JSON item is already the representation a row type reads, so the failure
+    // of decoding it is the real one.
+    if matches!(value, SqlVal::Json(_)) {
+        return Err(error);
+    }
+
+    T::from_sql_value(&SqlVal::Json(item.clone())).map_err(|_| error)
 }
 
 impl<T: SqlArrayElement> MakeNullable for Vec<T> {

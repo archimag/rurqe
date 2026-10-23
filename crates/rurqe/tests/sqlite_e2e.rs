@@ -204,3 +204,43 @@ fn typed_sqlite_errors_are_inspectable_through_the_facade() {
     let owned = failed.into_backend().expect("driver error is owned");
     assert!(owned.to_string().contains("missing_function"), "unexpected error: {owned}");
 }
+
+#[test]
+fn a_json_aggregate_decodes_into_the_elements_of_an_array() {
+    let mut db = database();
+
+    for (id, name, score) in [(1i64, "root", 42i32), (2i64, "guest", 7i32)] {
+        let insert = insert_into::<Sqlite<Sqlite3_35>, User>().values((
+            UserId::set(id),
+            UserName::set(name),
+            UserActive::set(id == 1),
+            UserScore::set(score),
+        ));
+        db.execute(&insert).expect("insert a user");
+    }
+
+    // SQLite has no array column type: the engine hands an aggregated row set
+    // over as JSON text, so the document decodes into the same `Vec<T>` an array
+    // column carries on an engine that stores one.
+    let aggregate = select_from::<Sqlite<Sqlite3_35>, User>().select((
+        Expr::<Vec<String>>::raw("json_group_array(\"name\")", Vec::new())
+            .expect("a template without placeholders"),
+        Expr::<Vec<i64>>::raw("json_group_array(\"score\")", Vec::new())
+            .expect("a template without placeholders"),
+    ));
+    let (mut names, mut scores) = db.fetch_one(&aggregate).expect("the aggregates decode");
+
+    // The aggregate collects the rows in scan order, so the assertion compares
+    // the collected elements instead of pinning an order SQLite never promises.
+    names.sort();
+    scores.sort_unstable();
+    assert_eq!(names, vec!["guest".to_owned(), "root".to_owned()]);
+    assert_eq!(scores, vec![7, 42]);
+
+    // A value that is not a JSON array of the element type is reported instead
+    // of decoding into an empty collection.
+    let broken = select_from::<Sqlite<Sqlite3_35>, User>().select((
+        Expr::<Vec<i64>>::raw("\"name\"", Vec::new()).expect("a template without placeholders"),
+    ));
+    assert!(db.fetch_one(&broken).is_err());
+}
