@@ -4,6 +4,7 @@ use std::path::Path;
 
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::migration::Migration;
+use rurqe_migrate::scripts::sql_scripts;
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::CliError;
@@ -37,47 +38,25 @@ pub(crate) fn prune_migrations(
         )));
     }
 
-    let entries = match std::fs::read_dir(migrations_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    let scripts = match sql_scripts(migrations_dir) {
+        Ok(Some(scripts)) => scripts,
+        Ok(None) => {
             println!(
                 "No migration directory `{}` to prune",
                 migrations_dir.display()
             );
             return Ok(());
         }
-        Err(error) => {
-            return Err(CliError(format!(
-                "failed to read `{}`: {error}",
-                migrations_dir.display()
-            )))
-        }
+        Err(error) => return Err(cli_error(error)),
     };
 
     let mut pruned = Vec::new();
 
-    for entry in entries {
-        let path = entry
-            .map_err(|error| {
-                CliError(format!(
-                    "failed to read `{}`: {error}",
-                    migrations_dir.display()
-                ))
-            })?
-            .path();
-
-        if path.extension().and_then(|extension| extension.to_str()) != Some("sql") {
-            continue;
-        }
-
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| CliError(format!("`{}` has no valid UTF-8 file name", path.display())))?;
-        let migration = Migration::parse(name, "").map_err(cli_error)?;
+    for script in scripts {
+        let migration = Migration::parse(script.name(), "").map_err(cli_error)?;
 
         if migration.version.is_some_and(|version| version < before) {
-            pruned.push(path);
+            pruned.push(script.path().to_owned());
         }
     }
 

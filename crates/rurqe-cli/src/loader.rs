@@ -3,42 +3,29 @@
 //! Scans migration folders (`migrations/`) for Flyway-compatible versioned
 //! (`V<version>__<description>.sql`) and repeatable (`R__<description>.sql`) scripts.
 
-use std::fs;
 use std::path::Path;
 
 use rurqe_migrate::error::Error;
 use rurqe_migrate::migration::Migration;
 use rurqe_migrate::runner::Migrator;
+use rurqe_migrate::scripts::sql_scripts;
 
 /// Reads and parses all migration `.sql` scripts from a directory, sorting them deterministically.
+///
+/// A missing directory holds no migrations, while a script that cannot be read or
+/// whose name follows no convention is reported instead of being skipped: a
+/// silently ignored script would apply an incomplete migration history.
 pub fn load_migrations_from_dir(dir: &Path) -> Result<Vec<Migration>, Error> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
+    let scripts = match sql_scripts(dir)? {
+        Some(scripts) => scripts,
+        None => return Ok(Vec::new()),
+    };
 
-    let entries = fs::read_dir(dir)
-        .map_err(|e| Error::Backend(format!("failed to read directory {}: {e}", dir.display())))?;
+    let mut migrations = Vec::with_capacity(scripts.len());
 
-    let mut migrations = Vec::new();
-
-    for entry in entries {
-        let entry = entry
-            .map_err(|e| Error::Backend(format!("failed to read directory entry: {e}")))?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "sql" {
-                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                        let sql = fs::read_to_string(&path).map_err(|e| {
-                            Error::Backend(format!("failed to read file {}: {e}", path.display()))
-                        })?;
-                        let migration = Migration::parse(file_name, &sql)?;
-                        migrations.push(migration);
-                    }
-                }
-            }
-        }
+    for script in scripts {
+        let sql = script.read()?;
+        migrations.push(Migration::parse(script.name(), &sql)?);
     }
 
     Ok(Migrator::sort_migrations(&migrations))
@@ -71,5 +58,40 @@ mod tests {
         assert_eq!(migrations[0].script, "V1__init.sql");
         assert_eq!(migrations[1].script, "V2__orders.sql");
         assert_eq!(migrations[2].script, "R__view.sql");
+    }
+
+    #[test]
+    fn parses_the_scripts_of_a_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("rurqe-loader-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the migration directory");
+        std::fs::write(dir.join("V1__init.sql"), "CREATE TABLE users (id INT);")
+            .expect("write the script");
+        std::fs::write(dir.join("V2__orders.sql"), "CREATE TABLE orders (id INT);")
+            .expect("write the script");
+        std::fs::write(dir.join("notes.txt"), "not a script").expect("write the note");
+
+        let migrations = load_migrations_from_dir(&dir).expect("valid scripts");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let names: Vec<&str> = migrations
+            .iter()
+            .map(|migration| migration.script.as_str())
+            .collect();
+        assert_eq!(names, vec!["V1__init.sql", "V2__orders.sql"]);
+    }
+
+    #[test]
+    fn a_missing_directory_holds_no_migrations() {
+        let dir = std::env::temp_dir().join(format!(
+            "rurqe-loader-absent-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(load_migrations_from_dir(&dir)
+            .expect("a missing directory is empty")
+            .is_empty());
     }
 }

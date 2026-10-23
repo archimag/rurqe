@@ -36,6 +36,7 @@ pub mod history;
 pub mod migration;
 pub mod mini_toml;
 pub mod runner;
+pub mod scripts;
 pub mod stage;
 pub mod version;
 

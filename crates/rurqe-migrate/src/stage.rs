@@ -41,6 +41,7 @@ use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::MigrationKind;
 use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
+use crate::scripts::sql_scripts;
 use crate::version::MigrationVersion;
 
 /// The synthetic script name the cold-start marker is recorded under.
@@ -83,9 +84,6 @@ impl DeclarativeStage {
     /// The directory holding the DDL scripts of the stage.
     pub const DIRECTORY: &str = "schema";
 
-    /// The file extension of a stage script.
-    const EXTENSION: &str = "sql";
-
     /// Collects the scripts, sorting them by file name.
     ///
     /// Directories are read in whatever order the file system reports, so the
@@ -102,45 +100,18 @@ impl DeclarativeStage {
     /// an unreadable file is an error: silently skipping a script would
     /// initialise the database with an incomplete schema.
     pub fn load(dir: &Path) -> Result<Option<Self>, Error> {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(stage_error(format!(
-                    "failed to read `{}`: {error}",
-                    dir.display()
-                )))
-            }
+        let scripts = match sql_scripts(dir)? {
+            Some(scripts) => scripts,
+            None => return Ok(None),
         };
 
-        let mut scripts = Vec::new();
+        let mut stage = Vec::with_capacity(scripts.len());
 
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                stage_error(format!("failed to read `{}`: {error}", dir.display()))
-            })?;
-
-            let path = entry.path();
-            let is_script = path.extension().and_then(|extension| extension.to_str())
-                == Some(Self::EXTENSION);
-
-            if !is_script || !path.is_file() {
-                continue;
-            }
-
-            let sql = std::fs::read_to_string(&path).map_err(|error| {
-                stage_error(format!("failed to read `{}`: {error}", path.display()))
-            })?;
-            let name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default()
-                .to_owned();
-
-            scripts.push(StageScript::new(name, sql));
+        for script in scripts {
+            stage.push(StageScript::new(script.name(), script.read()?));
         }
 
-        Ok(Some(Self::new(scripts)))
+        Ok(Some(Self::new(stage)))
     }
 
     /// The scripts of the stage in application order.
