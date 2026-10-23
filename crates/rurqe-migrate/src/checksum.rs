@@ -86,9 +86,15 @@ pub fn sha256(data: &[u8]) -> [u8; CHECKSUM_LEN] {
 }
 
 /// Copies a digest into the fixed-size checksum buffer.
+///
+/// The copy is length-tolerant: a payload of another length leaves the rest of
+/// the buffer zeroed instead of aborting the process, so the helper carries no
+/// panic path even though every caller hands in a SHA-256 digest.
 fn digest_of(bytes: &[u8]) -> [u8; CHECKSUM_LEN] {
     let mut digest = [0u8; CHECKSUM_LEN];
-    digest.copy_from_slice(bytes);
+    for (slot, byte) in digest.iter_mut().zip(bytes) {
+        *slot = *byte;
+    }
     digest
 }
 
