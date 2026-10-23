@@ -11,9 +11,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rurqe_cli::run_cli;
+use rurqe_cli::stage::materialise_stage;
 use rurqe_cli::SqliteMigrationBackend;
 use rurqe_migrate::catalog::SchemaCatalog;
-use rurqe_migrate::{Checkpoint, Checksum, Error, Migration, Migrator, STAGE_SCRIPT};
+use rurqe_migrate::{
+    Checkpoint, Checksum, DeclarativeStage, Error, Migration, Migrator, StageScript, STAGE_SCRIPT,
+};
 
 /// The declarative definition of the `users` table shared by most tests.
 const USERS: &str = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
@@ -782,6 +785,231 @@ fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_ha
         &database,
     ]))
     .expect_err("the diverged stage hash blocks the tail");
+
+    assert!(
+        error.to_string().contains("has diverged from the checkpoint"),
+        "got {error}"
+    );
+    assert_eq!(tables(&db), vec!["users".to_owned()]);
+}
+
+#[test]
+fn stages_verify_filters_the_unpruned_tail_at_the_checkpoint() {
+    let workspace = temp_workspace("prune-verify");
+    let base_dir = workspace.join("base");
+    let stage_dir = workspace.join("schema");
+    let migrations = workspace.join("migrations");
+
+    // The declarative stage the checkpoint was cut at: the `users` table
+    // without the `email` column the tail later adds.
+    let base_users = "CREATE TABLE users (id INTEGER PRIMARY KEY);";
+    write_scripts(&base_dir, &[("users.sql", base_users)]);
+
+    // Unpruned history: the folded `V1` still sits at the boundary while `V2`
+    // is the active delta.
+    write_scripts(
+        &migrations,
+        &[
+            ("V1__users.sql", base_users),
+            (
+                "V2__email.sql",
+                "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+            ),
+        ],
+    );
+
+    // The current stage the base plus the active tail must reproduce.
+    write_scripts(
+        &stage_dir,
+        &[(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
+        )],
+    );
+
+    // The checkpoint hash must anchor the base stage catalog.
+    let base_stage = DeclarativeStage::new(vec![StageScript::new("users.sql", base_users)]);
+    let base_catalog =
+        materialise_stage(&base_stage, ":memory:").expect("the base stage materialises");
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    write_checkpoint_with_hash(&checkpoint_path, "1", base_catalog.checksum());
+
+    let stage = path_string(&stage_dir);
+    let base = path_string(&base_dir);
+    let dir = path_string(&migrations);
+    let checkpoint = path_string(&checkpoint_path);
+
+    run_cli(argv(&[
+        "stage",
+        "verify",
+        "--stage-dir",
+        &stage,
+        "--base-stage-dir",
+        &base,
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--scratch-url",
+        ":memory:",
+    ]))
+    .expect("the pruned tail above the checkpoint converges with the stage");
+}
+
+#[test]
+fn the_golden_equation_rejects_a_base_stage_diverging_from_the_checkpoint() {
+    let workspace = temp_workspace("verify-base-mismatch");
+    let base_dir = workspace.join("base");
+    let stage_dir = workspace.join("schema");
+    let migrations = workspace.join("migrations");
+
+    write_scripts(
+        &base_dir,
+        &[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")],
+    );
+    write_scripts(
+        &migrations,
+        &[(
+            "V2__email.sql",
+            "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+        )],
+    );
+    write_scripts(
+        &stage_dir,
+        &[(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
+        )],
+    );
+
+    // The marker anchors a placeholder hash the base stage cannot reproduce.
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    write_checkpoint(&checkpoint_path, "1");
+
+    let stage = path_string(&stage_dir);
+    let base = path_string(&base_dir);
+    let dir = path_string(&migrations);
+    let checkpoint = path_string(&checkpoint_path);
+
+    let error = run_cli(argv(&[
+        "stage",
+        "verify",
+        "--stage-dir",
+        &stage,
+        "--base-stage-dir",
+        &base,
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--scratch-url",
+        ":memory:",
+    ]))
+    .expect_err("the base stage catalog diverges from the checkpoint hash");
+
+    assert!(
+        error
+            .to_string()
+            .contains("base stage catalog hash mismatch"),
+        "got {error}"
+    );
+}
+
+#[test]
+fn a_sequential_database_matching_the_checkpoint_is_advanced_by_the_tail() {
+    let workspace = temp_workspace("sequential-match");
+    let db = workspace.join("app.db");
+    let migrations = workspace.join("migrations");
+    write_scripts(&migrations, &[("V1__users.sql", USERS)]);
+
+    let dir = path_string(&migrations);
+    let database = path_string(&db);
+
+    // A classic sequential lifecycle initialises the database; no stage marker
+    // is ever recorded, so the history stops at the boundary version.
+    run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the initial migration is applied without a cold start");
+
+    // Anchor the checkpoint to the live catalog of the sequential database.
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    write_checkpoint_with_hash(&checkpoint_path, "1", catalog_checksum(&db));
+    let checkpoint = path_string(&checkpoint_path);
+
+    write_scripts(&migrations, &[("V2__orders.sql", ORDERS)]);
+    run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the matching catalog is verified and the tail applies");
+
+    assert_eq!(tables(&db), vec!["orders".to_owned(), "users".to_owned()]);
+    assert_eq!(
+        history(&db)
+            .into_iter()
+            .map(|(script, _, _)| script)
+            .collect::<Vec<_>>(),
+        vec!["V1__users.sql".to_owned(), "V2__orders.sql".to_owned()]
+    );
+}
+
+#[test]
+fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
+    let workspace = temp_workspace("sequential-drift");
+    let db = workspace.join("app.db");
+    let migrations = workspace.join("migrations");
+    write_scripts(&migrations, &[("V1__users.sql", USERS)]);
+
+    let dir = path_string(&migrations);
+    let database = path_string(&db);
+
+    run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the initial migration is applied without a cold start");
+
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    write_checkpoint_with_hash(&checkpoint_path, "1", catalog_checksum(&db));
+    let checkpoint = path_string(&checkpoint_path);
+
+    // Drift the live schema without touching the recorded history, so only the
+    // catalog digest catches the divergence.
+    {
+        let connection = rusqlite::Connection::open(&db).expect("open the sqlite database");
+        connection
+            .execute_batch("ALTER TABLE users ADD COLUMN drifted TEXT;")
+            .expect("the live schema drifts from the checkpoint");
+    }
+
+    write_scripts(&migrations, &[("V2__orders.sql", ORDERS)]);
+    let error = run_cli(argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--database-url",
+        &database,
+    ]))
+    .expect_err("the drifted catalog diverges from the checkpoint hash");
 
     assert!(
         error.to_string().contains("has diverged from the checkpoint"),
