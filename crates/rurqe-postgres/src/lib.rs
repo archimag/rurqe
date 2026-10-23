@@ -8,9 +8,12 @@ mod expressions;
 
 pub use dialect::{Pg14, Pg15, Pg16, PgVersion, Postgres};
 pub use expressions::{
-    plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayElements, PgArrayExpressions,
-    PgExpressions,
+    plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayElements, PgArrayExpressions, PgJson,
+    PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
+    PgTextSearchValue, PgTextValue,
 };
+#[allow(deprecated)]
+pub use expressions::PgExpressions;
 
 #[cfg(feature = "tokio-postgres")]
 pub use backend::async_conn::{PgAsyncConnection, PgAsyncTransaction};

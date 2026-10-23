@@ -1,11 +1,286 @@
 //! PostgreSQL-specific expression extensions and text search functions.
 
 use rurqe_core::expr::{
-    BinaryOp, Expr, ExprKind, IntoExpr, MergeScope, Merged, SqlArrayElement, SqlVal,
+    BinaryOp, Expr, ExprKind, IntoExpr, MergeScope, Merged, SqlArrayElement, SqlVal, ToSqlVal,
 };
+use rurqe_core::query::MakeNullable;
 use rurqe_core::schema::Column;
 
-/// PostgreSQL-specific expressions and operators.
+/// A column value the PostgreSQL regex operators read.
+///
+/// The operators compare text, so they are offered for a text column and for its
+/// optional form alike.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a PostgreSQL text value",
+    label = "the regex operators read text",
+    note = "declare the column as `String`, `Option<String>`, `&'static str`, or `Option<&'static str>`"
+)]
+pub trait PgTextValue {}
+
+impl PgTextValue for String {}
+impl PgTextValue for Option<String> {}
+impl PgTextValue for &'static str {}
+impl PgTextValue for Option<&'static str> {}
+
+/// A column value the PostgreSQL full-text search operators read.
+///
+/// Full-text search matches a `tsquery` against text, so it is offered for the
+/// same value kinds as the regex operators.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a PostgreSQL text value",
+    label = "full-text search matches text",
+    note = "declare the column as `String`, `Option<String>`, `&'static str`, or `Option<&'static str>`"
+)]
+pub trait PgTextSearchValue {}
+
+impl PgTextSearchValue for String {}
+impl PgTextSearchValue for Option<String> {}
+impl PgTextSearchValue for &'static str {}
+impl PgTextSearchValue for Option<&'static str> {}
+
+/// A JSON or JSONB document carried as its text.
+///
+/// PostgreSQL prints a JSON document as text and accepts it in that form, so a
+/// schema maps a `json` or `jsonb` column onto this wrapper without pulling in a
+/// serialisation crate. The default type parameter makes a bare `PgJson` name a
+/// document held as a `String`.
+///
+/// ```
+/// use rurqe_postgres::rurqe_core::expr::{SqlVal, ToSqlVal};
+/// use rurqe_postgres::PgJson;
+///
+/// assert_eq!(
+///     PgJson("{\"a\": 1}").to_sql_val(),
+///     SqlVal::Text("{\"a\": 1}".to_owned())
+/// );
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PgJson<T = String>(pub T);
+
+impl<T: Into<String>> ToSqlVal for PgJson<T> {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.0.into())
+    }
+}
+
+impl<T: Clone + Into<String>> ToSqlVal for &PgJson<T> {
+    fn to_sql_val(self) -> SqlVal {
+        SqlVal::Text(self.0.clone().into())
+    }
+}
+
+impl<T> MakeNullable for PgJson<T> {
+    type Nullable = Option<PgJson<T>>;
+}
+
+/// A column value the PostgreSQL JSON operators read.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a PostgreSQL JSON value",
+    label = "the JSON operators read a JSON document",
+    note = "declare the column as `PgJson`, `Option<PgJson>`, or — with the `serde_json` feature — as `serde_json::Value` or `Json<T>`"
+)]
+pub trait PgJsonValue {}
+
+impl<T> PgJsonValue for PgJson<T> {}
+impl<T> PgJsonValue for Option<PgJson<T>> {}
+
+#[cfg(feature = "serde_json")]
+impl PgJsonValue for serde_json::Value {}
+#[cfg(feature = "serde_json")]
+impl PgJsonValue for Option<serde_json::Value> {}
+#[cfg(feature = "serde_json")]
+impl<T> PgJsonValue for rurqe_core::expr::Json<T> {}
+#[cfg(feature = "serde_json")]
+impl<T> PgJsonValue for Option<rurqe_core::expr::Json<T>> {}
+
+/// PostgreSQL POSIX regular expression operators.
+///
+/// Every operator keeps the column symbolic, so its reference is qualified
+/// against the relations of the statement the predicate belongs to and quoted by
+/// the dialect:
+///
+/// ```text
+/// ("content" ~ $1)        regex_match
+/// ("content" ~* $1)       regex_match_ci
+/// ("content" !~ $1)       regex_not_match
+/// ("content" !~* $1)      regex_not_match_ci
+/// ```
+///
+/// A column of another value kind has no regex operators:
+///
+/// ```compile_fail
+/// use rurqe_postgres::PgRegexExpressions;
+///
+/// rurqe_postgres::rurqe_core::table! {
+///     Doc => "docs" {
+///         DocRank => "rank": i64,
+///     }
+/// }
+///
+/// // Fails to compile: `rank` holds numbers, not text.
+/// let _ = DocRank.regex_match("^1");
+/// ```
+pub trait PgRegexExpressions {
+    /// The scope of the table the column belongs to.
+    type Scope;
+
+    /// POSIX regex match (`~`).
+    fn regex_match(self, pattern: &str) -> Expr<bool, Self::Scope>;
+
+    /// POSIX regex case-insensitive match (`~*`).
+    fn regex_match_ci(self, pattern: &str) -> Expr<bool, Self::Scope>;
+
+    /// POSIX regex does not match (`!~`).
+    fn regex_not_match(self, pattern: &str) -> Expr<bool, Self::Scope>;
+
+    /// POSIX regex case-insensitive does not match (`!~*`).
+    fn regex_not_match_ci(self, pattern: &str) -> Expr<bool, Self::Scope>;
+}
+
+impl<C> PgRegexExpressions for C
+where
+    C: Column,
+    C::RustType: PgTextValue,
+{
+    type Scope = C::Table;
+
+    fn regex_match(self, pattern: &str) -> Expr<bool, C::Table> {
+        column_binary_op::<C>("~", pattern)
+    }
+
+    fn regex_match_ci(self, pattern: &str) -> Expr<bool, C::Table> {
+        column_binary_op::<C>("~*", pattern)
+    }
+
+    fn regex_not_match(self, pattern: &str) -> Expr<bool, C::Table> {
+        column_binary_op::<C>("!~", pattern)
+    }
+
+    fn regex_not_match_ci(self, pattern: &str) -> Expr<bool, C::Table> {
+        column_binary_op::<C>("!~*", pattern)
+    }
+}
+
+/// PostgreSQL JSON and JSONB operators.
+///
+/// The operators read a JSON document, so they are offered for a column whose
+/// Rust type is a JSON value ([`PgJsonValue`]). A column holding text is not a
+/// JSON document:
+///
+/// ```compile_fail
+/// use rurqe_postgres::PgJsonExpressions;
+///
+/// rurqe_postgres::rurqe_core::table! {
+///     Doc => "docs" {
+///         DocContent => "content": String,
+///     }
+/// }
+///
+/// // Fails to compile: `content` holds text, not a JSON document.
+/// let _ = DocContent.json_contains("{\"a\": 1}");
+/// ```
+pub trait PgJsonExpressions {
+    /// The scope of the table the column belongs to.
+    type Scope;
+
+    /// JSONB contains (`@>`).
+    fn json_contains(self, other: &str) -> Expr<bool, Self::Scope>;
+
+    /// JSONB exists / has key (`?`).
+    fn json_has_key(self, key: &str) -> Expr<bool, Self::Scope>;
+
+    /// JSONB has any keys (`?|`).
+    fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool, Self::Scope>;
+
+    /// JSONB value at an object key or an array index (`->`).
+    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Scope>;
+
+    /// JSONB value at an object key or an array index, rendered as text (`->>`).
+    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Scope>;
+}
+
+impl<C> PgJsonExpressions for C
+where
+    C: Column,
+    C::RustType: PgJsonValue,
+{
+    type Scope = C::Table;
+
+    fn json_contains(self, other: &str) -> Expr<bool, C::Table> {
+        column_binary_op::<C>("@>", other)
+    }
+
+    fn json_has_key(self, key: &str) -> Expr<bool, C::Table> {
+        column_binary_op::<C>("?", key)
+    }
+
+    fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool, C::Table> {
+        let elements: Vec<String> = keys.iter().map(|key| quote_array_element(key)).collect();
+        let array = format!("{{{}}}", elements.join(","));
+        column_binary_op::<C>("?|", &array)
+    }
+
+    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
+        json_extract::<C>("->", key.into())
+    }
+
+    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
+        json_extract::<C>("->>", key.into())
+    }
+}
+
+/// PostgreSQL full-text search operators.
+///
+/// Full-text search matches a `tsquery` against text, so a column of another
+/// value kind has no such operator:
+///
+/// ```compile_fail
+/// use rurqe_postgres::PgTextSearchExpressions;
+///
+/// rurqe_postgres::rurqe_core::table! {
+///     Doc => "docs" {
+///         DocRank => "rank": i64,
+///     }
+/// }
+///
+/// // Fails to compile: full-text search matches text.
+/// let _ = DocRank.matches_tsquery("rust");
+/// ```
+pub trait PgTextSearchExpressions {
+    /// The scope of the table the column belongs to.
+    type Scope;
+
+    /// Full-text search match (`@@ to_tsquery(?)`).
+    fn matches_tsquery(self, query: &str) -> Expr<bool, Self::Scope>;
+}
+
+impl<C> PgTextSearchExpressions for C
+where
+    C: Column,
+    C::RustType: PgTextSearchValue,
+{
+    type Scope = C::Table;
+
+    fn matches_tsquery(self, query: &str) -> Expr<bool, C::Table> {
+        Expr::from_kind(ExprKind::DialectOp {
+            op: "@@",
+            lhs: Box::new(C::expr_kind()),
+            rhs: Box::new(to_tsquery(query).into_kind()),
+        })
+    }
+}
+
+/// Deprecated aggregate of the PostgreSQL expression extensions.
+///
+/// The trait offers every operator for every column, so a regex or a JSON
+/// operator reaches a column whose value kind has no such operator. Its
+/// successors are bounded by the value kind they read: [`PgRegexExpressions`]
+/// reads text, [`PgJsonExpressions`] reads a JSON document, and
+/// [`PgTextSearchExpressions`] reads text, each through the marker trait naming
+/// the values it accepts.
+#[deprecated(
+    note = "use `PgRegexExpressions`, `PgJsonExpressions`, and `PgTextSearchExpressions`: each of them is bounded by the value kind its operators read"
+)]
 pub trait PgExpressions: Column {
     /// POSIX regex match (`~`).
     fn regex_match(self, pattern: &str) -> Expr<bool, Self::Table>;
@@ -46,6 +321,7 @@ pub trait PgExpressions: Column {
     fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Table>;
 }
 
+#[allow(deprecated)]
 impl<C: Column> PgExpressions for C {
     fn regex_match(self, pattern: &str) -> Expr<bool, Self::Table> {
         column_binary_op::<C>("~", pattern)
@@ -363,16 +639,21 @@ fn array_quantifier(quantifier: &'static str, array: ExprKind, value: ExprKind) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        plainto_tsquery, quote_array_element, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions,
+        PgJson, PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
+        PgTextSearchValue, PgTextValue,
+    };
     use crate::dialect::Postgres;
-    use rurqe_core::expr::render_expr;
-    use rurqe_core::schema::{AliasedCol, TableRef};
+    use rurqe_core::expr::{render_expr, Expr, ExprKind, SqlVal, ToSqlVal};
+    use rurqe_core::query::MakeNullable;
+    use rurqe_core::schema::{AliasedCol, Column, TableRef};
     use rurqe_core::table;
 
     table! {
         Doc => "docs" {
             DocContent => "content": String,
-            DocMetadata => "metadata": String,
+            DocMetadata => "metadata": PgJson,
             DocQuoted => "a\"b": String,
         }
     }
@@ -600,5 +881,61 @@ mod tests {
         );
 
         assert_eq!(sql, "(\"docs\".\"metadata\" -> $1)");
+    }
+
+    #[test]
+    fn text_columns_satisfy_the_text_markers() {
+        fn assert_text_value<T: PgTextValue>() {}
+        fn assert_search_value<T: PgTextSearchValue>() {}
+        fn assert_text_column<C: Column>()
+        where
+            C::RustType: PgTextValue + PgTextSearchValue,
+        {
+        }
+
+        assert_text_value::<String>();
+        assert_text_value::<Option<String>>();
+        assert_text_value::<&'static str>();
+        assert_text_value::<Option<&'static str>>();
+        assert_search_value::<String>();
+        assert_search_value::<Option<String>>();
+
+        assert_text_column::<DocContent>();
+    }
+
+    #[test]
+    fn a_json_column_carries_the_json_marker() {
+        fn assert_json_value<T: PgJsonValue>() {}
+        fn assert_nullable<T: MakeNullable<Nullable = Option<T>>>() {}
+
+        assert_json_value::<PgJson>();
+        assert_json_value::<PgJson<String>>();
+        assert_json_value::<Option<PgJson>>();
+
+        #[cfg(feature = "serde_json")]
+        {
+            assert_json_value::<serde_json::Value>();
+            assert_json_value::<Option<serde_json::Value>>();
+            assert_json_value::<rurqe_core::expr::Json<String>>();
+            assert_json_value::<Option<rurqe_core::expr::Json<String>>>();
+        }
+
+        assert_nullable::<PgJson>();
+        assert_eq!(
+            PgJson("{\"a\": 1}").to_sql_val(),
+            SqlVal::Text("{\"a\": 1}".to_owned())
+        );
+        assert_eq!((&PgJson("{}")).to_sql_val(), SqlVal::Text("{}".to_owned()));
+    }
+
+    #[test]
+    fn a_json_column_is_never_read_as_text() {
+        fn assert_json_column<C: Column>()
+        where
+            C::RustType: PgJsonValue,
+        {
+        }
+
+        assert_json_column::<DocMetadata>();
     }
 }
