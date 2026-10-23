@@ -249,6 +249,56 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     }
 }
 
+impl<D: Dialect, Tables> SelectQuery<D, Tables, (), NoProjection, NoLock> {
+    /// Groups query results by `columns`, moving the query into the
+    /// [`GroupedQuery`] state.
+    ///
+    /// `group_by` must be established before projections are selected so that
+    /// every projected column is verified to be either grouped or an aggregate.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: calling `group_by` after `select` is rejected.
+    /// let _ = SelectQuery::<MockDialect>::new()
+    ///     .from::<User>()
+    ///     .select((UserId,))
+    ///     .group_by(UserId);
+    /// ```
+    pub fn group_by<G, Positions>(
+        mut self,
+        columns: G,
+    ) -> GroupedQuery<D, Tables, (), <G as GroupByColumns<EmptyGroupSet>>::Columns, NoProjection>
+    where
+        G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<EmptyGroupSet>,
+    {
+        columns.push_column_names(&mut self.group_by);
+        GroupedQuery {
+            query: self,
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Projected> {
     /// Selects `selection`, fixing the row type of the query to the selection row.
     ///
@@ -393,22 +443,6 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
             None => predicate,
         };
         self.filter = Some(filter);
-    }
-
-    /// Groups query results by `columns`, moving the query into the
-    /// [`GroupedQuery`] state.
-    pub fn group_by<G, Positions>(
-        mut self,
-        columns: G,
-    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<EmptyGroupSet>>::Columns, Projected>
-    where
-        G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<EmptyGroupSet>,
-    {
-        columns.push_column_names(&mut self.group_by);
-        GroupedQuery {
-            query: self,
-            _marker: PhantomData,
-        }
     }
 
     /// Restricts grouped rows to those satisfying `predicate`.

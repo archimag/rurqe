@@ -207,9 +207,9 @@ fn left_join_lifts_joined_columns_into_options() {
 fn aggregates_compose_with_group_by_and_having() {
     let built = SelectQuery::<Postgres<Pg15>>::new()
         .from::<Order>()
-        .select((OrderUserId,))
         .where_(Expr::column::<OrderId>().gt(0i64))
         .group_by(OrderUserId)
+        .select((OrderUserId,))
         .having(Expr::count_all().gt(2i64))
         .having(Expr::sum::<OrderTotal>().lt(500.0))
         .order_by_desc(OrderUserId)
@@ -231,6 +231,7 @@ fn aggregates_compose_with_group_by_and_having() {
 fn aggregate_filter_where_and_distinct_aggregates_render_expected_sql() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
+        .group_by(OrderUserId)
         .select((
             OrderUserId,
             count_distinct(OrderId),
@@ -238,7 +239,6 @@ fn aggregate_filter_where_and_distinct_aggregates_render_expected_sql() {
             avg_distinct(OrderTotal)
                 .filter_where::<Postgres<Pg16>, _>(Expr::column::<OrderId>().gt(0i64)),
         ))
-        .group_by(OrderUserId)
         .build();
 
     assert_eq!(
@@ -255,8 +255,8 @@ fn aggregate_filter_where_and_distinct_aggregates_render_expected_sql() {
 fn aggregate_functions_cover_avg_min_and_max() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
-        .select((OrderUserId,))
         .group_by(OrderUserId)
+        .select((OrderUserId,))
         .having(Expr::avg::<OrderTotal>().gt(10.0))
         .having(Expr::min::<OrderId>().lt(100i64))
         .having(Expr::max::<OrderTotal>().lt(1000.0))
@@ -278,8 +278,8 @@ fn joined_aggregations_group_rows_by_the_joined_table() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
         .inner_join::<User, _, _>(Expr::column::<UserId>().eq(7i64))
-        .select((UserName,))
         .group_by(UserName)
+        .select((UserName,))
         .having(Expr::count_all().gt(1i64))
         .order_by_asc(UserName)
         .build();
@@ -344,8 +344,8 @@ fn window_functions_render_over_clause_and_decode_rows() {
 #[test]
 fn cte_subquery_composes_with_main_query_and_decodes_rows() {
     let summary_subquery = select_from::<Postgres<Pg16>, Order>()
-        .select((OrderUserId, Expr::count_all()))
-        .group_by(OrderUserId);
+        .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()));
 
     let summary_cte = summary_subquery.as_cte::<UserSummary>();
 
@@ -399,9 +399,9 @@ fn named_cte_renders_with_clause_and_binds_parameters() {
 #[test]
 fn a_derived_table_replaces_the_from_relation_of_a_query() {
     let counts = select_from::<Postgres<Pg16>, Order>()
-        .select((OrderUserId, Expr::count_all()))
         .where_(Expr::column::<OrderTotal>().gt(100.0))
         .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()))
         .as_table::<UserSummary>();
 
     let built = SelectQuery::<Postgres<Pg16>>::new()
@@ -431,8 +431,8 @@ fn a_derived_table_replaces_the_from_relation_of_a_query() {
 #[test]
 fn a_derived_table_joins_a_stored_relation() {
     let counts = select_from::<Postgres<Pg16>, Order>()
-        .select((OrderUserId, Expr::count_all()))
         .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()))
         .as_table::<UserSummary>();
 
     let built = select_from::<Postgres<Pg16>, User>()
@@ -458,8 +458,8 @@ fn a_derived_table_joins_a_stored_relation() {
 #[test]
 fn a_left_joined_derived_table_lifts_its_columns_into_options() {
     let counts = select_from::<Postgres<Pg16>, Order>()
-        .select((OrderUserId, Expr::count_all()))
         .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()))
         .as_table::<UserSummary>();
 
     // The projected row type states that the derived columns reach the row as
@@ -540,8 +540,8 @@ fn raw_sql_macro_escapes_and_formats_subexpressions() {
 #[test]
 fn sql_macro_composes_with_group_by_and_having() {
     let built = select_from::<Postgres<Pg16>, Order>()
-        .select((OrderUserId, sql!(<i64> "COUNT(*)")))
         .group_by(OrderUserId)
+        .select((OrderUserId, sql!(<i64> "COUNT(*)")))
         .having(sql!(bool, "SUM(total) > ?", 250.0))
         .having(Expr::count_all().lt(100i64))
         .build();
@@ -918,8 +918,8 @@ fn a_filtered_aggregate_restricts_the_rows_it_reads() {
 
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
-        .select((OrderUserId, spent.clone()))
         .group_by(OrderUserId)
+        .select((OrderUserId, spent.clone()))
         .having(spent.gt(500.0))
         .build();
 
@@ -1285,8 +1285,8 @@ mod phase18_relational {
     #[test]
     fn a_dynamic_query_joins_a_derived_table_and_filters_on_arrays() {
         let counts = select_from::<Postgres<Pg16>, Comment>()
-            .select((CommentPostId, Expr::count_all()))
             .group_by(CommentPostId)
+            .select((CommentPostId, Expr::count_all()))
             .as_table::<CommentCount>();
 
         // An absent predicate must leave the statement untouched. The predicate

@@ -436,15 +436,15 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
 fn group_by_renders_single_column_and_tuple() {
     let single = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .select((UserId,))
         .group_by(UserId)
+        .select((UserId,))
         .build();
     assert_eq!(single.sql, "SELECT \"id\" FROM \"users\" GROUP BY \"id\"");
 
     let tuple = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .select((UserId, UserName))
         .group_by((UserId, UserName))
+        .select((UserId, UserName))
         .build();
     assert_eq!(
         tuple.sql,
@@ -456,9 +456,9 @@ fn group_by_renders_single_column_and_tuple() {
 fn multiple_group_by_calls_append_columns() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .select((UserId, UserName))
         .group_by(UserId)
         .group_by(UserName)
+        .select((UserId, UserName))
         .build();
 
     assert_eq!(
@@ -471,8 +471,8 @@ fn multiple_group_by_calls_append_columns() {
 fn having_renders_aggregate_filters_and_binds_parameters() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<Order>()
-        .select((OrderUserId,))
         .group_by(OrderUserId)
+        .select((OrderUserId,))
         .having(Expr::count_all().gt(5i64))
         .build();
 
@@ -487,9 +487,9 @@ fn having_renders_aggregate_filters_and_binds_parameters() {
 fn repeated_having_calls_are_combined_with_and() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<Order>()
-        .select((OrderUserId,))
         .where_(Expr::column::<OrderId>().gt(0i64))
         .group_by(OrderUserId)
+        .select((OrderUserId,))
         .having(Expr::count_all().gt(2i64))
         .having(Expr::sum::<OrderTotal>().lt(100.0))
         .order_by_asc(OrderUserId)
@@ -1269,8 +1269,8 @@ fn group_by_transitions_to_the_grouped_typestate() {
     let query: GroupedQuery<MockDialect, Order, (i64,), GroupSet<EmptyGroupSet, OrderUserId>> =
         SelectQuery::<MockDialect>::new()
             .from::<Order>()
-            .select((OrderUserId,))
-            .group_by(OrderUserId);
+            .group_by(OrderUserId)
+            .select((OrderUserId,));
 
     assert_eq!(
         query.build().sql,
@@ -1391,6 +1391,10 @@ fn order_by_and_group_by_qualify_aliased_columns() {
             Expr::column::<AliasedCol<UserAlias, UserId>>()
                 .eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
         )
+        .group_by((
+            AliasedCol::<UserAlias, UserId>::new(),
+            AliasedCol::<ManagerAlias, UserName>::new(),
+        ))
         .select((
             AliasedCol::<UserAlias, UserId>::new(),
             AliasedCol::<ManagerAlias, UserName>::new(),
@@ -1399,14 +1403,13 @@ fn order_by_and_group_by_qualify_aliased_columns() {
             AliasedCol::<UserAlias, UserName>::new(),
             OrderDirection::Asc,
         )
-        .group_by(AliasedCol::<ManagerAlias, UserName>::new())
         .build();
 
     assert_eq!(
         built.sql,
         "SELECT \"u\".\"id\", \"m\".\"name\" FROM \"users\" AS \"u\" \
          INNER JOIN \"users\" AS \"m\" ON (\"u\".\"id\" = \"m\".\"id\") \
-         GROUP BY \"m\".\"name\" ORDER BY \"u\".\"name\" ASC"
+         GROUP BY \"u\".\"id\", \"m\".\"name\" ORDER BY \"u\".\"name\" ASC"
     );
     assert!(built.params.is_empty());
 }

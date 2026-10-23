@@ -9,7 +9,9 @@ use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
 use super::selection::{Selection, SelectionFor, SelectTarget};
-use super::select::{BuiltQuery, HasProjection, OrderDirection, ProjectionPresent, SelectQuery};
+use super::select::{
+    BuiltQuery, HasProjection, NoProjection, OrderDirection, ProjectionPresent, SelectQuery,
+};
 use super::window::WindowExpr;
 
 /// A column or tuple of columns for the `GROUP BY` clause.
@@ -362,8 +364,8 @@ pub struct GroupedQuery<
     pub(crate) _marker: PhantomData<fn() -> GroupByCols>,
 }
 
-impl<D: Dialect, Tables: TableScope, GroupByCols, Projected>
-    GroupedQuery<D, Tables, (), GroupByCols, Projected>
+impl<D: Dialect, Tables: TableScope, GroupByCols>
+    GroupedQuery<D, Tables, (), GroupByCols, NoProjection>
 {
     /// Selects `selection`, requiring every projected column to be grouped or aggregated.
     ///
@@ -513,14 +515,47 @@ impl<D: Dialect, Tables: TableScope, GroupByCols, Projected>
     }
 }
 
-impl<D: Dialect, Tables, Output, GroupByCols, Projected>
-    GroupedQuery<D, Tables, Output, GroupByCols, Projected>
+impl<D: Dialect, Tables, GroupByCols>
+    GroupedQuery<D, Tables, (), GroupByCols, NoProjection>
 {
     /// Groups the rows further by `columns`, appending them to the grouping.
+    ///
+    /// Further grouping is only permitted before projections are fixed.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .group_by(OrderUserId)
+    ///         .select((OrderUserId,))
+    ///         .group_by(OrderUserId);
+    /// }
+    /// ```
     pub fn group_by<G, Positions>(
         self,
         columns: G,
-    ) -> GroupedQuery<D, Tables, Output, <G as GroupByColumns<GroupByCols>>::Columns, Projected>
+    ) -> GroupedQuery<D, Tables, (), <G as GroupByColumns<GroupByCols>>::Columns, NoProjection>
     where
         G: GroupBy + GroupByInScope<Tables, Positions> + GroupByColumns<GroupByCols>,
     {
@@ -531,7 +566,11 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
             _marker: PhantomData,
         }
     }
+}
 
+impl<D: Dialect, Tables, Output, GroupByCols, Projected>
+    GroupedQuery<D, Tables, Output, GroupByCols, Projected>
+{
     /// Restricts grouped rows to those satisfying `predicate`.
     pub fn having<Scope, P>(mut self, predicate: Expr<bool, Scope>) -> Self
     where

@@ -316,8 +316,25 @@ crate::pin_dialect_version! {
 ///
 /// // Fails to compile: `OrderTotal` is not a column of a table in scope.
 /// let _ = select_from::<Postgres, User>()
+///     .group_by(OrderTotal)
+///     .select((UserId,));
+/// ```
+///
+/// Calling `group_by` on an already projected query is rejected at compile time:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: `group_by` must be established before `select`.
+/// let _ = select_from::<Postgres, User>()
 ///     .select((UserId,))
-///     .group_by(OrderTotal);
+///     .group_by(UserId);
 /// ```
 ///
 /// ```compile_fail
