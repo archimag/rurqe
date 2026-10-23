@@ -7,8 +7,6 @@
 //! `introspect_database`, `introspect_connection`) plus the backward-compatible
 //! [`IntrospectQueries`] container.
 
-use std::fmt;
-
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::{connect, CliError, Connection};
@@ -20,6 +18,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use crate::target::{detect_dialect, DatabaseDialect};
 pub use postgres::{introspect_postgres, introspect_postgres_schema};
 pub use sqlite::{
     catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
@@ -30,47 +29,6 @@ pub use types::{
     RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
     RawPrimaryKeyMetadata, RawTableMetadata,
 };
-
-/// The database engine a connection string targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DatabaseDialect {
-    /// PostgreSQL, selected by `postgres://` / `postgresql://` URLs.
-    Postgres,
-    /// SQLite, selected by `sqlite:` URLs or local `.sqlite` / `.sqlite3` / `.db` files.
-    Sqlite,
-}
-
-impl fmt::Display for DatabaseDialect {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            DatabaseDialect::Postgres => "PostgreSQL",
-            DatabaseDialect::Sqlite => "SQLite",
-        })
-    }
-}
-
-/// Detects the target [`DatabaseDialect`] from a connection string.
-///
-/// Absent URLs default to [`DatabaseDialect::Postgres`], preserving the
-/// historical behavior for callers that rely on the default.
-pub fn detect_dialect(database_url: Option<&str>) -> DatabaseDialect {
-    match database_url {
-        Some(url) => {
-            let lower = url.trim().to_ascii_lowercase();
-            if lower.starts_with("sqlite:")
-                || lower == ":memory:"
-                || lower.ends_with(".sqlite")
-                || lower.ends_with(".sqlite3")
-                || lower.ends_with(".db")
-            {
-                DatabaseDialect::Sqlite
-            } else {
-                DatabaseDialect::Postgres
-            }
-        }
-        None => DatabaseDialect::Postgres,
-    }
-}
 
 /// Introspects the schema catalog of a live database identified by its connection URL or path.
 pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {

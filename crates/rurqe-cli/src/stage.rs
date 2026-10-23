@@ -63,9 +63,8 @@ use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::{connect, redact_database_url, Connection};
 use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
-use crate::introspect::{
-    detect_dialect, introspect_postgres, introspect_sqlite, DatabaseDialect,
-};
+use crate::introspect::{introspect_postgres, introspect_sqlite};
+use crate::target::DatabaseTarget;
 
 /// One labelled SQL fragment applied to a scratch state.
 struct Script<'a> {
@@ -95,12 +94,15 @@ impl SandboxKind {
     /// A file-backed SQLite scratch has to be empty, so a misconfigured
     /// `--scratch-url` never replays schema DDL on top of somebody's data.
     fn open(scratch_url: &str) -> Result<Self, StageError> {
-        match detect_dialect(Some(scratch_url)) {
-            DatabaseDialect::Sqlite => open_sqlite_scratch(scratch_url),
-            DatabaseDialect::Postgres => PostgresSandbox::connect(scratch_url)
+        match DatabaseTarget::parse(scratch_url) {
+            DatabaseTarget::Postgres => PostgresSandbox::connect(scratch_url)
                 .map(Box::new)
                 .map(SandboxKind::Postgres)
                 .map_err(|message| StageError::Sandbox { message }),
+            DatabaseTarget::SqliteMemory => open_sqlite_scratch(None, scratch_url),
+            DatabaseTarget::SqliteFile(path) => {
+                open_sqlite_scratch(Some(path.as_str()), scratch_url)
+            }
         }
     }
 
@@ -142,23 +144,19 @@ const SQLITE_SCRATCH_OBJECTS: &str = "SELECT type, name FROM sqlite_master \
      WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
      ORDER BY name";
 
-/// Opens the SQLite scratch database addressed by `scratch_url`.
+/// Opens the SQLite scratch database the classified `target` names.
 ///
-/// Without a path — `:memory:`, an empty value, or a bare `sqlite:` prefix — the
-/// replay happens in memory and never touches the filesystem. A real path opens
-/// that file and is required to be empty.
-fn open_sqlite_scratch(scratch_url: &str) -> Result<SandboxKind, StageError> {
-    let path = scratch_url
-        .strip_prefix("sqlite://")
-        .or_else(|| scratch_url.strip_prefix("sqlite:"))
-        .unwrap_or(scratch_url);
-
-    let in_memory = path.is_empty() || path == ":memory:";
-
-    let connection = if in_memory {
-        rusqlite::Connection::open_in_memory()
-    } else {
-        rusqlite::Connection::open(path)
+/// Without a path — `:memory:`, an empty value, or a bare `sqlite:` prefix the
+/// target has already reduced to nothing — the replay happens in memory and
+/// never touches the filesystem. A real path opens that file and is required to
+/// be empty.
+fn open_sqlite_scratch(
+    path: Option<&str>,
+    scratch_url: &str,
+) -> Result<SandboxKind, StageError> {
+    let connection = match path {
+        Some(path) => rusqlite::Connection::open(path),
+        None => rusqlite::Connection::open_in_memory(),
     }
     .map_err(|error| StageError::Sandbox {
         message: format!(
@@ -167,7 +165,7 @@ fn open_sqlite_scratch(scratch_url: &str) -> Result<SandboxKind, StageError> {
         ),
     })?;
 
-    if !in_memory {
+    if path.is_some() {
         ensure_scratch_is_empty(&connection, scratch_url)?;
     }
 
@@ -230,7 +228,9 @@ fn reset_sqlite_scratch(connection: &rusqlite::Connection) -> Result<(), StageEr
         connection
             .execute_batch("PRAGMA foreign_keys = OFF;")
             .map_err(|error| StageError::Sandbox {
-                message: format!("failed to disable foreign keys in the SQLite scratch database: {error}"),
+                message: format!(
+                    "failed to disable foreign keys in the SQLite scratch database: {error}"
+                ),
             })?;
     }
 

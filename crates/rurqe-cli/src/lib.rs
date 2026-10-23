@@ -9,6 +9,7 @@ pub mod drift;
 pub mod introspect;
 pub mod loader;
 pub mod stage;
+pub mod target;
 
 pub use cli::{parse_args, run_cli, CliCommand, CliError};
 pub use codegen::{generate_schema_rs, CodegenError, CodegenOptions};

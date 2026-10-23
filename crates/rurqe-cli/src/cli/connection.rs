@@ -10,7 +10,7 @@
 //! downgraded to cleartext, and every accepted unencrypted session is announced
 //! once per process, so plaintext is never silent.
 
-use crate::introspect::{detect_dialect, DatabaseDialect};
+use crate::target::DatabaseTarget;
 
 use super::args::{redact_database_url, CliError};
 
@@ -42,23 +42,20 @@ pub(crate) enum Connection {
 /// connection error wording, so the CLI commands and catalog introspection can
 /// never drift apart.
 pub(crate) fn connect(url: &str) -> Result<Connection, CliError> {
-    match detect_dialect(Some(url)) {
-        DatabaseDialect::Sqlite => Ok(Connection::Sqlite(open_sqlite(url)?)),
-        DatabaseDialect::Postgres => Ok(Connection::Postgres(connect_postgres(url)?)),
+    match DatabaseTarget::parse(url) {
+        DatabaseTarget::Postgres => Ok(Connection::Postgres(connect_postgres(url)?)),
+        DatabaseTarget::SqliteMemory => open_sqlite(None, url).map(Connection::Sqlite),
+        DatabaseTarget::SqliteFile(path) => {
+            open_sqlite(Some(path.as_str()), url).map(Connection::Sqlite)
+        }
     }
 }
 
-/// Opens a SQLite connection from a URL or plain filesystem path.
-fn open_sqlite(url: &str) -> Result<rusqlite::Connection, CliError> {
-    let path = url
-        .strip_prefix("sqlite://")
-        .or_else(|| url.strip_prefix("sqlite:"))
-        .unwrap_or(url);
-
-    let conn = if path == ":memory:" || path.is_empty() {
-        rusqlite::Connection::open_in_memory()
-    } else {
-        rusqlite::Connection::open(path)
+/// Opens a SQLite connection, in memory when the target names no file.
+fn open_sqlite(path: Option<&str>, url: &str) -> Result<rusqlite::Connection, CliError> {
+    let conn = match path {
+        Some(path) => rusqlite::Connection::open(path),
+        None => rusqlite::Connection::open_in_memory(),
     };
 
     conn.map_err(|e| {
