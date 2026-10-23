@@ -283,6 +283,19 @@ pub fn cold_start<B: MigrationBackend>(
             tracing::debug!(version = %marker.version, "stage is already recorded");
             return Ok(ColdStartReport::default());
         }
+
+        // The database was initialised from a stage that no longer matches the
+        // one on disk, so the two digests name different schemas and a cold start
+        // would silently overwrite an initialised database.
+        return Err(stage_error(format!(
+            "the database already carries a stage marker for version `{}` with a diverged digest; \
+             re-initialise it from scratch or commit the current stage first",
+            existing
+                .version
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        )));
     }
 
     if let Some(existing) = history.iter().max_by_key(|entry| entry.installed_rank) {
@@ -509,7 +522,7 @@ mod tests {
         let error = cold_start(&mut backend, &stage(), &changed)
             .expect_err("a diverged stage cannot masquerade as a cold start");
 
-        assert!(matches!(error, Error::BaselineAlreadyExists { .. }));
+        assert!(matches!(error, Error::InvalidStage { .. }));
     }
 
     #[test]
