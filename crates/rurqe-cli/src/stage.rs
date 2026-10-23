@@ -221,22 +221,48 @@ fn scratch_objects(connection: &rusqlite::Connection) -> Result<Vec<(String, Str
 
 /// Drops every user object the replay left in a SQLite scratch database.
 fn reset_sqlite_scratch(connection: &rusqlite::Connection) -> Result<(), StageError> {
-    for (kind, name) in scratch_objects(connection)? {
-        let quoted = name.replace('"', "\"\"");
-        let statement = if kind == "view" {
-            format!("DROP VIEW IF EXISTS \"{quoted}\"")
-        } else {
-            format!("DROP TABLE IF EXISTS \"{quoted}\"")
-        };
+    let foreign_keys_enabled = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map(|value| value != 0)
+        .unwrap_or(false);
 
+    if foreign_keys_enabled {
         connection
-            .execute_batch(&statement)
+            .execute_batch("PRAGMA foreign_keys = OFF;")
             .map_err(|error| StageError::Sandbox {
-                message: format!("failed to empty the SQLite scratch database: {error}"),
+                message: format!("failed to disable foreign keys in the SQLite scratch database: {error}"),
             })?;
     }
 
-    Ok(())
+    let drop_result = (|| -> Result<(), StageError> {
+        for (kind, name) in scratch_objects(connection)? {
+            let quoted = name.replace('"', "\"\"");
+            let statement = if kind == "view" {
+                format!("DROP VIEW IF EXISTS \"{quoted}\"")
+            } else {
+                format!("DROP TABLE IF EXISTS \"{quoted}\"")
+            };
+
+            connection
+                .execute_batch(&statement)
+                .map_err(|error| StageError::Sandbox {
+                    message: format!("failed to empty the SQLite scratch database: {error}"),
+                })?;
+        }
+        Ok(())
+    })();
+
+    let restore_result = if foreign_keys_enabled {
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|error| StageError::Sandbox {
+                message: format!("failed to restore foreign keys in the SQLite scratch database: {error}"),
+            })
+    } else {
+        Ok(())
+    };
+
+    drop_result.and(restore_result)
 }
 
 /// Scratch state backed by an ephemeral PostgreSQL database of its own.
@@ -820,6 +846,23 @@ mod tests {
         GoldenEquation::new(&stage, &tail)
             .verify(&url)
             .expect("the emptied scratch is reusable");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_file_scratch_database_resets_with_foreign_keys_enabled() {
+        let path = scratch_path("fk");
+        let url = path.to_string_lossy().into_owned();
+        let ddl = "PRAGMA foreign_keys = ON;\n\
+                   CREATE TABLE customers (id INTEGER PRIMARY KEY);\n\
+                   CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id));";
+        let stage = stage(&[("schema.sql", ddl)]);
+        let tail = tail(&[("V1__schema.sql", ddl)]);
+
+        GoldenEquation::new(&stage, &tail)
+            .verify(&url)
+            .expect("both sides converge with foreign keys enabled");
 
         let _ = std::fs::remove_file(&path);
     }
