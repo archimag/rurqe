@@ -6,6 +6,7 @@ use core::ops::{Add, Div, Mul, Rem, Sub};
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::functions::SqlCastTarget;
 use super::ops::{IntoExpr, Numeric, NumericOperand};
+use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
@@ -265,9 +266,17 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// expression, yet stays distinguishable from it: a check relying on the
     /// difference — the projection rule of a grouped query, for instance — keeps
     /// treating the expression as one that reads a column.
+    ///
+    /// Every bare column reference of the tree becomes an explicit
+    /// `"table"."column"` one while the scope is dropped. A correlated expression
+    /// is rendered inside the statement of somebody else, which may address a
+    /// single relation — the very table the reference reads, or that table under
+    /// an alias the reference cannot name. The qualifier keeps the reference
+    /// naming its own table instead of silently reading a column of the statement
+    /// it is rendered into.
     pub fn without_scope(self) -> Expr<T, Unscoped, Aggr> {
         Expr {
-            kind: self.kind,
+            kind: qualify_references(self.kind),
             _result: PhantomData,
         }
     }

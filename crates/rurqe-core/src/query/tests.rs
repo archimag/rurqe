@@ -933,6 +933,33 @@ fn subquery_predicates_render_nested_queries_with_sequential_parameters() {
 }
 
 #[test]
+fn a_correlated_reference_names_its_table_inside_a_single_relation_subquery() {
+    // The inner statement addresses `orders` alone, so a bare reference would read
+    // as a column of that statement and silently compare the outer row with
+    // itself. Dropping the scope makes the reference name its own table, so the
+    // correlated reading stays explicit even when both statements scan one table.
+    let earlier = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .where_(Expr::column::<OrderId>().lt(Expr::column::<OrderId>().without_scope()))
+        .order_by_asc(OrderId)
+        .limit(1);
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId, OrderTotal))
+        .where_(Expr::exists(earlier))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"total\" FROM \"orders\" WHERE (EXISTS (SELECT \"id\" FROM \"orders\" \
+         WHERE (\"id\" < \"orders\".\"id\") ORDER BY \"id\" ASC LIMIT 1))"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
 fn not_in_subquery_renders_negated_membership() {
     let totals = SelectQuery::<MockDialect>::new()
         .from::<Order>()

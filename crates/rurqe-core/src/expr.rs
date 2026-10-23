@@ -18,6 +18,7 @@ mod ast;
 mod builder;
 mod functions;
 mod ops;
+mod qualify;
 mod render;
 mod row;
 mod scope;
