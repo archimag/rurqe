@@ -31,6 +31,11 @@ impl PgVersion for Pg16 {}
 pub struct Postgres<V: PgVersion = Pg16>(PhantomData<fn() -> V>);
 
 impl<V: PgVersion> Dialect for Postgres<V> {
+    // PostgreSQL aggregates a nested row set natively, which keeps the ordering,
+    // the filter, and the row limit of the nested statement in charge of the
+    // produced document.
+    const SUPPORTS_JSONB_ROW_AGG: bool = true;
+
     fn push_quoted_identifier(out: &mut String, ident: &str) {
         out.push('"');
         for ch in ident.chars() {

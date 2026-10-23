@@ -123,6 +123,11 @@ impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
 
 impl<V: SqliteVersion> Dialect for Sqlite<V> {
+    // SQLite has no row-level JSON aggregation, so a nested collection assembles
+    // every object field by field and collects the objects with
+    // `json_group_array`.
+    const SUPPORTS_JSONB_ROW_AGG: bool = false;
+
     fn push_quoted_identifier(out: &mut String, ident: &str) {
         out.push('"');
         for ch in ident.chars() {

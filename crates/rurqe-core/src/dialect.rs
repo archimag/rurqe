@@ -12,6 +12,17 @@ pub trait Dialect: 'static + Send + Sync {
     /// collation.
     const SUPPORTS_ILIKE: bool = true;
 
+    /// Whether the dialect aggregates a nested row set into native JSON.
+    ///
+    /// A dialect with native row aggregation renders a nested collection as
+    /// `jsonb_agg(to_jsonb(...))`, which keeps the clauses of the nested
+    /// statement in charge of the produced document. A dialect without it
+    /// assembles every object field by field with `json_object` and collects the
+    /// objects with `json_group_array`. Both forms produce the same JSON
+    /// document, so a client decodes one representation whichever engine
+    /// produced it.
+    const SUPPORTS_JSONB_ROW_AGG: bool = false;
+
     /// Appends a quoted identifier to the output SQL buffer.
     fn push_quoted_identifier(out: &mut String, ident: &str);
 

@@ -79,12 +79,34 @@ impl<T: SqlArrayElement> FromSqlValue for Vec<T> {
             // An element that does not decode reports the element type, so the
             // failure names the column rather than the array wrapping it.
             SqlVal::Array(elements) => elements.iter().map(T::from_sql_value).collect(),
+            // A nested collection arrives as JSON: PostgreSQL aggregates it into
+            // a `jsonb` array while SQLite renders it as JSON text, and every item
+            // of such an array is the JSON object of one row.
+            #[cfg(feature = "serde_json")]
+            SqlVal::Json(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|item| T::from_sql_value(&SqlVal::Json(item.clone())))
+                .collect(),
+            #[cfg(feature = "serde_json")]
+            SqlVal::Text(text) => {
+                Vec::<T>::from_sql_value(&SqlVal::Json(parse_json_document(text)?))
+            }
             _ => Err(RowDecodeError::TypeMismatch {
                 target: std::any::type_name::<Self>(),
                 found: value.variant_name(),
             }),
         }
     }
+}
+
+/// Parses the JSON document held by a textual value.
+#[cfg(feature = "serde_json")]
+fn parse_json_document(text: &str) -> Result<serde_json::Value, RowDecodeError> {
+    serde_json::from_str(text).map_err(|error| RowDecodeError::InvalidValue {
+        target: "a JSON document",
+        found: "text",
+        detail: error.to_string(),
+    })
 }
 
 impl<T: SqlArrayElement> MakeNullable for Vec<T> {

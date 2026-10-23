@@ -998,6 +998,11 @@ pub mod prelude {
 
     pub use rurqe_core::schema::Next;
 
+    pub use rurqe_core::nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
+
+    #[cfg(feature = "serde_json")]
+    pub use rurqe_core::nested::{json_object, json_to_sql_value, nested_field};
+
     pub use rurqe_core::table_alias;
 
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};

@@ -175,6 +175,33 @@ pub enum ExprKind {
         /// The frame restricting the rows the function reads, if any.
         frame: Option<WindowFrame>,
     },
+    /// A nested collection of the rows a statement produces, aggregated as JSON.
+    ///
+    /// The engine aggregates the rows of the nested statement into one JSON
+    /// document, so a one-to-many relation is read in a single statement instead
+    /// of one statement per parent. The clauses of the nested statement keep
+    /// their meaning: its ordering decides the order of the produced array, its
+    /// filter decides which rows appear, and its limit decides how many.
+    Multiset {
+        /// The statement whose rows are aggregated.
+        query: Subquery,
+        /// The JSON keys of the fields of one row, in projection order.
+        fields: Vec<&'static str>,
+        /// Whether the collection holds at most one row (`jsonb` object instead
+        /// of an array).
+        single: bool,
+    },
+    /// A sub-expression exposed under an alias, as a projection list names it.
+    ///
+    /// The alias is the SQL name of the projected expression, which is what a
+    /// derived relation exposes as a column and what the JSON keys of a nested
+    /// collection are built from.
+    Aliased {
+        /// The aliased expression.
+        expr: Box<ExprKind>,
+        /// The SQL identifier the expression is projected under.
+        alias: &'static str,
+    },
 }
 
 /// A single `WHEN condition THEN result` branch of a [`ExprKind::Case`] expression.
