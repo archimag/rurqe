@@ -202,6 +202,21 @@ impl FromSqlValue for String {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::Text(value) => Ok(value.clone()),
+            // The code generator maps a column of a dedicated value family onto
+            // `String` unless its `domain_types` option asks for the exact type,
+            // which keeps a generated schema free of the optional value crates.
+            // Such a column decodes from the textual form of the value it reads,
+            // so the generated type stays the one the column was mapped onto.
+            #[cfg(feature = "uuid")]
+            SqlVal::Uuid(_) => Ok(value.to_string()),
+            #[cfg(feature = "chrono")]
+            SqlVal::NaiveDateTime(_) | SqlVal::DateTimeUtc(_) | SqlVal::NaiveDate(_) => {
+                Ok(value.to_string())
+            }
+            #[cfg(feature = "serde_json")]
+            SqlVal::Json(_) => Ok(value.to_string()),
+            #[cfg(feature = "decimal")]
+            SqlVal::Decimal(_) => Ok(value.to_string()),
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -476,6 +491,58 @@ mod tests {
         assert!(String::from_sql_value(&SqlVal::I64(7)).is_err());
         assert!(bool::from_sql_value(&SqlVal::Text("true".to_owned())).is_err());
         assert!(f64::from_sql_value(&SqlVal::I64(7)).is_err());
+    }
+
+    #[cfg(feature = "uuid")]
+    #[test]
+    fn string_columns_decode_a_uuid_in_its_textual_form() {
+        assert_eq!(
+            String::from_sql_value(&SqlVal::Uuid(uuid::Uuid::from_u128(1))),
+            Ok("00000000-0000-0000-0000-000000000001".to_owned())
+        );
+    }
+
+    #[cfg(feature = "chrono")]
+    #[test]
+    fn string_columns_decode_temporal_values_in_their_textual_form() {
+        let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
+            .and_then(|date| date.and_hms_opt(3, 4, 5))
+            .expect("the timestamp is in the range of the calendar");
+
+        assert_eq!(
+            String::from_sql_value(&SqlVal::NaiveDateTime(timestamp)),
+            Ok("2024-01-02 03:04:05".to_owned())
+        );
+        assert_eq!(
+            String::from_sql_value(&SqlVal::NaiveDate(timestamp.date())),
+            Ok("2024-01-02".to_owned())
+        );
+        assert_eq!(
+            String::from_sql_value(&SqlVal::DateTimeUtc(
+                chrono::DateTime::from_naive_utc_and_offset(timestamp, chrono::Utc),
+            )),
+            Ok("2024-01-02T03:04:05+00:00".to_owned())
+        );
+    }
+
+    #[cfg(feature = "serde_json")]
+    #[test]
+    fn string_columns_decode_a_json_document_in_its_textual_form() {
+        let document = serde_json::json!({ "active": true });
+
+        assert_eq!(
+            String::from_sql_value(&SqlVal::Json(document.clone())),
+            Ok(document.to_string())
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn string_columns_decode_an_exact_decimal_in_its_textual_form() {
+        assert_eq!(
+            String::from_sql_value(&SqlVal::Decimal(rust_decimal::Decimal::new(1500, 3))),
+            Ok("1.500".to_owned())
+        );
     }
 
     #[test]

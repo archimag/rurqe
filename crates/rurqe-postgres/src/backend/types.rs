@@ -7,6 +7,7 @@
 
 mod array;
 mod driver;
+mod fallback;
 mod numeric;
 mod network;
 mod wire;
@@ -616,6 +617,13 @@ fn extended_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
         return Ok(SqlVal::Bytes(
             Vec::<u8>::from_sql(ty, payload).map_err(decode_failure)?,
         ));
+    }
+
+    // A build without the crate backing a value family still reads its columns:
+    // the payload is rendered in the textual form a column the code generator
+    // mapped onto `String` carries.
+    if let Some(text) = fallback::decode(ty, payload) {
+        return text.map(SqlVal::Text).map_err(DecodeError::Invalid);
     }
 
     // A type outside the native scalars is decoded by the wire codec naming its
