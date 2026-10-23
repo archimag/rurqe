@@ -9,6 +9,8 @@
 //! cold start anchors the very digest `schema.lock` and `checkpoint.toml` carry
 //! whatever engine executed the declarative stage.
 
+use std::time::{Duration, Instant};
+
 use rurqe_migrate::catalog::SchemaCatalog;
 use rurqe_migrate::checksum::Checksum;
 use rurqe_migrate::error::Error;
@@ -26,6 +28,12 @@ const HISTORY_COLUMN_COUNT: usize = 9;
 
 /// Advisory lock key guarding a PostgreSQL migration run.
 const MIGRATION_LOCK_ID: i64 = 0x5255_5251_455f_4d49;
+
+/// Time a migration run waits for the PostgreSQL advisory lock.
+const DEFAULT_ADVISORY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Delay between two attempts to take the PostgreSQL advisory lock.
+const ADVISORY_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 
 /// A raw `__rurqe_schema_history` row before decoding into domain types.
 struct RawHistoryRow {
@@ -109,6 +117,45 @@ fn placeholders(sigil: char, count: usize) -> String {
 
 fn backend_error(err: impl std::fmt::Display) -> Error {
     Error::Backend(err.to_string())
+}
+
+/// Polls the advisory lock `lock_id` until one round takes it or the wait expires.
+///
+/// The loop carries no driver call of its own: `attempt` reports whether one
+/// round took the lock, so its behaviour — an immediate acquisition, a lock that
+/// another runner frees later, and a wait that runs out — is verified without a
+/// PostgreSQL daemon. A failing round is reported unchanged, because a lost
+/// connection cannot be healed by waiting.
+fn poll_advisory_lock<F>(
+    lock_id: i64,
+    timeout: Duration,
+    interval: Duration,
+    mut attempt: F,
+) -> Result<usize, Error>
+where
+    F: FnMut() -> Result<bool, Error>,
+{
+    let start = Instant::now();
+    let mut attempts = 0usize;
+
+    loop {
+        attempts += 1;
+        if attempt()? {
+            return Ok(attempts);
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            let lock_hex = format!("0x{:016x}", lock_id as u64);
+            return Err(Error::Backend(format!(
+                "could not acquire the PostgreSQL advisory lock {lock_id} ({lock_hex}) \
+                 within {timeout:?} ({attempts} attempt(s), waited {elapsed:?}): another \
+                 migration runner may be holding it; retry once that run finishes"
+            )));
+        }
+
+        std::thread::sleep(interval.min(timeout.saturating_sub(elapsed)));
+    }
 }
 
 /// [`MigrationBackend`] over a `rusqlite` connection.
@@ -281,6 +328,7 @@ impl Drop for SqliteMigrationTransaction<'_> {
 pub struct PostgresMigrationBackend {
     client: postgres::Client,
     lock_held: bool,
+    lock_timeout: Duration,
 }
 
 impl PostgresMigrationBackend {
@@ -289,7 +337,18 @@ impl PostgresMigrationBackend {
         Self {
             client,
             lock_held: false,
+            lock_timeout: DEFAULT_ADVISORY_LOCK_TIMEOUT,
         }
+    }
+
+    /// Overrides how long a run waits for the advisory lock before giving up.
+    ///
+    /// A migration that cannot take the lock within the timeout is rejected with
+    /// a diagnostic naming the lock, so a runner blocked by a stuck peer fails
+    /// fast instead of hanging forever.
+    pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
+        self.lock_timeout = timeout;
+        self
     }
 
     /// Introspects the schema catalog of the `public` schema.
@@ -343,12 +402,42 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn acquire_lock(&mut self) -> Result<(), Error> {
-        self.client
-            .query("SELECT pg_advisory_lock($1)", &[&MIGRATION_LOCK_ID])
-            .map(|_| ())
-            .map_err(backend_error)?;
-        self.lock_held = true;
-        Ok(())
+        let lock_id = MIGRATION_LOCK_ID;
+        let timeout = self.lock_timeout;
+
+        tracing::debug!(
+            lock_id,
+            timeout = ?timeout,
+            "acquiring the PostgreSQL advisory lock"
+        );
+
+        let client = &mut self.client;
+        let outcome = poll_advisory_lock(lock_id, timeout, ADVISORY_LOCK_RETRY_INTERVAL, || {
+            let row = client
+                .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_id])
+                .map_err(backend_error)?;
+            row.try_get(0).map_err(backend_error)
+        });
+
+        match outcome {
+            Ok(attempts) => {
+                self.lock_held = true;
+                tracing::debug!(
+                    lock_id,
+                    attempts = attempts as u64,
+                    "acquired the PostgreSQL advisory lock"
+                );
+                Ok(())
+            }
+            Err(err) => {
+                tracing::warn!(
+                    lock_id,
+                    error = %err,
+                    "could not acquire the PostgreSQL advisory lock"
+                );
+                Err(err)
+            }
+        }
     }
 
     fn release_lock(&mut self) -> Result<(), Error> {
@@ -356,10 +445,23 @@ impl MigrationBackend for PostgresMigrationBackend {
         // dropped releases the lock on the server side by itself, and retrying
         // the unlock on the same closed connection from `Drop` cannot succeed.
         self.lock_held = false;
+
+        tracing::debug!(
+            lock_id = MIGRATION_LOCK_ID,
+            "releasing the PostgreSQL advisory lock"
+        );
+
         self.client
             .query("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
             .map(|_| ())
-            .map_err(backend_error)
+            .map_err(|err| {
+                tracing::warn!(
+                    lock_id = MIGRATION_LOCK_ID,
+                    error = %err,
+                    "failed to release the PostgreSQL advisory lock"
+                );
+                backend_error(err)
+            })
     }
 }
 
@@ -477,6 +579,7 @@ mod tests {
     use super::*;
     use rurqe_migrate::migration::Migration;
     use rurqe_migrate::runner::Migrator;
+    use std::time::Duration;
 
     fn backend() -> SqliteMigrationBackend {
         SqliteMigrationBackend::new(rusqlite::Connection::open_in_memory().unwrap())
@@ -596,5 +699,79 @@ mod tests {
         );
 
         tx.rollback().expect("the transaction is rolled back");
+    }
+
+    #[test]
+    fn the_advisory_lock_is_taken_on_the_first_attempt() {
+        let mut calls = 0u32;
+        let attempts = poll_advisory_lock(
+            MIGRATION_LOCK_ID,
+            Duration::from_secs(1),
+            Duration::ZERO,
+            || {
+                calls += 1;
+                Ok(true)
+            },
+        )
+        .expect("the free lock is taken at once");
+
+        assert_eq!(attempts, 1);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn the_advisory_lock_is_polled_until_it_becomes_free() {
+        let mut pending = 2u32;
+        let attempts = poll_advisory_lock(
+            MIGRATION_LOCK_ID,
+            Duration::from_secs(1),
+            Duration::ZERO,
+            || {
+                if pending == 0 {
+                    Ok(true)
+                } else {
+                    pending -= 1;
+                    Ok(false)
+                }
+            },
+        )
+        .expect("the lock becomes free after the earlier rounds fail");
+
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn a_held_advisory_lock_times_out_with_its_identifier() {
+        let error = poll_advisory_lock(
+            MIGRATION_LOCK_ID,
+            Duration::ZERO,
+            Duration::ZERO,
+            || Ok(false),
+        )
+        .expect_err("a lock nobody releases times out");
+
+        let message = match error {
+            Error::Backend(message) => message,
+            other => panic!("unexpected error: {other:?}"),
+        };
+
+        assert!(message.contains(&MIGRATION_LOCK_ID.to_string()), "{message}");
+        assert!(
+            message.contains(&format!("0x{:016x}", MIGRATION_LOCK_ID)),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_backend_failure_stops_the_polling() {
+        let error = poll_advisory_lock(
+            MIGRATION_LOCK_ID,
+            Duration::from_secs(1),
+            Duration::ZERO,
+            || Err(Error::Backend("connection lost".to_owned())),
+        )
+        .expect_err("a failing backend is reported unchanged");
+
+        assert_eq!(error, Error::Backend("connection lost".to_owned()));
     }
 }
