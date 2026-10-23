@@ -10,7 +10,8 @@ use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
 use super::selection::{Selection, SelectionFor, SelectTarget};
 use super::select::{
-    BuiltQuery, HasProjection, NoProjection, OrderDirection, ProjectionPresent, SelectQuery,
+    BuiltQuery, HasProjection, LockUnavailable, NoProjection, OrderDirection, ProjectionPresent,
+    SelectQuery,
 };
 use super::window::WindowExpr;
 
@@ -643,8 +644,14 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Returns the query of this state, dropping the grouping marker.
-    pub fn into_select(self) -> SelectQuery<D, Tables, Output, Projected> {
-        self.query
+    ///
+    /// A grouped statement produces one row per group, so the returned query
+    /// carries `LockUnavailable`: PostgreSQL refuses a row-level lock on a
+    /// statement whose rows are grouped, and the marker keeps
+    /// [`for_update`](SelectQuery::for_update) and
+    /// [`for_share`](SelectQuery::for_share) unreachable on it.
+    pub fn into_select(self) -> SelectQuery<D, Tables, Output, Projected, LockUnavailable> {
+        self.query.retype()
     }
 }
 

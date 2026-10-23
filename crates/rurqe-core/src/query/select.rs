@@ -6,8 +6,8 @@ use crate::dialect::{
     Dialect, SupportsDistinctOn, SupportsFullOuterJoin, SupportsLateralJoin, SupportsRowLocking,
 };
 use crate::expr::{
-    BinaryOp, CteAst, DerivedAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause,
-    LockStrength, SelectAst, SqlVal, StatementRef, Subquery,
+    BinaryOp, CteAst, DerivedAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause, LockStrength,
+    SelectAst, SqlVal, Subquery,
 };
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
@@ -15,7 +15,7 @@ use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 // module, so the canonical definitions live there and are re-exported here.
 pub use crate::expr::{NullsOrder, OrderCriterion, OrderDirection};
 
-use super::cte::{Cte, Lateral, DerivedTable};
+use super::cte::{Cte, DerivedTable, Lateral};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
 use super::scope::{
     CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
@@ -53,6 +53,19 @@ pub struct NoLock;
 /// clause can neither be requested twice nor modified before it exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Locked;
+
+/// Typestate marker indicating that a `SELECT` query cannot request a row-level lock.
+///
+/// PostgreSQL refuses `FOR UPDATE` and `FOR SHARE` on a statement that
+/// deduplicates its rows (`DISTINCT`, `DISTINCT ON`) or combines several
+/// statements (`UNION`, `INTERSECT`, `EXCEPT`), so recording one of those clauses
+/// moves the query out of [`NoLock`] and leaves the locking builders unreachable.
+/// Grouping moves the query out of the locking path as well: a grouped query
+/// reaches [`SelectQuery`] again only through
+/// [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select), which
+/// returns an unlocked query carrying this marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockUnavailable;
 
 /// Statically asserts that a `SELECT` query records the rows it projects.
 ///
@@ -97,7 +110,24 @@ pub trait ProjectionPresent {}
 
 impl ProjectionPresent for HasProjection {}
 
-/// Phantom marker carrying the dialect, scope, row type, and projection state of a query.
+/// Statically asserts that a `SELECT` query may be combined with another statement.
+///
+/// A set operation compares the rows of several queries, so the combined
+/// statement can neither keep the row-level lock of an operand nor accept a new
+/// one: a query that already requests a lock carries [`Locked`] and does not
+/// implement this trait.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be combined with another statement",
+    label = "this statement requests a row-level lock",
+    note = "remove the `FOR UPDATE` or `FOR SHARE` clause before combining the statement with `UNION`, `INTERSECT`, or `EXCEPT`"
+)]
+pub trait SetOperand {}
+
+impl SetOperand for NoLock {}
+
+impl SetOperand for LockUnavailable {}
+
+/// Phantom marker carrying the dialect, scope, row type, and typestates of a query.
 type QueryMarker<D, Tables, Output, Projected, Lock> =
     PhantomData<fn() -> (D, Tables, Output, Projected, Lock)>;
 
@@ -111,19 +141,24 @@ type QueryMarker<D, Tables, Output, Projected, Lock> =
 ///
 /// `Projected` records whether the query already projects the rows it selects: a
 /// fresh query carries [`NoProjection`], and [`SelectQuery::select`] moves it into
-/// [`HasProjection`], the only state whose queries can be rendered. The parameter
-/// defaults to [`NoProjection`], so `SelectQuery::<D>::new()` starts an unprojected
-/// query while a finished query spells
-/// `SelectQuery<D, Tables, Output, HasProjection>`.
+/// [`HasProjection`], the only state whose queries can be rendered.
 ///
 /// `Lock` records whether the query requests a row-level lock: a plain query
 /// carries [`NoLock`], and [`SelectQuery::for_update`] or
 /// [`SelectQuery::for_share`] move it into [`Locked`], where the closing
 /// [`SelectQuery::nowait`] and [`SelectQuery::skip_locked`] modifiers stay
-/// reachable. The requested clause is copied into the rendered statement, so a
-/// locked query executes like any other.
-pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProjection, Lock = NoLock>
-{
+/// reachable. A query that cannot be locked carries [`LockUnavailable`] instead:
+/// deduplicating its rows with [`SelectQuery::distinct`] or
+/// [`SelectQuery::distinct_on`], grouping it, or combining it with
+/// [`SelectQuery::union`] and the other set operations moves it out of [`NoLock`],
+/// because PostgreSQL refuses a row-level lock on such a statement.
+pub struct SelectQuery<
+    D: Dialect,
+    Tables = (),
+    Output = (),
+    Projected = NoProjection,
+    Lock = NoLock,
+> {
     ctes: Vec<CteAst>,
     from: Option<TableRef>,
     projections: Vec<ExprKind>,
@@ -224,12 +259,7 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// The query the derived table wraps is rendered inline as
     /// `(SELECT ...) AS "name"`, so the statement selects from its rows without a
     /// temporary relation, while the columns of the subquery are referenced
-    /// through the `table!` marker the derived table was built with:
-    ///
-    /// ```text
-    /// SELECT "user_id", "order_count"
-    /// FROM (SELECT "user_id", COUNT(*) FROM "orders" GROUP BY "user_id") AS "user_summary"
-    /// ```
+    /// through the `table!` marker the derived table was built with.
     pub fn from_subquery<T: Table, Row, SubD>(
         mut self,
         derived: DerivedTable<T, Row, SubD>,
@@ -249,6 +279,10 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, (), NoProjection, NoLock> {
     ///
     /// `group_by` must be established before projections are selected so that
     /// every projected column is verified to be either grouped or an aggregate.
+    /// The grouped query is not lockable: PostgreSQL evaluates a row-level lock on
+    /// the rows the statement produced, while a grouped statement produces one row
+    /// per group, so [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select)
+    /// hands the query back with [`LockUnavailable`].
     ///
     /// ```compile_fail
     /// use rurqe_core::dialect::Dialect;
@@ -293,7 +327,85 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, (), NoProjection, NoLock> {
     }
 }
 
-impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Projected> {
+impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Projected, NoLock> {
+    /// Marks the query as `DISTINCT`, removing duplicate rows.
+    ///
+    /// Every expression of the `ORDER BY` clause of a `DISTINCT` statement has to
+    /// appear in the projection list as well, because the engine sorts the rows it
+    /// produced rather than the rows it read; PostgreSQL rejects the statement
+    /// otherwise. The rule depends on the projected expressions rather than on
+    /// their types, so it is documented here instead of being enforced by the
+    /// builder.
+    ///
+    /// A deduplicated statement cannot request a row-level lock, so the query
+    /// moves out of [`NoLock`] and [`SelectQuery::for_update`] and
+    /// [`SelectQuery::for_share`] stop applying to it:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::{Dialect, SupportsRowLocking};
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsRowLocking for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: a deduplicated statement cannot be locked.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .select((UserId,))
+    ///         .distinct()
+    ///         .for_update();
+    /// }
+    /// ```
+    pub fn distinct(mut self) -> SelectQuery<D, Tables, Output, Projected, LockUnavailable> {
+        self.distinct = true;
+        self.retype()
+    }
+
+    /// Appends a column to the `DISTINCT ON (...)` clause.
+    ///
+    /// `DISTINCT ON` is a dialect-specific feature supported by PostgreSQL and
+    /// gated by [`SupportsDistinctOn`]. The expressions of the clause have to
+    /// match the leading expressions of the `ORDER BY` clause, because that
+    /// ordering decides which of the duplicate rows survives; PostgreSQL rejects
+    /// the statement otherwise. The rule compares expressions rather than their
+    /// types, so it is documented here instead of being enforced by the builder.
+    ///
+    /// A deduplicated statement cannot request a row-level lock, so the query
+    /// moves out of [`NoLock`] and the locking builders stop applying to it.
+    pub fn distinct_on<C: Column, P>(
+        mut self,
+        _col: C,
+    ) -> SelectQuery<D, Tables, Output, Projected, LockUnavailable>
+    where
+        D: SupportsDistinctOn,
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.distinct_on.push(C::expr_kind());
+        self.retype()
+    }
+}
+
+impl<D: Dialect, Tables, Output, Projected, Lock>
+    SelectQuery<D, Tables, Output, Projected, Lock>
+{
     /// Selects `selection`, fixing the row type of the query to the selection row.
     ///
     /// The selection is captured as dialect-neutral AST nodes at the call site,
@@ -304,13 +416,17 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// The query must already select from a table, so the row type is derived
     /// from the scope the projection is read from: a column of a `LEFT JOIN`ed
-    /// table reaches the row as `Option<T>`. Selecting before the first `from`
-    /// is therefore rejected at compile time, which also rules out a projection
-    /// fixed before an outer join could lift it; see [`TableScope`].
+    /// table reaches the row as `Option<T>`.
     pub fn select<S, Positions>(
         mut self,
         selection: S,
-    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, HasProjection>
+    ) -> SelectQuery<
+        D,
+        Tables,
+        <S as SelectionFor<Tables, Positions>>::Row,
+        HasProjection,
+        Lock,
+    >
     where
         Tables: TableScope,
         S: SelectionFor<Tables, Positions>,
@@ -337,25 +453,6 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         self
     }
 
-    /// Marks the query as `DISTINCT`, removing duplicate rows.
-    pub fn distinct(mut self) -> Self {
-        self.distinct = true;
-        self
-    }
-
-    /// Appends a column to the `DISTINCT ON (...)` clause.
-    ///
-    /// `DISTINCT ON` is a dialect-specific feature supported by PostgreSQL and
-    /// gated by [`SupportsDistinctOn`].
-    pub fn distinct_on<C: Column, P>(mut self, _col: C) -> Self
-    where
-        D: SupportsDistinctOn,
-        Tables: TableInScope<C::Table, P>,
-    {
-        self.distinct_on.push(C::expr_kind());
-        self
-    }
-
     /// Lifts the column `C` into its nullable form [`Nullable`].
     pub fn nullable<C: Column>(&self) -> Nullable<C> {
         Nullable::new()
@@ -374,14 +471,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// A `SELECT` records its filter as statement data rather than as a typestate,
     /// so an absent predicate leaves the query unchanged and the returned query
-    /// type stays the same. The method is the entry point for a filter assembled
-    /// from optional caller input:
-    ///
-    /// ```text
-    /// let query = select_from(Users)
-    ///     .select(cols!(UsersId))
-    ///     .where_opt(search.map(|search| UsersName.eq(search)));
-    /// ```
+    /// type stays the same.
     pub fn where_opt<Scope, P>(self, predicate: Option<Expr<bool, Scope>>) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
@@ -396,14 +486,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// The closure returns the query it receives, so it restricts, orders, or
     /// paginates the statement, while a clause that changes the query type — a
-    /// projection, a join, or a row lock — stays outside the conditional:
-    ///
-    /// ```text
-    /// let query = select_from(Users)
-    ///     .select(cols!(UsersId))
-    ///     .when(only_active, |query| query.where_(UsersActive.eq(true)))
-    ///     .when(page_size > 0, |query| query.limit(page_size));
-    /// ```
+    /// projection, a join, or a row lock — stays outside the conditional.
     pub fn when(self, condition: bool, build: impl FnOnce(Self) -> Self) -> Self {
         if condition {
             build(self)
@@ -413,12 +496,6 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     }
 
     /// Applies `build` to the query when `value` is present, handing it over.
-    ///
-    /// ```text
-    /// let query = select_from(Users)
-    ///     .select(cols!(UsersId))
-    ///     .if_some(name, |query, name| query.where_(UsersName.eq(name)));
-    /// ```
     pub fn if_some<T>(self, value: Option<T>, build: impl FnOnce(Self, T) -> Self) -> Self {
         match value {
             Some(value) => build(self, value),
@@ -475,10 +552,6 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     }
 
     /// Appends an ordering criterion fixing where the NULL values of `col` sort.
-    ///
-    /// The placement follows the direction, so a page over a nullable column keeps
-    /// its order on every engine instead of following the default of the one that
-    /// serves the statement.
     pub fn order_by_nulls<C: Column, P>(
         mut self,
         _col: C,
@@ -543,7 +616,8 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     /// Records `criterion` on the clause the query currently orders with.
     ///
     /// An ordering written after a set operation belongs to the combined rows
-    /// rather than to the left query, so it is recorded on the compound statement.
+    /// rather than to the left query, so it is recorded on the compound statement
+    /// and rendered against the output column names of the projections.
     pub(crate) fn push_ordering(&mut self, criterion: OrderCriterion) {
         if self.set_operations.is_empty() {
             self.order_by.push(criterion);
@@ -582,7 +656,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     pub fn inner_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
@@ -596,7 +670,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         self,
         _table: T,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
@@ -609,7 +683,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     pub fn left_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
@@ -623,7 +697,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         self,
         _table: T,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
@@ -635,7 +709,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     /// Joins the table `T` to the query with an unconditional `CROSS JOIN`.
     pub fn cross_join<T: Table>(
         self,
-    ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
     {
@@ -647,7 +721,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     pub fn cross_join_table<T: Table>(
         self,
         _table: T,
-    ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
     {
@@ -659,7 +733,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     pub fn full_outer_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, FullOuterJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, FullOuterJoined<Tables, T>, Output, Projected, Lock>
     where
         D: SupportsFullOuterJoin,
         Tables: TableScope,
@@ -679,7 +753,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         self,
         _table: T,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, FullOuterJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, FullOuterJoined<Tables, T>, Output, Projected, Lock>
     where
         D: SupportsFullOuterJoin,
         Tables: TableScope,
@@ -698,18 +772,12 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// The query the derived table wraps is rendered inline as
     /// `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one
-    /// while its rows come from the subquery:
-    ///
-    /// ```text
-    /// SELECT "users"."id", "user_summary"."order_count" FROM "users"
-    /// INNER JOIN (SELECT "user_id", COUNT(*) FROM "orders" GROUP BY "user_id")
-    ///     AS "user_summary" ON ("user_summary"."user_id" = "users"."id")
-    /// ```
+    /// while its rows come from the subquery.
     pub fn inner_join_subquery<T: Table, Row, SubD, Scope, P>(
         mut self,
         derived: DerivedTable<T, Row, SubD>,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
         SubD: DialectInScope<D>,
@@ -729,7 +797,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         mut self,
         derived: DerivedTable<T, Row, SubD>,
         on: Expr<bool, Scope>,
-    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected>
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected, Lock>
     where
         Tables: TableScope,
         SubD: DialectInScope<D>,
@@ -758,7 +826,12 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         self
     }
 
-    fn retype<D2: Dialect, Tables2, Output2, Projected2, Lock2>(
+    /// Reinterprets the recorded statement under another set of typestates.
+    ///
+    /// The statement data is untouched, so the method only renames the phantom
+    /// parameters the callers want to reach: the grouped query builder hands a
+    /// query back with [`LockUnavailable`] through it.
+    pub(super) fn retype<D2: Dialect, Tables2, Output2, Projected2, Lock2>(
         self,
     ) -> SelectQuery<D2, Tables2, Output2, Projected2, Lock2> {
         SelectQuery {
@@ -827,7 +900,7 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
 }
 
 impl<D: Dialect + SupportsRowLocking, Tables, Output>
-    SelectQuery<D, Tables, Output, HasProjection>
+    SelectQuery<D, Tables, Output, HasProjection, NoLock>
 {
     /// Locks the selected rows for the rest of the transaction (`FOR UPDATE`).
     ///
@@ -837,6 +910,10 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// modifiers available. Row-level locking is a dialect capability, so a query
     /// built for a dialect without it — SQLite, which locks the whole database
     /// instead — does not compile.
+    ///
+    /// The builder is reachable only from [`NoLock`]: deduplicating the rows of
+    /// the statement or combining it with another one moves the query out of that
+    /// state, because PostgreSQL refuses a row-level lock on such a statement.
     ///
     /// ```
     /// use rurqe_core::dialect::{Dialect, SupportsRowLocking};
@@ -859,7 +936,6 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// impl SupportsRowLocking for MockDialect {}
     ///
     /// rurqe_core::table! {
-    ///     /// The `jobs` table.
     ///     Job => "jobs" {
     ///         JobId => "id": i64,
     ///     }
@@ -910,7 +986,6 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// impl rurqe_core::dialect::SupportsRowLocking for MockDialect {}
     ///
     /// rurqe_core::table! {
-    ///     /// The `jobs` table.
     ///     Job => "jobs" {
     ///         JobId => "id": i64,
     ///     }
@@ -958,12 +1033,20 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     }
 }
 
-impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
+impl<D: Dialect, Tables, Output, Lock: SetOperand>
+    SelectQuery<D, Tables, Output, HasProjection, Lock>
+{
     /// Combines this query with `other` using `UNION`, removing duplicate rows.
+    ///
+    /// A combined statement can neither keep the row-level lock of an operand nor
+    /// accept a new one, so the resulting query carries [`LockUnavailable`]. The
+    /// ordering, the limit, and the offset written after the combination apply to
+    /// the combined rows and therefore read the output column names of the
+    /// projections rather than the relations of the left query.
     pub fn union<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> Self {
+    ) -> SelectQuery<D, Tables, Output, HasProjection, LockUnavailable> {
         self.with_set_operation(SetOpKind::Union, other)
     }
 
@@ -971,7 +1054,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
     pub fn union_all<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> Self {
+    ) -> SelectQuery<D, Tables, Output, HasProjection, LockUnavailable> {
         self.with_set_operation(SetOpKind::UnionAll, other)
     }
 
@@ -979,7 +1062,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
     pub fn intersect<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> Self {
+    ) -> SelectQuery<D, Tables, Output, HasProjection, LockUnavailable> {
         self.with_set_operation(SetOpKind::Intersect, other)
     }
 
@@ -987,7 +1070,7 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
     pub fn except<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> Self {
+    ) -> SelectQuery<D, Tables, Output, HasProjection, LockUnavailable> {
         self.with_set_operation(SetOpKind::Except, other)
     }
 
@@ -995,48 +1078,18 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
         mut self,
         kind: SetOpKind,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> Self {
+    ) -> SelectQuery<D, Tables, Output, HasProjection, LockUnavailable> {
         self.set_operations.push(SetOpAst {
             kind,
             query: other.to_ast(),
         });
-        self
+        self.retype()
     }
 }
 
 impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     SelectQuery<D, Tables, Output, P, Lock>
 {
-    fn as_statement_ref(&self) -> StatementRef<'_> {
-        let from = self.from.or_else(|| {
-            let mut tables: Vec<TableRef> = Vec::new();
-            Tables::push_table_refs(&mut tables);
-            tables.first().copied()
-        });
-
-        StatementRef {
-            ctes: &self.ctes,
-            distinct: self.distinct,
-            distinct_on: &self.distinct_on,
-            projections: &self.projections,
-            projection_aliases: None,
-            from,
-            joins: &self.joins,
-            derived: &self.derived,
-            filter: self.filter.as_ref(),
-            group_by: &self.group_by,
-            having: self.having.as_ref(),
-            order_by: &self.order_by,
-            limit: self.limit,
-            offset: self.offset,
-            set_operations: &self.set_operations,
-            compound_order_by: &self.compound_order_by,
-            compound_limit: self.compound_limit,
-            compound_offset: self.compound_offset,
-            lock: self.lock,
-        }
-    }
-
     /// Describes the query as a dialect-neutral statement AST.
     pub fn to_ast(&self) -> SelectAst {
         let from = self.from.or_else(|| {
@@ -1069,7 +1122,7 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
 
     /// Renders the query statement and parameters into the target buffers.
     pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        self.as_statement_ref().render::<D>(sql, params);
+        self.to_ast().render::<D>(sql, params);
     }
 
     /// Renders the query into SQL text and its ordered parameter list.

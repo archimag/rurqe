@@ -1439,16 +1439,7 @@ fn order_by_and_group_by_qualify_aliased_columns() {
         "SELECT \"u\".\"id\", \"m\".\"name\" FROM \"users\" AS \"u\" \
          INNER JOIN \"users\" AS \"m\" ON (\"u\".\"id\" = \"m\".\"id\") \
          GROUP BY \"u\".\"id\", \"m\".\"name\" ORDER BY \"u\".\"id\" ASC"
-    );/*_424152F25FAADF03>
-<replace>        .order_by(AliasedCol::<UserAlias, UserId>::new(), OrderDirection::Asc)
-        .build();
-
-    assert_eq!(
-        built.sql,
-        "SELECT \"u\".\"id\", \"m\".\"name\" FROM \"users\" AS \"u\" \
-         INNER JOIN \"users\" AS \"m\" ON (\"u\".\"id\" = \"m\".\"id\") \
-         GROUP BY \"u\".\"id\", \"m\".\"name\" ORDER BY \"u\".\"id\" ASC"
-    );*/
+    );
     assert!(built.params.is_empty());
 }
 
@@ -1732,4 +1723,31 @@ fn async_futures_run_on_a_spawned_thread() {
     .expect("rows decode");
 
     assert_eq!(rows, vec![(1i64, "root".to_owned())]);
+}
+
+#[test]
+fn a_compound_ordering_reads_the_output_columns_of_the_projection() {
+    // The ordering of a set operation sorts the combined rows, so the columns it
+    // names are the output columns of the projections. A reference qualified with
+    // the table of the left query would name a relation the combined statement no
+    // longer declares, which PostgreSQL rejects with a `missing FROM-clause entry`
+    // error.
+    let joined = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .inner_join::<Order, _, _>(Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+        .select((UserId, OrderTotal));
+
+    let plain = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId, OrderTotal));
+
+    let built = joined.union(plain).order_by_asc(UserId).limit(3).build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" INNER JOIN \"orders\" \
+         ON (\"users\".\"id\" = \"orders\".\"user_id\") UNION SELECT \"id\", \"total\" FROM \
+         \"orders\" ORDER BY \"id\" ASC LIMIT 3"
+    );
+    assert!(built.params.is_empty());
 }

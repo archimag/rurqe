@@ -742,13 +742,18 @@ impl<'a> StatementRef<'a> {
             StatementRef::from(&operation.query).render_operand::<D>(sql, params);
         }
 
+        // The ordering of a compound statement sorts the combined rows rather
+        // than the rows of an operand, so it reads the output columns of the
+        // projections: a qualified reference would name a relation the combined
+        // statement never declares. The ordering is therefore rendered without
+        // the relations of the left query, leaving every column bare.
         render_order_and_pagination::<D>(
             sql,
             params,
             self.compound_order_by,
             self.compound_limit,
             self.compound_offset,
-            &relations,
+            &[],
         );
     }
 
