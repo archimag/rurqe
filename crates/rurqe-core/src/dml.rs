@@ -295,9 +295,23 @@ pub struct AssignColumn<'a> {
 /// Implemented for a single [`Assignment`] and for tuples of any arity. The
 /// target table is fixed by each implementation, so a tuple only satisfies
 /// `AssignmentSet<T>` when every element belongs to `T`.
+///
+/// A set offers two ways to read its assignments: [`extend_assignments`] borrows
+/// them for inspection, while [`into_assignments`] consumes the set and hands the
+/// values over so a statement builder moves them into its own buffer instead of
+/// cloning every [`AssignValue`].
+///
+/// [`extend_assignments`]: AssignmentSet::extend_assignments
+/// [`into_assignments`]: AssignmentSet::into_assignments
 pub trait AssignmentSet<T: Table> {
-    /// Appends every assignment in the set to `out`.
+    /// Appends a borrowed view of every assignment in the set to `out`.
     fn extend_assignments<'a>(&'a self, out: &mut Vec<AssignColumn<'a>>);
+
+    /// Moves every assignment in the set into `out` as an owned column/value pair.
+    ///
+    /// A statement builder consumes its assignment set exactly once, so the values
+    /// are moved into the statement rather than cloned out of a borrowed view.
+    fn into_assignments(self, out: &mut Vec<(&'static str, AssignValue)>);
 }
 
 impl<C, V, Scope> AssignmentSet<C::Table> for Assignment<C, V, Scope>
@@ -309,6 +323,10 @@ where
             column: C::NAME,
             value: &self.value,
         });
+    }
+
+    fn into_assignments(self, out: &mut Vec<(&'static str, AssignValue)>) {
+        out.push((C::NAME, self.value));
     }
 }
 
@@ -322,6 +340,10 @@ macro_rules! impl_assignment_set_for_tuple {
             fn extend_assignments<'a>(&'a self, out: &mut Vec<AssignColumn<'a>>) {
                 $(self.$index.extend_assignments(out);)+
             }
+
+            fn into_assignments(self, out: &mut Vec<(&'static str, AssignValue)>) {
+                $(self.$index.into_assignments(out);)+
+            }
         }
     };
 }
@@ -333,7 +355,16 @@ impl_assignment_set_for_tuple!((0, A), (1, B), (2, C), (3, D));
 impl_assignment_set_for_tuple!((0, A), (1, B), (2, C), (3, D), (4, E));
 impl_assignment_set_for_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F));
 impl_assignment_set_for_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G));
-impl_assignment_set_for_tuple!((0, A), (1, B), (2, C), (3, D), (4, E), (5, F), (6, G), (7, H));
+impl_assignment_set_for_tuple!(
+    (0, A),
+    (1, B),
+    (2, C),
+    (3, D),
+    (4, E),
+    (5, F),
+    (6, G),
+    (7, H)
+);
 
 #[cfg(test)]
 mod tests {
@@ -350,6 +381,12 @@ mod tests {
         let mut out = Vec::new();
         set.extend_assignments(&mut out);
         out.into_iter().map(|assignment| assignment.column).collect()
+    }
+
+    fn take_columns<T: Table, S: AssignmentSet<T>>(set: S) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        set.into_assignments(&mut out);
+        out.into_iter().map(|(column, _)| column).collect()
     }
 
     #[test]
@@ -381,11 +418,15 @@ mod tests {
             collect_columns::<User, _>(&UserId::default_value()),
             vec!["id"]
         );
+        assert_eq!(take_columns::<User, _>(UserId::set(1i64)), vec!["id"]);
     }
 
     #[test]
     fn tuples_collect_assignments_in_order() {
         let assignments = (UserId::set(1i64), UserName::set("root"));
         assert_eq!(collect_columns::<User, _>(&assignments), vec!["id", "name"]);
+
+        let owned = (UserId::set(1i64), UserName::set("root"));
+        assert_eq!(take_columns::<User, _>(owned), vec!["id", "name"]);
     }
 }
