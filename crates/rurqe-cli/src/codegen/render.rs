@@ -2,7 +2,7 @@
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
-use super::naming::escape_literal;
+use super::naming::{doc_text, escape_literal};
 use super::plan::{build_plan, EnumPlan, TablePlan};
 use super::{CodegenError, CodegenOptions};
 
@@ -55,7 +55,7 @@ pub fn generate_schema_rs(
 /// Renders one `#[derive(SqlType)]` enum definition.
 fn write_enum(out: &mut String, enum_plan: &EnumPlan<'_>) {
     out.push_str("/// The `");
-    out.push_str(enum_plan.name);
+    out.push_str(&doc_text(enum_plan.name));
     out.push_str("` enum.\n");
     out.push_str("#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]\n");
     out.push_str("pub enum ");
@@ -80,7 +80,7 @@ fn write_enum(out: &mut String, enum_plan: &EnumPlan<'_>) {
 fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions) {
     out.push_str("table! {\n");
     out.push_str("    /// The `");
-    out.push_str(table.name);
+    out.push_str(&doc_text(table.name));
     out.push_str("` table.\n");
     out.push_str("    ");
     out.push_str(&table.ident);
@@ -106,7 +106,7 @@ fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions
     }
 
     out.push_str("/// Strongly typed row record for `");
-    out.push_str(table.name);
+    out.push_str(&doc_text(table.name));
     out.push_str("`.\n");
     out.push_str("#[derive(Debug, Clone, PartialEq)]\n");
     out.push_str("pub struct ");
@@ -156,7 +156,7 @@ fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rurqe_migrate::catalog::{ColumnDef, TableDef, TypeKind};
+    use rurqe_migrate::catalog::{ColumnDef, EnumDef, TableDef, TypeKind};
 
     #[test]
     fn codegen_renders_deterministic_schema() {
@@ -227,6 +227,45 @@ mod tests {
         assert!(code.contains("pub id: uuid::Uuid,"));
         assert!(code.contains("UsersDeletedAt => \"deleted_at\": Option<chrono::NaiveDateTime>"));
         assert!(!code.contains("Option<Option<"));
+    }
+
+    #[test]
+    fn doc_comments_never_break_out_of_the_comment() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users\npub struct Injected;",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            Vec::new(),
+        )])
+        .with_enums(vec![EnumDef::new(
+            "mood\r\nfn injected() {}",
+            vec!["ok".to_owned()],
+        )]);
+
+        let code =
+            generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
+
+        // The names reach the comments on the line they were written on.
+        assert!(code.contains("/// The `users\\npub struct Injected;` table."));
+        assert!(code.contains("/// The `mood\\r\\nfn injected() {}` enum."));
+        assert!(code.contains("/// Strongly typed row record for `users\\npub struct Injected;`."));
+
+        // No control character reaches the generated module, so a name can never
+        // end the comment it was rendered into nor start a line of its own.
+        assert!(!code.contains('\r'));
+
+        for line in code.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            assert!(!trimmed.starts_with("fn injected"), "{line}");
+            assert!(!trimmed.starts_with("pub struct Injected"), "{line}");
+        }
+
+        // The names reach the module through their sanitized identifiers, so it
+        // compiles with exactly the items the generator declares.
+        assert!(code.contains("UsersPubStructInjected => \"users\\npub struct Injected;\""));
+        assert!(code.contains("pub enum MoodFnInjected {"));
     }
 
     #[test]

@@ -25,13 +25,19 @@ pub use self::render::generate_schema_rs;
 #[derive(Debug, Clone)]
 pub struct CodegenOptions {
     /// Module doc comment prepended to the generated output.
+    ///
+    /// The text is emitted verbatim as comment lines, so it is trusted
+    /// configuration written by the developer: it must never carry a name read
+    /// from an untrusted database catalog.
     pub doc_comment: Option<String>,
     /// Whether to generate strongly typed `*Record` structs for each table.
     pub generate_records: bool,
     /// Rust types keyed by their `table.column` schema path.
     ///
     /// An override replaces the mapped type of a column, so domain newtypes
-    /// survive code generation. See [`crate::config`].
+    /// survive code generation. The value is emitted verbatim into the declared
+    /// column, so an override is trusted configuration and must spell a
+    /// syntactically valid Rust type. See [`crate::config`].
     pub type_overrides: BTreeMap<String, String>,
     /// Whether `Uuid`, `Json`, `Timestamp`, and `Date` columns map onto their
     /// domain types instead of `String`.

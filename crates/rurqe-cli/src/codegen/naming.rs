@@ -101,9 +101,8 @@ fn sanitize_snake_case(s: &str) -> String {
 
 /// Escapes a schema name for inclusion in a generated Rust string literal.
 ///
-/// The quote and the backslash are escaped explicitly, the line, carriage
-/// return, tab, and NUL characters get their short escapes, and every other
-/// control character is escaped through `escape_default`. A name carried over
+/// The quote and the backslash are escaped explicitly, and every control
+/// character is escaped through [`push_control_escape`]. A name carried over
 /// from a database catalog therefore never breaks the generated literal over
 /// several lines nor embeds a raw control character into it.
 pub(super) fn escape_literal(name: &str) -> String {
@@ -113,16 +112,51 @@ pub(super) fn escape_literal(name: &str) -> String {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\0' => out.push_str("\\0"),
-            other if other.is_control() => out.extend(other.escape_default()),
-            _ => out.push(c),
+            other => push_control_escape(&mut out, other),
         }
     }
 
     out
+}
+
+/// Renders a schema name as text that stays inside a generated doc comment.
+///
+/// A `//`-style comment ends at a line break, so a raw catalog name carrying one
+/// would close the comment and start arbitrary source in the generated module.
+/// Every control character is therefore spelled with its visible escape, which
+/// keeps the rendered comment on a single line while preserving the name the
+/// catalog declares:
+///
+/// ```text
+/// /// The `users\npub struct Injected;` table.
+/// ```
+///
+/// The result is only meant for comment text: identifiers go through
+/// [`to_safe_ident`] and string literals through [`escape_literal`].
+pub(super) fn doc_text(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+
+    for c in name.chars() {
+        push_control_escape(&mut out, c);
+    }
+
+    out
+}
+
+/// Appends `c` to `out`, spelling a control character with its visible escape.
+///
+/// The line, carriage return, tab, and NUL characters get their short escapes,
+/// and every other control character is escaped through `escape_default`. All
+/// remaining characters are copied verbatim.
+fn push_control_escape(out: &mut String, c: char) {
+    match c {
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\0' => out.push_str("\\0"),
+        other if other.is_control() => out.extend(other.escape_default()),
+        other => out.push(other),
+    }
 }
 
 #[cfg(test)]
@@ -189,5 +223,22 @@ mod tests {
 
         // Ordinary text, including multi-byte characters, is left untouched.
         assert_eq!(escape_literal("Grüße"), "Grüße");
+    }
+
+    #[test]
+    fn doc_text_keeps_a_name_on_a_single_line() {
+        assert_eq!(doc_text("plain"), "plain");
+        assert_eq!(doc_text("user.profiles"), "user.profiles");
+        assert_eq!(doc_text("line\nbreak"), "line\\nbreak");
+        assert_eq!(doc_text("carriage\rreturn"), "carriage\\rreturn");
+        assert_eq!(doc_text("tab\tseparated"), "tab\\tseparated");
+        assert_eq!(doc_text("nul\0byte"), "nul\\0byte");
+
+        // Any other control character keeps a single-line escape instead of the
+        // raw byte it is spelled with.
+        assert_eq!(doc_text("bell\u{7}"), "bell\\u{7}");
+
+        // Ordinary text, including multi-byte characters, is left untouched.
+        assert_eq!(doc_text("Grüße"), "Grüße");
     }
 }
