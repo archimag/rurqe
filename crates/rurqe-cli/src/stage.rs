@@ -53,18 +53,21 @@
 //! assert!(report.is_equivalent());
 //! ```
 
+mod postgres;
+
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use rurqe_migrate::catalog::SchemaCatalog;
 use rurqe_migrate::migration::Migration;
 use rurqe_migrate::runner::Migrator;
 use rurqe_migrate::stage::DeclarativeStage;
 
-use crate::cli::{connect, redact_database_url, Connection};
+use crate::cli::redact_database_url;
 use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
-use crate::introspect::{introspect_postgres, introspect_sqlite};
+use crate::introspect::introspect_sqlite;
 use crate::target::DatabaseTarget;
+
+use self::postgres::PostgresSandbox;
 
 /// One labelled SQL fragment applied to a scratch state.
 struct Script<'a> {
@@ -263,161 +266,6 @@ fn reset_sqlite_scratch(connection: &rusqlite::Connection) -> Result<(), StageEr
     };
 
     drop_result.and(restore_result)
-}
-
-/// Scratch state backed by an ephemeral PostgreSQL database of its own.
-///
-/// Every verification creates a freshly named database on the server behind the
-/// configured URL, connects to it, and replays both sides of the equation there.
-/// A database is a hard isolation boundary, so nothing the replay does can reach
-/// the user's data and no other session observes the scratch tables. Dropping the
-/// sandbox removes the database together with everything built inside it.
-///
-/// Creating a database is a server-level operation, so the connected role needs
-/// the `CREATEDB` privilege; a missing privilege is reported as an actionable
-/// message instead of an opaque driver error.
-struct PostgresSandbox {
-    /// The server-level connection the scratch database is created and dropped through.
-    admin: postgres::Client,
-    /// The replay connection, closed before the scratch database is dropped.
-    client: Option<postgres::Client>,
-    /// The generated name of the scratch database.
-    database: String,
-}
-
-/// Hands out a scratch database name no concurrent verification can collide with.
-///
-/// The process id and the monotonic counter separate the verifications of one
-/// process, while the nanosecond timestamp separates concurrent processes that
-/// happen to share a process id on different hosts.
-fn scratch_database_name() -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-
-    format!(
-        "rurqe_scratch_{}_{nanos}_{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
-impl PostgresSandbox {
-    /// Connects to `url` and creates the scratch database the verification runs in.
-    fn connect(url: &str) -> Result<Self, String> {
-        let mut admin = match connect(url).map_err(|error| error.to_string())? {
-            Connection::Postgres(client) => client,
-            Connection::Sqlite(_) => {
-                return Err(format!(
-                    "`{}` does not address a PostgreSQL database",
-                    redact_database_url(url)
-                ))
-            }
-        };
-
-        let config: postgres::Config = url.parse().map_err(|error| {
-            format!(
-                "failed to read `{}` as a PostgreSQL connection URL: {error}",
-                redact_database_url(url)
-            )
-        })?;
-
-        let database = scratch_database_name();
-        let create = format!("CREATE DATABASE \"{database}\"");
-
-        // Database names cannot be bound as parameters, but the generated name only
-        // carries ASCII alphanumerics and underscores, so rendering it is
-        // injection-free.
-        if let Err(error) = admin.batch_execute(&create) {
-            return Err(format!(
-                "failed to create the scratch database on `{}`: {error}; the connected role \
-                 needs the CREATEDB privilege",
-                redact_database_url(url)
-            ));
-        }
-
-        match attach_scratch_database(config, &database) {
-            Ok(client) => Ok(Self {
-                admin,
-                client: Some(client),
-                database,
-            }),
-            Err(message) => {
-                drop_scratch_database(&mut admin, &database);
-                Err(message)
-            }
-        }
-    }
-
-    /// Applies one SQL script inside the scratch database.
-    fn apply(&mut self, sql: &str) -> Result<(), String> {
-        self.replay_connection()?
-            .batch_execute(sql)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Introspects the `public` schema of the scratch database only.
-    fn catalog(&mut self) -> Result<SchemaCatalog, String> {
-        introspect_postgres(self.replay_connection()?).map_err(|error| error.to_string())
-    }
-
-    /// The still-open replay connection.
-    fn replay_connection(&mut self) -> Result<&mut postgres::Client, String> {
-        self.client
-            .as_mut()
-            .ok_or_else(|| format!("the scratch database `{}` is already closed", self.database))
-    }
-}
-
-/// Opens the replay connection to the freshly created scratch database.
-///
-/// The replay is introspected through the `public` schema of the scratch
-/// database, so the search path is pinned instead of following a schema named
-/// after the connected role.
-fn attach_scratch_database(
-    mut config: postgres::Config,
-    database: &str,
-) -> Result<postgres::Client, String> {
-    config.dbname(database);
-
-    let mut client = config
-        .connect(postgres::NoTls)
-        .map_err(|error| format!("failed to connect to the scratch database: {error}"))?;
-
-    client
-        .batch_execute("SET search_path TO public")
-        .map_err(|error| format!("failed to prepare the scratch database: {error}"))?;
-
-    Ok(client)
-}
-
-/// Drops a scratch database, removing the data the verification built inside it.
-///
-/// `WITH (FORCE)` terminates sessions still attached to the database and needs
-/// PostgreSQL 13 or newer, so a plain drop is the fallback for older servers.
-fn drop_scratch_database(admin: &mut postgres::Client, database: &str) {
-    let forced = format!("DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)");
-
-    if admin.batch_execute(&forced).is_err() {
-        let plain = format!("DROP DATABASE IF EXISTS \"{database}\"");
-        let _ = admin.batch_execute(&plain);
-    }
-}
-
-impl Drop for PostgresSandbox {
-    fn drop(&mut self) {
-        // The replay connection is closed first, so a failed replay that left a
-        // transaction open cannot keep the database alive on servers without the
-        // `WITH (FORCE)` clause.
-        if let Some(client) = self.client.take() {
-            let _ = client.close();
-        }
-
-        drop_scratch_database(&mut self.admin, &self.database);
-    }
 }
 
 /// One side of the Golden Equation: the declarative stage and the tail that must
