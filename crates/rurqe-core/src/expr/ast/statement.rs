@@ -8,8 +8,9 @@
 //! share one definition of every node.
 
 use core::fmt::Write;
+use core::marker::PhantomData;
 
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsDistinctFrom, SupportsGreatest, SupportsNullsOrdering};
 use crate::schema::TableRef;
 
 use super::ExprKind;
@@ -533,4 +534,75 @@ impl<R: Dialect> MergeDialect<R> for () {
 // Two concrete markers combine only when they name the same dialect.
 impl<D: Dialect> MergeDialect<D> for D {
     type Output = D;
+}
+
+/// A node needing the `GREATEST` and `LEAST` functions of its dialect.
+///
+/// The marker states a capability instead of naming an engine, so the node
+/// renders under any dialect providing it and is rejected by one lacking it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequiresGreatest;
+
+/// A node needing the `IS DISTINCT FROM` and `IS NOT DISTINCT FROM` predicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequiresDistinctFrom;
+
+/// A node needing explicit `NULLS FIRST` and `NULLS LAST` ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequiresNullsOrdering;
+
+/// A node needing two capabilities at once.
+///
+/// Composing nodes carrying distinct requirements folds them into this marker,
+/// which renders only under a dialect satisfying both requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequiresAll<A, B>(PhantomData<fn() -> (A, B)>);
+
+impl<D: SupportsGreatest> DialectInScope<D> for RequiresGreatest {}
+
+impl<D: SupportsDistinctFrom> DialectInScope<D> for RequiresDistinctFrom {}
+
+impl<D: SupportsNullsOrdering> DialectInScope<D> for RequiresNullsOrdering {}
+
+impl<D, A, B> DialectInScope<D> for RequiresAll<A, B>
+where
+    A: DialectInScope<D>,
+    B: DialectInScope<D>,
+{
+}
+
+// A requirement merged onto any node keeps that node beside the requirement, so
+// a dialect-neutral or dialect-pinned node still carries the capability it needs.
+impl<L> MergeDialect<RequiresGreatest> for L {
+    type Output = RequiresAll<L, RequiresGreatest>;
+}
+
+impl<L> MergeDialect<RequiresDistinctFrom> for L {
+    type Output = RequiresAll<L, RequiresDistinctFrom>;
+}
+
+impl<L> MergeDialect<RequiresNullsOrdering> for L {
+    type Output = RequiresAll<L, RequiresNullsOrdering>;
+}
+
+impl<L, A, B> MergeDialect<RequiresAll<A, B>> for L {
+    type Output = RequiresAll<L, RequiresAll<A, B>>;
+}
+
+// A requirement merged onto a concrete dialect keeps both, so the requirement is
+// still checked when the combined node is rendered under that dialect.
+impl<D: Dialect> MergeDialect<D> for RequiresGreatest {
+    type Output = RequiresAll<RequiresGreatest, D>;
+}
+
+impl<D: Dialect> MergeDialect<D> for RequiresDistinctFrom {
+    type Output = RequiresAll<RequiresDistinctFrom, D>;
+}
+
+impl<D: Dialect> MergeDialect<D> for RequiresNullsOrdering {
+    type Output = RequiresAll<RequiresNullsOrdering, D>;
+}
+
+impl<D: Dialect, A, B> MergeDialect<D> for RequiresAll<A, B> {
+    type Output = RequiresAll<RequiresAll<A, B>, D>;
 }

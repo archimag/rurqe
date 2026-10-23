@@ -31,8 +31,9 @@ pub use array::SqlArrayElement;
 pub use ast::{
     CaseBranch, CaseBuilder, CteAst, DialectInScope, ExprKind, HasBranches, JoinAst, JoinKind,
     LockClause, LockStrength, LockWait, MergeDialect, MergedDialect, NoBranches, NullsOrder,
-    OrderCriterion, OrderDirection, SelectAst, SetOpAst, SetOpKind, Subquery, SubqueryOp,
-    WindowExprKind, WindowFrame, WindowFrameBound, WindowFrameKind, DerivedAst,
+    OrderCriterion, OrderDirection, RequiresAll, RequiresDistinctFrom, RequiresGreatest,
+    RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind, Subquery, SubqueryOp, WindowExprKind,
+    WindowFrame, WindowFrameBound, WindowFrameKind, DerivedAst,
 };
 pub use builder::{Aggregate, Expr, NonAggregate};
 pub use functions::{

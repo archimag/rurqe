@@ -14,8 +14,9 @@ mod statement;
 
 pub use statement::{
     CteAst, DialectInScope, JoinAst, JoinKind, LockClause, LockStrength, LockWait, MergeDialect,
-    MergedDialect, NullsOrder, OrderCriterion, OrderDirection, SelectAst, SetOpAst, SetOpKind,
-    WindowExprKind, WindowFrame, WindowFrameBound, WindowFrameKind, DerivedAst,
+    MergedDialect, NullsOrder, OrderCriterion, OrderDirection, RequiresAll, RequiresDistinctFrom,
+    RequiresGreatest, RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind, WindowExprKind,
+    WindowFrame, WindowFrameBound, WindowFrameKind, DerivedAst,
 };
 
 /// The shape of a SQL expression tree.
