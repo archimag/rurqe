@@ -64,8 +64,18 @@ pub struct RawIndexMetadata {
 /// the built-in set keeps its declared spelling, type parameters included, so a
 /// `numeric(10,2)` column never compares equal to a `numeric(18,4)` one inside
 /// `schema.lock`.
+///
+/// An array spelling such as `text[]` maps to [`TypeKind::Array`] of the type
+/// its elements are declared as.
 pub fn map_sql_type_to_kind(sql_type: &str) -> TypeKind {
     let declared = sql_type.trim();
+
+    // An array is spelled as its element type followed by `[]`, so the suffix is
+    // peeled off before the element type itself is classified.
+    if let Some(element) = declared.strip_suffix("[]") {
+        return TypeKind::Array(Box::new(map_sql_type_to_kind(element)));
+    }
+
     let lower = strip_type_parameters(declared).to_ascii_lowercase();
 
     match lower.as_str() {
@@ -154,6 +164,44 @@ fn strip_type_parameters(sql_type: &str) -> &str {
     }
 }
 
+/// Resolves the catalog type of one introspected column.
+///
+/// PostgreSQL reports an array column as `ARRAY` and names its element type
+/// through `udt_name`, prefixed with an underscore, so the element type is
+/// classified on its own and wrapped back into [`TypeKind::Array`]. A
+/// `USER-DEFINED` column names its type through `udt_name` alone, and a column
+/// whose type is declared by the database itself is an enum of that name.
+fn column_type_kind(column: &RawColumnMetadata, enums: &BTreeMap<String, Vec<String>>) -> TypeKind {
+    let udt = column
+        .udt_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+
+    if column.data_type.trim().eq_ignore_ascii_case("ARRAY") {
+        if let Some(element) = udt.and_then(|name| name.strip_prefix('_')) {
+            return TypeKind::Array(Box::new(named_type_kind(element, enums)));
+        }
+    }
+
+    match udt {
+        Some(name) if enums.contains_key(name) => TypeKind::Enum(name.to_owned()),
+        Some(name) if column.data_type.trim().eq_ignore_ascii_case("USER-DEFINED") => {
+            named_type_kind(name, enums)
+        }
+        _ => map_sql_type_to_kind(&column.data_type),
+    }
+}
+
+/// Resolves the type named by a `udt_name`, mapping an enum to its own kind.
+fn named_type_kind(name: &str, enums: &BTreeMap<String, Vec<String>>) -> TypeKind {
+    if enums.contains_key(name) {
+        TypeKind::Enum(name.to_owned())
+    } else {
+        map_sql_type_to_kind(name)
+    }
+}
+
 /// Folds flat index rows into one [`IndexDef`] per index.
 ///
 /// Both `pg_index` and the SQLite `PRAGMA index_list` report one row per indexed
@@ -205,19 +253,7 @@ pub fn catalog_from_metadata(
     let mut indexes_by_table = fold_indexes(indexes);
 
     for col in columns {
-        let is_enum = col
-            .udt_name
-            .as_ref()
-            .is_some_and(|udt| enums_by_name.contains_key(udt));
-        let kind = if is_enum {
-            TypeKind::Enum(col.udt_name.clone().unwrap_or_default())
-        } else if col.data_type.eq_ignore_ascii_case("USER-DEFINED") {
-            col.udt_name
-                .as_ref()
-                .map_or_else(|| map_sql_type_to_kind(&col.data_type), |udt| map_sql_type_to_kind(udt))
-        } else {
-            map_sql_type_to_kind(&col.data_type)
-        };
+        let kind = column_type_kind(col, &enums_by_name);
         let mut def = ColumnDef::new(&col.column_name, kind, col.is_nullable);
         if let Some(ref default) = col.column_default {
             def = def.with_default(default);

@@ -51,6 +51,47 @@ fn codegen_creates_valid_rust_code_with_schema_hash() {
 }
 
 #[test]
+fn codegen_renders_array_columns_as_vectors() {
+    let tables = vec![RawTableMetadata {
+        name: "posts".to_owned(),
+    }];
+    let cols = vec![
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "id".to_owned(),
+            data_type: "bigint".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("int8".to_owned()),
+        },
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "tags".to_owned(),
+            data_type: "ARRAY".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("_text".to_owned()),
+        },
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "ratings".to_owned(),
+            data_type: "ARRAY".to_owned(),
+            is_nullable: true,
+            column_default: None,
+            udt_name: Some("_int8".to_owned()),
+        },
+    ];
+
+    let catalog = catalog_from_metadata(&tables, &cols, &[], &[], &[], &[]);
+    let code = generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
+
+    assert!(code.contains("PostsTags => \"tags\": Vec<String>"));
+    assert!(code.contains("pub tags: Vec<String>,"));
+    assert!(code.contains("PostsRatings => \"ratings\": Option<Vec<i64>>"));
+    assert!(code.contains("pub ratings: Option<Vec<i64>>,"));
+}
+
+#[test]
 fn drift_verification_passes_when_snapshot_matches() {
     let catalog = SchemaCatalog::new(vec![TableDef::new(
         "products",

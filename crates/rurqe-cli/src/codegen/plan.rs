@@ -489,4 +489,26 @@ mod tests {
             "Option<UserMood>"
         );
     }
+
+    #[test]
+    fn array_columns_map_to_vectors_of_their_element() {
+        let options = CodegenOptions::default();
+
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("tags", TypeKind::Array(Box::new(TypeKind::Text)), false),
+                &options,
+            ),
+            "Vec<String>"
+        );
+        assert_eq!(
+            rust_type_of(
+                &ColumnDef::new("moods", TypeKind::Array(Box::new(TypeKind::Enum(
+                    "user_mood".to_owned()
+                ))), true),
+                &options,
+            ),
+            "Option<Vec<UserMood>>"
+        );
+    }
 }

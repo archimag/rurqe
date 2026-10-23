@@ -251,6 +251,86 @@ fn unknown_types_keep_their_declared_precision() {
 }
 
 #[test]
+fn array_spellings_map_to_their_element_type() {
+    assert_eq!(
+        map_sql_type_to_kind("integer[]"),
+        TypeKind::Array(Box::new(TypeKind::Int32))
+    );
+    assert_eq!(
+        map_sql_type_to_kind("character varying(80)[]"),
+        TypeKind::Array(Box::new(TypeKind::Text))
+    );
+    assert_eq!(
+        map_sql_type_to_kind("numeric(18,4)[]"),
+        TypeKind::Array(Box::new(TypeKind::Other("numeric(18,4)".to_owned())))
+    );
+}
+
+#[test]
+fn postgres_array_columns_map_to_their_element_type() {
+    let tables = vec![RawTableMetadata {
+        name: "posts".to_owned(),
+    }];
+    let cols = vec![
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "id".to_owned(),
+            data_type: "bigint".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("int8".to_owned()),
+        },
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "tags".to_owned(),
+            data_type: "ARRAY".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("_text".to_owned()),
+        },
+        RawColumnMetadata {
+            table_name: "posts".to_owned(),
+            column_name: "moods".to_owned(),
+            data_type: "ARRAY".to_owned(),
+            is_nullable: true,
+            column_default: None,
+            udt_name: Some("_post_status".to_owned()),
+        },
+    ];
+    let enums = vec![
+        RawEnumMetadata {
+            name: "post_status".to_owned(),
+            variant: "draft".to_owned(),
+        },
+        RawEnumMetadata {
+            name: "post_status".to_owned(),
+            variant: "published".to_owned(),
+        },
+    ];
+
+    let catalog = catalog_from_metadata(&tables, &cols, &[], &[], &[], &enums);
+    let table = &catalog.tables[0];
+    let column = |name: &str| {
+        table
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .expect("the column is introspected")
+    };
+
+    assert_eq!(
+        column("tags").type_kind,
+        TypeKind::Array(Box::new(TypeKind::Text))
+    );
+    assert!(!column("tags").nullable);
+    assert_eq!(
+        column("moods").type_kind,
+        TypeKind::Array(Box::new(TypeKind::Enum("post_status".to_owned())))
+    );
+    assert!(column("moods").nullable);
+}
+
+#[test]
 fn sqlite_declared_types_follow_the_affinity_rules() {
     assert_eq!(map_sqlite_declared_type_to_kind("INTEGER"), TypeKind::Int64);
     assert_eq!(
