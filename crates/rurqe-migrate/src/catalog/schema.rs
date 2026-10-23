@@ -61,17 +61,22 @@ impl SchemaCatalog {
     /// table name, column name, foreign-key name, and index name, so the result
     /// equals the catalog that generated the snapshot. The labels of an enum keep
     /// the order they were rendered in.
+    ///
+    /// A snapshot that still carries the v1 header is read as well: it differs
+    /// only in writing the SQL text of a column default verbatim, without the
+    /// quotes and escapes the current format applies.
     pub fn from_lock(lock: &str) -> Result<SchemaCatalog, Error> {
         let mut lines = lock.lines();
-        match lines.next() {
-            Some(header) if header == lock::LOCK_HEADER => {}
+        let defaults = match lines.next() {
+            Some(header) if header == lock::LOCK_HEADER => Defaults::Quoted,
+            Some(header) if header == lock::LEGACY_LOCK_HEADER => Defaults::Verbatim,
             _ => {
                 return Err(lock_error(format!(
                     "expected `{}` header",
                     lock::LOCK_HEADER
                 )))
             }
-        }
+        };
 
         let lines: Vec<&str> = lines.collect();
         let mut enums: Vec<EnumDef> = Vec::new();
@@ -97,7 +102,7 @@ impl SchemaCatalog {
             }
 
             if trimmed.starts_with("table ") {
-                let (table, next) = parse_table(&lines, index)?;
+                let (table, next) = parse_table(&lines, index, defaults)?;
                 tables.push(table);
                 index = next;
                 continue;
@@ -113,6 +118,70 @@ impl SchemaCatalog {
 
         Ok(SchemaCatalog::new(tables).with_enums(enums))
     }
+}
+
+/// How the column defaults of a snapshot are encoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Defaults {
+    /// A v1 snapshot writes the SQL text of a default verbatim.
+    Verbatim,
+    /// A v2 snapshot writes the SQL text of a default as a quoted, escaped string.
+    Quoted,
+}
+
+/// Parses the `table "<name>" { ... }` block starting at `start`.
+///
+/// The `defaults` of the snapshot decide how the SQL text of a default is read.
+fn parse_table(
+    lines: &[&str],
+    start: usize,
+    defaults: Defaults,
+) -> Result<(TableDef, usize), Error> {
+    let header = lines.get(start).copied().unwrap_or_default();
+    let mut table = TableBuilder::new(parse_table_header(header.trim_start())?);
+
+    // Buffer of raw lines belonging to the body item being parsed. A column
+    // default may span multiple lines, so items are collected until the next item
+    // keyword or the closing brace is reached.
+    let mut item_lines: Vec<String> = Vec::new();
+    let body = lines.get(start + 1..).unwrap_or_default();
+
+    for (offset, line) in body.iter().enumerate() {
+        let trimmed = line.trim_start();
+
+        if trimmed.is_empty() {
+            if item_lines.is_empty() {
+                return Err(lock_error("unexpected blank line inside a table block"));
+            }
+            item_lines.push((*line).to_owned());
+            continue;
+        }
+
+        let is_close = trimmed == "}";
+        let is_item = trimmed.starts_with("column ")
+            || trimmed.starts_with("primary key ")
+            || trimmed.starts_with("foreign key ")
+            || trimmed.starts_with("index ")
+            || trimmed.starts_with("unique index ");
+
+        if is_close || is_item {
+            if !item_lines.is_empty() {
+                apply_table_item(&mut table, &item_lines.join("\n"), defaults)?;
+                item_lines.clear();
+            }
+            if is_close {
+                return Ok((table.finish(), start + offset + 2));
+            }
+            item_lines.push((*line).to_owned());
+        } else {
+            if item_lines.is_empty() {
+                return Err(lock_error("unexpected line inside a table block"));
+            }
+            item_lines.push((*line).to_owned());
+        }
+    }
+
+    Err(lock_error("unterminated table block: missing `}`"))
 }
 
 /// Parses the `[[enum]]` section whose entries start at `start`.
@@ -208,55 +277,6 @@ fn parse_variant_list(input: &str) -> Result<Vec<String>, Error> {
     }
 }
 
-/// Parses the `table "<name>" { ... }` block starting at `start`.
-fn parse_table(lines: &[&str], start: usize) -> Result<(TableDef, usize), Error> {
-    let header = lines.get(start).copied().unwrap_or_default();
-    let mut table = TableBuilder::new(parse_table_header(header.trim_start())?);
-
-    // Buffer of raw lines belonging to the body item being parsed. A column
-    // default may span multiple lines, so items are collected until the next item
-    // keyword or the closing brace is reached.
-    let mut item_lines: Vec<String> = Vec::new();
-    let body = lines.get(start + 1..).unwrap_or_default();
-
-    for (offset, line) in body.iter().enumerate() {
-        let trimmed = line.trim_start();
-
-        if trimmed.is_empty() {
-            if item_lines.is_empty() {
-                return Err(lock_error("unexpected blank line inside a table block"));
-            }
-            item_lines.push((*line).to_owned());
-            continue;
-        }
-
-        let is_close = trimmed == "}";
-        let is_item = trimmed.starts_with("column ")
-            || trimmed.starts_with("primary key ")
-            || trimmed.starts_with("foreign key ")
-            || trimmed.starts_with("index ")
-            || trimmed.starts_with("unique index ");
-
-        if is_close || is_item {
-            if !item_lines.is_empty() {
-                apply_table_item(&mut table, &item_lines.join("\n"))?;
-                item_lines.clear();
-            }
-            if is_close {
-                return Ok((table.finish(), start + offset + 2));
-            }
-            item_lines.push((*line).to_owned());
-        } else {
-            if item_lines.is_empty() {
-                return Err(lock_error("unexpected line inside a table block"));
-            }
-            item_lines.push((*line).to_owned());
-        }
-    }
-
-    Err(lock_error("unterminated table block: missing `}`"))
-}
-
 /// Builds a [`TableDef`] while a `table` block is being parsed.
 struct TableBuilder {
     name: String,
@@ -311,10 +331,14 @@ fn lock_error(message: impl Into<String>) -> Error {
 }
 
 /// Dispatches one buffered table-body item to the matching parser.
-fn apply_table_item(table: &mut TableBuilder, item: &str) -> Result<(), Error> {
+fn apply_table_item(
+    table: &mut TableBuilder,
+    item: &str,
+    defaults: Defaults,
+) -> Result<(), Error> {
     let item = item.trim_start();
     if item.starts_with("column ") {
-        table.columns.push(parse_column(item)?);
+        table.columns.push(parse_column(item, defaults)?);
     } else if item.starts_with("primary key ") {
         table.primary_key = parse_primary_key(item)?;
     } else if item.starts_with("foreign key ") {
@@ -345,7 +369,9 @@ fn parse_table_header(line: &str) -> Result<String, Error> {
 }
 
 /// Parses a `column "<name>": <type> ...` definition.
-fn parse_column(item: &str) -> Result<ColumnDef, Error> {
+///
+/// The `defaults` of the snapshot decide how the SQL text of the default is read.
+fn parse_column(item: &str, defaults: Defaults) -> Result<ColumnDef, Error> {
     let rest = item
         .strip_prefix("column ")
         .ok_or_else(|| lock_error("expected `column` keyword"))?;
@@ -357,7 +383,11 @@ fn parse_column(item: &str) -> Result<ColumnDef, Error> {
     let marker = find_nullability_marker(rest)?;
     let type_kind = parse_type_kind(&rest[..marker.start])?;
     let default = if marker.has_default {
-        Some(rest[marker.start + marker.len..].to_owned())
+        let text = &rest[marker.start + marker.len..];
+        Some(match defaults {
+            Defaults::Verbatim => text.to_owned(),
+            Defaults::Quoted => parse_quoted_default(text)?,
+        })
     } else {
         None
     };
@@ -402,7 +432,7 @@ fn parse_foreign_key(item: &str) -> Result<ForeignKeyDef, Error> {
         .strip_prefix(' ')
         .ok_or_else(|| lock_error("expected a space before the referenced columns"))?;
     let (referenced_columns, rest) = parse_quoted_list(rest)?;
-    if !rest.is_empty() {
+    if !rest.trim().is_empty() {
         return Err(lock_error(
             "unexpected text after the foreign key declaration",
         ));
@@ -426,7 +456,7 @@ fn parse_index(item: &str, unique: bool) -> Result<IndexDef, Error> {
         .strip_prefix(' ')
         .ok_or_else(|| lock_error("expected a space before the indexed columns"))?;
     let (columns, rest) = parse_quoted_list(rest)?;
-    if !rest.is_empty() {
+    if !rest.trim().is_empty() {
         return Err(lock_error("unexpected text after the index declaration"));
     }
     Ok(IndexDef::new(name, columns, unique))
@@ -561,4 +591,55 @@ fn parse_type_kind(text: &str) -> Result<TypeKind, Error> {
 /// even number of quotes.
 fn has_open_quote(text: &str) -> bool {
     text.chars().filter(|character| *character == '"').count() % 2 == 1
+}
+
+/// Parses a quoted, escaped default value written by a current snapshot.
+///
+/// A doubled quote carries a literal quote, `\\` a backslash, `\n` a line feed,
+/// and `\r` a carriage return; every other character stands for itself.
+fn parse_quoted_default(input: &str) -> Result<String, Error> {
+    let mut characters = input.char_indices();
+
+    match characters.next() {
+        Some((_, '"')) => {}
+        _ => return Err(lock_error("expected a double-quoted default value")),
+    }
+
+    let mut value = String::new();
+    let mut closing = None;
+
+    while let Some((index, character)) = characters.next() {
+        match character {
+            '"' => {
+                if let Some((_, '"')) = characters.clone().next() {
+                    characters.next();
+                    value.push('"');
+                } else {
+                    closing = Some(index);
+                    break;
+                }
+            }
+            '\\' => match characters.next() {
+                Some((_, 'n')) => value.push('\n'),
+                Some((_, 'r')) => value.push('\r'),
+                Some((_, '\\')) => value.push('\\'),
+                Some((_, other)) => {
+                    return Err(lock_error(format!(
+                        "the escape `\\{other}` is not recognised in a default value"
+                    )))
+                }
+                None => return Err(lock_error("a default value ends inside an escape")),
+            },
+            other => value.push(other),
+        }
+    }
+
+    let closing = closing.ok_or_else(|| lock_error("unterminated quoted default value"))?;
+    let rest = &input[closing + 1..];
+
+    if !rest.trim().is_empty() {
+        return Err(lock_error("unexpected text after a quoted default value"));
+    }
+
+    Ok(value)
 }

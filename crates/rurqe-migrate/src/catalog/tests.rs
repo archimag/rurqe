@@ -31,11 +31,11 @@ fn orders() -> TableDef {
 }
 
 const EXPECTED_LOCK: &str = concat!(
-    "schema lock v1\n",
+    "schema lock v2\n",
     "\n",
     "table \"orders\" {\n",
     "  column \"id\": int64 not null\n",
-    "  column \"total\": float64 null default 0\n",
+    "  column \"total\": float64 null default \"0\"\n",
     "  column \"user_id\": int64 not null\n",
     "  primary key (\"id\")\n",
     "  foreign key \"orders_user_id_fkey\" (\"user_id\") references \"users\" (\"id\")\n",
@@ -97,7 +97,7 @@ fn identifiers_are_quoted_and_escaped() {
     assert_eq!(
         catalog.to_lock(),
         concat!(
-            "schema lock v1\n",
+            "schema lock v2\n",
             "\n",
             "table \"we\"\"ird\" {\n",
             "  column \"select\": citext null\n",
@@ -108,7 +108,7 @@ fn identifiers_are_quoted_and_escaped() {
 
 #[test]
 fn empty_catalog_renders_only_the_header() {
-    assert_eq!(SchemaCatalog::default().to_lock(), "schema lock v1\n");
+    assert_eq!(SchemaCatalog::default().to_lock(), "schema lock v2\n");
 }
 
 #[test]
@@ -251,8 +251,26 @@ fn from_lock_round_trips_defaults_containing_keywords() {
 #[test]
 fn from_lock_rejects_a_missing_or_wrong_header() {
     assert!(SchemaCatalog::from_lock("").is_err());
-    assert!(SchemaCatalog::from_lock("schema lock v2\n").is_err());
-    assert!(SchemaCatalog::from_lock("schema lock v1").is_ok());
+    assert!(SchemaCatalog::from_lock("schema lock v3\n").is_err());
+    assert!(SchemaCatalog::from_lock("schema lock v2").is_ok());
+}
+
+#[test]
+fn a_v1_snapshot_is_still_read_with_verbatim_defaults() {
+    let lock = concat!(
+        "schema lock v1\n",
+        "\n",
+        "table \"events\" {\n",
+        "  column \"payload\": text null default line one\n",
+        "}\n",
+    );
+
+    let catalog = SchemaCatalog::from_lock(lock).unwrap();
+
+    assert_eq!(
+        catalog.tables[0].columns[0].default.as_deref(),
+        Some("line one")
+    );
 }
 
 #[test]
@@ -283,7 +301,7 @@ fn lock_renders_enum_sections_before_tables() {
     assert_eq!(
         catalog.to_lock(),
         concat!(
-            "schema lock v1\n",
+            "schema lock v2\n",
             "\n",
             "[[enum]]\n",
             "name = \"mood\"\n",
@@ -317,7 +335,7 @@ fn enum_and_array_column_types_render_canonically() {
     assert_eq!(
         catalog.to_lock(),
         concat!(
-            "schema lock v1\n",
+            "schema lock v2\n",
             "\n",
             "table \"accounts\" {\n",
             "  column \"mood\": enum \"mood\" not null\n",
@@ -364,4 +382,26 @@ fn from_lock_rejects_malformed_enum_sections() {
         SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nname = \"m\"\nvariants = [\"a\"\n")
             .is_err()
     );
+}
+
+#[test]
+fn quoted_defaults_survive_quotes_backslashes_and_line_breaks() {
+    let catalog = SchemaCatalog::new(vec![TableDef::new(
+        "events",
+        vec![ColumnDef::new("payload", TypeKind::Text, true)
+            .with_default("'{\"a\": \"b\"}'\nsecond\\line")],
+        Vec::new(),
+    )]);
+
+    let lock = catalog.to_lock();
+    let line = lock
+        .lines()
+        .find(|line| line.trim_start().starts_with("column \"payload\""))
+        .expect("the column is rendered");
+
+    assert!(
+        line.contains("\\n"),
+        "a line break stays escaped inside the default: {line}"
+    );
+    assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }

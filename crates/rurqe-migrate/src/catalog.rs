@@ -26,7 +26,7 @@
 //! assert_eq!(
 //!     catalog.to_lock(),
 //!     concat!(
-//!         "schema lock v1\n",
+//!         "schema lock v2\n",
 //!         "\n",
 //!         "table \"users\" {\n",
 //!         "  column \"email\": text not null\n",
