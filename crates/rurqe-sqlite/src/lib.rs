@@ -20,7 +20,8 @@ use core::marker::PhantomData;
 
 pub use rurqe_core;
 use rurqe_core::dialect::{
-    Dialect, SupportsAggregateFilter, SupportsOnConflict, SupportsReturning, SupportsUpdateFrom,
+    Dialect, SupportsAggregateFilter, SupportsJsonAggregation, SupportsNullsOrdering,
+    SupportsOnConflict, SupportsReturning, SupportsUpdateFrom, SupportsWindowFunctions,
 };
 
 /// Marker trait representing a SQLite engine version.
@@ -45,12 +46,21 @@ impl SqliteVersion for Sqlite3_24 {}
 impl SqliteVersionAtLeast<3, 0> for Sqlite3_24 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_24 {}
 
+/// SQLite 3.25 marker: introduces window functions (`OVER (...)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Sqlite3_25;
+impl SqliteVersion for Sqlite3_25 {}
+impl SqliteVersionAtLeast<3, 0> for Sqlite3_25 {}
+impl SqliteVersionAtLeast<3, 24> for Sqlite3_25 {}
+impl SqliteVersionAtLeast<3, 25> for Sqlite3_25 {}
+
 /// SQLite 3.30 marker: introduces `FILTER (WHERE ...)` clauses on aggregate functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sqlite3_30;
 impl SqliteVersion for Sqlite3_30 {}
 impl SqliteVersionAtLeast<3, 0> for Sqlite3_30 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_30 {}
+impl SqliteVersionAtLeast<3, 25> for Sqlite3_30 {}
 impl SqliteVersionAtLeast<3, 30> for Sqlite3_30 {}
 
 /// SQLite 3.35 marker: introduces the `RETURNING` clause on DML statements.
@@ -59,6 +69,7 @@ pub struct Sqlite3_35;
 impl SqliteVersion for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 0> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_35 {}
+impl SqliteVersionAtLeast<3, 25> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 30> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 
@@ -154,6 +165,18 @@ impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsOnConflict for Sqli
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsUpdateFrom for Sqlite<V> {}
 
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 30>> SupportsAggregateFilter for Sqlite<V> {}
+
+// Window functions belong to SQLite since 3.25.0, and explicit `NULLS FIRST` /
+// `NULLS LAST` since 3.30.0, so each capability follows the threshold that
+// introduced it. `GREATEST` and `LEAST` were never added to the engine (its
+// `max`/`min` scalar functions serve the same purpose), and `IS DISTINCT FROM`
+// arrived only in 3.39.0, past the newest pinned marker, so neither capability is
+// implemented for any declared version.
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 25>> SupportsWindowFunctions for Sqlite<V> {}
+
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 30>> SupportsNullsOrdering for Sqlite<V> {}
+
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsJsonAggregation for Sqlite<V> {}
 
 /// Re-export of the underlying `rusqlite` crate for adapter users.
 #[cfg(feature = "rusqlite")]
@@ -589,5 +612,27 @@ mod tests {
 
         assert_update_from::<Sqlite<Sqlite3_35>>();
         assert_update_from::<Sqlite>();
+    }
+
+    #[test]
+    fn expression_capabilities_are_gated_by_version() {
+        fn assert_window_functions<D: Dialect + SupportsWindowFunctions>() {}
+        fn assert_nulls_ordering<D: Dialect + SupportsNullsOrdering>() {}
+        fn assert_json_aggregation<D: Dialect + SupportsJsonAggregation>() {}
+
+        assert_window_functions::<Sqlite<Sqlite3_25>>();
+        assert_window_functions::<Sqlite<Sqlite3_30>>();
+        assert_window_functions::<Sqlite<Sqlite3_35>>();
+        assert_window_functions::<Sqlite>();
+
+        assert_nulls_ordering::<Sqlite<Sqlite3_30>>();
+        assert_nulls_ordering::<Sqlite<Sqlite3_35>>();
+        assert_nulls_ordering::<Sqlite>();
+
+        assert_json_aggregation::<Sqlite<Sqlite3_24>>();
+        assert_json_aggregation::<Sqlite<Sqlite3_25>>();
+        assert_json_aggregation::<Sqlite<Sqlite3_30>>();
+        assert_json_aggregation::<Sqlite<Sqlite3_35>>();
+        assert_json_aggregation::<Sqlite>();
     }
 }

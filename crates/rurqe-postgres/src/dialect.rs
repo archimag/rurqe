@@ -4,9 +4,10 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 
 use rurqe_core::dialect::{
-    Dialect, SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctOn,
-    SupportsFullOuterJoin, SupportsLateralJoin, SupportsOnConflict, SupportsReturning,
-    SupportsRowLocking, SupportsUpdateFrom,
+    Dialect, SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctFrom,
+    SupportsDistinctOn, SupportsFullOuterJoin, SupportsGreatest, SupportsJsonAggregation,
+    SupportsLateralJoin, SupportsNullsOrdering, SupportsOnConflict, SupportsReturning,
+    SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
 };
 
 /// Marker trait representing a PostgreSQL engine version.
@@ -62,6 +63,11 @@ impl<V: PgVersion> SupportsUpdateFrom for Postgres<V> {}
 impl<V: PgVersion> SupportsFullOuterJoin for Postgres<V> {}
 impl<V: PgVersion> SupportsRowLocking for Postgres<V> {}
 impl<V: PgVersion> SupportsAggregateFilter for Postgres<V> {}
+impl<V: PgVersion> SupportsWindowFunctions for Postgres<V> {}
+impl<V: PgVersion> SupportsNullsOrdering for Postgres<V> {}
+impl<V: PgVersion> SupportsGreatest for Postgres<V> {}
+impl<V: PgVersion> SupportsJsonAggregation for Postgres<V> {}
+impl<V: PgVersion> SupportsDistinctFrom for Postgres<V> {}
 
 #[cfg(test)]
 mod tests {
@@ -101,6 +107,24 @@ mod tests {
         assert_capabilities::<Postgres<Pg15>>();
         assert_capabilities::<Postgres<Pg16>>();
         assert_capabilities::<Postgres>();
+    }
+
+    #[test]
+    fn expression_capabilities_hold_for_every_version() {
+        fn assert_expression_capabilities<
+            D: Dialect
+                + SupportsWindowFunctions
+                + SupportsNullsOrdering
+                + SupportsGreatest
+                + SupportsJsonAggregation
+                + SupportsDistinctFrom,
+        >() {
+        }
+
+        assert_expression_capabilities::<Postgres<Pg14>>();
+        assert_expression_capabilities::<Postgres<Pg15>>();
+        assert_expression_capabilities::<Postgres<Pg16>>();
+        assert_expression_capabilities::<Postgres>();
     }
 
     #[test]
