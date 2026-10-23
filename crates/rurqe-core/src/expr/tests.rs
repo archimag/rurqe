@@ -24,6 +24,9 @@ impl crate::dialect::Dialect for MockDialect {
     }
 }
 
+// The mock dialect stands for a modern engine, so filtered aggregates render.
+impl crate::dialect::SupportsAggregateFilter for MockDialect {}
+
 fn render(kind: &ExprKind) -> (String, Vec<SqlVal>) {
     let mut sql = String::new();
     let mut params = Vec::new();

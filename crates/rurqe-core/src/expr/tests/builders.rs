@@ -386,7 +386,7 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
         }
     );
 
-    let filtered = sum(UserId).filter_where(UserId.gt(10i64));
+    let filtered = sum(UserId).filter_where::<MockDialect, _>(UserId.gt(10i64));
     assert_eq!(
         filtered.kind(),
         &ExprKind::Aggregate {
@@ -409,8 +409,8 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
 
     let chained = Expr::count::<UserId>()
         .distinct()
-        .filter_where(UserId.gt(0i64))
-        .filter_where(UserId.lt(100i64));
+        .filter_where::<MockDialect, _>(UserId.gt(0i64))
+        .filter_where::<MockDialect, _>(UserId.lt(100i64));
 
     let ExprKind::Aggregate {
         distinct,

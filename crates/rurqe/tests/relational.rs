@@ -174,8 +174,9 @@ fn aggregate_filter_where_and_distinct_aggregates_render_expected_sql() {
         .select((
             OrderUserId,
             count_distinct(OrderId),
-            sum(OrderTotal).filter_where(Expr::column::<OrderTotal>().gt(100.0)),
-            avg_distinct(OrderTotal).filter_where(Expr::column::<OrderId>().gt(0i64)),
+            sum(OrderTotal).filter_where::<Postgres<Pg16>, _>(Expr::column::<OrderTotal>().gt(100.0)),
+            avg_distinct(OrderTotal)
+                .filter_where::<Postgres<Pg16>, _>(Expr::column::<OrderId>().gt(0i64)),
         ))
         .group_by(OrderUserId)
         .build();
@@ -760,7 +761,8 @@ fn window_frames_restrict_the_rows_a_window_reads() {
 
 #[test]
 fn a_filtered_aggregate_restricts_the_rows_it_reads() {
-    let spent = sum(OrderTotal).filter_where(Expr::column::<OrderId>().gt(0i64));
+    let spent =
+        sum(OrderTotal).filter_where::<Postgres<Pg16>, _>(Expr::column::<OrderId>().gt(0i64));
 
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()

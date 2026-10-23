@@ -25,14 +25,18 @@ fn filtered_and_distinct_aggregates_render_sql() {
     assert_eq!(sql, "COUNT(DISTINCT \"id\")");
     assert!(params.is_empty());
 
-    let (sql, params) = render(Expr::count::<UserId>().filter_where(UserId.gt(10i64)).kind());
+    let (sql, params) = render(
+        Expr::count::<UserId>()
+            .filter_where::<MockDialect, _>(UserId.gt(10i64))
+            .kind(),
+    );
     assert_eq!(sql, "COUNT(\"id\") FILTER (WHERE (\"id\" > ?))");
     assert_eq!(params, vec![SqlVal::I64(10)]);
 
     let (sql, params) = render(
         sum_distinct(UserId)
-            .filter_where(UserId.gt(5i64))
-            .filter_where(UserId.lt(50i64))
+            .filter_where::<MockDialect, _>(UserId.gt(5i64))
+            .filter_where::<MockDialect, _>(UserId.lt(50i64))
             .kind(),
     );
     assert_eq!(

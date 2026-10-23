@@ -7,7 +7,7 @@ use super::ops::IntoExpr;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsAggregateFilter};
 use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::schema::{Column, Table};
 
@@ -542,8 +542,78 @@ impl<T, Scope> Expr<T, Scope, Aggregate> {
     /// Adds a `FILTER (WHERE ...)` clause restricting the rows this aggregate evaluates.
     ///
     /// Multiple calls combine their conditions with the SQL `AND` operator.
-    pub fn filter_where<P>(self, predicate: Expr<bool, P>) -> Expr<T, Merged<Scope, P>, Aggregate>
+    ///
+    /// A filtered aggregate is a dialect capability rather than plain SQL:
+    /// PostgreSQL knows the clause from its first version, while SQLite gained it
+    /// in 3.30.0. The dialect of the statement the aggregate is projected into is
+    /// therefore named explicitly and must implement
+    /// [`SupportsAggregateFilter`](crate::dialect::SupportsAggregateFilter):
+    ///
+    /// ```
+    /// use rurqe_core::dialect::{Dialect, SupportsAggregateFilter};
+    /// use rurqe_core::expr::{sum, Expr};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsAggregateFilter for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// let spent = sum(OrderTotal)
+    ///     .filter_where::<MockDialect, _>(Expr::column::<OrderTotal>().gt(50.0));
+    /// ```
+    ///
+    /// A dialect without the capability rejects the call at compile time instead
+    /// of rendering SQL the engine cannot parse:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::{sum, Expr};
+    ///
+    /// struct FlatDialect;
+    ///
+    /// impl Dialect for FlatDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: `FlatDialect` has no `FILTER (WHERE ...)` clause.
+    /// let _ = sum(OrderTotal)
+    ///     .filter_where::<FlatDialect, _>(Expr::column::<OrderTotal>().gt(50.0));
+    /// ```
+    pub fn filter_where<D, P>(
+        self,
+        predicate: Expr<bool, P>,
+    ) -> Expr<T, Merged<Scope, P>, Aggregate>
     where
+        D: SupportsAggregateFilter,
         Scope: MergeScope<P>,
     {
         let ExprKind::Aggregate {

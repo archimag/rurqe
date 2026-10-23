@@ -17,6 +17,12 @@
 //! [`Selection`](rurqe_core::query::Selection) keeps the declared column types.
 //! Two projections producing the same field name are reported as a compile
 //! error suggesting an explicit rename.
+//!
+//! The synthesized selection implements
+//! [`GroupedSelection`](rurqe_core::query::GroupedSelection) as well, so it
+//! projects from a grouped query under the same rule a tuple selection follows:
+//! every projected column must be part of the `GROUP BY` clause or be an
+//! aggregate.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -37,6 +43,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut projection_pushes = TokenStream::new();
     let mut selection_bounds = TokenStream::new();
     let mut scope_bounds = TokenStream::new();
+    let mut grouped_bounds = TokenStream::new();
     let mut from_bounds = TokenStream::new();
     let mut belongs_bounds = TokenStream::new();
     let mut from_positions = TokenStream::new();
@@ -49,7 +56,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut position_args = Vec::new();
     let mut used_fields: Vec<String> = Vec::new();
 
-    for (index, item) in projections.items.iter().enumerate() {
+    for (index, item) in projections.as_slice().iter().enumerate() {
         let field = item.field_ident()?;
         let field_name = field.to_string();
         if used_fields.contains(&field_name) {
@@ -79,6 +86,9 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         });
         scope_bounds.extend(quote! {
             #element: ::rurqe_core::query::SelectTargetInScope<Tables, #position>,
+        });
+        grouped_bounds.extend(quote! {
+            #element: ::rurqe_core::query::GroupedSelectTarget<__G, #position>,
         });
         from_bounds.extend(quote! {
             #element: ::rurqe_core::query::SelectTargetInScope<
@@ -147,7 +157,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         });
     }
 
-    let arity = Literal::usize_unsuffixed(projections.items.len());
+    let arity = Literal::usize_unsuffixed(projections.len());
 
     Ok(quote! {
         {
@@ -157,7 +167,8 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 #field_defs
             }
 
-            impl<#(#record_params),*> ::rurqe_core::row::FromRow for __RurqeRecord<#(#record_params),*>
+            impl<#(#record_params),*> ::rurqe_core::row::FromRow
+                for __RurqeRecord<#(#record_params),*>
             where
                 #(#record_params: ::rurqe_core::row::FromSqlValue,)*
             {
@@ -172,6 +183,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                             },
                         );
                     }
+
                     ::core::result::Result::Ok(__RurqeRecord {
                         #field_reads
                     })
@@ -223,8 +235,21 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 type Row = __RurqeRecord<#(#scoped_args),*>;
             }
 
+            // A grouped query accepts the same projections under one extra rule:
+            // every projected column must be grouped or an aggregate, which the
+            // `GroupedSelectTarget` bound of each element states.
+            impl<__G, #(#position_params,)* #(#element_params,)*>
+                ::rurqe_core::query::GroupedSelection<__G, (#(#position_args,)*)>
+                for __RurqeSelection<#(#element_params),*>
+            where
+                #selection_bounds
+                #grouped_bounds
+            {
+            }
+
             impl<__T: ::rurqe_core::schema::Table, #(#element_params,)*>
-                ::rurqe_core::query::TableSelection<__T> for __RurqeSelection<#(#element_params),*>
+                ::rurqe_core::query::TableSelection<__T>
+                for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds
                 #belongs_bounds
@@ -297,5 +322,13 @@ mod tests {
         let expanded = expand_projections(&projections).expect("projections expand");
 
         assert!(expanded.to_string().contains("__RurqeSelection"));
+    }
+
+    #[test]
+    fn colliding_field_names_are_rejected() {
+        let projections = projection_list("UserId as id, users::EMAIL as id");
+        let error = expand_projections(&projections).expect_err("duplicate fields are rejected");
+
+        assert!(error.to_string().contains("more than one projection"));
     }
 }

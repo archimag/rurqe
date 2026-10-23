@@ -204,6 +204,18 @@ fn selection_feeds_the_query_builder() {
     assert_eq!(built.sql, "SELECT id, email FROM users");
 }
 
+#[test]
+fn selections_project_from_a_grouped_query() {
+    let built = SelectQuery::<TestDialect>::new()
+        .from::<Order>()
+        .group_by(OrderId)
+        .select(select!(OrderId, order_count: Expr::count_all()))
+        .build();
+
+    assert_eq!(built.sql, "SELECT id, COUNT(*) FROM orders GROUP BY id");
+    assert!(built.params.is_empty());
+}
+
 /// A second dialect scope proving that the dialect is fixed by the imported
 /// `from(table)` trait, so the same `select!` expression binds to another
 /// dialect without any turbofish.
