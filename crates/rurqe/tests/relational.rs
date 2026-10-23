@@ -118,35 +118,52 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
 }
 
 #[test]
-fn cross_join_and_full_outer_join_render_and_lift_nullability() {
-    let cross = select_from::<Postgres<Pg16>, User>()
+fn cross_join_renders_an_unconditional_cartesian_product() {
+    let built = select_from::<Postgres<Pg16>, User>()
         .cross_join_table(Order)
-        .select((UserId, OrderId))
+        .select((UserId, OrderId, OrderTotal))
+        .where_(Expr::column::<UserActive>().eq(true))
         .build();
 
     assert_eq!(
-        cross.sql,
-        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" CROSS JOIN \"orders\""
+        built.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" \
+         CROSS JOIN \"orders\" WHERE (\"users\".\"active\" = $1)"
     );
+    assert_eq!(built.params, vec![SqlVal::Bool(true)]);
 
-    type FullOuterScope = FullOuterJoined<User, Order>;
-    type NullablePair = (Option<i64>, Option<i64>);
+    // A cross join matches every pair of rows, so neither side becomes nullable.
+    let row = <(i64, i64, f64)>::from_row(&[SqlVal::I64(1), SqlVal::I64(42), SqlVal::F64(19.5)])
+        .expect("the cartesian row decodes");
 
-    let full_outer: SelectQuery<Postgres<Pg16>, FullOuterScope, NullablePair, HasProjection> =
-        select_from::<Postgres<Pg16>, User>()
-            .full_outer_join_table(
-                Order,
-                Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
-            )
-            .select((UserId, OrderId));
+    assert_eq!(row, (1, 42, 19.5));
+}
+
+#[test]
+fn full_outer_join_lifts_both_sides_into_options() {
+    // Both relations of a FULL OUTER JOIN can stay unmatched, so the row type
+    // states `Option<T>` for the columns of either side of the join. The dialect
+    // and the scope follow from the join and the selection, so the annotation
+    // names the projected row type only.
+    type OptionalIds = (Option<i64>, Option<i64>);
+
+    let query: SelectQuery<_, _, OptionalIds, _> = select_from::<Postgres<Pg16>, User>()
+        .full_outer_join_table(
+            Order,
+            Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
+        )
+        .select((UserId, OrderId))
+        .where_(Expr::column::<OrderTotal>().gt(10.0));
+
+    let built = query.build();
 
     assert_eq!(
-        full_outer.build().sql,
+        built.sql,
         "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" FULL OUTER JOIN \"orders\" \
-         ON (\"users\".\"id\" = \"orders\".\"user_id\")"
+         ON (\"users\".\"id\" = \"orders\".\"user_id\") WHERE (\"orders\".\"total\" > $1)"
     );
+    assert_eq!(built.params, vec![SqlVal::F64(10.0)]);
 
-    // Bilateral nullability verification: both sides decode as Option<i64>
     let matched = <(Option<i64>, Option<i64>)>::from_row(&[SqlVal::I64(1), SqlVal::I64(10)])
         .expect("matched row decodes");
     assert_eq!(matched, (Some(1), Some(10)));

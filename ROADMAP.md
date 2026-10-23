@@ -30,7 +30,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 16** [x] | Compile-Fail Hardening & Negative Test Suite | Compile-time rejection of every scope, nullability, typestate, capability, and grouping violation | Absolute SQL Correctness (Completed) |
 | **Phase 17** [x] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Completed) |
 | **Phase 18** [x] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Completed) |
-| **Phase 19** [ ] | Expression Polish, Practical DML & Advanced Ordering | Arithmetic `std::ops`, partial upsert `ON CONFLICT WHERE`, `NULLS FIRST/LAST`, `Decimal`, scalar SQL functions, JSONB extraction, `FULL OUTER JOIN` | High-ROI Relational Polish (Planned) |
+| **Phase 19** [x] | Expression Polish, Practical DML & Advanced Ordering | Arithmetic `std::ops`, partial upsert `ON CONFLICT WHERE`, `NULLS FIRST/LAST`, `Decimal`, scalar SQL functions, JSONB extraction, `FULL OUTER JOIN` | High-ROI Relational Polish (Completed) |
 
 ---
 
@@ -850,31 +850,31 @@ let filtered = select_from(Users)
 
 ---
 
-## Phase 19: Expression Polish, Practical DML & Advanced Ordering [Planned]
+## Phase 19: Expression Polish, Practical DML & Advanced Ordering [Completed]
 
 ### Objective
 Eliminate the remaining need for untyped raw SQL escape hatches (`sql!`) in common OLTP and fintech workloads: enable intuitive Rust arithmetic operators (`+`, `-`, `*`, `/`, `%`) directly on typed expressions and columns via `std::ops`, complete upsert expressiveness with partial conflict targets and conditional updates (`ON CONFLICT (...) WHERE ... DO UPDATE ... WHERE ...`), provide explicit deterministic null ordering (`NULLS FIRST` / `NULLS LAST`), integrate `rust_decimal::Decimal` under the `decimal` feature flag, implement core ANSI scalar functions (`cast`, `nullif`, `greatest`, `least`, `is_distinct_from`), add PostgreSQL JSONB value extraction operators (`->`, `->>`), and complete relational join coverage with unconditional `CROSS JOIN` and strictly typed `FULL OUTER JOIN` (with bilateral compile-time `Option<T>` nullability lifting).
 
 ### Key Deliverables
-- [ ] **Arithmetic Operators via `std::ops` on Expressions & Columns:**
+- [x] **Arithmetic Operators via `std::ops` on Expressions & Columns:**
   - Implementation of `Add`, `Sub`, `Mul`, `Div`, `Rem` for `Expr<T, Scope>` and `Column` markers.
   - Scope propagation across operands via `MergeScope`. Compile-time numeric type matching (`i32`, `i64`, `f64`, `Decimal`).
-- [ ] **Full Upsert Expressiveness (`ON CONFLICT WHERE` & `DO UPDATE WHERE`):**
+- [x] **Full Upsert Expressiveness (`ON CONFLICT WHERE` & `DO UPDATE WHERE`):**
   - Partial unique index target predicates: `on_conflict_where(target, target_predicate)`.
   - Conditional update predicates: `do_update_where(assignments, update_predicate)`.
   - Native rendering for PostgreSQL and SQLite 3.24+ without emulation.
-- [ ] **Explicit Null Ordering (`NULLS FIRST / NULLS LAST`):**
+- [x] **Explicit Null Ordering (`NULLS FIRST / NULLS LAST`):**
   - Fluent modifiers on `OrderDirection` / `SelectQuery` / `WindowSpec`: `.order_by_asc_nulls_first(...)`, `.order_by_desc_nulls_last(...)`, etc.
   - Deterministic index and keyset pagination support across varying database defaults.
-- [ ] **Ecosystem Decimal Integration (`rust_decimal` under feature `decimal`):**
+- [x] **Ecosystem Decimal Integration (`rust_decimal` under feature `decimal`):**
   - Implement `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`, and `MakeNullable` for `rust_decimal::Decimal`.
   - Connect with the existing base-10000 binary PostgreSQL `NUMERIC` codec in `rurqe-postgres`.
   - Codegen configuration mapping `TypeKind::Numeric` to `rust_decimal::Decimal` when the feature is enabled.
-- [ ] **Standard SQL Scalar Functions & Null Predicates:**
+- [x] **Standard SQL Scalar Functions & Null Predicates:**
   - Type-safe helpers in `expr::functions`: `cast::<Target>(expr)`, `nullif(a, b)`, `greatest(...)`, `least(...)`, `is_distinct_from(a, b)`, `is_not_distinct_from(a, b)`.
-- [ ] **PostgreSQL JSONB Field Extraction Operators:**
+- [x] **PostgreSQL JSONB Field Extraction Operators:**
   - Extension methods in `PgExpressions`: `->` (extract JSON object/element), `->>` (extract text scalar), `#>` / `#>>` (extract path).
-- [ ] **Relational Join Completeness (`CROSS JOIN` & `FULL OUTER JOIN`):**
+- [x] **Relational Join Completeness (`CROSS JOIN` & `FULL OUTER JOIN`):**
   - Unconditional `.cross_join(table)`.
   - `.full_outer_join(table, condition)`: static bilateral nullability lifting (both left and right relations lift to `Option<T>` in result projections).
 
