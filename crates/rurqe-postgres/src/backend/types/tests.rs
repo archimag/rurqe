@@ -1,0 +1,254 @@
+//! Regression tests for the binding layer.
+//!
+//! The tests drive the codecs through the type descriptors a server would report
+//! for a column, so the wire representation of a column the code generator maps
+//! onto `String` stays pinned without a running database.
+
+use bytes::BytesMut;
+use rurqe_core::expr::SqlVal;
+
+use super::driver::types::{IsNull, Kind, ToSql, Type};
+use super::wire::{wire_of, Wire};
+use super::SqlValParam;
+
+/// Builds a type the way the server would report it.
+fn synthetic(name: &str, oid: u32, kind: Kind) -> Type {
+    Type::new(name.to_owned(), oid, kind, "public".to_owned())
+}
+
+#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
+#[test]
+fn uuid_json_and_temporal_values_bind_directly() {
+    let mut buffer = BytesMut::new();
+    let uuid_param = SqlValParam(&SqlVal::Uuid(uuid::Uuid::nil()));
+    assert!(matches!(
+        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let json_param = SqlValParam(&SqlVal::Json(serde_json::json!({ "a": 1 })));
+    assert!(matches!(
+        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
+        .unwrap()
+        .and_hms_opt(3, 4, 5)
+        .unwrap();
+    let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
+    assert!(matches!(
+        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
+    let date_param = SqlValParam(&SqlVal::NaiveDate(date));
+    assert!(matches!(
+        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+}
+
+#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
+#[test]
+fn text_parameters_bind_to_uuid_json_and_temporal_types() {
+    let mut buffer = BytesMut::new();
+    let uuid_param = SqlValParam(&SqlVal::Text(
+        "00000000-0000-0000-0000-000000000000".to_owned(),
+    ));
+    assert!(matches!(
+        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let json_param = SqlValParam(&SqlVal::Text("{\"a\":1}".to_owned()));
+    assert!(matches!(
+        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let timestamp_param = SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()));
+    assert!(matches!(
+        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let date_param = SqlValParam(&SqlVal::Text("2024-01-02".to_owned()));
+    assert!(matches!(
+        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+}
+
+#[test]
+fn scalar_values_map_to_driver_parameters() {
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::I64(7))
+            .to_sql(&Type::INT8, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+    assert!(matches!(
+        SqlValParam(&SqlVal::Bool(true))
+            .to_sql(&Type::BOOL, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+    assert!(matches!(
+        SqlValParam(&SqlVal::Text("root".to_owned()))
+            .to_sql(&Type::TEXT, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+}
+
+#[test]
+fn null_binds_for_any_declared_type() {
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::Null)
+            .to_sql(&Type::INT8, &mut buffer)
+            .unwrap(),
+        IsNull::Yes
+    ));
+    assert!(matches!(
+        SqlValParam(&SqlVal::Null)
+            .to_sql(&Type::UUID, &mut buffer)
+            .unwrap(),
+        IsNull::Yes
+    ));
+}
+
+#[test]
+fn unusable_column_types_are_rejected_with_a_clear_message() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INTERVAL, &mut buffer) {
+        Ok(_) => panic!("intervals cannot receive bound parameters"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("int64"));
+    assert!(error.to_string().contains("interval"));
+}
+
+#[test]
+fn null_binds_to_columns_outside_the_supported_types() {
+    let mut buffer = BytesMut::new();
+
+    assert!(matches!(
+        SqlValParam(&SqlVal::Null)
+            .to_sql_checked(&Type::INTERVAL, &mut buffer)
+            .unwrap(),
+        IsNull::Yes
+    ));
+}
+
+#[test]
+fn encoding_failures_surface_as_driver_errors() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::EncodingError("not encodable".to_owned()))
+        .to_sql_checked(&Type::TEXT, &mut buffer)
+    {
+        Ok(_) => panic!("an encoding failure cannot be bound"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("not encodable"));
+}
+
+#[test]
+fn numeric_columns_bind_the_decimal_text_of_the_value() {
+    let mut buffer = BytesMut::new();
+    let param = SqlValParam(&SqlVal::Text("12345.678".to_owned()));
+    assert!(matches!(
+        param.to_sql_checked(&Type::NUMERIC, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+    assert_eq!(
+        buffer.to_vec(),
+        vec![0u8, 3, 0, 1, 0, 0, 0, 3, 0, 1, 9, 0x29, 0x1a, 0x7c]
+    );
+
+    // A value bound as a number reaches the same decimal representation.
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::I64(42))
+        .to_sql_checked(&Type::NUMERIC, &mut buffer)
+        .unwrap();
+    assert_eq!(buffer.to_vec(), vec![0u8, 1, 0, 0, 0, 0, 0, 0, 0, 42]);
+    assert_eq!(Wire::Numeric.decode(&buffer[..]), Ok("42".to_owned()));
+}
+
+#[test]
+fn network_columns_bind_and_decode_their_textual_address() {
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("10.1.2.0/24".to_owned()))
+        .to_sql_checked(&Type::CIDR, &mut buffer)
+        .unwrap();
+    assert_eq!(buffer.to_vec(), vec![2u8, 24, 1, 4, 10, 1, 2, 0]);
+    assert_eq!(
+        Wire::Network { cidr: true }.decode(&buffer[..]),
+        Ok("10.1.2.0/24".to_owned())
+    );
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("192.168.1.5".to_owned()))
+        .to_sql_checked(&Type::INET, &mut buffer)
+        .unwrap();
+    assert_eq!(
+        Wire::Network { cidr: false }.decode(&buffer[..]),
+        Ok("192.168.1.5".to_owned())
+    );
+}
+
+#[test]
+fn extension_enum_and_domain_columns_are_recognised() {
+    let citext = synthetic("citext", 65_535, Kind::Simple);
+    assert_eq!(wire_of(&citext), Some(Wire::Text));
+
+    let labels = vec!["happy".to_owned(), "sad".to_owned()];
+    let mood = synthetic("mood", 65_534, Kind::Enum(labels));
+    assert_eq!(wire_of(&mood), Some(Wire::Text));
+
+    let email = synthetic("email", 65_533, Kind::Domain(Type::TEXT));
+    assert_eq!(wire_of(&email), Some(Wire::Text));
+
+    let amount = synthetic("amount", 65_532, Kind::Domain(Type::NUMERIC));
+    assert_eq!(wire_of(&amount), Some(Wire::Numeric));
+
+    assert_eq!(wire_of(&Type::INET), Some(Wire::Network { cidr: false }));
+    assert_eq!(wire_of(&Type::CIDR), Some(Wire::Network { cidr: true }));
+    assert_eq!(wire_of(&Type::INTERVAL), None);
+}
+
+#[test]
+fn a_textual_column_accepts_its_string_representation() {
+    let citext = synthetic("citext", 65_535, Kind::Simple);
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::Text("Mixed Case".to_owned()))
+            .to_sql_checked(&citext, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+    assert_eq!(buffer.to_vec(), b"Mixed Case".to_vec());
+}
+
+#[test]
+fn a_value_without_a_textual_form_is_rejected_for_a_network_column() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INET, &mut buffer) {
+        Ok(_) => panic!("an integer has no textual network address form"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("int64"));
+    assert!(error.to_string().contains("inet"));
+}

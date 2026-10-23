@@ -4,8 +4,46 @@ use core::future::Future;
 
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
+use tokio_postgres::types::ToSql;
 
-use super::types::{execute_raw_async, fetch_raw_async, PgError};
+use super::types::{row_to_sql_vals, PgError, SqlValParam};
+
+/// Executes `query` through an asynchronous client without decoding rows.
+///
+/// The helper accepts any [`tokio_postgres::GenericClient`] — a plain client, a
+/// pooled client, or an open transaction — so the parameter binding logic is
+/// shared by every asynchronous adapter.
+pub(crate) async fn fetch_raw_async<C>(
+    client: &C,
+    query: &BuiltQuery,
+) -> Result<Vec<Vec<SqlVal>>, PgError>
+where
+    C: tokio_postgres::GenericClient,
+{
+    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+    let refs: Vec<&(dyn ToSql + Sync)> = params
+        .iter()
+        .map(|param| param as &(dyn ToSql + Sync))
+        .collect();
+    let rows = client.query(query.sql.as_str(), &refs).await?;
+    rows.iter().map(row_to_sql_vals).collect()
+}
+
+/// Executes `query` through an asynchronous client and returns affected rows.
+pub(crate) async fn execute_raw_async<C>(
+    client: &C,
+    query: &BuiltQuery,
+) -> Result<u64, PgError>
+where
+    C: tokio_postgres::GenericClient,
+{
+    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+    let refs: Vec<&(dyn ToSql + Sync)> = params
+        .iter()
+        .map(|param| param as &(dyn ToSql + Sync))
+        .collect();
+    Ok(client.execute(query.sql.as_str(), &refs).await?)
+}
 
 /// A [`tokio_postgres::Client`] executing RURQE queries asynchronously.
 ///

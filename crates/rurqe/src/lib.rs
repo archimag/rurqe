@@ -1039,7 +1039,10 @@ pub mod prelude {
     pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};
 
     #[cfg(feature = "tokio-postgres")]
-    pub use rurqe_postgres::{PgAsyncConnection, PgError};
+    pub use rurqe_postgres::PgAsyncConnection;
+
+    #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
+    pub use rurqe_postgres::PgError;
 
     #[cfg(feature = "sqlite")]
     pub use rurqe_sqlite::{

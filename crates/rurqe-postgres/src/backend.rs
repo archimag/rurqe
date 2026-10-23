@@ -1,6 +1,6 @@
 //! PostgreSQL driver execution adapters and shared parameter binding.
 
-#[cfg(feature = "tokio-postgres")]
+#[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
 pub mod types;
 
 #[cfg(feature = "tokio-postgres")]

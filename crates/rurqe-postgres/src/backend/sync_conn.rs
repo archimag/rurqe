@@ -1,12 +1,40 @@
 //! Synchronous execution adapter over [`postgres::Client`].
 
+use postgres::types::ToSql;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
     BuiltQuery, QueryBackend, TransactionBackend, TransactionGuard, TransactionStatus,
     TransactionalConnection,
 };
 
-use super::types::{execute_raw_sync, fetch_raw_sync, PgError};
+use super::types::{row_to_sql_vals, PgError, SqlValParam};
+
+/// Executes `query` through a synchronous client without decoding rows.
+pub(crate) fn fetch_raw_sync(
+    client: &mut postgres::Client,
+    query: &BuiltQuery,
+) -> Result<Vec<Vec<SqlVal>>, PgError> {
+    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+    let refs: Vec<&(dyn ToSql + Sync)> = params
+        .iter()
+        .map(|param| param as &(dyn ToSql + Sync))
+        .collect();
+    let rows = client.query(query.sql.as_str(), &refs)?;
+    rows.iter().map(row_to_sql_vals).collect()
+}
+
+/// Executes `query` through a synchronous client and returns affected rows.
+pub(crate) fn execute_raw_sync(
+    client: &mut postgres::Client,
+    query: &BuiltQuery,
+) -> Result<u64, PgError> {
+    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+    let refs: Vec<&(dyn ToSql + Sync)> = params
+        .iter()
+        .map(|param| param as &(dyn ToSql + Sync))
+        .collect();
+    Ok(client.execute(query.sql.as_str(), &refs)?)
+}
 
 /// A [`postgres::Client`] executing RURQE queries through the synchronous driver.
 ///

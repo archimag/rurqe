@@ -1,25 +1,33 @@
 //! Shared parameter binding and row decoding for the PostgreSQL driver adapters.
+//!
+//! Both adapters hand their statements to the same binding layer: a [`SqlVal`]
+//! parameter is encoded into the binary representation the server expects for
+//! the column it targets, and a result column is decoded back into the ordered
+//! [`SqlVal`]s RURQE rows are built from.
 
+mod driver;
 mod numeric;
 mod network;
 mod wire;
+
+#[cfg(test)]
+mod tests;
 
 use std::error::Error as StdError;
 use std::fmt;
 
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
-use rurqe_core::query::BuiltQuery;
-use tokio_postgres::types::{FromSql, IsNull, ToSql, Type};
-use tokio_postgres::Row;
 
-use wire::{wire_of, Wire};
+use self::driver::types::{FromSql, IsNull, ToSql, Type};
+use self::driver::{Error as DriverError, Row};
+use self::wire::{wire_of, Wire};
 
 /// Error raised while executing a query through a PostgreSQL driver adapter.
 #[derive(Debug)]
 pub enum PgError {
     /// The PostgreSQL driver failed to execute the statement.
-    Driver(tokio_postgres::Error),
+    Driver(DriverError),
     /// A result column holds a type that cannot be decoded into a [`SqlVal`].
     UnsupportedType(String),
     /// A result column holds a value that does not decode as its declared type.
@@ -67,8 +75,8 @@ impl StdError for PgError {
     }
 }
 
-impl From<tokio_postgres::Error> for PgError {
-    fn from(error: tokio_postgres::Error) -> Self {
+impl From<DriverError> for PgError {
+    fn from(error: DriverError) -> Self {
         PgError::Driver(error)
     }
 }
@@ -84,35 +92,54 @@ impl From<deadpool_postgres::PoolError> for PgError {
 ///
 /// `UUID`, `JSON`/`JSONB`, and the temporal types have no dedicated
 /// [`SqlVal`] variant: codegen maps them to `String`, so their text values
-/// are parsed back into the type the column declares before being encoded.
+/// are parsed back into the type the column declares before being encoded. A
+/// build without the feature backing one of those families binds the text as it
+/// stands and leaves the server to reject a value it cannot read.
 fn text_to_sql(
     value: &str,
     ty: &Type,
     out: &mut BytesMut,
 ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
-    if ty == &Type::UUID {
-        value.parse::<uuid::Uuid>()?.to_sql(ty, out)
-    } else if ty == &Type::JSON || ty == &Type::JSONB {
-        let parsed: serde_json::Value = serde_json::from_str(value)?;
-        parsed.to_sql(ty, out)
-    } else if ty == &Type::TIMESTAMP {
-        parse_timestamp(value)?.to_sql(ty, out)
-    } else if ty == &Type::TIMESTAMPTZ {
-        parse_timestamptz(value)?.to_sql(ty, out)
-    } else if ty == &Type::DATE {
-        chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")?.to_sql(ty, out)
-    } else {
-        value.to_sql(ty, out)
+    #[cfg(feature = "uuid")]
+    {
+        if ty == &Type::UUID {
+            return value.parse::<uuid::Uuid>()?.to_sql(ty, out);
+        }
     }
+
+    #[cfg(feature = "serde_json")]
+    {
+        if ty == &Type::JSON || ty == &Type::JSONB {
+            let parsed: serde_json::Value = serde_json::from_str(value)?;
+            return parsed.to_sql(ty, out);
+        }
+    }
+
+    #[cfg(feature = "chrono")]
+    {
+        if ty == &Type::TIMESTAMP {
+            return parse_timestamp(value)?.to_sql(ty, out);
+        }
+        if ty == &Type::TIMESTAMPTZ {
+            return parse_timestamptz(value)?.to_sql(ty, out);
+        }
+        if ty == &Type::DATE {
+            return chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")?.to_sql(ty, out);
+        }
+    }
+
+    value.to_sql(ty, out)
 }
 
 /// Parses a timestamp string, accepting both space- and `T`-separated forms.
+#[cfg(feature = "chrono")]
 fn parse_timestamp(value: &str) -> Result<chrono::NaiveDateTime, chrono::ParseError> {
     chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f"))
 }
 
 /// Parses a timestamp with time zone, assuming UTC when no offset is present.
+#[cfg(feature = "chrono")]
 fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chrono::ParseError> {
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
         return Ok(parsed.with_timezone(&chrono::Utc));
@@ -122,72 +149,6 @@ fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chron
         naive,
         chrono::Utc,
     ))
-}
-
-/// Executes `query` through an asynchronous client without decoding rows.
-///
-/// The helper accepts any [`tokio_postgres::GenericClient`] — a plain
-/// client, a pooled client, or an open transaction — so the parameter
-/// binding logic is shared by every asynchronous adapter.
-pub(crate) async fn fetch_raw_async<C>(
-    client: &C,
-    query: &BuiltQuery,
-) -> Result<Vec<Vec<SqlVal>>, PgError>
-where
-    C: tokio_postgres::GenericClient,
-{
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    let rows = client.query(query.sql.as_str(), &refs).await?;
-    rows.iter().map(row_to_sql_vals).collect()
-}
-
-/// Executes `query` through an asynchronous client and returns affected rows.
-pub(crate) async fn execute_raw_async<C>(
-    client: &C,
-    query: &BuiltQuery,
-) -> Result<u64, PgError>
-where
-    C: tokio_postgres::GenericClient,
-{
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    Ok(client.execute(query.sql.as_str(), &refs).await?)
-}
-
-/// Executes `query` through a synchronous client without decoding rows.
-#[cfg(feature = "postgres")]
-pub(crate) fn fetch_raw_sync(
-    client: &mut postgres::Client,
-    query: &BuiltQuery,
-) -> Result<Vec<Vec<SqlVal>>, PgError> {
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    let rows = client.query(query.sql.as_str(), &refs)?;
-    rows.iter().map(row_to_sql_vals).collect()
-}
-
-/// Executes `query` through a synchronous client and returns affected rows.
-#[cfg(feature = "postgres")]
-pub(crate) fn execute_raw_sync(
-    client: &mut postgres::Client,
-    query: &BuiltQuery,
-) -> Result<u64, PgError> {
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    Ok(client.execute(query.sql.as_str(), &refs)?)
 }
 
 /// A [`SqlVal`] bound to the parameter type expected by the PostgreSQL driver.
@@ -414,312 +375,101 @@ impl<'a> FromSql<'a> for RawValue {
 pub(crate) fn row_to_sql_vals(row: &Row) -> Result<Vec<SqlVal>, PgError> {
     let mut values = Vec::with_capacity(row.columns().len());
     for (index, column) in row.columns().iter().enumerate() {
-        let ty = column.type_();
-        let value = if ty == &Type::BOOL {
-            row.try_get::<usize, Option<bool>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Bool)
-        } else if ty == &Type::INT2 {
-            row.try_get::<usize, Option<i16>>(index)?
-                .map_or(SqlVal::Null, |value| SqlVal::I32(i32::from(value)))
-        } else if ty == &Type::INT4 {
-            row.try_get::<usize, Option<i32>>(index)?
-                .map_or(SqlVal::Null, SqlVal::I32)
-        } else if ty == &Type::INT8 {
-            row.try_get::<usize, Option<i64>>(index)?
-                .map_or(SqlVal::Null, SqlVal::I64)
-        } else if ty == &Type::FLOAT4 {
-            row.try_get::<usize, Option<f32>>(index)?
-                .map_or(SqlVal::Null, |value| SqlVal::F64(f64::from(value)))
-        } else if ty == &Type::FLOAT8 {
-            row.try_get::<usize, Option<f64>>(index)?
-                .map_or(SqlVal::Null, SqlVal::F64)
-        } else if ty == &Type::UUID {
-            row.try_get::<usize, Option<uuid::Uuid>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Uuid)
-        } else if ty == &Type::JSON || ty == &Type::JSONB {
-            row.try_get::<usize, Option<serde_json::Value>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Json)
-        } else if ty == &Type::TIMESTAMP {
-            row.try_get::<usize, Option<chrono::NaiveDateTime>>(index)?
-                .map_or(SqlVal::Null, SqlVal::NaiveDateTime)
-        } else if ty == &Type::TIMESTAMPTZ {
-            row.try_get::<usize, Option<chrono::DateTime<chrono::Utc>>>(index)?
-                .map_or(SqlVal::Null, SqlVal::DateTimeUtc)
-        } else if ty == &Type::DATE {
-            row.try_get::<usize, Option<chrono::NaiveDate>>(index)?
-                .map_or(SqlVal::Null, SqlVal::NaiveDate)
-        } else if ty == &Type::TEXT
-            || ty == &Type::VARCHAR
-            || ty == &Type::BPCHAR
-            || ty == &Type::NAME
-        {
-            row.try_get::<usize, Option<String>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Text)
-        } else if ty == &Type::BYTEA {
-            row.try_get::<usize, Option<Vec<u8>>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Bytes)
-        } else if let Some(wire) = wire_of(ty) {
-            // A column outside the native types is read as the raw payload of its
-            // binary representation and decoded by the wire codec, which is also
-            // what makes a domain over a native type readable.
-            match row.try_get::<usize, Option<RawValue>>(index)? {
-                Some(raw) => SqlVal::Text(raw.decode(wire, ty)?),
-                None => SqlVal::Null,
-            }
-        } else {
-            return Err(PgError::UnsupportedType(ty.name().to_owned()));
-        };
-        values.push(value);
+        values.push(column_value(row, index, column.type_())?);
     }
     Ok(values)
 }
 
-#[cfg(test)]
-mod tests {
-    use bytes::BytesMut;
-    use rurqe_core::expr::SqlVal;
-    use tokio_postgres::types::{IsNull, Kind, ToSql, Type};
-
-    use super::{wire_of, SqlValParam, Wire};
-
-    /// Builds a type the way the server would report it.
-    fn synthetic(name: &str, oid: u32, kind: Kind) -> Type {
-        Type::new(name.to_owned(), oid, kind, "public".to_owned())
+/// Decodes one column of a row into the [`SqlVal`] of its declared type.
+fn column_value(row: &Row, index: usize, ty: &Type) -> Result<SqlVal, PgError> {
+    if ty == &Type::BOOL {
+        return Ok(row
+            .try_get::<usize, Option<bool>>(index)?
+            .map_or(SqlVal::Null, SqlVal::Bool));
+    }
+    if ty == &Type::INT2 {
+        return Ok(row
+            .try_get::<usize, Option<i16>>(index)?
+            .map_or(SqlVal::Null, |value| SqlVal::I32(i32::from(value))));
+    }
+    if ty == &Type::INT4 {
+        return Ok(row
+            .try_get::<usize, Option<i32>>(index)?
+            .map_or(SqlVal::Null, SqlVal::I32));
+    }
+    if ty == &Type::INT8 {
+        return Ok(row
+            .try_get::<usize, Option<i64>>(index)?
+            .map_or(SqlVal::Null, SqlVal::I64));
+    }
+    if ty == &Type::FLOAT4 {
+        return Ok(row
+            .try_get::<usize, Option<f32>>(index)?
+            .map_or(SqlVal::Null, |value| SqlVal::F64(f64::from(value))));
+    }
+    if ty == &Type::FLOAT8 {
+        return Ok(row
+            .try_get::<usize, Option<f64>>(index)?
+            .map_or(SqlVal::Null, SqlVal::F64));
     }
 
-    #[test]
-    fn uuid_json_and_temporal_values_bind_directly() {
-        let mut buffer = BytesMut::new();
-        let uuid_param = SqlValParam(&SqlVal::Uuid(uuid::Uuid::nil()));
-        assert!(matches!(
-            uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-
-        let mut buffer = BytesMut::new();
-        let json_param = SqlValParam(&SqlVal::Json(serde_json::json!({ "a": 1 })));
-        assert!(matches!(
-            json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-
-        let mut buffer = BytesMut::new();
-        let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
-            .unwrap()
-            .and_hms_opt(3, 4, 5)
-            .unwrap();
-        let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
-        assert!(matches!(
-            timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-
-        let mut buffer = BytesMut::new();
-        let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
-        let date_param = SqlValParam(&SqlVal::NaiveDate(date));
-        assert!(matches!(
-            date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
-            IsNull::No
-        ));
+    #[cfg(feature = "uuid")]
+    {
+        if ty == &Type::UUID {
+            return Ok(row
+                .try_get::<usize, Option<uuid::Uuid>>(index)?
+                .map_or(SqlVal::Null, SqlVal::Uuid));
+        }
     }
 
-    #[test]
-    fn text_parameters_bind_to_uuid_json_and_temporal_types() {
-        let mut buffer = BytesMut::new();
-        let uuid_param = SqlValParam(&SqlVal::Text(
-            "00000000-0000-0000-0000-000000000000".to_owned(),
-        ));
-        assert!(matches!(
-            uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-
-        let mut buffer = BytesMut::new();
-        let json_param = SqlValParam(&SqlVal::Text("{\"a\":1}".to_owned()));
-        assert!(matches!(
-            json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-
-        let mut buffer = BytesMut::new();
-        let timestamp_param = SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()));
-        assert!(matches!(
-            timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-
-        let mut buffer = BytesMut::new();
-        let date_param = SqlValParam(&SqlVal::Text("2024-01-02".to_owned()));
-        assert!(matches!(
-            date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
-            IsNull::No
-        ));
+    #[cfg(feature = "serde_json")]
+    {
+        if ty == &Type::JSON || ty == &Type::JSONB {
+            return Ok(row
+                .try_get::<usize, Option<serde_json::Value>>(index)?
+                .map_or(SqlVal::Null, SqlVal::Json));
+        }
     }
 
-    #[test]
-    fn scalar_values_map_to_driver_parameters() {
-        let mut buffer = BytesMut::new();
-        assert!(matches!(
-            SqlValParam(&SqlVal::I64(7))
-                .to_sql(&Type::INT8, &mut buffer)
-                .unwrap(),
-            IsNull::No
-        ));
-        assert!(matches!(
-            SqlValParam(&SqlVal::Bool(true))
-                .to_sql(&Type::BOOL, &mut buffer)
-                .unwrap(),
-            IsNull::No
-        ));
-        assert!(matches!(
-            SqlValParam(&SqlVal::Text("root".to_owned()))
-                .to_sql(&Type::TEXT, &mut buffer)
-                .unwrap(),
-            IsNull::No
-        ));
+    #[cfg(feature = "chrono")]
+    {
+        if ty == &Type::TIMESTAMP {
+            return Ok(row
+                .try_get::<usize, Option<chrono::NaiveDateTime>>(index)?
+                .map_or(SqlVal::Null, SqlVal::NaiveDateTime));
+        }
+        if ty == &Type::TIMESTAMPTZ {
+            return Ok(row
+                .try_get::<usize, Option<chrono::DateTime<chrono::Utc>>>(index)?
+                .map_or(SqlVal::Null, SqlVal::DateTimeUtc));
+        }
+        if ty == &Type::DATE {
+            return Ok(row
+                .try_get::<usize, Option<chrono::NaiveDate>>(index)?
+                .map_or(SqlVal::Null, SqlVal::NaiveDate));
+        }
     }
 
-    #[test]
-    fn null_binds_for_any_declared_type() {
-        let mut buffer = BytesMut::new();
-        assert!(matches!(
-            SqlValParam(&SqlVal::Null)
-                .to_sql(&Type::INT8, &mut buffer)
-                .unwrap(),
-            IsNull::Yes
-        ));
-        assert!(matches!(
-            SqlValParam(&SqlVal::Null)
-                .to_sql(&Type::UUID, &mut buffer)
-                .unwrap(),
-            IsNull::Yes
-        ));
+    if ty == &Type::TEXT || ty == &Type::VARCHAR || ty == &Type::BPCHAR || ty == &Type::NAME {
+        return Ok(row
+            .try_get::<usize, Option<String>>(index)?
+            .map_or(SqlVal::Null, SqlVal::Text));
+    }
+    if ty == &Type::BYTEA {
+        return Ok(row
+            .try_get::<usize, Option<Vec<u8>>>(index)?
+            .map_or(SqlVal::Null, SqlVal::Bytes));
     }
 
-    #[test]
-    fn unusable_column_types_are_rejected_with_a_clear_message() {
-        let mut buffer = BytesMut::new();
-        let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INTERVAL, &mut buffer)
-        {
-            Ok(_) => panic!("intervals cannot receive bound parameters"),
-            Err(error) => error,
+    // A column outside the native types is read as the raw payload of its binary
+    // representation and decoded by the wire codec, which is also what makes a
+    // domain over a native type readable.
+    if let Some(wire) = wire_of(ty) {
+        return match row.try_get::<usize, Option<RawValue>>(index)? {
+            Some(raw) => Ok(SqlVal::Text(raw.decode(wire, ty)?)),
+            None => Ok(SqlVal::Null),
         };
-
-        assert!(error.to_string().contains("int64"));
-        assert!(error.to_string().contains("interval"));
     }
 
-    #[test]
-    fn null_binds_to_columns_outside_the_supported_types() {
-        let mut buffer = BytesMut::new();
-
-        assert!(matches!(
-            SqlValParam(&SqlVal::Null)
-                .to_sql_checked(&Type::INTERVAL, &mut buffer)
-                .unwrap(),
-            IsNull::Yes
-        ));
-    }
-
-    #[test]
-    fn encoding_failures_surface_as_driver_errors() {
-        let mut buffer = BytesMut::new();
-        let error = match SqlValParam(&SqlVal::EncodingError("not encodable".to_owned()))
-            .to_sql_checked(&Type::TEXT, &mut buffer)
-        {
-            Ok(_) => panic!("an encoding failure cannot be bound"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("not encodable"));
-    }
-
-    #[test]
-    fn numeric_columns_bind_the_decimal_text_of_the_value() {
-        let mut buffer = BytesMut::new();
-        let param = SqlValParam(&SqlVal::Text("12345.678".to_owned()));
-        assert!(matches!(
-            param.to_sql_checked(&Type::NUMERIC, &mut buffer).unwrap(),
-            IsNull::No
-        ));
-        assert_eq!(
-            buffer.to_vec(),
-            vec![0u8, 3, 0, 1, 0, 0, 0, 3, 0, 1, 9, 0x29, 0x1a, 0x7c]
-        );
-
-        // A value bound as a number reaches the same decimal representation.
-        let mut buffer = BytesMut::new();
-        SqlValParam(&SqlVal::I64(42))
-            .to_sql_checked(&Type::NUMERIC, &mut buffer)
-            .unwrap();
-        assert_eq!(buffer.to_vec(), vec![0u8, 1, 0, 0, 0, 0, 0, 0, 0, 42]);
-        assert_eq!(Wire::Numeric.decode(&buffer[..]), Ok("42".to_owned()));
-    }
-
-    #[test]
-    fn network_columns_bind_and_decode_their_textual_address() {
-        let mut buffer = BytesMut::new();
-        SqlValParam(&SqlVal::Text("10.1.2.0/24".to_owned()))
-            .to_sql_checked(&Type::CIDR, &mut buffer)
-            .unwrap();
-        assert_eq!(buffer.to_vec(), vec![2u8, 24, 1, 4, 10, 1, 2, 0]);
-        assert_eq!(
-            Wire::Network { cidr: true }.decode(&buffer[..]),
-            Ok("10.1.2.0/24".to_owned())
-        );
-
-        let mut buffer = BytesMut::new();
-        SqlValParam(&SqlVal::Text("192.168.1.5".to_owned()))
-            .to_sql_checked(&Type::INET, &mut buffer)
-            .unwrap();
-        assert_eq!(
-            Wire::Network { cidr: false }.decode(&buffer[..]),
-            Ok("192.168.1.5".to_owned())
-        );
-    }
-
-    #[test]
-    fn extension_enum_and_domain_columns_are_recognised() {
-        let citext = synthetic("citext", 65_535, Kind::Simple);
-        assert_eq!(wire_of(&citext), Some(Wire::Text));
-
-        let labels = vec!["happy".to_owned(), "sad".to_owned()];
-        let mood = synthetic("mood", 65_534, Kind::Enum(labels));
-        assert_eq!(wire_of(&mood), Some(Wire::Text));
-
-        let email = synthetic("email", 65_533, Kind::Domain(Type::TEXT));
-        assert_eq!(wire_of(&email), Some(Wire::Text));
-
-        let amount = synthetic("amount", 65_532, Kind::Domain(Type::NUMERIC));
-        assert_eq!(wire_of(&amount), Some(Wire::Numeric));
-
-        assert_eq!(wire_of(&Type::INET), Some(Wire::Network { cidr: false }));
-        assert_eq!(wire_of(&Type::CIDR), Some(Wire::Network { cidr: true }));
-        assert_eq!(wire_of(&Type::INTERVAL), None);
-    }
-
-    #[test]
-    fn a_textual_column_accepts_its_string_representation() {
-        let citext = synthetic("citext", 65_535, Kind::Simple);
-        let mut buffer = BytesMut::new();
-        assert!(matches!(
-            SqlValParam(&SqlVal::Text("Mixed Case".to_owned()))
-                .to_sql_checked(&citext, &mut buffer)
-                .unwrap(),
-            IsNull::No
-        ));
-        assert_eq!(buffer.to_vec(), b"Mixed Case".to_vec());
-    }
-
-    #[test]
-    fn a_value_without_a_textual_form_is_rejected_for_a_network_column() {
-        let mut buffer = BytesMut::new();
-        let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INET, &mut buffer) {
-            Ok(_) => panic!("an integer has no textual network address form"),
-            Err(error) => error,
-        };
-
-        assert!(error.to_string().contains("int64"));
-        assert!(error.to_string().contains("inet"));
-    }
+    Err(PgError::UnsupportedType(ty.name().to_owned()))
 }

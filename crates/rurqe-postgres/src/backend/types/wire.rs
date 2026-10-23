@@ -7,8 +7,7 @@
 //! reports the rest as unsupported instead of guessing a layout the server would
 //! misinterpret.
 
-use tokio_postgres::types::{Kind, Type};
-
+use super::driver::types::{Kind, Type};
 use super::{network, numeric};
 
 /// Representation a column type uses on the wire.

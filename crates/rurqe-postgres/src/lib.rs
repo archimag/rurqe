@@ -13,7 +13,7 @@ pub use expressions::{plainto_tsquery, to_tsquery, to_tsvector, PgExpressions};
 pub use backend::async_conn::{PgAsyncConnection, PgAsyncTransaction};
 #[cfg(feature = "deadpool-postgres")]
 pub use backend::pools::PgAsyncPool;
-#[cfg(feature = "tokio-postgres")]
+#[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
 pub use backend::types::PgError;
 #[cfg(feature = "r2d2")]
 pub use backend::pools::{PgPool, PgPoolError};

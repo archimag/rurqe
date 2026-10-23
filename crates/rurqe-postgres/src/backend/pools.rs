@@ -7,7 +7,8 @@ mod deadpool_impl {
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 
-    use crate::backend::types::{execute_raw_async, fetch_raw_async, PgError};
+    use crate::backend::async_conn::{execute_raw_async, fetch_raw_async};
+    use crate::backend::types::PgError;
 
     /// A `deadpool-postgres` pool executing RURQE queries asynchronously.
     ///
@@ -71,7 +72,8 @@ mod r2d2_impl {
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{BuiltQuery, QueryBackend};
 
-    use crate::backend::types::{execute_raw_sync, fetch_raw_sync, PgError};
+    use crate::backend::sync_conn::{execute_raw_sync, fetch_raw_sync};
+    use crate::backend::types::PgError;
 
     /// An `r2d2` pool of synchronous PostgreSQL connections.
     ///
