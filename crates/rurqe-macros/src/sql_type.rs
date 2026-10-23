@@ -163,8 +163,8 @@ fn nullability_impl(name: &Ident) -> TokenStream {
     }
 }
 
-/// Reads the storage mode from the `#[sql(..)]` attributes of the input.
-fn storage_of(attrs: &[Attribute]) -> syn::Result<Storage> {
+/// Collects the `#[sql(..)]` options declared on `attrs`.
+fn sql_options_of(attrs: &[Attribute]) -> syn::Result<SqlOptions> {
     let mut options = SqlOptions::default();
 
     for attr in attrs {
@@ -174,21 +174,17 @@ fn storage_of(attrs: &[Attribute]) -> syn::Result<Storage> {
         attr.parse_nested_meta(|meta| options.record(&meta))?;
     }
 
-    options.resolve()
+    Ok(options)
+}
+
+/// Reads the storage mode from the `#[sql(..)]` attributes of the input.
+fn storage_of(attrs: &[Attribute]) -> syn::Result<Storage> {
+    sql_options_of(attrs)?.resolve()
 }
 
 /// Reads the storage mode of an enum, which is its label unless stated otherwise.
 fn enum_storage_of(attrs: &[Attribute]) -> syn::Result<Storage> {
-    let mut options = SqlOptions::default();
-
-    for attr in attrs {
-        if !attr.path().is_ident("sql") {
-            continue;
-        }
-        attr.parse_nested_meta(|meta| options.record(&meta))?;
-    }
-
-    options.resolve_enum()
+    sql_options_of(attrs)?.resolve_enum()
 }
 
 /// The collected `#[sql(..)]` options of one derived newtype.
