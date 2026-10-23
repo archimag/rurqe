@@ -39,7 +39,10 @@ pub use functions::{
     avg, avg_distinct, coalesce, count, count_all, count_distinct, greatest, is_distinct_from,
     is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, SqlCastTarget,
 };
-pub use ops::{Expression, IntoExpr, Numeric, NumericOperand, SqlCompatible, StringExpression};
+pub use ops::{
+    CombineAggr, CombinedAggr, Expression, IntoExpr, Numeric, NumericOperand, SqlCompatible,
+    StringExpression,
+};
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use row::{RowExpr, RowValues};
 pub use scope::{MergeScope, Merged, Unscoped};

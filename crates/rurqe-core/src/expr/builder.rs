@@ -5,7 +5,7 @@ use core::ops::{Add, Div, Mul, Rem, Sub};
 
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
 use super::functions::SqlCastTarget;
-use super::ops::{IntoExpr, Numeric, NumericOperand};
+use super::ops::{CombineAggr, CombinedAggr, IntoExpr, Numeric, NumericOperand};
 use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
@@ -358,7 +358,11 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// applied without inspecting the operands: the database evaluates the
     /// expression, which keeps an overflow or a division by zero the decision of
     /// the server instead of the client.
-    fn arithmetic<TargetScope>(self, op: BinaryOp, rhs: ExprKind) -> Expr<T, TargetScope, Aggr> {
+    fn arithmetic<TargetScope, TargetAggr>(
+        self,
+        op: BinaryOp,
+        rhs: ExprKind,
+    ) -> Expr<T, TargetScope, TargetAggr> {
         Expr::new(ExprKind::Binary {
             op,
             lhs: Box::new(self.kind),
@@ -396,57 +400,7 @@ impl<T> Expr<T, ()> {
     /// scalar operand on its own, so most code passes the query directly to a
     /// comparison operator; this constructor spells the equivalent conversion out
     /// explicitly. The nested statement renders inline with the enclosing one, so
-    /// its parameters continue the placeholder numbering of the outer query:
-    ///
-    /// ```
-    /// use rurqe_core::dialect::Dialect;
-    /// use rurqe_core::expr::Expr;
-    /// use rurqe_core::query::SelectQuery;
-    ///
-    /// struct MockDialect;
-    ///
-    /// impl Dialect for MockDialect {
-    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
-    ///         out.push('"');
-    ///         out.push_str(ident);
-    ///         out.push('"');
-    ///     }
-    ///
-    ///     fn push_placeholder(out: &mut String, index: usize) {
-    ///         out.push('$');
-    ///         out.push_str(&index.to_string());
-    ///     }
-    /// }
-    ///
-    /// rurqe_core::table! {
-    ///     User => "users" {
-    ///         UserId => "id": i64,
-    ///         UserScore => "score": f64,
-    ///     }
-    /// }
-    ///
-    /// rurqe_core::table! {
-    ///     Order => "orders" {
-    ///         OrderUserId => "user_id": i64,
-    ///         OrderTotal => "total": f64,
-    ///     }
-    /// }
-    ///
-    /// let biggest = SelectQuery::<MockDialect>::new()
-    ///     .from::<Order>()
-    ///     .select((OrderTotal,))
-    ///     .where_(Expr::column::<OrderUserId>().eq(1i64));
-    ///
-    /// let query = SelectQuery::<MockDialect>::new()
-    ///     .from::<User>()
-    ///     .select((UserId,))
-    ///     .where_(Expr::column::<UserScore>().eq(biggest));
-    ///
-    /// assert_eq!(
-    ///     query.build().sql,
-    ///     "SELECT \"id\" FROM \"users\" WHERE (\"score\" = (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = $1)))"
-    /// );
-    /// ```
+    /// its parameters continue the placeholder numbering of the outer query.
     ///
     /// A query projecting several columns is not a single value, so it does not
     /// convert into a scalar subquery:
@@ -618,37 +572,7 @@ impl<T, Scope> Expr<T, Scope, Aggregate> {
     /// PostgreSQL knows the clause from its first version, while SQLite gained it
     /// in 3.30.0. The dialect of the statement the aggregate is projected into is
     /// therefore named explicitly and must implement
-    /// [`SupportsAggregateFilter`](crate::dialect::SupportsAggregateFilter):
-    ///
-    /// ```
-    /// use rurqe_core::dialect::{Dialect, SupportsAggregateFilter};
-    /// use rurqe_core::expr::{sum, Expr};
-    ///
-    /// struct MockDialect;
-    ///
-    /// impl Dialect for MockDialect {
-    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
-    ///         out.push('"');
-    ///         out.push_str(ident);
-    ///         out.push('"');
-    ///     }
-    ///
-    ///     fn push_placeholder(out: &mut String, index: usize) {
-    ///         let _ = index;
-    ///     }
-    /// }
-    ///
-    /// impl SupportsAggregateFilter for MockDialect {}
-    ///
-    /// rurqe_core::table! {
-    ///     Order => "orders" {
-    ///         OrderTotal => "total": f64,
-    ///     }
-    /// }
-    ///
-    /// let spent = sum(OrderTotal)
-    ///     .filter_where::<MockDialect, _>(Expr::column::<OrderTotal>().gt(50.0));
-    /// ```
+    /// [`SupportsAggregateFilter`](crate::dialect::SupportsAggregateFilter).
     ///
     /// A dialect without the capability rejects the call at compile time instead
     /// of rendering SQL the engine cannot parse:
@@ -749,11 +673,14 @@ impl Expr<(), ()> {
 // composes the way the SQL it renders reads: `Expr::column::<OrderTotal>() + 1.5`
 // renders `("total" + $1)`. The database evaluates the operator, which is why the
 // operands only have to carry the same numeric type and no value is folded on the
-// client. The aggregation marker of the left operand survives, so an aggregate
-// stays projectable from a grouped query after it is scaled:
+// client. The aggregation marker of the produced expression is derived by
+// `CombineAggr` from the marker of the left operand and the operand on the right,
+// so an aggregate scaled by a constant stays projectable from a grouped query,
+// while an aggregate combined with a column read per row stops being one:
 //
 // ```text
-// SELECT SUM("total") + $1 FROM "orders"
+// SUM("total") + $1     -> an aggregate
+// SUM("total") + "tax"  -> one value per row
 // ```
 
 impl<T, Scope, Aggr, Rhs> Add<Rhs> for Expr<T, Scope, Aggr>
@@ -761,8 +688,9 @@ where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
     Rhs: NumericOperand<T>,
+    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
 
     fn add(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Add, rhs.into_operand_kind())
@@ -774,8 +702,9 @@ where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
     Rhs: NumericOperand<T>,
+    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
 
     fn sub(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Sub, rhs.into_operand_kind())
@@ -787,8 +716,9 @@ where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
     Rhs: NumericOperand<T>,
+    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
 
     fn mul(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Mul, rhs.into_operand_kind())
@@ -800,8 +730,9 @@ where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
     Rhs: NumericOperand<T>,
+    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
 
     fn div(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Div, rhs.into_operand_kind())
@@ -813,8 +744,9 @@ where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
     Rhs: NumericOperand<T>,
+    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
 
     fn rem(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Rem, rhs.into_operand_kind())

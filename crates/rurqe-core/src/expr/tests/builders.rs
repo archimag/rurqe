@@ -624,3 +624,40 @@ fn arithmetic_renders_its_operator_between_the_operands() {
 
     assert_eq!(render(net.kind()).0, "(\"total\" - \"tax\")");
 }
+
+#[test]
+fn an_operand_reading_a_column_drops_the_aggregation_marker() {
+    // The arithmetic reads `tax` once per row, so it no longer collapses the
+    // group even though its left operand is an aggregate.
+    let folded: Expr<f64, (Order, Order), NonAggregate> = sum(OrderTotal) + OrderTax;
+
+    // The aggregate reads `total` and the constant adds no table, so the
+    // arithmetic stays projectable from a grouped query.
+    let scaled: Expr<f64, Order, Aggregate> = sum(OrderTotal) * 2.0f64;
+
+    // Two per-row operands compute one value per row, whether they read a column
+    // or a value.
+    let per_row: Expr<f64, (Order, Order), NonAggregate> = Expr::column::<OrderTotal>() + OrderTax;
+
+    assert!(matches!(
+        folded.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    ));
+    assert!(matches!(
+        scaled.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Mul,
+            ..
+        }
+    ));
+    assert!(matches!(
+        per_row.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    ));
+}

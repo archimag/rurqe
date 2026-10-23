@@ -1,12 +1,19 @@
 //! Operand compatibility, conversion, and call-site expression traits.
+//!
+//! The traits here answer the questions an operand raises at the call site of a
+//! comparison or an arithmetic operator: [`SqlCompatible`] asserts that the Rust
+//! types line up, [`IntoExpr`] converts a bound value into an expression node,
+//! [`Expression`] lets a column marker be written directly, and
+//! [`NumericOperand`] admits the right-hand side of arithmetic. [`CombineAggr`]
+//! then derives whether the arithmetic still collapses the rows of a group.
 
 use super::ast::{ExprKind, SubqueryOp};
-use super::builder::Expr;
+use super::builder::{Aggregate, Expr, NonAggregate};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::ToSqlVal;
 use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
-use crate::schema::Column;
+use crate::schema::{Column, Table};
 
 /// Statically asserts that a value of type `ValType` may be compared with a
 /// column whose Rust type is `ColType`.
@@ -350,17 +357,10 @@ impl Numeric for f64 {}
 /// A value an arithmetic expression combines with a numeric expression.
 ///
 /// Arithmetic reads the way the SQL it renders does, so the right-hand side of an
-/// operator is either a value of the numeric type, an expression of that type, or
-/// a column declared as that type:
-///
-/// ```
-/// use rurqe_core::expr::{Expr, NumericOperand};
-///
-/// fn assert_operand<T: NumericOperand<f64>>() {}
-///
-/// assert_operand::<f64>();
-/// assert_operand::<Expr<f64>>();
-/// ```
+/// operator is a value of the numeric type, a column declared as that type, or an
+/// expression of that type. Beside the tables the operand references, the
+/// operand states the aggregation marker it contributes, which
+/// [`CombineAggr`] folds with the marker of the left operand.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an operand of a `{T}` arithmetic expression",
     label = "incompatible arithmetic operand",
@@ -370,6 +370,14 @@ pub trait NumericOperand<T: Numeric> {
     /// The scope of the tables the operand references.
     type Scope;
 
+    /// The aggregation marker the operand contributes to the expression.
+    ///
+    /// A bound value or a column reference computes one value per row, so the
+    /// operand carries [`NonAggregate`]. An operand that is already an
+    /// expression keeps the marker it was built with, which keeps
+    /// `SUM("total") + SUM("tax")` an aggregate.
+    type Aggr;
+
     /// Converts `self` into the expression node of the operand.
     fn into_operand_kind(self) -> ExprKind;
 }
@@ -377,14 +385,14 @@ pub trait NumericOperand<T: Numeric> {
 /// Implements [`NumericOperand`] for the listed scalar types.
 ///
 /// The types are written out instead of being covered by a blanket implementation
-/// for every [`Numeric`] type: a blanket one would overlap with the implementations
-/// for expressions and column markers, which a downstream crate may combine with a
-/// numeric type of its own.
-macro_rules! impl_numeric_operand {
+/// over [`Numeric`], because a blanket one would overlap with the implementations
+/// for column markers and for expressions.
+macro_rules! impl_scalar_numeric_operand {
     ($($ty:ty),+ $(,)?) => {
         $(
             impl NumericOperand<$ty> for $ty {
                 type Scope = ();
+                type Aggr = NonAggregate;
 
                 fn into_operand_kind(self) -> ExprKind {
                     ExprKind::Value(self.to_sql_val())
@@ -394,30 +402,122 @@ macro_rules! impl_numeric_operand {
     };
 }
 
-impl_numeric_operand!(i32, i64, f64);
+impl_scalar_numeric_operand!(i32, i64, f64);
 
-impl<T, Scope, Aggr> NumericOperand<T> for Expr<T, Scope, Aggr>
-where
-    T: Numeric,
-{
-    type Scope = Scope;
-
-    fn into_operand_kind(self) -> ExprKind {
-        self.into_kind()
-    }
-}
-
+// A column marker computes one value per row of its table.
 impl<T, C> NumericOperand<T> for C
 where
     T: Numeric,
     C: Column<RustType = T>,
 {
     type Scope = C::Table;
+    type Aggr = NonAggregate;
 
     fn into_operand_kind(self) -> ExprKind {
         C::expr_kind()
     }
 }
+
+// A built expression keeps both the tables and the aggregation marker it was
+// constructed with.
+impl<T, Scope, Marker> NumericOperand<T> for Expr<T, Scope, Marker>
+where
+    T: Numeric,
+{
+    type Scope = Scope;
+    type Aggr = Marker;
+
+    fn into_operand_kind(self) -> ExprKind {
+        self.into_kind()
+    }
+}
+
+/// Derives the aggregation marker of an arithmetic expression.
+///
+/// The left operand of an arithmetic operator states whether the expression
+/// collapses the rows of its group, while the right operand states the same
+/// through its [marker](NumericOperand::Aggr) and says through its
+/// [scope](NumericOperand::Scope) whether it is constant within a group:
+///
+/// - two aggregates collapse their group, so the result stays [`Aggregate`];
+/// - two per-row operands compute one value per row, so the result is
+///   [`NonAggregate`];
+/// - an aggregate combined with an operand referencing no table —
+///   `SUM("total") + $1` — stays an aggregate, because a constant is the same
+///   value in every row of the group;
+/// - an aggregate combined with an operand reading a column —
+///   `SUM("total") + "tax"` — computes one value per row, so the result is
+///   [`NonAggregate`] and a grouped query rejects it.
+///
+/// The last two cases are what keeps the projection of a grouped query sound: the
+/// arithmetic reads a column the query neither groups by nor aggregates, which
+/// SQL rejects outside the `GROUP BY` clause.
+#[diagnostic::on_unimplemented(
+    message = "the aggregation marker `{Self}` cannot be combined with a `{RhsAggr}` operand of scope `{RhsScope}`",
+    label = "unsupported arithmetic operand",
+    note = "arithmetic combines a numeric expression with a value, a column reference, or an expression built from them"
+)]
+pub trait CombineAggr<RhsAggr, RhsScope> {
+    /// The aggregation marker of the expression the operands build.
+    type Output;
+}
+
+/// The aggregation marker of an arithmetic expression combining `LhsAggr` with an
+/// operand carrying `RhsAggr` and referencing `RhsScope`.
+pub type CombinedAggr<LhsAggr, RhsAggr, RhsScope> =
+    <LhsAggr as CombineAggr<RhsAggr, RhsScope>>::Output;
+
+// Two per-row operands compute one value per row, whatever tables they read.
+impl<RhsScope> CombineAggr<NonAggregate, RhsScope> for NonAggregate {
+    type Output = NonAggregate;
+}
+
+// A per-row value combined with an aggregate reads a column of the group, so the
+// arithmetic stops collapsing it.
+impl<RhsScope> CombineAggr<Aggregate, RhsScope> for NonAggregate {
+    type Output = NonAggregate;
+}
+
+// Two aggregates collapse their group.
+impl<RhsScope> CombineAggr<Aggregate, RhsScope> for Aggregate {
+    type Output = Aggregate;
+}
+
+// A value referencing no table is the same in every row of a group, so it leaves
+// an aggregate standing.
+impl CombineAggr<NonAggregate, ()> for Aggregate {
+    type Output = Aggregate;
+}
+
+// A dropped scope names a column read that is checked against the enclosing
+// statement instead of the query, so it is no more constant than the column.
+impl CombineAggr<NonAggregate, Unscoped> for Aggregate {
+    type Output = NonAggregate;
+}
+
+// A table scope is the scope of a column reference, which computes one value per
+// row.
+impl<T: Table> CombineAggr<NonAggregate, T> for Aggregate {
+    type Output = NonAggregate;
+}
+
+// A compound operand references the tables of every column it reads.
+macro_rules! impl_tuple_combine_aggr {
+    ($($table:ident),+) => {
+        impl<$($table: Table),+> CombineAggr<NonAggregate, ($($table,)+)> for Aggregate {
+            type Output = NonAggregate;
+        }
+    };
+}
+
+impl_tuple_combine_aggr!(T1);
+impl_tuple_combine_aggr!(T1, T2);
+impl_tuple_combine_aggr!(T1, T2, T3);
+impl_tuple_combine_aggr!(T1, T2, T3, T4);
+impl_tuple_combine_aggr!(T1, T2, T3, T4, T5);
+impl_tuple_combine_aggr!(T1, T2, T3, T4, T5, T6);
+impl_tuple_combine_aggr!(T1, T2, T3, T4, T5, T6, T7);
+impl_tuple_combine_aggr!(T1, T2, T3, T4, T5, T6, T7, T8);
 
 /// A SQL expression of type `T` that can be compared with bound values.
 ///
