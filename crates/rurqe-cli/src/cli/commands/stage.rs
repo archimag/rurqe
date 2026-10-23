@@ -180,9 +180,14 @@ pub(crate) fn commit_stage(
     }
 
     let catalog = introspect_database(database_url)?;
-    write_file(lock_path, &catalog.to_lock())?;
 
+    // Both artifacts are rendered before the first byte is written, and the
+    // snapshot lands before the marker that anchors it, so an interrupted commit
+    // never leaves a checkpoint pointing at a lock file it cannot validate.
+    let lock = catalog.to_lock();
     let checkpoint = Checkpoint::new(version, catalog.checksum());
+
+    write_file(lock_path, &lock)?;
     write_file(checkpoint_path, &checkpoint.render())?;
 
     println!(

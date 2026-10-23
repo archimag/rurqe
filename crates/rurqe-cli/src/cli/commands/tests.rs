@@ -8,7 +8,7 @@ use rurqe_migrate::{Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, 
 use crate::driver::SqliteMigrationBackend;
 use crate::stage::materialise_stage;
 
-use super::{commit_stage, initialise_stage, prune_migrations};
+use super::{commit_stage, initialise_stage, prune_migrations, write_file};
 
 fn workspace(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("rurqe-commands-{}-{name}", std::process::id()));
@@ -164,6 +164,63 @@ fn prune_refuses_to_drop_scripts_the_tail_still_needs() {
 
     assert!(error.to_string().contains("still needs"));
     assert!(migrations_dir.join("V2__orders.sql").exists());
+}
+
+#[test]
+fn a_written_artifact_leaves_no_staged_sibling_behind() {
+    let dir = workspace("atomic-write");
+    let target = dir.join("schema.lock");
+
+    write_file(&target, "snapshot").expect("the artifact is written");
+
+    let contents = std::fs::read_to_string(&target).expect("read the artifact");
+    assert_eq!(contents, "snapshot");
+
+    let mut entries: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the workspace")
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+
+    assert_eq!(entries, vec!["schema.lock".to_owned()]);
+}
+
+#[test]
+fn a_failed_write_reports_the_directory_it_could_not_prepare() {
+    let dir = workspace("atomic-failure");
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, "not a directory").expect("write the blocking file");
+
+    let error = write_file(&blocker.join("schema.lock"), "snapshot")
+        .expect_err("a file cannot hold the artifact");
+
+    assert!(error.to_string().contains("blocker"), "{error}");
+}
+
+#[test]
+fn a_failed_checkpoint_write_keeps_the_committed_lock_readable() {
+    let dir = workspace("commit-partial");
+    let lock_path = dir.join("schema.lock");
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, "not a directory").expect("write the blocking file");
+    let checkpoint_path = blocker.join("checkpoint.toml");
+
+    // The snapshot lands before the marker that anchors it, so a marker that
+    // cannot be written never leaves a checkpoint pointing at a lock file that
+    // describes a different database.
+    let error = commit_stage(version("3.2"), ":memory:", &lock_path, &checkpoint_path)
+        .expect_err("a file cannot hold the checkpoint");
+
+    assert!(error.to_string().contains("blocker"), "{error}");
+
+    let lock = std::fs::read_to_string(&lock_path).expect("read the lock");
+    SchemaCatalog::from_lock(&lock).expect("the committed lock stays canonical");
 }
 
 #[test]

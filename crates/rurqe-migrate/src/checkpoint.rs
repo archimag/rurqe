@@ -159,15 +159,19 @@ impl Checkpoint {
         Ok(Self::new(pruned_up_to_version, schema_hash))
     }
 
-    /// Reads the marker at `path`, returning `None` when the file is absent.
+    /// Reads the marker at `path`, returning `None` when no marker exists there.
     ///
-    /// A missing file means "no pruning boundary", while an unreadable or
-    /// malformed file is an error: silently ignoring a broken marker would let
-    /// the tail run against a database that can no longer be advanced.
+    /// An absent file means "no pruning boundary", and so does a path below a
+    /// component that is not a directory: no marker can live there, so the commit
+    /// reads the boundary as absent and the write that follows reports the
+    /// unusable path with the artifact it could not produce. A marker that is
+    /// present but unreadable or malformed stays an error, because silently
+    /// ignoring a broken marker would let the tail run against a database that can
+    /// no longer be advanced.
     pub fn load(path: &Path) -> Result<Option<Self>, Error> {
         match std::fs::read_to_string(path) {
             Ok(contents) => Self::parse(&contents).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if no_marker_can_exist(path, &error) => Ok(None),
             Err(error) => Err(invalid(format!(
                 "failed to read `{}`: {error}",
                 path.display()
@@ -219,6 +223,28 @@ impl Checkpoint {
             }),
         }
     }
+}
+
+/// Whether a failed read means no marker exists at the requested path.
+///
+/// An absent file is the ordinary case, and a path below a component that is not
+/// a directory is the second one: the marker cannot live there, so the boundary is
+/// read as absent instead of aborting a commit that has not written anything yet.
+/// Every other failure — a permission, a decode, or a damaged file — keeps the
+/// boundary unknown rather than pretending the history was never pruned.
+fn no_marker_can_exist(path: &Path, error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return true;
+    }
+
+    // A path below a regular file fails with an OS error that no stable error kind
+    // names on every toolchain, so the parent itself is inspected instead.
+    matches!(path.parent(), Some(parent) if !names_a_directory(parent))
+}
+
+/// Whether `path` names an existing directory.
+fn names_a_directory(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
 }
 
 /// Builds an [`Error::InvalidCheckpoint`] from `message`.
@@ -324,6 +350,26 @@ mod tests {
         let checkpoint = marker("3.2");
 
         assert_eq!(Checkpoint::parse(&checkpoint.render()), Ok(checkpoint));
+    }
+
+    #[test]
+    fn a_path_below_a_regular_file_holds_no_marker() {
+        let dir = std::env::temp_dir().join(format!(
+            "rurqe-checkpoint-{}-{}",
+            std::process::id(),
+            std::line!()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the workspace");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "not a directory").expect("write the blocking file");
+
+        // No marker can live below a regular file, so the boundary is absent and
+        // the write that follows reports the unusable path.
+        let loaded = Checkpoint::load(&blocker.join("checkpoint.toml"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(loaded, Ok(None));
     }
 
     #[test]

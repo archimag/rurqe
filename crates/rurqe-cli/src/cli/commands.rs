@@ -7,6 +7,7 @@
 //! re-exports the entry points consumed by the CLI dispatcher.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::codegen::CodegenOptions;
 use crate::config::{CodegenConfig, DEFAULT_CONFIG_PATH};
@@ -89,8 +90,58 @@ pub(super) fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
             })?;
         }
     }
-    std::fs::write(path, contents)
-        .map_err(|e| CliError(format!("failed to write `{}`: {e}", path.display())))
+
+    // The bytes are staged next to the artifact and renamed into place, so a
+    // failure while they are written leaves the previous file untouched instead
+    // of truncating it. A lock and the checkpoint derived from it therefore never
+    // disagree about the snapshot they describe.
+    let temporary = temporary_sibling(path);
+    write_temporary(&temporary, contents, path)?;
+
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        CliError(format!("failed to write `{}`: {error}", path.display()))
+    })
+}
+
+/// The temporary file an artifact is staged in before it is renamed.
+///
+/// The name stays a hidden sibling of the artifact, and the process id together
+/// with a monotonic counter keeps two writers of one path apart.
+fn temporary_sibling(path: &Path) -> PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temporary = format!(".{name}.{}.{sequence}.tmp", std::process::id());
+
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(temporary),
+        _ => PathBuf::from(temporary),
+    }
+}
+
+/// Writes the bytes of an artifact and flushes them to the device.
+fn write_temporary(temporary: &Path, contents: &str, path: &Path) -> Result<(), CliError> {
+    use std::io::Write;
+
+    let mut file = std::fs::File::create(temporary)
+        .map_err(|error| write_failure(temporary, path, &error))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| write_failure(temporary, path, &error))?;
+    file.sync_all()
+        .map_err(|error| write_failure(temporary, path, &error))?;
+
+    Ok(())
+}
+
+/// Removes the staged file a failed write left behind and names the artifact.
+fn write_failure(temporary: &Path, path: &Path, error: &std::io::Error) -> CliError {
+    let _ = std::fs::remove_file(temporary);
+    CliError(format!("failed to write `{}`: {error}", path.display()))
 }
 
 pub(super) fn print_help() {
