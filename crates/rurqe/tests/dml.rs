@@ -385,3 +385,98 @@ fn mutation_filters_keep_the_scope_of_column_markers() {
     assert_eq!(deleted.sql, "DELETE FROM \"users\" WHERE (\"name\" = $1)");
     assert_eq!(deleted.params, vec![SqlVal::Text("guest".to_owned())]);
 }
+
+#[test]
+fn a_partial_conflict_target_and_a_conditional_update_close_the_upsert() {
+    // The target predicate selects the partial unique index the statement
+    // conflicts on, while the update predicate restricts which conflicting rows
+    // are rewritten. Both sit around the action they qualify.
+    let built = insert_into::<Postgres, User>()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict((UserId,))
+        .target_where(Expr::column::<UserId>().gt(0i64))
+        .update_where(Expr::column::<UserName>().ne("root"))
+        .do_update(UserName::set("upserted"))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
+         ON CONFLICT (\"id\") WHERE (\"id\" > $3) \
+         DO UPDATE SET \"name\" = $4 WHERE (\"name\" <> $5)"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::I64(1),
+            SqlVal::Text("root".to_owned()),
+            SqlVal::I64(0),
+            SqlVal::Text("upserted".to_owned()),
+            SqlVal::Text("root".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn the_update_predicate_compares_the_stored_row_with_the_proposed_one() {
+    // `EXCLUDED` is a relation of its own inside the update branch, so the
+    // predicate reads the stored row and the proposed one side by side.
+    let built = insert_into::<Postgres, User>()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict((UserId,))
+        .update_where(excluded(UserName).ne(Expr::column::<UserName>()))
+        .do_update(UserName::set_expr(excluded(UserName)))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") \
+         DO UPDATE SET \"name\" = EXCLUDED.\"name\" WHERE (EXCLUDED.\"name\" <> \"name\")"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+    );
+}
+
+#[test]
+fn a_partial_conflict_target_restricts_a_do_nothing_clause() {
+    // A skipped conflict keeps the target predicate it was narrowed to, so the
+    // statement only stays silent for the rows of the partial index.
+    let built = insert_into::<Postgres, User>()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict((UserId,))
+        .target_where(Expr::column::<UserId>().gt(0i64))
+        .do_nothing()
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
+         ON CONFLICT (\"id\") WHERE (\"id\" > $3) DO NOTHING"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::I64(1),
+            SqlVal::Text("root".to_owned()),
+            SqlVal::I64(0),
+        ]
+    );
+}
+
+#[test]
+fn an_assignment_renders_an_arithmetic_expression() {
+    // The database computes the right-hand side, so the column keeps its own
+    // value in the statement instead of being read and rewritten by the client.
+    let built = update::<Postgres, User>()
+        .set(UserId::set_expr(Expr::column::<UserId>() + 1i64))
+        .where_(Expr::column::<UserId>().gt(10i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"users\" SET \"id\" = (\"id\" + $1) WHERE (\"id\" > $2)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(10)]);
+}
