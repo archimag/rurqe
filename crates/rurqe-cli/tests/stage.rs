@@ -89,13 +89,32 @@ fn script_names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Writes a canonical `checkpoint.toml` marker at `path`.
+/// Writes a canonical `checkpoint.toml` marker with a placeholder hash.
+///
+/// Used by the pruning tests, where no database sits behind the marker and the
+/// anchored hash never takes part in the verification.
 fn write_checkpoint(path: &Path, version: &str) {
-    let checkpoint = Checkpoint::new(
-        version.parse().expect("a valid version"),
-        Checksum::of(b"stage"),
-    );
+    write_checkpoint_with_hash(path, version, Checksum::of(b"stage"));
+}
+
+/// Writes a canonical `checkpoint.toml` marker anchoring `schema_hash`.
+fn write_checkpoint_with_hash(path: &Path, version: &str, schema_hash: Checksum) {
+    let checkpoint = Checkpoint::new(version.parse().expect("a valid version"), schema_hash);
     fs::write(path, checkpoint.render()).expect("write the checkpoint");
+}
+
+/// The canonical catalog digest of the SQLite database at `db`.
+///
+/// The digest is read through the very introspection the migration backend
+/// reports at the checkpoint boundary, so a marker written from it describes the
+/// live schema instead of a placeholder.
+fn catalog_checksum(db: &Path) -> Checksum {
+    let connection = rusqlite::Connection::open(db).expect("open the sqlite database");
+    let backend = SqliteMigrationBackend::new(connection);
+    backend
+        .introspect_catalog()
+        .expect("introspect the live catalog")
+        .checksum()
 }
 
 /// The user tables of the SQLite database at `db`, sorted by name.
@@ -428,10 +447,9 @@ fn an_outdated_database_is_blocked_by_the_checkpoint() {
     assert!(error.to_string().contains("schema/"), "got {error}");
     assert_eq!(tables(&db), vec!["users".to_owned()]);
 
-    let boundary = Checkpoint::new(
-        "1".parse().expect("a valid version"),
-        Checksum::of(b"stage"),
-    );
+    // The boundary marker anchors the live catalog, so the tail is gated by the
+    // real schema hash instead of a placeholder.
+    let boundary = Checkpoint::new("1".parse().expect("a valid version"), catalog_checksum(&db));
     let report = {
         let connection = rusqlite::Connection::open(&db).expect("reopen the sqlite database");
         let mut backend = SqliteMigrationBackend::new(connection);
@@ -488,7 +506,8 @@ fn migrate_up_honours_the_committed_checkpoint() {
     assert!(error.to_string().contains("schema/"), "got {error}");
     assert_eq!(tables(&db), vec!["users".to_owned()]);
 
-    write_checkpoint(&checkpoint_path, "1");
+    let stage_hash = catalog_checksum(&db);
+    write_checkpoint_with_hash(&checkpoint_path, "1", stage_hash);
     run_cli(argv(&[
         "migrate",
         "up",

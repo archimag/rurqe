@@ -9,7 +9,8 @@
 //!   and purges failed attempts.
 //! - [`status`](Migrator::status): inspects schema state without mutations.
 //! - [`with_checkpoint`](Migrator::with_checkpoint): attaches a pruning boundary
-//!   that rejects targets older than the pruned history.
+//!   that rejects targets older than the pruned history and verifies the live
+//!   catalog against the anchored stage hash.
 
 use std::collections::BTreeMap;
 
@@ -224,7 +225,9 @@ impl Migrator {
     /// Every migration run then verifies that the target database already sits at
     /// or above [`Checkpoint::pruned_up_to_version`]; a target below it can no
     /// longer be advanced, because the scripts that would bring it forward have
-    /// been pruned.
+    /// been pruned. A target sitting exactly at the boundary is additionally
+    /// measured against [`Checkpoint::schema_hash`], so a schema that drifted from
+    /// the anchored stage is caught before the tail rewrites it.
     pub fn with_checkpoint(checkpoint: Checkpoint) -> Self {
         Self {
             checkpoint: Some(checkpoint),
@@ -264,6 +267,7 @@ impl Migrator {
         self.validate_version_uniqueness(migrations)?;
         let history = guard.read_history()?;
         self.validate_history(&history, migrations)?;
+        self.validate_catalog_hash(&mut guard, &history)?;
         tracing::debug!(
             history_entries = history.len(),
             "validated schema history"
@@ -538,6 +542,51 @@ impl Migrator {
 
         Ok(())
     }
+
+    /// Compares the live catalog of the target against the checkpoint hash.
+    ///
+    /// The stage marker check reads the digest recorded in the history table,
+    /// which describes the schema as it was initialised. A database that drifted
+    /// from that snapshot keeps the recorded digest while its real catalog moved
+    /// on, so the boundary is verified against the catalog the backend reports.
+    /// Only a target sitting exactly at the pruned boundary is measured: below it
+    /// the run is rejected as outdated, above it the stage has already been
+    /// superseded by the tail and the checkpoint no longer describes the schema.
+    fn validate_catalog_hash<B: MigrationBackend>(
+        &self,
+        guard: &mut LockGuard<'_, B>,
+        history: &[SchemaHistoryEntry],
+    ) -> Result<(), Error> {
+        let Some(checkpoint) = &self.checkpoint else {
+            return Ok(());
+        };
+
+        let recorded_version = history
+            .iter()
+            .filter(|entry| entry.success)
+            .filter_map(|entry| entry.version.clone())
+            .max();
+
+        if recorded_version.as_ref() != Some(checkpoint.pruned_up_to_version()) {
+            return Ok(());
+        }
+
+        // A backend that cannot introspect itself reports nothing, which leaves
+        // the digest recorded in the stage marker authoritative.
+        let Some(actual) = guard.catalog_checksum()? else {
+            return Ok(());
+        };
+
+        if actual == checkpoint.schema_hash() {
+            return Ok(());
+        }
+
+        Err(Error::CheckpointHashMismatch {
+            pruned_up_to_version: checkpoint.pruned_up_to_version().to_string(),
+            recorded_hash: actual.to_hex(),
+            expected_hash: checkpoint.schema_hash().to_hex(),
+        })
+    }
 }
 
 /// Applies one migration and records its outcome in the schema history.
@@ -746,6 +795,8 @@ pub struct InMemoryBackend {
     pub non_transactional_sql: Vec<String>,
     /// Flag indicating whether exclusive migration lock is acquired.
     pub locked: bool,
+    /// Digest the backend reports for the catalog it currently holds.
+    pub catalog_checksum: Option<Checksum>,
 }
 
 impl InMemoryBackend {
@@ -767,6 +818,10 @@ impl MigrationBackend for InMemoryBackend {
 
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
         Ok(self.history.clone())
+    }
+
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        Ok(self.catalog_checksum)
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
@@ -852,8 +907,15 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, format_timestamp, InMemoryBackend, LockGuard, Migrator};
-    use super::{InMemoryTransaction, MigrationBackend};
+    use super::{
+        civil_from_days, format_timestamp, InMemoryBackend, InMemoryTransaction, LockGuard,
+        MigrationBackend, Migrator,
+    };
+    use crate::checkpoint::Checkpoint;
+    use crate::checksum::Checksum;
+    use crate::error::Error;
+    use crate::history::SchemaHistoryEntry;
+    use crate::migration::{Migration, MigrationKind};
 
     #[test]
     fn lock_guard_manages_backend_locking_lifecycle() {
@@ -865,11 +927,6 @@ mod tests {
         }
         assert!(!backend.locked);
     }
-    use crate::checkpoint::Checkpoint;
-    use crate::checksum::Checksum;
-    use crate::error::Error;
-    use crate::history::SchemaHistoryEntry;
-    use crate::migration::{Migration, MigrationKind};
 
     #[test]
     fn epoch_converts_to_the_unix_epoch_date() {
@@ -957,6 +1014,59 @@ mod tests {
 
         assert!(matches!(error, Error::CheckpointHashMismatch { .. }));
         assert_eq!(backend.history.len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_accepts_a_catalog_matching_its_hash() {
+        let mut backend = InMemoryBackend::new();
+        let stage = Migration::parse("V3__stage.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name");
+        Migrator::new()
+            .migrate(&mut backend, &[stage])
+            .expect("the stage migration applies");
+
+        backend.catalog_checksum = Some(Checksum::of(b"stage"));
+
+        let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
+            .expect("a valid script name");
+        let report = Migrator::with_checkpoint(boundary("3"))
+            .migrate(&mut backend, &[tail])
+            .expect("the live catalog matches the checkpoint hash");
+
+        assert_eq!(report.applied_count, 1);
+        assert_eq!(report.applied_scripts, vec!["V4__tail.sql"]);
+    }
+
+    #[test]
+    fn checkpoint_rejects_a_catalog_that_diverged_from_its_hash() {
+        let mut backend = InMemoryBackend::new();
+        let stage = Migration::parse("V3__stage.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name");
+        Migrator::new()
+            .migrate(&mut backend, &[stage])
+            .expect("the stage migration applies");
+
+        backend.catalog_checksum = Some(Checksum::of(b"drifted"));
+
+        let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
+            .expect("a valid script name");
+        let error = Migrator::with_checkpoint(boundary("3"))
+            .migrate(&mut backend, &[tail])
+            .expect_err("the diverged catalog stops the run");
+
+        match &error {
+            Error::CheckpointHashMismatch {
+                pruned_up_to_version,
+                recorded_hash,
+                expected_hash,
+            } => {
+                assert_eq!(pruned_up_to_version, "3");
+                assert_eq!(recorded_hash, &Checksum::of(b"drifted").to_hex());
+                assert_eq!(expected_hash, &Checksum::of(b"stage").to_hex());
+            }
+            other => panic!("expected CheckpointHashMismatch, got {other:?}"),
+        }
+        assert_eq!(backend.history.len(), 1, "the tail never ran");
     }
 
     #[test]

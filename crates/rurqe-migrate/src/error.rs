@@ -91,7 +91,11 @@ pub enum Error {
         /// The stage hash anchored by the checkpoint.
         schema_hash: String,
     },
-    /// The stage hash recorded in the history table does not match the checkpoint hash.
+    /// A schema hash does not match the hash anchored by the checkpoint.
+    ///
+    /// The recorded hash is either the digest of the stage marker stored in the
+    /// history table or the digest of the catalog the database really holds: both
+    /// name the same schema, so both are compared against the checkpoint hash.
     CheckpointHashMismatch {
         /// The boundary version of the checkpoint.
         pruned_up_to_version: String,
@@ -189,8 +193,9 @@ impl fmt::Display for Error {
                 expected_hash,
             } => write!(
                 f,
-                "stage marker at version `{pruned_up_to_version}` has hash `{recorded_hash}`, \
-                 but checkpoint expects `{expected_hash}`: stage has diverged from the checkpoint"
+                "schema at version `{pruned_up_to_version}` has hash `{recorded_hash}`, \
+                 but checkpoint expects `{expected_hash}`: the recorded stage marker or the \
+                 live catalog has diverged from the checkpoint"
             ),
             Error::Backend(message) => write!(f, "database backend error: {message}"),
         }
