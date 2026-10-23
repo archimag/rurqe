@@ -39,7 +39,7 @@ use crate::catalog::SchemaCatalog;
 use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
-use crate::migration::MigrationKind;
+use crate::migration::{parse_script_attributes, MigrationKind};
 use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
 use crate::scripts::sql_scripts;
 use crate::version::MigrationVersion;
@@ -52,14 +52,23 @@ pub const STAGE_SCRIPT: &str = "<< Stage >>";
 pub struct StageScript {
     name: String,
     sql: String,
+    transactional: bool,
 }
 
 impl StageScript {
     /// Creates a script from its file name and DDL contents.
+    ///
+    /// The script is transactional unless its name or its comments declare
+    /// otherwise, following the same attribute parser the migration tail uses.
     pub fn new(name: impl Into<String>, sql: impl Into<String>) -> Self {
+        let name = name.into();
+        let sql = sql.into();
+        let transactional = parse_script_attributes(&name, &sql).is_transactional();
+
         Self {
-            name: name.into(),
-            sql: sql.into(),
+            name,
+            sql,
+            transactional,
         }
     }
 
@@ -71,6 +80,17 @@ impl StageScript {
     /// The DDL the script applies.
     pub fn sql(&self) -> &str {
         &self.sql
+    }
+
+    /// Whether the script runs inside the transaction the cold start opens.
+    pub fn is_transactional(&self) -> bool {
+        self.transactional
+    }
+
+    /// Overrides whether the script runs inside a transaction.
+    pub fn with_transactional(mut self, transactional: bool) -> Self {
+        self.transactional = transactional;
+        self
     }
 }
 
@@ -228,8 +248,10 @@ pub struct ColdStartReport {
 
 /// Initialises an empty database from the declarative stage.
 ///
-/// The DDL scripts of `stage` are applied in a single transaction — a failure
-/// anywhere leaves the database untouched — and the resulting schema is anchored
+/// The transactional DDL scripts of `stage` share one transaction — a failure
+/// among them leaves the database untouched — while a script marked
+/// non-transactional runs on its own, outside any transaction. The resulting
+/// schema is anchored
 /// by a synthetic [`StageMarker`] row in the schema history. Because the marker
 /// is recorded as a baseline, every versioned migration at or below
 /// [`StageMarker::version`] is reported as applied while the active tail above
@@ -298,19 +320,9 @@ pub fn cold_start<B: MigrationBackend>(
         });
     }
 
-    let mut tx = guard.begin()?;
     let start_time = std::time::Instant::now();
 
-    for script in stage.scripts() {
-        if let Err(error) = tx.execute(script.sql()) {
-            let _ = tx.rollback();
-            tracing::error!(script = %script.name(), error = %error, "stage script failed");
-            return Err(Error::MigrationExecutionFailed {
-                script: script.name().to_owned(),
-                source: error.to_string(),
-            });
-        }
-    }
+    apply_stage(&mut guard, stage)?;
 
     let elapsed_ms = start_time.elapsed().as_millis() as i64;
 
@@ -318,22 +330,16 @@ pub fn cold_start<B: MigrationBackend>(
     // checkpoint written by `stage commit` recognises the initialised database
     // whatever engine executed the DDL. A backend that cannot introspect itself
     // keeps the digest the caller supplied.
-    let checksum = match tx.catalog_checksum() {
+    let checksum = match guard.catalog_checksum() {
         Ok(Some(checksum)) => checksum,
         Ok(None) => marker.checksum(),
-        Err(error) => {
-            let _ = tx.rollback();
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
 
     let entry = marker.entry_with_checksum(1, current_timestamp(), checksum);
 
-    if let Err(error) = tx.record_entry(&entry) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
-
+    let mut tx = guard.begin()?;
+    tx.record_entry(&entry)?;
     tx.commit()?;
 
     tracing::info!(
@@ -352,6 +358,59 @@ pub fn cold_start<B: MigrationBackend>(
         installed_rank: Some(entry.installed_rank),
         total_time_ms: elapsed_ms,
     })
+}
+
+/// Applies the DDL of `stage`, honouring each script's transactional attribute.
+///
+/// Consecutive transactional scripts share one transaction, so a failure among
+/// them leaves the database untouched. A script marked non-transactional commits
+/// the work staged so far and then runs on its own: engines refuse such
+/// statements inside a transaction, so wrapping them would abort the cold start
+/// on a perfectly valid stage.
+fn apply_stage<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    stage: &DeclarativeStage,
+) -> Result<(), Error> {
+    let scripts = stage.scripts();
+    let mut index = 0usize;
+
+    while let Some(script) = scripts.get(index) {
+        if !script.is_transactional() {
+            if let Err(error) = guard.execute_non_transactional(script.sql()) {
+                return Err(stage_script_failed(script, &error));
+            }
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        while matches!(scripts.get(index), Some(next) if next.is_transactional()) {
+            index += 1;
+        }
+
+        let batch = scripts.get(start..index).unwrap_or_default();
+        let mut tx = guard.begin()?;
+
+        for script in batch {
+            if let Err(error) = tx.execute(script.sql()) {
+                let _ = tx.rollback();
+                return Err(stage_script_failed(script, &error));
+            }
+        }
+
+        tx.commit()?;
+    }
+
+    Ok(())
+}
+
+/// Builds the failure a stage script is reported with.
+fn stage_script_failed(script: &StageScript, error: &Error) -> Error {
+    tracing::error!(script = %script.name(), error = %error, "stage script failed");
+    Error::MigrationExecutionFailed {
+        script: script.name().to_owned(),
+        source: error.to_string(),
+    }
 }
 
 /// Builds an [`Error::InvalidStage`] from `message`.
@@ -580,5 +639,52 @@ mod tests {
             .expect_err("cold start fails on bad script");
         assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
         assert!(!failing_backend.locked);
+    }
+
+    #[test]
+    fn a_stage_script_keeps_its_declared_transactionality() {
+        assert!(StageScript::new("users.sql", USERS).is_transactional());
+        assert!(!StageScript::new("users.notx.sql", USERS).is_transactional());
+        assert!(!StageScript::new(
+            "users.sql",
+            "-- executeInTransaction=false\nCREATE TABLE users (id INTEGER);"
+        )
+        .is_transactional());
+        assert!(!StageScript::new("users.sql", USERS)
+            .with_transactional(false)
+            .is_transactional());
+    }
+
+    #[test]
+    fn a_non_transactional_stage_script_runs_outside_a_transaction() {
+        let mut backend = InMemoryBackend::new();
+        let stage = DeclarativeStage::new(vec![
+            StageScript::new("orders.sql", ORDERS),
+            StageScript::new(
+                "users.sql",
+                "-- executeInTransaction=false\nCREATE INDEX CONCURRENTLY users_id ON users (id);",
+            ),
+        ]);
+
+        let report = cold_start(&mut backend, &stage, &marker()).expect("the stage applies");
+
+        assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
+        assert_eq!(backend.non_transactional_sql.len(), 1);
+        assert_eq!(backend.history.len(), 1);
+        assert!(backend.history[0].success);
+    }
+
+    #[test]
+    fn a_failing_non_transactional_stage_script_aborts_the_cold_start() {
+        let mut backend = InMemoryBackend::new();
+        backend.failure_script = Some("BOOM".to_owned());
+        let stage = DeclarativeStage::new(vec![StageScript::new("users.notx.sql", "BOOM;")]);
+
+        let error = cold_start(&mut backend, &stage, &marker())
+            .expect_err("the failing script aborts the cold start");
+
+        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+        assert!(backend.history.is_empty());
+        assert!(!backend.locked);
     }
 }

@@ -227,6 +227,10 @@ impl MigrationBackend for SqliteMigrationBackend {
             .map_err(backend_error)?;
         Ok(SqliteMigrationTransaction { tx: Some(tx) })
     }
+
+    fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
+        self.conn.execute_batch(sql).map_err(backend_error)
+    }
 }
 
 /// Transactional boundary of a [`SqliteMigrationBackend`] step.
@@ -399,6 +403,10 @@ impl MigrationBackend for PostgresMigrationBackend {
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         let tx = self.client.transaction().map_err(backend_error)?;
         Ok(PostgresMigrationTransaction { tx: Some(tx) })
+    }
+
+    fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
+        self.client.batch_execute(sql).map_err(backend_error)
     }
 
     fn acquire_lock(&mut self) -> Result<(), Error> {

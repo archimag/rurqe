@@ -352,3 +352,49 @@ fn baseline_rejects_non_empty_history() {
         other => panic!("expected BaselineAlreadyExists, got {other:?}"),
     }
 }
+
+#[test]
+fn non_transactional_migrations_run_outside_the_transaction_boundary() {
+    let mut backend = InMemoryBackend::new();
+    let migrator = Migrator::new();
+
+    let m1 = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT);").unwrap();
+    let m2 = Migration::parse(
+        "V2__index.notx.sql",
+        "CREATE INDEX CONCURRENTLY users_id ON users (id);",
+    )
+    .unwrap();
+
+    let report = migrator
+        .migrate(&mut backend, &[m1, m2])
+        .expect("both migrations apply");
+
+    assert_eq!(
+        report.applied_scripts,
+        vec!["V1__init.sql", "V2__index.notx.sql"]
+    );
+    assert_eq!(backend.non_transactional_sql.len(), 1);
+    assert_eq!(backend.history.len(), 2);
+    assert!(backend.history.iter().all(|entry| entry.success));
+}
+
+#[test]
+fn a_failed_non_transactional_migration_is_recorded_and_released() {
+    let mut backend = InMemoryBackend::new();
+    backend.failure_script = Some("BOOM".to_owned());
+    let migrator = Migrator::new();
+
+    let broken = Migration::parse("V1__broken.notx.sql", "BOOM;").unwrap();
+    let error = migrator
+        .migrate(&mut backend, std::slice::from_ref(&broken))
+        .expect_err("the failing script aborts the run");
+
+    match error {
+        Error::MigrationExecutionFailed { script, .. } => assert_eq!(script, "V1__broken.notx.sql"),
+        other => panic!("expected MigrationExecutionFailed, got {other:?}"),
+    }
+
+    assert_eq!(backend.history.len(), 1);
+    assert!(!backend.history[0].success);
+    assert!(!backend.locked);
+}

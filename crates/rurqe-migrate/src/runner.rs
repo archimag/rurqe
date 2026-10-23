@@ -47,6 +47,22 @@ pub trait MigrationBackend {
     /// Begins a transactional boundary.
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error>;
 
+    /// Executes `sql` outside of any transaction the runner opens.
+    ///
+    /// Engines reject some statements inside a transaction — `CREATE INDEX
+    /// CONCURRENTLY`, `VACUUM`, `ALTER TYPE ... ADD VALUE` on older servers — so a
+    /// script marked non-transactional is applied through this method. Its
+    /// history row is then written by a separate transaction, so work the engine
+    /// already committed is never reported as pending again.
+    ///
+    /// The default refuses the call: a backend that cannot run a script on its
+    /// own keeps supporting transactional scripts only.
+    fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
+        Err(Error::Backend(format!(
+            "the migration backend cannot execute `{sql}` outside a transaction"
+        )))
+    }
+
     /// Acquires an exclusive migration lock.
     fn acquire_lock(&mut self) -> Result<(), Error> {
         Ok(())
@@ -307,83 +323,11 @@ impl Migrator {
             if should_run {
                 current_rank += 1;
                 tracing::info!(script = %migration.script, "applying migration");
-                let mut tx = guard.begin()?;
-                let start_time = std::time::Instant::now();
+                let elapsed_ms = apply_migration(&mut guard, migration, current_rank)?;
 
-                match tx.execute(&migration.sql) {
-                    Ok(()) => {
-                        let elapsed_ms = start_time.elapsed().as_millis() as i64;
-                        let entry = SchemaHistoryEntry::applied(
-                            current_rank,
-                            migration,
-                            current_timestamp(),
-                            elapsed_ms,
-                        );
-                        tx.record_entry(&entry)?;
-                        tx.commit()?;
-                        tracing::info!(
-                            script = %migration.script,
-                            elapsed_ms = elapsed_ms,
-                            "migration applied"
-                        );
-
-                        report.applied_scripts.push(migration.script.clone());
-                        report.applied_count += 1;
-                        report.total_time_ms += elapsed_ms;
-                    }
-                    Err(err) => {
-                        let elapsed_ms = start_time.elapsed().as_millis() as i64;
-                        if let Err(rollback_err) = tx.rollback() {
-                            tracing::warn!(
-                                script = %migration.script,
-                                error = %rollback_err,
-                                "failed to rollback failed migration transaction"
-                            );
-                        }
-                        tracing::error!(
-                            script = %migration.script,
-                            error = %err,
-                            "migration failed"
-                        );
-
-                        let failed_entry = SchemaHistoryEntry::failed(
-                            current_rank,
-                            migration,
-                            current_timestamp(),
-                            elapsed_ms,
-                        );
-                        match guard.begin() {
-                            Ok(mut fail_tx) => {
-                                if let Err(rec_err) = fail_tx.record_entry(&failed_entry) {
-                                    tracing::warn!(
-                                        script = %migration.script,
-                                        error = %rec_err,
-                                        "failed to record failed migration entry"
-                                    );
-                                    let _ = fail_tx.rollback();
-                                } else if let Err(commit_err) = fail_tx.commit() {
-                                    tracing::warn!(
-                                        script = %migration.script,
-                                        error = %commit_err,
-                                        "failed to commit failed migration history entry"
-                                    );
-                                }
-                            }
-                            Err(begin_err) => {
-                                tracing::warn!(
-                                    script = %migration.script,
-                                    error = %begin_err,
-                                    "failed to open transaction to record failed migration"
-                                );
-                            }
-                        }
-
-                        return Err(Error::MigrationExecutionFailed {
-                            script: migration.script.clone(),
-                            source: err.to_string(),
-                        });
-                    }
-                }
+                report.applied_scripts.push(migration.script.clone());
+                report.applied_count += 1;
+                report.total_time_ms += elapsed_ms;
             }
         }
 
@@ -594,6 +538,142 @@ impl Migrator {
     }
 }
 
+/// Applies one migration and records its outcome in the schema history.
+///
+/// A transactional script runs inside the transaction the runner opens, so the
+/// script and its history row commit together. A script marked non-transactional
+/// is applied outside any transaction, and its history row is written afterwards
+/// by a separate transaction: the engine may already have committed the
+/// statement, so losing the row would report the work as pending forever.
+fn apply_migration<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    migration: &Migration,
+    installed_rank: i64,
+) -> Result<i64, Error> {
+    let start_time = std::time::Instant::now();
+
+    if migration.is_transactional() {
+        let mut tx = guard.begin()?;
+
+        let elapsed_ms = match tx.execute(&migration.sql) {
+            Ok(()) => start_time.elapsed().as_millis() as i64,
+            Err(error) => {
+                let elapsed_ms = start_time.elapsed().as_millis() as i64;
+                if let Err(rollback_error) = tx.rollback() {
+                    tracing::warn!(
+                        script = %migration.script,
+                        error = %rollback_error,
+                        "failed to rollback failed migration transaction"
+                    );
+                }
+                tracing::error!(
+                    script = %migration.script,
+                    error = %error,
+                    "migration failed"
+                );
+                record_failure(guard, migration, installed_rank, elapsed_ms);
+                return Err(execution_failed(migration, &error));
+            }
+        };
+
+        let entry = SchemaHistoryEntry::applied(
+            installed_rank,
+            migration,
+            current_timestamp(),
+            elapsed_ms,
+        );
+        tx.record_entry(&entry)?;
+        tx.commit()?;
+        tracing::info!(
+            script = %migration.script,
+            elapsed_ms = elapsed_ms,
+            "migration applied"
+        );
+
+        return Ok(elapsed_ms);
+    }
+
+    let elapsed_ms = match guard.execute_non_transactional(&migration.sql) {
+        Ok(()) => start_time.elapsed().as_millis() as i64,
+        Err(error) => {
+            let elapsed_ms = start_time.elapsed().as_millis() as i64;
+            tracing::error!(
+                script = %migration.script,
+                error = %error,
+                "migration failed"
+            );
+            record_failure(guard, migration, installed_rank, elapsed_ms);
+            return Err(execution_failed(migration, &error));
+        }
+    };
+
+    let entry = SchemaHistoryEntry::applied(
+        installed_rank,
+        migration,
+        current_timestamp(),
+        elapsed_ms,
+    );
+    let mut tx = guard.begin()?;
+    tx.record_entry(&entry)?;
+    tx.commit()?;
+    tracing::info!(
+        script = %migration.script,
+        elapsed_ms = elapsed_ms,
+        transactional = false,
+        "migration applied"
+    );
+
+    Ok(elapsed_ms)
+}
+
+/// Records a failed migration attempt, best effort.
+///
+/// The failure is reported to the caller already, so a backend that cannot write
+/// the row must not replace the original diagnostic with a second error.
+fn record_failure<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    migration: &Migration,
+    installed_rank: i64,
+    elapsed_ms: i64,
+) {
+    let entry =
+        SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), elapsed_ms);
+
+    match guard.begin() {
+        Ok(mut tx) => {
+            if let Err(error) = tx.record_entry(&entry) {
+                tracing::warn!(
+                    script = %migration.script,
+                    error = %error,
+                    "failed to record failed migration entry"
+                );
+                let _ = tx.rollback();
+            } else if let Err(error) = tx.commit() {
+                tracing::warn!(
+                    script = %migration.script,
+                    error = %error,
+                    "failed to commit failed migration history entry"
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                script = %migration.script,
+                error = %error,
+                "failed to open transaction to record failed migration"
+            );
+        }
+    }
+}
+
+/// Wraps `error` into the failure the caller sees for `migration`.
+fn execution_failed(migration: &Migration, error: &Error) -> Error {
+    Error::MigrationExecutionFailed {
+        script: migration.script.clone(),
+        source: error.to_string(),
+    }
+}
+
 /// Renders the current UTC time as `YYYY-MM-DD HH:MM:SS`.
 ///
 /// The history table stores `installed_on` as a plain string, so the runner has to
@@ -652,6 +732,8 @@ pub struct InMemoryBackend {
     pub table_created: bool,
     /// Failure simulation on SQL execution.
     pub failure_script: Option<String>,
+    /// Log of the scripts executed outside a transaction.
+    pub non_transactional_sql: Vec<String>,
     /// Flag indicating whether exclusive migration lock is acquired.
     pub locked: bool,
 }
@@ -684,6 +766,16 @@ impl MigrationBackend for InMemoryBackend {
             staged_history: initial_history,
             staged_sql: Vec::new(),
         })
+    }
+
+    fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
+        if let Some(ref fail_sql) = self.failure_script {
+            if sql.contains(fail_sql) {
+                return Err(Error::Backend(format!("simulated failure on `{sql}`")));
+            }
+        }
+        self.non_transactional_sql.push(sql.to_owned());
+        Ok(())
     }
 
     fn acquire_lock(&mut self) -> Result<(), Error> {
@@ -854,5 +946,66 @@ mod tests {
 
         assert!(matches!(error, Error::CheckpointHashMismatch { .. }));
         assert_eq!(backend.history.len(), 1);
+    }
+
+    #[test]
+    fn a_non_transactional_migration_runs_outside_a_transaction() {
+        let mut backend = InMemoryBackend::new();
+        let migration = Migration::parse(
+            "V1__index.sql",
+            "-- executeInTransaction=false\nCREATE INDEX CONCURRENTLY users_id ON users (id);",
+        )
+        .expect("a valid script name");
+
+        let report = Migrator::new()
+            .migrate(&mut backend, &[migration])
+            .expect("the non-transactional script applies");
+
+        assert_eq!(report.applied_count, 1);
+        assert_eq!(backend.non_transactional_sql.len(), 1);
+        assert_eq!(backend.executed_sql.len(), 1);
+        assert_eq!(backend.history.len(), 1);
+        assert!(backend.history[0].success);
+    }
+
+    #[test]
+    fn the_history_of_a_non_transactional_migration_is_written_after_it_runs() {
+        let mut backend = InMemoryBackend::new();
+        let first = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name");
+        let second = Migration::parse(
+            "V2__index.notx.sql",
+            "CREATE INDEX CONCURRENTLY users_id ON users (id);",
+        )
+        .expect("a valid script name");
+
+        let report = Migrator::new()
+            .migrate(&mut backend, &[first, second])
+            .expect("both scripts apply");
+
+        assert_eq!(
+            report.applied_scripts,
+            vec!["V1__users.sql", "V2__index.notx.sql"]
+        );
+        assert_eq!(backend.non_transactional_sql.len(), 1);
+        assert_eq!(backend.history.len(), 2);
+        assert!(backend.history.iter().all(|entry| entry.success));
+    }
+
+    #[test]
+    fn a_failed_non_transactional_migration_is_recorded_as_failed() {
+        let mut backend = InMemoryBackend::new();
+        backend.failure_script = Some("BOOM".to_owned());
+        let migration =
+            Migration::parse("V1__broken.notx.sql", "BOOM;").expect("a valid script name");
+
+        let error = Migrator::new()
+            .migrate(&mut backend, &[migration])
+            .expect_err("the failing script aborts the run");
+
+        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+        assert_eq!(backend.history.len(), 1);
+        assert!(!backend.history[0].success);
+        assert!(!backend.locked);
     }
 }
