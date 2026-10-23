@@ -1095,7 +1095,6 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
 /// aggregate.
 #[cfg(feature = "serde_json")]
 mod phase18_relational {
-    use rurqe::core::query::SelectionFor;
     use rurqe::prelude::*;
 
     /// The lifecycle state of a post, stored as the label of a database enum.
@@ -1132,66 +1131,29 @@ mod phase18_relational {
         }
     }
 
-    /// One nested comment row decoded from the JSON aggregate of its post.
-    #[derive(Debug, Clone, PartialEq)]
-    struct CommentRow {
-        body: String,
-    }
-
-    impl ToSqlVal for CommentRow {
-        fn to_sql_val(self) -> SqlVal {
-            let body = self.body;
-            SqlVal::Text(format!("{{\"body\":\"{body}\"}}"))
+    dto! {
+        /// One nested comment row decoded from the JSON aggregate of its post.
+        ///
+        /// The declaration carries the nested-row contracts, so the row is read
+        /// back from the object the aggregate produces without a hand-written
+        /// conversion, and the key it reads is the field the nested statement
+        /// projects under.
+        struct CommentRow {
+            CommentBody as body,
         }
-    }
-
-    impl FromSqlValue for CommentRow {
-        fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
-            let object = json_object(value)?;
-            Ok(CommentRow {
-                body: nested_field(&object, "body")?,
-            })
-        }
-    }
-
-    impl SqlArrayElement for CommentRow {}
-
-    impl MultisetRow for CommentRow {
-        const FIELDS: &'static [&'static str] = &["body"];
-    }
-
-    /// The projection of one nested comment row.
-    ///
-    /// The row type of the nested statement is the record the JSON aggregate
-    /// decodes into, so the selection names it instead of a tuple whose fields
-    /// belong to the nested document.
-    struct CommentColumns;
-
-    impl Selection for CommentColumns {
-        type Row = CommentRow;
-
-        fn push_column_names(&self, out: &mut Vec<&'static str>) {
-            out.push(CommentBody::NAME);
-        }
-
-        fn push_projections(&self, out: &mut Vec<ExprKind>) {
-            out.push(CommentBody::expr_kind());
-        }
-    }
-
-    impl SelectionFor<Comment, At<0>> for CommentColumns {
-        type Row = CommentRow;
-    }
-
-    /// The nested statement of the comments of every post.
-    fn comments<D: Dialect>() -> SelectQuery<D, Comment, CommentRow, HasProjection> {
-        SelectQuery::new().from::<Comment>().select(CommentColumns)
     }
 
     #[test]
     fn a_nested_collection_composes_with_enum_and_array_predicates() {
         let built = select_from::<Postgres<Pg16>, Post>()
-            .select((PostId, nest_many(comments::<Postgres<Pg16>>())))
+            .select((
+                PostId,
+                nest_many(
+                    SelectQuery::<Postgres<Pg16>>::new()
+                        .from::<Comment>()
+                        .select(select!(CommentBody as body)),
+                ),
+            ))
             .where_(PostMood.eq(Mood::Happy))
             .where_(PostTags.any("rust".to_owned()))
             .order_by_asc(PostId)
@@ -1234,7 +1196,14 @@ mod phase18_relational {
     #[test]
     fn a_single_nested_row_stops_at_its_first_row() {
         let built = select_from::<Postgres<Pg16>, Post>()
-            .select((PostId, nest_one(comments::<Postgres<Pg16>>())))
+            .select((
+                PostId,
+                nest_one(
+                    SelectQuery::<Postgres<Pg16>>::new()
+                        .from::<Comment>()
+                        .select(select!(CommentBody as body)),
+                ),
+            ))
             .build();
 
         assert_eq!(
