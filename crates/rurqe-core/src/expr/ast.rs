@@ -4,7 +4,7 @@
 use core::marker::PhantomData;
 
 use super::builder::{Aggregate, Expr};
-use super::ops::IntoExpr;
+use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::dialect::Dialect;
@@ -531,36 +531,48 @@ impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     }
 }
 
-impl<Scope> Expr<bool, Scope> {
+impl<Scope, Aggr> Expr<bool, Scope, Aggr> {
     /// Combines two predicates with the SQL `AND` operator.
-    pub fn and<OtherScope>(
+    ///
+    /// Both operands contribute their aggregation marker through
+    /// [`CombineAggr`], so combining two aggregate predicates stays aggregate
+    /// and a grouped query still accepts the result.
+    #[allow(clippy::type_complexity)]
+    pub fn and<OtherScope, OtherAggr>(
         self,
-        other: Expr<bool, OtherScope>,
-    ) -> Expr<bool, Merged<Scope, OtherScope>>
+        other: Expr<bool, OtherScope, OtherAggr>,
+    ) -> Expr<bool, Merged<Scope, OtherScope>, CombinedAggr<Aggr, OtherAggr, OtherScope>>
     where
         Scope: MergeScope<OtherScope>,
+        Aggr: CombineAggr<OtherAggr, OtherScope>,
     {
         self.combine(BinaryOp::And, other)
     }
 
     /// Combines two predicates with the SQL `OR` operator.
-    pub fn or<OtherScope>(
+    ///
+    /// The aggregate marker combines the same way it does for `AND`.
+    #[allow(clippy::type_complexity)]
+    pub fn or<OtherScope, OtherAggr>(
         self,
-        other: Expr<bool, OtherScope>,
-    ) -> Expr<bool, Merged<Scope, OtherScope>>
+        other: Expr<bool, OtherScope, OtherAggr>,
+    ) -> Expr<bool, Merged<Scope, OtherScope>, CombinedAggr<Aggr, OtherAggr, OtherScope>>
     where
         Scope: MergeScope<OtherScope>,
+        Aggr: CombineAggr<OtherAggr, OtherScope>,
     {
         self.combine(BinaryOp::Or, other)
     }
 
-    fn combine<OtherScope>(
+    #[allow(clippy::type_complexity)]
+    fn combine<OtherScope, OtherAggr>(
         self,
         op: BinaryOp,
-        other: Expr<bool, OtherScope>,
-    ) -> Expr<bool, Merged<Scope, OtherScope>>
+        other: Expr<bool, OtherScope, OtherAggr>,
+    ) -> Expr<bool, Merged<Scope, OtherScope>, CombinedAggr<Aggr, OtherAggr, OtherScope>>
     where
         Scope: MergeScope<OtherScope>,
+        Aggr: CombineAggr<OtherAggr, OtherScope>,
     {
         Expr::new(ExprKind::Binary {
             op,

@@ -601,7 +601,11 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     GroupedQuery<D, Tables, Output, GroupByCols, Projected>
 {
     /// Restricts grouped rows to those satisfying `predicate`.
-    pub fn having<Scope, P>(mut self, predicate: Expr<bool, Scope>) -> Self
+    ///
+    /// A `HAVING` clause filters the groups an aggregate produced, so the
+    /// predicate is written over an aggregate — `count_all().gt(5i64)`, for
+    /// instance — and keeps the aggregation marker of that comparison.
+    pub fn having<Scope, Aggr, P>(mut self, predicate: Expr<bool, Scope, Aggr>) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
     {
