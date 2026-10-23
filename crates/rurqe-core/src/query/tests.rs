@@ -24,6 +24,7 @@ impl Dialect for MockDialect {
 
 impl SupportsLateralJoin for MockDialect {}
 impl crate::dialect::SupportsDistinctOn for MockDialect {}
+impl crate::dialect::SupportsFullOuterJoin for MockDialect {}
 
 #[derive(Default)]
 struct MockBackend {
@@ -204,8 +205,64 @@ fn single_table_and_joined_scopes_are_query_scopes() {
     assert_scope::<User>();
     assert_scope::<Joined<User, Order>>();
     assert_scope::<LeftJoined<User, Order>>();
+    assert_scope::<CrossJoined<User, Order>>();
+    assert_scope::<FullOuterJoined<User, Order>>();
     assert_scope::<Joined<Joined<User, Order>, User>>();
     assert_scope::<Joined<LeftJoined<User, Order>, User>>();
+}
+
+#[test]
+fn cross_join_renders_unconditional_cross_join() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .cross_join::<Order>()
+        .select((UserId, OrderId))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" CROSS JOIN \"orders\""
+    );
+    assert!(built.params.is_empty());
+
+    let built_value = SelectQuery::<MockDialect>::new()
+        .from_table(User)
+        .cross_join_table(Order)
+        .select((UserId, OrderId))
+        .build();
+
+    assert_eq!(built_value.sql, built.sql);
+}
+
+#[test]
+fn full_outer_join_lifts_both_relations_into_options() {
+    type FullOuterScope = FullOuterJoined<User, Order>;
+    type NullablePair = (Option<i64>, Option<i64>);
+
+    let query: SelectQuery<MockDialect, FullOuterScope, NullablePair, HasProjection> =
+        SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .full_outer_join::<Order, _, _>(
+                Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
+            )
+            .select((UserId, OrderId));
+
+    let built = query.build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" FULL OUTER JOIN \"orders\" \
+         ON (\"users\".\"id\" = \"orders\".\"user_id\")"
+    );
+    assert!(built.params.is_empty());
+
+    let built_value = SelectQuery::<MockDialect>::new()
+        .from_table(User)
+        .full_outer_join_table(Order, Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+        .select((UserId, OrderId))
+        .build();
+
+    assert_eq!(built_value.sql, built.sql);
 }
 
 #[test]

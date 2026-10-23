@@ -1008,8 +1008,8 @@ pub mod prelude {
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 
     pub use rurqe_core::dialect::{
-        SupportsAggregateFilter, SupportsDeleteUsing, SupportsLateralJoin, SupportsRowLocking,
-        SupportsUpdateFrom,
+        SupportsAggregateFilter, SupportsDeleteUsing, SupportsFullOuterJoin, SupportsLateralJoin,
+        SupportsRowLocking, SupportsUpdateFrom,
     };
 
     pub use rurqe_core::expr::{
@@ -1020,8 +1020,9 @@ pub mod prelude {
     };
 
     pub use rurqe_core::query::{
-        AsyncQueryBackend, AsyncQueryBackendExt, HasProjection, JoinKind, Joined, LeftJoined,
-        Locked, NoLock, NoProjection, Nullable, ProjectionPresent, SetOpKind, TableScope,
+        AsyncQueryBackend, AsyncQueryBackendExt, CrossJoined, FullOuterJoined, HasProjection,
+        JoinKind, Joined, LeftJoined, Locked, NoLock, NoProjection, Nullable, ProjectionPresent,
+        SetOpKind, TableScope,
     };
 
     pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};

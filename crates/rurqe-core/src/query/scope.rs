@@ -52,8 +52,23 @@ macro_rules! impl_joined_scope_nullability {
 
 impl_joined_scope_nullability!(Joined => NonNullableRel);
 impl_joined_scope_nullability!(LeftJoined => NullableRel);
+impl_joined_scope_nullability!(CrossJoined => NonNullableRel);
 impl_joined_scope_nullability!(CrossLateralJoined => NonNullableRel);
 impl_joined_scope_nullability!(LeftLateralJoined => NullableRel);
+
+// Base case: the table T joined by FULL OUTER JOIN is NullableRel.
+impl<Tables, T: Table> TableNullabilityInScope<T, At<0>> for FullOuterJoined<Tables, T> {
+    type Nullability = NullableRel;
+}
+
+// Inductive case: every table in Tables becomes NullableRel under FULL OUTER JOIN.
+impl<Tables, T: Table, Target: Table, P> TableNullabilityInScope<Target, Next<P>>
+    for FullOuterJoined<Tables, T>
+where
+    Tables: TableNullabilityInScope<Target, P>,
+{
+    type Nullability = NullableRel;
+}
 
 /// The ordered list of tables a query selects from, joined tables included.
 #[diagnostic::on_unimplemented(
@@ -155,6 +170,40 @@ impl<Tables: ExprScope, T: Table> ExprScope for Joined<Tables, T> {}
 
 impl<Tables: ExprScope, T: Table> ExprScope for LeftJoined<Tables, T> {}
 
+/// A query scope extending `Tables` with the table `T` joined by a `CROSS JOIN`.
+pub struct CrossJoined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
+
+impl<Tables: TableScope, T: Table> TableScope for CrossJoined<Tables, T> {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        Tables::push_table_names(out);
+        out.push(T::NAME);
+    }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        Tables::push_table_refs(out);
+        out.push(T::table_ref());
+    }
+}
+
+impl<Tables: ExprScope, T: Table> ExprScope for CrossJoined<Tables, T> {}
+
+/// A query scope extending `Tables` with the table `T` joined by a `FULL OUTER JOIN`.
+pub struct FullOuterJoined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
+
+impl<Tables: TableScope, T: Table> TableScope for FullOuterJoined<Tables, T> {
+    fn push_table_names(out: &mut Vec<&'static str>) {
+        Tables::push_table_names(out);
+        out.push(T::NAME);
+    }
+
+    fn push_table_refs(out: &mut Vec<TableRef>) {
+        Tables::push_table_refs(out);
+        out.push(T::table_ref());
+    }
+}
+
+impl<Tables: ExprScope, T: Table> ExprScope for FullOuterJoined<Tables, T> {}
+
 /// A query scope extending `Tables` with the `LATERAL` subquery exposed as `T`.
 pub struct CrossLateralJoined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
 
@@ -206,5 +255,7 @@ macro_rules! impl_joined_scope_table_in_scope {
 
 impl_joined_scope_table_in_scope!(Joined);
 impl_joined_scope_table_in_scope!(LeftJoined);
+impl_joined_scope_table_in_scope!(CrossJoined);
+impl_joined_scope_table_in_scope!(FullOuterJoined);
 impl_joined_scope_table_in_scope!(CrossLateralJoined);
 impl_joined_scope_table_in_scope!(LeftLateralJoined);

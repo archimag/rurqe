@@ -118,6 +118,49 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
 }
 
 #[test]
+fn cross_join_and_full_outer_join_render_and_lift_nullability() {
+    let cross = select_from::<Postgres<Pg16>, User>()
+        .cross_join_table(Order)
+        .select((UserId, OrderId))
+        .build();
+
+    assert_eq!(
+        cross.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" CROSS JOIN \"orders\""
+    );
+
+    type FullOuterScope = FullOuterJoined<User, Order>;
+    type NullablePair = (Option<i64>, Option<i64>);
+
+    let full_outer: SelectQuery<Postgres<Pg16>, FullOuterScope, NullablePair, HasProjection> =
+        select_from::<Postgres<Pg16>, User>()
+            .full_outer_join_table(
+                Order,
+                Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
+            )
+            .select((UserId, OrderId));
+
+    assert_eq!(
+        full_outer.build().sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" FULL OUTER JOIN \"orders\" \
+         ON (\"users\".\"id\" = \"orders\".\"user_id\")"
+    );
+
+    // Bilateral nullability verification: both sides decode as Option<i64>
+    let matched = <(Option<i64>, Option<i64>)>::from_row(&[SqlVal::I64(1), SqlVal::I64(10)])
+        .expect("matched row decodes");
+    assert_eq!(matched, (Some(1), Some(10)));
+
+    let left_only = <(Option<i64>, Option<i64>)>::from_row(&[SqlVal::I64(1), SqlVal::Null])
+        .expect("left-only row decodes");
+    assert_eq!(left_only, (Some(1), None));
+
+    let right_only = <(Option<i64>, Option<i64>)>::from_row(&[SqlVal::Null, SqlVal::I64(10)])
+        .expect("right-only row decodes");
+    assert_eq!(right_only, (None, Some(10)));
+}
+
+#[test]
 fn left_join_lifts_joined_columns_into_options() {
     assert_nullable_row::<(UserId, Nullable<OrderTotal>)>();
 

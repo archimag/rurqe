@@ -48,8 +48,9 @@ pub use self::group_by::{
     GroupedSelectTarget, GroupedSelection,
 };
 pub use self::scope::{
-    CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, NonNullableRel,
-    NullableRel, ScopePositions, TableNullabilityInScope, TableScope,
+    CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
+    LeftLateralJoined, NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope,
+    TableScope,
 };
 pub use self::select::{
     BuiltQuery, HasProjection, Locked, NoLock, NoProjection, NullsOrder, OrderDirection,

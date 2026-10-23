@@ -2,7 +2,9 @@
 
 use core::marker::PhantomData;
 
-use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin, SupportsRowLocking};
+use crate::dialect::{
+    Dialect, SupportsDistinctOn, SupportsFullOuterJoin, SupportsLateralJoin, SupportsRowLocking,
+};
 use crate::expr::{
     BinaryOp, CteAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause, LockStrength,
     SelectAst, SqlVal, Subquery, DerivedAst,
@@ -16,8 +18,8 @@ pub use crate::expr::{NullsOrder, OrderCriterion, OrderDirection};
 use super::cte::{Cte, Lateral, DerivedTable};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
 use super::scope::{
-    CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, ScopePositions,
-    TableScope,
+    CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
+    LeftLateralJoined, ScopePositions, TableScope,
 };
 use super::selection::{Nullable, Selection, SelectionFor};
 use super::set_ops::{SetOpAst, SetOpKind};
@@ -595,6 +597,56 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Left, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins the table `T` to the query with an unconditional `CROSS JOIN`.
+    pub fn cross_join<T: Table>(
+        self,
+    ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Cross, None).retype()
+    }
+
+    /// Joins `table` to the query with an unconditional `CROSS JOIN`.
+    pub fn cross_join_table<T: Table>(
+        self,
+        _table: T,
+    ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected>
+    where
+        Tables: TableScope,
+    {
+        self.push_join(JoinKind::Cross, None).retype()
+    }
+
+    /// Joins the table `T` to the query with a `FULL OUTER JOIN` restricted by `on`.
+    pub fn full_outer_join<T: Table, Scope, P>(
+        self,
+        on: Expr<bool, Scope>,
+    ) -> SelectQuery<D, FullOuterJoined<Tables, T>, Output, Projected>
+    where
+        D: SupportsFullOuterJoin,
+        Tables: TableScope,
+        Scope: ExprInScope<FullOuterJoined<Tables, T>, P> + ScopePositions<P>,
+    {
+        self.push_join(JoinKind::FullOuter, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins `table` to the query with a `FULL OUTER JOIN` restricted by `on`.
+    pub fn full_outer_join_table<T: Table, Scope, P>(
+        self,
+        _table: T,
+        on: Expr<bool, Scope>,
+    ) -> SelectQuery<D, FullOuterJoined<Tables, T>, Output, Projected>
+    where
+        D: SupportsFullOuterJoin,
+        Tables: TableScope,
+        Scope: ExprInScope<FullOuterJoined<Tables, T>, P> + ScopePositions<P>,
+    {
+        self.push_join(JoinKind::FullOuter, Some(on.into_kind()))
             .retype()
     }
 
