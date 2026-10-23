@@ -6,9 +6,11 @@
 //! `ORDER BY`, `LAG`, and `LEAD` just like it does in the projection list.
 //!
 //! Beside the rendered clauses, a specification and the window expressions built
-//! over it carry the tables their columns belong to. A window reading a table the
-//! query does not select from is therefore rejected at the call site instead of
-//! rendering a statement the database cannot resolve.
+//! over it carry the tables their columns belong to and the type-level set of
+//! columns the window reads. A window reading a table the query does not select
+//! from is therefore rejected at the call site instead of rendering a statement
+//! the database cannot resolve, and the recorded column set is what a grouped
+//! query checks its window expressions against.
 
 use core::fmt::{self, Write};
 use core::marker::PhantomData;
@@ -24,12 +26,20 @@ use crate::schema::{Column, ExprInScope, TableRef};
 // the expression module, so the canonical definition lives there.
 pub use crate::expr::WindowExprKind;
 
+use super::group_by::{EmptyGroupSet, GroupByColumns, GroupSet, GroupSetColumns};
 use super::scope::ScopePositions;
 use super::select::OrderDirection;
 use super::selection::{SelectTarget, SelectTargetInScope};
 
 #[cfg(test)]
 mod tests;
+
+/// The type-level set of columns a single window column contributes to grouping.
+///
+/// A window specification and the window expressions built over it record one
+/// [`GroupSet`] node per column they read, so a grouped query can compare that
+/// set with the columns it groups by.
+pub type WindowColumnSet<C> = GroupSet<EmptyGroupSet, C>;
 
 /// A column or tuple of columns for the `PARTITION BY` clause of a window specification.
 #[diagnostic::on_unimplemented(
@@ -41,12 +51,16 @@ pub trait PartitionBy {
     /// The tables the partitioned columns belong to.
     type Scope;
 
+    /// The type-level set of the partitioned columns.
+    type Columns;
+
     /// Appends the partition column expressions to `out`.
     fn push_partition_by(&self, out: &mut Vec<ExprKind>);
 }
 
 impl<C: Column> PartitionBy for C {
     type Scope = C::Table;
+    type Columns = <C as GroupByColumns<EmptyGroupSet>>::Columns;
 
     fn push_partition_by(&self, out: &mut Vec<ExprKind>) {
         out.push(C::expr_kind());
@@ -57,6 +71,7 @@ macro_rules! impl_partition_by {
     ($($column:ident),+) => {
         impl<$($column: Column),+> PartitionBy for ($($column,)+) {
             type Scope = ($($column::Table,)+);
+            type Columns = <($($column,)+) as GroupByColumns<EmptyGroupSet>>::Columns;
 
             fn push_partition_by(&self, out: &mut Vec<ExprKind>) {
                 $(out.push($column::expr_kind());)+
@@ -77,16 +92,17 @@ impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 /// A specification of an `OVER (...)` window partition, ordering, and frame.
 ///
 /// The specification carries the tables `Scope` its partitioned and ordered
-/// columns belong to, so a window function evaluated over it is only projectable
-/// from a query selecting from those tables.
-pub struct WindowSpec<Scope = ()> {
+/// columns belong to and the type-level set `Cols` of those columns, so a window
+/// function evaluated over it is only projectable from a query selecting from
+/// those tables and grouping the columns it reads.
+pub struct WindowSpec<Scope = (), Cols = EmptyGroupSet> {
     partition_by: Vec<ExprKind>,
     order_by: Vec<OrderCriterion>,
     frame: Option<WindowFrame>,
-    _scope: PhantomData<fn() -> Scope>,
+    _scope: PhantomData<fn() -> (Scope, Cols)>,
 }
 
-impl<Scope> Default for WindowSpec<Scope> {
+impl<Scope, Cols> Default for WindowSpec<Scope, Cols> {
     fn default() -> Self {
         Self {
             partition_by: Vec::new(),
@@ -97,7 +113,7 @@ impl<Scope> Default for WindowSpec<Scope> {
     }
 }
 
-impl<Scope> Clone for WindowSpec<Scope> {
+impl<Scope, Cols> Clone for WindowSpec<Scope, Cols> {
     fn clone(&self) -> Self {
         Self {
             partition_by: self.partition_by.clone(),
@@ -108,7 +124,7 @@ impl<Scope> Clone for WindowSpec<Scope> {
     }
 }
 
-impl<Scope> PartialEq for WindowSpec<Scope> {
+impl<Scope, Cols> PartialEq for WindowSpec<Scope, Cols> {
     fn eq(&self, other: &Self) -> bool {
         self.partition_by == other.partition_by
             && self.order_by == other.order_by
@@ -116,7 +132,7 @@ impl<Scope> PartialEq for WindowSpec<Scope> {
     }
 }
 
-impl<Scope> WindowSpec<Scope> {
+impl<Scope, Cols> WindowSpec<Scope, Cols> {
     /// Creates an empty window specification (`OVER ()`).
     pub fn new() -> Self {
         Self::default()
@@ -127,11 +143,16 @@ impl<Scope> WindowSpec<Scope> {
         Self::default()
     }
 
-    /// Partitions the window by `partition`, extending the scope by its tables.
-    pub fn partition_by<P>(self, partition: P) -> WindowSpec<Merged<Scope, P::Scope>>
+    /// Partitions the window by `partition`, extending the scope and the column
+    /// set by its tables and columns.
+    pub fn partition_by<P>(
+        self,
+        partition: P,
+    ) -> WindowSpec<Merged<Scope, P::Scope>, <P::Columns as GroupSetColumns<Cols>>::Columns>
     where
         P: PartitionBy,
         Scope: MergeScope<P::Scope>,
+        P::Columns: GroupSetColumns<Cols>,
     {
         let mut partition_by = self.partition_by;
         partition.push_partition_by(&mut partition_by);
@@ -148,7 +169,7 @@ impl<Scope> WindowSpec<Scope> {
         mut self,
         _col: C,
         direction: OrderDirection,
-    ) -> WindowSpec<Merged<Scope, C::Table>>
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -166,7 +187,7 @@ impl<Scope> WindowSpec<Scope> {
         _col: C,
         direction: OrderDirection,
         nulls: NullsOrder,
-    ) -> WindowSpec<Merged<Scope, C::Table>>
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -175,7 +196,10 @@ impl<Scope> WindowSpec<Scope> {
     }
 
     /// Appends an ascending ordering criterion for column `col`.
-    pub fn order_by_asc<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_asc<C: Column>(
+        self,
+        col: C,
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -183,7 +207,10 @@ impl<Scope> WindowSpec<Scope> {
     }
 
     /// Appends a descending ordering criterion for column `col`.
-    pub fn order_by_desc<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_desc<C: Column>(
+        self,
+        col: C,
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -191,7 +218,10 @@ impl<Scope> WindowSpec<Scope> {
     }
 
     /// Appends an ascending ordering criterion putting NULL values first.
-    pub fn order_by_asc_nulls_first<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_asc_nulls_first<C: Column>(
+        self,
+        col: C,
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -199,7 +229,10 @@ impl<Scope> WindowSpec<Scope> {
     }
 
     /// Appends an ascending ordering criterion putting NULL values last.
-    pub fn order_by_asc_nulls_last<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_asc_nulls_last<C: Column>(
+        self,
+        col: C,
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -207,7 +240,10 @@ impl<Scope> WindowSpec<Scope> {
     }
 
     /// Appends a descending ordering criterion putting NULL values first.
-    pub fn order_by_desc_nulls_first<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_desc_nulls_first<C: Column>(
+        self,
+        col: C,
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -215,7 +251,10 @@ impl<Scope> WindowSpec<Scope> {
     }
 
     /// Appends a descending ordering criterion putting NULL values last.
-    pub fn order_by_desc_nulls_last<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_desc_nulls_last<C: Column>(
+        self,
+        col: C,
+    ) -> WindowSpec<Merged<Scope, C::Table>, GroupSet<Cols, C>>
     where
         Scope: MergeScope<C::Table>,
     {
@@ -231,8 +270,9 @@ impl<Scope> WindowSpec<Scope> {
     ///
     /// A `ROWS` frame counts its boundaries in physical rows, so
     /// `WindowFrameBound::preceding(2)` reaches exactly two rows back regardless
-    /// of the values of the ordered column. The frame references no table, so the
-    /// scope of the specification stays unchanged.
+    /// of the values of the ordered column. The frame references no table and no
+    /// column of its own, so the scope and the column set of the specification
+    /// stay unchanged.
     pub fn rows_between(mut self, start: WindowFrameBound, end: WindowFrameBound) -> Self {
         self.frame = Some(WindowFrame::new(WindowFrameKind::Rows, start, end));
         self
@@ -300,11 +340,12 @@ impl<Scope> WindowSpec<Scope> {
         }
     }
 
-    /// Re-types the specification to `NewScope` while keeping the rendered clauses.
+    /// Re-types the specification to `NewScope` and `NewCols` while keeping the
+    /// rendered clauses.
     ///
-    /// The builders extend the clauses in place and only change the scope marker,
-    /// so the transition between scopes is expressed exactly once.
-    fn retype<NewScope>(self) -> WindowSpec<NewScope> {
+    /// The builders extend the clauses in place and only change the markers, so
+    /// the transition between scopes is expressed exactly once.
+    fn retype<NewScope, NewCols>(self) -> WindowSpec<NewScope, NewCols> {
         WindowSpec {
             partition_by: self.partition_by,
             order_by: self.order_by,
@@ -313,10 +354,11 @@ impl<Scope> WindowSpec<Scope> {
         }
     }
 
-    /// Drops the scope marker while keeping the rendered clauses.
+    /// Drops the scope and column markers while keeping the rendered clauses.
     ///
-    /// A window expression carries the union of its own scope and the scope of
-    /// its specification, so the stored specification does not need to repeat it.
+    /// A window expression carries the union of its own scope and column set with
+    /// the ones of its specification, so the stored specification does not need to
+    /// repeat them.
     fn without_scope(self) -> WindowSpec<()> {
         self.retype()
     }
@@ -338,7 +380,7 @@ impl Window {
     }
 
     /// Starts a window specification partitioned by `partition`.
-    pub fn partition_by<P: PartitionBy>(partition: P) -> WindowSpec<P::Scope> {
+    pub fn partition_by<P: PartitionBy>(partition: P) -> WindowSpec<P::Scope, P::Columns> {
         let mut partition_by = Vec::new();
         partition.push_partition_by(&mut partition_by);
         WindowSpec {
@@ -350,7 +392,10 @@ impl Window {
     }
 
     /// Starts a window specification ordered by `col` with `direction`.
-    pub fn order_by<C: Column>(_col: C, direction: OrderDirection) -> WindowSpec<C::Table> {
+    pub fn order_by<C: Column>(
+        _col: C,
+        direction: OrderDirection,
+    ) -> WindowSpec<C::Table, WindowColumnSet<C>> {
         WindowSpec {
             partition_by: Vec::new(),
             order_by: vec![OrderCriterion::new(C::expr_kind(), direction)],
@@ -364,7 +409,7 @@ impl Window {
         _col: C,
         direction: OrderDirection,
         nulls: NullsOrder,
-    ) -> WindowSpec<C::Table> {
+    ) -> WindowSpec<C::Table, WindowColumnSet<C>> {
         WindowSpec {
             partition_by: Vec::new(),
             order_by: vec![OrderCriterion::new(C::expr_kind(), direction).nulls(nulls)],
@@ -374,12 +419,12 @@ impl Window {
     }
 
     /// Starts a window specification with ascending ordering for `col`.
-    pub fn order_by_asc<C: Column>(col: C) -> WindowSpec<C::Table> {
+    pub fn order_by_asc<C: Column>(col: C) -> WindowSpec<C::Table, WindowColumnSet<C>> {
         Window::order_by(col, OrderDirection::Asc)
     }
 
     /// Starts a window specification with descending ordering for `col`.
-    pub fn order_by_desc<C: Column>(col: C) -> WindowSpec<C::Table> {
+    pub fn order_by_desc<C: Column>(col: C) -> WindowSpec<C::Table, WindowColumnSet<C>> {
         Window::order_by(col, OrderDirection::Desc)
     }
 
@@ -397,17 +442,26 @@ impl Window {
     }
 }
 
+/// Phantom marker carrying the result type, referenced scope, and column set of
+/// a [`WindowExpr`].
+///
+/// The alias keeps the phantom field readable at its declaration site and keeps
+/// the field type out of the clippy complexity budget, mirroring the expression,
+/// query, and statement markers of the surrounding modules.
+type WindowExprMarker<T, Scope, Cols> = PhantomData<fn() -> (T, Scope, Cols)>;
+
 /// A typed window expression evaluated with an `OVER (...)` clause.
 ///
 /// The expression carries the tables `Scope` referenced by the wrapped
-/// expression and by its window specification.
-pub struct WindowExpr<T, Scope = ()> {
+/// expression and by its window specification, and the type-level set `Cols` of
+/// the columns the window reads.
+pub struct WindowExpr<T, Scope = (), Cols = EmptyGroupSet> {
     kind: WindowExprKind,
     window: WindowSpec<()>,
-    _result: PhantomData<fn() -> (T, Scope)>,
+    _result: WindowExprMarker<T, Scope, Cols>,
 }
 
-impl<T, Scope> Clone for WindowExpr<T, Scope> {
+impl<T, Scope, Cols> Clone for WindowExpr<T, Scope, Cols> {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
@@ -417,13 +471,13 @@ impl<T, Scope> Clone for WindowExpr<T, Scope> {
     }
 }
 
-impl<T, Scope> PartialEq for WindowExpr<T, Scope> {
+impl<T, Scope, Cols> PartialEq for WindowExpr<T, Scope, Cols> {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind && self.window == other.window
     }
 }
 
-impl<T, Scope> fmt::Debug for WindowExpr<T, Scope> {
+impl<T, Scope, Cols> fmt::Debug for WindowExpr<T, Scope, Cols> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowExpr")
             .field("kind", &self.kind)
@@ -434,13 +488,16 @@ impl<T, Scope> fmt::Debug for WindowExpr<T, Scope> {
     }
 }
 
-impl<T, Scope> WindowExpr<T, Scope> {
-    /// Creates a window expression of scope `Scope` over `window`.
+impl<T, Scope, Cols> WindowExpr<T, Scope, Cols> {
+    /// Creates a window expression of scope `Scope` and column set `Cols` over `window`.
     ///
-    /// The caller is responsible for `Scope` covering both the wrapped
-    /// expression and the window specification, which is exactly what the
-    /// `over` builders of the expressions and of `LAG` / `LEAD` arrange for.
-    pub(crate) fn of_window<WinScope>(kind: WindowExprKind, window: WindowSpec<WinScope>) -> Self {
+    /// The caller is responsible for `Scope` and `Cols` covering both the wrapped
+    /// expression and the window specification, which is exactly what the `over`
+    /// builders of the expressions and of `LAG` / `LEAD` arrange for.
+    pub(crate) fn of_window<WinScope, WinCols>(
+        kind: WindowExprKind,
+        window: WindowSpec<WinScope, WinCols>,
+    ) -> Self {
         Self {
             kind,
             window: window.without_scope(),
@@ -512,8 +569,8 @@ impl<T> WindowExpr<T, ()> {
     }
 }
 
-impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget
-    for WindowExpr<T, Scope>
+impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Cols: 'static + Send + Sync>
+    SelectTarget for WindowExpr<T, Scope, Cols>
 {
     type RustType = T;
 
@@ -526,7 +583,7 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync> SelectTarget
     }
 }
 
-impl<Tables, T, Scope, P> SelectTargetInScope<Tables, P> for WindowExpr<T, Scope>
+impl<Tables, T, Scope, Cols, P> SelectTargetInScope<Tables, P> for WindowExpr<T, Scope, Cols>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
 {
@@ -550,24 +607,38 @@ impl<T> WindowFn<T> {
     }
 
     /// Evaluates this window function over `window`.
-    pub fn over<WinScope>(self, window: WindowSpec<WinScope>) -> WindowExpr<T, WinScope> {
+    ///
+    /// The produced expression references the tables and the columns of the
+    /// specification, so the enclosing query checks both.
+    pub fn over<WinScope, WinCols>(
+        self,
+        window: WindowSpec<WinScope, WinCols>,
+    ) -> WindowExpr<T, WinScope, WinCols> {
         WindowExpr::of_window(self.kind, window)
     }
 }
 
+/// Phantom marker carrying the result type, referenced scope, and column set of
+/// a [`LagLeadFn`].
+///
+/// The alias keeps the phantom field readable at its declaration site while the
+/// marker itself stays a zero-sized `PhantomData`.
+type LagLeadMarker<T, Scope, Col> = PhantomData<fn() -> (T, Scope, Col)>;
+
 /// A `LAG` or `LEAD` window function builder with optional offset configuration.
 ///
-/// The builder carries the table of the column it reads as `Scope`, which the
-/// resulting window expression merges with the scope of its specification.
+/// The builder carries the table of the column it reads as `Scope` and the column
+/// itself as the type-level set `Col`, which the resulting window expression
+/// merges with the scope and the column set of its specification.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LagLeadFn<T, Scope = ()> {
+pub struct LagLeadFn<T, Scope = (), Col = EmptyGroupSet> {
     is_lag: bool,
     column: ExprKind,
     offset: Option<u32>,
-    _result: PhantomData<fn() -> (T, Scope)>,
+    _result: LagLeadMarker<T, Scope, Col>,
 }
 
-impl<T, Scope> LagLeadFn<T, Scope> {
+impl<T, Scope, Col> LagLeadFn<T, Scope, Col> {
     /// Sets the row offset (defaults to 1 if omitted).
     pub fn offset(mut self, offset: u32) -> Self {
         self.offset = Some(offset);
@@ -575,12 +646,13 @@ impl<T, Scope> LagLeadFn<T, Scope> {
     }
 
     /// Evaluates this function over `window`.
-    pub fn over<WinScope>(
+    pub fn over<WinScope, WinCols>(
         self,
-        window: WindowSpec<WinScope>,
-    ) -> WindowExpr<T, Merged<Scope, WinScope>>
+        window: WindowSpec<WinScope, WinCols>,
+    ) -> WindowExpr<T, Merged<Scope, WinScope>, <Col as GroupSetColumns<WinCols>>::Columns>
     where
         Scope: MergeScope<WinScope>,
+        Col: GroupSetColumns<WinCols>,
     {
         let kind = if self.is_lag {
             WindowExprKind::Lag {
@@ -613,7 +685,7 @@ pub fn dense_rank() -> WindowFn<i64> {
 }
 
 /// Starts a `LAG(C)` window function builder for column `C`.
-pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table> {
+pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table, WindowColumnSet<C>> {
     LagLeadFn {
         is_lag: true,
         column: C::expr_kind(),
@@ -623,7 +695,7 @@ pub fn lag<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table> {
 }
 
 /// Starts a `LEAD(C)` window function builder for column `C`.
-pub fn lead<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table> {
+pub fn lead<C: Column>(_col: C) -> LagLeadFn<Option<C::RustType>, C::Table, WindowColumnSet<C>> {
     LagLeadFn {
         is_lag: false,
         column: C::expr_kind(),

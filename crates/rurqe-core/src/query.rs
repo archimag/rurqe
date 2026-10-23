@@ -44,8 +44,8 @@ pub use self::execution::{
     QueryBackend, QueryBackendExt, TransactionBackend, TransactionContext,
 };
 pub use self::group_by::{
-    ColumnInGroupBy, EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupSet, GroupedQuery,
-    GroupedSelectTarget, GroupedSelection,
+    ColumnInGroupBy, EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupSet,
+    GroupSetColumns, GroupedQuery, GroupedSelectTarget, GroupedSelection,
 };
 pub use self::scope::{
     CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
@@ -64,6 +64,6 @@ pub use self::savepoint::{InvalidSavepointName, SavepointName};
 pub use self::set_ops::{SetOpAst, SetOpKind};
 pub use self::transaction::{TransactionGuard, TransactionStatus, TransactionalConnection};
 pub use self::window::{
-    dense_rank, lag, lead, rank, row_number, LagLeadFn, PartitionBy, Window, WindowExpr,
-    WindowExprKind, WindowFn, WindowSpec,
+    dense_rank, lag, lead, rank, row_number, LagLeadFn, PartitionBy, Window, WindowColumnSet,
+    WindowExpr, WindowExprKind, WindowFn, WindowSpec,
 };

@@ -92,6 +92,31 @@ pub struct EmptyGroupSet;
 /// A type-level set of grouped columns, extended one column at a time.
 pub struct GroupSet<Prev, C>(PhantomData<fn() -> (Prev, C)>);
 
+/// Folds a type-level set of columns onto another set.
+///
+/// A window specification records the columns it partitions by and orders by, one
+/// [`GroupSet`] node per column. A window expression merges that set with its own
+/// columns, so the trait rewrites the appended set on top of the set it is merged
+/// into while keeping the order the columns were declared in.
+pub trait GroupSetColumns<Prev> {
+    /// The set holding the columns of `Prev` followed by the columns of `Self`.
+    type Columns;
+}
+
+// The empty appended set leaves the set it is merged into untouched.
+impl<Prev> GroupSetColumns<Prev> for EmptyGroupSet {
+    type Columns = Prev;
+}
+
+// The appended set contributes its last column on top of the columns folded in so
+// far, so a tuple of window columns keeps its declaration order.
+impl<Prev, Inner, C: Column> GroupSetColumns<Prev> for GroupSet<Inner, C>
+where
+    Inner: GroupSetColumns<Prev>,
+{
+    type Columns = GroupSet<<Inner as GroupSetColumns<Prev>>::Columns, C>;
+}
+
 /// Derives the type-level set of grouped columns from a `GROUP BY` clause.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a valid GROUP BY clause",
@@ -315,8 +340,12 @@ impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<
     type Output = T;
 }
 
-impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
-    GroupedSelectTarget<GroupByCols, At<0>> for WindowExpr<T, Scope>
+impl<
+        GroupByCols,
+        T: 'static + Send + Sync,
+        Scope: 'static + Send + Sync,
+        Cols: 'static + Send + Sync,
+    > GroupedSelectTarget<GroupByCols, At<0>> for WindowExpr<T, Scope, Cols>
 {
     type Output = T;
 }

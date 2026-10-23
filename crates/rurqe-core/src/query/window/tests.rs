@@ -25,7 +25,7 @@ impl Dialect for MockDialect {
 }
 
 /// Renders the `OVER (...)` clause of `expression` without an enclosing statement.
-fn render<T, Scope>(expression: &WindowExpr<T, Scope>) -> String {
+fn render<T, Scope, Cols>(expression: &WindowExpr<T, Scope, Cols>) -> String {
     let mut sql = String::new();
     let mut params = Vec::new();
     render_expr::<MockDialect>(&mut sql, &mut params, &expression.to_expr_kind(), &[]);

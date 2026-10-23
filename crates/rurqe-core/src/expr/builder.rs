@@ -292,10 +292,10 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// The produced expression references the tables of both this expression and
     /// the window specification, so a window reading a table the query does not
     /// select from is rejected at the call site.
-    pub fn over<WinScope>(
+    pub fn over<WinScope, WinCols>(
         self,
-        window: crate::query::WindowSpec<WinScope>,
-    ) -> crate::query::WindowExpr<T, Merged<Scope, WinScope>>
+        window: crate::query::WindowSpec<WinScope, WinCols>,
+    ) -> crate::query::WindowExpr<T, Merged<Scope, WinScope>, WinCols>
     where
         Scope: MergeScope<WinScope>,
     {
@@ -346,7 +346,9 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///
     /// The builder carries the table of `C`, which the resulting window
     /// expression merges with the scope of its `OVER` specification.
-    pub fn lag<C: Column<RustType = T>>(col: C) -> crate::query::LagLeadFn<Option<T>, C::Table> {
+    pub fn lag<C: Column<RustType = T>>(
+        col: C,
+    ) -> crate::query::LagLeadFn<Option<T>, C::Table, crate::query::WindowColumnSet<C>> {
         crate::query::lag(col)
     }
 
@@ -354,7 +356,9 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///
     /// The builder carries the table of `C`, which the resulting window
     /// expression merges with the scope of its `OVER` specification.
-    pub fn lead<C: Column<RustType = T>>(col: C) -> crate::query::LagLeadFn<Option<T>, C::Table> {
+    pub fn lead<C: Column<RustType = T>>(
+        col: C,
+    ) -> crate::query::LagLeadFn<Option<T>, C::Table, crate::query::WindowColumnSet<C>> {
         crate::query::lead(col)
     }
 
