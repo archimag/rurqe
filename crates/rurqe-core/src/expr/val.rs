@@ -699,6 +699,16 @@ pub enum BinaryOp {
     And,
     /// `OR`
     Or,
+    /// The `+` operator.
+    Add,
+    /// The `-` operator.
+    Sub,
+    /// The `*` operator.
+    Mul,
+    /// The `/` operator.
+    Div,
+    /// The `%` operator.
+    Rem,
 }
 
 impl BinaryOp {
@@ -713,6 +723,11 @@ impl BinaryOp {
             BinaryOp::Lte => "<=",
             BinaryOp::And => "AND",
             BinaryOp::Or => "OR",
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Rem => "%",
         }
     }
 }

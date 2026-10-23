@@ -1,5 +1,13 @@
 use super::*;
 
+crate::table! {
+    Order => "orders" {
+        OrderTotal => "total": f64,
+        OrderTax => "tax": f64,
+        OrderQty => "qty": i64,
+    }
+}
+
 #[test]
 fn column_expression_carries_static_name() {
     assert_eq!(
@@ -479,4 +487,96 @@ fn expressions_carry_table_scopes_across_operators() {
 
     let not_null_expr: Expr<bool, User> = UserName.is_not_null();
     assert!(matches!(not_null_expr.kind(), ExprKind::IsNull { negated: true, .. }));
+}
+
+#[test]
+fn arithmetic_operators_build_binary_expressions() {
+    let raised: Expr<f64, Order> = Expr::column::<OrderTotal>() + 1.5f64;
+    assert_eq!(
+        raised.kind(),
+        &ExprKind::Binary {
+            op: BinaryOp::Add,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }),
+            rhs: Box::new(ExprKind::Value(SqlVal::F64(1.5))),
+        }
+    );
+
+    let net: Expr<f64, (Order, Order)> = Expr::column::<OrderTotal>() - OrderTax;
+    assert_eq!(
+        net.kind(),
+        &ExprKind::Binary {
+            op: BinaryOp::Sub,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "tax",
+            }),
+        }
+    );
+
+    let doubled: Expr<i64, Order> = Expr::column::<OrderQty>() * 2i64;
+    assert!(matches!(
+        doubled.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Mul,
+            ..
+        }
+    ));
+
+    let halved: Expr<f64, Order> = Expr::column::<OrderTotal>() / 2.0f64;
+    assert!(matches!(
+        halved.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Div,
+            ..
+        }
+    ));
+
+    let parity: Expr<i64, Order> = Expr::column::<OrderQty>() % 2i64;
+    assert!(matches!(
+        parity.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Rem,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn arithmetic_merges_the_scopes_of_its_operands() {
+    // A bound value references no table, so it adds nothing to the scope.
+    let _: Expr<f64, Order> = Expr::column::<OrderTotal>() + 0.5f64;
+
+    // Two columns of the same table reference it twice, exactly as they do when
+    // they are compared with each other.
+    let _: Expr<f64, (Order, Order)> = Expr::column::<OrderTotal>() + OrderTax;
+
+    // A column of another table extends the scope with that table.
+    let _: Expr<i64, (Order, User)> = Expr::column::<OrderQty>() + UserId;
+}
+
+#[test]
+fn arithmetic_preserves_the_aggregation_marker() {
+    let adjusted: Expr<f64, (), Aggregate> = sum(OrderTotal) + 1.0f64;
+
+    assert!(matches!(
+        adjusted.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn arithmetic_renders_its_operator_between_the_operands() {
+    let net = Expr::column::<OrderTotal>() - OrderTax;
+
+    assert_eq!(render(net.kind()).0, "(\"total\" - \"tax\")");
 }

@@ -1,9 +1,10 @@
 //! The generic [`Expr`] type and its fluent construction and comparison methods.
 
 use core::marker::PhantomData;
+use core::ops::{Add, Div, Mul, Rem, Sub};
 
 use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
-use super::ops::IntoExpr;
+use super::ops::{IntoExpr, Numeric, NumericOperand};
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
@@ -302,6 +303,20 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// expression merges with the scope of its `OVER` specification.
     pub fn lead<C: Column<RustType = T>>(col: C) -> crate::query::LagLeadFn<Option<T>, C::Table> {
         crate::query::lead(col)
+    }
+
+    /// Builds an arithmetic expression applying `op` to this expression and `rhs`.
+    ///
+    /// The method backs the operator overloads of [`Expr`], so the operator is
+    /// applied without inspecting the operands: the database evaluates the
+    /// expression, which keeps an overflow or a division by zero the decision of
+    /// the server instead of the client.
+    fn arithmetic<TargetScope>(self, op: BinaryOp, rhs: ExprKind) -> Expr<T, TargetScope, Aggr> {
+        Expr::new(ExprKind::Binary {
+            op,
+            lhs: Box::new(self.kind),
+            rhs: Box::new(rhs),
+        })
     }
 }
 
@@ -671,5 +686,81 @@ impl Expr<(), ()> {
             table: Q::NAME,
             column: C::NAME,
         })
+    }
+}
+
+// Arithmetic follows the standard operator traits, so a numeric expression
+// composes the way the SQL it renders reads: `Expr::column::<OrderTotal>() + 1.5`
+// renders `("total" + $1)`. The database evaluates the operator, which is why the
+// operands only have to carry the same numeric type and no value is folded on the
+// client. The aggregation marker of the left operand survives, so an aggregate
+// stays projectable from a grouped query after it is scaled:
+//
+// ```text
+// SELECT SUM("total") + $1 FROM "orders"
+// ```
+
+impl<T, Scope, Aggr, Rhs> Add<Rhs> for Expr<T, Scope, Aggr>
+where
+    T: Numeric,
+    Scope: MergeScope<Rhs::Scope>,
+    Rhs: NumericOperand<T>,
+{
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+
+    fn add(self, rhs: Rhs) -> Self::Output {
+        self.arithmetic(BinaryOp::Add, rhs.into_operand_kind())
+    }
+}
+
+impl<T, Scope, Aggr, Rhs> Sub<Rhs> for Expr<T, Scope, Aggr>
+where
+    T: Numeric,
+    Scope: MergeScope<Rhs::Scope>,
+    Rhs: NumericOperand<T>,
+{
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+
+    fn sub(self, rhs: Rhs) -> Self::Output {
+        self.arithmetic(BinaryOp::Sub, rhs.into_operand_kind())
+    }
+}
+
+impl<T, Scope, Aggr, Rhs> Mul<Rhs> for Expr<T, Scope, Aggr>
+where
+    T: Numeric,
+    Scope: MergeScope<Rhs::Scope>,
+    Rhs: NumericOperand<T>,
+{
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+
+    fn mul(self, rhs: Rhs) -> Self::Output {
+        self.arithmetic(BinaryOp::Mul, rhs.into_operand_kind())
+    }
+}
+
+impl<T, Scope, Aggr, Rhs> Div<Rhs> for Expr<T, Scope, Aggr>
+where
+    T: Numeric,
+    Scope: MergeScope<Rhs::Scope>,
+    Rhs: NumericOperand<T>,
+{
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+
+    fn div(self, rhs: Rhs) -> Self::Output {
+        self.arithmetic(BinaryOp::Div, rhs.into_operand_kind())
+    }
+}
+
+impl<T, Scope, Aggr, Rhs> Rem<Rhs> for Expr<T, Scope, Aggr>
+where
+    T: Numeric,
+    Scope: MergeScope<Rhs::Scope>,
+    Rhs: NumericOperand<T>,
+{
+    type Output = Expr<T, Merged<Scope, Rhs::Scope>, Aggr>;
+
+    fn rem(self, rhs: Rhs) -> Self::Output {
+        self.arithmetic(BinaryOp::Rem, rhs.into_operand_kind())
     }
 }

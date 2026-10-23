@@ -296,6 +296,108 @@ impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<
     }
 }
 
+/// A Rust type SQL arithmetic is defined over.
+///
+/// The trait names the numeric types a column maps onto, so an arithmetic
+/// expression is only accepted for a value the database can compute with. Both
+/// operands carry the same type: mixing an `i64` with an `f64` has no SQL
+/// equivalent that keeps the Rust type of the result, so the mixture is rejected
+/// at the call site instead of being widened silently.
+///
+/// ```
+/// use rurqe_core::expr::Numeric;
+///
+/// fn assert_numeric<T: Numeric>() {}
+///
+/// assert_numeric::<i32>();
+/// assert_numeric::<i64>();
+/// assert_numeric::<f64>();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not support SQL arithmetic",
+    label = "unsupported arithmetic type",
+    note = "arithmetic combines `i32`, `i64`, and `f64` values, which are the numeric types a column maps onto"
+)]
+pub trait Numeric: ToSqlVal + Sized {}
+
+impl Numeric for i32 {}
+
+impl Numeric for i64 {}
+
+impl Numeric for f64 {}
+
+/// A value an arithmetic expression combines with a numeric expression.
+///
+/// Arithmetic reads the way the SQL it renders does, so the right-hand side of an
+/// operator is either a value of the numeric type, an expression of that type, or
+/// a column declared as that type:
+///
+/// ```
+/// use rurqe_core::expr::{Expr, NumericOperand};
+///
+/// fn assert_operand<T: NumericOperand<f64>>() {}
+///
+/// assert_operand::<f64>();
+/// assert_operand::<Expr<f64>>();
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an operand of a `{T}` arithmetic expression",
+    label = "incompatible arithmetic operand",
+    note = "arithmetic combines a numeric expression with a value of the same type, an expression of that type, or a column declared as that type"
+)]
+pub trait NumericOperand<T: Numeric> {
+    /// The scope of the tables the operand references.
+    type Scope;
+
+    /// Converts `self` into the expression node of the operand.
+    fn into_operand_kind(self) -> ExprKind;
+}
+
+/// Implements [`NumericOperand`] for the listed scalar types.
+///
+/// The types are written out instead of being covered by a blanket implementation
+/// for every [`Numeric`] type: a blanket one would overlap with the implementations
+/// for expressions and column markers, which a downstream crate may combine with a
+/// numeric type of its own.
+macro_rules! impl_numeric_operand {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl NumericOperand<$ty> for $ty {
+                type Scope = ();
+
+                fn into_operand_kind(self) -> ExprKind {
+                    ExprKind::Value(self.to_sql_val())
+                }
+            }
+        )+
+    };
+}
+
+impl_numeric_operand!(i32, i64, f64);
+
+impl<T, Scope, Aggr> NumericOperand<T> for Expr<T, Scope, Aggr>
+where
+    T: Numeric,
+{
+    type Scope = Scope;
+
+    fn into_operand_kind(self) -> ExprKind {
+        self.into_kind()
+    }
+}
+
+impl<T, C> NumericOperand<T> for C
+where
+    T: Numeric,
+    C: Column<RustType = T>,
+{
+    type Scope = C::Table;
+
+    fn into_operand_kind(self) -> ExprKind {
+        C::expr_kind()
+    }
+}
+
 /// A SQL expression of type `T` that can be compared with bound values.
 ///
 /// The trait lets the expression be written directly at the call site — a column
