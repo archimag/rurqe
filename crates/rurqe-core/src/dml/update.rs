@@ -196,6 +196,38 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         }
     }
 
+    /// Restricts the update to rows matching `predicate` when one is given,
+    /// keeping the filtering typestate unchanged.
+    ///
+    /// Unlike [`where_opt`](UpdateQuery::where_opt), an absent predicate does not
+    /// grant permission to update every row: a statement that is still
+    /// [`Unfiltered`] after the call cannot be built, so a filter assembled from
+    /// optional caller input never widens into a full-table mutation by
+    /// accident. The caller either supplies the missing predicate or opts in
+    /// explicitly:
+    ///
+    /// ```text
+    /// let query = update(Users)
+    ///     .set(UsersName::set("root"))
+    ///     .where_if(target.map(|target| UsersId.eq(target)))
+    ///     .allow_all();
+    /// ```
+    pub fn where_if<PredicateScope, P>(
+        self,
+        predicate: Option<Expr<bool, PredicateScope>>,
+    ) -> UpdateQuery<D, T, State, Returning, Scope, Assignments>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+    {
+        match predicate {
+            // A recorded predicate moves the statement into `Filtered`; the
+            // typestate is restored so the permission to build the statement
+            // still depends only on the state the caller established.
+            Some(predicate) => self.where_(predicate).retype(),
+            None => self,
+        }
+    }
+
     /// Merges `predicate` into the recorded filter with a boolean `AND`.
     fn push_filter(&mut self, predicate: ExprKind) {
         let filter = match self.filter.take() {
@@ -463,6 +495,40 @@ mod tests {
 
         assert_eq!(built.sql, "UPDATE \"users\" SET \"active\" = $1");
         assert_eq!(built.params, vec![SqlVal::Bool(true)]);
+    }
+
+    #[test]
+    fn where_if_keeps_the_filtering_typestate() {
+        fn assert_unfiltered(
+            _query: &UpdateQuery<MockDialect, User, Unfiltered, (), User, HasAssignments>,
+        ) {
+        }
+
+        // An absent optional predicate leaves the statement unfiltered, so the
+        // typestate still refuses to build it until the caller opts in.
+        let pending = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_if(None::<Expr<bool, User>>);
+        assert_unfiltered(&pending);
+
+        let explicit = pending.allow_all().build();
+        assert_eq!(explicit.sql, "UPDATE \"users\" SET \"name\" = $1");
+        assert_eq!(explicit.params, vec![SqlVal::Text("root".to_owned())]);
+
+        let filtered = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_if(Some(Expr::column::<UserId>().eq(1i64)))
+            .allow_all()
+            .build();
+
+        assert_eq!(
+            filtered.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(
+            filtered.params,
+            vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
+        );
     }
 
     #[test]
