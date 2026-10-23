@@ -13,7 +13,8 @@
 use core::fmt::{self, Write};
 
 use super::ast::{
-    DerivedAst, ExprKind, OrderCriterion, SelectAst, Subquery, SubqueryOp, WindowExprKind,
+    CteAst, DerivedAst, ExprKind, JoinAst, LockClause, OrderCriterion, SelectAst, SetOpAst,
+    Subquery, SubqueryOp, WindowExprKind,
 };
 use super::val::SqlVal;
 use crate::dialect::Dialect;
@@ -159,7 +160,7 @@ fn render_relation<D: Dialect>(
     match subquery {
         Some(subquery) => {
             sql.push('(');
-            subquery.query.render::<D>(sql, params);
+            StatementRef::from(&subquery.query).render::<D>(sql, params);
             sql.push_str(") AS ");
             D::push_quoted_identifier(sql, subquery.name);
         }
@@ -496,14 +497,8 @@ fn render_multiset<D: Dialect>(
     fields: &[&'static str],
     single: bool,
 ) {
-    let mut inner = query.ast().clone();
-
-    for (projection, field) in inner.projections.iter_mut().zip(fields.iter()) {
-        *projection = ExprKind::Aliased {
-            expr: Box::new(projection.clone()),
-            alias: field,
-        };
-    }
+    let mut inner = StatementRef::from(query.ast());
+    inner.projection_aliases = Some(fields);
 
     // A single nested row stops after the first row of its statement, so the
     // ordering and the pagination of that statement keep deciding which row the
@@ -643,20 +638,64 @@ fn render_ordered_expressions<D: Dialect>(
     }
 }
 
-impl SelectAst {
+/// A borrowed view of a `SELECT` statement AST.
+///
+/// Borrows all clauses from either a [`SelectAst`] or directly from the query
+/// builder, avoiding cloning of clause vectors during statement rendering.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct StatementRef<'a> {
+    pub ctes: &'a [CteAst],
+    pub distinct: bool,
+    pub distinct_on: &'a [ExprKind],
+    pub projections: &'a [ExprKind],
+    pub projection_aliases: Option<&'a [&'static str]>,
+    pub from: Option<TableRef>,
+    pub joins: &'a [JoinAst],
+    pub derived: &'a [DerivedAst],
+    pub filter: Option<&'a ExprKind>,
+    pub group_by: &'a [ExprKind],
+    pub having: Option<&'a ExprKind>,
+    pub order_by: &'a [OrderCriterion],
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+    pub set_operations: &'a [SetOpAst],
+    pub compound_order_by: &'a [OrderCriterion],
+    pub compound_limit: Option<u32>,
+    pub compound_offset: Option<u32>,
+    pub lock: Option<LockClause>,
+}
+
+impl<'a> From<&'a SelectAst> for StatementRef<'a> {
+    fn from(ast: &'a SelectAst) -> Self {
+        Self {
+            ctes: &ast.ctes,
+            distinct: ast.distinct,
+            distinct_on: &ast.distinct_on,
+            projections: &ast.projections,
+            projection_aliases: None,
+            from: ast.from,
+            joins: &ast.joins,
+            derived: &ast.derived,
+            filter: ast.filter.as_ref(),
+            group_by: &ast.group_by,
+            having: ast.having.as_ref(),
+            order_by: &ast.order_by,
+            limit: ast.limit,
+            offset: ast.offset,
+            set_operations: &ast.set_operations,
+            compound_order_by: &ast.compound_order_by,
+            compound_limit: ast.compound_limit,
+            compound_offset: ast.compound_offset,
+            lock: ast.lock,
+        }
+    }
+}
+
+impl<'a> StatementRef<'a> {
     /// Renders the statement into `sql`, binding every literal into `params`.
-    ///
-    /// A statement chained with set operations renders its own clauses first,
-    /// then the operation keywords, and finally the ordering and pagination of
-    /// the compound result. An operand carrying its own `WITH` clause, ordering,
-    /// pagination, or nested set operations is parenthesised, so its clauses stay
-    /// attached to it instead of binding to the compound statement. A statement
-    /// requesting a row-level lock renders it after every other clause.
     pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
         self.render_statement::<D>(sql, params);
 
-        // `FOR UPDATE` and `FOR SHARE` close the statement: SQL binds the lock
-        // after the ordering and pagination of the rows it locks.
         if let Some(lock) = self.lock {
             lock.render_into(sql);
         }
@@ -671,7 +710,7 @@ impl SelectAst {
             render_order_and_pagination::<D>(
                 sql,
                 params,
-                &self.order_by,
+                self.order_by,
                 self.limit,
                 self.offset,
                 &relations,
@@ -679,8 +718,6 @@ impl SelectAst {
             return;
         }
 
-        // The left operand owns its `WITH` clause, ordering, and pagination, so
-        // it is parenthesised whenever it carries any of them.
         let wrap_left = !self.ctes.is_empty() || self.has_own_tail();
         if wrap_left {
             sql.push('(');
@@ -689,7 +726,7 @@ impl SelectAst {
         render_order_and_pagination::<D>(
             sql,
             params,
-            &self.order_by,
+            self.order_by,
             self.limit,
             self.offset,
             &relations,
@@ -698,19 +735,17 @@ impl SelectAst {
             sql.push(')');
         }
 
-        for operation in &self.set_operations {
+        for operation in self.set_operations {
             sql.push(' ');
             sql.push_str(operation.kind.as_str());
             sql.push(' ');
-            operation.query.render_operand::<D>(sql, params);
+            StatementRef::from(&operation.query).render_operand::<D>(sql, params);
         }
 
-        // Ordering and pagination written after a set operation apply to the
-        // combined rows rather than to the left query.
         render_order_and_pagination::<D>(
             sql,
             params,
-            &self.compound_order_by,
+            self.compound_order_by,
             self.compound_limit,
             self.compound_offset,
             &relations,
@@ -718,9 +753,6 @@ impl SelectAst {
     }
 
     /// Whether rendering the statement as a set-operation operand needs parentheses.
-    ///
-    /// An operand carrying its own `WITH` clause, ordering, pagination, or nested
-    /// set operations keeps those clauses only inside parentheses.
     pub fn requires_operand_parentheses(&self) -> bool {
         !self.ctes.is_empty() || self.has_own_tail() || !self.set_operations.is_empty()
     }
@@ -764,7 +796,7 @@ impl SelectAst {
                 }
                 D::push_quoted_identifier(sql, cte.name);
                 sql.push_str(" AS (");
-                cte.query.render::<D>(sql, params);
+                StatementRef::from(&cte.query).render::<D>(sql, params);
                 sql.push(')');
             }
             sql.push(' ');
@@ -775,21 +807,21 @@ impl SelectAst {
 
         if let Some(from) = &self.from {
             sql.push_str(" FROM ");
-            render_relation::<D>(sql, params, from, &self.derived);
+            render_relation::<D>(sql, params, from, self.derived);
         }
 
-        for join in &self.joins {
+        for join in self.joins {
             sql.push(' ');
             sql.push_str(join.kind.as_str());
             sql.push(' ');
             match &join.lateral {
                 Some(lateral) => {
                     sql.push('(');
-                    lateral.render::<D>(sql, params);
+                    StatementRef::from(lateral).render::<D>(sql, params);
                     sql.push_str(") AS ");
                     D::push_quoted_identifier(sql, join.table.name);
                 }
-                None => render_relation::<D>(sql, params, &join.table, &self.derived),
+                None => render_relation::<D>(sql, params, &join.table, self.derived),
             }
             if let Some(on) = &join.on {
                 sql.push_str(" ON ");
@@ -797,17 +829,17 @@ impl SelectAst {
             }
         }
 
-        if let Some(filter) = &self.filter {
+        if let Some(filter) = self.filter {
             sql.push_str(" WHERE ");
             render_expr::<D>(sql, params, filter, relations);
         }
 
         if !self.group_by.is_empty() {
             sql.push_str(" GROUP BY ");
-            render_expressions::<D>(sql, params, &self.group_by, relations);
+            render_expressions::<D>(sql, params, self.group_by, relations);
         }
 
-        if let Some(having) = &self.having {
+        if let Some(having) = self.having {
             sql.push_str(" HAVING ");
             render_expr::<D>(sql, params, having, relations);
         }
@@ -822,13 +854,46 @@ impl SelectAst {
     ) {
         if !self.distinct_on.is_empty() {
             sql.push_str("DISTINCT ON (");
-            render_expressions::<D>(sql, params, &self.distinct_on, relations);
+            render_expressions::<D>(sql, params, self.distinct_on, relations);
             sql.push_str(") ");
         } else if self.distinct {
             sql.push_str("DISTINCT ");
         }
 
-        render_expressions::<D>(sql, params, &self.projections, relations);
+        for (index, projection) in self.projections.iter().enumerate() {
+            if index > 0 {
+                sql.push_str(", ");
+            }
+            render_expr::<D>(sql, params, projection, relations);
+            if let Some(aliases) = self.projection_aliases {
+                if let Some(&alias) = aliases.get(index) {
+                    sql.push_str(" AS ");
+                    D::push_quoted_identifier(sql, alias);
+                }
+            }
+        }
+    }
+}
+
+impl SelectAst {
+    /// Renders the statement into `sql`, binding every literal into `params`.
+    ///
+    /// A statement chained with set operations renders its own clauses first,
+    /// then the operation keywords, and finally the ordering and pagination of
+    /// the compound result. An operand carrying its own `WITH` clause, ordering,
+    /// pagination, or nested set operations is parenthesised, so its clauses stay
+    /// attached to it instead of binding to the compound statement. A statement
+    /// requesting a row-level lock renders it after every other clause.
+    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+        StatementRef::from(self).render::<D>(sql, params);
+    }
+
+    /// Whether rendering the statement as a set-operation operand needs parentheses.
+    ///
+    /// An operand carrying its own `WITH` clause, ordering, pagination, or nested
+    /// set operations keeps those clauses only inside parentheses.
+    pub fn requires_operand_parentheses(&self) -> bool {
+        StatementRef::from(self).requires_operand_parentheses()
     }
 }
 

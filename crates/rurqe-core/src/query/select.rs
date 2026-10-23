@@ -6,8 +6,8 @@ use crate::dialect::{
     Dialect, SupportsDistinctOn, SupportsFullOuterJoin, SupportsLateralJoin, SupportsRowLocking,
 };
 use crate::expr::{
-    BinaryOp, CteAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause, LockStrength,
-    SelectAst, SqlVal, Subquery, DerivedAst,
+    BinaryOp, CteAst, DerivedAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause,
+    LockStrength, SelectAst, SqlVal, StatementRef, Subquery,
 };
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
@@ -101,18 +101,6 @@ impl ProjectionPresent for HasProjection {}
 type QueryMarker<D, Tables, Output, Projected, Lock> =
     PhantomData<fn() -> (D, Tables, Output, Projected, Lock)>;
 
-/// A single join clause recorded on a [`SelectQuery`].
-///
-/// The clause keeps the joined relation as dialect-neutral data, so the query
-/// is described without a rendering closure and renders with the dialect of the
-/// statement it belongs to.
-#[derive(Clone, Debug, PartialEq)]
-struct JoinClause {
-    kind: JoinKind,
-    on: Option<ExprKind>,
-    lateral: Option<SelectAst>,
-}
-
 /// A `SELECT` query over the table `Tables` producing rows of type `Output`.
 ///
 /// Every clause is accumulated as dialect-neutral statement data, so building a
@@ -137,8 +125,9 @@ struct JoinClause {
 pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProjection, Lock = NoLock>
 {
     ctes: Vec<CteAst>,
+    from: Option<TableRef>,
     projections: Vec<ExprKind>,
-    joins: Vec<JoinClause>,
+    joins: Vec<JoinAst>,
     derived: Vec<DerivedAst>,
     filter: Option<ExprKind>,
     pub(crate) group_by: Vec<ExprKind>,
@@ -162,6 +151,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> Clone
     fn clone(&self) -> Self {
         Self {
             ctes: self.ctes.clone(),
+            from: self.from,
             projections: self.projections.clone(),
             joins: self.joins.clone(),
             derived: self.derived.clone(),
@@ -188,6 +178,7 @@ impl<D: Dialect> SelectQuery<D, (), (), NoProjection> {
     pub fn new() -> Self {
         SelectQuery {
             ctes: Vec::new(),
+            from: None,
             projections: Vec::new(),
             joins: Vec::new(),
             derived: Vec::new(),
@@ -217,12 +208,14 @@ impl<D: Dialect> Default for SelectQuery<D, (), (), NoProjection> {
 
 impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// Introduces `T` as the table rows are selected from.
-    pub fn from<T: Table>(self) -> SelectQuery<D, T, Output, Projected> {
+    pub fn from<T: Table>(mut self) -> SelectQuery<D, T, Output, Projected> {
+        self.from = Some(T::table_ref());
         self.retype()
     }
 
     /// Introduces `table` as the table rows are selected from.
-    pub fn from_table<T: Table>(self, _table: T) -> SelectQuery<D, T, Output, Projected> {
+    pub fn from_table<T: Table>(mut self, _table: T) -> SelectQuery<D, T, Output, Projected> {
+        self.from = Some(T::table_ref());
         self.retype()
     }
 
@@ -244,6 +237,7 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     where
         SubD: DialectInScope<D>,
     {
+        self.from = Some(T::table_ref());
         self.derived.push(derived.into_ast());
         self.retype()
     }
@@ -589,7 +583,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableScope,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
-        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+        self.push_join(JoinKind::Inner, T::table_ref(), None, Some(on.into_kind()))
             .retype()
     }
 
@@ -603,7 +597,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableScope,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
-        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+        self.push_join(JoinKind::Inner, T::table_ref(), None, Some(on.into_kind()))
             .retype()
     }
 
@@ -616,7 +610,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableScope,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
-        self.push_join(JoinKind::Left, Some(on.into_kind()))
+        self.push_join(JoinKind::Left, T::table_ref(), None, Some(on.into_kind()))
             .retype()
     }
 
@@ -630,7 +624,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableScope,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
-        self.push_join(JoinKind::Left, Some(on.into_kind()))
+        self.push_join(JoinKind::Left, T::table_ref(), None, Some(on.into_kind()))
             .retype()
     }
 
@@ -641,7 +635,8 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     where
         Tables: TableScope,
     {
-        self.push_join(JoinKind::Cross, None).retype()
+        self.push_join(JoinKind::Cross, T::table_ref(), None, None)
+            .retype()
     }
 
     /// Joins `table` to the query with an unconditional `CROSS JOIN`.
@@ -652,7 +647,8 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     where
         Tables: TableScope,
     {
-        self.push_join(JoinKind::Cross, None).retype()
+        self.push_join(JoinKind::Cross, T::table_ref(), None, None)
+            .retype()
     }
 
     /// Joins the table `T` to the query with a `FULL OUTER JOIN` restricted by `on`.
@@ -665,8 +661,13 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableScope,
         Scope: ExprInScope<FullOuterJoined<Tables, T>, P> + ScopePositions<P>,
     {
-        self.push_join(JoinKind::FullOuter, Some(on.into_kind()))
-            .retype()
+        self.push_join(
+            JoinKind::FullOuter,
+            T::table_ref(),
+            None,
+            Some(on.into_kind()),
+        )
+        .retype()
     }
 
     /// Joins `table` to the query with a `FULL OUTER JOIN` restricted by `on`.
@@ -680,8 +681,13 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableScope,
         Scope: ExprInScope<FullOuterJoined<Tables, T>, P> + ScopePositions<P>,
     {
-        self.push_join(JoinKind::FullOuter, Some(on.into_kind()))
-            .retype()
+        self.push_join(
+            JoinKind::FullOuter,
+            T::table_ref(),
+            None,
+            Some(on.into_kind()),
+        )
+        .retype()
     }
 
     /// Joins the derived table `derived` to the query with an `INNER JOIN`.
@@ -706,7 +712,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
         self.derived.push(derived.into_ast());
-        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+        self.push_join(JoinKind::Inner, T::table_ref(), None, Some(on.into_kind()))
             .retype()
     }
 
@@ -726,17 +732,24 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
         self.derived.push(derived.into_ast());
-        self.push_join(JoinKind::Left, Some(on.into_kind()))
+        self.push_join(JoinKind::Left, T::table_ref(), None, Some(on.into_kind()))
             .retype()
     }
 
     /// Records a regular join clause whose relational effect is expressed by the
     /// caller's return type.
-    fn push_join(mut self, kind: JoinKind, on: Option<ExprKind>) -> Self {
-        self.joins.push(JoinClause {
+    fn push_join(
+        mut self,
+        kind: JoinKind,
+        table: TableRef,
+        lateral: Option<SelectAst>,
+        on: Option<ExprKind>,
+    ) -> Self {
+        self.joins.push(JoinAst {
             kind,
+            table,
+            lateral,
             on,
-            lateral: None,
         });
         self
     }
@@ -746,6 +759,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ) -> SelectQuery<D2, Tables2, Output2, Projected2, Lock2> {
         SelectQuery {
             ctes: self.ctes,
+            from: self.from,
             projections: self.projections,
             joins: self.joins,
             derived: self.derived,
@@ -778,8 +792,9 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
     where
         LatD: DialectInScope<D>,
     {
-        self.joins.push(JoinClause {
+        self.joins.push(JoinAst {
             kind: JoinKind::CrossLateral,
+            table: T::table_ref(),
             on: None,
             lateral: Some(lateral.query),
         });
@@ -794,8 +809,9 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
     where
         LatD: DialectInScope<D>,
     {
-        self.joins.push(JoinClause {
+        self.joins.push(JoinAst {
             kind: JoinKind::LeftLateral,
+            table: T::table_ref(),
             on: Some(ExprKind::Raw {
                 fragments: vec!["true".to_owned()],
                 params: Vec::new(),
@@ -987,37 +1003,51 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection> {
 impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     SelectQuery<D, Tables, Output, P, Lock>
 {
-    /// Describes the query as a dialect-neutral statement AST.
-    ///
-    /// The relations of the statement follow the scope of the query: the table
-    /// the rows are selected from comes first, and every join appends the relation
-    /// it introduced in the same order. Joins are paired with the relations of the
-    /// scope instead of being indexed by them, so a join without a matching
-    /// relation is dropped rather than aborting the renderer.
-    pub fn to_ast(&self) -> SelectAst {
-        let mut tables: Vec<TableRef> = Vec::new();
-        Tables::push_table_refs(&mut tables);
+    fn as_statement_ref(&self) -> StatementRef<'_> {
+        let from = self.from.or_else(|| {
+            let mut tables: Vec<TableRef> = Vec::new();
+            Tables::push_table_refs(&mut tables);
+            tables.first().copied()
+        });
 
-        let joins = tables
-            .iter()
-            .skip(1)
-            .copied()
-            .zip(self.joins.iter())
-            .map(|(table, join)| JoinAst {
-                kind: join.kind,
-                table,
-                lateral: join.lateral.clone(),
-                on: join.on.clone(),
-            })
-            .collect();
+        StatementRef {
+            ctes: &self.ctes,
+            distinct: self.distinct,
+            distinct_on: &self.distinct_on,
+            projections: &self.projections,
+            projection_aliases: None,
+            from,
+            joins: &self.joins,
+            derived: &self.derived,
+            filter: self.filter.as_ref(),
+            group_by: &self.group_by,
+            having: self.having.as_ref(),
+            order_by: &self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            set_operations: &self.set_operations,
+            compound_order_by: &self.compound_order_by,
+            compound_limit: self.compound_limit,
+            compound_offset: self.compound_offset,
+            lock: self.lock,
+        }
+    }
+
+    /// Describes the query as a dialect-neutral statement AST.
+    pub fn to_ast(&self) -> SelectAst {
+        let from = self.from.or_else(|| {
+            let mut tables: Vec<TableRef> = Vec::new();
+            Tables::push_table_refs(&mut tables);
+            tables.first().copied()
+        });
 
         SelectAst {
             ctes: self.ctes.clone(),
             distinct: self.distinct,
             distinct_on: self.distinct_on.clone(),
             projections: self.projections.clone(),
-            from: tables.first().copied(),
-            joins,
+            from,
+            joins: self.joins.clone(),
             derived: self.derived.clone(),
             filter: self.filter.clone(),
             group_by: self.group_by.clone(),
@@ -1035,7 +1065,7 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
 
     /// Renders the query statement and parameters into the target buffers.
     pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        self.to_ast().render::<D>(sql, params);
+        self.as_statement_ref().render::<D>(sql, params);
     }
 
     /// Renders the query into SQL text and its ordered parameter list.
