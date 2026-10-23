@@ -7,9 +7,10 @@
 //! only, never through tuple indices.
 
 use rurqe_core::dialect::Dialect;
-use rurqe_core::expr::{Expr, SqlVal};
+use rurqe_core::expr::{Expr, SqlArrayElement, SqlVal, ToSqlVal};
+use rurqe_core::nested::MultisetRow;
 use rurqe_core::query::{HasProjection, LeftJoined, SelectQuery, Selection, SelectionFor};
-use rurqe_core::row::FromRow;
+use rurqe_core::row::{FromRow, FromSqlValue, RowDecodeError};
 use rurqe_macros::select;
 
 rurqe_core::table! {
@@ -80,6 +81,27 @@ where
 {
     <S as SelectionFor<Tables, Positions>>::Row::from_row(values)
 }
+
+/// Reads the keys a record publishes to the nested projection aggregating it.
+fn keys_of<R: MultisetRow>(_row: &R) -> &'static [&'static str] {
+    R::FIELDS
+}
+
+/// Decodes the JSON object of one nested row into the record of `witness`.
+fn read_nested<R: FromSqlValue>(_witness: &R, value: &SqlVal) -> Result<R, RowDecodeError> {
+    R::from_sql_value(value)
+}
+
+/// Decodes the JSON array of a nested collection into the records of `witness`.
+fn read_collection<R: SqlArrayElement>(
+    _witness: &R,
+    value: &SqlVal,
+) -> Result<Vec<R>, RowDecodeError> {
+    <Vec<R> as FromSqlValue>::from_sql_value(value)
+}
+
+/// Asserts that the record of `_row` can be one element of a collection.
+fn assert_element<R: SqlArrayElement>(_row: &R) {}
 
 #[test]
 fn projects_columns_in_declaration_order() {
@@ -214,6 +236,83 @@ fn selections_project_from_a_grouped_query() {
 
     assert_eq!(built.sql, "SELECT id, COUNT(*) FROM orders GROUP BY id");
     assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_projected_record_publishes_the_keys_of_its_fields() {
+    let selection = select!(UserId, UserEmail as contact_email);
+    let row = decode(
+        &selection,
+        &[SqlVal::I64(1), SqlVal::Text("root".to_owned())],
+    )
+    .expect("row decodes");
+
+    let expected: &[&str] = &["user_id", "contact_email"];
+    assert_eq!(keys_of(&row), expected);
+}
+
+#[test]
+fn a_projected_record_reads_the_object_of_a_nested_row() {
+    let selection = select!(UserId, UserEmail as contact_email);
+    let witness = decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())])
+        .expect("row decodes");
+
+    let document = SqlVal::Json(serde_json::json!({ "user_id": 7, "contact_email": "ops" }));
+    let row = read_nested(&witness, &document).expect("the nested row decodes");
+
+    assert_eq!(row.user_id, 7);
+    assert_eq!(row.contact_email, "ops");
+}
+
+#[test]
+fn a_projected_record_writes_the_object_of_a_nested_row() {
+    let selection = select!(UserId, UserEmail as contact_email);
+    let row = decode(&selection, &[SqlVal::I64(7), SqlVal::Text("ops".to_owned())])
+        .expect("row decodes");
+
+    assert_eq!(
+        row.to_sql_val(),
+        SqlVal::Json(serde_json::json!({ "user_id": 7, "contact_email": "ops" }))
+    );
+}
+
+#[test]
+fn a_collection_of_projected_records_decodes_from_a_json_array() {
+    let selection = select!(UserId, UserEmail as contact_email);
+    let witness = decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())])
+        .expect("row decodes");
+
+    let document = SqlVal::Json(serde_json::json!([
+        { "user_id": 1, "contact_email": "root" },
+        { "user_id": 2, "contact_email": "ops" },
+    ]));
+    let rows = read_collection(&witness, &document).expect("the collection decodes");
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.get(1).map(|row| row.contact_email.as_str()),
+        Some("ops")
+    );
+}
+
+#[test]
+fn a_missing_field_of_a_nested_selection_is_reported() {
+    let selection = select!(UserId, UserEmail as contact_email);
+    let witness = decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())])
+        .expect("row decodes");
+
+    let document = SqlVal::Json(serde_json::json!({ "user_id": 1 }));
+    let error = read_nested(&witness, &document).expect_err("the missing field is reported");
+
+    assert!(error.to_string().contains("contact_email"));
+}
+
+#[test]
+fn a_projected_record_is_an_array_element() {
+    let selection = select!(UserId);
+    let row = decode(&selection, &[SqlVal::I64(1)]).expect("row decodes");
+
+    assert_element(&row);
 }
 
 /// A second dialect scope proving that the dialect is fixed by the imported
