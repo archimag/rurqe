@@ -57,7 +57,7 @@ pub struct UpdateQuery<
     assignments: Vec<(&'static str, AssignValue)>,
     from_tables: Vec<&'static str>,
     filter: Option<ExprKind>,
-    returning: Vec<&'static str>,
+    returning: Vec<ExprKind>,
     _marker: UpdateMarker<D, T, State, Returning, Scope, Assignments>,
 }
 
@@ -275,7 +275,7 @@ impl<D: Dialect + SupportsReturning, T: Table, State, Scope, Assignments>
         mut self,
         selection: S,
     ) -> UpdateQuery<D, T, State, <S as Selection>::Row, Scope, Assignments> {
-        selection.push_column_names(&mut self.returning);
+        selection.push_projections(&mut self.returning);
         self.retype()
     }
 }
@@ -328,12 +328,16 @@ where
         }
 
         if !self.returning.is_empty() {
+            // A projected column belongs to the mutated table, so it is
+            // qualified by the same rules as any other column reference: a
+            // `FROM` source may declare a column of the same name, which would
+            // make a bare name ambiguous.
             sql.push_str(" RETURNING ");
-            for (index, name) in self.returning.iter().enumerate() {
+            for (index, projection) in self.returning.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                render_expr::<D>(&mut sql, &mut params, projection, &relations);
             }
         }
 
@@ -609,6 +613,23 @@ mod tests {
             built.sql,
             "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" \
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
+        );
+        assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
+    }
+
+    #[test]
+    fn returning_qualifies_the_target_table_across_a_from_clause() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .from::<Account>()
+            .set(UserName::set("alice"))
+            .allow_all()
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" \
+             RETURNING \"users\".\"id\", \"users\".\"name\""
         );
         assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
     }

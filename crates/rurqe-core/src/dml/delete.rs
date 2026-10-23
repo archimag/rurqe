@@ -44,7 +44,7 @@ use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (), Scope = T> {
     using_tables: Vec<&'static str>,
     filter: Option<ExprKind>,
-    returning: Vec<&'static str>,
+    returning: Vec<ExprKind>,
     _marker: DeleteMarker<D, T, State, Returning, Scope>,
 }
 
@@ -186,7 +186,7 @@ impl<D: Dialect + SupportsReturning, T: Table, State, Scope> DeleteQuery<D, T, S
         mut self,
         selection: S,
     ) -> DeleteQuery<D, T, State, <S as Selection>::Row, Scope> {
-        selection.push_column_names(&mut self.returning);
+        selection.push_projections(&mut self.returning);
         self.retype()
     }
 }
@@ -209,26 +209,30 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
             }
         }
 
+        // The deleted table and every `USING` source are in scope of the filter
+        // and of the projections, so a column of either one is qualified as soon
+        // as the statement addresses more than the target table.
+        let mut relations = Vec::with_capacity(1 + self.using_tables.len());
+        relations.push(TableRef::plain(T::NAME));
+        relations.extend(self.using_tables.iter().copied().map(TableRef::plain));
+
         let mut params = Vec::new();
         if let Some(filter) = &self.filter {
-            // The deleted table and every `USING` source are in scope of the
-            // filter, so a column of either one is qualified as soon as the
-            // statement addresses more than the target table.
-            let mut relations = Vec::with_capacity(1 + self.using_tables.len());
-            relations.push(TableRef::plain(T::NAME));
-            relations.extend(self.using_tables.iter().copied().map(TableRef::plain));
-
             sql.push_str(" WHERE ");
             render_expr::<D>(&mut sql, &mut params, filter, &relations);
         }
 
         if !self.returning.is_empty() {
+            // A projected column belongs to the deleted table, so it follows the
+            // same qualification rules as any other column reference: a `USING`
+            // source may declare a column of the same name, which would make a
+            // bare name ambiguous.
             sql.push_str(" RETURNING ");
-            for (index, name) in self.returning.iter().enumerate() {
+            for (index, projection) in self.returning.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                render_expr::<D>(&mut sql, &mut params, projection, &relations);
             }
         }
 
@@ -334,6 +338,23 @@ mod tests {
             built.sql,
             "DELETE FROM \"users\" USING \"accounts\" \
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
+        );
+        assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn returning_qualifies_the_target_table_across_a_using_clause() {
+        let built = DeleteQuery::<MockDialect, User>::new()
+            .using::<Account>()
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .returning((UserId, UserName))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "DELETE FROM \"users\" USING \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\") \
+             RETURNING \"users\".\"id\", \"users\".\"name\""
         );
         assert!(built.params.is_empty());
     }
