@@ -2,6 +2,14 @@
 
 ## 1. Architecture and Module Structure
 
+* **Tiered API Invariants (High-Level vs Low-Level):**
+  * **High-Level API (Guaranteed Correctness):**
+    * Queries written using the fluent typed DSL (`SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `select!`, `dto!`, column markers) must provide absolute compile-time SQL soundness.
+    * If the code compiles, the emitted SQL query must be syntactically, structurally, and dialect-semantically valid for the targeted database and version. Ambiguous column references, missing tables in scope, invalid nullability projections, or unsupported dialect capabilities must be rejected strictly at compile time.
+  * **Low-Level API (Safe Danger Zone / Fallback):**
+    * Escape-hatch interfaces (`sql!`, `raw_sql!`, `Expr::raw`, `fetch_raw`, `execute_raw`) exist exclusively as fallbacks for exotic or unmodeled database behavior.
+    * Runtime errors (syntax errors from the engine, type mismatches, constraint violations) are permitted and must be surfaced cleanly via `Result<T, ExecutionError>`.
+    * **Panic-Free Invariant:** Panics, aborts, or unwinds are strictly forbidden under all circumstances, even on completely malformed raw SQL, mixed placeholder tokens, or corrupt wire responses.
 * **KISS, YAGNI, and DRY:**
   * No speculative fields, methods, or traits "just in case". Delete dead code immediately; do not leave it commented out.
   * Single Source of Truth (SSOT) for data structures, serialization formats, and validation rules.
