@@ -82,9 +82,9 @@ pub(super) fn wire_of(ty: &Type) -> Option<Wire> {
 /// Resolves the type a domain is declared over.
 ///
 /// A domain is reported as a type of its own, while its binary representation is
-/// the one of the type it is declared over, so the classification always looks
-/// through the whole domain chain.
-fn base_type(ty: &Type) -> &Type {
+/// the one of the type it is declared over, so both the classification and the
+/// array codec always look through the whole domain chain.
+pub(super) fn base_type(ty: &Type) -> &Type {
     let mut base = ty;
     while let Kind::Domain(inner) = base.kind() {
         base = inner;

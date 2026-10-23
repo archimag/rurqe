@@ -9,82 +9,21 @@ use rurqe_core::expr::SqlVal;
 
 use super::driver::types::{IsNull, Kind, ToSql, Type};
 use super::wire::{wire_of, Wire};
-use super::SqlValParam;
+use super::{decode_value, SqlValParam};
 
 /// Builds a type the way the server would report it.
 fn synthetic(name: &str, oid: u32, kind: Kind) -> Type {
     Type::new(name.to_owned(), oid, kind, "public".to_owned())
 }
 
-#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
-#[test]
-fn uuid_json_and_temporal_values_bind_directly() {
-    let mut buffer = BytesMut::new();
-    let uuid_param = SqlValParam(&SqlVal::Uuid(uuid::Uuid::nil()));
-    assert!(matches!(
-        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let json_param = SqlValParam(&SqlVal::Json(serde_json::json!({ "a": 1 })));
-    assert!(matches!(
-        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
-        .unwrap()
-        .and_hms_opt(3, 4, 5)
-        .unwrap();
-    let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
-    assert!(matches!(
-        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
-    let date_param = SqlValParam(&SqlVal::NaiveDate(date));
-    assert!(matches!(
-        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-}
-
-#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
-#[test]
-fn text_parameters_bind_to_uuid_json_and_temporal_types() {
-    let mut buffer = BytesMut::new();
-    let uuid_param = SqlValParam(&SqlVal::Text(
-        "00000000-0000-0000-0000-000000000000".to_owned(),
-    ));
-    assert!(matches!(
-        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let json_param = SqlValParam(&SqlVal::Text("{\"a\":1}".to_owned()));
-    assert!(matches!(
-        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let timestamp_param = SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()));
-    assert!(matches!(
-        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let date_param = SqlValParam(&SqlVal::Text("2024-01-02".to_owned()));
-    assert!(matches!(
-        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
-        IsNull::No
-    ));
+/// Builds the array type over `element`, the way the server would report it.
+fn array_of(name: &str, oid: u32, element: Type) -> Type {
+    Type::new(
+        name.to_owned(),
+        oid,
+        Kind::Array(element),
+        "public".to_owned(),
+    )
 }
 
 #[test]
@@ -251,4 +190,185 @@ fn a_value_without_a_textual_form_is_rejected_for_a_network_column() {
 
     assert!(error.to_string().contains("int64"));
     assert!(error.to_string().contains("inet"));
+}
+
+#[test]
+fn an_array_column_binds_one_value_per_element() {
+    let mut buffer = BytesMut::new();
+    let param = SqlValParam(&SqlVal::Array(vec![SqlVal::I64(1), SqlVal::I64(2)]));
+    assert!(matches!(
+        param.to_sql_checked(&Type::INT8_ARRAY, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    // One dimension, no NULL, the `int8` element OID, two elements from the first
+    // lower bound, and then the payload of every element.
+    let mut expected = Vec::new();
+    for field in [1i32, 0, 20, 2, 1] {
+        expected.extend_from_slice(&field.to_be_bytes());
+    }
+    for value in [1i64, 2i64] {
+        expected.extend_from_slice(&8i32.to_be_bytes());
+        expected.extend_from_slice(&value.to_be_bytes());
+    }
+
+    assert_eq!(buffer.to_vec(), expected);
+}
+
+#[test]
+fn an_array_round_trips_through_the_binary_form() {
+    let values = vec![SqlVal::Text("a".to_owned()), SqlVal::Null];
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Array(values.clone()))
+        .to_sql_checked(&Type::TEXT_ARRAY, &mut buffer)
+        .unwrap();
+
+    assert_eq!(
+        decode_value(&Type::TEXT_ARRAY, &buffer[..]).expect("the array is decodable"),
+        SqlVal::Array(values)
+    );
+}
+
+#[test]
+fn arrays_of_enums_and_domains_decode_their_elements() {
+    let moods = array_of(
+        "_mood",
+        65_530,
+        synthetic(
+            "mood",
+            65_534,
+            Kind::Enum(vec!["happy".to_owned(), "sad".to_owned()]),
+        ),
+    );
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Array(vec![SqlVal::Text("happy".to_owned())]))
+        .to_sql_checked(&moods, &mut buffer)
+        .unwrap();
+    assert_eq!(
+        decode_value(&moods, &buffer[..]).expect("the enum array is decodable"),
+        SqlVal::Array(vec![SqlVal::Text("happy".to_owned())])
+    );
+
+    let amounts = array_of(
+        "_amount",
+        65_531,
+        synthetic("amount", 65_532, Kind::Domain(Type::NUMERIC)),
+    );
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())]))
+        .to_sql_checked(&amounts, &mut buffer)
+        .unwrap();
+    assert_eq!(
+        decode_value(&amounts, &buffer[..]).expect("the decimal array is decodable"),
+        SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())])
+    );
+}
+
+#[test]
+fn an_empty_array_decodes_without_elements() {
+    let mut bytes = Vec::new();
+    for field in [0i32, 0, 20] {
+        bytes.extend_from_slice(&field.to_be_bytes());
+    }
+
+    assert_eq!(
+        decode_value(&Type::INT8_ARRAY, &bytes).expect("an empty array is decodable"),
+        SqlVal::Array(Vec::new())
+    );
+}
+
+#[test]
+fn a_multi_dimensional_array_is_reported() {
+    let mut bytes = Vec::new();
+    for field in [2i32, 0, 20] {
+        bytes.extend_from_slice(&field.to_be_bytes());
+    }
+
+    let error =
+        decode_value(&Type::INT8_ARRAY, &bytes).expect_err("a matrix cannot decode into a vector");
+
+    assert!(error.describe().contains("2 dimensions"));
+}
+
+#[test]
+fn a_scalar_value_is_rejected_for_an_array_column() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INT8_ARRAY, &mut buffer) {
+        Ok(_) => panic!("a scalar cannot fill an array column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("int64"));
+}
+
+#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
+#[test]
+fn uuid_json_and_temporal_values_bind_directly() {
+    let mut buffer = BytesMut::new();
+    let uuid_param = SqlValParam(&SqlVal::Uuid(uuid::Uuid::nil()));
+    assert!(matches!(
+        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let json_param = SqlValParam(&SqlVal::Json(serde_json::json!({ "a": 1 })));
+    assert!(matches!(
+        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
+        .unwrap()
+        .and_hms_opt(3, 4, 5)
+        .unwrap();
+    let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
+    assert!(matches!(
+        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
+    let date_param = SqlValParam(&SqlVal::NaiveDate(date));
+    assert!(matches!(
+        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+}
+
+#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
+#[test]
+fn text_parameters_bind_to_uuid_json_and_temporal_types() {
+    let mut buffer = BytesMut::new();
+    let uuid_param = SqlValParam(&SqlVal::Text(
+        "00000000-0000-0000-0000-000000000000".to_owned(),
+    ));
+    assert!(matches!(
+        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let json_param = SqlValParam(&SqlVal::Text("{\"a\":1}".to_owned()));
+    assert!(matches!(
+        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let timestamp_param = SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()));
+    assert!(matches!(
+        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+        IsNull::No
+    ));
+
+    let mut buffer = BytesMut::new();
+    let date_param = SqlValParam(&SqlVal::Text("2024-01-02".to_owned()));
+    assert!(matches!(
+        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
+        IsNull::No
+    ));
 }

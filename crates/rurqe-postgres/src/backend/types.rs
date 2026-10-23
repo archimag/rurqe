@@ -5,6 +5,7 @@
 //! the column it targets, and a result column is decoded back into the ordered
 //! [`SqlVal`]s RURQE rows are built from.
 
+mod array;
 mod driver;
 mod numeric;
 mod network;
@@ -19,9 +20,9 @@ use std::fmt;
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
 
-use self::driver::types::{FromSql, IsNull, ToSql, Type};
+use self::driver::types::{FromSql, IsNull, Kind, ToSql, Type};
 use self::driver::{Error as DriverError, Row};
-use self::wire::{wire_of, Wire};
+use self::wire::{base_type, wire_of, Wire};
 
 /// Error raised while executing a query through a PostgreSQL driver adapter.
 #[derive(Debug)]
@@ -161,6 +162,12 @@ impl ToSql for SqlValParam<'_> {
         ty: &Type,
         out: &mut BytesMut,
     ) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+        // An array column binds one value per element, so the value is encoded by
+        // the array codec of its element type.
+        if matches!(base_type(ty).kind(), Kind::Array(_)) {
+            return encode_array(self.0, ty, out);
+        }
+
         match wire_of(ty) {
             // Textual columns and plain scalars keep the per-value encoding.
             None | Some(Wire::Text) => {}
@@ -245,6 +252,14 @@ impl ToSql for SqlValParam<'_> {
     /// are rejected before the driver is asked to encode the parameter, which
     /// turns an opaque driver error into an actionable diagnostic.
     fn accepts(ty: &Type) -> bool {
+        let ty = base_type(ty);
+
+        // The element type decides whether an array column can receive the
+        // parameter, since the column binds one value per element.
+        if let Kind::Array(elem_ty) = ty.kind() {
+            return Self::accepts(elem_ty);
+        }
+
         matches!(
             ty,
             &Type::BOOL
@@ -282,6 +297,31 @@ impl ToSql for SqlValParam<'_> {
         }
 
         Err(unusable_value(self.0, ty))
+    }
+}
+
+/// Encodes an array parameter into the binary representation of its column.
+///
+/// Every element is encoded by the codec of the element type, and the values are
+/// assembled by the array writer of the driver, which keeps a `NULL` element
+/// marked as such.
+fn encode_array(
+    value: &SqlVal,
+    ty: &Type,
+    out: &mut BytesMut,
+) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+    let array_ty = base_type(ty);
+    if !matches!(array_ty.kind(), Kind::Array(_)) {
+        return Err(unusable_value(value, ty));
+    }
+
+    match value {
+        SqlVal::Null => Ok(IsNull::Yes),
+        SqlVal::Array(elements) => {
+            let params: Vec<SqlValParam<'_>> = elements.iter().map(SqlValParam).collect();
+            params.to_sql(array_ty, out)
+        }
+        other => Err(unusable_value(other, ty)),
     }
 }
 
@@ -346,20 +386,11 @@ fn encoding_failure(reason: &str) -> Box<dyn StdError + Sync + Send> {
 /// Raw binary payload of a result column.
 ///
 /// The driver decodes a column only into a type that declares itself compatible
-/// with the column type, which leaves the types RURQE reads textually — enum
-/// labels, extension types, and domains — out of reach. Reading the payload as
-/// raw bytes lets the adapter decode it through its own wire codec instead.
+/// with the column type, which leaves the values RURQE reads through its own
+/// codecs — arrays, decimals, network addresses, enum labels, extension types,
+/// and domains over any of them — out of reach. Reading the payload as raw bytes
+/// lets the adapter decode it itself.
 struct RawValue(Vec<u8>);
-
-impl RawValue {
-    /// Decodes the payload according to the representation `wire` describes.
-    fn decode(&self, wire: Wire, ty: &Type) -> Result<String, PgError> {
-        wire.decode(&self.0).map_err(|reason| PgError::InvalidValue {
-            column_type: ty.name().to_owned(),
-            reason,
-        })
-    }
-}
 
 impl<'a> FromSql<'a> for RawValue {
     fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn StdError + Sync + Send>> {
@@ -380,96 +411,146 @@ pub(crate) fn row_to_sql_vals(row: &Row) -> Result<Vec<SqlVal>, PgError> {
     Ok(values)
 }
 
+/// Why the binary payload of a column cannot be decoded into a [`SqlVal`].
+#[derive(Debug)]
+enum DecodeError {
+    /// The declared column type has no known binary representation.
+    Unsupported,
+    /// The payload does not decode as its declared type.
+    Invalid(String),
+}
+
+impl DecodeError {
+    /// Describes the failure as one message.
+    fn describe(self) -> String {
+        match self {
+            DecodeError::Unsupported => {
+                "the declared type has no known binary representation".to_owned()
+            }
+            DecodeError::Invalid(reason) => reason,
+        }
+    }
+}
+
 /// Decodes one column of a row into the [`SqlVal`] of its declared type.
 fn column_value(row: &Row, index: usize, ty: &Type) -> Result<SqlVal, PgError> {
-    if ty == &Type::BOOL {
-        return Ok(row
-            .try_get::<usize, Option<bool>>(index)?
-            .map_or(SqlVal::Null, SqlVal::Bool));
+    match row.try_get::<usize, Option<RawValue>>(index)? {
+        None => Ok(SqlVal::Null),
+        Some(raw) => decode_value(ty, &raw.0).map_err(|failure| match failure {
+            DecodeError::Unsupported => PgError::UnsupportedType(ty.name().to_owned()),
+            DecodeError::Invalid(reason) => PgError::InvalidValue {
+                column_type: ty.name().to_owned(),
+                reason,
+            },
+        }),
     }
-    if ty == &Type::INT2 {
-        return Ok(row
-            .try_get::<usize, Option<i16>>(index)?
-            .map_or(SqlVal::Null, |value| SqlVal::I32(i32::from(value))));
-    }
-    if ty == &Type::INT4 {
-        return Ok(row
-            .try_get::<usize, Option<i32>>(index)?
-            .map_or(SqlVal::Null, SqlVal::I32));
-    }
-    if ty == &Type::INT8 {
-        return Ok(row
-            .try_get::<usize, Option<i64>>(index)?
-            .map_or(SqlVal::Null, SqlVal::I64));
-    }
-    if ty == &Type::FLOAT4 {
-        return Ok(row
-            .try_get::<usize, Option<f32>>(index)?
-            .map_or(SqlVal::Null, |value| SqlVal::F64(f64::from(value))));
-    }
-    if ty == &Type::FLOAT8 {
-        return Ok(row
-            .try_get::<usize, Option<f64>>(index)?
-            .map_or(SqlVal::Null, SqlVal::F64));
+}
+
+/// Decodes the binary payload of one value of the declared type `ty`.
+///
+/// A column holding an array is decoded element by element, and every other
+/// column is decoded directly, so a column and an element of an array of the same
+/// type share one codec.
+fn decode_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
+    let ty = base_type(ty);
+
+    if let Kind::Array(elem_ty) = ty.kind() {
+        let elements = array::decode(elem_ty, payload).map_err(DecodeError::Invalid)?;
+        return Ok(SqlVal::Array(elements));
     }
 
+    scalar_value(ty, payload)
+}
+
+/// Decodes the binary payload of a value that is not an array.
+fn scalar_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
+    let value = if ty == &Type::BOOL {
+        SqlVal::Bool(bool::from_sql(ty, payload).map_err(decode_failure)?)
+    } else if ty == &Type::INT2 {
+        SqlVal::I32(i32::from(
+            i16::from_sql(ty, payload).map_err(decode_failure)?,
+        ))
+    } else if ty == &Type::INT4 {
+        SqlVal::I32(i32::from_sql(ty, payload).map_err(decode_failure)?)
+    } else if ty == &Type::INT8 {
+        SqlVal::I64(i64::from_sql(ty, payload).map_err(decode_failure)?)
+    } else if ty == &Type::FLOAT4 {
+        SqlVal::F64(f64::from(
+            f32::from_sql(ty, payload).map_err(decode_failure)?,
+        ))
+    } else if ty == &Type::FLOAT8 {
+        SqlVal::F64(f64::from_sql(ty, payload).map_err(decode_failure)?)
+    } else {
+        return extended_value(ty, payload);
+    };
+
+    Ok(value)
+}
+
+/// Decodes a value whose type is recognised through its family rather than
+/// through one of the primitive scalars.
+fn extended_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
     #[cfg(feature = "uuid")]
     {
         if ty == &Type::UUID {
-            return Ok(row
-                .try_get::<usize, Option<uuid::Uuid>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Uuid));
+            return Ok(SqlVal::Uuid(
+                uuid::Uuid::from_sql(ty, payload).map_err(decode_failure)?,
+            ));
         }
     }
 
     #[cfg(feature = "serde_json")]
     {
         if ty == &Type::JSON || ty == &Type::JSONB {
-            return Ok(row
-                .try_get::<usize, Option<serde_json::Value>>(index)?
-                .map_or(SqlVal::Null, SqlVal::Json));
+            return Ok(SqlVal::Json(
+                serde_json::Value::from_sql(ty, payload).map_err(decode_failure)?,
+            ));
         }
     }
 
     #[cfg(feature = "chrono")]
     {
         if ty == &Type::TIMESTAMP {
-            return Ok(row
-                .try_get::<usize, Option<chrono::NaiveDateTime>>(index)?
-                .map_or(SqlVal::Null, SqlVal::NaiveDateTime));
+            return Ok(SqlVal::NaiveDateTime(
+                chrono::NaiveDateTime::from_sql(ty, payload).map_err(decode_failure)?,
+            ));
         }
         if ty == &Type::TIMESTAMPTZ {
-            return Ok(row
-                .try_get::<usize, Option<chrono::DateTime<chrono::Utc>>>(index)?
-                .map_or(SqlVal::Null, SqlVal::DateTimeUtc));
+            return Ok(SqlVal::DateTimeUtc(
+                chrono::DateTime::<chrono::Utc>::from_sql(ty, payload).map_err(decode_failure)?,
+            ));
         }
         if ty == &Type::DATE {
-            return Ok(row
-                .try_get::<usize, Option<chrono::NaiveDate>>(index)?
-                .map_or(SqlVal::Null, SqlVal::NaiveDate));
+            return Ok(SqlVal::NaiveDate(
+                chrono::NaiveDate::from_sql(ty, payload).map_err(decode_failure)?,
+            ));
         }
     }
 
     if ty == &Type::TEXT || ty == &Type::VARCHAR || ty == &Type::BPCHAR || ty == &Type::NAME {
-        return Ok(row
-            .try_get::<usize, Option<String>>(index)?
-            .map_or(SqlVal::Null, SqlVal::Text));
+        return Ok(SqlVal::Text(
+            String::from_sql(ty, payload).map_err(decode_failure)?,
+        ));
     }
     if ty == &Type::BYTEA {
-        return Ok(row
-            .try_get::<usize, Option<Vec<u8>>>(index)?
-            .map_or(SqlVal::Null, SqlVal::Bytes));
+        return Ok(SqlVal::Bytes(
+            Vec::<u8>::from_sql(ty, payload).map_err(decode_failure)?,
+        ));
     }
 
-    // A column outside the native types is read as the raw payload of its binary
-    // representation and decoded by the wire codec, which is also what makes a
-    // domain over a native type readable.
-    if let Some(wire) = wire_of(ty) {
-        return match row.try_get::<usize, Option<RawValue>>(index)? {
-            Some(raw) => Ok(SqlVal::Text(raw.decode(wire, ty)?)),
-            None => Ok(SqlVal::Null),
-        };
+    // A type outside the native scalars is decoded by the wire codec naming its
+    // textual representation, which is also what makes an enum label, an
+    // extension type, or a domain over a native type readable.
+    match wire_of(ty) {
+        Some(wire) => wire
+            .decode(payload)
+            .map(SqlVal::Text)
+            .map_err(DecodeError::Invalid),
+        None => Err(DecodeError::Unsupported),
     }
+}
 
-    Err(PgError::UnsupportedType(ty.name().to_owned()))
+/// Turns a driver decoding failure into an invalid-value reason.
+fn decode_failure(reason: Box<dyn StdError + Sync + Send>) -> DecodeError {
+    DecodeError::Invalid(reason.to_string())
 }

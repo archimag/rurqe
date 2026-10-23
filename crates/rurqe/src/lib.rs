@@ -1037,7 +1037,9 @@ pub mod prelude {
     pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
     #[cfg(feature = "postgres")]
-    pub use rurqe_postgres::{Pg14, Pg15, Pg16, PgConnection, PgVersion, Postgres};
+    pub use rurqe_postgres::{
+        Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions, PgConnection, PgVersion, Postgres,
+    };
 
     #[cfg(feature = "tokio-postgres")]
     pub use rurqe_postgres::PgAsyncConnection;
