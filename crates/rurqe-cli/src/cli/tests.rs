@@ -284,6 +284,7 @@ fn parses_stage_commands() {
             stage_dir: PathBuf::from("schema"),
             base_stage_dir: Some(PathBuf::from("schema-base")),
             migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
             scratch_url: None,
             database_url: None,
         }
@@ -325,6 +326,7 @@ fn parses_an_explicit_scratch_url() {
             stage_dir: PathBuf::from("schema"),
             base_stage_dir: None,
             migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
             scratch_url: Some("postgres://db.internal:5432/scratch".into()),
             database_url: None,
         }

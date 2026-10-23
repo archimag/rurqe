@@ -63,6 +63,7 @@ pub enum CliCommand {
         stage_dir: PathBuf,
         base_stage_dir: Option<PathBuf>,
         migrations_dir: PathBuf,
+        checkpoint_path: PathBuf,
         scratch_url: Option<String>,
         database_url: Option<String>,
     },
@@ -514,6 +515,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut stage_dir = default_stage_dir();
     let mut base_stage_dir = None;
     let mut migrations_dir = default_migrations_dir();
+    let mut checkpoint_path = default_checkpoint_path();
     let mut scratch_url = None;
     let mut database_url = None;
 
@@ -533,6 +535,9 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--migrations-dir" => {
                 migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
+            "--checkpoint-path" => {
+                checkpoint_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
+            }
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
@@ -548,6 +553,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
         stage_dir,
         base_stage_dir,
         migrations_dir,
+        checkpoint_path,
         scratch_url,
         database_url,
     })

@@ -139,16 +139,21 @@ pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
     migrations_dir: &Path,
+    checkpoint_path: &Path,
     scratch_url: &str,
 ) -> Result<(), CliError> {
     let stage = load_stage(stage_dir)?;
     let base = base_stage_dir.map(load_stage).transpose()?;
     let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
 
-    let equation = match &base {
+    let mut equation = match &base {
         Some(base) => GoldenEquation::new(&stage, &tail).with_base(base),
         None => GoldenEquation::new(&stage, &tail),
     };
+    if let Some(checkpoint) = &checkpoint {
+        equation = equation.with_checkpoint(checkpoint);
+    }
     let report = equation.verify(scratch_url).map_err(cli_error)?;
 
     println!(

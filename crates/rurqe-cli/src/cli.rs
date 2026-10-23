@@ -161,6 +161,7 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             stage_dir,
             base_stage_dir,
             migrations_dir,
+            checkpoint_path,
             scratch_url,
             database_url,
         } => {
@@ -169,6 +170,7 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
                 &stage_dir,
                 base_stage_dir.as_deref(),
                 &migrations_dir,
+                &checkpoint_path,
                 &url,
             )
         }
