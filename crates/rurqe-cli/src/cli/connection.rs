@@ -12,7 +12,8 @@
 
 use crate::target::DatabaseTarget;
 
-use super::args::{redact_database_url, CliError};
+use super::args::CliError;
+use super::redact::redact_database_url;
 
 /// Resolves the target database URL from the flag or the `DATABASE_URL` environment variable.
 pub(super) fn resolve_database_url(supplied: Option<String>) -> Result<String, CliError> {

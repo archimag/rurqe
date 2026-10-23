@@ -4,19 +4,21 @@
 //! dispatching (`cargo db-migrate ...`, `cargo db-codegen ...`, `cargo db-verify ...`).
 //!
 //! The module is split into focused submodules: `args` parses command-line
-//! tokens into typed [`CliCommand`] values and redacts credentials from
-//! connection URLs, `connection` owns the database connection lifecycle, and
-//! `commands` implements the behaviour of every CLI command. This facade keeps
-//! only the command dispatch in [`run_cli`].
+//! tokens into typed [`CliCommand`] values, `redact` masks the credentials a
+//! connection string carries, `connection` owns the database connection
+//! lifecycle, and `commands` implements the behaviour of every CLI command. This
+//! facade keeps only the command dispatch in [`run_cli`].
 
 mod args;
 mod commands;
 mod connection;
+mod redact;
 
 #[cfg(test)]
 mod tests;
 
-pub use args::{parse_args, redact_database_url, CliCommand, CliError};
+pub use args::{parse_args, CliCommand, CliError};
+pub use redact::redact_database_url;
 pub(crate) use args::resolve_equation_url;
 pub(crate) use connection::{connect, Connection};
 
