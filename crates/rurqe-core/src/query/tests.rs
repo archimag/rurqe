@@ -183,19 +183,24 @@ fn inner_join_renders_join_clause_before_filter() {
 
 #[test]
 fn joined_scope_tracks_every_table_in_from_order() {
+    // A table the query already addresses is joined through an alias marker: two
+    // relations of the same name would be rejected by the engine.
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
-        .inner_join::<User, _, At<0>>(Expr::column::<UserId>().eq(2i64))
+        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+            Expr::column::<UserId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
+        )
         .select((OrderId,))
         .build();
 
     assert_eq!(
         built.sql,
         "SELECT \"orders\".\"id\" FROM \"users\" INNER JOIN \"orders\" \
-         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" ON (\"users\".\"id\" = $2)"
+         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" AS \"m\" \
+         ON (\"users\".\"id\" = \"m\".\"id\")"
     );
-    assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(2)]);
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
 #[test]
@@ -306,7 +311,9 @@ fn left_join_renders_left_keyword_and_composes_with_inner_join() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
-        .inner_join::<User, _, At<0>>(Expr::column::<UserId>().eq(2i64));
+        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+            Expr::column::<UserId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
+        );
     let total = query.nullable::<OrderTotal>();
 
     let built = query.select((OrderId, total)).build();
@@ -314,9 +321,10 @@ fn left_join_renders_left_keyword_and_composes_with_inner_join() {
     assert_eq!(
         built.sql,
         "SELECT \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
-         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" ON (\"users\".\"id\" = $2)"
+         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" AS \"m\" \
+         ON (\"users\".\"id\" = \"m\".\"id\")"
     );
-    assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::I64(2)]);
+    assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
 
 #[test]
@@ -370,19 +378,22 @@ fn inner_joined_columns_keep_their_declared_types() {
 
 #[test]
 fn nested_left_join_stays_nullable_inside_an_inner_join() {
-    type NestedScope = Joined<LeftJoined<User, Order>, User>;
+    type NestedScope = Joined<LeftJoined<User, Order>, Aliased<User, ManagerAlias>>;
 
     let query: SelectQuery<MockDialect, NestedScope, (Option<i64>,), HasProjection> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
             .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(1i64))
-            .inner_join::<User, _, At<0>>(Expr::column::<UserId>().eq(2i64))
+            .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+                Expr::column::<UserId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
+            )
             .select((OrderId,));
 
     assert_eq!(
         query.build().sql,
         "SELECT \"orders\".\"id\" FROM \"users\" LEFT JOIN \"orders\" \
-         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" ON (\"users\".\"id\" = $2)"
+         ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" AS \"m\" \
+         ON (\"users\".\"id\" = \"m\".\"id\")"
     );
 }
 

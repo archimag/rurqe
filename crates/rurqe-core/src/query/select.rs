@@ -653,6 +653,41 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins the table `T` to the query with an `INNER JOIN` restricted by `on`.
+    ///
+    /// Joining a table the query already addresses renders its name twice in the
+    /// `FROM` clause, which the engine rejects as `table name specified more than
+    /// once` unless the second relation is aliased. The marker of that relation is
+    /// therefore an [`Aliased`](crate::schema::Aliased) one:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: the table `users` is already in scope, so the relation
+    /// // has to be joined through an `Aliased` marker instead of a bare one.
+    /// let _ = SelectQuery::<MockDialect>::new()
+    ///     .from::<User>()
+    ///     .inner_join::<User, _, _>(Expr::column::<UserId>().eq(1i64));
+    /// ```
     pub fn inner_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,

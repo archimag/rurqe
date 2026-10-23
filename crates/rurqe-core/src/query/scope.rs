@@ -21,7 +21,8 @@ pub struct NullableRel;
 #[diagnostic::on_unimplemented(
     message = "table `{T}` is not part of this query's scope",
     label = "add `{T}` to the query before projecting its columns",
-    note = "introduce the table with `from`, `inner_join`, `left_join`, or a lateral join"
+    note = "introduce the table with `from`, `inner_join`, `left_join`, or a lateral join",
+    note = "address a table the query already joins through an `Aliased<T, A>` marker, since two relations of the same name are rejected by the engine"
 )]
 pub trait TableNullabilityInScope<T: Table, P = At<0>> {
     /// The nullability of `T` contributed by the join that introduced it.
@@ -137,6 +138,13 @@ impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
 impl_scope_positions!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
 
 /// A query scope extending `Tables` with the table `T` joined to it.
+///
+/// The scope records table markers rather than relations, so joining the same
+/// table twice — `Joined<Joined<User, Order>, User>` — addresses two relations of
+/// the same name, which the engine rejects as `table name specified more than
+/// once`. A repeated join therefore takes an
+/// [`Aliased`](crate::schema::Aliased) marker, whose alias is the only qualifier
+/// both relations stay reachable through.
 pub struct Joined<Tables, T>(PhantomData<fn() -> (Tables, T)>);
 
 impl<Tables: TableScope, T: Table> TableScope for Joined<Tables, T> {
