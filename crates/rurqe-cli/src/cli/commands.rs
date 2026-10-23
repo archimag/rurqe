@@ -35,10 +35,12 @@ pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
 /// wrong types for overridden columns.
 pub(super) fn codegen_options() -> Result<CodegenOptions, CliError> {
     let config = CodegenConfig::load(Path::new(DEFAULT_CONFIG_PATH)).map_err(cli_error)?;
+    let domain_types = config.domain_types();
     let type_overrides = config.into_type_overrides();
 
     Ok(CodegenOptions {
         type_overrides,
+        domain_types,
         ..CodegenOptions::default()
     })
 }
@@ -98,7 +100,7 @@ USAGE:
     cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>] [--database-url <url>]
     cargo db-migrate [status|repair] [--migrations-dir <dir>]
     cargo db-baseline --version <version> [--description <desc>]
-    cargo db-codegen [--output <path>] [--lock-path <path>]
+    cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types]
     cargo db-verify [--schema-path <path>] [--lock-path <path>]
     cargo rurqe stage init|verify|commit [options]
     cargo rurqe prune --before <version> [options]

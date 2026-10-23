@@ -375,6 +375,41 @@ fn run_cli_codegen_writes_schema_and_lock_from_live_sqlite() {
 }
 
 #[test]
+fn run_cli_codegen_with_domain_types_flag_enables_domain_mapping() {
+    let workspace = temp_workspace("codegen-domain-types");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch(
+            "CREATE TABLE events (
+                 id INTEGER PRIMARY KEY,
+                 created_at DATETIME NOT NULL
+             );",
+        )
+        .expect("create schema");
+    }
+
+    let schema = workspace.join("src").join("schema.rs");
+    let lock = workspace.join("schema.lock");
+
+    let args = vec![
+        "rurqe".to_owned(),
+        "codegen".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--output".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+        "--domain-types".to_owned(),
+    ];
+    run_cli(args).expect("codegen succeeds with domain types");
+
+    let code = fs::read_to_string(&schema).expect("read generated schema");
+    assert!(code.contains("EventsCreatedAt => \"created_at\": chrono::NaiveDateTime"));
+}
+
+#[test]
 fn run_cli_verify_passes_on_match_and_reports_drift() {
     let workspace = temp_workspace("verify");
     let db = workspace.join("app.db");

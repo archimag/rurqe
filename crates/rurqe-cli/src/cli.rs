@@ -118,10 +118,14 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             database_url,
             output,
             lock_path,
+            domain_types,
         } => {
             let url = resolve_database_url(database_url)?;
             let catalog = introspect_database(&url)?;
-            let options = codegen_options()?;
+            let mut options = codegen_options()?;
+            if domain_types {
+                options.domain_types = true;
+            }
             let code = generate_schema_rs(&catalog, &options)
                 .map_err(|err| CliError(format!("failed to generate schema code: {err}")))?;
             write_file(&output, &code)?;

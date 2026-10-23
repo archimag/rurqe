@@ -26,6 +26,9 @@ use rurqe_migrate::mini_toml::{section_name, split_entry, strip_comment, TomlErr
 /// The configuration file read by default.
 pub const DEFAULT_CONFIG_PATH: &str = "rurqe.toml";
 
+/// The section holding general codegen options.
+const CODEGEN_SECTION: &str = "codegen";
+
 /// The section holding the per-column Rust type overrides.
 const TYPE_OVERRIDES_SECTION: &str = "codegen.type_overrides";
 
@@ -34,6 +37,8 @@ const TYPE_OVERRIDES_SECTION: &str = "codegen.type_overrides";
 pub struct CodegenConfig {
     /// Rust types keyed by their `table.column` schema path.
     type_overrides: BTreeMap<String, String>,
+    /// Whether domain types (`Uuid`, `Json`, `Timestamp`, `Date`) are enabled.
+    domain_types: bool,
 }
 
 impl CodegenConfig {
@@ -52,10 +57,10 @@ impl CodegenConfig {
         }
     }
 
-    /// Parses the `[codegen.type_overrides]` table out of `contents`.
+    /// Parses the `[codegen]` and `[codegen.type_overrides]` tables out of `contents`.
     pub fn parse(contents: &str) -> Result<Self, ConfigError> {
         let mut config = Self::default();
-        let mut in_overrides = false;
+        let mut current_section: Option<String> = None;
 
         for (index, raw) in contents.lines().enumerate() {
             let number = index + 1;
@@ -66,18 +71,35 @@ impl CodegenConfig {
             }
 
             if line.starts_with('[') {
-                in_overrides =
-                    section_name(line, number).map_err(from_toml)? == TYPE_OVERRIDES_SECTION;
+                current_section =
+                    Some(section_name(line, number).map_err(from_toml)?.to_owned());
                 continue;
             }
 
-            if !in_overrides {
-                continue;
-            }
-
-            let (key, value) = entry(line, number)?;
-            if config.type_overrides.insert(key.clone(), value).is_some() {
-                return Err(syntax(number, format!("`{key}` is given more than once")));
+            match current_section.as_deref() {
+                Some(CODEGEN_SECTION) => {
+                    let (key, value) = split_entry(line, number).map_err(from_toml)?;
+                    if key == "domain_types" {
+                        let enabled = match value.as_str() {
+                            "true" => true,
+                            "false" => false,
+                            _ => {
+                                return Err(syntax(
+                                    number,
+                                    format!("expected `true` or `false` for `domain_types`, got `{value}`"),
+                                ));
+                            }
+                        };
+                        config.domain_types = enabled;
+                    }
+                }
+                Some(TYPE_OVERRIDES_SECTION) => {
+                    let (key, value) = entry(line, number)?;
+                    if config.type_overrides.insert(key.clone(), value).is_some() {
+                        return Err(syntax(number, format!("`{key}` is given more than once")));
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -89,6 +111,11 @@ impl CodegenConfig {
         self.type_overrides
             .get(&format!("{table}.{column}"))
             .map(String::as_str)
+    }
+
+    /// Returns whether domain types are enabled in configuration.
+    pub fn domain_types(&self) -> bool {
+        self.domain_types
     }
 
     /// Returns the declared overrides keyed by their `table.column` path.
@@ -210,6 +237,24 @@ mod tests {
             .expect("unrelated tables are ignored");
 
         assert!(config.type_overrides().is_empty());
+    }
+
+    #[test]
+    fn parses_domain_types_in_codegen_section() {
+        let config = CodegenConfig::parse("[codegen]\ndomain_types = true\n")
+            .expect("codegen section parsed");
+        assert!(config.domain_types());
+
+        let config_false = CodegenConfig::parse("[codegen]\ndomain_types = false\n")
+            .expect("codegen section parsed");
+        assert!(!config_false.domain_types());
+    }
+
+    #[test]
+    fn invalid_domain_types_is_rejected() {
+        let err = CodegenConfig::parse("[codegen]\ndomain_types = not_a_bool\n")
+            .expect_err("non-boolean rejected");
+        assert!(err.to_string().contains("domain_types"));
     }
 
     #[test]

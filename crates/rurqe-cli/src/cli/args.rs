@@ -43,6 +43,7 @@ pub enum CliCommand {
         database_url: Option<String>,
         output: PathBuf,
         lock_path: PathBuf,
+        domain_types: bool,
     },
     Verify {
         database_url: Option<String>,
@@ -138,6 +139,7 @@ impl Entrypoint {
                 database_url: None,
                 output: default_schema_output(),
                 lock_path: default_lock_path(),
+                domain_types: false,
             }),
             Entrypoint::CargoDbVerify => Some(CliCommand::Verify {
                 database_url: None,
@@ -344,6 +346,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             let mut database_url = None;
             let mut output = default_schema_output();
             let mut lock_path = default_lock_path();
+            let mut domain_types = false;
 
             let mut idx = 0;
             while idx < tokens.len() {
@@ -358,6 +361,10 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
                     "--lock-path" => {
                         lock_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
                     }
+                    "--domain-types" => {
+                        domain_types = true;
+                        idx += 1;
+                    }
                     other => {
                         return Err(CliError(format!("unknown option `{other}` for codegen")));
                     }
@@ -368,6 +375,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
                 database_url,
                 output,
                 lock_path,
+                domain_types,
             })
         }
 

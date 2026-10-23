@@ -86,6 +86,26 @@ fn parses_cargo_db_codegen_invocation() {
             database_url: None,
             output: PathBuf::from("src/db/schema.rs"),
             lock_path: PathBuf::from("schema.lock"),
+            domain_types: false,
+        }
+    );
+}
+
+#[test]
+fn parses_codegen_domain_types_flag() {
+    let cmd = parse_args(&[
+        "cargo-db-codegen".into(),
+        "--domain-types".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::Codegen {
+            database_url: None,
+            output: PathBuf::from("src/schema.rs"),
+            lock_path: PathBuf::from("schema.lock"),
+            domain_types: true,
         }
     );
 }
@@ -367,6 +387,7 @@ fn parses_codegen_command() {
             database_url: None,
             output: PathBuf::from("src/db/schema.rs"),
             lock_path: PathBuf::from("schema.lock"),
+            domain_types: false,
         }
     );
 }
