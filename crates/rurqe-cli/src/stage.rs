@@ -53,7 +53,7 @@
 //! assert!(report.is_equivalent());
 //! ```
 
-mod postgres;
+pub(crate) mod postgres;
 
 use std::fmt;
 

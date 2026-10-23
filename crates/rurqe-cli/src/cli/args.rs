@@ -18,6 +18,9 @@ const DEFAULT_SCHEMA_OUTPUT: &str = "src/schema.rs";
 /// The default snapshot file recording the canonical schema hash.
 const DEFAULT_LOCK_PATH: &str = "schema.lock";
 
+/// The default age above which a scratch database counts as abandoned.
+const DEFAULT_CLEANUP_AGE: u64 = crate::stage::postgres::DEFAULT_SCRATCH_MAX_AGE.as_secs();
+
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -68,6 +71,11 @@ pub enum CliCommand {
         database_url: Option<String>,
         lock_path: PathBuf,
         checkpoint_path: PathBuf,
+    },
+    StageCleanup {
+        scratch_url: Option<String>,
+        database_url: Option<String>,
+        older_than_secs: u64,
     },
     Prune {
         before: MigrationVersion,
@@ -184,18 +192,37 @@ fn default_lock_path() -> PathBuf {
 /// target, so silently selecting an in-memory SQLite engine would exercise a
 /// different engine than the project targets and hide the substitution from CI.
 pub(crate) fn resolve_equation_url(supplied: Option<String>) -> Result<String, CliError> {
+    scratch_url(supplied).ok_or_else(|| {
+        CliError(
+            "no scratch database URL provided: pass `--scratch-url <url>` (or \
+             `--database-url <url>`, or set the DATABASE_URL environment variable); the \
+             golden equation needs a disposable target such as `:memory:`, an empty SQLite \
+             file, or a PostgreSQL URL"
+                .to_owned(),
+        )
+    })
+}
+
+/// Resolves the server `stage cleanup` sweeps the abandoned scratch databases on.
+pub(crate) fn resolve_cleanup_url(supplied: Option<String>) -> Result<String, CliError> {
+    scratch_url(supplied).ok_or_else(|| {
+        CliError(
+            "no scratch database URL provided: pass `--scratch-url <url>` (or \
+             `--database-url <url>`, or set the DATABASE_URL environment variable); the sweep \
+             names the PostgreSQL server that keeps the scratch databases"
+                .to_owned(),
+        )
+    })
+}
+
+/// Applies the shared precedence of a scratch database URL.
+///
+/// The flag supplied by the caller wins over the `DATABASE_URL` environment
+/// variable, and a blank value names nothing at all.
+fn scratch_url(supplied: Option<String>) -> Option<String> {
     supplied
         .or_else(|| std::env::var("DATABASE_URL").ok())
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            CliError(
-                "no scratch database URL provided: pass `--scratch-url <url>` (or \
-                 `--database-url <url>`, or set the DATABASE_URL environment variable); the \
-                 golden equation needs a disposable target such as `:memory:`, an empty SQLite \
-                 file, or a PostgreSQL URL"
-                    .to_owned(),
-            )
-        })
 }
 
 /// Borrows the value following the flag at `*idx`, advancing past both.
@@ -424,7 +451,8 @@ fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
         Some(action) if !action.starts_with('-') => *action,
         _ => {
             return Err(CliError(
-                "missing stage action (expected `init`, `verify`, or `commit`)".to_owned(),
+                "missing stage action (expected `init`, `verify`, `commit`, or `cleanup`)"
+                    .to_owned(),
             ))
         }
     };
@@ -433,8 +461,9 @@ fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
         "init" => parse_stage_init(&tokens[1..]),
         "verify" => parse_stage_verify(&tokens[1..]),
         "commit" => parse_stage_commit(&tokens[1..]),
+        "cleanup" => parse_stage_cleanup(&tokens[1..]),
         other => Err(CliError(format!(
-            "unknown stage action `{other}` (expected `init`, `verify`, or `commit`)"
+            "unknown stage action `{other}` (expected `init`, `verify`, `commit`, or `cleanup`)"
         ))),
     }
 }
@@ -565,6 +594,47 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
         lock_path,
         checkpoint_path,
     })
+}
+
+/// Parses `stage cleanup`: drop the scratch databases earlier verifications abandoned.
+fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
+    let mut scratch_url = None;
+    let mut database_url = None;
+    let mut older_than_secs = DEFAULT_CLEANUP_AGE;
+
+    let mut idx = 0;
+    while idx < tokens.len() {
+        let flag = tokens[idx];
+        match flag {
+            "--scratch-url" => {
+                scratch_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
+            }
+            "--database-url" => {
+                database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
+            }
+            "--older-than" => {
+                older_than_secs = parse_seconds(flag, take_value(tokens, &mut idx, flag)?)?;
+            }
+            other => {
+                return Err(CliError(format!(
+                    "unknown option `{other}` for stage cleanup"
+                )));
+            }
+        }
+    }
+
+    Ok(CliCommand::StageCleanup {
+        scratch_url,
+        database_url,
+        older_than_secs,
+    })
+}
+
+/// Parses a count of seconds supplied through `flag`.
+fn parse_seconds(flag: &str, value: &str) -> Result<u64, CliError> {
+    value
+        .parse::<u64>()
+        .map_err(|error| CliError(format!("invalid `{flag}` value `{value}`: {error}")))
 }
 
 /// Parses `prune`: drop migration scripts the checkpoint already folded in.

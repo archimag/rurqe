@@ -27,7 +27,7 @@ use crate::introspect::introspect_postgres;
 const SCRATCH_PREFIX: &str = "rurqe_scratch_";
 
 /// The age after which an abandoned scratch database is swept away.
-pub(super) const DEFAULT_SCRATCH_MAX_AGE: Duration = Duration::from_secs(3_600);
+pub(crate) const DEFAULT_SCRATCH_MAX_AGE: Duration = Duration::from_secs(3_600);
 
 /// The smallest value of the leading name field that names a second.
 ///
@@ -207,7 +207,7 @@ pub(super) fn is_scratch_database_stale(name: &str, max_age: Duration, now: Syst
 /// Returns the names of the databases that are gone afterwards. A database the
 /// server refuses to drop is reported and skipped, because a sweep running ahead
 /// of a verification must never block it.
-pub(super) fn sweep_stale_scratch_databases(
+pub(crate) fn sweep_stale_scratch_databases(
     admin: &mut postgres::Client,
     max_age: Duration,
 ) -> Result<Vec<String>, String> {

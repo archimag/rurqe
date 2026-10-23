@@ -93,11 +93,7 @@ fn parses_cargo_db_codegen_invocation() {
 
 #[test]
 fn parses_codegen_domain_types_flag() {
-    let cmd = parse_args(&[
-        "cargo-db-codegen".into(),
-        "--domain-types".into(),
-    ])
-    .unwrap();
+    let cmd = parse_args(&["cargo-db-codegen".into(), "--domain-types".into()]).unwrap();
 
     assert_eq!(
         cmd,
@@ -333,6 +329,80 @@ fn parses_an_explicit_scratch_url() {
             database_url: None,
         }
     );
+}
+
+#[test]
+fn parses_stage_cleanup_with_its_defaults() {
+    let cmd = parse_args(&["rurqe".into(), "stage".into(), "cleanup".into()]).unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::StageCleanup {
+            scratch_url: None,
+            database_url: None,
+            older_than_secs: 3_600,
+        }
+    );
+}
+
+#[test]
+fn parses_stage_cleanup_options() {
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "cleanup".into(),
+        "--scratch-url".into(),
+        "postgres://db.internal:5432/app".into(),
+        "--database-url".into(),
+        "postgres://db.internal:5432/fallback".into(),
+        "--older-than".into(),
+        "600".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::StageCleanup {
+            scratch_url: Some("postgres://db.internal:5432/app".into()),
+            database_url: Some("postgres://db.internal:5432/fallback".into()),
+            older_than_secs: 600,
+        }
+    );
+}
+
+#[test]
+fn parses_stage_cleanup_with_a_single_url_flag() {
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "cleanup".into(),
+        "--database-url".into(),
+        ":memory:".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::StageCleanup {
+            scratch_url: None,
+            database_url: Some(":memory:".into()),
+            older_than_secs: 3_600,
+        }
+    );
+}
+
+#[test]
+fn stage_cleanup_rejects_a_malformed_age() {
+    let error = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "cleanup".into(),
+        "--older-than".into(),
+        "soon".into(),
+    ])
+    .expect_err("a malformed age is rejected");
+
+    assert!(error.to_string().contains("--older-than"), "got {error}");
 }
 
 #[test]

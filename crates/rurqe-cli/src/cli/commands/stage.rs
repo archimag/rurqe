@@ -1,18 +1,76 @@
-//! Declarative stage and checkpoint lifecycle commands.
+//! Declarative stage, checkpoint, and scratch lifecycle commands.
 
 use std::path::Path;
+use std::time::Duration;
 
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::runner::MigrationBackend;
 use rurqe_migrate::stage::{cold_start, DeclarativeStage, StageMarker};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::cli::{redact_database_url, CliError};
+use crate::cli::{connect, redact_database_url, CliError, Connection};
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
+use crate::stage::postgres::sweep_stale_scratch_databases;
 use crate::stage::GoldenEquation;
+use crate::target::{DatabaseDialect, DatabaseTarget};
 
 use super::{cli_error, write_file};
+
+/// Drops the PostgreSQL scratch databases earlier verifications abandoned.
+///
+/// Every verification against a PostgreSQL server builds its replay inside a
+/// throwaway `rurqe_scratch_…` database and drops it again, so a verification
+/// that was killed before it could clean up leaves one behind. The sweep dates
+/// each database by the instant its name records and drops the ones older than
+/// `older_than` — the same opportunistic cleanup a verification runs before it
+/// creates a scratch database of its own, exposed here for an explicit run.
+///
+/// SQLite needs no sweep: a verification opens either an in-memory database or a
+/// file the operator owns, so nothing is ever left behind on a shared server.
+pub(crate) fn cleanup_stage(scratch_url: &str, older_than: Duration) -> Result<(), CliError> {
+    if DatabaseTarget::parse(scratch_url).dialect() != DatabaseDialect::Postgres {
+        println!(
+            "Nothing to sweep: `{}` addresses a SQLite scratch database, which a verification \
+             opens in memory or in the file it is pointed at",
+            redact_database_url(scratch_url)
+        );
+        return Ok(());
+    }
+
+    let mut admin = match connect(scratch_url)? {
+        Connection::Postgres(client) => client,
+        Connection::Sqlite(_) => {
+            return Err(CliError(format!(
+                "`{}` does not address a PostgreSQL database",
+                redact_database_url(scratch_url)
+            )))
+        }
+    };
+
+    let dropped = sweep_stale_scratch_databases(&mut admin, older_than).map_err(cli_error)?;
+
+    if dropped.is_empty() {
+        println!(
+            "No PostgreSQL scratch database on `{}` is older than {} second(s)",
+            redact_database_url(scratch_url),
+            older_than.as_secs()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Dropped {} stale PostgreSQL scratch database(s) on `{}` older than {} second(s):",
+        dropped.len(),
+        redact_database_url(scratch_url),
+        older_than.as_secs()
+    );
+    for database in &dropped {
+        println!("  - {database}");
+    }
+
+    Ok(())
+}
 
 /// Loads the declarative stage from `dir`, rejecting an absent directory.
 fn load_stage(dir: &Path) -> Result<DeclarativeStage, CliError> {

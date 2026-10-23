@@ -1,7 +1,8 @@
 //! Behaviour of each CLI command, grouped by lifecycle area.
 //!
 //! `migrate` implements the Flyway-style history commands, `stage` the
-//! declarative stage and checkpoint lifecycle, and `prune` the history pruning.
+//! declarative stage, checkpoint, and scratch lifecycle, and `prune` the history
+//! pruning.
 //! This facade keeps the helpers shared by those modules plus the help text and
 //! re-exports the entry points consumed by the CLI dispatcher.
 
@@ -21,7 +22,7 @@ mod tests;
 
 pub(crate) use self::migrate::{apply_migrations, baseline_database, repair_history, report_status};
 pub(crate) use self::prune::prune_migrations;
-pub(crate) use self::stage::{commit_stage, initialise_stage, verify_stage};
+pub(crate) use self::stage::{cleanup_stage, commit_stage, initialise_stage, verify_stage};
 
 /// Formats a displayable error as a [`CliError`].
 pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
@@ -102,7 +103,7 @@ USAGE:
     cargo db-baseline --version <version> [--description <desc>]
     cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types]
     cargo db-verify [--schema-path <path>] [--lock-path <path>]
-    cargo rurqe stage init|verify|commit [options]
+    cargo rurqe stage init|verify|commit|cleanup [options]
     cargo rurqe prune --before <version> [options]
 
 COMMANDS:
@@ -115,6 +116,7 @@ COMMANDS:
     stage init       Cold start the database from the declarative stage (`schema/`)
     stage verify     Verify the golden equation State(schema/) == State(Checkpoint + tail)
     stage commit     Seal the live database as `schema.lock` and anchor `checkpoint.toml`
+    stage cleanup    Drop the PostgreSQL scratch databases abandoned by earlier verifications
     prune            Delete migration scripts below the committed checkpoint boundary
 
 STAGE OPTIONS:
@@ -122,6 +124,7 @@ STAGE OPTIONS:
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
                      [--scratch-url <url>]
     stage commit     --version <version> [--lock-path <path>] [--checkpoint-path <path>]
+    stage cleanup    [--scratch-url <url>] [--older-than <secs>]
     prune            --before <version> [--migrations-dir <dir>] [--dry-run]
 
 CONFIGURATION:

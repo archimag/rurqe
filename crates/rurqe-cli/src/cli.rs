@@ -14,18 +14,20 @@ mod commands;
 mod connection;
 mod redact;
 
+use std::time::Duration;
+
 #[cfg(test)]
 mod tests;
 
 pub use args::{parse_args, CliCommand, CliError};
 pub use redact::redact_database_url;
-pub(crate) use args::resolve_equation_url;
+pub(crate) use args::{resolve_cleanup_url, resolve_equation_url};
 pub(crate) use connection::{connect, Connection};
 
 use self::commands::{
-    apply_migrations, baseline_database, codegen_options, commit_stage, initialise_stage,
-    print_help, prune_migrations, repair_history, report_status, resolve_schema_code,
-    verify_stage, write_file,
+    apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage,
+    initialise_stage, print_help, prune_migrations, repair_history, report_status,
+    resolve_schema_code, verify_stage, write_file,
 };
 use self::connection::resolve_database_url;
 
@@ -178,6 +180,14 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
         } => {
             let url = resolve_database_url(database_url)?;
             commit_stage(version, &url, &lock_path, &checkpoint_path)
+        }
+        CliCommand::StageCleanup {
+            scratch_url,
+            database_url,
+            older_than_secs,
+        } => {
+            let url = resolve_cleanup_url(scratch_url.or(database_url))?;
+            cleanup_stage(&url, Duration::from_secs(older_than_secs))
         }
         CliCommand::Prune {
             before,
