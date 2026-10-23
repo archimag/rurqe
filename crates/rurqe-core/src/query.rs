@@ -38,7 +38,7 @@ mod window;
 #[cfg(test)]
 mod tests;
 
-pub use self::cte::{cte, cte_named, lateral, Cte, Lateral};
+pub use self::cte::{cte, cte_named, lateral, Cte, DerivedTable, Lateral};
 pub use self::execution::{
     AsyncQueryBackend, AsyncQueryBackendExt, ExecutableQuery, ExecutionError, IsolationLevel,
     QueryBackend, QueryBackendExt, TransactionBackend, TransactionContext,

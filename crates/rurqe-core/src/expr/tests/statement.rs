@@ -21,6 +21,7 @@ fn select(projections: Vec<ExprKind>) -> SelectAst {
         projections,
         from: Some(TableRef::plain("users")),
         joins: Vec::new(),
+        derived: Vec::new(),
         filter: None,
         group_by: Vec::new(),
         having: None,

@@ -1,10 +1,10 @@
-//! Common Table Expressions and `LATERAL` subqueries.
+//! Common Table Expressions, derived tables, and `LATERAL` subqueries.
 
 use core::fmt;
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::SelectAst;
+use crate::expr::{DerivedAst, SelectAst};
 use crate::schema::Table;
 
 use super::scope::TableScope;
@@ -148,4 +148,73 @@ pub fn lateral<T: Table, D: Dialect, S: TableScope, Row>(
     query: SelectQuery<D, S, Row, HasProjection>,
 ) -> Lateral<T, Row, D> {
     Lateral::new(query)
+}
+
+/// A subquery exposed as a relation under the table marker `T`.
+///
+/// The statement the type wraps is rendered inline as `(SELECT ...) AS "name"`,
+/// so it joins and nests without a temporary table, a view, or a second round
+/// trip. The marker `T` declares the shape of the projected rows, which keeps the
+/// columns of the relation checked against the scope of the statement reading
+/// them — including the `Option<T>` lifting an outer join applies:
+///
+/// ```text
+/// SELECT "user_summary"."order_count" FROM "users"
+/// INNER JOIN (SELECT "user_id", COUNT(*) AS "order_count" FROM "orders" GROUP BY "user_id")
+///     AS "user_summary" ON ("user_summary"."user_id" = "users"."id")
+/// ```
+///
+/// A derived table is therefore what a query needs when its rows come from an
+/// aggregate, a filtered projection, or any other finished statement rather than
+/// from a stored relation.
+pub struct DerivedTable<T = (), Row = (), D = ()> {
+    pub(crate) name: &'static str,
+    pub(crate) query: SelectAst,
+    _marker: SubqueryMarker<T, Row, D>,
+}
+
+impl<T, Row, D> Clone for DerivedTable<T, Row, D> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name,
+            query: self.query.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T, Row, D> PartialEq for DerivedTable<T, Row, D> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.query == other.query
+    }
+}
+
+impl<T, Row, D> fmt::Debug for DerivedTable<T, Row, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DerivedTable")
+            .field("name", &self.name)
+            .field("query", &self.query)
+            .finish()
+    }
+}
+
+impl<T: Table, Row, D: Dialect> DerivedTable<T, Row, D> {
+    /// Exposes `query` as a derived table referenced through the marker `T`.
+    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
+        Self {
+            name: T::NAME,
+            query: query.to_ast(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T, Row, D> DerivedTable<T, Row, D> {
+    /// Converts the relation into the statement node addressing its rows.
+    pub(crate) fn into_ast(self) -> DerivedAst {
+        DerivedAst {
+            name: self.name,
+            query: self.query,
+        }
+    }
 }

@@ -6,7 +6,7 @@ use crate::dialect::Dialect;
 use crate::expr::{Aggregate, Expr, ExprKind, NonAggregate};
 use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 
-use super::cte::Cte;
+use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
 use super::selection::{Selection, SelectionFor, SelectTarget};
 use super::select::{BuiltQuery, HasProjection, OrderDirection, ProjectionPresent, SelectQuery};
@@ -602,6 +602,15 @@ impl<D: Dialect, Tables: TableScope, Output, GroupByCols>
     /// Converts this grouped query into a CTE for the table `T`.
     pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {
         Cte::new(self.query)
+    }
+
+    /// Exposes this grouped query as a derived table referenced through the marker `T`.
+    ///
+    /// An aggregated subquery is the usual source of a derived relation: the
+    /// grouping stays inside the parenthesised statement, so the enclosing query
+    /// reads one row per group instead of one row per aggregated source row.
+    pub fn as_table<T: Table>(self) -> DerivedTable<T, Output, D> {
+        DerivedTable::new(self.query)
     }
 }
 

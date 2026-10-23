@@ -337,6 +337,98 @@ fn named_cte_renders_with_clause_and_binds_parameters() {
 }
 
 #[test]
+fn a_derived_table_replaces_the_from_relation_of_a_query() {
+    let counts = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId, Expr::count_all()))
+        .where_(Expr::column::<OrderTotal>().gt(100.0))
+        .group_by(OrderUserId)
+        .as_table::<UserSummary>();
+
+    let built = SelectQuery::<Postgres<Pg16>>::new()
+        .from_subquery(counts)
+        .select((SummaryUserId, SummaryOrderCount))
+        .where_(Expr::column::<SummaryUserId>().gt(10i64))
+        .order_by_desc(SummaryOrderCount)
+        .limit(2)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", \"order_count\" FROM (SELECT \"user_id\", COUNT(*) FROM \"orders\" \
+         WHERE (\"total\" > $1) GROUP BY \"user_id\") AS \"user_summary\" \
+         WHERE (\"user_id\" > $2) ORDER BY \"order_count\" DESC LIMIT 2"
+    );
+
+    // The subquery is rendered before the enclosing filter, so its parameter
+    // carries the first placeholder of the statement.
+    assert_eq!(built.params, vec![SqlVal::F64(100.0), SqlVal::I64(10)]);
+
+    let record =
+        <(i64, i64)>::from_row(&[SqlVal::I64(1), SqlVal::I64(7)]).expect("derived rows decode");
+    assert_eq!(record, (1, 7));
+}
+
+#[test]
+fn a_derived_table_joins_a_stored_relation() {
+    let counts = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId, Expr::count_all()))
+        .group_by(OrderUserId)
+        .as_table::<UserSummary>();
+
+    let built = select_from::<Postgres<Pg16>, User>()
+        .inner_join_subquery(
+            counts,
+            Expr::column::<SummaryUserId>().eq(Expr::column::<UserId>()),
+        )
+        .select((UserId, UserName, SummaryOrderCount))
+        .where_(Expr::column::<SummaryOrderCount>().gt(1i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"users\".\"name\", \"user_summary\".\"order_count\" \
+         FROM \"users\" INNER JOIN (SELECT \"user_id\", COUNT(*) FROM \"orders\" \
+         GROUP BY \"user_id\") AS \"user_summary\" \
+         ON (\"user_summary\".\"user_id\" = \"users\".\"id\") \
+         WHERE (\"user_summary\".\"order_count\" > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
+fn a_left_joined_derived_table_lifts_its_columns_into_options() {
+    let counts = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderUserId, Expr::count_all()))
+        .group_by(OrderUserId)
+        .as_table::<UserSummary>();
+
+    // The projected row type states that the derived columns reach the row as
+    // `Option<i64>`, exactly like the columns of a left-joined stored table. Only
+    // the row type is pinned: the scope follows from the join and the projection
+    // state from the selection, so spelling them out would state the same twice.
+    let query: SelectQuery<_, _, (i64, Option<i64>), _> = select_from::<Postgres<Pg16>, User>()
+        .left_join_subquery(
+            counts,
+            Expr::column::<SummaryUserId>().eq(Expr::column::<UserId>()),
+        )
+        .select((UserId, SummaryOrderCount));
+
+    let built = query.build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"user_summary\".\"order_count\" FROM \"users\" \
+         LEFT JOIN (SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\") \
+         AS \"user_summary\" ON (\"user_summary\".\"user_id\" = \"users\".\"id\")"
+    );
+    assert!(built.params.is_empty());
+
+    let missing = <(i64, Option<i64>)>::from_row(&[SqlVal::I64(1), SqlVal::Null])
+        .expect("unmatched rows decode");
+    assert_eq!(missing, (1, None));
+}
+
+#[test]
 fn sql_macro_integrates_into_query_clauses_and_binds_typed_params() {
     let custom_filter = sql!(
         bool,

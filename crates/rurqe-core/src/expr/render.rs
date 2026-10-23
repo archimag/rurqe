@@ -12,7 +12,7 @@
 
 use core::fmt::{self, Write};
 
-use super::ast::{ExprKind, OrderDirection, SelectAst, SubqueryOp, WindowExprKind};
+use super::ast::{DerivedAst, ExprKind, OrderDirection, SelectAst, SubqueryOp, WindowExprKind};
 use super::val::SqlVal;
 use crate::dialect::Dialect;
 use crate::schema::TableRef;
@@ -131,6 +131,37 @@ fn split_fragments(template: &str, use_question_mark: bool) -> Vec<String> {
 fn push_char(fragments: &mut [String], character: char) {
     if let Some(current) = fragments.last_mut() {
         current.push(character);
+    }
+}
+
+/// Renders a relation of the statement, inlining the subquery of a derived table.
+///
+/// A relation whose name matches a derived table of the statement renders as
+/// `(SELECT ...) AS "name"`, while every other relation renders as the table
+/// reference it already is. Only a plain reference can stand for a derived
+/// table: an aliased one is addressed through its alias, while a derived table is
+/// addressed through the name of the marker it exposes, so the reference would
+/// name a relation the statement never declared.
+fn render_relation<D: Dialect>(
+    sql: &mut String,
+    params: &mut Vec<SqlVal>,
+    table: &TableRef,
+    derived: &[DerivedAst],
+) {
+    let subquery = if table.alias.is_none() {
+        derived.iter().find(|entry| entry.name == table.name)
+    } else {
+        None
+    };
+
+    match subquery {
+        Some(subquery) => {
+            sql.push('(');
+            subquery.query.render::<D>(sql, params);
+            sql.push_str(") AS ");
+            D::push_quoted_identifier(sql, subquery.name);
+        }
+        None => table.render::<D>(sql),
     }
 }
 
@@ -612,7 +643,7 @@ impl SelectAst {
 
         if let Some(from) = &self.from {
             sql.push_str(" FROM ");
-            from.render::<D>(sql);
+            render_relation::<D>(sql, params, from, &self.derived);
         }
 
         for join in &self.joins {
@@ -626,7 +657,7 @@ impl SelectAst {
                     sql.push_str(") AS ");
                     D::push_quoted_identifier(sql, join.table.name);
                 }
-                None => join.table.render::<D>(sql),
+                None => render_relation::<D>(sql, params, &join.table, &self.derived),
             }
             if let Some(on) = &join.on {
                 sql.push_str(" ON ");

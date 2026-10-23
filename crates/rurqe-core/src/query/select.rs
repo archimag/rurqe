@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use crate::dialect::{Dialect, SupportsDistinctOn, SupportsLateralJoin, SupportsRowLocking};
 use crate::expr::{
     BinaryOp, CteAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause, LockStrength,
-    SelectAst, SqlVal, Subquery,
+    SelectAst, SqlVal, Subquery, DerivedAst,
 };
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
@@ -13,7 +13,7 @@ use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 // module, so the canonical definition lives there and is re-exported here.
 pub use crate::expr::OrderDirection;
 
-use super::cte::{Cte, Lateral};
+use super::cte::{Cte, Lateral, DerivedTable};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
 use super::scope::{
     CrossLateralJoined, JoinKind, Joined, LeftJoined, LeftLateralJoined, ScopePositions,
@@ -137,6 +137,7 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProje
     ctes: Vec<CteAst>,
     projections: Vec<ExprKind>,
     joins: Vec<JoinClause>,
+    derived: Vec<DerivedAst>,
     filter: Option<ExprKind>,
     pub(crate) group_by: Vec<ExprKind>,
     having: Option<ExprKind>,
@@ -161,6 +162,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> Clone
             ctes: self.ctes.clone(),
             projections: self.projections.clone(),
             joins: self.joins.clone(),
+            derived: self.derived.clone(),
             filter: self.filter.clone(),
             group_by: self.group_by.clone(),
             having: self.having.clone(),
@@ -186,6 +188,7 @@ impl<D: Dialect> SelectQuery<D, (), (), NoProjection> {
             ctes: Vec::new(),
             projections: Vec::new(),
             joins: Vec::new(),
+            derived: Vec::new(),
             filter: None,
             group_by: Vec::new(),
             having: None,
@@ -218,6 +221,28 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
 
     /// Introduces `table` as the table rows are selected from.
     pub fn from_table<T: Table>(self, _table: T) -> SelectQuery<D, T, Output, Projected> {
+        self.retype()
+    }
+
+    /// Introduces the derived table `derived` as the relation rows are selected from.
+    ///
+    /// The query the derived table wraps is rendered inline as
+    /// `(SELECT ...) AS "name"`, so the statement selects from its rows without a
+    /// temporary relation, while the columns of the subquery are referenced
+    /// through the `table!` marker the derived table was built with:
+    ///
+    /// ```text
+    /// SELECT "user_id", "order_count"
+    /// FROM (SELECT "user_id", COUNT(*) FROM "orders" GROUP BY "user_id") AS "user_summary"
+    /// ```
+    pub fn from_subquery<T: Table, Row, SubD>(
+        mut self,
+        derived: DerivedTable<T, Row, SubD>,
+    ) -> SelectQuery<D, T, Output, Projected>
+    where
+        SubD: DialectInScope<D>,
+    {
+        self.derived.push(derived.into_ast());
         self.retype()
     }
 }
@@ -516,6 +541,52 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
             .retype()
     }
 
+    /// Joins the derived table `derived` to the query with an `INNER JOIN`.
+    ///
+    /// The query the derived table wraps is rendered inline as
+    /// `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one
+    /// while its rows come from the subquery:
+    ///
+    /// ```text
+    /// SELECT "users"."id", "user_summary"."order_count" FROM "users"
+    /// INNER JOIN (SELECT "user_id", COUNT(*) FROM "orders" GROUP BY "user_id")
+    ///     AS "user_summary" ON ("user_summary"."user_id" = "users"."id")
+    /// ```
+    pub fn inner_join_subquery<T: Table, Row, SubD, Scope, P>(
+        mut self,
+        derived: DerivedTable<T, Row, SubD>,
+        on: Expr<bool, Scope>,
+    ) -> SelectQuery<D, Joined<Tables, T>, Output, Projected>
+    where
+        Tables: TableScope,
+        SubD: DialectInScope<D>,
+        Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
+    {
+        self.derived.push(derived.into_ast());
+        self.push_join(JoinKind::Inner, Some(on.into_kind()))
+            .retype()
+    }
+
+    /// Joins the derived table `derived` to the query with a `LEFT JOIN`.
+    ///
+    /// An outer join leaves the rows of the derived table unmatched whenever the
+    /// condition does not hold, so its columns reach the projected row as
+    /// `Option<T>` exactly like those of a left-joined stored table.
+    pub fn left_join_subquery<T: Table, Row, SubD, Scope, P>(
+        mut self,
+        derived: DerivedTable<T, Row, SubD>,
+        on: Expr<bool, Scope>,
+    ) -> SelectQuery<D, LeftJoined<Tables, T>, Output, Projected>
+    where
+        Tables: TableScope,
+        SubD: DialectInScope<D>,
+        Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
+    {
+        self.derived.push(derived.into_ast());
+        self.push_join(JoinKind::Left, Some(on.into_kind()))
+            .retype()
+    }
+
     /// Records a regular join clause whose relational effect is expressed by the
     /// caller's return type.
     fn push_join(mut self, kind: JoinKind, on: Option<ExprKind>) -> Self {
@@ -534,6 +605,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
             ctes: self.ctes,
             projections: self.projections,
             joins: self.joins,
+            derived: self.derived,
             filter: self.filter,
             group_by: self.group_by,
             having: self.having,
@@ -803,6 +875,7 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
             projections: self.projections.clone(),
             from: tables.first().copied(),
             joins,
+            derived: self.derived.clone(),
             filter: self.filter.clone(),
             group_by: self.group_by.clone(),
             having: self.having.clone(),
@@ -854,6 +927,15 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output, HasP
     /// Converts this query into a CTE for the table `T`.
     pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {
         Cte::new(self)
+    }
+
+    /// Exposes this query as a derived table referenced through the marker `T`.
+    ///
+    /// The marker declares the columns of the projected rows, which the caller
+    /// states by choosing it: the relation is then referenced like a stored table
+    /// — `"name"."column"` — while the database materialises nothing.
+    pub fn as_table<T: Table>(self) -> DerivedTable<T, Output, D> {
+        DerivedTable::new(self)
     }
 
     /// Converts this query into a named CTE with alias `name`.

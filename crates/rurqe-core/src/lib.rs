@@ -21,7 +21,7 @@ pub use query::{
     ExecutionError, GroupBy, GroupByInScope, IsolationLevel, LagLeadFn, OrderDirection,
     PartitionBy, QueryBackend, QueryBackendExt, SelectQuery, SelectTarget, SelectTargetInScope,
     Selection, SelectionInScope, TransactionBackend, TransactionContext, Window, WindowExpr,
-    WindowExprKind, WindowFn, WindowSpec,
+    WindowExprKind, WindowFn, WindowSpec, DerivedTable,
 };
 pub use row::{FromRow, FromSqlValue, RowDecodeError};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

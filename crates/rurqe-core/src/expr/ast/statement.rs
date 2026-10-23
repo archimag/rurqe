@@ -341,6 +341,12 @@ pub struct SelectAst {
     pub from: Option<TableRef>,
     /// The joins appended to the `FROM` clause, in declaration order.
     pub joins: Vec<JoinAst>,
+    /// The derived relations of the statement, keyed by the alias they expose.
+    ///
+    /// A relation of [`from`](SelectAst::from) or of a join whose name matches one
+    /// of these entries renders as `(SELECT ...) AS "name"` instead of a
+    /// reference to a stored table.
+    pub derived: Vec<DerivedAst>,
     /// The `WHERE` predicate restricting the selected rows.
     pub filter: Option<ExprKind>,
     /// The expressions of the `GROUP BY` clause.
@@ -371,6 +377,22 @@ pub struct CteAst {
     /// The SQL identifier the expression is named after.
     pub name: &'static str,
     /// The statement the expression is defined by.
+    pub query: SelectAst,
+}
+
+/// A subquery exposed as a relation of a [`SelectAst`], addressed by its alias.
+///
+/// A derived table closes over the statement it wraps and is referenced through
+/// the alias it carries, so it renders wherever the statement addresses a
+/// relation: in the `FROM` clause of the statement and in any of its joins. The
+/// identifier is the name of the `table!` marker the relation is exposed under,
+/// which keeps the visibility of its columns checked like that of a stored table
+/// while the database materialises no temporary relation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DerivedAst {
+    /// The alias the subquery is exposed under.
+    pub name: &'static str,
+    /// The statement the relation is defined by.
     pub query: SelectAst,
 }
 
