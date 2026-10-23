@@ -307,12 +307,14 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn release_lock(&mut self) -> Result<(), Error> {
+        // The flag is cleared before the query runs: a connection that already
+        // dropped releases the lock on the server side by itself, and retrying
+        // the unlock on the same closed connection from `Drop` cannot succeed.
+        self.lock_held = false;
         self.client
             .query("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
             .map(|_| ())
-            .map_err(backend_error)?;
-        self.lock_held = false;
-        Ok(())
+            .map_err(backend_error)
     }
 }
 
