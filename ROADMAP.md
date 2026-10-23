@@ -28,7 +28,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 14** [x] | Rich Types, Custom Domain Types & Observability | Ecosystem types (UUID, JSON, Chrono/Time) via features, custom binary/text newtypes, enums, tracing | Type System Completeness & Observability (Completed) |
 | **Phase 15** [x] | Stage-Based Schema Evolution | AI-first declarative schema stages, verifiable transition paths, optional history retention | Stage-Based Schema Evolution & AI-First Lifecycle (Completed) |
 | **Phase 16** [x] | Compile-Fail Hardening & Negative Test Suite | Compile-time rejection of every scope, nullability, typestate, capability, and grouping violation | Absolute SQL Correctness (Completed) |
-| **Phase 17** [ ] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Planned) |
+| **Phase 17** [x] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Completed) |
 | **Phase 18** [ ] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Planned) |
 
 ---
@@ -717,34 +717,34 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 
 ---
 
-## Phase 17: Relational Depth, Row Expressions & Locking (jOOQ Parity & Transactional Soundness) [Planned]
+## Phase 17: Relational Depth, Row Expressions & Locking (jOOQ Parity & Transactional Soundness) [Completed]
 
 ### Objective
 Deliver deep relational expressiveness and strict transactional concurrency without synthetic runtime emulation: row value expressions (column tuples in comparisons, predicates, and keyset pagination), scalar subqueries seamlessly lifting into typed `Expr<T>`, pessimistic row-level locking (`FOR UPDATE`, `FOR SHARE`, `SKIP LOCKED`, `NOWAIT`) gated by dialect capability traits, ANSI SQL:2003 aggregate `FILTER (WHERE ...)`, complete window frame specifications (`ROWS/RANGE BETWEEN`), and strictly typed references to the `EXCLUDED` pseudo-relation in `ON CONFLICT DO UPDATE`.
 
 ### Key Deliverables
-- [ ] **Row Value Expressions (SQL:1992 Tuple Comparisons & Keyset Pagination):**
+- [x] **Row Value Expressions (SQL:1992 Tuple Comparisons & Keyset Pagination):**
   - Column tuples as first-class operands: `(col_a, col_b).eq((val_a, val_b))`, `(col_a, col_b).gt((val_a, val_b))`.
   - Tuple membership predicates: `(col_a, col_b).in_subquery(subquery)`.
   - High-level keyset/cursor pagination DSL: `.paginate_after((created_at, id), cursor)` translating directly into native tuple ordering comparisons (`>` / `<`) with deterministic index utilization in PostgreSQL and SQLite.
-- [ ] **Scalar Subqueries as First-Class Expressions (`IntoExpr<T>` & `Expr<T>`):**
+- [x] **Scalar Subqueries as First-Class Expressions (`IntoExpr<T>` & `Expr<T>`):**
   - Direct implementation of `IntoExpr<T>` and `SqlCompatible<T, SelectQuery<...>>` for single-column `SelectQuery`: subqueries pass directly into comparison operators without any conversion method (`ProductPrice.gt(select_from(Products).select(avg(ProductPrice)))`).
   - Standard `From<SelectQuery<...>> for Expr<T>` implementation enabling `.into()` whenever the target expression type is unambiguously inferred.
   - Explicit `Expr::subquery(query)` constructor for unconstrained syntactic positions (`CASE WHEN`, tuple comparisons).
   - Static invariant: subqueries projecting multi-column tuples do not implement `IntoExpr<T>` and are rejected at compile time.
-- [ ] **Pessimistic Row-Level Locking (`SupportsRowLocking`):**
+- [x] **Pessimistic Row-Level Locking (`SupportsRowLocking`):**
   - Gated by the `SupportsRowLocking` capability trait (implemented for `Postgres<V>`, absent for `Sqlite`).
   - Query locking methods: `.for_update()`, `.for_share()`, `.for_no_key_update()`, `.for_key_share()`.
   - Lock acquisition modifiers: `.nowait()`, `.skip_locked()`.
   - Zero emulation: SQLite usage rejected at compile time via `#[diagnostic::on_unimplemented]`.
-- [ ] **Aggregate `FILTER (WHERE ...)` (SQL:2003) & Aggregate `DISTINCT`:**
+- [x] **Aggregate `FILTER (WHERE ...)` (SQL:2003) & Aggregate `DISTINCT`:**
   - Condition filtering on aggregates: `count_all().filter_where(condition)`, `sum(amount).filter_where(condition)`.
   - Gated via `SupportsAggregateFilter` (PostgreSQL 9.4+, SQLite 3.30+). Native rendering without `CASE WHEN` emulation.
   - Typed distinct aggregates: `count_distinct(col)`, `sum_distinct(col)`.
-- [ ] **Window Frame Specifications (`ROWS / RANGE BETWEEN`):**
+- [x] **Window Frame Specifications (`ROWS / RANGE BETWEEN`):**
   - Complete window framing DSL on `WindowSpec`: `.rows_between(start, end)`, `.range_between(start, end)`.
   - Frame bounds: `WindowFrame::UnboundedPreceding`, `WindowFrame::Preceding(n)`, `WindowFrame::CurrentRow`, `WindowFrame::Following(n)`, `WindowFrame::UnboundedFollowing`.
-- [ ] **Strictly Typed `EXCLUDED` in `ON CONFLICT DO UPDATE`:**
+- [x] **Strictly Typed `EXCLUDED` in `ON CONFLICT DO UPDATE`:**
   - Typed reference to rejected row values via `excluded(Col)` in upsert assignments:
     `on_conflict(UserId).do_update((UserName.set(excluded(UserName)), Attempts.set(Attempts.add(1))))`.
   - Renders `\"users\".\"name\" = EXCLUDED.\"name\"` (native in PostgreSQL and SQLite 3.24+).
