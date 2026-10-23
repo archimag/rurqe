@@ -102,6 +102,7 @@ FROM information_schema.table_constraints tc
 JOIN information_schema.key_column_usage kcu
   ON tc.constraint_name = kcu.constraint_name
  AND tc.table_schema = kcu.table_schema
+ AND tc.table_name = kcu.table_name
 WHERE tc.constraint_type = 'PRIMARY KEY'
   AND tc.table_schema = $1
 ORDER BY kcu.table_name, kcu.ordinal_position;
@@ -142,8 +143,17 @@ ORDER BY owning.relname, constraint_row.conname, position.index;
 /// subscripts are generated: an ordinary SQL array is one-based, which keeps the
 /// positional lookup of the indexed attribute aligned with the generated
 /// subscript. Primary-key indexes are excluded through `indisprimary`, because a
-/// primary key is already described by the key columns of its table, and an index
-/// over an expression contributes no attribute name and is skipped as well.
+/// primary key is already described by the key columns of its table.
+///
+/// Only the key attributes describe what an index searches: `indkey` continues
+/// with the non-key `INCLUDE` columns, which an index does not order or restrict
+/// rows by, so the subscripts are bounded by `indnkeyatts` and the trailing
+/// attributes never reach the catalog.
+///
+/// An index carrying an expression stores a zero attribute number in its place,
+/// and an expression has no column name to report. Such an index is skipped as a
+/// whole, exactly like the SQLite introspection skips an expression index, so a
+/// catalog never describes a mixed index by the columns alone.
 pub(crate) const POSTGRES_INDEXES: &str = r#"
 SELECT
   index_table.relname AS table_name,
@@ -160,6 +170,8 @@ JOIN pg_attribute attribute
  AND attribute.attnum = (index_row.indkey::int2[])[position.index]
 WHERE namespace.nspname = $1
   AND NOT index_row.indisprimary
+  AND index_row.indnkeyatts >= position.index
+  AND NOT (0 = ANY(index_row.indkey::int2[]))
 ORDER BY index_table.relname, index_class.relname, position.index;
 "#;
 
@@ -290,6 +302,33 @@ fn column_error(statement: &str, column: &str, error: impl std::fmt::Display) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_primary_key_statement_matches_columns_within_their_table() {
+        // A constraint name is only unique per table, so a schema-wide match on the
+        // name alone folds the columns of a foreign key or a unique constraint of
+        // another table into the primary key it shares the name with.
+        assert!(
+            POSTGRES_PRIMARY_KEYS.contains("tc.table_name = kcu.table_name"),
+            "the primary key query must constrain the join to one table"
+        );
+    }
+
+    #[test]
+    fn the_index_statement_reads_only_the_key_attributes() {
+        assert!(
+            POSTGRES_INDEXES.contains("index_row.indnkeyatts >= position.index"),
+            "the index query must stop before the non-key INCLUDE columns"
+        );
+    }
+
+    #[test]
+    fn the_index_statement_skips_expression_indexes() {
+        assert!(
+            POSTGRES_INDEXES.contains("NOT (0 = ANY(index_row.indkey::int2[]))"),
+            "the index query must skip an index carrying an expression"
+        );
+    }
 
     #[test]
     fn a_undecodable_column_names_the_query_and_the_column() {
