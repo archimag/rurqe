@@ -51,7 +51,7 @@ fn the_stage_is_applied_from_the_declarative_directory() {
     .expect("write the stage script");
 
     let mut backend = InMemoryBackend::new();
-    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage", None)
+    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage")
         .expect("the cold start succeeds");
 
     assert_eq!(backend.history.len(), 1);
@@ -71,7 +71,7 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     .expect("write the stage script");
 
     let mut backend = InMemoryBackend::new();
-    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage", None)
+    initialise_stage(&mut backend, &stage_dir, version("3.2"), "stage")
         .expect("the cold start succeeds");
 
     let stage = DeclarativeStage::load(&stage_dir)

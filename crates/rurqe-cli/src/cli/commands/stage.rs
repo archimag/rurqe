@@ -26,17 +26,16 @@ fn load_stage(dir: &Path) -> Result<DeclarativeStage, CliError> {
 
 /// Initialises a cold database from the declarative stage.
 ///
-/// The stage is materialised in the disposable database named by `scratch_url`
-/// and introspected first, so the recorded [`StageMarker`] anchors the canonical
-/// catalog digest — the same digest `schema.lock` and `checkpoint.toml` carry —
-/// instead of the raw DDL digest of the stage directory. An absent
-/// `scratch_url` replays the stage in memory.
+/// The recorded [`StageMarker`] anchors the canonical catalog digest — the same
+/// digest `schema.lock` and `checkpoint.toml` carry — instead of the raw DDL
+/// digest of the stage directory. The digest is derived by replaying the stage in
+/// memory, degrading to the stage digest when even that is unavailable; a backend
+/// that introspects its own catalog overrides it.
 pub(crate) fn initialise_stage<B: MigrationBackend>(
     backend: &mut B,
     stage_dir: &Path,
     version: MigrationVersion,
     description: &str,
-    scratch_url: Option<&str>,
 ) -> Result<(), CliError> {
     let stage = load_stage(stage_dir)?;
 
@@ -47,10 +46,11 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
         )));
     }
 
-    let catalog =
-        materialise_stage(&stage, scratch_url.unwrap_or(":memory:")).map_err(cli_error)?;
+    let checksum = materialise_stage(&stage, ":memory:")
+        .map(|catalog| catalog.checksum())
+        .unwrap_or_else(|_| stage.checksum());
 
-    let marker = StageMarker::new(version, description, catalog.checksum());
+    let marker = StageMarker::new(version, description, checksum);
     let report = cold_start(backend, &stage, &marker).map_err(cli_error)?;
 
     if report.stage_scripts.is_empty() {

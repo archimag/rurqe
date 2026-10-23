@@ -30,7 +30,7 @@ use self::connection::resolve_database_url;
 use crate::codegen::generate_schema_rs;
 use crate::drift::verify_drift;
 use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
-use crate::introspect::{detect_dialect, introspect_database, DatabaseDialect};
+use crate::introspect::introspect_database;
 
 /// Opens the migration backend for `database_url` and evaluates `$run` against it.
 ///
@@ -51,20 +51,6 @@ macro_rules! with_migration_backend {
             }
         }
     }};
-}
-
-/// Chooses the disposable database the declarative stage is materialised in
-/// before a cold start records its marker.
-///
-/// A SQLite target replays the stage in memory, so the file behind the target
-/// URL is untouched. A PostgreSQL target needs a real sandbox, so the stage is
-/// materialised in the ephemeral database [`resolve_equation_url`] derives from
-/// the target URL and introspected there.
-fn stage_init_scratch_url(database_url: Option<&str>) -> Result<String, CliError> {
-    match detect_dialect(database_url) {
-        DatabaseDialect::Sqlite => Ok(":memory:".to_owned()),
-        DatabaseDialect::Postgres => resolve_equation_url(database_url.map(str::to_owned)),
-    }
 }
 
 /// Runs the CLI toolchain and prints execution outputs.
@@ -163,15 +149,8 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             description,
             database_url,
         } => {
-            let scratch_url = stage_init_scratch_url(database_url.as_deref())?;
             with_migration_backend!(database_url, |backend| {
-                initialise_stage(
-                    &mut backend,
-                    &stage_dir,
-                    version,
-                    &description,
-                    Some(&scratch_url),
-                )
+                initialise_stage(&mut backend, &stage_dir, version, &description)
             })
         }
         CliCommand::StageVerify {
