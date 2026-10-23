@@ -60,6 +60,7 @@ pub(crate) mod postgres;
 use std::fmt;
 
 use rurqe_migrate::catalog::SchemaCatalog;
+use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::migration::Migration;
 use rurqe_migrate::runner::Migrator;
 use rurqe_migrate::stage::DeclarativeStage;
@@ -310,6 +311,7 @@ fn reset_sqlite_scratch(connection: &rusqlite::Connection) -> Result<(), StageEr
 #[derive(Debug, Clone, Copy)]
 pub struct GoldenEquation<'a> {
     base: Option<&'a DeclarativeStage>,
+    checkpoint: Option<&'a Checkpoint>,
     stage: &'a DeclarativeStage,
     tail: &'a [Migration],
 }
@@ -322,6 +324,7 @@ impl<'a> GoldenEquation<'a> {
     pub fn new(stage: &'a DeclarativeStage, tail: &'a [Migration]) -> Self {
         Self {
             base: None,
+            checkpoint: None,
             stage,
             tail,
         }
@@ -336,6 +339,16 @@ impl<'a> GoldenEquation<'a> {
         self
     }
 
+    /// Anchors the replay to a committed checkpoint boundary.
+    ///
+    /// Migrations at or below the pruned version are skipped during tail replay,
+    /// and if a base stage is provided, its catalog hash is verified against
+    /// the checkpoint hash.
+    pub fn with_checkpoint(mut self, checkpoint: &'a Checkpoint) -> Self {
+        self.checkpoint = Some(checkpoint);
+        self
+    }
+
     /// Materialises both sides of the equation and compares their catalogs.
     ///
     /// Both states are built in the scratch database named by `scratch_url` and
@@ -345,6 +358,16 @@ impl<'a> GoldenEquation<'a> {
     /// between the two sides. Any divergence is returned as
     /// [`StageError::Diverged`] carrying the full report.
     pub fn verify(&self, scratch_url: &str) -> Result<GoldenReport, StageError> {
+        if let (Some(checkpoint), Some(base)) = (self.checkpoint, self.base) {
+            let base_catalog = materialise_stage(base, scratch_url)?;
+            if base_catalog.checksum() != checkpoint.schema_hash() {
+                return Err(StageError::BaseStageHashMismatch {
+                    expected: checkpoint.schema_hash().to_hex(),
+                    actual: base_catalog.schema_hash(),
+                });
+            }
+        }
+
         let stage_catalog = materialise_stage(self.stage, scratch_url)?;
 
         let replayed = Migrator::sort_migrations(self.tail);
@@ -356,11 +379,21 @@ impl<'a> GoldenEquation<'a> {
                 transactional: script.is_transactional(),
             }));
         }
-        tail_scripts.extend(replayed.iter().map(|migration| Script {
-            label: migration.script.as_str(),
-            sql: migration.sql.as_str(),
-            transactional: migration.is_transactional(),
-        }));
+        tail_scripts.extend(
+            replayed
+                .iter()
+                .filter(|migration| match (&self.checkpoint, &migration.version) {
+                    (Some(checkpoint), Some(version)) => {
+                        version > checkpoint.pruned_up_to_version()
+                    }
+                    _ => true,
+                })
+                .map(|migration| Script {
+                    label: migration.script.as_str(),
+                    sql: migration.sql.as_str(),
+                    transactional: migration.is_transactional(),
+                }),
+        );
         let tail_catalog = materialise(scratch_url, &tail_scripts)?;
 
         let diff = compute_catalog_diff(&tail_catalog, &stage_catalog);
@@ -426,6 +459,13 @@ pub enum StageError {
         /// The underlying driver message.
         message: String,
     },
+    /// The base stage catalog hash does not match the checkpoint hash.
+    BaseStageHashMismatch {
+        /// The hash expected by the checkpoint.
+        expected: String,
+        /// The actual catalog hash of the replayed base stage.
+        actual: String,
+    },
     /// Both sides of the equation describe different schemas.
     Diverged(Box<GoldenReport>),
 }
@@ -439,6 +479,10 @@ impl fmt::Display for StageError {
             StageError::Script { script, message } => write!(
                 f,
                 "failed to apply `{script}` in the scratch database: {message}"
+            ),
+            StageError::BaseStageHashMismatch { expected, actual } => write!(
+                f,
+                "base stage catalog hash mismatch: expected {expected}, got {actual}"
             ),
             StageError::Diverged(report) => {
                 writeln!(
@@ -518,6 +562,7 @@ fn apply_scripts(sandbox: &mut SandboxKind, scripts: &[Script<'_>]) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rurqe_migrate::checksum::Checksum;
     use rurqe_migrate::stage::StageScript;
 
     use crate::drift::TableDiff;
@@ -642,6 +687,74 @@ mod tests {
 
         assert!(report.is_equivalent());
         assert_eq!(report.stage_hash(), report.tail_hash());
+    }
+
+    #[test]
+    fn checkpoint_filters_outdated_tail_migrations() {
+        let base = stage(&[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")]);
+        let base_catalog = materialise_stage(&base, ":memory:").expect("base catalog");
+        let cp = Checkpoint::new(
+            "1.0".parse().expect("valid version"),
+            base_catalog.checksum(),
+        );
+
+        // V1 would fail if applied on top of base because table users already exists
+        let tail = tail(&[
+            ("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);"),
+            (
+                "V2__email.sql",
+                "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+            ),
+            (
+                "R__active_users.sql",
+                "CREATE VIEW active_users AS SELECT id FROM users;",
+            ),
+        ]);
+        let stage = stage(&[(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
+        )]);
+
+        let report = GoldenEquation::new(&stage, &tail)
+            .with_base(&base)
+            .with_checkpoint(&cp)
+            .verify(":memory:")
+            .expect("checkpoint filters V1 and matches base hash");
+
+        assert!(report.is_equivalent());
+    }
+
+    #[test]
+    fn base_stage_hash_mismatch_is_rejected() {
+        let base = stage(&[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")]);
+        let cp = Checkpoint::new(
+            "1.0".parse().expect("valid version"),
+            Checksum::of(b"wrong_hash"),
+        );
+
+        let tail = tail(&[(
+            "V2__email.sql",
+            "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+        )]);
+        let stage = stage(&[(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
+        )]);
+
+        let error = GoldenEquation::new(&stage, &tail)
+            .with_base(&base)
+            .with_checkpoint(&cp)
+            .verify(":memory:")
+            .expect_err("mismatched base stage hash must be rejected");
+
+        match &error {
+            StageError::BaseStageHashMismatch { expected, actual } => {
+                assert_eq!(expected, &Checksum::of(b"wrong_hash").to_hex());
+                assert_ne!(expected, actual);
+            }
+            other => panic!("expected BaseStageHashMismatch, got {other:?}"),
+        }
+        assert!(error.to_string().contains("base stage catalog hash mismatch"));
     }
 
     #[test]
