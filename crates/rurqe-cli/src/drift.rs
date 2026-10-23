@@ -217,6 +217,13 @@ pub enum DriftError {
         /// stale `SCHEMA_HASH` still reports exactly what drifted.
         diff: Box<SchemaDiff>,
     },
+    /// The generated schema code carries no `SCHEMA_HASH` constant.
+    ///
+    /// The constant is the only bridge between the generated code and the live
+    /// catalog, so its absence would let a schema file that no codegen produced
+    /// pass verification silently. The structural diff is carried along, so the
+    /// report still names whatever else drifted.
+    MissingSchemaHash { diff: Box<SchemaDiff> },
     InvalidLock(String),
     Io(String),
 }
@@ -238,6 +245,18 @@ impl fmt::Display for DriftError {
                 write!(
                     f,
                     "\nHint: Run `cargo db-codegen` to update code and snapshot."
+                )
+            }
+            DriftError::MissingSchemaHash { diff } => {
+                writeln!(
+                    f,
+                    "The schema code declares no `SCHEMA_HASH` constant, so it cannot be \
+                     verified against the live database."
+                )?;
+                diff.write_details(f, DiffWording::SNAPSHOT)?;
+                write!(
+                    f,
+                    "\nHint: Run `cargo db-codegen` to regenerate the schema code and snapshot."
                 )
             }
             DriftError::InvalidLock(message) => {
@@ -263,11 +282,19 @@ pub fn verify_drift(
     let diff = compute_catalog_diff(live_catalog, &expected_catalog);
 
     if let Some(code) = schema_rs {
-        if let Some(embedded_hash) = extract_schema_hash(code) {
-            if embedded_hash != live_hash {
+        match extract_schema_hash(code) {
+            Some(embedded_hash) if embedded_hash == live_hash => {}
+            Some(embedded_hash) => {
                 return Err(DriftError::HashMismatch {
                     expected: live_hash,
                     found_in_code: embedded_hash,
+                    diff: Box::new(diff),
+                });
+            }
+            // A schema file without the constant cannot be tied to any catalog, so
+            // it is rejected instead of passing the hash gate by omission.
+            None => {
+                return Err(DriftError::MissingSchemaHash {
                     diff: Box::new(diff),
                 });
             }
@@ -611,6 +638,24 @@ mod tests {
         let code = format!("pub const SCHEMA_HASH: &str = \"{}\";", catalog.schema_hash());
 
         assert!(verify_drift(&catalog, &lock, Some(&code)).is_ok());
+    }
+
+    #[test]
+    fn schema_code_without_a_hash_constant_is_rejected() {
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            vec!["id".to_owned()],
+        )]);
+        let lock = catalog.to_lock();
+        let code = "// generated code without the marker\npub fn unrelated() {}";
+
+        match verify_drift(&catalog, &lock, Some(code)).unwrap_err() {
+            DriftError::MissingSchemaHash { diff } => {
+                assert!(diff.is_empty(), "an equal catalog drifts in no way");
+            }
+            other => panic!("expected MissingSchemaHash, got {other:?}"),
+        }
     }
 
     #[test]

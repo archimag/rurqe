@@ -596,6 +596,25 @@ pub fn materialise_stage(
 fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalog, StageError> {
     let mut sandbox = SandboxKind::open(scratch_url)?;
 
+    let replay = apply_scripts(&mut sandbox, scripts)
+        .and_then(|()| sandbox.catalog().map_err(|message| StageError::Sandbox { message }));
+
+    // A file-backed scratch database is reused by the next side of the equation,
+    // so the replay is undone whether or not it succeeded: a replay that stopped
+    // halfway would otherwise leave its tables for that side to build on.
+    let reset = sandbox.reset();
+
+    match (replay, reset) {
+        (Ok(catalog), Ok(())) => Ok(catalog),
+        // The replay failed, so its diagnostic describes the real problem and the
+        // reset merely happened on the way out.
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+/// Applies every script of one side to the scratch state in the given order.
+fn apply_scripts(sandbox: &mut SandboxKind, scripts: &[Script<'_>]) -> Result<(), StageError> {
     for script in scripts {
         sandbox
             .apply(script.sql)
@@ -605,13 +624,7 @@ fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalo
             })?;
     }
 
-    let catalog = sandbox
-        .catalog()
-        .map_err(|message| StageError::Sandbox { message })?;
-
-    sandbox.reset()?;
-
-    Ok(catalog)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -787,6 +800,36 @@ mod tests {
 
         assert!(matches!(error, StageError::Script { .. }), "got {error:?}");
         assert!(error.to_string().contains("users.sql"));
+    }
+
+    #[test]
+    fn a_failed_replay_leaves_nothing_in_the_scratch_database() {
+        let path = scratch_path("partial");
+        let url = path.to_string_lossy().into_owned();
+
+        // The first statement creates a table and the second one fails, so the
+        // replay trips over DDL it has already committed to the scratch.
+        let failing = stage(&[(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);\n\
+             CREATE TABLE users (id INTEGER PRIMARY KEY);",
+        )]);
+
+        let error = GoldenEquation::new(&failing, &[])
+            .verify(&url)
+            .expect_err("the stage cannot create the same table twice");
+
+        assert!(matches!(error, StageError::Script { .. }), "got {error:?}");
+
+        // The scratch database is empty again, so a sound stage still converges.
+        let sound = stage(&[("users.sql", USERS)]);
+        let tail = tail(&[("V1__users.sql", USERS)]);
+
+        GoldenEquation::new(&sound, &tail)
+            .verify(&url)
+            .expect("the failed replay left no table behind");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
