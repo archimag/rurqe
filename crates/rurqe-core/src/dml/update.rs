@@ -14,8 +14,8 @@
 use core::marker::PhantomData;
 
 use super::{
-    AssignValue, AssignmentSet, AssignmentsPresent, ExecutableMutation, Filtered, HasAssignments,
-    NoAssignments, Unfiltered,
+    AssignValue, AssignmentScope, AssignmentSet, AssignmentsPresent, ExecutableMutation,
+    Filtered, HasAssignments, NoAssignments, Unfiltered,
 };
 use crate::dialect::{Dialect, SupportsReturning, SupportsUpdateFrom};
 use crate::dml::render_expr;
@@ -127,10 +127,20 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///
     /// The first call transitions the query from [`NoAssignments`] to
     /// [`HasAssignments`], which is what makes [`UpdateQuery::build`] reachable.
-    pub fn set<S: AssignmentSet<T>>(
+    ///
+    /// An expression assignment reads the tables of its operands, so the
+    /// statement checks them against the relations it addresses: an assignment
+    /// referencing a table the `UPDATE` does not reach fails to compile, exactly
+    /// like a filter of the same shape. Such a table is introduced with
+    /// [`from`](UpdateQuery::from) before the assignment is recorded.
+    pub fn set<S, P>(
         mut self,
         set: S,
-    ) -> UpdateQuery<D, T, State, Returning, Scope, HasAssignments> {
+    ) -> UpdateQuery<D, T, State, Returning, Scope, HasAssignments>
+    where
+        S: AssignmentSet<T> + AssignmentScope,
+        <S as AssignmentScope>::Scope: ExprInScope<Scope, P> + ScopePositions<P>,
+    {
         let mut columns = Vec::new();
         set.extend_assignments(&mut columns);
         for item in columns {
@@ -245,6 +255,13 @@ where
         D::push_quoted_identifier(&mut sql, T::NAME);
         sql.push_str(" SET ");
 
+        // The mutated table and every `FROM` source are in scope of the
+        // assignments and of the filter, so a column of either one is qualified
+        // as soon as the statement addresses more than the target table.
+        let mut relations = Vec::with_capacity(1 + self.from_tables.len());
+        relations.push(TableRef::plain(T::NAME));
+        relations.extend(self.from_tables.iter().copied().map(TableRef::plain));
+
         let mut params = Vec::new();
         for (index, (name, value)) in self.assignments.iter().enumerate() {
             if index > 0 {
@@ -252,7 +269,7 @@ where
             }
             D::push_quoted_identifier(&mut sql, name);
             sql.push_str(" = ");
-            value.render::<D>(&mut sql, &mut params);
+            value.render::<D>(&mut sql, &mut params, &relations);
         }
 
         if !self.from_tables.is_empty() {
@@ -266,13 +283,6 @@ where
         }
 
         if let Some(filter) = &self.filter {
-            // The mutated table and every `FROM` source are in scope of the
-            // filter, so a column of either one is qualified as soon as the
-            // statement addresses more than the target table.
-            let mut relations = Vec::with_capacity(1 + self.from_tables.len());
-            relations.push(TableRef::plain(T::NAME));
-            relations.extend(self.from_tables.iter().copied().map(TableRef::plain));
-
             sql.push_str(" WHERE ");
             render_expr::<D>(&mut sql, &mut params, filter, &relations);
         }
@@ -492,6 +502,21 @@ mod tests {
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
+    }
+
+    #[test]
+    fn an_expression_assignment_is_qualified_across_relations() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .from::<Account>()
+            .set(UserId::set_expr(Expr::column::<AccountId>()))
+            .allow_all()
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"id\" = \"accounts\".\"id\" FROM \"accounts\""
+        );
+        assert!(built.params.is_empty());
     }
 
     #[test]

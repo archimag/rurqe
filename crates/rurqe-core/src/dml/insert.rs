@@ -19,7 +19,7 @@ use crate::expr::SelectAst;
 use crate::query::{
     BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
-use crate::schema::{Column, ColumnBelongsTo, Table};
+use crate::schema::{Column, ColumnBelongsTo, Table, TableRef};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -120,7 +120,7 @@ impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7, C8);
 )]
 pub trait InsertSource<T: Table> {}
 
-impl<C: Column, V> InsertSource<C::Table> for Assignment<C, V> {}
+impl<C: Column, V, Scope> InsertSource<C::Table> for Assignment<C, V, Scope> {}
 
 macro_rules! impl_insert_source_for_tuple {
     ($($element:ident),+) => {
@@ -369,6 +369,10 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
         sql.push(')');
 
         let mut params = Vec::new();
+        // The statement addresses the inserted table only, so an assigned
+        // expression reads its columns unqualified while a reference to any other
+        // relation keeps naming that relation.
+        let relations = [TableRef::plain(T::NAME)];
         if let Some(select) = &self.select {
             sql.push(' ');
             select.render::<D>(&mut sql, &mut params);
@@ -383,7 +387,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T,
                     if value_index > 0 {
                         sql.push_str(", ");
                     }
-                    value.render::<D>(&mut sql, &mut params);
+                    value.render::<D>(&mut sql, &mut params, &relations);
                 }
                 sql.push(')');
             }

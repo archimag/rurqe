@@ -13,8 +13,8 @@ pub use dialect::{
     SupportsRowLocking, SupportsUpdateFrom,
 };
 pub use dml::{
-    excluded, AssignColumn, AssignValue, Assignment, AssignmentSet, ColumnAssign, DeleteQuery,
-    Excluded, InsertQuery, Unfiltered, UpdateQuery,
+    excluded, AssignColumn, AssignValue, Assignment, AssignmentScope, AssignmentSet, ColumnAssign,
+    DeleteQuery, Excluded, InsertQuery, Unfiltered, UpdateQuery,
 };
 pub use expr::{
     Aggregate, AggregateFunc, BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, SqlArrayElement,

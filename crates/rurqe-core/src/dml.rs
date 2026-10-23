@@ -17,19 +17,21 @@ pub mod conflict;
 pub mod delete;
 pub mod excluded;
 pub mod insert;
+pub mod scope;
 pub mod update;
 
 pub use conflict::{Conflict, ConflictAction, OnConflict};
 pub use delete::DeleteQuery;
 pub use excluded::{excluded, Excluded};
 pub use insert::{EmptyRows, InsertQuery};
+pub use scope::AssignmentScope;
 pub use update::UpdateQuery;
 
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::expr::{Expr, ExprKind, SqlCompatible, SqlVal};
-use crate::schema::{Column, Table};
+use crate::schema::{Column, Table, TableRef};
 
 /// Typestate marker indicating that a DML mutation does not yet have a filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,14 +126,24 @@ pub enum AssignValue {
 
 impl AssignValue {
     /// Appends the value to `sql`, binding it to `params` when it carries a parameter.
-    pub(crate) fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+    ///
+    /// `relations` names the relations of the statement being rendered, so an
+    /// expression assignment references its columns exactly like any other
+    /// expression of the same statement: a `SET` clause of an `UPDATE ... FROM`
+    /// qualifies a column as soon as the statement addresses several relations.
+    pub(crate) fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+        relations: &[TableRef],
+    ) {
         match self {
             AssignValue::Value(value) => {
                 params.push(value.clone());
                 D::push_placeholder(sql, params.len());
             }
             AssignValue::Default => sql.push_str("DEFAULT"),
-            AssignValue::Expr(expr) => render_expr::<D>(sql, params, expr, &[]),
+            AssignValue::Expr(expr) => render_expr::<D>(sql, params, expr, relations),
         }
     }
 }
@@ -140,7 +152,9 @@ impl AssignValue {
 ///
 /// `V` is the Rust type of the assigned value and must be compatible with
 /// `C::RustType`; constructing an assignment with an incompatible value fails to
-/// compile.
+/// compile. `Scope` names the tables the assigned value reads: a bound value
+/// references none of them, while an expression assignment carries the scope of
+/// its operands, as reported by [`AssignmentScope`].
 ///
 /// ```
 /// use rurqe_core::dml::{AssignValue, ColumnAssign};
@@ -159,13 +173,14 @@ impl AssignValue {
 /// let generated = UserId::default_value();
 /// assert_eq!(generated.value(), &AssignValue::Default);
 /// ```
-pub struct Assignment<C: Column, V> {
+pub struct Assignment<C: Column, V, Scope = ()> {
     value: AssignValue,
     _column: PhantomData<fn() -> C>,
     _value: PhantomData<fn() -> V>,
+    _scope: PhantomData<fn() -> Scope>,
 }
 
-impl<C, V> Assignment<C, V>
+impl<C, V> Assignment<C, V, ()>
 where
     C: Column,
     V: SqlCompatible<C::RustType, V> + Into<SqlVal>,
@@ -176,11 +191,12 @@ where
             value: AssignValue::Value(value.into()),
             _column: PhantomData,
             _value: PhantomData,
+            _scope: PhantomData,
         }
     }
 }
 
-impl<C> Assignment<C, C::RustType>
+impl<C> Assignment<C, C::RustType, ()>
 where
     C: Column,
 {
@@ -192,11 +208,12 @@ where
             value: AssignValue::Default,
             _column: PhantomData,
             _value: PhantomData,
+            _scope: PhantomData,
         }
     }
 }
 
-impl<C, Scope> Assignment<C, Expr<C::RustType, Scope>>
+impl<C, Scope> Assignment<C, Expr<C::RustType, Scope>, Scope>
 where
     C: Column,
 {
@@ -213,11 +230,12 @@ where
             value: AssignValue::Expr(expr.into_kind()),
             _column: PhantomData,
             _value: PhantomData,
+            _scope: PhantomData,
         }
     }
 }
 
-impl<C, V> Assignment<C, V>
+impl<C, V, Scope> Assignment<C, V, Scope>
 where
     C: Column,
 {
@@ -238,7 +256,7 @@ where
 /// `UserId::default_value()` are available without extra boilerplate.
 pub trait ColumnAssign: Column + Sized {
     /// Assigns `value` to the column, checking operand compatibility.
-    fn set<V>(value: V) -> Assignment<Self, V>
+    fn set<V>(value: V) -> Assignment<Self, V, ()>
     where
         V: SqlCompatible<Self::RustType, V> + Into<SqlVal>,
     {
@@ -246,7 +264,7 @@ pub trait ColumnAssign: Column + Sized {
     }
 
     /// Assigns the SQL `DEFAULT` keyword to the column.
-    fn default_value() -> Assignment<Self, Self::RustType> {
+    fn default_value() -> Assignment<Self, Self::RustType, ()> {
         Assignment::default_value()
     }
 
@@ -256,7 +274,7 @@ pub trait ColumnAssign: Column + Sized {
     /// cannot be assigned, and it stays symbolic until the statement is rendered.
     fn set_expr<Scope>(
         expr: Expr<Self::RustType, Scope>,
-    ) -> Assignment<Self, Expr<Self::RustType, Scope>> {
+    ) -> Assignment<Self, Expr<Self::RustType, Scope>, Scope> {
         Assignment::set_expr(expr)
     }
 }
@@ -282,7 +300,7 @@ pub trait AssignmentSet<T: Table> {
     fn extend_assignments<'a>(&'a self, out: &mut Vec<AssignColumn<'a>>);
 }
 
-impl<C, V> AssignmentSet<C::Table> for Assignment<C, V>
+impl<C, V, Scope> AssignmentSet<C::Table> for Assignment<C, V, Scope>
 where
     C: Column,
 {

@@ -95,7 +95,10 @@ impl Conflict {
                     }
                     D::push_quoted_identifier(sql, name);
                     sql.push_str(" = ");
-                    value.render::<D>(sql, params);
+                    // The clause addresses the inserted row and its proposed
+                    // `EXCLUDED` row, both of which are referenced explicitly, so
+                    // a column of the target table stays unqualified.
+                    value.render::<D>(sql, params, &[]);
                 }
                 if let Some(predicate) = predicate {
                     sql.push_str(" WHERE ");
