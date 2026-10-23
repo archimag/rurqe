@@ -444,7 +444,7 @@ pub fn parse_sqlite_check_enums(
             continue;
         }
 
-        if i + 5 <= bytes.len() && sql[i..i + 5].eq_ignore_ascii_case("check") {
+        if i + 5 <= bytes.len() && bytes[i..i + 5].eq_ignore_ascii_case(b"check") {
             let prev_ok = i == 0
                 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
             let next_idx = i + 5;
@@ -456,7 +456,10 @@ pub fn parse_sqlite_check_enums(
                 while paren_idx < bytes.len() && bytes[paren_idx].is_ascii_whitespace() {
                     paren_idx += 1;
                 }
-                if paren_idx < bytes.len() && bytes[paren_idx] == b'(' {
+                if paren_idx < bytes.len()
+                    && bytes[paren_idx] == b'('
+                    && sql.is_char_boundary(paren_idx)
+                {
                     if let Some((inner, end_idx)) = extract_paren_block(&sql[paren_idx..]) {
                         if let Some((col, variants)) = parse_check_clause(inner, known_columns) {
                             if seen.insert(col.clone()) {
@@ -576,7 +579,7 @@ fn parse_check_clause(inner: &str, known_columns: &[&str]) -> Option<(String, Ve
         rest = rest.strip_prefix(')')?.trim_start();
     }
 
-    if rest.len() < 2 || !rest[..2].eq_ignore_ascii_case("in") {
+    if rest.len() < 2 || !rest.as_bytes()[..2].eq_ignore_ascii_case(b"in") {
         return None;
     }
     let after_in = &rest[2..];
@@ -868,6 +871,27 @@ mod tests {
         assert_eq!(
             lines.foreign_keys[0].referenced_columns,
             vec!["id", "region"]
+        );
+    }
+
+    #[test]
+    fn check_enum_parser_handles_multibyte_utf8() {
+        let sql = r#"
+            CREATE TABLE "пользователи" (
+                "ид" INTEGER PRIMARY KEY,
+                -- Комментарий с кириллицей и спецсимволами: ©, ®, €, 🚀
+                "описание" TEXT DEFAULT 'значение с кириллицей',
+                "статус" TEXT NOT NULL,
+                CHECK ("статус" IN ('активен', 'заблокирован'))
+            );
+        "#;
+        let enums = parse_sqlite_check_enums(sql, &["ид", "описание", "статус"]);
+        assert_eq!(
+            enums,
+            vec![(
+                "статус".to_owned(),
+                vec!["активен".to_owned(), "заблокирован".to_owned()]
+            )]
         );
     }
 }
