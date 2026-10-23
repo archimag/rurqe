@@ -217,6 +217,45 @@ fn json_number(value: f64) -> serde_json::Value {
     }
 }
 
+/// The JSON object of one nested row.
+///
+/// The object stays opaque: a nested row is read through [`nested_field`], which
+/// turns it into the values the declared fields name. Keeping one type across
+/// builds lets [`json_object`], [`nested_field`], and [`multiset_object`] stay
+/// callable whether or not a JSON crate is compiled in, so the projections
+/// synthesized by `dto!` and `select!` resolve their paths in every build.
+#[cfg(feature = "serde_json")]
+#[derive(Debug, Clone)]
+pub struct RowObject(serde_json::Map<String, serde_json::Value>);
+
+#[cfg(feature = "serde_json")]
+impl RowObject {
+    /// Reads the JSON value stored under `field`, if the object carries it.
+    pub fn get(&self, field: &str) -> Option<&serde_json::Value> {
+        self.0.get(field)
+    }
+}
+
+/// The JSON object of one nested row.
+///
+/// A build without the `serde_json` feature carries no JSON document, so the
+/// object holds nothing and every read reports the missing feature. The type and
+/// the helpers around it stay callable, which is what keeps a `dto!` or `select!`
+/// expansion compiling without the feature.
+#[cfg(not(feature = "serde_json"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowObject;
+
+/// The diagnostic a nested row reports in a build without the `serde_json` feature.
+#[cfg(not(feature = "serde_json"))]
+fn json_support_missing(operation: &str) -> crate::row::RowDecodeError {
+    crate::row::RowDecodeError::InvalidValue {
+        target: "a nested row",
+        found: "json",
+        detail: format!("{operation} requires the `serde_json` feature of `rurqe-core`"),
+    }
+}
+
 /// Builds the JSON object of a nested row from the values of its fields.
 ///
 /// The keys are the field names the row declares in
@@ -232,14 +271,24 @@ pub fn multiset_object(fields: &[(&str, SqlVal)]) -> SqlVal {
     SqlVal::Json(serde_json::Value::Object(object))
 }
 
+/// Builds the JSON object of a nested row from the values of its fields.
+///
+/// A build without the `serde_json` feature cannot write a JSON document, so the
+/// value reports the missing feature as an encoding error: the statement still
+/// renders, and the driver surfaces the reason instead of binding an empty row.
+#[cfg(not(feature = "serde_json"))]
+pub fn multiset_object(_fields: &[(&str, SqlVal)]) -> SqlVal {
+    SqlVal::EncodingError(
+        "writing a nested row requires the `serde_json` feature of `rurqe-core`".to_owned(),
+    )
+}
+
 /// Parses the JSON object a nested document holds.
 ///
 /// PostgreSQL reports the object of a nested row as a JSON value, while SQLite
 /// reports the same document as text, so both forms are accepted here.
 #[cfg(feature = "serde_json")]
-pub fn json_object(
-    value: &SqlVal,
-) -> Result<serde_json::Map<String, serde_json::Value>, crate::row::RowDecodeError> {
+pub fn json_object(value: &SqlVal) -> Result<RowObject, crate::row::RowDecodeError> {
     use crate::row::RowDecodeError;
 
     let mismatch = || RowDecodeError::TypeMismatch {
@@ -248,10 +297,10 @@ pub fn json_object(
     };
 
     match value {
-        SqlVal::Json(serde_json::Value::Object(object)) => Ok(object.clone()),
+        SqlVal::Json(serde_json::Value::Object(object)) => Ok(RowObject(object.clone())),
         SqlVal::Json(_) => Err(mismatch()),
         SqlVal::Text(text) => match serde_json::from_str(text) {
-            Ok(serde_json::Value::Object(object)) => Ok(object),
+            Ok(serde_json::Value::Object(object)) => Ok(RowObject(object)),
             Ok(_) => Err(mismatch()),
             Err(error) => Err(RowDecodeError::InvalidValue {
                 target: "a nested row",
@@ -263,6 +312,16 @@ pub fn json_object(
     }
 }
 
+/// Parses the JSON object a nested document holds.
+///
+/// A build without the `serde_json` feature carries no JSON document, so reading
+/// one reports the missing feature. The function stays callable, which is what
+/// keeps a `dto!` or `select!` expansion compiling without the feature.
+#[cfg(not(feature = "serde_json"))]
+pub fn json_object(_value: &SqlVal) -> Result<RowObject, crate::row::RowDecodeError> {
+    Err(json_support_missing("reading a nested row"))
+}
+
 /// Decodes the field `field` of a nested JSON object into `T`.
 ///
 /// A missing key is reported instead of decoding into a default value, so the
@@ -270,7 +329,7 @@ pub fn json_object(
 /// is read.
 #[cfg(feature = "serde_json")]
 pub fn nested_field<T: crate::row::FromSqlValue>(
-    object: &serde_json::Map<String, serde_json::Value>,
+    object: &RowObject,
     field: &str,
 ) -> Result<T, crate::row::RowDecodeError> {
     match object.get(field) {
@@ -281,6 +340,21 @@ pub fn nested_field<T: crate::row::FromSqlValue>(
             detail: format!("the nested row carries no `{field}` field"),
         }),
     }
+}
+
+/// Decodes the field `field` of a nested JSON object into `T`.
+///
+/// A build without the `serde_json` feature reads no JSON document, so decoding a
+/// field reports the missing feature. The function stays callable, which is what
+/// keeps a `dto!` or `select!` expansion compiling without the feature.
+#[cfg(not(feature = "serde_json"))]
+pub fn nested_field<T: crate::row::FromSqlValue>(
+    _object: &RowObject,
+    field: &str,
+) -> Result<T, crate::row::RowDecodeError> {
+    Err(json_support_missing(&format!(
+        "reading the `{field}` field of a nested row"
+    )))
 }
 
 #[cfg(all(test, feature = "serde_json"))]
@@ -563,5 +637,30 @@ mod tests {
             row,
             SqlVal::Json(serde_json::json!({ "sku": "a", "qty": 2 }))
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "serde_json")))]
+mod without_json_tests {
+    use super::*;
+    use crate::row::RowDecodeError;
+
+    #[test]
+    fn a_nested_row_reports_the_missing_json_feature() {
+        let error = match json_object(&SqlVal::Text("{}".to_owned())) {
+            Ok(_) => panic!("a build without `serde_json` decodes no nested row"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            RowDecodeError::InvalidValue { detail, .. } if detail.contains("serde_json")
+        ));
+
+        assert!(matches!(
+            multiset_object(&[("id", SqlVal::I64(1))]),
+            SqlVal::EncodingError(_)
+        ));
+        assert!(nested_field::<i64>(&RowObject, "id").is_err());
     }
 }

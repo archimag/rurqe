@@ -1015,10 +1015,12 @@ pub mod prelude {
 
     pub use rurqe_core::schema::Next;
 
-    pub use rurqe_core::nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
+    pub use rurqe_core::nested::{
+        json_object, nest_many, nest_one, nested_field, MultisetRow, NestMany, NestOne, RowObject,
+    };
 
     #[cfg(feature = "serde_json")]
-    pub use rurqe_core::nested::{json_object, json_to_sql_value, nested_field, sql_val_to_json};
+    pub use rurqe_core::nested::{json_to_sql_value, sql_val_to_json};
 
     pub use rurqe_core::table_alias;
 
