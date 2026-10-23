@@ -1,7 +1,7 @@
 //! End-to-end execution tests for the `rusqlite` adapter against in-memory SQLite.
 
 use rurqe_sqlite::rurqe_core::dml::{ColumnAssign, InsertQuery};
-use rurqe_sqlite::rurqe_core::expr::Expr;
+use rurqe_sqlite::rurqe_core::expr::{Expr, SqlVal};
 use rurqe_sqlite::rurqe_core::query::{ExecutionError, QueryBackendExt, SelectQuery};
 use rurqe_sqlite::rurqe_core::table;
 use rurqe_sqlite::rusqlite::Connection;
@@ -91,6 +91,39 @@ fn fetch_optional_returns_none_for_absent_rows() {
         .where_(Expr::column::<UserId>().eq(99i64));
 
     assert_eq!(adapter.fetch_optional(&query).expect("optional"), None);
+}
+
+#[test]
+fn an_array_parameter_binds_as_a_json_document_and_decodes_back() {
+    let mut adapter = seeded();
+
+    // SQLite has no array column, so an array parameter binds as the JSON
+    // document of its elements. The very same values decode back into the
+    // element type of the array, which is how an aggregated row set travels
+    // through the driver: a parameter rendered in PostgreSQL's `{...}` spelling
+    // would bind text no decoder can read back.
+    let names = vec![
+        SqlVal::Text("root".to_owned()),
+        SqlVal::Text("guest".to_owned()),
+    ];
+    let numbers = vec![SqlVal::I64(1), SqlVal::I64(2)];
+
+    let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((
+            Expr::<Vec<String>>::raw("?", vec![SqlVal::Array(names)])
+                .expect("a template with one placeholder"),
+            Expr::<Vec<i64>>::raw("?", vec![SqlVal::Array(numbers)])
+                .expect("a template with one placeholder"),
+        ))
+        .where_(Expr::column::<UserId>().eq(1i64));
+
+    let (decoded_names, decoded_numbers) = adapter
+        .fetch_one(&query)
+        .expect("the bound arrays decode back");
+
+    assert_eq!(decoded_names, vec!["root".to_owned(), "guest".to_owned()]);
+    assert_eq!(decoded_numbers, vec![1i64, 2]);
 }
 
 /// Minimal error type used by the transaction closures in the tests below.
