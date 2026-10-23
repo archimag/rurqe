@@ -13,7 +13,7 @@
 use core::fmt::{self, Write};
 
 use super::ast::{
-    DerivedAst, ExprKind, OrderDirection, SelectAst, Subquery, SubqueryOp, WindowExprKind,
+    DerivedAst, ExprKind, OrderCriterion, SelectAst, Subquery, SubqueryOp, WindowExprKind,
 };
 use super::val::SqlVal;
 use crate::dialect::Dialect;
@@ -601,20 +601,27 @@ fn render_expressions<D: Dialect>(
     }
 }
 
-/// Renders `ORDER BY`-style criteria, each followed by its direction.
+/// Renders `ORDER BY`-style criteria, each followed by its direction and the
+/// placement of its NULL values.
 fn render_ordered_expressions<D: Dialect>(
     sql: &mut String,
     params: &mut Vec<SqlVal>,
-    criteria: &[(ExprKind, OrderDirection)],
+    criteria: &[OrderCriterion],
     relations: &[TableRef],
 ) {
-    for (index, (expression, direction)) in criteria.iter().enumerate() {
+    for (index, criterion) in criteria.iter().enumerate() {
         if index > 0 {
             sql.push_str(", ");
         }
-        render_expr::<D>(sql, params, expression, relations);
+        render_expr::<D>(sql, params, &criterion.expr, relations);
         sql.push(' ');
-        sql.push_str(direction.as_str());
+        sql.push_str(criterion.direction.as_str());
+        // The placement follows the direction, so a criterion reads
+        // `"score" DESC NULLS LAST`.
+        if let Some(nulls) = criterion.nulls {
+            sql.push(' ');
+            sql.push_str(nulls.as_str());
+        }
     }
 }
 
@@ -811,7 +818,7 @@ impl SelectAst {
 fn render_order_and_pagination<D: Dialect>(
     sql: &mut String,
     params: &mut Vec<SqlVal>,
-    order_by: &[(ExprKind, OrderDirection)],
+    order_by: &[OrderCriterion],
     limit: Option<u32>,
     offset: Option<u32>,
     relations: &[TableRef],

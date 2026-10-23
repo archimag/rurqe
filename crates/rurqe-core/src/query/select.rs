@@ -9,9 +9,9 @@ use crate::expr::{
 };
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
-// `ORDER BY` directions describe the statement AST shared with the expression
-// module, so the canonical definition lives there and is re-exported here.
-pub use crate::expr::OrderDirection;
+// `ORDER BY` criteria describe the statement AST shared with the expression
+// module, so the canonical definitions live there and are re-exported here.
+pub use crate::expr::{NullsOrder, OrderCriterion, OrderDirection};
 
 use super::cte::{Cte, Lateral, DerivedTable};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
@@ -141,13 +141,13 @@ pub struct SelectQuery<D: Dialect, Tables = (), Output = (), Projected = NoProje
     filter: Option<ExprKind>,
     pub(crate) group_by: Vec<ExprKind>,
     having: Option<ExprKind>,
-    order_by: Vec<(ExprKind, OrderDirection)>,
+    order_by: Vec<OrderCriterion>,
     limit: Option<u32>,
     offset: Option<u32>,
     set_operations: Vec<SetOpAst>,
     distinct: bool,
     distinct_on: Vec<ExprKind>,
-    compound_order_by: Vec<(ExprKind, OrderDirection)>,
+    compound_order_by: Vec<OrderCriterion>,
     compound_limit: Option<u32>,
     compound_offset: Option<u32>,
     lock: Option<LockClause>,
@@ -436,12 +436,25 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     where
         Tables: TableInScope<C::Table, P>,
     {
-        let criterion = (C::expr_kind(), direction);
-        if self.set_operations.is_empty() {
-            self.order_by.push(criterion);
-        } else {
-            self.compound_order_by.push(criterion);
-        }
+        self.push_ordering(OrderCriterion::new(C::expr_kind(), direction));
+        self
+    }
+
+    /// Appends an ordering criterion fixing where the NULL values of `col` sort.
+    ///
+    /// The placement follows the direction, so a page over a nullable column keeps
+    /// its order on every engine instead of following the default of the one that
+    /// serves the statement.
+    pub fn order_by_nulls<C: Column, P>(
+        mut self,
+        _col: C,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.push_ordering(OrderCriterion::new(C::expr_kind(), direction).nulls(nulls));
         self
     }
 
@@ -459,6 +472,50 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableInScope<C::Table, P>,
     {
         self.order_by(col, OrderDirection::Desc)
+    }
+
+    /// Appends an ascending ordering criterion putting NULL values first.
+    pub fn order_by_asc_nulls_first<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::First)
+    }
+
+    /// Appends an ascending ordering criterion putting NULL values last.
+    pub fn order_by_asc_nulls_last<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::Last)
+    }
+
+    /// Appends a descending ordering criterion putting NULL values first.
+    pub fn order_by_desc_nulls_first<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::First)
+    }
+
+    /// Appends a descending ordering criterion putting NULL values last.
+    pub fn order_by_desc_nulls_last<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::Last)
+    }
+
+    /// Records `criterion` on the clause the query currently orders with.
+    ///
+    /// An ordering written after a set operation belongs to the combined rows
+    /// rather than to the left query, so it is recorded on the compound statement.
+    fn push_ordering(&mut self, criterion: OrderCriterion) {
+        if self.set_operations.is_empty() {
+            self.order_by.push(criterion);
+        } else {
+            self.compound_order_by.push(criterion);
+        }
     }
 
     /// Limits the number of returned rows to `limit`.

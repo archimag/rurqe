@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{Aggregate, Expr, ExprKind, NonAggregate};
+use crate::expr::{Aggregate, Expr, ExprKind, NonAggregate, NullsOrder};
 use crate::schema::{At, Column, ExprInScope, Next, Table, TableInScope};
 
 use super::cte::{Cte, DerivedTable};
@@ -564,6 +564,52 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
         Tables: TableInScope<C::Table, P>,
     {
         self.order_by(col, OrderDirection::Desc)
+    }
+
+    /// Appends an ordering criterion fixing where the NULL values of `col` sort.
+    pub fn order_by_nulls<C: Column, P>(
+        mut self,
+        col: C,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.query = self.query.order_by_nulls(col, direction, nulls);
+        self
+    }
+
+    /// Appends an ascending ordering criterion putting NULL values first.
+    pub fn order_by_asc_nulls_first<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::First)
+    }
+
+    /// Appends an ascending ordering criterion putting NULL values last.
+    pub fn order_by_asc_nulls_last<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::Last)
+    }
+
+    /// Appends a descending ordering criterion putting NULL values first.
+    pub fn order_by_desc_nulls_first<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::First)
+    }
+
+    /// Appends a descending ordering criterion putting NULL values last.
+    pub fn order_by_desc_nulls_last<C: Column, P>(self, col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::Last)
     }
 
     /// Limits the number of returned groups to `limit`.

@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::expr::{LockClause, LockStrength, LockWait};
+use crate::expr::{LockClause, LockStrength, LockWait, OrderCriterion};
 use crate::schema::{Column, TableRef};
 
 crate::table! {
@@ -48,7 +48,10 @@ fn render_statement(ast: &SelectAst) -> (String, Vec<SqlVal>) {
 fn a_statement_renders_every_clause_in_sql_order() {
     let mut ast = select(vec![UserId::expr_kind(), UserName::expr_kind()]);
     ast.filter = Some(Expr::column::<UserId>().gt(10i64).into_kind());
-    ast.order_by = vec![(UserId::expr_kind(), OrderDirection::Desc)];
+    ast.order_by = vec![OrderCriterion::new(
+        UserId::expr_kind(),
+        OrderDirection::Desc,
+    )];
     ast.limit = Some(5);
     ast.offset = Some(2);
 
@@ -127,7 +130,10 @@ fn a_union_of_plain_statements_needs_no_parentheses() {
         kind: SetOpKind::Union,
         query: select(vec![UserId::expr_kind()]),
     }];
-    ast.compound_order_by = vec![(UserId::expr_kind(), OrderDirection::Asc)];
+    ast.compound_order_by = vec![OrderCriterion::new(
+        UserId::expr_kind(),
+        OrderDirection::Asc,
+    )];
     ast.compound_limit = Some(10);
 
     let (sql, _) = render_statement(&ast);
@@ -142,7 +148,10 @@ fn a_union_of_plain_statements_needs_no_parentheses() {
 #[test]
 fn operands_carrying_their_own_clauses_are_parenthesised() {
     let mut right = select(vec![UserId::expr_kind()]);
-    right.order_by = vec![(UserId::expr_kind(), OrderDirection::Desc)];
+    right.order_by = vec![OrderCriterion::new(
+        UserId::expr_kind(),
+        OrderDirection::Desc,
+    )];
 
     let mut left = select(vec![UserId::expr_kind()]);
     left.limit = Some(1);
@@ -188,7 +197,7 @@ fn a_window_expression_renders_its_partition_and_ordering() {
     let window = ExprKind::Window {
         kind: Box::new(WindowExprKind::RowNumber),
         partition_by: vec![UserId::expr_kind()],
-        order_by: vec![(UserId::expr_kind(), OrderDirection::Desc)],
+        order_by: vec![OrderCriterion::new(UserId::expr_kind(), OrderDirection::Desc)],
         frame: None,
     };
 
@@ -220,7 +229,7 @@ fn lag_and_lead_render_their_offsets() {
             offset: None,
         }),
         partition_by: Vec::new(),
-        order_by: vec![(UserId::expr_kind(), OrderDirection::Asc)],
+        order_by: vec![OrderCriterion::new(UserId::expr_kind(), OrderDirection::Asc)],
         frame: None,
     };
     assert_eq!(render(&lead).0, "LEAD(\"id\") OVER (ORDER BY \"id\" ASC)");
@@ -284,7 +293,10 @@ fn a_lock_follows_the_compound_ordering_of_a_set_operation() {
         kind: SetOpKind::Union,
         query: select(vec![UserId::expr_kind()]),
     }];
-    ast.compound_order_by = vec![(UserId::expr_kind(), OrderDirection::Asc)];
+    ast.compound_order_by = vec![OrderCriterion::new(
+        UserId::expr_kind(),
+        OrderDirection::Asc,
+    )];
     ast.lock = Some(LockClause::new(LockStrength::Update).skip_locked());
 
     let (sql, _) = render_statement(&ast);

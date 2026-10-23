@@ -15,8 +15,8 @@ use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::expr::{
-    render_expr, ExprKind, MergeScope, Merged, SqlVal, WindowFrame, WindowFrameBound,
-    WindowFrameKind,
+    render_expr, ExprKind, MergeScope, Merged, NullsOrder, OrderCriterion, SqlVal, WindowFrame,
+    WindowFrameBound, WindowFrameKind,
 };
 use crate::schema::{Column, ExprInScope, TableRef};
 
@@ -81,7 +81,7 @@ impl_partition_by!(C1, C2, C3, C4, C5, C6, C7, C8);
 /// from a query selecting from those tables.
 pub struct WindowSpec<Scope = ()> {
     partition_by: Vec<ExprKind>,
-    order_by: Vec<(ExprKind, OrderDirection)>,
+    order_by: Vec<OrderCriterion>,
     frame: Option<WindowFrame>,
     _scope: PhantomData<fn() -> Scope>,
 }
@@ -152,26 +152,79 @@ impl<Scope> WindowSpec<Scope> {
     where
         Scope: MergeScope<C::Table>,
     {
-        self.order_by.push((C::expr_kind(), direction));
+        self.push_ordering(OrderCriterion::new(C::expr_kind(), direction));
+        self.retype()
+    }
+
+    /// Appends an ordering criterion fixing where the NULL values of `col` sort.
+    ///
+    /// The placement is written after the direction, so a window reads
+    /// `ORDER BY "score" DESC NULLS LAST` and the rows of a partition keep their
+    /// positions even when the ordered column is nullable.
+    pub fn order_by_nulls<C: Column>(
+        mut self,
+        _col: C,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.push_ordering(OrderCriterion::new(C::expr_kind(), direction).nulls(nulls));
         self.retype()
     }
 
     /// Appends an ascending ordering criterion for column `col`.
-    pub fn order_by_asc<C: Column>(mut self, _col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_asc<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
     where
         Scope: MergeScope<C::Table>,
     {
-        self.order_by.push((C::expr_kind(), OrderDirection::Asc));
-        self.retype()
+        self.order_by(col, OrderDirection::Asc)
     }
 
     /// Appends a descending ordering criterion for column `col`.
-    pub fn order_by_desc<C: Column>(mut self, _col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    pub fn order_by_desc<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
     where
         Scope: MergeScope<C::Table>,
     {
-        self.order_by.push((C::expr_kind(), OrderDirection::Desc));
-        self.retype()
+        self.order_by(col, OrderDirection::Desc)
+    }
+
+    /// Appends an ascending ordering criterion putting NULL values first.
+    pub fn order_by_asc_nulls_first<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::First)
+    }
+
+    /// Appends an ascending ordering criterion putting NULL values last.
+    pub fn order_by_asc_nulls_last<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::Last)
+    }
+
+    /// Appends a descending ordering criterion putting NULL values first.
+    pub fn order_by_desc_nulls_first<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::First)
+    }
+
+    /// Appends a descending ordering criterion putting NULL values last.
+    pub fn order_by_desc_nulls_last<C: Column>(self, col: C) -> WindowSpec<Merged<Scope, C::Table>>
+    where
+        Scope: MergeScope<C::Table>,
+    {
+        self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::Last)
+    }
+
+    /// Records `criterion` among the orderings of the window.
+    fn push_ordering(&mut self, criterion: OrderCriterion) {
+        self.order_by.push(criterion);
     }
 
     /// Restricts the window to the rows between `start` and `end` (`ROWS BETWEEN`).
@@ -224,13 +277,17 @@ impl<Scope> WindowSpec<Scope> {
             }
             written = true;
             sql.push_str("ORDER BY ");
-            for (index, (expression, direction)) in self.order_by.iter().enumerate() {
+            for (index, criterion) in self.order_by.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(sql, params, expression, relations);
+                render_expr::<D>(sql, params, &criterion.expr, relations);
                 sql.push(' ');
-                sql.push_str(direction.as_str());
+                sql.push_str(criterion.direction.as_str());
+                if let Some(nulls) = criterion.nulls {
+                    sql.push(' ');
+                    sql.push_str(nulls.as_str());
+                }
             }
         }
         // The frame closes the window contents, so it follows the ordering of the
@@ -296,7 +353,21 @@ impl Window {
     pub fn order_by<C: Column>(_col: C, direction: OrderDirection) -> WindowSpec<C::Table> {
         WindowSpec {
             partition_by: Vec::new(),
-            order_by: vec![(C::expr_kind(), direction)],
+            order_by: vec![OrderCriterion::new(C::expr_kind(), direction)],
+            frame: None,
+            _scope: PhantomData,
+        }
+    }
+
+    /// Starts a window specification ordered by `col`, fixing where NULL values sort.
+    pub fn order_by_nulls<C: Column>(
+        _col: C,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> WindowSpec<C::Table> {
+        WindowSpec {
+            partition_by: Vec::new(),
+            order_by: vec![OrderCriterion::new(C::expr_kind(), direction).nulls(nulls)],
             frame: None,
             _scope: PhantomData,
         }

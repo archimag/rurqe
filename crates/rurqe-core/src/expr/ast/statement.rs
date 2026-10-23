@@ -33,6 +33,64 @@ impl OrderDirection {
     }
 }
 
+/// The position NULL values take in an ordering criterion.
+///
+/// Engines disagree on the placement they choose on their own: PostgreSQL sorts
+/// NULL values as the largest value, while SQLite sorts them as the smallest. A
+/// query whose result depends on the placement names it, so the order of a page
+/// over a nullable column stays the same on either engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NullsOrder {
+    /// NULL values sort before every non-NULL value (`NULLS FIRST`).
+    First,
+    /// NULL values sort after every non-NULL value (`NULLS LAST`).
+    Last,
+}
+
+impl NullsOrder {
+    /// The SQL text of the placement.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            NullsOrder::First => "NULLS FIRST",
+            NullsOrder::Last => "NULLS LAST",
+        }
+    }
+}
+
+/// One criterion of an `ORDER BY` clause.
+///
+/// A criterion orders one expression in a direction and optionally fixes where
+/// the NULL values of that expression sort, so a statement and a window
+/// specification describe their ordering the same way. A criterion without a
+/// placement leaves it to the engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderCriterion {
+    /// The ordered expression.
+    pub expr: ExprKind,
+    /// The direction the expression is ordered in.
+    pub direction: OrderDirection,
+    /// The placement of the NULL values of the expression, if it is fixed.
+    pub nulls: Option<NullsOrder>,
+}
+
+impl OrderCriterion {
+    /// Orders `expr` in `direction`, leaving the placement of NULL values to the
+    /// engine.
+    pub fn new(expr: ExprKind, direction: OrderDirection) -> Self {
+        Self {
+            expr,
+            direction,
+            nulls: None,
+        }
+    }
+
+    /// Fixes where the NULL values of the ordered expression sort.
+    pub fn nulls(mut self, nulls: NullsOrder) -> Self {
+        self.nulls = Some(nulls);
+        self
+    }
+}
+
 /// The flavour of join bringing a relation into the statement scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JoinKind {
@@ -354,7 +412,7 @@ pub struct SelectAst {
     /// The `HAVING` predicate restricting the grouped rows.
     pub having: Option<ExprKind>,
     /// The ordering criteria of the left query, applied before a set operation.
-    pub order_by: Vec<(ExprKind, OrderDirection)>,
+    pub order_by: Vec<OrderCriterion>,
     /// The row limit of the left query, applied before a set operation.
     pub limit: Option<u32>,
     /// The row offset of the left query, applied before a set operation.
@@ -362,7 +420,7 @@ pub struct SelectAst {
     /// The set operations chained onto the statement, in declaration order.
     pub set_operations: Vec<SetOpAst>,
     /// The ordering criteria of the compound result, applied after a set operation.
-    pub compound_order_by: Vec<(ExprKind, OrderDirection)>,
+    pub compound_order_by: Vec<OrderCriterion>,
     /// The row limit of the compound result, applied after a set operation.
     pub compound_limit: Option<u32>,
     /// The row offset of the compound result, applied after a set operation.

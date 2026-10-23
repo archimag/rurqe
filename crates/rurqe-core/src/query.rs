@@ -52,8 +52,8 @@ pub use self::scope::{
     NullableRel, ScopePositions, TableNullabilityInScope, TableScope,
 };
 pub use self::select::{
-    BuiltQuery, HasProjection, Locked, NoLock, NoProjection, OrderDirection, ProjectionPresent,
-    SelectQuery,
+    BuiltQuery, HasProjection, Locked, NoLock, NoProjection, NullsOrder, OrderDirection,
+    ProjectionPresent, SelectQuery,
 };
 pub use self::selection::{
     ApplyNullability, ColumnInScope, MakeNullable, Nullable, SelectTarget, SelectTargetInScope,
