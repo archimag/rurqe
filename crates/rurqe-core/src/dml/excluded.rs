@@ -16,8 +16,8 @@
 
 use core::marker::PhantomData;
 
-use crate::expr::{Expr, ExprKind};
-use crate::schema::Column;
+use crate::expr::{Expr, ExprKind, MergeScope, Unscoped};
+use crate::schema::{Column, Table};
 
 /// Marker naming the table whose proposed row the `EXCLUDED` relation exposes.
 ///
@@ -47,4 +47,79 @@ pub struct Excluded<T>(PhantomData<fn() -> T>);
 /// ```
 pub fn excluded<C: Column>(_column: C) -> Expr<C::RustType, Excluded<C::Table>> {
     Expr::from_kind(ExprKind::Excluded { column: C::NAME })
+}
+
+// The proposed row is not a relation of a query scope: it only exists inside the
+// update branch of an upsert, so it merges into the scope of a predicate instead
+// of extending the scope of a statement. Comparing a stored column with the value
+// proposed for it therefore stays typed — the resulting predicate reads both the
+// table and its proposed row — and renders as a single condition:
+//
+// ```text
+// DO UPDATE SET "name" = EXCLUDED."name" WHERE ("name" <> EXCLUDED."name")
+// ```
+
+impl<T: Table> MergeScope<Excluded<T>> for Excluded<T> {
+    type Output = Excluded<T>;
+}
+
+impl<L: Table, T: Table> MergeScope<Excluded<T>> for L {
+    type Output = (L, Excluded<T>);
+}
+
+impl<T: Table, R: Table> MergeScope<R> for Excluded<T> {
+    type Output = (Excluded<T>, R);
+}
+
+// The right operand of these two impls is the proposed row itself, which stays
+// unambiguously distinct from the empty scope and from the dropped-scope marker.
+impl<T: Table> MergeScope<Excluded<T>> for () {
+    type Output = Excluded<T>;
+}
+
+impl<T: Table> MergeScope<Excluded<T>> for Unscoped {
+    type Output = Excluded<T>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expr::Merged;
+
+    crate::table! {
+        User => "users" {
+            UserName => "name": String,
+        }
+    }
+
+    fn assert_merged<L: MergeScope<R, Output = Expected>, R, Expected>() {}
+
+    #[test]
+    fn the_proposed_row_merges_into_the_scope_of_a_predicate() {
+        assert_merged::<Excluded<User>, Excluded<User>, Excluded<User>>();
+        assert_merged::<User, Excluded<User>, (User, Excluded<User>)>();
+        assert_merged::<Excluded<User>, User, (Excluded<User>, User)>();
+        assert_merged::<(), Excluded<User>, Excluded<User>>();
+        assert_merged::<Unscoped, Excluded<User>, Excluded<User>>();
+
+        // A constant or unscoped operand on the right contributes no table, so
+        // the proposed row survives unchanged.
+        assert_merged::<Excluded<User>, (), Excluded<User>>();
+        assert_merged::<Excluded<User>, Unscoped, Excluded<User>>();
+    }
+
+    #[test]
+    fn a_proposed_value_carries_the_type_of_its_column() {
+        let proposed: Expr<String, Excluded<User>> = excluded(UserName);
+
+        assert_eq!(proposed.kind(), &ExprKind::Excluded { column: "name" });
+    }
+
+    #[test]
+    fn a_predicate_comparing_the_stored_and_proposed_rows_keeps_both_scopes() {
+        let _: Expr<bool, Merged<User, Excluded<User>>> =
+            Expr::column::<UserName>().ne(excluded(UserName));
+        let _: Expr<bool, Merged<Excluded<User>, User>> =
+            excluded(UserName).ne(Expr::column::<UserName>());
+    }
 }

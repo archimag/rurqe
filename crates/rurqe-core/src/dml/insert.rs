@@ -317,6 +317,7 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     pub fn on_conflict_do_nothing(mut self) -> Self {
         self.conflict = Some(Conflict {
             target: Vec::new(),
+            target_predicate: None,
             action: ConflictAction::DoNothing,
         });
         self
@@ -334,10 +335,7 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     ) -> OnConflict<D, T, Values, Returning> {
         let mut columns = Vec::new();
         target.push_column_names(&mut columns);
-        OnConflict {
-            query: self,
-            target: columns,
-        }
+        OnConflict::new(self, columns)
     }
 }
 
@@ -672,6 +670,108 @@ mod tests {
         assert_eq!(
             built.params,
             vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn on_conflict_target_where_renders_the_partial_index_predicate() {
+        use crate::expr::Expr;
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .target_where(Expr::column::<UserId>().gt(0i64))
+            .do_update(UserName::set("upserted"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") WHERE (\"id\" > $3) DO UPDATE SET \"name\" = $4"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::I64(0),
+                SqlVal::Text("upserted".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn on_conflict_update_where_restricts_the_rewritten_rows() {
+        use crate::expr::Expr;
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .update_where(Expr::column::<UserName>().ne("root"))
+            .do_update(UserName::set("upserted"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $3 WHERE (\"name\" <> $4)"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::Text("upserted".to_owned()),
+                SqlVal::Text("root".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_update_predicate_compares_the_stored_row_with_the_proposed_one() {
+        use crate::dml::excluded;
+        use crate::expr::Expr;
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .update_where(excluded(UserName).ne(Expr::column::<UserName>()))
+            .do_update(UserName::set_expr(excluded(UserName)))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\" WHERE (EXCLUDED.\"name\" <> \"name\")"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn both_predicates_render_around_the_action() {
+        use crate::expr::Expr;
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .target_where(Expr::column::<UserId>().gt(0i64))
+            .update_where(Expr::column::<UserName>().ne("root"))
+            .do_update(UserName::set("upserted"))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") WHERE (\"id\" > $3) DO UPDATE SET \"name\" = $4 WHERE (\"name\" <> $5)"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::I64(0),
+                SqlVal::Text("upserted".to_owned()),
+                SqlVal::Text("root".to_owned()),
+            ]
         );
     }
 
