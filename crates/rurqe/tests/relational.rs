@@ -1545,3 +1545,65 @@ mod postgres_extension_traits {
         );
     }
 }
+
+#[test]
+fn greatest_and_least_render_their_comparison_functions() {
+    use rurqe::core::expr::{greatest, least};
+
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId, greatest(OrderTotal, [1.0, 2.0])))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", GREATEST(\"total\", $1, $2) FROM \"orders\""
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(1.0), SqlVal::F64(2.0)]);
+
+    let lowest = select_from::<Postgres<Pg16>, Order>()
+        .select((least(OrderTotal, [1.0]),))
+        .build();
+
+    assert_eq!(lowest.sql, "SELECT LEAST(\"total\", $1) FROM \"orders\"");
+    assert_eq!(lowest.params, vec![SqlVal::F64(1.0)]);
+}
+
+#[test]
+fn the_null_safe_predicates_compare_against_absent_values() {
+    use rurqe::core::expr::{is_distinct_from, is_not_distinct_from};
+
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((OrderId,))
+        .where_(is_distinct_from(OrderTotal, 0.0))
+        .where_(is_not_distinct_from(OrderUserId, 7i64))
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"orders\" WHERE ((\"total\" IS DISTINCT FROM $1) AND \
+         (\"user_id\" IS NOT DISTINCT FROM $2))"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(0.0), SqlVal::I64(7)]);
+}
+
+#[test]
+fn an_ordering_can_fix_where_nulls_sort() {
+    let built = select_from::<Postgres<Pg16>, Order>()
+        .select((
+            OrderId,
+            row_number().over(
+                Window::partition_by(OrderUserId).order_by_desc_nulls_last(OrderTotal),
+            ),
+        ))
+        .order_by_desc_nulls_last(OrderTotal)
+        .limit(3)
+        .build();
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", ROW_NUMBER() OVER (PARTITION BY \"user_id\" \
+         ORDER BY \"total\" DESC NULLS LAST) FROM \"orders\" \
+         ORDER BY \"total\" DESC NULLS LAST LIMIT 3"
+    );
+    assert!(built.params.is_empty());
+}
