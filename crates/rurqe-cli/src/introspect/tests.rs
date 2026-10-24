@@ -70,6 +70,8 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             column_name: "order_id".to_owned(),
             referenced_table: "orders".to_owned(),
             referenced_column: "id".to_owned(),
+            on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+            on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
         RawForeignKeyMetadata {
             name: "order_items_order_fkey".to_owned(),
@@ -77,6 +79,8 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             column_name: "line_no".to_owned(),
             referenced_table: "orders".to_owned(),
             referenced_column: "line_no".to_owned(),
+            on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+            on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
     ];
 
@@ -122,6 +126,8 @@ fn sqlite_composite_foreign_key_rows_fold_into_one_constraint() {
             from_column: "order_id".to_owned(),
             to_column: "id".to_owned(),
             referenced_table: "orders".to_owned(),
+            on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+            on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
         RawSqliteForeignKeyMetadata {
             table_name: "order_items".to_owned(),
@@ -129,6 +135,8 @@ fn sqlite_composite_foreign_key_rows_fold_into_one_constraint() {
             from_column: "line_no".to_owned(),
             to_column: "line_no".to_owned(),
             referenced_table: "orders".to_owned(),
+            on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+            on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
     ];
 
@@ -196,6 +204,8 @@ fn sqlite_metadata_assembly_builds_catalog_with_keys() {
         from_column: "user_id".to_owned(),
         to_column: "id".to_owned(),
         referenced_table: "users".to_owned(),
+        on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+        on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
     }];
 
     let catalog = catalog_from_sqlite_metadata(&tables, &columns, &fks, &[]);
@@ -482,14 +492,20 @@ fn index_rows_fold_into_composite_indexes() {
         RawIndexMetadata {
             table_name: "users".to_owned(),
             index_name: "users_tenant_email_idx".to_owned(),
-            column_name: "tenant".to_owned(),
+            column_name: Some("tenant".to_owned()),
             unique: false,
+            method: None,
+            predicate: None,
+            expression: None,
         },
         RawIndexMetadata {
             table_name: "users".to_owned(),
             index_name: "users_tenant_email_idx".to_owned(),
-            column_name: "email".to_owned(),
+            column_name: Some("email".to_owned()),
             unique: false,
+            method: None,
+            predicate: None,
+            expression: None,
         },
     ];
 

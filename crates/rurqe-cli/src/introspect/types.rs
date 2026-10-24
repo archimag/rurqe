@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use rurqe_migrate::catalog::{
-    ColumnDef, EnumDef, ForeignKeyDef, IndexDef, SchemaCatalog, TableDef, TypeKind,
+    CheckDef, ColumnDef, EnumDef, ForeignKeyAction, ForeignKeyDef, IndexDef, SchemaCatalog,
+    TableDef, TriggerDef, TypeKind, ViewDef,
 };
 
 /// Raw table metadata row.
@@ -38,6 +39,10 @@ pub struct RawPrimaryKeyMetadata {
 }
 
 /// Raw foreign key constraint row.
+///
+/// One row describes one key column, and the referential actions of the
+/// constraint are repeated on every row of it, so folding the rows of a
+/// constraint keeps the actions intact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawForeignKeyMetadata {
     pub name: String,
@@ -45,15 +50,80 @@ pub struct RawForeignKeyMetadata {
     pub column_name: String,
     pub referenced_table: String,
     pub referenced_column: String,
+    pub on_delete: ForeignKeyAction,
+    pub on_update: ForeignKeyAction,
 }
 
 /// Raw secondary index row, one per indexed column.
+///
+/// The index attributes are repeated on every row of an index, and an index
+/// declared over an expression reports no column name at all: `PRAGMA
+/// index_info` and `pg_index` both leave the attribute unnamed for the
+/// positional entry an expression occupies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawIndexMetadata {
     pub table_name: String,
     pub index_name: String,
-    pub column_name: String,
+    pub column_name: Option<String>,
     pub unique: bool,
+    pub method: Option<String>,
+    pub predicate: Option<String>,
+    pub expression: Option<String>,
+}
+
+/// Raw check constraint row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawCheckMetadata {
+    pub table_name: String,
+    pub name: String,
+    pub expression: String,
+}
+
+/// Raw view definition row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawViewMetadata {
+    pub name: String,
+    pub definition: String,
+}
+
+/// Raw trigger definition row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTriggerMetadata {
+    pub name: String,
+    pub table_name: String,
+    pub definition: String,
+}
+
+/// The catalog sections introspected alongside tables and their columns.
+///
+/// Bundling them keeps the assembler signatures readable while every engine
+/// still reports the sections it can observe.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RawCatalogSections<'a> {
+    /// The check constraints of the schema.
+    pub checks: &'a [RawCheckMetadata],
+    /// The views of the schema.
+    pub views: &'a [RawViewMetadata],
+    /// The triggers of the schema.
+    pub triggers: &'a [RawTriggerMetadata],
+}
+
+/// Reads a referential action reported by an engine.
+///
+/// PostgreSQL reports the action as one of its `confdeltype` / `confupdtype`
+/// letters while SQLite spells the action out, so both spellings of every
+/// action are understood and anything unfamiliar falls back to `NO ACTION`,
+/// which is the SQL default of a foreign key.
+pub fn parse_foreign_key_action(text: &str) -> ForeignKeyAction {
+    let lower = text.trim().to_ascii_lowercase();
+
+    match lower.as_str() {
+        "r" | "restrict" => ForeignKeyAction::Restrict,
+        "c" | "cascade" => ForeignKeyAction::Cascade,
+        "n" | "set null" => ForeignKeyAction::SetNull,
+        "d" | "set default" => ForeignKeyAction::SetDefault,
+        _ => ForeignKeyAction::NoAction,
+    }
 }
 
 /// Maps a raw SQL database data type string to an engine-neutral [`TypeKind`].
@@ -206,18 +276,39 @@ fn named_type_kind(name: &str, enums: &BTreeMap<String, Vec<String>>) -> TypeKin
 ///
 /// Both `pg_index` and the SQLite `PRAGMA index_list` report one row per indexed
 /// column, so the rows are collected in arrival order and a composite index keeps
-/// the column order it was declared in. The returned map is keyed by owning table.
+/// the column order it was declared in. The attributes of an index are read from
+/// the first row of it, because every row of one index reports the same value.
+///
+/// A row without a column name belongs to an expression index; it contributes no
+/// column while the expression it carries still reaches the definition. The
+/// returned map is keyed by owning table.
 pub(super) fn fold_indexes(indexes: &[RawIndexMetadata]) -> BTreeMap<String, Vec<IndexDef>> {
     let mut by_table: BTreeMap<String, BTreeMap<String, IndexDef>> = BTreeMap::new();
 
     for row in indexes {
-        by_table
+        let index = by_table
             .entry(row.table_name.clone())
             .or_default()
             .entry(row.index_name.clone())
-            .or_insert_with(|| IndexDef::new(&row.index_name, Vec::new(), row.unique))
-            .columns
-            .push(row.column_name.clone());
+            .or_insert_with(|| {
+                let mut index = IndexDef::new(&row.index_name, Vec::new(), row.unique);
+                if let Some(method) = &row.method {
+                    index = index.with_method(method);
+                }
+                if let Some(predicate) = &row.predicate {
+                    index = index.with_predicate(predicate);
+                }
+                if let Some(expression) = &row.expression {
+                    index = index.with_expression(expression);
+                }
+                index
+            });
+
+        if let Some(column) = &row.column_name {
+            if !index.columns.contains(column) {
+                index.columns.push(column.clone());
+            }
+        }
     }
 
     by_table
@@ -239,6 +330,30 @@ pub fn catalog_from_metadata(
     indexes: &[RawIndexMetadata],
     enums: &[RawEnumMetadata],
 ) -> SchemaCatalog {
+    catalog_from_metadata_with_sections(
+        tables,
+        columns,
+        pks,
+        fks,
+        indexes,
+        enums,
+        &RawCatalogSections::default(),
+    )
+}
+
+/// Assembles a normalized [`SchemaCatalog`] including checks, views, and triggers.
+///
+/// The sections are attached to the catalog as they are reported, so an engine
+/// that cannot observe one of them simply passes an empty slice.
+pub fn catalog_from_metadata_with_sections(
+    tables: &[RawTableMetadata],
+    columns: &[RawColumnMetadata],
+    pks: &[RawPrimaryKeyMetadata],
+    fks: &[RawForeignKeyMetadata],
+    indexes: &[RawIndexMetadata],
+    enums: &[RawEnumMetadata],
+    sections: &RawCatalogSections<'_>,
+) -> SchemaCatalog {
     let mut enums_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in enums {
         enums_by_name
@@ -250,6 +365,7 @@ pub fn catalog_from_metadata(
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
     let mut pks_by_table: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut fks_by_table: BTreeMap<String, BTreeMap<String, ForeignKeyDef>> = BTreeMap::new();
+    let mut checks_by_table: BTreeMap<String, Vec<CheckDef>> = BTreeMap::new();
     let mut indexes_by_table = fold_indexes(indexes);
 
     for col in columns {
@@ -278,9 +394,17 @@ pub fn catalog_from_metadata(
             .entry(fk.name.clone())
             .or_insert_with(|| {
                 ForeignKeyDef::new(&fk.name, Vec::new(), &fk.referenced_table, Vec::new())
+                    .with_actions(fk.on_delete, fk.on_update)
             });
         constraint.columns.push(fk.column_name.clone());
         constraint.referenced_columns.push(fk.referenced_column.clone());
+    }
+
+    for check in sections.checks {
+        checks_by_table
+            .entry(check.table_name.clone())
+            .or_default()
+            .push(CheckDef::new(&check.name, &check.expression));
     }
 
     let mut result_tables = Vec::new();
@@ -291,10 +415,14 @@ pub fn catalog_from_metadata(
             .remove(&table.name)
             .map(|constraints| constraints.into_values().collect())
             .unwrap_or_default();
+        let table_checks = checks_by_table.remove(&table.name).unwrap_or_default();
 
         let table_indexes = indexes_by_table.remove(&table.name).unwrap_or_default();
 
         let mut def = TableDef::new(&table.name, table_cols, table_pk);
+        for check in table_checks {
+            def = def.with_check(check);
+        }
         for fk in table_fks {
             def = def.with_foreign_key(fk);
         }
@@ -309,5 +437,19 @@ pub fn catalog_from_metadata(
         .map(|(name, variants)| EnumDef::new(name, variants))
         .collect();
 
-    SchemaCatalog::new(result_tables).with_enums(result_enums)
+    let views: Vec<ViewDef> = sections
+        .views
+        .iter()
+        .map(|view| ViewDef::new(&view.name, &view.definition))
+        .collect();
+    let triggers: Vec<TriggerDef> = sections
+        .triggers
+        .iter()
+        .map(|trigger| TriggerDef::new(&trigger.name, &trigger.table_name, &trigger.definition))
+        .collect();
+
+    SchemaCatalog::new(result_tables)
+        .with_enums(result_enums)
+        .with_views(views)
+        .with_triggers(triggers)
 }

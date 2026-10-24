@@ -74,7 +74,12 @@ pub fn parse_sqlite_check_enums(
 
 /// Extracts the balanced text inside `(...)` starting at `s[0] == '('`.
 /// Returns `Some((inner_slice, total_length_consumed))`.
-fn extract_paren_block(s: &str) -> Option<(&str, usize)> {
+///
+/// The scan skips string literals and quoted identifiers, so a parenthesis
+/// written inside a value never closes the block early. The sibling scanner of
+/// the catalog module reuses it to read a `CHECK` clause without duplicating the
+/// quote handling.
+pub(super) fn extract_paren_block(s: &str) -> Option<(&str, usize)> {
     if !s.starts_with('(') {
         return None;
     }

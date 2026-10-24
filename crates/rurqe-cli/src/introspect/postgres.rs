@@ -13,8 +13,10 @@ use rurqe_migrate::catalog::SchemaCatalog;
 use crate::cli::CliError;
 
 use super::types::{
-    catalog_from_metadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata,
-    RawIndexMetadata, RawPrimaryKeyMetadata, RawTableMetadata,
+    catalog_from_metadata_with_sections, parse_foreign_key_action, RawCatalogSections,
+    RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata,
+    RawIndexMetadata, RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata,
+    RawViewMetadata,
 };
 
 /// Query to fetch all user tables of the introspected schema.
@@ -114,13 +116,31 @@ ORDER BY kcu.table_name, kcu.ordinal_position;
 /// relationship between referencing and referenced columns, so the catalog is
 /// read through `pg_constraint` and the `conkey` / `confkey` arrays are
 /// unnested together with `generate_subscripts` to keep composite keys aligned.
+///
+/// `confdeltype` and `confupdtype` carry the referential actions of the key as
+/// single letters, which are spelled out here so the catalog receives the action
+/// itself rather than a driver-level character code.
 pub(crate) const POSTGRES_FOREIGN_KEYS: &str = r#"
 SELECT
   constraint_row.conname,
   owning.relname AS table_name,
   owning_column.attname AS column_name,
   referenced.relname AS referenced_table,
-  referenced_column.attname AS referenced_column
+  referenced_column.attname AS referenced_column,
+  CASE constraint_row.confdeltype
+    WHEN 'c' THEN 'CASCADE'
+    WHEN 'r' THEN 'RESTRICT'
+    WHEN 'n' THEN 'SET NULL'
+    WHEN 'd' THEN 'SET DEFAULT'
+    ELSE 'NO ACTION'
+  END AS on_delete,
+  CASE constraint_row.confupdtype
+    WHEN 'c' THEN 'CASCADE'
+    WHEN 'r' THEN 'RESTRICT'
+    WHEN 'n' THEN 'SET NULL'
+    WHEN 'd' THEN 'SET DEFAULT'
+    ELSE 'NO ACTION'
+  END AS on_update
 FROM pg_constraint constraint_row
 JOIN pg_class owning ON owning.oid = constraint_row.conrelid
 JOIN pg_namespace namespace ON namespace.oid = owning.relnamespace
@@ -151,28 +171,80 @@ ORDER BY owning.relname, constraint_row.conname, position.index;
 /// attributes never reach the catalog.
 ///
 /// An index carrying an expression stores a zero attribute number in its place,
-/// and an expression has no column name to report. Such an index is skipped as a
-/// whole, exactly like the SQLite introspection skips an expression index, so a
-/// catalog never describes a mixed index by the columns alone.
+/// and `pg_attribute` matches no row for that entry. The join is therefore an
+/// outer one, so the index survives with an unnamed key entry, its expression
+/// read from `indexprs` and its partial predicate from `indpred`. Dropping such
+/// an index instead would make an expression index invisible to the snapshot and
+/// to every drift check.
 pub(crate) const POSTGRES_INDEXES: &str = r#"
 SELECT
   index_table.relname AS table_name,
   index_class.relname AS index_name,
   index_row.indisunique AS is_unique,
+  access_method.amname AS method,
+  pg_get_expr(index_row.indpred, index_row.indrelid) AS predicate,
+  pg_get_expr(index_row.indexprs, index_row.indrelid) AS expression,
   attribute.attname AS column_name
 FROM pg_index index_row
 JOIN pg_class index_class ON index_class.oid = index_row.indexrelid
 JOIN pg_class index_table ON index_table.oid = index_row.indrelid
 JOIN pg_namespace namespace ON namespace.oid = index_table.relnamespace
+JOIN pg_am access_method ON access_method.oid = index_class.relam
 JOIN generate_subscripts(index_row.indkey::int2[], 1) AS position(index) ON TRUE
-JOIN pg_attribute attribute
+LEFT JOIN pg_attribute attribute
   ON attribute.attrelid = index_row.indrelid
  AND attribute.attnum = (index_row.indkey::int2[])[position.index]
 WHERE namespace.nspname = $1
   AND NOT index_row.indisprimary
   AND index_row.indnkeyatts >= position.index
-  AND NOT (0 = ANY(index_row.indkey::int2[]))
 ORDER BY index_table.relname, index_class.relname, position.index;
+"#;
+
+/// Query to fetch the check constraints of the introspected schema.
+///
+/// `pg_get_expr` renders the stored predicate without the `CHECK` keyword and
+/// its wrapping parentheses, so the catalog carries the boolean expression the
+/// constraint enforces, which is exactly what a declarative stage declares.
+pub(crate) const POSTGRES_CHECKS: &str = r#"
+SELECT
+  check_table.relname AS table_name,
+  constraint_row.conname AS constraint_name,
+  pg_get_expr(constraint_row.conbin, constraint_row.conrelid) AS expression
+FROM pg_constraint constraint_row
+JOIN pg_class check_table ON check_table.oid = constraint_row.conrelid
+JOIN pg_namespace namespace ON namespace.oid = check_table.relnamespace
+WHERE constraint_row.contype = 'c'
+  AND namespace.nspname = $1
+  AND check_table.relname != '__rurqe_schema_history'
+ORDER BY check_table.relname, constraint_row.conname;
+"#;
+
+/// Query to fetch the views of the introspected schema.
+pub(crate) const POSTGRES_VIEWS: &str = r#"
+SELECT view_name, view_definition
+FROM information_schema.views
+WHERE table_schema = $1
+ORDER BY view_name;
+"#;
+
+/// Query to fetch the user-defined triggers of the introspected schema.
+///
+/// `tgisinternal` marks the triggers PostgreSQL creates for a constraint (a
+/// foreign key check, for instance); those are already described by the
+/// constraint itself, so only triggers a schema declares by hand are read.
+/// `pg_get_triggerdef` renders the complete `CREATE TRIGGER` statement.
+pub(crate) const POSTGRES_TRIGGERS: &str = r#"
+SELECT
+  trigger_row.tgname AS trigger_name,
+  trigger_table.relname AS table_name,
+  pg_get_triggerdef(trigger_row.oid) AS definition
+FROM pg_trigger trigger_row
+JOIN pg_class trigger_table ON trigger_table.oid = trigger_row.tgrelid
+JOIN pg_namespace namespace ON namespace.oid = trigger_table.relnamespace
+WHERE namespace.nspname = $1
+  AND NOT trigger_row.tgisinternal
+  AND trigger_table.relname != '__rurqe_schema_history'
+ORDER BY trigger_table.relname, trigger_row.tgname;
 "#;
 
 /// Introspects the `public` schema of a live PostgreSQL database client.
@@ -218,12 +290,17 @@ where
     })?;
 
     let raw_fks = query_catalog(client, POSTGRES_FOREIGN_KEYS, schema, "foreign keys", |row| {
+        let on_delete: String = read_column(row, 5, "foreign keys", "on_delete")?;
+        let on_update: String = read_column(row, 6, "foreign keys", "on_update")?;
+
         Ok(RawForeignKeyMetadata {
             name: read_column(row, 0, "foreign keys", "conname")?,
             table_name: read_column(row, 1, "foreign keys", "table_name")?,
             column_name: read_column(row, 2, "foreign keys", "column_name")?,
             referenced_table: read_column(row, 3, "foreign keys", "referenced_table")?,
             referenced_column: read_column(row, 4, "foreign keys", "referenced_column")?,
+            on_delete: parse_foreign_key_action(&on_delete),
+            on_update: parse_foreign_key_action(&on_update),
         })
     })?;
 
@@ -232,7 +309,10 @@ where
             table_name: read_column(row, 0, "indexes", "table_name")?,
             index_name: read_column(row, 1, "indexes", "index_name")?,
             unique: read_column(row, 2, "indexes", "is_unique")?,
-            column_name: read_column(row, 3, "indexes", "column_name")?,
+            method: read_column(row, 3, "indexes", "method")?,
+            predicate: read_column(row, 4, "indexes", "predicate")?,
+            expression: read_column(row, 5, "indexes", "expression")?,
+            column_name: read_column(row, 6, "indexes", "column_name")?,
         })
     })?;
 
@@ -243,13 +323,41 @@ where
         })
     })?;
 
-    Ok(catalog_from_metadata(
+    let raw_checks = query_catalog(client, POSTGRES_CHECKS, schema, "checks", |row| {
+        Ok(RawCheckMetadata {
+            table_name: read_column(row, 0, "checks", "table_name")?,
+            name: read_column(row, 1, "checks", "constraint_name")?,
+            expression: read_column(row, 2, "checks", "expression")?,
+        })
+    })?;
+
+    let raw_views = query_catalog(client, POSTGRES_VIEWS, schema, "views", |row| {
+        Ok(RawViewMetadata {
+            name: read_column(row, 0, "views", "view_name")?,
+            definition: read_column(row, 1, "views", "view_definition")?,
+        })
+    })?;
+
+    let raw_triggers = query_catalog(client, POSTGRES_TRIGGERS, schema, "triggers", |row| {
+        Ok(RawTriggerMetadata {
+            name: read_column(row, 0, "triggers", "trigger_name")?,
+            table_name: read_column(row, 1, "triggers", "table_name")?,
+            definition: read_column(row, 2, "triggers", "definition")?,
+        })
+    })?;
+
+    Ok(catalog_from_metadata_with_sections(
         &raw_tables,
         &raw_columns,
         &raw_pks,
         &raw_fks,
         &raw_indexes,
         &raw_enums,
+        &RawCatalogSections {
+            checks: &raw_checks,
+            views: &raw_views,
+            triggers: &raw_triggers,
+        },
     ))
 }
 
@@ -323,10 +431,46 @@ mod tests {
     }
 
     #[test]
-    fn the_index_statement_skips_expression_indexes() {
+    fn the_index_statement_keeps_expression_indexes() {
+        // An expression occupies a zero attribute number, which matches no
+        // `pg_attribute` row, so only an outer join keeps the index in the catalog.
         assert!(
-            POSTGRES_INDEXES.contains("NOT (0 = ANY(index_row.indkey::int2[]))"),
-            "the index query must skip an index carrying an expression"
+            POSTGRES_INDEXES.contains("LEFT JOIN pg_attribute attribute"),
+            "the index query must keep an index declared over an expression"
+        );
+        assert!(
+            !POSTGRES_INDEXES.contains("NOT (0 = ANY"),
+            "the index query must not drop the indexes it cannot name by column"
+        );
+    }
+
+    #[test]
+    fn the_index_statement_reads_the_index_attributes() {
+        assert!(POSTGRES_INDEXES.contains("access_method.amname"));
+        assert!(POSTGRES_INDEXES.contains("pg_get_expr(index_row.indpred"));
+        assert!(POSTGRES_INDEXES.contains("pg_get_expr(index_row.indexprs"));
+    }
+
+    #[test]
+    fn the_foreign_key_statement_reads_the_referential_actions() {
+        assert!(POSTGRES_FOREIGN_KEYS.contains("constraint_row.confdeltype"));
+        assert!(POSTGRES_FOREIGN_KEYS.contains("constraint_row.confupdtype"));
+    }
+
+    #[test]
+    fn the_check_statement_reads_only_check_constraints() {
+        assert!(
+            POSTGRES_CHECKS.contains("constraint_row.contype = 'c'"),
+            "the check query must read the check constraints alone"
+        );
+        assert!(POSTGRES_CHECKS.contains("pg_get_expr"));
+    }
+
+    #[test]
+    fn the_trigger_statement_skips_the_internal_triggers() {
+        assert!(
+            POSTGRES_TRIGGERS.contains("NOT trigger_row.tgisinternal"),
+            "the trigger query must skip the triggers backing a constraint"
         );
     }
 

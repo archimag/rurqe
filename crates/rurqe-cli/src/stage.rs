@@ -710,10 +710,18 @@ mod tests {
                 "CREATE VIEW active_users AS SELECT id FROM users;",
             ),
         ]);
-        let stage = stage(&[(
-            "users.sql",
-            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
-        )]);
+        // The repeatable script lives in the tail, so the stage has to declare
+        // the view it creates as well.
+        let stage = stage(&[
+            (
+                "users.sql",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
+            ),
+            (
+                "views.sql",
+                "CREATE VIEW active_users AS SELECT id FROM users;",
+            ),
+        ]);
 
         let report = GoldenEquation::new(&stage, &tail)
             .with_base(&base)
@@ -774,8 +782,11 @@ mod tests {
     }
 
     #[test]
-    fn repeatable_scripts_stay_outside_the_catalog() {
-        let stage = stage(&[("users.sql", USERS)]);
+    fn a_repeatable_script_belongs_to_the_catalog_it_builds() {
+        // The bindings avoid the names of the `stage` and `tail` helpers, because a
+        // shadowing `let stage = stage(...)` would resolve the call to the value
+        // already bound instead of the helper.
+        let initial = stage(&[("users.sql", USERS)]);
         let tail = tail(&[
             ("V1__users.sql", USERS),
             (
@@ -784,9 +795,28 @@ mod tests {
             ),
         ]);
 
-        let report = GoldenEquation::new(&stage, &tail)
+        let error = GoldenEquation::new(&initial, &tail)
             .verify(":memory:")
-            .expect("views are not part of the catalog");
+            .expect_err("the stage never declares the view the tail creates");
+
+        match &error {
+            StageError::Diverged(report) => {
+                assert_eq!(report.diff.extra_views, vec!["active_users".to_owned()]);
+            }
+            other => panic!("expected Diverged, got {other:?}"),
+        }
+
+        let declared = stage(&[
+            ("users.sql", USERS),
+            (
+                "views.sql",
+                "CREATE VIEW active_users AS SELECT id FROM users;",
+            ),
+        ]);
+
+        let report = GoldenEquation::new(&declared, &tail)
+            .verify(":memory:")
+            .expect("the stage declares the view the tail creates");
 
         assert!(report.is_equivalent());
     }

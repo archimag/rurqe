@@ -21,13 +21,14 @@ mod tests;
 pub use crate::target::{detect_dialect, DatabaseDialect};
 pub use postgres::{introspect_postgres, introspect_postgres_schema};
 pub use sqlite::{
-    catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
-    RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
+    catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections, introspect_sqlite,
+    RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
 };
 pub use types::{
-    catalog_from_metadata, map_sql_type_to_kind, map_sqlite_declared_type_to_kind,
-    RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
-    RawPrimaryKeyMetadata, RawTableMetadata,
+    catalog_from_metadata, catalog_from_metadata_with_sections, map_sql_type_to_kind,
+    map_sqlite_declared_type_to_kind, parse_foreign_key_action, RawCatalogSections,
+    RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
+    RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata,
 };
 
 /// Introspects the schema catalog of a live database identified by its connection URL or path.
