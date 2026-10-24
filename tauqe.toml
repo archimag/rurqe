@@ -81,5 +81,6 @@ repomap_token_budget = 40000 # token budget for the repository map (default: 400
 # max_pattern_batch = 150     # maximum files admitted by one glob request (default: 150)
 pinned = [
     "Conventions.md",
-    "Vision.md"
+    "Vision.md",
+    "ROADMAP.md"
 ]
