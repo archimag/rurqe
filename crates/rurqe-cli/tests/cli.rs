@@ -477,6 +477,61 @@ fn run_cli_codegen_with_domain_types_flag_enables_domain_mapping() {
 }
 
 #[test]
+fn run_cli_codegen_with_domain_types_maps_decimal_columns_and_verifies_cleanly() {
+    let workspace = temp_workspace("codegen-decimal");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch(
+            "CREATE TABLE invoices (
+                 id INTEGER PRIMARY KEY,
+                 total NUMERIC NOT NULL,
+                 discount DECIMAL(10, 2)
+             );",
+        )
+        .expect("create schema");
+    }
+
+    let schema = workspace.join("src").join("schema.rs");
+    let lock = workspace.join("schema.lock");
+
+    let args = vec![
+        "rurqe".to_owned(),
+        "codegen".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--output".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+        "--domain-types".to_owned(),
+    ];
+    run_cli(args).expect("codegen succeeds with decimal columns");
+
+    let code = fs::read_to_string(&schema).expect("read generated schema");
+    assert!(code.contains("InvoicesTotal => \"total\": rust_decimal::Decimal"));
+    assert!(code.contains("InvoicesDiscount => \"discount\": Option<rust_decimal::Decimal>"));
+    assert!(code.contains("pub total: rust_decimal::Decimal,"));
+    assert!(code.contains("pub discount: Option<rust_decimal::Decimal>,"));
+
+    let snapshot = fs::read_to_string(&lock).expect("read schema lock");
+    assert!(snapshot.contains("column \"total\": numeric not null"));
+    assert!(snapshot.contains("column \"discount\": numeric null"));
+
+    let verify_args = vec![
+        "rurqe".to_owned(),
+        "verify".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--schema-path".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+    ];
+    run_cli(verify_args).expect("verification passes for the decimal columns");
+}
+
+#[test]
 fn run_cli_verify_passes_on_match_and_reports_drift() {
     let workspace = temp_workspace("verify");
     let db = workspace.join("app.db");
