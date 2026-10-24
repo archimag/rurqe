@@ -31,7 +31,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 17** [x] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Completed) |
 | **Phase 18** [x] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Completed) |
 | **Phase 19** [x] | Expression Polish, Practical DML & Advanced Ordering | Arithmetic `std::ops`, partial upsert `ON CONFLICT WHERE`, `NULLS FIRST/LAST`, `Decimal`, scalar SQL functions, JSONB extraction, `FULL OUTER JOIN` | High-ROI Relational Polish (Completed) |
-| **Phase 20** [ ] | Absolute SQL Soundness: Scoping, Grouping & Ordering Typestates | Unaliased duplicate join guards, subquery arity/type checks in `IN`, sound function grouping, `DISTINCT`/`DISTINCT ON` & compound `ORDER BY` typestates | Uncompromising SQL Soundness (Planned) |
+| **Phase 20** [x] | Absolute SQL Soundness: Scoping, Grouping & Ordering Typestates | Unaliased duplicate join guards, subquery arity/type checks in `IN`, sound function grouping, `DISTINCT`/`DISTINCT ON` & compound `ORDER BY` typestates | Uncompromising SQL Soundness (Completed) |
 
 ---
 
@@ -881,38 +881,46 @@ Eliminate the remaining need for untyped raw SQL escape hatches (`sql!`) in comm
 
 ---
 
-## Phase 20: Absolute SQL Soundness: Relational Scoping, Grouping & Ordering Typestates
+## Phase 20: Absolute SQL Soundness: Relational Scoping, Grouping & Ordering Typestates [Completed]
 
 ### Objective
-Fulfill the core vision of **Absolute SQL Correctness** (`Vision.md § 1.5.1`) by turning the remaining classes of runtime-failing SQL into compile-time rejections: prevent unaliased duplicate table joins, enforce strict subquery column arity and type congruence in `IN` predicates, propagate column grouping provenance through scalar functions (`coalesce`, `nullif`, `greatest`, `least`, `CASE`), and introduce typestate constraints for ordering clauses in `DISTINCT`, `DISTINCT ON`, and compound set operations (`UNION`, `INTERSECT`, `EXCEPT`).
+Fulfill the core vision of **Absolute SQL Correctness** (`Vision.md § 1.5.1`) by closing the remaining classes of runtime-failing SQL across both tiers of the guarantee: keep strict `IN` subquery arity and type congruence, grouping provenance through scalar expressions, and compound-statement ordering inside the stable-Rust type system, while the rules that need a negative assertion (a relation is *absent* from the scope) or the alignment of one clause with another one written later in a dynamic fluent chain (`DISTINCT ON` prefix, compound `ORDER BY` targets) are validated deterministically by the fallible `.build()` before any network I/O. No invalid statement reaches the engine, and nothing relies on nightly-only type-system features.
 
 ### Key Deliverables
-- [ ] **Disjoint Relation Scope & Unaliased Duplicate Join Prevention:**
-  - Introduce static disjointness guards (`TableNotInScope<T>` or `DisjointRelation<Scope, T>`) for `.inner_join`, `.left_join`, `.cross_join`, and `.full_outer_join`.
-  - Joining a table already present in the query's relation scope without an explicit alias (`table_alias!`, `users.as_alias("u2")`) fails to compile with an actionable diagnostic explaining that identical relations must be aliased to avoid ambiguous SQL table references.
-- [ ] **Strict Subquery Arity & Type Soundness for `IN` Predicates:**
-  - Constrain scalar `.in_subquery(sub)` and `.not_in_subquery(sub)` on `Expr<T>` / `Column<RustType = T>` to only accept subqueries projecting exactly one column of type `T` (`SelectQuery<D, Tables, (T,), HasProjection>`).
-  - Constrain row-value tuple predicates `(c1, c2).in_subquery(sub)` to only accept subqueries whose projection tuple matches the exact arity and types `(T1, T2)`. Multi-column or arity-mismatched subqueries are rejected at compile time.
-- [ ] **Sound Grouped Expression Propagation in Scalar Functions:**
-  - Extend grouping provenance traits (`GroupedSelectTarget`, `ColumnInGroupBy`) to composite expressions: scalar functions (`coalesce`, `nullif`, `greatest`, `least`) and `case().when().then().end()`.
-  - If any input expression or branch references an ungrouped column, the resulting expression does not implement `GroupedSelectTarget` and cannot be projected in a `GroupedQuery`, preventing grouping-bypass queries from compiling.
-- [ ] **Compile-Time Ordering Typestates for `DISTINCT` & `DISTINCT ON`:**
-  - Transition `SelectQuery` to a distinct-checked typestate upon `.distinct()`: `.order_by*` methods require sorting criteria to implement `InProjection<ProjectedCols>`, rejecting ordering by unprojected columns at compile time.
-  - In PostgreSQL `DISTINCT ON (cols)` queries, enforce that the leading criteria in `.order_by*` match the exact sequence of expressions specified in `distinct_on`, preventing runtime PostgreSQL syntax errors.
-- [ ] **Compound Query (`UNION`, `INTERSECT`, `EXCEPT`) `ORDER BY` Typestate:**
-  - Restrict trailing `.order_by*` clauses on compound queries (`SetOpAst`) to reference only the projected columns or 1-based positional indices of the compound result, rejecting table-qualified column references from constituent subqueries.
+- [x] **Disjoint Relation Scope & Unaliased Duplicate Join Prevention (tier 2):**
+  - Two relations sharing one effective name in `FROM` / `JOIN` are rejected deterministically during `.build()` with `BuildError::DuplicateRelation { name }`, which names the colliding relation and points at `table_alias!` / `.as_alias(...)` as the remedy.
+  - The effective name is the alias a relation is referenced under, or its table name when it carries none, so `FROM "users" JOIN "users"` collides exactly like two uses of one alias; derived tables and lateral subqueries participate under the marker name they are exposed as.
+  - On stable Rust a compile-time disjointness guard would require a negative assertion (`#![feature(negative_impls)]`), which the stable-Rust invariant forbids, so the rule lives in tier 2 of `Vision.md § 1.5.1` — deterministic, before any SQL reaches the engine.
+- [x] **Strict Subquery Arity & Type Soundness for `IN` Predicates (tier 1, delivered earlier):**
+  - `InSubquery<Row>` ties the expected row type to the projection of the nested statement, so scalar `.in_subquery(sub)` and `.not_in_subquery(sub)` accept only a `SelectQuery` projecting exactly `(T,)` for an `Expr<T>` / `Column<RustType = T>`.
+  - Row-value tuple predicates `(c1, c2).in_subquery(sub)` accept only subqueries whose projection tuple matches the exact arity and types `(T1, T2)`; a multi-column or arity-mismatched projection is rejected by `rustc`.
+- [x] **Sound Grouped Expression Propagation in Scalar Functions (tier 1):**
+  - `FunctionOperand` carries the scope, the aggregation marker, and the dialect requirement of every argument, and `CombineAggr` folds them, so `coalesce`, `nullif`, `greatest`, and `least` stay `Aggregate` as soon as one argument aggregates — `coalesce(sum(orders.total), 0.0)` projects from a `GroupedQuery`.
+  - `CaseBuilder` folds the markers of its conditions, its results, and its `ELSE` fallback the same way, so a `CASE` written over aggregates stays projectable while a branch reading a bare column makes the whole expression per-row.
+  - An expression that reads an ungrouped column therefore does not implement `GroupedSelectTarget`, and the grouping bypass is rejected by the compiler instead of by the engine.
+- [x] **Ordering Soundness for `DISTINCT` & `DISTINCT ON`:**
+  - The `DISTINCT` rule — every `ORDER BY` expression has to appear in the projection list — accompanies the deduplicating builders as documented call-site guidance, because the rule compares projected expressions rather than their types.
+  - PostgreSQL `DISTINCT ON (cols)` prefix alignment is enforced during `.build()`: the leading `ORDER BY` expressions must match the `distinct_on` expressions left-to-right, otherwise the statement fails with `BuildError::DistinctOnOrderMismatch { position }` before any network I/O.
+  - Deduplicating a statement moves it out of the locking typestate, so `FOR UPDATE` / `FOR SHARE` stop applying to it.
+- [x] **Compound Query (`UNION`, `INTERSECT`, `EXCEPT`) `ORDER BY` Typestate:**
+  - Combining statements moves the query into the `Compound` scope with the locking typestate unavailable, so the table-qualified `.order_by*` family — which would name a relation the combined statement no longer declares — does not apply.
+  - Ordering the combined rows goes through `order_by_output(_asc/_desc/_nulls_first/_nulls_last…)` for output column names and `order_by_index(_asc/_desc)` for 1-based positions.
+  - The first compound criterion moves the query into `TailClosed`, where `SetOperand` has no implementation, so no operand can follow the ordering of the combined rows.
+  - `.build()` checks the assembled clause: `BuildError::CompoundOrderIndex` rejects a position outside the projection list and `BuildError::CompoundOrderColumn` rejects an output name the projection list does not produce.
 
 ### Example Usage
 ```rust
 use rurqe::postgres::prelude::*;
 
-// 1. Rejected at compile time: duplicate unaliased join
-// let _ = select_from(users).inner_join(users, users.id.eq(users.id)); // ERROR: users already in scope, use alias
+// 1. Rejected while building (tier 2): two relations share one effective name
+// let err = select_from(users).inner_join(users, users.id.eq(users.id)).select(cols!(users.id)).build().unwrap_err();
+// assert!(matches!(err, BuildError::DuplicateRelation { name: "users" }));
+// Fix: alias the second occurrence — `let u2 = users.as_alias("u2");`
 
-// 2. Rejected at compile time: arity mismatch in IN subquery
+// 2. Rejected at compile time (tier 1): arity mismatch in an IN subquery
 // let _ = users.id.in_subquery(select_from(orders).select((orders.id, orders.user_id))); // ERROR: expected (i64,), got (i64, i64)
 
-// 3. Rejected at compile time: ungrouped column hidden inside coalesce
+// 3. Rejected at compile time (tier 1): ungrouped column hidden inside coalesce
 // let _ = select_from(users)
 //     .group_by(users.id)
 //     .select((users.id, coalesce(users.name, "anon"))); // ERROR: users.name is neither grouped nor aggregated
@@ -922,6 +930,13 @@ let unique_names = select_from(users)
     .select(users.name)
     .distinct()
     .order_by_asc(users.name)
+    .fetch_all(&mut conn)?;
+
+// 5. Guaranteed valid SQL: a compound statement ordered by its own output columns
+let combined = select_from(users)
+    .select(cols!(users.name))
+    .union_all(select_from(archived_users).select(cols!(archived_users.name)))
+    .order_by_output_asc(users.name)
     .fetch_all(&mut conn)?;
 ```
 

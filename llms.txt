@@ -7,6 +7,7 @@
 - **Kysely Ergonomics (DX):** Queries read like idiomatic SQL. Named projection macros (`select!`, `cols!`, `dto!`) eliminate tuple indexing (`row.0`, `row.1`) without requiring manual struct boilerplate.
 - **Strict Compile-Time Safety & Zero-Cost:** Zero-Sized Type (ZST) markers monomorphize into static SQL buffers and direct deserializers with zero runtime overhead.
 - **Dialect & Version Capability Gating:** SQL features unsupported by a target database engine or version (`SupportsReturning`, `SupportsOnConflict`, `SupportsDistinctOn`) are gated via compile-time capability traits. Incompatible queries fail to compile.
+- **Two-Tier SQL Correctness:** Relational scope, outer-join nullability, typestates, capability gates, `IN`-subquery arity/type congruence, aggregation provenance, and compound-statement ordering are enforced by the compiler on stable Rust. Rules that need negative assertions (unaliased duplicate relations) or clause alignment decided by a dynamic fluent chain (`DISTINCT ON` prefix, compound `ORDER BY` targets) are validated deterministically by the fallible `.build()`, which returns `Result<BuiltQuery, BuildError>` before any SQL leaves the process.
 - **Typestate Protection:** Unfiltered `UPDATE` and `DELETE` operations fail at compile time unless explicitly scoped via `.where_(...)` or confirmed via `.allow_all()`.
 - **Database-First Single Source of Truth:** Live database catalogs (PostgreSQL and SQLite) are introspected directly into strongly typed schemas, canonical `schema.lock` snapshots, and compile-time `SCHEMA_HASH` constants.
 - **Flyway Lifecycle Integrity:** Migration runner supporting versioned (`V1__...`) and repeatable (`R__...`) scripts, standalone SHA-256 checksum audits, baseline onboarding, repair, and drift verification.
@@ -110,10 +111,34 @@ let query = select_from::<Postgres, User>()
 ### 4. Aggregations, `GROUP BY`, and `HAVING`
 
 ```rust
+// Group by first, then project the grouped columns, the aggregates, and the
+// expressions built from them.
 let query = select_from::<Postgres, Order>()
-    .select((OrderUserId, Expr::sum::<OrderTotal>(), Expr::count_all()))
     .group_by(OrderUserId)
+    .select((OrderUserId, Expr::sum::<OrderTotal>(), Expr::count_all()))
     .having(Expr::sum::<OrderTotal>().gt(1000.0));
+```
+
+Aggregation provenance survives scalar functions: `coalesce`, `nullif`, `greatest`, and `least` accept every argument through `FunctionOperand` and fold the markers they contribute through `CombineAggr`, so a call stays an aggregate as soon as one argument aggregates — `coalesce(sum(orders.total), 0.0)` projects from a `GroupedQuery` without a cast or an explicit `.nullable()`:
+
+```rust
+let query = select_from::<Postgres, Order>()
+    .group_by(OrderUserId)
+    .select((
+        OrderUserId,
+        coalesce(Expr::<f64>::sum::<OrderTotal>(), 0.0),
+        nullif(Expr::<i64>::count_all(), 0i64),
+        Expr::<i64>::case()
+            .when(Expr::<i64>::count_all().gt(5i64), Expr::<i64>::count_all())
+            .else_(0i64)
+            .end(),
+    ));
+```
+
+A per-row argument keeps the whole call per-row, so an ungrouped column hidden inside `coalesce` is still rejected by the compiler:
+
+```text
+group_by(users.id).select((users.id, coalesce(users.name, "anon"))) // rejected: `users.name` is neither grouped nor aggregated
 ```
 
 ### 5. Common Table Expressions (`WITH cte AS (...)`)
@@ -189,6 +214,21 @@ let query = select_from::<Postgres, Order>()
 
 `case()` requires at least one `when` branch; omitting `else_` leaves unmatched rows to the engine's `NULL`.
 
+Branches fold the aggregation marker of their condition, their result, and the `ELSE` fallback the same way a scalar function folds its arguments, so a `CASE` written entirely over aggregates stays an aggregate and remains projectable from a `GroupedQuery`:
+
+```rust
+let tier = Expr::<i64>::case()
+    .when(Expr::<i64>::count_all().gt(5i64), Expr::<i64>::count_all())
+    .else_(0i64)
+    .end();
+
+let report = select_from::<Postgres, Order>()
+    .group_by(OrderUserId)
+    .select((OrderUserId, tier));
+```
+
+A branch that reads a bare column makes the whole expression per-row, so the grouped query rejects it unless that column is grouped.
+
 ### 9. Subquery Predicates (`EXISTS`, `IN`)
 
 `Expr::exists` / `Expr::not_exists` accept any `SelectQuery`, while `.in_subquery(...)` / `.not_in_subquery(...)` compare a column with the nested query. Nested statements render inline and continue the placeholder numbering of the enclosing query:
@@ -215,7 +255,16 @@ A `SelectQuery` also converts into a reusable subquery via `.into_subquery()`, `
 
 ### 10. Set Operations (`UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`)
 
-Set operators combine two `SelectQuery<D, Tables, Output>` values. The dialect and the output row type are checked at compile time, so the combined statement stays decodable as `Output`; trailing `ORDER BY` / `LIMIT` apply to the combined result:
+Set operators combine two `SelectQuery<D, Tables, Output>` values. The dialect and the output row type are checked at compile time, so the combined statement stays decodable as `Output`.
+
+A combined statement produces the columns of its first projection list, so the query moves into the `Compound` scope: its rows no longer belong to a table, and it can neither keep a row-level lock nor request one. Ordering a combined statement therefore goes through the result the combination produced instead of the tables its operands read — the table-qualified `.order_by*` family stops applying and two builders take its place:
+
+- `order_by_output(_asc/_desc/_nulls_first/_nulls_last…)` names an output column;
+- `order_by_index(_asc/_desc)` names a 1-based position of the projection list.
+
+The first compound criterion moves the query into `TailClosed`, where another operand is rejected: SQL binds the trailing `ORDER BY` to the whole result, so `A UNION B ORDER BY ... UNION C` is invalid. A criterion written before a set operation belongs to the left operand and renders inside its parentheses, while `LIMIT` / `OFFSET` written after one apply to the combined rows.
+
+`.build()` validates the assembled clause: `BuildError::CompoundOrderIndex` rejects a position outside the projection list and `BuildError::CompoundOrderColumn` rejects an output name the projection list does not produce.
 
 ```rust
 let by_state = |active: bool| {
@@ -224,14 +273,29 @@ let by_state = |active: bool| {
         .where_(Expr::column::<UserActive>().eq(active))
 };
 
-let visible = by_state(true).union_all(by_state(false)).order_by_asc(UserId).limit(50);
+let visible = by_state(true)
+    .union_all(by_state(false))
+    .order_by_output_asc(UserId)
+    .limit(50)
+    .build()
+    .expect("valid query");
 // SELECT "id" FROM "users" WHERE ("active" = $1)
 // UNION ALL SELECT "id" FROM "users" WHERE ("active" = $2) ORDER BY "id" ASC LIMIT 50
+
+// The same result ordered by the position of its single projected column:
+let by_position = by_state(true).union(by_state(false)).order_by_index_desc(1);
 
 // Deduplicating and filtering variants:
 let deduped = by_state(true).union(by_state(false));
 let both = by_state(true).intersect(by_state(false));
 let only_active = by_state(true).except(by_state(false));
+```
+
+An operand can never be combined after the ordering of the combined rows, and a compound statement cannot be addressed by a constituent table's column:
+
+```text
+first.union(second).order_by_output_asc(UserId).union(third) // rejected: the tail is closed
+first.union(second).order_by_asc(UserId)                     // rejected: no relation in scope
 ```
 
 ### 11. Type-Safe DML with Typestate Protection
@@ -507,6 +571,34 @@ let upsert = insert_into(Users)
 - The dialect-generic constructors (`select_from::<D, T>()`, `from_table::<D, T>(table)`, `SelectQuery::from_table(table)`, ...) stay available for dialect-agnostic libraries that must not commit to a pinned version.
 
 ---
+
+## Pre-flight Build Validation (`BuildError`)
+
+Rendering a `SELECT` is fallible. `SelectQuery::build` returns `Result<BuiltQuery, BuildError>`, and every execution helper that renders through it (`fetch_all`, `fetch_optional`, `fetch_one`, `execute`) surfaces the same failure as `ExecutionError::Build`, reachable through `is_build()` and `as_build()` without touching the backend error. The DML builders keep rendering directly into `BuiltQuery`.
+
+Before any SQL leaves the process, the renderer audits the assembled statement tree — the statement itself, its CTEs, its derived tables, its lateral joins, its set-operation operands, and every nested `IN` / `EXISTS` / `MULTISET` / scalar subquery — so a violation in a nested statement is reported through the same typed error as the outermost clause:
+
+- `BuildError::DuplicateRelation { name }` — two relations share one effective name in `FROM` / `JOIN`. The effective name is the alias a relation is referenced under, or its table name when it carries none, so `FROM "users" JOIN "users"` collides exactly like two uses of one alias. Give each occurrence a distinct alias via `table_alias!` or `.as_alias(...)`.
+- `BuildError::DistinctOnOrderMismatch { position }` — the leading `ORDER BY` expressions do not match the `DISTINCT ON (...)` expressions left-to-right, which PostgreSQL requires because that ordering decides which duplicate row survives.
+- `BuildError::CompoundOrderIndex { index, columns }` — the `ORDER BY` of a compound statement names a 1-based position outside its projection list.
+- `BuildError::CompoundOrderColumn { column }` — the `ORDER BY` of a compound statement names an output column its projection list does not produce.
+
+The split follows `Vision.md § 1.5.1`: arity, types, scope, nullability, typestates, and capability gates are compile-time guarantees, while these rules need either a negative assertion (a relation is *absent* from the scope) or the alignment of one clause with another one written later in the chain, so they are decided deterministically by the fallible build.
+
+```rust
+use rurqe::prelude::*;
+
+// Rejected while building: the same table appears twice under one name.
+let err = select_from::<Postgres<Pg16>, User>()
+    .inner_join_table(User, UserId.eq(UserId))
+    .select(cols!(UserId))
+    .build()
+    .unwrap_err();
+assert!(matches!(err, BuildError::DuplicateRelation { name: "users" }));
+
+// Guaranteed valid instead: alias the second occurrence.
+let alias = TableAlias::new("u2"); // `table_alias!` / `.as_alias(...)` in application code
+```
 
 ## Domain Newtypes (`#[derive(SqlType)]`)
 
