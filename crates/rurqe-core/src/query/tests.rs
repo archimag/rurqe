@@ -25,6 +25,7 @@ impl Dialect for MockDialect {
 impl SupportsLateralJoin for MockDialect {}
 impl crate::dialect::SupportsDistinctOn for MockDialect {}
 impl crate::dialect::SupportsFullOuterJoin for MockDialect {}
+impl crate::dialect::SupportsNullsOrdering for MockDialect {}
 
 #[derive(Default)]
 struct MockBackend {

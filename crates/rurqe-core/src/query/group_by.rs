@@ -2,7 +2,7 @@
 
 use core::marker::PhantomData;
 
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsNullsOrdering};
 use crate::expr::{AggregateMarker, Expr, NonAggregate, NullsOrder, OrderCriterion};
 use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
@@ -530,6 +530,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
         nulls: NullsOrder,
     ) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
@@ -540,6 +541,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// Appends an ascending ordering criterion putting NULL values first.
     pub fn order_by_asc_nulls_first<C: Column, P, PGroup>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
@@ -549,6 +551,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// Appends an ascending ordering criterion putting NULL values last.
     pub fn order_by_asc_nulls_last<C: Column, P, PGroup>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
@@ -558,6 +561,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// Appends a descending ordering criterion putting NULL values first.
     pub fn order_by_desc_nulls_first<C: Column, P, PGroup>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
@@ -567,6 +571,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// Appends a descending ordering criterion putting NULL values last.
     pub fn order_by_desc_nulls_last<C: Column, P, PGroup>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
     {
@@ -608,6 +613,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
         nulls: NullsOrder,
     ) -> Self
     where
+        D: SupportsNullsOrdering,
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
         Marker: AggregateMarker + AggregateInDialect<D>,
     {

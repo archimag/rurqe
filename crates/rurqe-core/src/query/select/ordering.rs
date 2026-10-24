@@ -1,6 +1,6 @@
 //! Ordering, pagination, and the clause-by-clause recording of both.
 
-use crate::dialect::Dialect;
+use crate::dialect::{Dialect, SupportsNullsOrdering};
 use crate::expr::{NullsOrder, OrderCriterion, OrderDirection};
 use crate::schema::{Column, TableInScope};
 
@@ -28,6 +28,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         nulls: NullsOrder,
     ) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
     {
         self.push_ordering(OrderCriterion::new(C::expr_kind(), direction).nulls(nulls));
@@ -53,6 +54,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// Appends an ascending ordering criterion putting NULL values first.
     pub fn order_by_asc_nulls_first<C: Column, P>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
     {
         self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::First)
@@ -61,6 +63,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// Appends an ascending ordering criterion putting NULL values last.
     pub fn order_by_asc_nulls_last<C: Column, P>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
     {
         self.order_by_nulls(col, OrderDirection::Asc, NullsOrder::Last)
@@ -69,6 +72,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// Appends a descending ordering criterion putting NULL values first.
     pub fn order_by_desc_nulls_first<C: Column, P>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
     {
         self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::First)
@@ -77,6 +81,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// Appends a descending ordering criterion putting NULL values last.
     pub fn order_by_desc_nulls_last<C: Column, P>(self, col: C) -> Self
     where
+        D: SupportsNullsOrdering,
         Tables: TableInScope<C::Table, P>,
     {
         self.order_by_nulls(col, OrderDirection::Desc, NullsOrder::Last)
