@@ -15,7 +15,7 @@ use core::marker::PhantomData;
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
-use crate::expr::SelectAst;
+use crate::expr::{DialectInScope, SelectAst};
 use crate::query::{
     BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
@@ -120,7 +120,7 @@ impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7, C8);
 )]
 pub trait InsertSource<T: Table> {}
 
-impl<C: Column, V, Scope> InsertSource<C::Table> for Assignment<C, V, Scope> {}
+impl<C: Column, V, Scope, D> InsertSource<C::Table> for Assignment<C, V, Scope, D> {}
 
 macro_rules! impl_insert_source_for_tuple {
     ($($element:ident),+) => {
@@ -234,6 +234,9 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         // A `VALUES` list addresses no relation at all, so an assigned
         // expression may read constants only.
         <S as AssignmentScope>::Scope: ExprInScope<()>,
+        // An assigned expression may require a dialect capability, which the
+        // statement has to provide like any other expression it renders.
+        <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         self.push_row(&set);
         self.retype()
@@ -252,6 +255,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         I: IntoIterator<Item = S>,
         S: AssignmentSet<T> + AssignmentScope,
         <S as AssignmentScope>::Scope: ExprInScope<()>,
+        <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         for set in rows {
             self.push_row(&set);

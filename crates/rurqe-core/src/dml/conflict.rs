@@ -22,7 +22,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsOnConflict};
-use crate::expr::{render_expr, Expr, ExprKind, SqlVal, Unscoped};
+use crate::expr::{render_expr, DialectInScope, Expr, ExprKind, NonAggregate, SqlVal, Unscoped};
 use crate::schema::Table;
 
 use super::{AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery};
@@ -220,12 +220,13 @@ where
     /// Recording a predicate moves the clause into [`HasUpdatePredicate`], where
     /// [`do_nothing`](OnConflict::do_nothing) is no longer reachable, so the
     /// predicate cannot be dropped silently.
-    pub fn update_where<S>(
+    pub fn update_where<S, PredD>(
         self,
-        predicate: Expr<bool, S>,
+        predicate: Expr<bool, S, NonAggregate, PredD>,
     ) -> OnConflict<D, T, Values, Returning, HasUpdatePredicate>
     where
         S: ConflictUpdateScope<T>,
+        PredD: DialectInScope<D>,
     {
         OnConflict {
             query: self.query,
@@ -296,9 +297,10 @@ where
     /// ```text
     /// ON CONFLICT ("id") WHERE ("id" > $1) DO UPDATE SET ...
     /// ```
-    pub fn target_where<S>(mut self, predicate: Expr<bool, S>) -> Self
+    pub fn target_where<S, PredD>(mut self, predicate: Expr<bool, S, NonAggregate, PredD>) -> Self
     where
         S: ConflictTargetScope<T>,
+        PredD: DialectInScope<D>,
     {
         self.target_predicate = Some(predicate.into_kind());
         self
@@ -357,6 +359,7 @@ where
     where
         A: AssignmentSet<T> + AssignmentScope,
         <A as AssignmentScope>::Scope: ConflictUpdateScope<T>,
+        <A as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         let mut columns = Vec::new();
         assignments.extend_assignments(&mut columns);

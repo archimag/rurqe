@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 use super::{ExecutableMutation, Filtered, Unfiltered};
 use crate::dialect::{Dialect, SupportsDeleteUsing, SupportsReturning};
 use crate::dml::render_expr;
-use crate::expr::{BinaryOp, Expr, ExprKind};
+use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
@@ -108,12 +108,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
     /// transitions the query from [`Unfiltered`] to [`Filtered`].
-    pub fn where_<PredicateScope, P>(
+    pub fn where_<PredicateScope, P, PredD>(
         mut self,
-        predicate: Expr<bool, PredicateScope>,
+        predicate: Expr<bool, PredicateScope, NonAggregate, PredD>,
     ) -> DeleteQuery<D, T, Filtered, Returning, Scope>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         self.push_filter(predicate.into_kind());
         self.retype()
@@ -129,12 +130,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     /// let query = delete_from(Users)
     ///     .where_opt(target.map(|target| UsersId.eq(target)));
     /// ```
-    pub fn where_opt<PredicateScope, P>(
+    pub fn where_opt<PredicateScope, P, PredD>(
         self,
-        predicate: Option<Expr<bool, PredicateScope>>,
+        predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> DeleteQuery<D, T, Filtered, Returning, Scope>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         match predicate {
             Some(predicate) => self.where_(predicate),

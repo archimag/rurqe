@@ -30,7 +30,7 @@ pub use update::UpdateQuery;
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{Expr, ExprKind, SqlCompatible, SqlVal};
+use crate::expr::{Expr, ExprKind, NonAggregate, SqlCompatible, SqlVal};
 use crate::schema::{Column, Table, TableRef};
 
 /// Typestate marker indicating that a DML mutation does not yet have a filter.
@@ -154,7 +154,10 @@ impl AssignValue {
 /// `C::RustType`; constructing an assignment with an incompatible value fails to
 /// compile. `Scope` names the tables the assigned value reads: a bound value
 /// references none of them, while an expression assignment carries the scope of
-/// its operands, as reported by [`AssignmentScope`].
+/// its operands, as reported by [`AssignmentScope`]. `D` carries the dialect
+/// marker of that expression, so an assigned value requiring a dialect
+/// capability the statement cannot provide is rejected by the statement that
+/// records it.
 ///
 /// ```
 /// use rurqe_core::dml::{AssignValue, ColumnAssign};
@@ -173,14 +176,15 @@ impl AssignValue {
 /// let generated = UserId::default_value();
 /// assert_eq!(generated.value(), &AssignValue::Default);
 /// ```
-pub struct Assignment<C: Column, V, Scope = ()> {
+pub struct Assignment<C: Column, V, Scope = (), D = ()> {
     value: AssignValue,
     _column: PhantomData<fn() -> C>,
     _value: PhantomData<fn() -> V>,
     _scope: PhantomData<fn() -> Scope>,
+    _dialect: PhantomData<fn() -> D>,
 }
 
-impl<C, V> Assignment<C, V, ()>
+impl<C, V> Assignment<C, V, (), ()>
 where
     C: Column,
     V: SqlCompatible<C::RustType, V> + Into<SqlVal>,
@@ -192,11 +196,12 @@ where
             _column: PhantomData,
             _value: PhantomData,
             _scope: PhantomData,
+            _dialect: PhantomData,
         }
     }
 }
 
-impl<C> Assignment<C, C::RustType, ()>
+impl<C> Assignment<C, C::RustType, (), ()>
 where
     C: Column,
 {
@@ -209,11 +214,12 @@ where
             _column: PhantomData,
             _value: PhantomData,
             _scope: PhantomData,
+            _dialect: PhantomData,
         }
     }
 }
 
-impl<C, Scope> Assignment<C, Expr<C::RustType, Scope>, Scope>
+impl<C, Scope, D> Assignment<C, Expr<C::RustType, Scope, NonAggregate, D>, Scope, D>
 where
     C: Column,
 {
@@ -225,17 +231,18 @@ where
     /// ```text
     /// ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
     /// ```
-    pub fn set_expr(expr: Expr<C::RustType, Scope>) -> Self {
+    pub fn set_expr(expr: Expr<C::RustType, Scope, NonAggregate, D>) -> Self {
         Self {
             value: AssignValue::Expr(expr.into_kind()),
             _column: PhantomData,
             _value: PhantomData,
             _scope: PhantomData,
+            _dialect: PhantomData,
         }
     }
 }
 
-impl<C, V, Scope> Assignment<C, V, Scope>
+impl<C, V, Scope, D> Assignment<C, V, Scope, D>
 where
     C: Column,
 {
@@ -272,9 +279,9 @@ pub trait ColumnAssign: Column + Sized {
     ///
     /// The expression carries the column's Rust type, so a value of another type
     /// cannot be assigned, and it stays symbolic until the statement is rendered.
-    fn set_expr<Scope>(
-        expr: Expr<Self::RustType, Scope>,
-    ) -> Assignment<Self, Expr<Self::RustType, Scope>, Scope> {
+    fn set_expr<Scope, D>(
+        expr: Expr<Self::RustType, Scope, NonAggregate, D>,
+    ) -> Assignment<Self, Expr<Self::RustType, Scope, NonAggregate, D>, Scope, D> {
         Assignment::set_expr(expr)
     }
 }
@@ -314,7 +321,7 @@ pub trait AssignmentSet<T: Table> {
     fn into_assignments(self, out: &mut Vec<(&'static str, AssignValue)>);
 }
 
-impl<C, V, Scope> AssignmentSet<C::Table> for Assignment<C, V, Scope>
+impl<C, V, Scope, D> AssignmentSet<C::Table> for Assignment<C, V, Scope, D>
 where
     C: Column,
 {

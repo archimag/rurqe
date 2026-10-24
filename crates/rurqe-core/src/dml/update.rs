@@ -19,7 +19,7 @@ use super::{
 };
 use crate::dialect::{Dialect, SupportsReturning, SupportsUpdateFrom};
 use crate::dml::render_expr;
-use crate::expr::{BinaryOp, Expr, ExprKind};
+use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
@@ -140,6 +140,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     where
         S: AssignmentSet<T> + AssignmentScope,
         <S as AssignmentScope>::Scope: ExprInScope<Scope, P> + ScopePositions<P>,
+        <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         let mut columns = Vec::new();
         set.extend_assignments(&mut columns);
@@ -161,12 +162,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
     /// transitions the query from [`Unfiltered`] to [`Filtered`].
-    pub fn where_<PredicateScope, P>(
+    pub fn where_<PredicateScope, P, PredD>(
         mut self,
-        predicate: Expr<bool, PredicateScope>,
+        predicate: Expr<bool, PredicateScope, NonAggregate, PredD>,
     ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         self.push_filter(predicate.into_kind());
         self.retype()
@@ -183,12 +185,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///     .set(UsersName::set("root"))
     ///     .where_opt(target.map(|target| UsersId.eq(target)));
     /// ```
-    pub fn where_opt<PredicateScope, P>(
+    pub fn where_opt<PredicateScope, P, PredD>(
         self,
-        predicate: Option<Expr<bool, PredicateScope>>,
+        predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         match predicate {
             Some(predicate) => self.where_(predicate),
@@ -212,12 +215,13 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///     .where_if(target.map(|target| UsersId.eq(target)))
     ///     .allow_all();
     /// ```
-    pub fn where_if<PredicateScope, P>(
+    pub fn where_if<PredicateScope, P, PredD>(
         self,
-        predicate: Option<Expr<bool, PredicateScope>>,
+        predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> UpdateQuery<D, T, State, Returning, Scope, Assignments>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         match predicate {
             // A recorded predicate moves the statement into `Filtered`; the
