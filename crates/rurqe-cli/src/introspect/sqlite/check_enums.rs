@@ -1,347 +1,201 @@
 //! Parsing of the `CHECK (<column> IN (...))` constraints SQLite uses for enums.
 //!
 //! SQLite has no `CREATE TYPE ... AS ENUM`, so a schema closes the set of values
-//! of a column with a table constraint instead. The parser walks the table DDL
-//! byte-wise and skips string literals and quoted identifiers, so a `CHECK`
-//! appearing inside a value is never mistaken for a constraint, and it recovers
-//! one `(column, variants)` pair per column.
+//! of a column with a table constraint instead. The parser walks the token stream
+//! of the shared lexer, so a `CHECK` written inside a value or a comment is never
+//! mistaken for a constraint, and it recovers one `(column, variants)` pair per
+//! column.
 
 use std::collections::BTreeSet;
+
+use super::lexer::{tokenize, SqlKeyword, Token, TokenKind};
 
 /// Parses deterministic `CHECK (<col> IN ('val1', 'val2', ...))` enum constraints
 /// from the table DDL `sql`.
 pub fn parse_sqlite_check_enums(sql: &str, known_columns: &[&str]) -> Vec<(String, Vec<String>)> {
+    let tokens = tokenize(sql);
     let mut results = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut index = 0;
 
-    let bytes = sql.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'\'' {
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\'' {
-                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                        i += 2;
-                    } else {
-                        i += 1;
-                        break;
-                    }
-                } else {
-                    i += 1;
-                }
-            }
+    while let Some(token) = tokens.get(index) {
+        if !matches!(token.kind, TokenKind::Keyword(SqlKeyword::Check)) {
+            index += 1;
             continue;
         }
 
-        if i + 5 <= bytes.len() && bytes[i..i + 5].eq_ignore_ascii_case(b"check") {
-            let prev_ok = i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
-            let next_idx = i + 5;
-            let next_ok = next_idx < bytes.len()
-                && (bytes[next_idx].is_ascii_whitespace() || bytes[next_idx] == b'(');
+        let open = index + 1;
+        if !matches!(
+            tokens.get(open).map(|token| token.kind),
+            Some(TokenKind::OpenParen)
+        ) {
+            index += 1;
+            continue;
+        }
 
-            if prev_ok && next_ok {
-                let mut paren_idx = next_idx;
-                while paren_idx < bytes.len() && bytes[paren_idx].is_ascii_whitespace() {
-                    paren_idx += 1;
-                }
-                if paren_idx < bytes.len()
-                    && bytes[paren_idx] == b'('
-                    && sql.is_char_boundary(paren_idx)
-                {
-                    if let Some((inner, end_idx)) = extract_paren_block(&sql[paren_idx..]) {
-                        if let Some((col, variants)) = parse_check_clause(inner, known_columns) {
-                            if seen.insert(col.clone()) {
-                                results.push((col, variants));
-                            }
-                        }
-                        i = paren_idx + end_idx;
-                        continue;
-                    }
-                }
+        let Some(close) = matching_close(&tokens, open) else {
+            index += 1;
+            continue;
+        };
+
+        if let Some((column, variants)) =
+            parse_check_clause(&tokens[open + 1..close], known_columns)
+        {
+            if seen.insert(column.clone()) {
+                results.push((column, variants));
             }
         }
-        i += 1;
+
+        index = close + 1;
     }
 
     results
 }
 
-/// Extracts the balanced text inside `(...)` starting at `s[0] == '('`.
-/// Returns `Some((inner_slice, total_length_consumed))`.
-///
-/// The scan skips string literals and quoted identifiers, so a parenthesis
-/// written inside a value never closes the block early. A block whose
-/// parentheses do not balance is refused instead of being read wrongly, and the
-/// sibling scanner of the catalog module reuses it to read a `CHECK` clause
-/// without duplicating the quote handling.
-pub(super) fn extract_paren_block(s: &str) -> Option<(&str, usize)> {
-    if !s.starts_with('(') {
+/// Parses `<col> IN ('val1', 'val2', ...)` from the tokens of a CHECK clause.
+fn parse_check_clause(
+    tokens: &[Token<'_>],
+    known_columns: &[&str],
+) -> Option<(String, Vec<String>)> {
+    let (start, end) = trim_parens(tokens, 0, tokens.len());
+
+    if matches!(
+        tokens.get(start).map(|token| token.kind),
+        Some(TokenKind::OpenParen)
+    ) {
+        let close = matching_close(tokens, start)?;
+        let (column, next) = parse_column_identifier(tokens, start + 1)?;
+        if next != close {
+            return None;
+        }
+        return parse_in_list(tokens, close + 1, end, column, known_columns);
+    }
+
+    let (column, next) = parse_column_identifier(tokens, start)?;
+    parse_in_list(tokens, next, end, column, known_columns)
+}
+
+/// Reads the column identifier at `index` and reports the following position.
+fn parse_column_identifier(tokens: &[Token<'_>], index: usize) -> Option<(String, usize)> {
+    let token = tokens.get(index)?;
+    match token.kind {
+        TokenKind::Ident | TokenKind::QuotedIdent(_) => Some((token.unescaped_ident(), index + 1)),
+        _ => None,
+    }
+}
+
+/// Reads the `IN (<literal>, ...)` tail of a check predicate.
+fn parse_in_list(
+    tokens: &[Token<'_>],
+    start: usize,
+    end: usize,
+    column: String,
+    known_columns: &[&str],
+) -> Option<(String, Vec<String>)> {
+    if start >= end
+        || !matches!(
+            tokens.get(start).map(|token| token.kind),
+            Some(TokenKind::Keyword(SqlKeyword::In))
+        )
+    {
         return None;
     }
 
-    let bytes = s.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = 0;
+    let open = start + 1;
+    if open >= end
+        || !matches!(
+            tokens.get(open).map(|token| token.kind),
+            Some(TokenKind::OpenParen)
+        )
+    {
+        return None;
+    }
 
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' => {
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\'' {
-                        if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
+    let close = matching_close(tokens, open)?;
+    if close + 1 != end {
+        return None;
+    }
+
+    let variants = parse_variant_list(tokens, open + 1, close)?;
+    let matched = known_columns
+        .iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(&column))?;
+
+    Some(((*matched).to_owned(), variants))
+}
+
+/// Reads the single-quoted literals of an `IN (...)` list.
+fn parse_variant_list(tokens: &[Token<'_>], start: usize, end: usize) -> Option<Vec<String>> {
+    let mut variants: Vec<String> = Vec::new();
+    let mut index = start;
+
+    loop {
+        if index >= end {
+            // A trailing comma is accepted, an empty list is not.
+            return if variants.is_empty() {
+                None
+            } else {
+                Some(variants)
+            };
+        }
+
+        let token = tokens.get(index)?;
+        if token.kind != TokenKind::StringLiteral {
+            return None;
+        }
+        variants.push(token.unescaped_string());
+        index += 1;
+
+        if index >= end {
+            return Some(variants);
+        }
+
+        match tokens.get(index).map(|token| token.kind) {
+            Some(TokenKind::Comma) => index += 1,
+            _ => return None,
+        }
+    }
+}
+
+/// Strips the parenthesis pairs wrapping the whole `start..end` range.
+fn trim_parens(tokens: &[Token<'_>], mut start: usize, mut end: usize) -> (usize, usize) {
+    while start < end {
+        if tokens.get(start).map(|token| token.kind) != Some(TokenKind::OpenParen) {
+            break;
+        }
+        match matching_close(tokens, start) {
+            Some(close) if close + 1 == end => {
+                start += 1;
+                end = close;
+            }
+            _ => break,
+        }
+    }
+
+    (start, end)
+}
+
+/// The index of the parenthesis closing the one at `open`.
+fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
+    if tokens.get(open).map(|token| token.kind) != Some(TokenKind::OpenParen) {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.kind {
+            TokenKind::OpenParen => depth = depth.checked_add(1)?,
+            TokenKind::CloseParen => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
                 }
             }
-            b'"' => {
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'"' {
-                        if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'[' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b']' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'`' => {
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'`' {
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1;
-                }
-            }
-            b'(' => {
-                depth = depth.saturating_add(1);
-                i += 1;
-            }
-            b')' => {
-                let balanced = depth.checked_sub(1)?;
-                i += 1;
-                if balanced == 0 {
-                    return Some((&s[1..i - 1], i));
-                }
-                depth = balanced;
-            }
-            _ => {
-                i += 1;
-            }
+            _ => {}
         }
     }
 
     None
-}
-
-/// Parses `<col> IN ('val1', 'val2', ...)` from the inside of a CHECK clause.
-fn parse_check_clause(inner: &str, known_columns: &[&str]) -> Option<(String, Vec<String>)> {
-    let mut expr = inner.trim();
-    while is_enclosed_in_parens(expr) {
-        expr = expr[1..expr.len() - 1].trim();
-    }
-
-    let mut had_open_paren = false;
-    if let Some(rest) = expr.strip_prefix('(') {
-        had_open_paren = true;
-        expr = rest.trim_start();
-    }
-
-    let (col_ident, rest) = parse_column_identifier(expr)?;
-    let mut rest = rest.trim_start();
-
-    if had_open_paren {
-        rest = rest.strip_prefix(')')?.trim_start();
-    }
-
-    if rest.len() < 2 || !rest.as_bytes()[..2].eq_ignore_ascii_case(b"in") {
-        return None;
-    }
-    let after_in = &rest[2..];
-    if !after_in.starts_with(|c: char| c.is_ascii_whitespace() || c == '(') {
-        return None;
-    }
-
-    let after_in = after_in.trim_start();
-    let after_open = after_in.strip_prefix('(')?;
-
-    let (variants, remaining) = parse_in_variant_list(after_open)?;
-    let remaining = remaining.trim();
-    if !remaining.is_empty() && !remaining.chars().all(|c| c == ')') {
-        return None;
-    }
-
-    let matched_col = known_columns
-        .iter()
-        .find(|&&c| c.eq_ignore_ascii_case(&col_ident))?;
-
-    Some(((*matched_col).to_owned(), variants))
-}
-
-fn parse_column_identifier(s: &str) -> Option<(String, &str)> {
-    let s = s.trim_start();
-    if s.is_empty() {
-        return None;
-    }
-
-    if let Some(rest) = s.strip_prefix('"') {
-        let mut name = String::new();
-        let mut chars = rest.char_indices().peekable();
-        while let Some((idx, ch)) = chars.next() {
-            if ch == '"' {
-                if chars.peek().map(|&(_, next)| next) == Some('"') {
-                    chars.next();
-                    name.push('"');
-                } else {
-                    return Some((name, &rest[idx + 1..]));
-                }
-            } else {
-                name.push(ch);
-            }
-        }
-        return None;
-    }
-
-    if let Some(rest) = s.strip_prefix('[') {
-        let end = rest.find(']')?;
-        return Some((rest[..end].to_owned(), &rest[end + 1..]));
-    }
-
-    if let Some(rest) = s.strip_prefix('`') {
-        let end = rest.find('`')?;
-        return Some((rest[..end].to_owned(), &rest[end + 1..]));
-    }
-
-    let mut end = 0;
-    for (idx, ch) in s.char_indices() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            end = idx + ch.len_utf8();
-        } else {
-            break;
-        }
-    }
-
-    if end == 0 {
-        None
-    } else {
-        Some((s[..end].to_owned(), &s[end..]))
-    }
-}
-
-fn parse_in_variant_list(mut s: &str) -> Option<(Vec<String>, &str)> {
-    let mut variants = Vec::new();
-
-    loop {
-        s = s.trim_start();
-        if let Some(rest) = s.strip_prefix(')') {
-            if !variants.is_empty() {
-                return Some((variants, rest));
-            }
-            return None;
-        }
-
-        let rest = s.strip_prefix('\'')?;
-        let mut variant = String::new();
-        let mut chars = rest.char_indices().peekable();
-        let mut closed_at = None;
-
-        while let Some((idx, ch)) = chars.next() {
-            if ch == '\'' {
-                if chars.peek().map(|&(_, next)| next) == Some('\'') {
-                    chars.next();
-                    variant.push('\'');
-                } else {
-                    closed_at = Some(idx + 1);
-                    break;
-                }
-            } else {
-                variant.push(ch);
-            }
-        }
-
-        let close_pos = closed_at?;
-        variants.push(variant);
-        s = rest[close_pos..].trim_start();
-
-        if let Some(after_comma) = s.strip_prefix(',') {
-            s = after_comma;
-        } else {
-            let after_close = s.strip_prefix(')')?;
-            return Some((variants, after_close));
-        }
-    }
-}
-
-fn is_enclosed_in_parens(s: &str) -> bool {
-    if !s.starts_with('(') || !s.ends_with(')') {
-        return false;
-    }
-
-    let bytes = s.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' => {
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\'' {
-                        if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            b'(' => {
-                depth = depth.saturating_add(1);
-                i += 1;
-            }
-            b')' => {
-                let balanced = match depth.checked_sub(1) {
-                    Some(balanced) => balanced,
-                    None => return false,
-                };
-                depth = balanced;
-                i += 1;
-                if depth == 0 && i < bytes.len() {
-                    return false;
-                }
-            }
-            _ => {
-                i += 1;
-            }
-        }
-    }
-
-    depth == 0
 }
 
 #[cfg(test)]
@@ -377,10 +231,27 @@ mod tests {
     }
 
     #[test]
-    fn a_stray_closing_parenthesis_never_breaks_the_scan() {
-        assert_eq!(extract_paren_block(")"), None);
-        assert_eq!(extract_paren_block(")("), None);
+    fn a_check_inside_a_line_comment_is_ignored() {
+        let sql = "CREATE TABLE tasks (\n\
+                     state TEXT NOT NULL -- CHECK (state IN ('hidden'))\n\
+                   );";
 
+        assert_eq!(parse_sqlite_check_enums(sql, &["state"]), Vec::new());
+    }
+
+    #[test]
+    fn a_check_inside_a_block_comment_is_ignored() {
+        let sql = "CREATE TABLE tasks (\n\
+                     state TEXT NOT NULL,\n\
+                     /* CHECK (state IN ('hidden', 'lost')) */\n\
+                     note TEXT\n\
+                   );";
+
+        assert_eq!(parse_sqlite_check_enums(sql, &["state"]), Vec::new());
+    }
+
+    #[test]
+    fn a_stray_closing_parenthesis_never_breaks_the_scan() {
         let sql = "CREATE TABLE tasks (state TEXT, CHECK (state IN ('new', 'done'))));";
 
         assert_eq!(
@@ -394,9 +265,6 @@ mod tests {
 
     #[test]
     fn an_unclosed_parenthesis_yields_no_constraint() {
-        assert_eq!(extract_paren_block("('a'"), None);
-        assert_eq!(extract_paren_block("('a'), 'b'"), Some(("'a'", 5)));
-
         let sql = "CREATE TABLE tasks (state TEXT, CHECK (state IN ('new', 'done')";
 
         assert_eq!(parse_sqlite_check_enums(sql, &["state"]), Vec::new());
@@ -404,14 +272,14 @@ mod tests {
 
     #[test]
     fn a_parenthesis_inside_a_literal_never_closes_the_block() {
-        assert_eq!(extract_paren_block("('a)')"), Some(("'a)'", 6)));
-    }
+        let sql = "CREATE TABLE tasks (state TEXT, CHECK (state IN ('a)', 'b')));";
 
-    #[test]
-    fn an_unbalanced_expression_is_never_read_as_a_literal_wrapper() {
-        assert!(!is_enclosed_in_parens(")("));
-        assert!(!is_enclosed_in_parens("(("));
-        assert!(!is_enclosed_in_parens("()()"));
-        assert!(is_enclosed_in_parens("('a)')"));
+        assert_eq!(
+            parse_sqlite_check_enums(sql, &["state"]),
+            vec![(
+                "state".to_owned(),
+                vec!["a)".to_owned(), "b".to_owned()]
+            )]
+        );
     }
 }
