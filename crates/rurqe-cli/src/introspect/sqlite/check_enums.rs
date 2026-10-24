@@ -53,33 +53,33 @@ pub fn parse_sqlite_check_enums(sql: &str, known_columns: &[&str]) -> Vec<(Strin
 }
 
 /// Parses `<col> IN ('val1', 'val2', ...)` from the tokens of a CHECK clause.
-fn parse_check_clause(
+///
+/// The parser is shared with the check collector, so a constraint closing the
+/// value set of a column is recognised as an enum exactly once, whatever
+/// parentheses wrap the column or the whole predicate.
+pub(super) fn parse_check_clause(
     tokens: &[Token<'_>],
     known_columns: &[&str],
 ) -> Option<(String, Vec<String>)> {
     let (start, end) = trim_parens(tokens, 0, tokens.len());
-
-    if matches!(
-        tokens.get(start).map(|token| token.kind),
-        Some(TokenKind::OpenParen)
-    ) {
-        let close = matching_close(tokens, start)?;
-        let (column, next) = parse_column_identifier(tokens, start + 1)?;
-        if next != close {
-            return None;
-        }
-        return parse_in_list(tokens, close + 1, end, column, known_columns);
-    }
-
     let (column, next) = parse_column_identifier(tokens, start)?;
     parse_in_list(tokens, next, end, column, known_columns)
 }
 
-/// Reads the column identifier at `index` and reports the following position.
+/// Reads the column identifier at `index`, unwrapping the parentheses around it,
+/// and reports the position that follows the identifier's parentheses.
 fn parse_column_identifier(tokens: &[Token<'_>], index: usize) -> Option<(String, usize)> {
     let token = tokens.get(index)?;
     match token.kind {
         TokenKind::Ident | TokenKind::QuotedIdent(_) => Some((token.unescaped_ident(), index + 1)),
+        TokenKind::OpenParen => {
+            let close = matching_close(tokens, index)?;
+            let (column, next) = parse_column_identifier(tokens, index + 1)?;
+            if next != close {
+                return None;
+            }
+            Some((column, close + 1))
+        }
         _ => None,
     }
 }
@@ -219,6 +219,22 @@ mod tests {
             vec![(
                 "статус".to_owned(),
                 vec!["активен".to_owned(), "заблокирован".to_owned()]
+            )]
+        );
+    }
+
+    #[test]
+    fn a_parenthesised_column_is_recognised_as_an_enum() {
+        let sql = "CREATE TABLE tasks (\n\
+                     status TEXT NOT NULL,\n\
+                     CHECK (((status)) IN ('todo', 'done'))\n\
+                   );";
+
+        assert_eq!(
+            parse_sqlite_check_enums(sql, &["status"]),
+            vec![(
+                "status".to_owned(),
+                vec!["todo".to_owned(), "done".to_owned()]
             )]
         );
     }

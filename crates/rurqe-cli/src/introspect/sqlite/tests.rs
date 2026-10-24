@@ -2,6 +2,7 @@
 
 use rurqe_migrate::catalog::ForeignKeyAction;
 
+use super::check_enums::parse_sqlite_check_enums;
 use super::checks::{parse_sqlite_checks, scan_check_constraints};
 use super::indexes::{column_list_of, predicate_of};
 use super::{
@@ -233,6 +234,44 @@ fn an_enum_check_stays_an_enum() {
     let sql = "CREATE TABLE tasks (\n\
                  status TEXT NOT NULL CHECK (status IN ('todo', 'done'))\n\
                );";
+
+    let checks = parse_sqlite_checks("tasks", sql, &["status"]);
+
+    assert!(checks.is_empty(), "unexpected checks: {checks:?}");
+}
+
+#[test]
+fn a_parenthesised_enum_check_stays_an_enum() {
+    let sql = "CREATE TABLE tasks (\n\
+                 status TEXT NOT NULL CHECK ((status) IN ('todo', 'done'))\n\
+               );";
+
+    assert_eq!(
+        parse_sqlite_check_enums(sql, &["status"]),
+        vec![(
+            "status".to_owned(),
+            vec!["todo".to_owned(), "done".to_owned()]
+        )]
+    );
+
+    let checks = parse_sqlite_checks("tasks", sql, &["status"]);
+
+    assert!(checks.is_empty(), "unexpected checks: {checks:?}");
+}
+
+#[test]
+fn a_doubly_parenthesised_enum_check_stays_an_enum() {
+    let sql = "CREATE TABLE tasks (\n\
+                 status TEXT NOT NULL CHECK (((status)) IN ('todo', 'done'))\n\
+               );";
+
+    assert_eq!(
+        parse_sqlite_check_enums(sql, &["status"]),
+        vec![(
+            "status".to_owned(),
+            vec!["todo".to_owned(), "done".to_owned()]
+        )]
+    );
 
     let checks = parse_sqlite_checks("tasks", sql, &["status"]);
 

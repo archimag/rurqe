@@ -6,7 +6,7 @@ use rurqe_migrate::catalog::CheckDef;
 
 use crate::introspect::types::RawCheckMetadata;
 
-use super::check_enums::parse_sqlite_check_enums;
+use super::check_enums::{parse_check_clause, parse_sqlite_check_enums};
 use super::lexer::{tokenize, SqlKeyword, Token, TokenKind};
 use super::{RawSqliteColumnMetadata, RawSqliteTableMetadata};
 
@@ -150,28 +150,17 @@ fn name_of(token: &Token<'_>) -> Option<String> {
 }
 
 /// Whether a check predicate closes the value set of an enum column.
+///
+/// The predicate is read by the enum parser itself, so a constraint the enum
+/// parser understood is never also emitted as a plain check, whatever
+/// parentheses wrap the column or the whole predicate.
 fn names_an_enum_column(expression: &str, enum_columns: &BTreeSet<String>) -> bool {
-    let tokens = tokenize(expression);
-    let (start, _) = trim_wrapping_parens(&tokens, 0, tokens.len());
-
-    let Some(column) = tokens.get(start) else {
-        return false;
-    };
-    let name = match column.kind {
-        TokenKind::Ident | TokenKind::QuotedIdent(_) => column.unescaped_ident(),
-        _ => return false,
-    };
-
-    if !matches!(
-        tokens.get(start + 1).map(|token| token.kind),
-        Some(TokenKind::Keyword(SqlKeyword::In))
-    ) {
+    let known: Vec<&str> = enum_columns.iter().map(String::as_str).collect();
+    if known.is_empty() {
         return false;
     }
 
-    enum_columns
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(&name))
+    parse_check_clause(&tokenize(expression), &known).is_some()
 }
 
 /// The token index of the parenthesis closing the one at `open`.
@@ -195,22 +184,4 @@ pub(super) fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize>
     }
 
     None
-}
-
-/// Strips the parenthesis pairs wrapping the whole `start..end` token range.
-fn trim_wrapping_parens(tokens: &[Token<'_>], mut start: usize, mut end: usize) -> (usize, usize) {
-    while start < end {
-        if tokens.get(start).map(|token| token.kind) != Some(TokenKind::OpenParen) {
-            break;
-        }
-        match matching_close(tokens, start) {
-            Some(close) if close + 1 == end => {
-                start += 1;
-                end = close;
-            }
-            _ => break,
-        }
-    }
-
-    (start, end)
 }
