@@ -21,7 +21,7 @@ use super::types::{
 mod check_enums;
 pub(crate) mod lexer;
 
-use lexer::extract_paren_block;
+use lexer::{tokenize, SqlKeyword, Token, TokenKind};
 
 pub use check_enums::parse_sqlite_check_enums;
 
@@ -521,206 +521,125 @@ fn parse_sqlite_checks(table: &str, sql: &str, known_columns: &[&str]) -> Vec<Ch
 
 /// Collects every `CHECK ( ... )` clause of a table DDL with its constraint name.
 ///
-/// The scan skips string literals and quoted identifiers, so a `CHECK` written
-/// inside a value is never read as a constraint. A `CONSTRAINT <name>` seen
-/// before a check names it; a comma ends the current table element and clears a
-/// name that belonged to another constraint.
+/// The scan runs over the token stream of the shared lexer, so a `CHECK` or a
+/// `CONSTRAINT` written inside a literal, a quoted identifier, or a comment is
+/// never read as a constraint. A `CONSTRAINT <name>` seen before a check names
+/// it; a comma ends the current table element and clears a name that belonged to
+/// another constraint.
 fn scan_check_constraints(sql: &str) -> Vec<(Option<String>, String)> {
-    const CONSTRAINT: &str = "constraint";
-    const CHECK: &str = "check";
-
-    let bytes = sql.as_bytes();
+    let tokens = tokenize(sql);
     let mut results = Vec::new();
     let mut pending: Option<String> = None;
     let mut index = 0;
 
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\'' | b'"' | b'`' => index = skip_quoted(bytes, index),
-            b'[' => index = skip_until(bytes, index, b']'),
-            b',' => {
+    while index < tokens.len() {
+        match tokens[index].kind {
+            TokenKind::Comma => {
                 pending = None;
                 index += 1;
             }
-            _ => {
-                if keyword_at(bytes, index, CONSTRAINT) {
-                    match constraint_name(bytes, index + CONSTRAINT.len()) {
-                        Some((name, next)) => {
-                            pending = Some(name);
-                            index = next;
-                        }
-                        None => index += 1,
+            TokenKind::Keyword(SqlKeyword::Constraint) => match tokens.get(index + 1).and_then(name_of) {
+                Some(name) => {
+                    pending = Some(name);
+                    index += 2;
+                }
+                None => index += 1,
+            },
+            TokenKind::Keyword(SqlKeyword::Check) => {
+                let open = index + 1;
+                if tokens.get(open).map(|token| token.kind) == Some(TokenKind::OpenParen) {
+                    if let Some(close) = matching_close(&tokens, open) {
+                        let start = tokens[open].span.1;
+                        let end = tokens[close].span.0;
+                        results.push((pending.take(), sql[start..end].trim().to_owned()));
+                        index = close + 1;
+                        continue;
                     }
-                    continue;
                 }
 
-                if keyword_at(bytes, index, CHECK) {
-                    let mut open = index + CHECK.len();
-                    while open < bytes.len() && bytes[open].is_ascii_whitespace() {
-                        open += 1;
-                    }
-
-                    if open < bytes.len() && bytes[open] == b'(' && sql.is_char_boundary(open) {
-                        if let Some((inner, length)) = extract_paren_block(&sql[open..]) {
-                            results.push((pending.take(), inner.trim().to_owned()));
-                            index = open + length;
-                            continue;
-                        }
-                    }
-
-                    pending = None;
-                }
-
+                pending = None;
                 index += 1;
             }
+            _ => index += 1,
         }
     }
 
     results
 }
 
+/// The unescaped name a constraint identifier token carries, if it is one.
+fn name_of(token: &Token<'_>) -> Option<String> {
+    match token.kind {
+        TokenKind::Ident | TokenKind::QuotedIdent(_) => Some(token.unescaped_ident()),
+        TokenKind::StringLiteral => Some(token.unescaped_string()),
+        _ => None,
+    }
+}
+
 /// Whether a check predicate closes the value set of an enum column.
 fn names_an_enum_column(expression: &str, enum_columns: &BTreeSet<String>) -> bool {
-    let mut text = expression.trim();
-    while text.len() >= 2 && text.starts_with('(') && text.ends_with(')') {
-        text = text[1..text.len() - 1].trim();
-    }
+    let tokens = tokenize(expression);
+    let (start, _) = trim_wrapping_parens(&tokens, 0, tokens.len());
 
-    let Some((identifier, rest)) = split_identifier(text) else {
+    let Some(column) = tokens.get(start) else {
         return false;
     };
-
-    let mut words = rest.split_whitespace();
-    matches!(words.next(), Some(word) if word.eq_ignore_ascii_case("in"))
-        && enum_columns
-            .iter()
-            .any(|column| column.eq_ignore_ascii_case(&identifier))
-}
-
-/// Splits a leading SQL identifier off `text`.
-fn split_identifier(text: &str) -> Option<(String, &str)> {
-    if let Some(rest) = text.strip_prefix('"') {
-        let mut name = String::new();
-        let mut chars = rest.char_indices().peekable();
-        while let Some((index, character)) = chars.next() {
-            if character == '"' {
-                if chars.peek().map(|&(_, next)| next) == Some('"') {
-                    chars.next();
-                    name.push('"');
-                } else {
-                    return Some((name, &rest[index + 1..]));
-                }
-            } else {
-                name.push(character);
-            }
-        }
-        return None;
-    }
-
-    let end = text
-        .char_indices()
-        .take_while(|(_, character)| character.is_ascii_alphanumeric() || *character == '_')
-        .map(|(index, character)| index + character.len_utf8())
-        .last()?;
-
-    Some((text[..end].to_owned(), &text[end..]))
-}
-
-/// Reads the identifier that follows a `CONSTRAINT` keyword.
-fn constraint_name(bytes: &[u8], mut index: usize) -> Option<(String, usize)> {
-    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-        index += 1;
-    }
-
-    let quote = match bytes.get(index) {
-        Some(b'"') => Some(b'"'),
-        Some(b'\'') => Some(b'\''),
-        Some(b'`') => Some(b'`'),
-        _ => None,
+    let name = match column.kind {
+        TokenKind::Ident | TokenKind::QuotedIdent(_) => column.unescaped_ident(),
+        _ => return false,
     };
 
-    if let Some(quote) = quote {
-        let mut name = Vec::new();
-        index += 1;
-        while index < bytes.len() {
-            if bytes[index] == quote {
-                if index + 1 < bytes.len() && bytes[index + 1] == quote {
-                    name.push(quote);
-                    index += 2;
-                    continue;
-                }
-                index += 1;
-                break;
-            }
-            name.push(bytes[index]);
-            index += 1;
-        }
-        return String::from_utf8(name).ok().map(|name| (name, index));
-    }
-
-    let start = index;
-    while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
-        index += 1;
-    }
-
-    if index == start {
-        return None;
-    }
-
-    String::from_utf8(bytes[start..index].to_vec())
-        .ok()
-        .map(|name| (name, index))
-}
-
-/// Whether `keyword` appears at `index` of `bytes` on an identifier boundary.
-fn keyword_at(bytes: &[u8], index: usize, keyword: &str) -> bool {
-    let keyword = keyword.as_bytes();
-    let end = index + keyword.len();
-
-    if end > bytes.len() || !bytes[index..end].eq_ignore_ascii_case(keyword) {
+    if !matches!(
+        tokens.get(start + 1).map(|token| token.kind),
+        Some(TokenKind::Keyword(SqlKeyword::In))
+    ) {
         return false;
     }
 
-    let before_ok = index == 0 || !is_identifier_byte(bytes[index - 1]);
-    let after_ok = end == bytes.len() || !is_identifier_byte(bytes[end]);
-
-    before_ok && after_ok
+    enum_columns
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&name))
 }
 
-/// Whether `byte` continues a SQL identifier.
-fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
-}
+/// The token index of the parenthesis closing the one at `open`.
+fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
+    if tokens.get(open).map(|token| token.kind) != Some(TokenKind::OpenParen) {
+        return None;
+    }
 
-/// Advances past the quoted token opening at `index`.
-fn skip_quoted(bytes: &[u8], index: usize) -> usize {
-    let quote = bytes[index];
-    let mut cursor = index + 1;
-
-    while cursor < bytes.len() {
-        if bytes[cursor] == quote {
-            if cursor + 1 < bytes.len() && bytes[cursor + 1] == quote {
-                cursor += 2;
-                continue;
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.kind {
+            TokenKind::OpenParen => depth = depth.checked_add(1)?,
+            TokenKind::CloseParen => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
             }
-            return cursor + 1;
+            _ => {}
         }
-        cursor += 1;
     }
 
-    bytes.len()
+    None
 }
 
-/// Advances past the `[ ... ]` token opening at `index`.
-fn skip_until(bytes: &[u8], index: usize, close: u8) -> usize {
-    let mut cursor = index + 1;
-    while cursor < bytes.len() {
-        if bytes[cursor] == close {
-            return cursor + 1;
+/// Strips the parenthesis pairs wrapping the whole `start..end` token range.
+fn trim_wrapping_parens(tokens: &[Token<'_>], mut start: usize, mut end: usize) -> (usize, usize) {
+    while start < end {
+        if tokens.get(start).map(|token| token.kind) != Some(TokenKind::OpenParen) {
+            break;
         }
-        cursor += 1;
+        match matching_close(tokens, start) {
+            Some(close) if close + 1 == end => {
+                start += 1;
+                end = close;
+            }
+            _ => break,
+        }
     }
-    bytes.len()
+
+    (start, end)
 }
 
 /// Collects the views declared by the schema.
@@ -885,71 +804,42 @@ fn sqlite_index_ddl(conn: &rusqlite::Connection, index: &str) -> Result<Option<S
 /// The parenthesised column list of an index DDL.
 ///
 /// The first opening parenthesis of an index statement introduces the list of
-/// indexed terms, so everything inside it is what the index searches.
+/// indexed terms, so everything inside it is what the index searches. The token
+/// stream already splits quoted and commented spans apart, so a parenthesis
+/// written inside a comment never opens the list.
 fn column_list_of(sql: &str) -> Option<String> {
-    let open = first_unquoted(sql, b'(')?;
-    let (inner, _) = extract_paren_block(&sql[open..])?;
-    Some(inner.trim().to_owned())
+    let tokens = tokenize(sql);
+    let open = tokens
+        .iter()
+        .position(|token| token.kind == TokenKind::OpenParen)?;
+    let close = matching_close(&tokens, open)?;
+    let start = tokens[open].span.1;
+    let end = tokens[close].span.0;
+    Some(sql[start..end].trim().to_owned())
 }
 
 /// The partial index predicate of an index DDL, if it declares one.
+///
+/// The predicate is the text after the `WHERE` keyword that closes the index
+/// statement, and a `WHERE` written inside a comment or a nested parenthesis is
+/// skipped by the token stream.
 fn predicate_of(sql: &str) -> Option<String> {
-    const WHERE: &str = "where";
-
-    let position = find_keyword(sql, WHERE)?;
-    let predicate = sql[position + WHERE.len()..]
-        .trim()
-        .trim_end_matches(';')
-        .trim();
-
-    if predicate.is_empty() {
-        None
-    } else {
-        Some(predicate.to_owned())
-    }
-}
-
-/// The byte index of the first `target` byte outside a quoted token.
-fn first_unquoted(sql: &str, target: u8) -> Option<usize> {
-    let bytes = sql.as_bytes();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\'' | b'"' | b'`' => index = skip_quoted(bytes, index),
-            b'[' => index = skip_until(bytes, index, b']'),
-            byte if byte == target => return Some(index),
-            _ => index += 1,
-        }
-    }
-
-    None
-}
-
-/// The byte index of `keyword` outside every parenthesised block and quoted token.
-fn find_keyword(sql: &str, keyword: &str) -> Option<usize> {
-    let bytes = sql.as_bytes();
+    let tokens = tokenize(sql);
     let mut depth = 0usize;
-    let mut index = 0;
 
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\'' | b'"' | b'`' => index = skip_quoted(bytes, index),
-            b'[' => index = skip_until(bytes, index, b']'),
-            b'(' => {
-                depth += 1;
-                index += 1;
+    for token in &tokens {
+        match token.kind {
+            TokenKind::OpenParen => depth = depth.saturating_add(1),
+            TokenKind::CloseParen => depth = depth.saturating_sub(1),
+            TokenKind::Keyword(SqlKeyword::Where) if depth == 0 => {
+                let predicate = sql[token.span.1..].trim().trim_end_matches(';').trim();
+                return if predicate.is_empty() {
+                    None
+                } else {
+                    Some(predicate.to_owned())
+                };
             }
-            b')' => {
-                depth = depth.saturating_sub(1);
-                index += 1;
-            }
-            _ => {
-                if depth == 0 && keyword_at(bytes, index, keyword) {
-                    return Some(index);
-                }
-                index += 1;
-            }
+            _ => {}
         }
     }
 
@@ -1228,5 +1118,56 @@ mod tests {
         assert_eq!(catalog.triggers[0].name, "users_touch");
         assert_eq!(catalog.triggers[0].table_name, "users");
         assert!(catalog.triggers[0].definition.contains("CREATE TRIGGER"));
+    }
+
+    #[test]
+    fn checks_declared_in_comments_are_never_constraints() {
+        let line = "CREATE TABLE tasks (\n\
+                      state TEXT NOT NULL -- CHECK (state IN ('hidden'))\n\
+                    );";
+        assert!(scan_check_constraints(line).is_empty());
+
+        let block = "CREATE TABLE tasks (\n\
+                       state TEXT NOT NULL,\n\
+                       /* CHECK (state IN ('hidden', 'lost')) */\n\
+                       note TEXT\n\
+                     );";
+        assert!(scan_check_constraints(block).is_empty());
+    }
+
+    #[test]
+    fn a_constraint_named_in_a_comment_names_nothing() {
+        let line = "CREATE TABLE users (\n\
+                      age INTEGER NOT NULL, -- CONSTRAINT fake\n\
+                      CHECK (age >= 0)\n\
+                    );";
+        let checks = parse_sqlite_checks("users", line, &["age"]);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "users_check_0");
+        assert_eq!(checks[0].expression, "age >= 0");
+
+        let block = "CREATE TABLE users (\n\
+                       age INTEGER NOT NULL,\n\
+                       /* CONSTRAINT fake */\n\
+                       CHECK (age >= 0)\n\
+                     );";
+        let checks = parse_sqlite_checks("users", block, &["age"]);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].name, "users_check_0");
+    }
+
+    #[test]
+    fn a_where_inside_a_comment_is_never_an_index_predicate() {
+        let line = "CREATE INDEX users_idx ON users (email) -- WHERE email IS NOT NULL\n;";
+        assert_eq!(predicate_of(line), None);
+
+        let block = "CREATE INDEX users_idx ON users (email) /* WHERE email IS NOT NULL */;";
+        assert_eq!(predicate_of(block), None);
+    }
+
+    #[test]
+    fn a_column_list_ignores_a_commented_parenthesis() {
+        let sql = "CREATE INDEX users_idx ON users /* (fake) */ (email, name);";
+        assert_eq!(column_list_of(sql), Some("email, name".to_owned()));
     }
 }
