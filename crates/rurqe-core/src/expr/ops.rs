@@ -468,7 +468,7 @@ impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not support SQL arithmetic",
     label = "unsupported arithmetic type",
-    note = "arithmetic combines `i32`, `i64`, and `f64` values, which are the numeric types a column maps onto"
+    note = "arithmetic combines `i32`, `i64`, `f64`, and `Decimal` values, which are the numeric types a column maps onto"
 )]
 pub trait Numeric: ToSqlVal + Sized {}
 
@@ -477,6 +477,9 @@ impl Numeric for i32 {}
 impl Numeric for i64 {}
 
 impl Numeric for f64 {}
+
+#[cfg(feature = "decimal")]
+impl Numeric for rust_decimal::Decimal {}
 
 /// A value an arithmetic expression combines with a numeric expression.
 ///
@@ -531,6 +534,31 @@ macro_rules! impl_scalar_numeric_operand {
 }
 
 impl_scalar_numeric_operand!(i32, i64, f64);
+
+// An exact decimal is the numeric type of a `NUMERIC` column, so it takes part
+// in arithmetic exactly like the built-in scalars do. The borrowed form lets a
+// decimal that is reused by the caller be bound without giving up ownership.
+#[cfg(feature = "decimal")]
+impl NumericOperand<rust_decimal::Decimal> for rust_decimal::Decimal {
+    type Scope = ();
+    type Aggr = NonAggregate;
+    type Dialect = ();
+
+    fn into_operand_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl NumericOperand<rust_decimal::Decimal> for &rust_decimal::Decimal {
+    type Scope = ();
+    type Aggr = NonAggregate;
+    type Dialect = ();
+
+    fn into_operand_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
 
 // A column marker computes one value per row of its table.
 impl<T, C> NumericOperand<T> for C

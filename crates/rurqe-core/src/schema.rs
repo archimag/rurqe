@@ -289,6 +289,11 @@ impl<A: TableAlias, C: Column> Column for AliasedCol<A, C> {
     }
 }
 
+// An aliased column keeps the Rust type of the column it addresses, so it takes
+// part in arithmetic exactly like the plain marker does, and its expression
+// stays qualified by the alias. The helper generating those operators is
+// declared further down, so its invocation is placed right after the definition.
+
 /// Position marker used to disambiguate table membership in composite scopes.
 ///
 /// Lone tables use position 0 ([`At<0>`]), while composite scopes such as `(T1, T2)`
@@ -613,6 +618,220 @@ impl<T1: Table, T2: Table, T3: Table, T4: Table, T5: Table, T6: Table, T7: Table
     type Output = (T1, T2, T3, T4, T5, T6, T7, S);
 }
 
+/// A value an arithmetic operator of a column marker combines with.
+///
+/// The trait is implemented for every operand the column's
+/// [`RustType`](Column::RustType) accepts, so a column marker carries the
+/// arithmetic operators exactly when its Rust type is a
+/// [numeric](crate::expr::Numeric) type: `i32`, `i64`, `f64`, or an exact
+/// [`rust_decimal::Decimal`].
+#[diagnostic::on_unimplemented(
+    message = "column `{C}` does not support SQL arithmetic with `{Self}`",
+    label = "the column's Rust type is not numeric, or the value has another type",
+    note = "arithmetic combines a numeric column with a value or an expression of the same Rust type"
+)]
+#[doc(hidden)]
+pub trait ColumnArithmetic<C: Column> {
+    /// The scope of the tables the operand references.
+    type Scope;
+
+    /// The aggregation marker the operand contributes.
+    type Aggr;
+
+    /// The dialect marker of the operand.
+    type Dialect;
+
+    /// Converts `self` into the expression node of the operand.
+    fn into_operand_kind(self) -> crate::expr::ExprKind;
+}
+
+impl<C, V> ColumnArithmetic<C> for V
+where
+    C: Column,
+    C::RustType: crate::expr::Numeric,
+    V: crate::expr::NumericOperand<C::RustType>,
+{
+    type Scope = V::Scope;
+    type Aggr = V::Aggr;
+    type Dialect = V::Dialect;
+
+    fn into_operand_kind(self) -> crate::expr::ExprKind {
+        <V as crate::expr::NumericOperand<C::RustType>>::into_operand_kind(self)
+    }
+}
+
+/// Assembles the binary expression node of a column arithmetic operator.
+///
+/// The node is built here instead of in the macro expansion, so the arithmetic
+/// of a column marker keeps using the tree the expression builders use.
+#[doc(hidden)]
+pub fn arithmetic_kind(
+    op: crate::expr::BinaryOp,
+    lhs: crate::expr::ExprKind,
+    rhs: crate::expr::ExprKind,
+) -> crate::expr::ExprKind {
+    crate::expr::ExprKind::Binary {
+        op,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    }
+}
+
+/// Implements the arithmetic operators of [`Expr`](crate::expr::Expr) on a
+/// column marker.
+///
+/// A column marker is a zero-sized value, so every operator builds the
+/// expression of its column and yields the expression the matching operator of
+/// [`Expr`](crate::expr::Expr) yields: the scopes of the operands merge, and a
+/// column read per row keeps the result a per-row expression. The operators
+/// exist exactly for the columns whose Rust type is numeric, because the
+/// [operand](ColumnArithmetic) only has an implementation for such a type.
+///
+/// The two bracket groups carry the extra generics and the extra bounds of a
+/// marker parameterised over a table alias, and stay empty for the markers
+/// [`table!`] declares.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __rurqe_column_arithmetic {
+    (
+        [$($extra_generics:tt)*]
+        [$($extra_bounds:tt)*]
+        $column:ty,
+        $scope:ty $(,)?
+    ) => {
+        impl<Rhs $($extra_generics)*> ::core::ops::Add<Rhs> for $column
+        where
+            $($extra_bounds)*
+            Rhs: $crate::schema::ColumnArithmetic<$column>,
+            $scope: $crate::expr::MergeScope<Rhs::Scope>,
+            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
+            (): $crate::expr::MergeDialect<Rhs::Dialect>,
+        {
+            type Output = $crate::expr::Expr<
+                <$column as $crate::schema::Column>::RustType,
+                $crate::expr::Merged<$scope, Rhs::Scope>,
+                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::MergedDialect<(), Rhs::Dialect>,
+            >;
+
+            fn add(self, rhs: Rhs) -> Self::Output {
+                $crate::expr::Expr::from_kind($crate::schema::arithmetic_kind(
+                    $crate::expr::BinaryOp::Add,
+                    <$column as $crate::schema::Column>::expr_kind(),
+                    <Rhs as $crate::schema::ColumnArithmetic<$column>>::into_operand_kind(rhs),
+                ))
+            }
+        }
+
+        impl<Rhs $($extra_generics)*> ::core::ops::Sub<Rhs> for $column
+        where
+            $($extra_bounds)*
+            Rhs: $crate::schema::ColumnArithmetic<$column>,
+            $scope: $crate::expr::MergeScope<Rhs::Scope>,
+            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
+            (): $crate::expr::MergeDialect<Rhs::Dialect>,
+        {
+            type Output = $crate::expr::Expr<
+                <$column as $crate::schema::Column>::RustType,
+                $crate::expr::Merged<$scope, Rhs::Scope>,
+                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::MergedDialect<(), Rhs::Dialect>,
+            >;
+
+            fn sub(self, rhs: Rhs) -> Self::Output {
+                $crate::expr::Expr::from_kind($crate::schema::arithmetic_kind(
+                    $crate::expr::BinaryOp::Sub,
+                    <$column as $crate::schema::Column>::expr_kind(),
+                    <Rhs as $crate::schema::ColumnArithmetic<$column>>::into_operand_kind(rhs),
+                ))
+            }
+        }
+
+        impl<Rhs $($extra_generics)*> ::core::ops::Mul<Rhs> for $column
+        where
+            $($extra_bounds)*
+            Rhs: $crate::schema::ColumnArithmetic<$column>,
+            $scope: $crate::expr::MergeScope<Rhs::Scope>,
+            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
+            (): $crate::expr::MergeDialect<Rhs::Dialect>,
+        {
+            type Output = $crate::expr::Expr<
+                <$column as $crate::schema::Column>::RustType,
+                $crate::expr::Merged<$scope, Rhs::Scope>,
+                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::MergedDialect<(), Rhs::Dialect>,
+            >;
+
+            fn mul(self, rhs: Rhs) -> Self::Output {
+                $crate::expr::Expr::from_kind($crate::schema::arithmetic_kind(
+                    $crate::expr::BinaryOp::Mul,
+                    <$column as $crate::schema::Column>::expr_kind(),
+                    <Rhs as $crate::schema::ColumnArithmetic<$column>>::into_operand_kind(rhs),
+                ))
+            }
+        }
+
+        impl<Rhs $($extra_generics)*> ::core::ops::Div<Rhs> for $column
+        where
+            $($extra_bounds)*
+            Rhs: $crate::schema::ColumnArithmetic<$column>,
+            $scope: $crate::expr::MergeScope<Rhs::Scope>,
+            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
+            (): $crate::expr::MergeDialect<Rhs::Dialect>,
+        {
+            type Output = $crate::expr::Expr<
+                <$column as $crate::schema::Column>::RustType,
+                $crate::expr::Merged<$scope, Rhs::Scope>,
+                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::MergedDialect<(), Rhs::Dialect>,
+            >;
+
+            fn div(self, rhs: Rhs) -> Self::Output {
+                $crate::expr::Expr::from_kind($crate::schema::arithmetic_kind(
+                    $crate::expr::BinaryOp::Div,
+                    <$column as $crate::schema::Column>::expr_kind(),
+                    <Rhs as $crate::schema::ColumnArithmetic<$column>>::into_operand_kind(rhs),
+                ))
+            }
+        }
+
+        impl<Rhs $($extra_generics)*> ::core::ops::Rem<Rhs> for $column
+        where
+            $($extra_bounds)*
+            Rhs: $crate::schema::ColumnArithmetic<$column>,
+            $scope: $crate::expr::MergeScope<Rhs::Scope>,
+            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
+            (): $crate::expr::MergeDialect<Rhs::Dialect>,
+        {
+            type Output = $crate::expr::Expr<
+                <$column as $crate::schema::Column>::RustType,
+                $crate::expr::Merged<$scope, Rhs::Scope>,
+                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::MergedDialect<(), Rhs::Dialect>,
+            >;
+
+            fn rem(self, rhs: Rhs) -> Self::Output {
+                $crate::expr::Expr::from_kind($crate::schema::arithmetic_kind(
+                    $crate::expr::BinaryOp::Rem,
+                    <$column as $crate::schema::Column>::expr_kind(),
+                    <Rhs as $crate::schema::ColumnArithmetic<$column>>::into_operand_kind(rhs),
+                ))
+            }
+        }
+    };
+}
+
+// An aliased column keeps the Rust type of the column it addresses, so it takes
+// part in arithmetic exactly like the plain marker does, and its expression
+// stays qualified by the alias. The invocation follows the helper definition so
+// that the macro is in scope wherever the aliased marker is used.
+__rurqe_column_arithmetic!(
+    [, A, C]
+    [A: TableAlias, C: Column,]
+    AliasedCol<A, C>,
+    Aliased<C::Table, A>
+);
+
 /// Declares a table marker type together with its column marker types.
 ///
 /// Each column links back to the table through [`Column::Table`] and carries its
@@ -665,6 +884,8 @@ macro_rules! table {
 
                 const NAME: &'static str = $column_name;
             }
+
+            $crate::__rurqe_column_arithmetic!([] [] $column, $table);
         )*
     };
 }
@@ -809,6 +1030,117 @@ mod tests {
                 name: "id",
             }
         );
+    }
+
+    #[test]
+    fn column_markers_compose_arithmetic_expressions() {
+        use crate::expr::{BinaryOp, Expr, ExprKind};
+
+        fn op_of<T, S, A, D>(expr: &Expr<T, S, A, D>) -> BinaryOp {
+            match expr.kind() {
+                ExprKind::Binary { op, .. } => *op,
+                other => panic!("expected an arithmetic expression, got {other:?}"),
+            }
+        }
+
+        assert_eq!(op_of(&(UserId + 1i64)), BinaryOp::Add);
+        assert_eq!(op_of(&(UserId - 2i64)), BinaryOp::Sub);
+        assert_eq!(op_of(&(UserId * 3i64)), BinaryOp::Mul);
+        assert_eq!(op_of(&(UserId / 4i64)), BinaryOp::Div);
+        assert_eq!(op_of(&(UserId % 5i64)), BinaryOp::Rem);
+    }
+
+    #[test]
+    fn column_markers_compose_arithmetic_with_other_columns() {
+        use crate::expr::{BinaryOp, ExprKind, SqlVal};
+
+        let total = OrderUserId + OrderId;
+
+        assert_eq!(
+            total.kind(),
+            &ExprKind::Binary {
+                op: BinaryOp::Add,
+                lhs: Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "user_id",
+                }),
+                rhs: Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "id",
+                }),
+            }
+        );
+
+        // The scope of the produced expression carries the tables of both
+        // columns, so a statement that does not select from `orders` rejects it.
+        let _: crate::expr::Expr<i64, (Order, Order)> = total;
+
+        let offset = OrderId + 1i64;
+        assert_eq!(
+            offset.kind(),
+            &ExprKind::Binary {
+                op: BinaryOp::Add,
+                lhs: Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "id",
+                }),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+            }
+        );
+    }
+
+    #[test]
+    fn aliased_column_markers_compose_arithmetic_expressions() {
+        use crate::expr::{BinaryOp, ExprKind, SqlVal};
+
+        let scaled = AliasedCol::<UserAlias, UserId>::new() * 2i64;
+
+        assert_eq!(
+            scaled.kind(),
+            &ExprKind::Binary {
+                op: BinaryOp::Mul,
+                lhs: Box::new(ExprKind::QualifiedColumn {
+                    table: "u",
+                    column: "id",
+                }),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(2))),
+            }
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    mod decimal_arithmetic {
+        use crate::expr::{BinaryOp, ExprKind};
+
+        crate::table! {
+            Price => "prices" {
+                PriceAmount => "amount": rust_decimal::Decimal,
+            }
+        }
+
+        #[test]
+        fn decimal_columns_compose_arithmetic_expressions() {
+            let amount = rust_decimal::Decimal::new(5, 2);
+
+            let total = PriceAmount + amount;
+            assert!(matches!(
+                total.kind(),
+                ExprKind::Binary {
+                    op: BinaryOp::Add,
+                    ..
+                }
+            ));
+
+            let borrowed = &amount;
+            let adjusted = PriceAmount - borrowed;
+            assert!(matches!(
+                adjusted.kind(),
+                ExprKind::Binary {
+                    op: BinaryOp::Sub,
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]
