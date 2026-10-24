@@ -27,7 +27,7 @@
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::parse::{ProjectionList, ProjectionTarget};
+use crate::parse::{ensure_unique_field_names, ProjectionList, ProjectionTarget};
 
 /// Expands a parsed `select!` input into the projection block expression.
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
@@ -36,6 +36,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 }
 
 fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> {
+    ensure_unique_field_names(projections)?;
+
     let mut field_defs = TokenStream::new();
     let mut field_reads = TokenStream::new();
     let mut document_writes = TokenStream::new();
@@ -56,20 +58,10 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut position_params = Vec::new();
     let mut position_args = Vec::new();
     let mut field_keys = Vec::new();
-    let mut used_fields: Vec<String> = Vec::new();
     let arity = Literal::usize_unsuffixed(projections.len());
 
     for (index, item) in projections.as_slice().iter().enumerate() {
         let field = item.field_ident()?;
-        let field_name = field.to_string();
-        if used_fields.contains(&field_name) {
-            let message = format!(
-                "projection field `{field_name}` is produced by more than one projection; \
-                 rename one of them with `as <alias>` or `alias: <expr>`"
-            );
-            return Err(syn::Error::new_spanned(item.target.tokens(), message));
-        }
-        used_fields.push(field_name);
 
         let key = Literal::string(&field_key(&field));
         field_keys.push(key.clone());

@@ -310,6 +310,35 @@ impl ProjectionList {
     }
 }
 
+/// Rejects a projection list whose items reduce to the same field name twice.
+///
+/// `select!` and `dto!` both synthesize one struct field per projection item,
+/// so two items naming the same field would emit a struct declaration rustc
+/// can only reject inside the generated code, and the collision would silently
+/// corrupt the JSON key contract of nested rows (`MultisetRow::FIELDS`). The
+/// check runs before any code is generated and reports the same remediation
+/// for both macros: rename one projection explicitly.
+pub fn ensure_unique_field_names(projections: &ProjectionList) -> syn::Result<()> {
+    let mut used_fields: Vec<String> = Vec::new();
+
+    for item in &projections.items {
+        let field = item.field_ident()?;
+        let field_name = field.to_string();
+
+        if used_fields.contains(&field_name) {
+            let message = format!(
+                "projection field `{field_name}` is produced by more than one projection; \
+                 rename one of them with `as <alias>` or `alias: <expr>`"
+            );
+            return Err(syn::Error::new_spanned(item.target.tokens(), message));
+        }
+
+        used_fields.push(field_name);
+    }
+
+    Ok(())
+}
+
 impl Parse for ProjectionList {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         if input.is_empty() {

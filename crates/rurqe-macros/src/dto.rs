@@ -60,6 +60,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         fields,
     } = syn::parse2(input)?;
 
+    crate::parse::ensure_unique_field_names(&fields)?;
+
     let mut field_defs = TokenStream::new();
     let mut field_reads = TokenStream::new();
     let mut document_writes = TokenStream::new();
@@ -194,5 +196,36 @@ mod tests {
         .expect("the alias names the field");
 
         assert!(expanded.to_string().contains("struct Good"));
+    }
+
+    #[test]
+    fn duplicate_field_names_are_rejected() {
+        let error = expand(quote! {
+            pub struct Bad {
+                id: UserId,
+                id: UserName,
+            }
+        })
+        .expect_err("two fields cannot share one name");
+
+        assert_eq!(
+            error.to_string(),
+            "projection field `id` is produced by more than one projection; \
+             rename one of them with `as <alias>` or `alias: <expr>`"
+        );
+    }
+
+    #[test]
+    fn fields_reducing_to_the_same_name_are_rejected() {
+        let error = expand(quote! {
+            pub struct Bad {
+                UserId as id,
+                UserName as id,
+            }
+        })
+        .expect_err("two aliases cannot share one name");
+
+        assert!(error.to_string().contains("projection field `id`"));
+        assert!(error.to_string().contains("rename one of them"));
     }
 }
