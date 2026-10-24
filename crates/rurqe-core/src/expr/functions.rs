@@ -1,7 +1,9 @@
 //! Free-function helpers building aggregate, window, and scalar expressions.
 
-use super::ast::ExprKind;
-use super::builder::{Aggregate, Expr};
+use super::ast::{
+    ExprKind, MergeDialect, MergedDialect, RequiresDistinctFrom, RequiresGreatest,
+};
+use super::builder::{Aggregate, Expr, NonAggregate};
 use super::ops::IntoExpr;
 use super::scope::{MergeScope, Merged};
 use crate::schema::Column;
@@ -161,12 +163,22 @@ where
 /// operands are collected from `others`, while the column anchoring the call
 /// fixes the type every operand has to be compatible with. The produced
 /// expression keeps the tables of all operands.
-pub fn greatest<C, I, V>(_operand: C, others: I) -> Expr<C::RustType, Merged<C::Table, V::Scope>>
+#[allow(clippy::type_complexity)]
+pub fn greatest<C, I, V>(
+    _operand: C,
+    others: I,
+) -> Expr<
+    C::RustType,
+    Merged<C::Table, V::Scope>,
+    NonAggregate,
+    MergedDialect<RequiresGreatest, V::Dialect>,
+>
 where
     C: Column,
     C::Table: MergeScope<V::Scope>,
     I: IntoIterator<Item = V>,
     V: IntoExpr<C::RustType>,
+    RequiresGreatest: MergeDialect<V::Dialect>,
 {
     let mut args = vec![C::expr_kind()];
     args.extend(others.into_iter().map(|value| value.into_expr_kind()));
@@ -181,12 +193,22 @@ where
 /// The function is the mirror image of [`greatest`]: it yields the smallest of
 /// its operands, ignores SQL `NULL` values, and keeps the tables of every
 /// operand.
-pub fn least<C, I, V>(_operand: C, others: I) -> Expr<C::RustType, Merged<C::Table, V::Scope>>
+#[allow(clippy::type_complexity)]
+pub fn least<C, I, V>(
+    _operand: C,
+    others: I,
+) -> Expr<
+    C::RustType,
+    Merged<C::Table, V::Scope>,
+    NonAggregate,
+    MergedDialect<RequiresGreatest, V::Dialect>,
+>
 where
     C: Column,
     C::Table: MergeScope<V::Scope>,
     I: IntoIterator<Item = V>,
     V: IntoExpr<C::RustType>,
+    RequiresGreatest: MergeDialect<V::Dialect>,
 {
     let mut args = vec![C::expr_kind()];
     args.extend(others.into_iter().map(|value| value.into_expr_kind()));
@@ -202,11 +224,21 @@ where
 /// equal to each other and distinct from every other value, where the plain `<>`
 /// operator yields `NULL` for such a pair instead of a truth value. The produced
 /// predicate keeps the tables of both operands.
-pub fn is_distinct_from<C, V>(_left: C, right: V) -> Expr<bool, Merged<C::Table, V::Scope>>
+#[allow(clippy::type_complexity)]
+pub fn is_distinct_from<C, V>(
+    _left: C,
+    right: V,
+) -> Expr<
+    bool,
+    Merged<C::Table, V::Scope>,
+    NonAggregate,
+    MergedDialect<RequiresDistinctFrom, V::Dialect>,
+>
 where
     C: Column,
     C::Table: MergeScope<V::Scope>,
     V: IntoExpr<C::RustType>,
+    RequiresDistinctFrom: MergeDialect<V::Dialect>,
 {
     distinct_from::<C, V>(right, false)
 }
@@ -217,21 +249,41 @@ where
 /// are equal or both are SQL `NULL`, where the plain `=` operator yields `NULL`
 /// for the absent pair instead. The produced predicate keeps the tables of both
 /// operands.
-pub fn is_not_distinct_from<C, V>(_left: C, right: V) -> Expr<bool, Merged<C::Table, V::Scope>>
+#[allow(clippy::type_complexity)]
+pub fn is_not_distinct_from<C, V>(
+    _left: C,
+    right: V,
+) -> Expr<
+    bool,
+    Merged<C::Table, V::Scope>,
+    NonAggregate,
+    MergedDialect<RequiresDistinctFrom, V::Dialect>,
+>
 where
     C: Column,
     C::Table: MergeScope<V::Scope>,
     V: IntoExpr<C::RustType>,
+    RequiresDistinctFrom: MergeDialect<V::Dialect>,
 {
     distinct_from::<C, V>(right, true)
 }
 
 /// Builds the null-safe comparison node of the column `C`.
-fn distinct_from<C, V>(right: V, negated: bool) -> Expr<bool, Merged<C::Table, V::Scope>>
+#[allow(clippy::type_complexity)]
+fn distinct_from<C, V>(
+    right: V,
+    negated: bool,
+) -> Expr<
+    bool,
+    Merged<C::Table, V::Scope>,
+    NonAggregate,
+    MergedDialect<RequiresDistinctFrom, V::Dialect>,
+>
 where
     C: Column,
     C::Table: MergeScope<V::Scope>,
     V: IntoExpr<C::RustType>,
+    RequiresDistinctFrom: MergeDialect<V::Dialect>,
 {
     Expr::new(ExprKind::DistinctFrom {
         lhs: Box::new(C::expr_kind()),
@@ -405,7 +457,7 @@ mod tests {
         assert_eq!(sql, "(\"total\" IS NOT DISTINCT FROM $1)");
         assert_eq!(params, vec![SqlVal::F64(0.0)]);
 
-        let _: Expr<bool, (Order, Line)> =
+        let _: Expr<bool, (Order, Line), NonAggregate, RequiresDistinctFrom> =
             is_distinct_from(OrderTotal, Expr::column::<LineTotal>());
     }
 }
