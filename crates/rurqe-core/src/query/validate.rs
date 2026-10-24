@@ -25,6 +25,15 @@ pub enum BuildError {
         /// The 0-based position of the first mismatched ordering criterion.
         position: usize,
     },
+    /// An `ORDER BY` expression of a `DISTINCT` statement is not projected.
+    ///
+    /// The engine sorts the rows the statement produced rather than the rows it
+    /// read, so every expression of the `ORDER BY` clause of a `DISTINCT`
+    /// statement has to appear in the projection list as well.
+    DistinctOrderNotProjected {
+        /// The 0-based position of the offending criterion in the `ORDER BY` clause.
+        position: usize,
+    },
     /// The `ORDER BY` of a compound statement names a position outside its projections.
     CompoundOrderIndex {
         /// The 1-based position the ordering names.
@@ -66,6 +75,14 @@ impl fmt::Display for BuildError {
                      PostgreSQL requires ORDER BY expressions to begin with the exact expressions listed in DISTINCT ON"
                 )
             }
+            BuildError::DistinctOrderNotProjected { position } => {
+                write!(
+                    f,
+                    "ORDER BY criterion at position {position} of a DISTINCT statement does not appear in the projection list; \
+                     for SELECT DISTINCT, ORDER BY expressions must appear in the select list, \
+                     so project the expression or order by one of the selected columns"
+                )
+            }
             BuildError::CompoundOrderIndex { index, columns } => {
                 write!(
                     f,
@@ -99,6 +116,7 @@ impl SelectAst {
     pub fn validate(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
         self.validate_distinct_on_prefix()?;
+        self.validate_distinct_order()?;
         self.validate_compound_order()?;
 
         for cte in &self.ctes {
@@ -205,6 +223,45 @@ impl SelectAst {
         Ok(())
     }
 
+    /// Rejects a `DISTINCT` statement whose `ORDER BY` names no projected expression.
+    ///
+    /// The engine sorts the rows the statement produced rather than the rows it
+    /// read, so every expression of the `ORDER BY` clause of a `DISTINCT`
+    /// statement has to appear in the projection list as well — PostgreSQL
+    /// rejects the statement otherwise with `for SELECT DISTINCT, ORDER BY
+    /// expressions must appear in select list`. The rule compares the assembled
+    /// expressions rather than their types, so it runs on the statement data
+    /// during [`SelectAst::validate`] and surfaces as
+    /// [`BuildError::DistinctOrderNotProjected`]. A projection exposed under an
+    /// alias matches the expression the alias names, and a bare 1-based
+    /// position matches the projection it addresses.
+    ///
+    /// A `DISTINCT ON (...)` statement follows its own prefix rule instead —
+    /// see `validate_distinct_on_prefix` — because that clause decides which of
+    /// the duplicate rows survives, so this rule stays dormant while the
+    /// `DISTINCT ON` list is populated.
+    fn validate_distinct_order(&self) -> Result<(), BuildError> {
+        if !self.distinct || !self.distinct_on.is_empty() || self.order_by.is_empty() {
+            return Ok(());
+        }
+        for (position, criterion) in self.order_by.iter().enumerate() {
+            if raw_order_position(&criterion.expr)
+                .is_some_and(|index| index > 0 && index as usize <= self.projections.len())
+            {
+                continue;
+            }
+            let ordered = projection_expr(&criterion.expr);
+            if !self
+                .projections
+                .iter()
+                .any(|projection| projection_expr(projection) == ordered)
+            {
+                return Err(BuildError::DistinctOrderNotProjected { position });
+            }
+        }
+        Ok(())
+    }
+
     /// Rejects a compound ordering that addresses no output column of the statement.
     ///
     /// A statement combined with `UNION`, `INTERSECT`, or `EXCEPT` sorts the rows
@@ -224,11 +281,8 @@ impl SelectAst {
         let columns = self.projections.len();
         for criterion in &self.compound_order_by {
             match &criterion.expr {
-                ExprKind::Raw { fragments, params } if params.is_empty() => {
-                    let position = fragments
-                        .first()
-                        .and_then(|fragment| fragment.parse::<u32>().ok());
-                    if let Some(index) = position {
+                ExprKind::Raw { .. } => {
+                    if let Some(index) = raw_order_position(&criterion.expr) {
                         if index == 0 || index as usize > columns {
                             return Err(BuildError::CompoundOrderIndex { index, columns });
                         }
@@ -277,6 +331,36 @@ fn reject_shadowed_derived(
         return Err(BuildError::AliasedDerivedRelation { name: alias });
     }
     Ok(())
+}
+
+/// Parses a bare 1-based position an ordering criterion addresses a projection by.
+///
+/// A compound statement and a `DISTINCT` statement both accept an ordering that
+/// addresses one of the projected columns by its position, rendered as a bare
+/// number. The helper recognises exactly that shape: a parameterless raw
+/// expression whose leading fragment parses as a number.
+fn raw_order_position(expr: &ExprKind) -> Option<u32> {
+    let ExprKind::Raw { fragments, params } = expr else {
+        return None;
+    };
+    if !params.is_empty() {
+        return None;
+    }
+    fragments
+        .first()
+        .and_then(|fragment| fragment.parse::<u32>().ok())
+}
+
+/// Unwraps the expression a projection or an ordering criterion addresses.
+///
+/// A projection exposed under an alias wraps its expression in
+/// [`ExprKind::Aliased`], so an ordering criterion matching that expression
+/// compares against the wrapped node.
+fn projection_expr(expr: &ExprKind) -> &ExprKind {
+    match expr {
+        ExprKind::Aliased { expr, .. } => expr,
+        other => other,
+    }
 }
 
 /// Resolves the output name a projection exposes to a compound ordering.
@@ -398,6 +482,7 @@ fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::{OrderCriterion, OrderDirection};
 
     #[test]
     fn build_error_display_duplicate_relation() {
@@ -413,6 +498,86 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("ORDER BY criterion at position 1"));
         assert!(msg.contains("DISTINCT ON"));
+    }
+
+    #[test]
+    fn build_error_display_distinct_order_not_projected() {
+        let err = BuildError::DistinctOrderNotProjected { position: 1 };
+        let msg = err.to_string();
+        assert!(msg.contains("ORDER BY criterion at position 1"));
+        assert!(msg.contains("must appear in the select list"));
+    }
+
+    #[test]
+    fn a_distinct_statement_ordering_a_projected_expression_is_accepted() {
+        let mut ast = empty_ast();
+        ast.distinct = true;
+        ast.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        });
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::Column {
+                table: "orders",
+                name: "id",
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_distinct_statement_ordering_an_unprojected_expression_is_rejected() {
+        let mut ast = empty_ast();
+        ast.distinct = true;
+        ast.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        });
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::Column {
+                table: "orders",
+                name: "total",
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::DistinctOrderNotProjected { position: 0 })
+        );
+    }
+
+    #[test]
+    fn a_distinct_ordering_matches_an_aliased_projection_and_a_bare_position() {
+        // The ordering criterion matches the expression the aliased projection
+        // wraps, and a bare 1-based position addresses the first projection.
+        let mut ast = empty_ast();
+        ast.distinct = true;
+        ast.projections.push(ExprKind::Aliased {
+            expr: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }),
+            alias: "net_total",
+        });
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::Column {
+                table: "orders",
+                name: "total",
+            },
+            OrderDirection::Desc,
+        ));
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::Raw {
+                fragments: vec!["1".to_owned()],
+                params: Vec::new(),
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(ast.validate(), Ok(()));
     }
 
     #[test]

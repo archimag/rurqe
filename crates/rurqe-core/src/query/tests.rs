@@ -79,6 +79,66 @@ fn distinct_renders_distinct_keyword() {
 }
 
 #[test]
+fn a_distinct_statement_orders_by_a_projected_expression() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserName,))
+        .distinct()
+        .order_by_asc(UserName)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT DISTINCT \"name\" FROM \"users\" ORDER BY \"name\" ASC"
+    );
+}
+
+#[test]
+fn a_distinct_statement_ordering_by_an_unprojected_expression_is_rejected() {
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .distinct()
+        .order_by_desc(OrderTotal);
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DistinctOrderNotProjected { position: 0 })
+    );
+}
+
+#[test]
+fn a_distinct_statement_reports_the_first_unprojected_ordering_criterion() {
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId, OrderTotal))
+        .distinct()
+        .order_by_desc(OrderId)
+        .order_by_asc(OrderUserId);
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DistinctOrderNotProjected { position: 1 })
+    );
+}
+
+#[test]
+fn a_distinct_compound_statement_keeps_its_compound_ordering_rule() {
+    // The left operand renders with DISTINCT, but the ordering of the combined
+    // rows names output columns, so it is the compound rule that rejects the
+    // criterion — exactly as it does without the deduplication.
+    assert_eq!(
+        compound_user_query()
+            .distinct()
+            .union(compound_user_query())
+            .order_by_output_asc(OrderTotal)
+            .build(),
+        Err(BuildError::CompoundOrderColumn { column: "total" })
+    );
+}
+
+#[test]
 fn distinct_on_renders_distinct_on_clause() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()

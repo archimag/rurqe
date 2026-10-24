@@ -899,7 +899,7 @@ Fulfill the core vision of **Absolute SQL Correctness** (`Vision.md § 1.5.1`) b
   - `CaseBuilder` folds the markers of its conditions, its results, and its `ELSE` fallback the same way, so a `CASE` written over aggregates stays projectable while a branch reading a bare column makes the whole expression per-row.
   - An expression that reads an ungrouped column therefore does not implement `GroupedSelectTarget`, and the grouping bypass is rejected by the compiler instead of by the engine.
 - [x] **Ordering Soundness for `DISTINCT` & `DISTINCT ON`:**
-  - The `DISTINCT` rule — every `ORDER BY` expression has to appear in the projection list — accompanies the deduplicating builders as documented call-site guidance, because the rule compares projected expressions rather than their types.
+  - The `DISTINCT` rule — every `ORDER BY` expression has to appear in the projection list — is enforced during `.build()` as well: the rule compares the assembled expressions rather than their types, so an ordering criterion naming no projected expression fails with `BuildError::DistinctOrderNotProjected { position }` before any SQL reaches the engine.
   - PostgreSQL `DISTINCT ON (cols)` prefix alignment is enforced during `.build()`: the leading `ORDER BY` expressions must match the `distinct_on` expressions left-to-right, otherwise the statement fails with `BuildError::DistinctOnOrderMismatch { position }` before any network I/O.
   - Deduplicating a statement moves it out of the locking typestate, so `FOR UPDATE` / `FOR SHARE` stop applying to it.
 - [x] **Compound Query (`UNION`, `INTERSECT`, `EXCEPT`) `ORDER BY` Typestate:**

@@ -433,10 +433,11 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     /// Every expression of the `ORDER BY` clause of a `DISTINCT` statement has to
     /// appear in the projection list as well, because the engine sorts the rows it
     /// produced rather than the rows it read; PostgreSQL rejects the statement
-    /// otherwise. The rule compares the projected expressions rather than their
-    /// types, so it is documented here instead of being enforced by the builder;
-    /// the related `DISTINCT ON (...)` prefix rule is validated during `.build()`
-    /// and surfaces as
+    /// otherwise. The rule compares the assembled expressions rather than their
+    /// types, so it is validated during `.build()` and surfaces as
+    /// [`BuildError::DistinctOrderNotProjected`](crate::query::BuildError::DistinctOrderNotProjected);
+    /// the related `DISTINCT ON (...)` prefix rule is validated there as well and
+    /// surfaces as
     /// [`BuildError::DistinctOnOrderMismatch`](crate::query::BuildError::DistinctOnOrderMismatch).
     ///
     /// A deduplicated statement cannot request a row-level lock, so the query
