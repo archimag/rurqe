@@ -896,6 +896,15 @@ The following capabilities represent valuable, high-utility SQL features that re
    - Native codecs and operators (`@>`, `<@`, `&&`, `-|-`) for `int4range`, `int8range`, `numrange`, `tsrange`, `tstzrange`, `daterange`.
 6. **Temporal `TIME` (`chrono::NaiveTime`) and `INTERVAL` Types:**
    - Dedicated `SqlVal::NaiveTime` variant and structured PostgreSQL interval handling.
+7. **MySQL Dialect & Driver Support (`rurqe-mysql`):**
+   - Complete third dialect implementation: backtick identifier escaping, positional `?` placeholders, and driver execution adapters for `mysql` / `mysql_async`.
+8. **TLS / SSL Connection Support in CLI (`rurqe-cli`):**
+   - Modular TLS support (`postgres-rustls` or `postgres-native-tls`) behind an optional Cargo feature flag, enabling encrypted connections when `sslmode=require` or `sslmode=verify-full` is specified.
+9. **Automated `schema.lock` Parity in Stage Verification:**
+   - Extension to `cargo db stage verify` validating that the committed `schema.lock` snapshot matches the declarative stage catalog bit-for-bit without requiring a separate drift step.
+10. **Compile-Time Ordering Typestate Constraints for `DISTINCT` and `DISTINCT ON`:**
+    - Typestate guards preventing `ORDER BY` on unprojected expressions when `DISTINCT` is active.
+    - Compile-time or builder validation ensuring `DISTINCT ON (expressions)` match the leftmost criteria of the trailing `ORDER BY` clause.
 
 ---
 
