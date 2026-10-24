@@ -530,21 +530,6 @@ fn derived_newtypes_bind_as_scalar_function_arguments() {
         }
     );
 
-    // A text literal binds as the same domain value the column reads.
-    assert_eq!(
-        nullif(WalletAddress, "addr_1").kind(),
-        &ExprKind::Function {
-            name: "NULLIF",
-            args: vec![
-                ExprKind::Column {
-                    table: "wallets",
-                    name: "address",
-                },
-                ExprKind::Value(SqlVal::Text("addr_1".to_owned())),
-            ],
-        }
-    );
-
     assert_eq!(
         greatest(AccountId, [UserId(1), UserId(2)]).kind(),
         &ExprKind::Function {

@@ -50,6 +50,26 @@ fn coalesce_keeps_the_scope_of_its_column() {
 }
 
 #[test]
+fn a_scalar_function_over_an_aggregate_stays_an_aggregate() {
+    // An aggregate argument keeps the whole call an aggregate, so the call is
+    // projectable from a grouped query even though it reads an ungrouped column.
+    let _: Expr<f64, Order, Aggregate> = coalesce(Expr::sum::<OrderTotal>(), 0.0);
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId, coalesce(Expr::sum::<OrderTotal>(), 0.0)))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COALESCE(SUM(\"total\"), $1) FROM \"orders\" GROUP BY \"user_id\""
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(0.0)]);
+}
+
+#[test]
 fn a_case_expression_keeps_the_scope_of_its_branches() {
     let _: Expr<String, Order> = Expr::<String>::case()
         .when(Expr::column::<OrderTotal>().gt(10.0), "large")

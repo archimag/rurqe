@@ -2,7 +2,8 @@
 
 use super::ast::{ExprKind, MergeDialect, MergedDialect, RequiresDistinctFrom, RequiresGreatest};
 use super::builder::{Aggregate, Expr, NonAggregate};
-use super::ops::IntoExpr;
+use super::operand::FunctionOperand;
+use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use crate::schema::Column;
 
@@ -84,12 +85,15 @@ pub fn max<C: Column>(_col: C) -> Expr<C::RustType, C::Table, Aggregate> {
     Expr::<C::RustType>::max::<C>()
 }
 
-/// Builds a `COALESCE(col, fallback)` expression for the column `col`.
+/// Builds a `COALESCE(first, fallback)` expression over its operands.
 ///
-/// The fallback is bound as a parameter, so it must be compatible with the
-/// column's Rust type. The produced expression carries the tables of both
-/// operands instead of degrading into a constant, so a grouped query rejects it
-/// unless the column it reads is grouped:
+/// Both operands are accepted through the [`FunctionOperand`] contract, so the
+/// call combines column markers, expressions built from them, and bound values
+/// of the result type. The produced expression keeps the tables of both
+/// operands instead of degrading into a constant, and it keeps the aggregation
+/// marker its operands contribute, so a call written over an aggregate stays an
+/// aggregate and remains projectable from a grouped query, while a call reading
+/// a bare column stays rejected unless that column is grouped:
 ///
 /// ```compile_fail
 /// use rurqe_core::dialect::Dialect;
@@ -123,93 +127,121 @@ pub fn max<C: Column>(_col: C) -> Expr<C::RustType, C::Table, Aggregate> {
 ///         .select((OrderUserId, coalesce(OrderTotal, 0.0)));
 /// }
 /// ```
-pub fn coalesce<C, V>(_col: C, fallback: V) -> Expr<C::RustType, Merged<C::Table, V::Scope>>
+#[allow(clippy::type_complexity)]
+pub fn coalesce<A, B, T>(
+    first: A,
+    fallback: B,
+) -> Expr<
+    T,
+    Merged<A::Scope, B::Scope>,
+    CombinedAggr<A::Aggr, B::Aggr, B::Scope>,
+    MergedDialect<A::Dialect, B::Dialect>,
+>
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
-    V: IntoExpr<C::RustType>,
+    A: FunctionOperand<T>,
+    B: FunctionOperand<T>,
+    A::Scope: MergeScope<B::Scope>,
+    A::Dialect: MergeDialect<B::Dialect>,
+    A::Aggr: CombineAggr<B::Aggr, B::Scope>,
 {
     Expr::new(ExprKind::Function {
         name: "COALESCE",
-        args: vec![C::expr_kind(), fallback.into_expr_kind()],
+        args: vec![first.into_operand_kind(), fallback.into_operand_kind()],
     })
 }
 
-/// Builds a `NULLIF(operand, other)` expression for the column `operand`.
+/// Builds a `NULLIF(operand, other)` expression over its operands.
 ///
-/// The function yields SQL `NULL` when both operands are equal and the operand
+/// Both operands are accepted through the [`FunctionOperand`] contract, and the
+/// function yields SQL `NULL` when both operands are equal and the operand
 /// itself otherwise, which turns a sentinel value into an absent one without
-/// spelling out a `CASE` expression. The produced expression keeps the tables of
-/// both operands, so a grouped query rejects it unless the column it reads is
-/// grouped.
-pub fn nullif<C, V>(_operand: C, other: V) -> Expr<C::RustType, Merged<C::Table, V::Scope>>
+/// spelling out a `CASE` expression. The produced expression keeps the tables
+/// of both operands and the aggregation marker they contribute, so a grouped
+/// query rejects it unless every column it reads is grouped or aggregated.
+#[allow(clippy::type_complexity)]
+pub fn nullif<A, B, T>(
+    operand: A,
+    other: B,
+) -> Expr<
+    T,
+    Merged<A::Scope, B::Scope>,
+    CombinedAggr<A::Aggr, B::Aggr, B::Scope>,
+    MergedDialect<A::Dialect, B::Dialect>,
+>
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
-    V: IntoExpr<C::RustType>,
+    A: FunctionOperand<T>,
+    B: FunctionOperand<T>,
+    A::Scope: MergeScope<B::Scope>,
+    A::Dialect: MergeDialect<B::Dialect>,
+    A::Aggr: CombineAggr<B::Aggr, B::Scope>,
 {
     Expr::new(ExprKind::Function {
         name: "NULLIF",
-        args: vec![C::expr_kind(), other.into_expr_kind()],
+        args: vec![operand.into_operand_kind(), other.into_operand_kind()],
     })
 }
 
-/// Builds a `GREATEST(operand, ...)` expression over the column `operand`.
+/// Builds a `GREATEST(first, ...)` expression over its operands.
 ///
 /// The function yields the largest of its operands and ignores SQL `NULL`
 /// values, so an absent candidate never wins the comparison. The remaining
-/// operands are collected from `others`, while the column anchoring the call
-/// fixes the type every operand has to be compatible with. The produced
-/// expression keeps the tables of all operands.
+/// operands are collected from `others`, and every operand is accepted through
+/// the [`FunctionOperand`] contract. The produced expression keeps the tables
+/// of all operands and the aggregation marker they contribute, so a call
+/// written over an aggregate stays projectable from a grouped query.
 #[allow(clippy::type_complexity)]
-pub fn greatest<C, I, V>(
-    _operand: C,
+pub fn greatest<A, I, V, T>(
+    first: A,
     others: I,
 ) -> Expr<
-    C::RustType,
-    Merged<C::Table, V::Scope>,
-    NonAggregate,
-    MergedDialect<RequiresGreatest, V::Dialect>,
+    T,
+    Merged<A::Scope, V::Scope>,
+    CombinedAggr<A::Aggr, V::Aggr, V::Scope>,
+    MergedDialect<MergedDialect<RequiresGreatest, A::Dialect>, V::Dialect>,
 >
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
+    A: FunctionOperand<T>,
     I: IntoIterator<Item = V>,
-    V: IntoExpr<C::RustType>,
-    RequiresGreatest: MergeDialect<V::Dialect>,
+    V: FunctionOperand<T>,
+    A::Scope: MergeScope<V::Scope>,
+    RequiresGreatest: MergeDialect<A::Dialect>,
+    MergedDialect<RequiresGreatest, A::Dialect>: MergeDialect<V::Dialect>,
+    A::Aggr: CombineAggr<V::Aggr, V::Scope>,
 {
-    let mut args = vec![C::expr_kind()];
-    args.extend(others.into_iter().map(|value| value.into_expr_kind()));
+    let mut args = vec![first.into_operand_kind()];
+    args.extend(others.into_iter().map(|value| value.into_operand_kind()));
     Expr::new(ExprKind::Function {
         name: "GREATEST",
         args,
     })
 }
 
-/// Builds a `LEAST(operand, ...)` expression over the column `operand`.
+/// Builds a `LEAST(first, ...)` expression over its operands.
 ///
 /// The function is the mirror image of [`greatest`]: it yields the smallest of
-/// its operands, ignores SQL `NULL` values, and keeps the tables of every
-/// operand.
+/// its operands, ignores SQL `NULL` values, and keeps the tables and the
+/// aggregation marker of every operand.
 #[allow(clippy::type_complexity)]
-pub fn least<C, I, V>(
-    _operand: C,
+pub fn least<A, I, V, T>(
+    first: A,
     others: I,
 ) -> Expr<
-    C::RustType,
-    Merged<C::Table, V::Scope>,
-    NonAggregate,
-    MergedDialect<RequiresGreatest, V::Dialect>,
+    T,
+    Merged<A::Scope, V::Scope>,
+    CombinedAggr<A::Aggr, V::Aggr, V::Scope>,
+    MergedDialect<MergedDialect<RequiresGreatest, A::Dialect>, V::Dialect>,
 >
 where
-    C: Column,
-    C::Table: MergeScope<V::Scope>,
+    A: FunctionOperand<T>,
     I: IntoIterator<Item = V>,
-    V: IntoExpr<C::RustType>,
-    RequiresGreatest: MergeDialect<V::Dialect>,
+    V: FunctionOperand<T>,
+    A::Scope: MergeScope<V::Scope>,
+    RequiresGreatest: MergeDialect<A::Dialect>,
+    MergedDialect<RequiresGreatest, A::Dialect>: MergeDialect<V::Dialect>,
+    A::Aggr: CombineAggr<V::Aggr, V::Scope>,
 {
-    let mut args = vec![C::expr_kind()];
-    args.extend(others.into_iter().map(|value| value.into_expr_kind()));
+    let mut args = vec![first.into_operand_kind()];
+    args.extend(others.into_iter().map(|value| value.into_operand_kind()));
     Expr::new(ExprKind::Function {
         name: "LEAST",
         args,
