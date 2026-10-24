@@ -7,7 +7,9 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{ColumnDef, EnumDef, IndexDef, SchemaCatalog, TableDef};
+use rurqe_migrate::catalog::{
+    CheckDef, ColumnDef, EnumDef, IndexDef, SchemaCatalog, TableDef, TriggerDef, ViewDef,
+};
 
 /// Structural schema diff describing exact discrepancies.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -18,6 +20,12 @@ pub struct SchemaDiff {
     pub missing_enums: Vec<String>,
     pub extra_enums: Vec<String>,
     pub altered_enums: Vec<String>,
+    pub missing_views: Vec<String>,
+    pub extra_views: Vec<String>,
+    pub altered_views: Vec<String>,
+    pub missing_triggers: Vec<String>,
+    pub extra_triggers: Vec<String>,
+    pub altered_triggers: Vec<String>,
 }
 
 impl SchemaDiff {
@@ -29,6 +37,12 @@ impl SchemaDiff {
             && self.missing_enums.is_empty()
             && self.extra_enums.is_empty()
             && self.altered_enums.is_empty()
+            && self.missing_views.is_empty()
+            && self.extra_views.is_empty()
+            && self.altered_views.is_empty()
+            && self.missing_triggers.is_empty()
+            && self.extra_triggers.is_empty()
+            && self.altered_triggers.is_empty()
     }
 
     /// Renders every discrepancy as an indented bullet, one line per finding.
@@ -59,6 +73,42 @@ impl SchemaDiff {
             writeln!(
                 f,
                 "  - Enum `{enum_name}` definition differs between {live} and {expected}."
+            )?;
+        }
+        for view_name in &self.missing_views {
+            writeln!(
+                f,
+                "  - View `{view_name}` is declared in {expected} but missing from {live}."
+            )?;
+        }
+        for view_name in &self.extra_views {
+            writeln!(
+                f,
+                "  - View `{view_name}` exists in {live} but is missing from {expected}."
+            )?;
+        }
+        for view_name in &self.altered_views {
+            writeln!(
+                f,
+                "  - View `{view_name}` definition differs between {live} and {expected}."
+            )?;
+        }
+        for trigger_name in &self.missing_triggers {
+            writeln!(
+                f,
+                "  - Trigger `{trigger_name}` is declared in {expected} but missing from {live}."
+            )?;
+        }
+        for trigger_name in &self.extra_triggers {
+            writeln!(
+                f,
+                "  - Trigger `{trigger_name}` exists in {live} but is missing from {expected}."
+            )?;
+        }
+        for trigger_name in &self.altered_triggers {
+            writeln!(
+                f,
+                "  - Trigger `{trigger_name}` definition differs between {live} and {expected}."
             )?;
         }
         for table in &self.missing_tables {
@@ -102,6 +152,24 @@ impl SchemaDiff {
                 writeln!(
                     f,
                     "  - Table `{table}`: foreign key constraints differ between {live} and {expected}."
+                )?;
+            }
+            for check in &diff.missing_checks {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: check `{check}` is in {expected} but missing from {live}."
+                )?;
+            }
+            for check in &diff.extra_checks {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: check `{check}` exists in {live} but is missing from {expected}."
+                )?;
+            }
+            for check in &diff.altered_checks {
+                writeln!(
+                    f,
+                    "  - Table `{table}`: check `{check}` definition differs between {live} and {expected}."
                 )?;
             }
             for index in &diff.missing_indexes {
@@ -162,6 +230,9 @@ pub struct TableDiff {
     pub altered_columns: Vec<String>,
     pub primary_key_mismatch: bool,
     pub foreign_key_mismatch: bool,
+    pub missing_checks: Vec<String>,
+    pub extra_checks: Vec<String>,
+    pub altered_checks: Vec<String>,
     pub missing_indexes: Vec<String>,
     pub extra_indexes: Vec<String>,
     pub altered_indexes: Vec<String>,
@@ -174,6 +245,9 @@ impl TableDiff {
             && self.altered_columns.is_empty()
             && !self.primary_key_mismatch
             && !self.foreign_key_mismatch
+            && self.missing_checks.is_empty()
+            && self.extra_checks.is_empty()
+            && self.altered_checks.is_empty()
             && self.missing_indexes.is_empty()
             && self.extra_indexes.is_empty()
             && self.altered_indexes.is_empty()
@@ -445,6 +519,65 @@ pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalo
         }
     }
 
+    let live_views: BTreeMap<&str, &ViewDef> =
+        live.views.iter().map(|v| (v.name.as_str(), v)).collect();
+    let expected_views: BTreeMap<&str, &ViewDef> = expected
+        .views
+        .iter()
+        .map(|v| (v.name.as_str(), v))
+        .collect();
+
+    let all_views: BTreeSet<&str> = live_views
+        .keys()
+        .copied()
+        .chain(expected_views.keys().copied())
+        .collect();
+
+    for view_name in all_views {
+        match (live_views.get(view_name), expected_views.get(view_name)) {
+            (None, Some(_)) => diff.missing_views.push(view_name.to_owned()),
+            (Some(_), None) => diff.extra_views.push(view_name.to_owned()),
+            (Some(live_view), Some(expected_view)) => {
+                if live_view.definition != expected_view.definition {
+                    diff.altered_views.push(view_name.to_owned());
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    let live_triggers: BTreeMap<&str, &TriggerDef> =
+        live.triggers.iter().map(|t| (t.name.as_str(), t)).collect();
+    let expected_triggers: BTreeMap<&str, &TriggerDef> = expected
+        .triggers
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
+
+    let all_triggers: BTreeSet<&str> = live_triggers
+        .keys()
+        .copied()
+        .chain(expected_triggers.keys().copied())
+        .collect();
+
+    for trigger_name in all_triggers {
+        match (
+            live_triggers.get(trigger_name),
+            expected_triggers.get(trigger_name),
+        ) {
+            (None, Some(_)) => diff.missing_triggers.push(trigger_name.to_owned()),
+            (Some(_), None) => diff.extra_triggers.push(trigger_name.to_owned()),
+            (Some(live_trigger), Some(expected_trigger)) => {
+                if live_trigger.table_name != expected_trigger.table_name
+                    || live_trigger.definition != expected_trigger.definition
+                {
+                    diff.altered_triggers.push(trigger_name.to_owned());
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
     let live_tables: BTreeMap<&str, &TableDef> =
         live.tables.iter().map(|t| (t.name.as_str(), t)).collect();
     let expected_tables: BTreeMap<&str, &TableDef> = expected
@@ -474,6 +607,15 @@ pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalo
     }
 
     diff
+}
+
+/// Collapses internal whitespace runs and trims the ends of a check expression.
+///
+/// Introspection may report the SQL text of a check constraint with different
+/// spacing than the snapshot records, so two constraints describing the same
+/// predicate are compared only after their whitespace is normalised.
+fn normalize_expression(expression: &str) -> String {
+    expression.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
@@ -511,6 +653,38 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
 
     if live.primary_key != expected.primary_key {
         diff.primary_key_mismatch = true;
+    }
+
+    let live_checks: BTreeMap<&str, &CheckDef> = live
+        .checks
+        .iter()
+        .map(|check| (check.name.as_str(), check))
+        .collect();
+    let expected_checks: BTreeMap<&str, &CheckDef> = expected
+        .checks
+        .iter()
+        .map(|check| (check.name.as_str(), check))
+        .collect();
+
+    let all_checks: BTreeSet<&str> = live_checks
+        .keys()
+        .copied()
+        .chain(expected_checks.keys().copied())
+        .collect();
+
+    for check in all_checks {
+        match (live_checks.get(check), expected_checks.get(check)) {
+            (None, Some(_)) => diff.missing_checks.push(check.to_owned()),
+            (Some(_), None) => diff.extra_checks.push(check.to_owned()),
+            (Some(live_check), Some(expected_check)) => {
+                if normalize_expression(&live_check.expression)
+                    != normalize_expression(&expected_check.expression)
+                {
+                    diff.altered_checks.push(check.to_owned());
+                }
+            }
+            (None, None) => {}
+        }
     }
 
     let live_foreign_keys: BTreeMap<&str, &_> = live
@@ -551,6 +725,9 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
             (Some(live_index), Some(expected_index)) => {
                 if live_index.unique != expected_index.unique
                     || live_index.columns != expected_index.columns
+                    || live_index.method != expected_index.method
+                    || live_index.predicate != expected_index.predicate
+                    || live_index.expression != expected_index.expression
                 {
                     diff.altered_indexes.push(index.to_owned());
                 }
@@ -565,7 +742,7 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rurqe_migrate::catalog::{ForeignKeyDef, IndexDef, TypeKind};
+    use rurqe_migrate::catalog::{ForeignKeyAction, ForeignKeyDef, IndexDef, TypeKind};
 
     fn users_table(indexes: Vec<IndexDef>) -> TableDef {
         let mut table = TableDef::new(
@@ -977,5 +1154,207 @@ mod tests {
     fn hash_extraction_prefers_real_constant_after_comment() {
         let code = "// pub const SCHEMA_HASH: &str = \"dead\";\npub const SCHEMA_HASH: &str = \"live\";";
         assert_eq!(extract_schema_hash(code), Some("live".to_owned()));
+    }
+
+    #[test]
+    fn view_drift_is_reported() {
+        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())])
+            .with_views(vec![ViewDef::new("active_users", "SELECT id FROM users")]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(Vec::new())]);
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.missing_views, vec!["active_users".to_owned()]);
+                assert!(report.to_string().contains("View `active_users`"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        let live_extra = SchemaCatalog::new(vec![users_table(Vec::new())]).with_views(vec![
+            ViewDef::new("active_users", "SELECT id FROM users"),
+            ViewDef::new("archived_users", "SELECT id FROM users"),
+        ]);
+        match verify_drift(&live_extra, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.extra_views, vec!["archived_users".to_owned()]);
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())]).with_views(vec![
+            ViewDef::new("active_users", "SELECT id, email FROM users"),
+        ]);
+        match verify_drift(&live_altered, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.altered_views, vec!["active_users".to_owned()]);
+                assert!(report
+                    .to_string()
+                    .contains("View `active_users` definition differs"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trigger_drift_is_reported() {
+        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())])
+            .with_triggers(vec![TriggerDef::new("users_audit", "users", "BEGIN; END;")]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(Vec::new())]);
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.missing_triggers, vec!["users_audit".to_owned()]);
+                assert!(report.to_string().contains("Trigger `users_audit`"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        let live_extra = SchemaCatalog::new(vec![users_table(Vec::new())]).with_triggers(vec![
+            TriggerDef::new("users_audit", "users", "BEGIN; END;"),
+            TriggerDef::new("users_touch", "users", "BEGIN; END;"),
+        ]);
+        match verify_drift(&live_extra, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.extra_triggers, vec!["users_touch".to_owned()]);
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())]).with_triggers(vec![
+            TriggerDef::new("users_audit", "users", "BEGIN; UPDATE x; END;"),
+        ]);
+        match verify_drift(&live_altered, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(report.diff.altered_triggers, vec!["users_audit".to_owned()]);
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_constraint_drift_is_reported() {
+        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())
+            .with_check(CheckDef::new("users_age_check", "age >= 0"))]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(Vec::new())]);
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].missing_checks,
+                    vec!["users_age_check".to_owned()]
+                );
+                assert!(report.to_string().contains("users_age_check"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        let live_extra = SchemaCatalog::new(vec![users_table(Vec::new())
+            .with_check(CheckDef::new("users_age_check", "age >= 0"))
+            .with_check(CheckDef::new("users_name_check", "length(email) > 0"))]);
+        match verify_drift(&live_extra, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].extra_checks,
+                    vec!["users_name_check".to_owned()]
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+
+        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())
+            .with_check(CheckDef::new("users_age_check", "age > 0"))]);
+        match verify_drift(&live_altered, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].altered_checks,
+                    vec!["users_age_check".to_owned()]
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn whitespace_differences_in_check_expressions_are_ignored() {
+        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())
+            .with_check(CheckDef::new("users_age_check", "age >= 0"))]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(Vec::new())
+            .with_check(CheckDef::new("users_age_check", "age   >=    0"))]);
+        assert!(verify_drift(&live, &lock, None).is_ok());
+    }
+
+    #[test]
+    fn index_attribute_drift_is_reported() {
+        let baseline = SchemaCatalog::new(vec![users_table(vec![
+            IndexDef::new("users_email_idx", vec!["email".to_owned()], false)
+                .with_method("btree")
+                .with_predicate("email IS NOT NULL"),
+        ])]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![users_table(vec![
+            IndexDef::new("users_email_idx", vec!["email".to_owned()], false)
+                .with_method("hash"),
+        ])]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert_eq!(
+                    report.diff.table_diffs["users"].altered_indexes,
+                    vec!["users_email_idx".to_owned()]
+                );
+                assert!(report.to_string().contains("users_email_idx"));
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn foreign_key_action_drift_is_reported() {
+        let baseline = SchemaCatalog::new(vec![TableDef::new(
+            "orders",
+            vec![ColumnDef::new("user_id", TypeKind::Int64, false)],
+            Vec::new(),
+        )
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "orders_user_id_fkey",
+                vec!["user_id".to_owned()],
+                "users",
+                vec!["id".to_owned()],
+            )
+            .with_actions(ForeignKeyAction::Cascade, ForeignKeyAction::NoAction),
+        )]);
+        let lock = baseline.to_lock();
+
+        let live = SchemaCatalog::new(vec![TableDef::new(
+            "orders",
+            vec![ColumnDef::new("user_id", TypeKind::Int64, false)],
+            Vec::new(),
+        )
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "orders_user_id_fkey",
+                vec!["user_id".to_owned()],
+                "users",
+                vec!["id".to_owned()],
+            )
+            .with_actions(ForeignKeyAction::Restrict, ForeignKeyAction::NoAction),
+        )]);
+
+        match verify_drift(&live, &lock, None).unwrap_err() {
+            DriftError::Drift(report) => {
+                assert!(
+                    report.diff.table_diffs["orders"].foreign_key_mismatch,
+                    "an action change must surface as a foreign key mismatch"
+                );
+            }
+            other => panic!("expected Drift, got {other:?}"),
+        }
     }
 }
