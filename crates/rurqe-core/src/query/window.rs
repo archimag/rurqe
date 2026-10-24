@@ -571,7 +571,8 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Cols: 'static + Sen
     }
 }
 
-impl<Tables, T, Scope, Cols, D, P> SelectTargetInScope<Tables, P> for WindowExpr<T, Scope, Cols, D>
+impl<Tables, T, Scope, Cols, D, StmtD, P> SelectTargetInScope<Tables, P, StmtD>
+    for WindowExpr<T, Scope, Cols, D>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
 {

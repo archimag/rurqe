@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::SupportsAggregateFilter;
-use crate::expr::{Aggregate, Expr, ExprKind, FilteredAggregate, NonAggregate};
+use crate::expr::{Aggregate, DialectInScope, Expr, ExprKind, FilteredAggregate, NonAggregate};
 use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
 
 use super::scope::{NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope};
@@ -43,8 +43,8 @@ impl<C: Column> SelectTarget for C {
     }
 }
 
-impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
-    for Expr<T, Scope, Aggr>
+impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr, D> SelectTarget
+    for Expr<T, Scope, Aggr, D>
 {
     type RustType = T;
 
@@ -288,21 +288,24 @@ where
     label = "the projected column belongs to a table the query does not select from",
     note = "introduce the column's table with `from` or a join before projecting it"
 )]
-pub trait SelectTargetInScope<Tables, P> {
+pub trait SelectTargetInScope<Tables, P, D = ()> {
     /// The type produced when the item is projected from this scope.
     type Output;
 }
 
-impl<Tables, C, P> SelectTargetInScope<Tables, P> for C
+impl<Tables, C, P, D> SelectTargetInScope<Tables, P, D> for C
 where
     C: Column + ColumnInScope<Tables, P>,
 {
     type Output = <C as ColumnInScope<Tables, P>>::Output;
 }
 
-impl<Tables, T, Scope, Aggr, P> SelectTargetInScope<Tables, P> for Expr<T, Scope, Aggr>
+impl<Tables, T, Scope, Aggr, ExprD, D, P> SelectTargetInScope<Tables, P, D>
+    for Expr<T, Scope, Aggr, ExprD>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    ExprD: DialectInScope<D>,
+    Aggr: AggregateInDialect<D>,
 {
     type Output = T;
 }
@@ -313,16 +316,16 @@ where
     label = "one of the projected columns belongs to a table the query does not select from",
     note = "introduce the column's table with `from` or a join before projecting it"
 )]
-pub trait SelectionFor<Tables, Positions>: Selection {
+pub trait SelectionFor<Tables, Positions, D = ()>: Selection {
     /// The row type produced by the selection in this relational context.
     type Row;
 }
 
 /// Statically asserts that every projection item of a selection is in the query scope.
-pub trait SelectionInScope<Tables, Positions>: Selection {}
+pub trait SelectionInScope<Tables, Positions, D = ()>: Selection {}
 
-impl<Tables, Positions, S> SelectionInScope<Tables, Positions> for S where
-    S: SelectionFor<Tables, Positions>
+impl<Tables, Positions, D, S> SelectionInScope<Tables, Positions, D> for S where
+    S: SelectionFor<Tables, Positions, D>
 {
 }
 
@@ -333,12 +336,12 @@ impl<Tables, Positions, S> SelectionInScope<Tables, Positions> for S where
 
 macro_rules! impl_selection_for {
     ($($target:ident $position:ident),+) => {
-        impl<Tables, $($target, $position),+> SelectionFor<Tables, ($($position,)+)>
+        impl<Tables, D, $($target, $position),+> SelectionFor<Tables, ($($position,)+), D>
             for ($($target,)+)
         where
-            $($target: SelectTarget + SelectTargetInScope<Tables, $position>,)+
+            $($target: SelectTarget + SelectTargetInScope<Tables, $position, D>,)+
         {
-            type Row = ($(<$target as SelectTargetInScope<Tables, $position>>::Output,)+);
+            type Row = ($(<$target as SelectTargetInScope<Tables, $position, D>>::Output,)+);
         }
     };
 }

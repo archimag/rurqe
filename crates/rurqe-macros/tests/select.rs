@@ -50,9 +50,9 @@ trait TestSelectFrom<T: rurqe_core::schema::Table, Positions>: Sized {
 impl<S, T, Positions> TestSelectFrom<T, Positions> for S
 where
     T: rurqe_core::schema::Table,
-    S: SelectionFor<T, Positions> + Send + Sync + 'static,
+    S: SelectionFor<T, Positions, TestDialect> + Send + Sync + 'static,
 {
-    type Row = <S as SelectionFor<T, Positions>>::Row;
+    type Row = <S as SelectionFor<T, Positions, TestDialect>>::Row;
 
     fn from(self, table: T) -> SelectQuery<TestDialect, T, Self::Row, HasProjection> {
         SelectQuery::<TestDialect>::new()
@@ -71,15 +71,15 @@ where
 }
 
 /// Decodes `values` into the row type `S` produces in the relational scope `Tables`.
-fn decode_scoped<S, Tables, Positions>(
+fn decode_scoped<S, Tables, Positions, D>(
     _selection: &S,
     values: &[SqlVal],
-) -> Option<<S as SelectionFor<Tables, Positions>>::Row>
+) -> Option<<S as SelectionFor<Tables, Positions, D>>::Row>
 where
-    S: SelectionFor<Tables, Positions>,
-    <S as SelectionFor<Tables, Positions>>::Row: FromRow,
+    S: SelectionFor<Tables, Positions, D>,
+    <S as SelectionFor<Tables, Positions, D>>::Row: FromRow,
 {
-    <S as SelectionFor<Tables, Positions>>::Row::from_row(values)
+    <S as SelectionFor<Tables, Positions, D>>::Row::from_row(values)
 }
 
 /// Reads the keys a record publishes to the nested projection aggregating it.
@@ -191,9 +191,11 @@ fn selection_starts_a_query_from_a_table_value() {
 fn left_joined_columns_are_lifted_into_options() {
     let selection = select!(UserId, OrderTotal);
 
-    let row =
-        decode_scoped::<_, LeftJoined<User, Order>, _>(&selection, &[SqlVal::I64(1), SqlVal::Null])
-            .expect("row decodes");
+    let row = decode_scoped::<_, LeftJoined<User, Order>, _, TestDialect>(
+        &selection,
+        &[SqlVal::I64(1), SqlVal::Null],
+    )
+    .expect("row decodes");
 
     assert_eq!(row.user_id, 1);
     assert_eq!(row.order_total, None);
@@ -350,9 +352,9 @@ mod question_mark_dialect_scope {
     impl<S, T, Positions> QuestionSelectFrom<T, Positions> for S
     where
         T: Table,
-        S: SelectionFor<T, Positions> + Send + Sync + 'static,
+        S: SelectionFor<T, Positions, QuestionDialect> + Send + Sync + 'static,
     {
-        type Row = <S as SelectionFor<T, Positions>>::Row;
+        type Row = <S as SelectionFor<T, Positions, QuestionDialect>>::Row;
 
         fn from(self, table: T) -> SelectQuery<QuestionDialect, T, Self::Row, HasProjection> {
             SelectQuery::<QuestionDialect>::new()

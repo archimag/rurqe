@@ -378,12 +378,12 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     ) -> GroupedQuery<
         D,
         Tables,
-        <S as SelectionFor<Tables, Positions>>::Row,
+        <S as SelectionFor<Tables, Positions, D>>::Row,
         GroupByCols,
         HasProjection,
     >
     where
-        S: SelectionFor<Tables, Positions>
+        S: SelectionFor<Tables, Positions, D>
             + GroupedSelection<GroupByCols, GroupPositions>
             + Send
             + Sync

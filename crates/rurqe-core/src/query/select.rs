@@ -448,10 +448,16 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     pub fn select<S, Positions>(
         mut self,
         selection: S,
-    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, HasProjection, Lock>
+    ) -> SelectQuery<
+        D,
+        Tables,
+        <S as SelectionFor<Tables, Positions, D>>::Row,
+        HasProjection,
+        Lock,
+    >
     where
         Tables: TableScope,
-        S: SelectionFor<Tables, Positions>,
+        S: SelectionFor<Tables, Positions, D>,
     {
         let mut projections = Vec::new();
         Selection::push_projections(&selection, &mut projections);

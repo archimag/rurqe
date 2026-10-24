@@ -103,7 +103,7 @@ where
 // the enclosing scope and resolves at the first position of every scope. Fixing
 // the position keeps the marker determined instead of leaving inference to pick
 // one of the positions a scope may offer.
-impl<Tables, D, S, Row> SelectTargetInScope<Tables, At<0>>
+impl<Tables, D, StmtD, S, Row> SelectTargetInScope<Tables, At<0>, StmtD>
     for NestMany<SelectQuery<D, S, Row, HasProjection>>
 where
     D: Dialect,
@@ -128,7 +128,7 @@ where
 
 // A single nested row reads from its own statement as well, so it resolves at the
 // same fixed position as the collection form.
-impl<Tables, D, S, Row> SelectTargetInScope<Tables, At<0>>
+impl<Tables, D, StmtD, S, Row> SelectTargetInScope<Tables, At<0>, StmtD>
     for NestOne<SelectQuery<D, S, Row, HasProjection>>
 where
     D: Dialect,

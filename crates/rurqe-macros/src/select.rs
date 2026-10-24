@@ -96,7 +96,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #field: ::rurqe_core::nested::nested_field(&document, #key)?,
         });
         scope_bounds.extend(quote! {
-            #element: ::rurqe_core::query::SelectTargetInScope<Tables, #position>,
+            #element: ::rurqe_core::query::SelectTargetInScope<Tables, #position, __D>,
         });
         grouped_bounds.extend(quote! {
             #element: ::rurqe_core::query::GroupedSelectTarget<__G, #position>,
@@ -105,13 +105,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #element: ::rurqe_core::query::SelectTargetInScope<
                 __T,
                 ::rurqe_core::schema::At<0>,
+                __D,
             >,
         });
         from_positions.extend(quote! {
             ::rurqe_core::schema::At<0>,
         });
         scoped_args.push(quote! {
-            <#element as ::rurqe_core::query::SelectTargetInScope<Tables, #position>>::Output
+            <#element as ::rurqe_core::query::SelectTargetInScope<Tables, #position, __D>>::Output
         });
         record_args.push(quote! {
             <#element as ::rurqe_core::query::SelectTarget>::RustType
@@ -254,8 +255,8 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 }
             }
 
-            impl<Tables, #(#position_params,)* #(#element_params,)*>
-                ::rurqe_core::query::SelectionFor<Tables, (#(#position_args,)*)>
+            impl<Tables, __D, #(#position_params,)* #(#element_params,)*>
+                ::rurqe_core::query::SelectionFor<Tables, (#(#position_args,)*), __D>
                 for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds
@@ -305,14 +306,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 ) -> ::rurqe_core::query::SelectQuery<
                     __D,
                     __T,
-                    <Self as ::rurqe_core::query::SelectionFor<__T, (#from_positions)>>::Row,
+                    <Self as ::rurqe_core::query::SelectionFor<__T, (#from_positions), __D>>::Row,
                     ::rurqe_core::query::HasProjection,
                 >
                 where
                     __D: ::rurqe_core::dialect::Dialect,
                     __T: ::rurqe_core::schema::Table,
                     #from_bounds
-                    Self: ::rurqe_core::query::SelectionFor<__T, (#from_positions)>
+                    Self: ::rurqe_core::query::SelectionFor<__T, (#from_positions), __D>
                         + ::core::marker::Send
                         + ::core::marker::Sync
                         + 'static,

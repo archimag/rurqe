@@ -118,9 +118,12 @@ macro_rules! pin_dialect_version {
         impl<S, T, Positions> SelectFrom<T, Positions> for S
         where
             T: Table,
-            S: $crate::core::query::SelectionFor<T, Positions> + Send + Sync + 'static,
+            S: $crate::core::query::SelectionFor<T, Positions, $dialect>
+                + Send
+                + Sync
+                + 'static,
         {
-            type Row = <S as $crate::core::query::SelectionFor<T, Positions>>::Row;
+            type Row = <S as $crate::core::query::SelectionFor<T, Positions, $dialect>>::Row;
 
             fn from(self, table: T) -> SelectQuery<$dialect, T, Self::Row, HasProjection> {
                 SelectQuery::new()
