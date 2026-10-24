@@ -95,7 +95,7 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
     let selection = cols!(UserId, OrderId, OrderTotal);
 
     let built = select_from::<Postgres<Pg16>, User>()
-        .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
+        .inner_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
         .select(cols!(UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
         .build();
@@ -148,7 +148,7 @@ fn full_outer_join_lifts_both_sides_into_options() {
     // names the projected row type only.
     type OptionalIds = (Option<i64>, Option<i64>);
 
-    let query: SelectQuery<_, _, OptionalIds, _> = select_from::<Postgres<Pg16>, User>()
+    let query: Query<_, _, OptionalIds> = select_from::<Postgres<Pg16>, User>()
         .full_outer_join_table(
             Order,
             Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
@@ -184,7 +184,7 @@ fn left_join_lifts_joined_columns_into_options() {
 
     let query = SelectQuery::<Postgres<Pg14>>::new()
         .from::<User>()
-        .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64));
+        .left_join_table(Order, Expr::column::<OrderUserId>().eq(3i64));
     let total = query.nullable::<OrderTotal>();
     let built = query.select((UserId, total)).build();
 
@@ -277,7 +277,7 @@ fn aggregate_functions_cover_avg_min_and_max() {
 fn joined_aggregations_group_rows_by_the_joined_table() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
-        .inner_join::<User, _, _>(Expr::column::<UserId>().eq(7i64))
+        .inner_join_table(User, Expr::column::<UserId>().eq(7i64))
         .group_by(UserName)
         .select((UserName,))
         .having(Expr::count_all().gt(1i64))
@@ -351,7 +351,8 @@ fn cte_subquery_composes_with_main_query_and_decodes_rows() {
 
     let built = select_from::<Postgres<Pg16>, User>()
         .with(summary_cte)
-        .inner_join::<UserSummary, _, _>(
+        .inner_join_table(
+            UserSummary,
             Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()),
         )
         .select((UserId, UserName, SummaryOrderCount))
@@ -466,7 +467,7 @@ fn a_left_joined_derived_table_lifts_its_columns_into_options() {
     // `Option<i64>`, exactly like the columns of a left-joined stored table. Only
     // the row type is pinned: the scope follows from the join and the projection
     // state from the selection, so spelling them out would state the same twice.
-    let query: SelectQuery<_, _, (i64, Option<i64>), _> = select_from::<Postgres<Pg16>, User>()
+    let query: Query<_, _, (i64, Option<i64>)> = select_from::<Postgres<Pg16>, User>()
         .left_join_subquery(
             counts,
             Expr::column::<SummaryUserId>().eq(Expr::column::<UserId>()),
@@ -627,7 +628,7 @@ fn subquery_predicates_filter_rows_and_bind_parameters_in_order() {
 }
 
 /// Builds a `CASE`-labelled customer query guarded by a correlated `EXISTS` predicate.
-fn active_customers() -> SelectQuery<Postgres<Pg16>, User, (i64, String), HasProjection> {
+fn active_customers() -> Query<Postgres<Pg16>, User, (i64, String)> {
     select_from::<Postgres<Pg16>, User>()
         .select((
             UserId,
@@ -666,7 +667,7 @@ fn set_operations_combine_case_and_exists_queries() {
         ]
     );
 
-    fn base() -> SelectQuery<Postgres<Pg16>, Order, (i64,), HasProjection> {
+    fn base() -> Query<Postgres<Pg16>, Order, (i64,)> {
         select_from::<Postgres<Pg16>, Order>().select((OrderUserId,))
     }
 
@@ -681,7 +682,7 @@ fn set_operations_combine_case_and_exists_queries() {
 }
 
 /// Builds the most recent order of the outer `users` row.
-fn latest_order_per_user() -> SelectQuery<Postgres<Pg16>, Order, (f64,), HasProjection> {
+fn latest_order_per_user() -> Query<Postgres<Pg16>, Order, (f64,)> {
     select_from::<Postgres<Pg16>, Order>()
         .select((OrderTotal,))
         .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
@@ -1021,7 +1022,7 @@ mod value_based_dsl {
              FROM \"orders\""
         );
 
-        fn active() -> SelectQuery<Postgres, User, (i64,), HasProjection> {
+        fn active() -> Query<Postgres, User, (i64,)> {
             select_from(User).select((UserId,)).where_(UserActive.eq(true))
         }
 
