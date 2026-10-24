@@ -141,6 +141,49 @@ where
 /// scopes of the conditions and results of its branches. Both therefore stay
 /// rejected unless the columns they read are grouped.
 ///
+/// A `CASE` expression propagates the same rule through its branches: a branch
+/// reading a bare column keeps the whole expression per-row, so a grouped query
+/// rejects it unless the column is grouped:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the CASE branch reads `total`, which is not grouped.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((
+///             OrderUserId,
+///             Expr::<f64>::case()
+///                 .when(Expr::column::<OrderTotal>().gt(0.0), 1.0)
+///                 .else_(0.0)
+///                 .end(),
+///         ));
+/// }
+/// ```
+///
 /// Dropping the scope with
 /// [`Expr::without_scope`](crate::expr::Expr::without_scope) — the escape hatch
 /// correlated subqueries are written with — replaces the tables with the

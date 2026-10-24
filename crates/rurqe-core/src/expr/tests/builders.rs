@@ -756,3 +756,31 @@ fn an_operand_reading_a_column_drops_the_aggregation_marker() {
         }
     ));
 }
+
+#[test]
+fn a_case_over_aggregates_stays_an_aggregate() {
+    // Every operand of the CASE is an aggregate or a constant, so the folding
+    // algebra of the builder keeps the finished expression an aggregate, and a
+    // grouped query accepts it as a projection.
+    let tiered: Expr<f64, (Order, Order), Aggregate> = Expr::<f64>::case()
+        .when(sum(OrderTotal).gt(10.0f64), sum(OrderTotal))
+        .else_(0.0f64)
+        .end();
+
+    assert!(matches!(
+        tiered.kind(),
+        ExprKind::Case { branches, .. } if matches!(
+            branches[0].condition,
+            ExprKind::Binary { op: BinaryOp::Gt, .. }
+        )
+    ));
+
+    // A per-row operand stops the expression collapsing the group, so the
+    // finished CASE is rejected by a grouped query unless its column is grouped.
+    let per_row: Expr<f64, (Order, Order), NonAggregate> = Expr::<f64>::case()
+        .when(sum(OrderTotal).gt(10.0f64), OrderTotal)
+        .else_(0.0f64)
+        .end();
+
+    assert!(matches!(per_row.kind(), ExprKind::Case { .. }));
+} 

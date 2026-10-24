@@ -70,6 +70,32 @@ fn a_scalar_function_over_an_aggregate_stays_an_aggregate() {
 }
 
 #[test]
+fn a_grouped_query_accepts_a_case_over_aggregates() {
+    // Every condition and result of the CASE is an aggregate or a constant, so
+    // the expression collapses the rows of a group and the grouped query
+    // accepts it as a projection.
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((
+            OrderUserId,
+            Expr::<f64>::case()
+                .when(Expr::sum::<OrderTotal>().gt(0.0), Expr::sum::<OrderTotal>())
+                .else_(0.0)
+                .end(),
+        ))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", CASE WHEN (SUM(\"total\") > $1) THEN SUM(\"total\") ELSE $2 END \
+         FROM \"orders\" GROUP BY \"user_id\""
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(0.0), SqlVal::F64(0.0)]);
+}
+
+#[test]
 fn a_case_expression_keeps_the_scope_of_its_branches() {
     let _: Expr<String, Order> = Expr::<String>::case()
         .when(Expr::column::<OrderTotal>().gt(10.0), "large")

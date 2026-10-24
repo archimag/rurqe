@@ -569,9 +569,10 @@ fn derived_newtypes_are_case_branches() {
 
     assert!(matches!(id.kind(), ExprKind::Case { .. }));
 
+    let fallback = Address::from_str("addr_0").expect("the address is inside the domain");
     let address = Expr::<Address>::case()
         .when(WalletId.eq(1i64), Expr::column::<WalletAddress>())
-        .else_("addr_0")
+        .else_(fallback)
         .end();
 
     assert!(matches!(address.kind(), ExprKind::Case { .. }));
