@@ -179,37 +179,60 @@ enum CommentScan {
     Sql,
     /// After `--`, until the end of the line.
     LineComment,
-    /// Inside `/* ... */`.
+    /// Inside `/* ... */`, tracking the nesting depth.
     BlockComment,
     /// Inside a `'...'` literal.
     TextLiteral,
     /// Inside a `"..."` identifier.
     QuotedIdentifier,
+    /// Inside a `$tag$ ... $tag$` dollar-quoted body.
+    DollarQuoted,
 }
 
 /// Collects the text of every comment in `sql`, skipping literals.
 ///
-/// String literals and quoted identifiers are tracked so a directive written
-/// inside data never disables the surrounding transaction, and the scanner walks
-/// the text character by character to stay panic-free on malformed SQL.
+/// String literals, quoted identifiers, and dollar-quoted bodies are tracked so a
+/// directive written inside data never disables the surrounding transaction. The
+/// dollar-quote form is the standard way to embed `plpgsql` function bodies in a
+/// PostgreSQL migration, and the quoted body routinely contains `--` and
+/// `/* ... */` sequences that are data rather than comments.
+///
+/// Block comments nest the way PostgreSQL nests them, so `/* a /* b */ c */` is a
+/// single comment. Only the outermost level contributes directive text: the body
+/// of a nested comment is skipped, while text written between nested comments is
+/// collected.
+///
+/// The scanner walks the text character by character to stay panic-free on
+/// malformed SQL.
 fn comment_text(sql: &str) -> String {
+    let characters: Vec<char> = sql.chars().collect();
     let mut comments = String::new();
-    let mut characters = sql.chars().peekable();
     let mut state = CommentScan::Sql;
+    let mut block_depth = 0usize;
+    let mut dollar_tag: Vec<char> = Vec::new();
+    let mut index = 0usize;
 
-    while let Some(current) = characters.next() {
+    while let Some(&current) = characters.get(index) {
         match state {
             CommentScan::Sql => match current {
-                '-' if characters.peek() == Some(&'-') => {
-                    characters.next();
+                '-' if characters.get(index + 1) == Some(&'-') => {
+                    index += 1;
                     state = CommentScan::LineComment;
                 }
-                '/' if characters.peek() == Some(&'*') => {
-                    characters.next();
+                '/' if characters.get(index + 1) == Some(&'*') => {
+                    index += 1;
+                    block_depth = 1;
                     state = CommentScan::BlockComment;
                 }
                 '\'' => state = CommentScan::TextLiteral,
                 '"' => state = CommentScan::QuotedIdentifier,
+                '$' => {
+                    if let Some(delimiter) = dollar_quote_opening(&characters, index) {
+                        index += delimiter.len() - 1;
+                        dollar_tag = delimiter;
+                        state = CommentScan::DollarQuoted;
+                    }
+                }
                 _ => {}
             },
             CommentScan::LineComment => {
@@ -220,17 +243,23 @@ fn comment_text(sql: &str) -> String {
                 }
             }
             CommentScan::BlockComment => {
-                if current == '*' && characters.peek() == Some(&'/') {
-                    characters.next();
-                    state = CommentScan::Sql;
-                } else {
+                if current == '/' && characters.get(index + 1) == Some(&'*') {
+                    index += 1;
+                    block_depth += 1;
+                } else if current == '*' && characters.get(index + 1) == Some(&'/') {
+                    index += 1;
+                    block_depth -= 1;
+                    if block_depth == 0 {
+                        state = CommentScan::Sql;
+                    }
+                } else if block_depth == 1 {
                     comments.push(current);
                 }
             }
             CommentScan::TextLiteral => {
                 if current == '\'' {
-                    if characters.peek() == Some(&'\'') {
-                        characters.next();
+                    if characters.get(index + 1) == Some(&'\'') {
+                        index += 1;
                     } else {
                         state = CommentScan::Sql;
                     }
@@ -238,17 +267,71 @@ fn comment_text(sql: &str) -> String {
             }
             CommentScan::QuotedIdentifier => {
                 if current == '"' {
-                    if characters.peek() == Some(&'"') {
-                        characters.next();
+                    if characters.get(index + 1) == Some(&'"') {
+                        index += 1;
                     } else {
                         state = CommentScan::Sql;
                     }
                 }
             }
+            CommentScan::DollarQuoted => {
+                if current == '$'
+                    && !dollar_tag.is_empty()
+                    && starts_with_at(&characters, index, &dollar_tag)
+                {
+                    index += dollar_tag.len() - 1;
+                    dollar_tag.clear();
+                    state = CommentScan::Sql;
+                }
+            }
         }
+
+        index += 1;
     }
 
     comments
+}
+
+/// Returns the `$tag$` delimiter opening a dollar-quoted body at `start`.
+///
+/// The character at `start` must be the leading `$`. A tag, when present, follows
+/// identifier rules: it starts with a letter or an underscore and continues with
+/// letters, digits, or underscores. A `$` glued to the end of an identifier is
+/// not a delimiter, and neither is a positional placeholder such as `$1`, so both
+/// stay ordinary SQL text.
+fn dollar_quote_opening(characters: &[char], start: usize) -> Option<Vec<char>> {
+    let preceding = start.checked_sub(1).and_then(|at| characters.get(at));
+    if matches!(preceding, Some(&character) if character.is_alphanumeric() || character == '_') {
+        return None;
+    }
+
+    let mut end = start + 1;
+    match characters.get(end) {
+        Some(&'$') => {}
+        Some(&first) if first.is_alphabetic() || first == '_' => {
+            end += 1;
+            while let Some(&next) = characters.get(end) {
+                if next == '$' {
+                    break;
+                }
+                if !(next.is_alphanumeric() || next == '_') {
+                    return None;
+                }
+                end += 1;
+            }
+        }
+        _ => return None,
+    }
+
+    Some(characters.get(start..=end)?.to_vec())
+}
+
+/// Whether `characters` holds `needle` starting exactly at `start`.
+fn starts_with_at(characters: &[char], start: usize, needle: &[char]) -> bool {
+    needle
+        .iter()
+        .enumerate()
+        .all(|(offset, expected)| characters.get(start.wrapping_add(offset)) == Some(expected))
 }
 
 fn parse_script_name(
@@ -463,5 +546,66 @@ mod tests {
 
         let attributes = parse_script_attributes("V1__init_notx.sql.bak", "SELECT 1;");
         assert!(attributes.transactional);
+    }
+
+    #[test]
+    fn a_directive_inside_a_dollar_quoted_body_is_ignored() {
+        for sql in [
+            "CREATE FUNCTION f() RETURNS void AS $$\n-- execute_in_transaction = false\n$$ LANGUAGE plpgsql;",
+            "CREATE FUNCTION f() RETURNS void AS $$\n/* transactional = false */\n$$ LANGUAGE plpgsql;",
+            "CREATE FUNCTION f() RETURNS void AS $body$\n-- executeInTransaction = false\n$body$ LANGUAGE plpgsql;",
+            "CREATE FUNCTION f() RETURNS text AS $body$ SELECT '-- transactional = false'; $body$ LANGUAGE sql;",
+            "INSERT INTO notes (body) VALUES ($tag$ -- execute_in_transaction=false $tag$);",
+            "INSERT INTO notes (body) VALUES ($$$$);",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                migration.is_transactional(),
+                "`{sql}` must stay transactional"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directive_after_a_dollar_quoted_body_is_honoured() {
+        let sql = "CREATE FUNCTION f() RETURNS void AS $$ SELECT 1; $$ LANGUAGE sql;\n-- transactional = false\n";
+        let migration = Migration::parse("V1__init.sql", sql).unwrap();
+        assert!(!migration.is_transactional());
+    }
+
+    #[test]
+    fn positional_placeholders_never_open_a_dollar_quote() {
+        let sql = "UPDATE users SET name = $1 WHERE id = $2;\n-- transactional = false\n";
+        let migration = Migration::parse("V1__init.sql", sql).unwrap();
+        assert!(!migration.is_transactional());
+    }
+
+    #[test]
+    fn a_directive_inside_a_nested_block_comment_is_ignored() {
+        for sql in [
+            "/* /* execute_in_transaction = false */ */\nCREATE TABLE users ();",
+            "/* outer /* executeInTransaction = false */ still outer */\nCREATE TABLE users ();",
+            "/*\n  /* transactional = false */\n*/\nCREATE TABLE users ();",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                migration.is_transactional(),
+                "`{sql}` must stay transactional"
+            );
+        }
+    }
+
+    #[test]
+    fn nesting_block_comments_keeps_the_outer_directive() {
+        for sql in [
+            "/* transactional = false /* nested */ */\nCREATE TABLE users ();",
+            "/* nested /* inner */ execute_in_transaction = false */\nCREATE TABLE users ();",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                !migration.is_transactional(),
+                "`{sql}` must be non-transactional"
+            );
+        }
     }
 }
