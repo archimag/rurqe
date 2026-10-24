@@ -10,9 +10,13 @@ use crate::expr::{ExprKind, SelectAst, WindowExprKind};
 /// An error returned when pre-flight query validation detects invalid SQL semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildError {
-    /// A table was referenced or joined multiple times without an explicit alias.
+    /// A relation was referenced or joined multiple times under one effective name.
+    ///
+    /// The effective name of a relation is the alias it is referenced under, or
+    /// its table name when it carries none, so two occurrences collide both when
+    /// one table appears twice without an alias and when one alias is used twice.
     DuplicateRelation {
-        /// The unaliased relation name that appears more than once.
+        /// The effective relation name that appears more than once.
         name: &'static str,
     },
     /// The leading `ORDER BY` expressions do not match the `DISTINCT ON` expressions.
@@ -48,6 +52,8 @@ impl std::error::Error for BuildError {}
 impl SelectAst {
     /// Performs recursive pre-flight validation on the query AST and all embedded subqueries.
     pub fn validate(&self) -> Result<(), BuildError> {
+        self.validate_relations()?;
+
         for cte in &self.ctes {
             cte.query.validate()?;
         }
@@ -91,6 +97,30 @@ impl SelectAst {
             set_op.query.validate()?;
         }
 
+        Ok(())
+    }
+
+    /// Rejects a statement whose relations collide under one effective name.
+    ///
+    /// The effective name of a relation is the alias it is referenced under, or
+    /// its table name when it carries none. Two relations sharing it render a
+    /// `FROM` clause the engine refuses — PostgreSQL reports `table name
+    /// specified more than once` — so the statement is rejected before any SQL
+    /// is dispatched. Derived tables and lateral subqueries participate under
+    /// the name of the marker they are exposed as, which is the name the
+    /// rendered clause gives them.
+    fn validate_relations(&self) -> Result<(), BuildError> {
+        let mut names = Vec::with_capacity(self.joins.len() + 1);
+        if let Some(from) = &self.from {
+            names.push(from.alias.unwrap_or(from.name));
+        }
+        for join in &self.joins {
+            let name = join.table.alias.unwrap_or(join.table.name);
+            if names.contains(&name) {
+                return Err(BuildError::DuplicateRelation { name });
+            }
+            names.push(name);
+        }
         Ok(())
     }
 }

@@ -223,6 +223,49 @@ fn joined_scope_tracks_every_table_in_from_order() {
 }
 
 #[test]
+fn a_table_joined_twice_without_an_alias_is_rejected_before_rendering() {
+    // The `ON` predicate and the projection deliberately stay outside the scope
+    // of the duplicated relation: a direct column reference to the joined table
+    // is already ambiguous between its two scope positions, so this is a
+    // compilable form that used to render an invalid duplicate `FROM` / `JOIN`.
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .inner_join::<User, _, _>(Expr::column::<UserId>().without_scope().eq(1i64))
+        .select((Expr::count_all(),));
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DuplicateRelation { name: "users" })
+    );
+}
+
+#[test]
+fn the_same_alias_joined_twice_is_rejected_before_rendering() {
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<User, ManagerAlias>>()
+        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+            Expr::column::<AliasedCol<ManagerAlias, UserId>>()
+                .without_scope()
+                .eq(1i64),
+        )
+        .select((Expr::count_all(),));
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DuplicateRelation { name: "m" })
+    );
+}
+
+#[test]
+fn the_duplicate_relation_diagnostic_is_pinned_verbatim() {
+    assert_eq!(
+        BuildError::DuplicateRelation { name: "users" }.to_string(),
+        "duplicate unaliased relation `users` in query scope; \
+         each occurrence of a table must have a distinct alias via `table_alias!` or `.as_alias(...)`"
+    );
+}
+
+#[test]
 fn single_table_and_joined_scopes_are_query_scopes() {
     fn assert_scope<S: TableScope>() {}
 
