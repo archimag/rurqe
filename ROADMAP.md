@@ -615,6 +615,7 @@ Unify declarative schema design with sequential migration safety in a **Grand Un
   - Checkpoint metadata (`checkpoint.toml` or migration header) storing `pruned_up_to_version` and base `stage_hash`.
   - Freedom to delete historical migration files prior to the checkpoint (`rm -f migrations/V001..V050*.sql`) without rewriting baselines or invalidating checksums.
   - Fail-safe guard: migration runner aborts with an actionable error if an existing target database version is older than the pruned checkpoint boundary.
+  - Boundary snapshots recorded by the toolchain: `stage commit` copies the declarative stage verbatim into a `checkpoint-stage/` directory next to `checkpoint.toml`, `stage verify` loads it as the base stage when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has no base stage is rejected with `StageError::BaseStageMissing` instead of replaying the tail over an empty scratch database.
 - [x] **Golden Equation Verification Engine (`cargo db-verify`):**
   - Verification workflow asserting $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$:
     1. Spin up ephemeral DB 1 $\to$ apply `schema/` DDL $\to$ snapshot catalog $K_{stage}$.
@@ -633,6 +634,7 @@ project/
 │   └── billing.sql
 ├── migrations/                   # Active migration tail (Delta for live DBs)
 │   ├── checkpoint.toml           # Pruned up to V050, base_hash = "sha256:..."
+│   ├── checkpoint-stage/         # Verbatim DDL snapshot of the checkpoint boundary
 │   ├── V051__add_credits.sql     # Active DDL + DML migration
 │   └── V052__index_billing.sql   # Active DDL migration
 ├── schema.lock                   # Deterministic catalog snapshot (SCHEMA_HASH)

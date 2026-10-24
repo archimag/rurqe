@@ -1,6 +1,6 @@
 //! Declarative stage, checkpoint, and scratch lifecycle commands.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rurqe_migrate::checkpoint::Checkpoint;
@@ -159,7 +159,10 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 /// Verifies the golden equation between the declarative stage and the tail.
 ///
 /// `scratch_url` names the scratch database both sides are materialised in; see
-/// [`GoldenEquation`] for its emptiness contract.
+/// [`GoldenEquation`] for its emptiness contract. When `--base-stage-dir` is
+/// omitted, the boundary snapshot `stage commit` recorded next to
+/// `checkpoint_path` is loaded as the base stage, so the boundary the tail
+/// replays over is the one the toolchain itself wrote.
 pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
@@ -168,9 +171,17 @@ pub(crate) fn verify_stage(
     scratch_url: &str,
 ) -> Result<CommandOutput, CliError> {
     let stage = load_stage(stage_dir)?;
-    let base = base_stage_dir.map(load_stage).transpose()?;
     let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
     let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
+
+    // An explicit `--base-stage-dir` overrides the recorded snapshot; without
+    // one, the snapshot `stage commit` wrote next to the marker is loaded, and
+    // an absent snapshot leaves the base unset so the golden equation itself
+    // rejects a checkpoint that cannot be replayed from nothing.
+    let base = match base_stage_dir {
+        Some(dir) => Some(load_stage(dir)?),
+        None => DeclarativeStage::load(&boundary_dir(checkpoint_path)).map_err(cli_error)?,
+    };
 
     let mut equation = match &base {
         Some(base) => GoldenEquation::new(&stage, &tail).with_base(base),
@@ -190,10 +201,19 @@ pub(crate) fn verify_stage(
     )))
 }
 
+/// The directory holding the verbatim DDL of a committed stage boundary.
+const CHECKPOINT_STAGE_DIR: &str = "checkpoint-stage";
+
 /// Seals the live database as the new declarative stage anchor.
+///
+/// The boundary is what the anchored tail replays over, so the declarative stage
+/// is snapshotted verbatim into [`CHECKPOINT_STAGE_DIR`] next to the marker
+/// before the marker itself is written: the scripts keep their names and their
+/// comments, which is where the replay re-reads their transactionality from.
 pub(crate) fn commit_stage(
     version: MigrationVersion,
     database_url: &str,
+    stage_dir: &Path,
     lock_path: &Path,
     checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
@@ -208,22 +228,66 @@ pub(crate) fn commit_stage(
         }
     }
 
+    let stage = load_stage(stage_dir)?;
     let catalog = introspect_database(database_url)?;
 
-    // Both artifacts are rendered before the first byte is written, and the
-    // snapshot lands before the marker that anchors it, so an interrupted commit
-    // never leaves a checkpoint pointing at a lock file it cannot validate.
+    // All artifacts are rendered before the first byte is written, and they land
+    // in the order lock, snapshot, marker, so an interrupted commit never leaves
+    // a checkpoint pointing at a state it cannot validate.
     let lock = catalog.to_lock();
     let checkpoint = Checkpoint::new(version, catalog.checksum());
 
     write_file(lock_path, &lock)?;
+    snapshot_boundary_stage(&stage, checkpoint_path)?;
     write_file(checkpoint_path, &checkpoint.render())?;
 
     Ok(CommandOutput::single(format!(
-        "Committed the stage to {} and anchored `{}` up to version {} (hash {})",
+        "Committed the stage to {}, snapshotted the boundary to {}, and anchored `{}` up to \
+         version {} (hash {})",
         lock_path.display(),
+        boundary_dir(checkpoint_path).display(),
         checkpoint_path.display(),
         checkpoint.pruned_up_to_version(),
         catalog.schema_hash()
     )))
+}
+
+/// The directory the boundary snapshot of the marker at `checkpoint_path` lives in.
+fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
+    checkpoint_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join(CHECKPOINT_STAGE_DIR)
+}
+
+/// Writes the verbatim DDL of the committed `stage` next to the checkpoint.
+///
+/// The previous snapshot is removed first, so scripts the new boundary dropped
+/// never linger. A commit interrupted between that removal and the new marker
+/// leaves the previous checkpoint pointing at a missing or partial snapshot,
+/// which the verification rejects loudly instead of replaying a mixture of two
+/// boundaries.
+fn snapshot_boundary_stage(
+    stage: &DeclarativeStage,
+    checkpoint_path: &Path,
+) -> Result<(), CliError> {
+    let dir = boundary_dir(checkpoint_path);
+
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(CliError(format!(
+                "failed to replace the boundary snapshot `{}`: {error}",
+                dir.display()
+            )))
+        }
+    }
+
+    for script in stage.scripts() {
+        write_file(&dir.join(script.name()), script.sql())?;
+    }
+
+    Ok(())
 }

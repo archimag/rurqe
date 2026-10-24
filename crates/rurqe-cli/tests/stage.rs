@@ -275,6 +275,9 @@ fn committing_the_stage_writes_the_lock_and_the_checkpoint() {
         connection.execute_batch(USERS).expect("create the schema");
     }
 
+    let stage_dir = workspace.join("schema");
+    write_scripts(&stage_dir, &[("users.sql", USERS)]);
+    let stage = path_string(&stage_dir);
     let lock = workspace.join("schema.lock");
     let checkpoint_path = workspace.join("checkpoint.toml");
     let database = path_string(&db);
@@ -286,6 +289,8 @@ fn committing_the_stage_writes_the_lock_and_the_checkpoint() {
         "commit",
         "--version",
         "4",
+        "--stage-dir",
+        &stage,
         "--database-url",
         &database,
         "--lock-path",
@@ -306,11 +311,21 @@ fn committing_the_stage_writes_the_lock_and_the_checkpoint() {
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].name, "users");
 
+    // The boundary snapshot lands next to the marker and carries the DDL of
+    // the stage verbatim, so the tail can be verified without a manual archive.
+    assert_eq!(
+        fs::read_to_string(workspace.join("checkpoint-stage").join("users.sql"))
+            .expect("read the boundary snapshot"),
+        USERS
+    );
+
     let error = run_cli(argv(&[
         "stage",
         "commit",
         "--version",
         "3",
+        "--stage-dir",
+        &stage,
         "--database-url",
         &database,
         "--lock-path",
@@ -690,6 +705,8 @@ fn cold_start_records_catalog_checksum_matching_stage_commit() {
         "commit",
         "--version",
         "3.2",
+        "--stage-dir",
+        &stage,
         "--database-url",
         &database,
         "--lock-path",
@@ -761,6 +778,8 @@ fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_ha
         "commit",
         "--version",
         "3.2",
+        "--stage-dir",
+        &stage,
         "--database-url",
         &database,
         "--lock-path",
@@ -859,6 +878,105 @@ fn stages_verify_filters_the_unpruned_tail_at_the_checkpoint() {
         ":memory:",
     ]))
     .expect("the pruned tail above the checkpoint converges with the stage");
+}
+
+#[test]
+fn the_committed_boundary_snapshot_anchors_the_tail_without_manual_directories() {
+    let workspace = temp_workspace("commit-verify");
+    let db = workspace.join("app.db");
+    let stage_dir = workspace.join("schema");
+    let migrations = workspace.join("migrations");
+
+    // The boundary: the declarative stage the checkpoint is cut at.
+    let boundary = "CREATE TABLE users (id INTEGER PRIMARY KEY);";
+    write_scripts(&stage_dir, &[("users.sql", boundary)]);
+
+    let stage = path_string(&stage_dir);
+    let database = path_string(&db);
+
+    run_cli(argv(&[
+        "stage",
+        "init",
+        "--version",
+        "1",
+        "--stage-dir",
+        &stage,
+        "--database-url",
+        &database,
+    ]))
+    .expect("the cold start applies the boundary stage");
+
+    let lock = workspace.join("schema.lock");
+    let checkpoint_path = workspace.join("checkpoint.toml");
+    let lock_path = path_string(&lock);
+    let checkpoint = path_string(&checkpoint_path);
+
+    run_cli(argv(&[
+        "stage",
+        "commit",
+        "--version",
+        "1",
+        "--stage-dir",
+        &stage,
+        "--database-url",
+        &database,
+        "--lock-path",
+        &lock_path,
+        "--checkpoint-path",
+        &checkpoint,
+    ]))
+    .expect("the boundary is sealed together with its snapshot");
+
+    // Both descriptions advance past the committed boundary. The stage
+    // repeats the default the tail migration adds, so the boundary snapshot
+    // plus the filtered tail reproduces it exactly.
+    let advanced =
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');";
+    write_scripts(&stage_dir, &[("users.sql", advanced)]);
+    write_scripts(
+        &migrations,
+        &[(
+            "V2__email.sql",
+            "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+        )],
+    );
+    let dir = path_string(&migrations);
+
+    // No `--base-stage-dir` is named: the snapshot the commit recorded is the
+    // base the filtered tail replays over.
+    run_cli(argv(&[
+        "stage",
+        "verify",
+        "--stage-dir",
+        &stage,
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--scratch-url",
+        ":memory:",
+    ]))
+    .expect("the committed snapshot anchors the tail without a manual directory");
+
+    // Without the snapshot the checkpoint cannot be reproduced from nothing,
+    // and the verification says so instead of reporting a diverged project.
+    fs::remove_dir_all(workspace.join("checkpoint-stage")).expect("drop the snapshot");
+
+    let error = run_cli(argv(&[
+        "stage",
+        "verify",
+        "--stage-dir",
+        &stage,
+        "--migrations-dir",
+        &dir,
+        "--checkpoint-path",
+        &checkpoint,
+        "--scratch-url",
+        ":memory:",
+    ]))
+    .expect_err("the checkpoint has no base stage to replay");
+
+    assert!(error.to_string().contains("base stage"), "got {error}");
 }
 
 #[test]

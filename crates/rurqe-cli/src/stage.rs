@@ -32,8 +32,11 @@
 //! `CREATEDB` privilege for the duration of the verification. The tail passed to
 //! [`GoldenEquation::new`] is the active set of scripts: migrations pruned below
 //! the checkpoint are already folded into the base stage, so replaying them would
-//! collide with it. A project that still keeps the stage snapshot of its
-//! checkpoint anchors the replay with [`GoldenEquation::with_base`].
+//! collide with it. The boundary itself is anchored with
+//! [`GoldenEquation::with_base`]: `stage commit` writes the verbatim DDL of the
+//! committed stage into a `checkpoint-stage/` directory next to
+//! `checkpoint.toml`, and `stage verify` loads that snapshot when no explicit
+//! base stage is named.
 //!
 //! ```
 //! use rurqe_cli::stage::GoldenEquation;
@@ -347,7 +350,10 @@ impl<'a> GoldenEquation<'a> {
     ///
     /// Migrations at or below the pruned version are skipped during tail replay,
     /// and if a base stage is provided, its catalog hash is verified against
-    /// the checkpoint hash.
+    /// the checkpoint hash. A checkpoint whose boundary is not the empty catalog
+    /// requires a base stage: without one, [`verify`](Self::verify) rejects the
+    /// equation with [`StageError::BaseStageMissing`] instead of replaying the
+    /// filtered tail over an empty scratch database.
     pub fn with_checkpoint(mut self, checkpoint: &'a Checkpoint) -> Self {
         self.checkpoint = Some(checkpoint);
         self
@@ -362,6 +368,21 @@ impl<'a> GoldenEquation<'a> {
     /// between the two sides. Any divergence is returned as
     /// [`StageError::Diverged`] carrying the full report.
     pub fn verify(&self, scratch_url: &str) -> Result<GoldenReport, StageError> {
+        // A checkpoint anchors a boundary the replay has to start from: without a
+        // base stage the filtered tail would be replayed over an empty scratch
+        // database and report a consistent project as diverged. An empty
+        // boundary is the one exception, because an empty scratch database
+        // reproduces it on its own.
+        if let Some(checkpoint) = self.checkpoint {
+            if self.base.is_none()
+                && checkpoint.schema_hash() != SchemaCatalog::default().checksum()
+            {
+                return Err(StageError::BaseStageMissing {
+                    pruned_up_to_version: checkpoint.pruned_up_to_version().to_string(),
+                });
+            }
+        }
+
         if let (Some(checkpoint), Some(base)) = (self.checkpoint, self.base) {
             let base_catalog = materialise_stage(base, scratch_url)?;
             if base_catalog.checksum() != checkpoint.schema_hash() {
@@ -463,6 +484,16 @@ pub enum StageError {
         /// The underlying driver message.
         message: String,
     },
+    /// A checkpoint anchors a boundary no base stage was supplied to replay.
+    ///
+    /// Replaying the filtered tail over an empty scratch database would report a
+    /// consistent project as diverged, so the boundary has to be reproduced from
+    /// the snapshot `stage commit` records next to the marker, or from an
+    /// explicit `--base-stage-dir`.
+    BaseStageMissing {
+        /// The pruned boundary the checkpoint anchors.
+        pruned_up_to_version: String,
+    },
     /// The base stage catalog hash does not match the checkpoint hash.
     BaseStageHashMismatch {
         /// The hash expected by the checkpoint.
@@ -483,6 +514,12 @@ impl fmt::Display for StageError {
             StageError::Script { script, message } => write!(
                 f,
                 "failed to apply `{script}` in the scratch database: {message}"
+            ),
+            StageError::BaseStageMissing { pruned_up_to_version } => write!(
+                f,
+                "checkpoint pruned up to version {pruned_up_to_version} requires a base stage \
+                 to reproduce the boundary, but none was supplied; re-run `stage commit` to \
+                 snapshot the boundary next to `checkpoint.toml`, or pass `--base-stage-dir`"
             ),
             StageError::BaseStageHashMismatch { expected, actual } => write!(
                 f,
@@ -779,6 +816,57 @@ mod tests {
         assert!(error
             .to_string()
             .contains("base stage catalog hash mismatch"));
+    }
+
+    #[test]
+    fn a_checkpoint_without_a_base_stage_is_rejected() {
+        let base = stage(&[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")]);
+        let base_catalog =
+            materialise_stage(&base, ":memory:").expect("the base stage materialises");
+        let checkpoint = Checkpoint::new(
+            "1".parse().expect("a valid version"),
+            base_catalog.checksum(),
+        );
+
+        let stage = stage(&[(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+        )]);
+        let tail = tail(&[(
+            "V2__email.sql",
+            "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+        )]);
+
+        let error = GoldenEquation::new(&stage, &tail)
+            .with_checkpoint(&checkpoint)
+            .verify(":memory:")
+            .expect_err("the boundary is not reproduced by an empty scratch database");
+
+        assert!(
+            matches!(error, StageError::BaseStageMissing { .. }),
+            "got {error:?}"
+        );
+        assert!(error.to_string().contains("base stage"), "got {error}");
+    }
+
+    #[test]
+    fn an_empty_boundary_needs_no_base_stage() {
+        // An empty scratch database reproduces an empty boundary on its own, so
+        // requiring a snapshot for it would reject a valid empty cold start.
+        let checkpoint = Checkpoint::new(
+            "0".parse().expect("a valid version"),
+            SchemaCatalog::default().checksum(),
+        );
+
+        let stage = stage(&[("users.sql", USERS)]);
+        let tail = tail(&[("V1__users.sql", USERS)]);
+
+        let report = GoldenEquation::new(&stage, &tail)
+            .with_checkpoint(&checkpoint)
+            .verify(":memory:")
+            .expect("an empty boundary is reproduced by the empty scratch database");
+
+        assert!(report.is_equivalent());
     }
 
     #[test]

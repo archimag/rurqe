@@ -94,10 +94,12 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
 #[test]
 fn committing_the_stage_anchors_the_checkpoint() {
     let dir = workspace("stage-commit");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    commit_stage(version("3.2"), ":memory:", &lock_path, &checkpoint_path)
+    commit_stage(version("3.2"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
         .expect("an empty database commits cleanly");
 
     let catalog =
@@ -112,14 +114,60 @@ fn committing_the_stage_anchors_the_checkpoint() {
 }
 
 #[test]
-fn the_committed_boundary_is_never_rewound() {
-    let dir = workspace("stage-rewind");
+fn committing_the_stage_snapshots_the_boundary_verbatim() {
+    let dir = workspace("stage-snapshot");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let users = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
+    std::fs::write(stage_dir.join("users.sql"), users).expect("write the stage script");
+
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
-    commit_stage(version("5"), ":memory:", &lock_path, &checkpoint_path)
+
+    commit_stage(version("3.2"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
+        .expect("the boundary is committed together with its snapshot");
+
+    let snapshot = dir.join("checkpoint-stage");
+    assert_eq!(
+        std::fs::read_to_string(snapshot.join("users.sql")).expect("read the snapshot"),
+        users
+    );
+
+    // A later commit replaces the snapshot, so a script the new boundary
+    // dropped never lingers next to the marker.
+    std::fs::remove_file(stage_dir.join("users.sql")).expect("drop the script");
+    std::fs::write(stage_dir.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
+        .expect("write the new script");
+
+    commit_stage(version("4"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
+        .expect("the boundary is re-committed");
+
+    let mut names: Vec<String> = std::fs::read_dir(&snapshot)
+        .expect("read the snapshot directory")
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+
+    assert_eq!(names, vec!["orders.sql".to_owned()]);
+}
+
+#[test]
+fn the_committed_boundary_is_never_rewound() {
+    let dir = workspace("stage-rewind");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    commit_stage(version("5"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
         .expect("the first commit succeeds");
 
-    let error = commit_stage(version("3"), ":memory:", &lock_path, &checkpoint_path)
+    let error = commit_stage(version("3"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
         .expect_err("the boundary cannot move backwards");
 
     assert!(error.to_string().contains("re-open"));
@@ -214,16 +262,19 @@ fn a_failed_write_reports_the_directory_it_could_not_prepare() {
 #[test]
 fn a_failed_checkpoint_write_keeps_the_committed_lock_readable() {
     let dir = workspace("commit-partial");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
     let lock_path = dir.join("schema.lock");
     let blocker = dir.join("blocker");
     std::fs::write(&blocker, "not a directory").expect("write the blocking file");
     let checkpoint_path = blocker.join("checkpoint.toml");
 
-    // The snapshot lands before the marker that anchors it, so a marker that
-    // cannot be written never leaves a checkpoint pointing at a lock file that
-    // describes a different database.
-    let error = commit_stage(version("3.2"), ":memory:", &lock_path, &checkpoint_path)
-        .expect_err("a file cannot hold the checkpoint");
+    // The lock lands before the boundary artifacts, and the marker lands last,
+    // so a boundary that cannot be written never leaves a checkpoint pointing
+    // at a lock file that describes a different database.
+    let error =
+        commit_stage(version("3.2"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
+            .expect_err("a file cannot hold the boundary artifacts");
 
     assert!(error.to_string().contains("blocker"), "{error}");
 

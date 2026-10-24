@@ -70,6 +70,7 @@ pub enum CliCommand {
     StageCommit {
         version: MigrationVersion,
         database_url: Option<String>,
+        stage_dir: PathBuf,
         lock_path: PathBuf,
         checkpoint_path: PathBuf,
     },
@@ -583,6 +584,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
 /// Parses `stage commit`: seal the live database as the new stage anchor.
 fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut version = None;
+    let mut stage_dir = default_stage_dir();
     let mut lock_path = default_lock_path();
     let mut checkpoint_path = default_checkpoint_path();
     let mut database_url = None;
@@ -603,6 +605,9 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
+            "--stage-dir" => {
+                stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage commit"
@@ -618,6 +623,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
     Ok(CliCommand::StageCommit {
         version,
         database_url,
+        stage_dir,
         lock_path,
         checkpoint_path,
     })

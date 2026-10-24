@@ -171,7 +171,8 @@ COMMANDS:
     verify           Verify bit-for-bit parity between live database and schema.lock
     stage init       Cold start the database from the declarative stage (`schema/`)
     stage verify     Verify the golden equation State(schema/) == State(Checkpoint + tail)
-    stage commit     Seal the live database as `schema.lock` and anchor `checkpoint.toml`
+    stage commit     Seal the live database as `schema.lock`, snapshot the boundary stage,
+                     and anchor `checkpoint.toml`
     stage cleanup    Drop the PostgreSQL scratch databases abandoned by earlier verifications
     prune            Delete migration scripts below the committed checkpoint boundary
 
@@ -179,9 +180,16 @@ STAGE OPTIONS:
     stage init       --version <version> [--stage-dir <dir>] [--description <desc>]
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
                      [--checkpoint-path <path>] [--scratch-url <url>]
-    stage commit     --version <version> [--lock-path <path>] [--checkpoint-path <path>]
+    stage commit     --version <version> [--stage-dir <dir>] [--lock-path <path>]
+                     [--checkpoint-path <path>]
     stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force]
     prune            --before <version> [--migrations-dir <dir>] [--dry-run]
+
+NOTES:
+    `stage commit` snapshots the declarative stage verbatim into `checkpoint-stage/`
+    next to `checkpoint.toml`. `stage verify` loads that snapshot as the base stage
+    when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has
+    no base stage is rejected instead of replaying the tail over an empty database.
 
 CONFIGURATION:
     `rurqe.toml` `[codegen.type_overrides]` maps a `table.column` onto the Rust

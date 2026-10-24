@@ -187,11 +187,12 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
         CliCommand::StageCommit {
             version,
             database_url,
+            stage_dir,
             lock_path,
             checkpoint_path,
         } => {
             let url = resolve_database_url(database_url)?;
-            commit_stage(version, &url, &lock_path, &checkpoint_path)
+            commit_stage(version, &url, &stage_dir, &lock_path, &checkpoint_path)
         }
         CliCommand::StageCleanup {
             scratch_url,

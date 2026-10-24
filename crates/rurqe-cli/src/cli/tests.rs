@@ -309,6 +309,32 @@ fn parses_stage_commands() {
         CliCommand::StageCommit {
             version: "3.2".parse().unwrap(),
             database_url: None,
+            stage_dir: PathBuf::from("schema"),
+            lock_path: PathBuf::from("schema.lock"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+        }
+    );
+}
+
+#[test]
+fn parses_stage_commit_stage_dir() {
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "commit".into(),
+        "--version".into(),
+        "3.2".into(),
+        "--stage-dir".into(),
+        "stages/boundary".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::StageCommit {
+            version: "3.2".parse().unwrap(),
+            database_url: None,
+            stage_dir: PathBuf::from("stages/boundary"),
             lock_path: PathBuf::from("schema.lock"),
             checkpoint_path: PathBuf::from("checkpoint.toml"),
         }
