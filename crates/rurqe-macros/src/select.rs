@@ -99,7 +99,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #element: ::rurqe_core::query::SelectTargetInScope<Tables, #position, __D>,
         });
         grouped_bounds.extend(quote! {
-            #element: ::rurqe_core::query::GroupedSelectTarget<__G, #position>,
+            #element: ::rurqe_core::query::GroupedSelectTarget<__G, #position, __D>,
         });
         from_bounds.extend(quote! {
             #element: ::rurqe_core::query::SelectTargetInScope<
@@ -268,8 +268,8 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             // A grouped query accepts the same projections under one extra rule:
             // every projected column must be grouped or an aggregate, which the
             // `GroupedSelectTarget` bound of each element states.
-            impl<__G, #(#position_params,)* #(#element_params,)*>
-                ::rurqe_core::query::GroupedSelection<__G, (#(#position_args,)*)>
+            impl<__G, __D, #(#position_params,)* #(#element_params,)*>
+                ::rurqe_core::query::GroupedSelection<__G, (#(#position_args,)*), __D>
                 for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds

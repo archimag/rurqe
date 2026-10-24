@@ -1007,11 +1007,13 @@ pub mod prelude {
         cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, BinaryOp,
         BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect, ExecutableQuery,
         ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
-        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, RowDecodeError,
-        SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible, SqlVal,
-        SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope, ToSqlVal,
-        Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt,
+        RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible,
+        SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
+        ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
     };
+
+    pub use rurqe_core::query::NullsOrder;
 
     pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
@@ -1033,7 +1035,8 @@ pub mod prelude {
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 
     pub use rurqe_core::dialect::{
-        SupportsAggregateFilter, SupportsDeleteUsing, SupportsFullOuterJoin, SupportsLateralJoin,
+        SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctFrom, SupportsFullOuterJoin,
+        SupportsGreatest, SupportsJsonAggregation, SupportsLateralJoin, SupportsNullsOrdering,
         SupportsRowLocking, SupportsUpdateFrom,
     };
 

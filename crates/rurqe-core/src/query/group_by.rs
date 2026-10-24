@@ -3,7 +3,9 @@
 use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsNullsOrdering};
-use crate::expr::{AggregateMarker, Expr, NonAggregate, NullsOrder, OrderCriterion};
+use crate::expr::{
+    AggregateMarker, DialectInScope, Expr, NonAggregate, NullsOrder, OrderCriterion,
+};
 use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
 use super::cte::{Cte, DerivedTable};
@@ -39,18 +41,21 @@ pub use self::sets::{
     label = "the predicate reads a column that is neither grouped nor aggregated",
     note = "filter the rows with `where_` before grouping, compare a grouped column with `having_col`, or wrap the column into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
 )]
-pub trait HavingPredicate<GroupByCols, Tables, P = At<0>> {}
+pub trait HavingPredicate<GroupByCols, Tables, P = At<0>, D = ()> {}
 
-impl<GroupByCols, Tables, Scope, Marker, P> HavingPredicate<GroupByCols, Tables, P>
-    for Expr<bool, Scope, Marker>
+impl<GroupByCols, Tables, Scope, Marker, ExprD, P, D>
+    HavingPredicate<GroupByCols, Tables, P, D> for Expr<bool, Scope, Marker, ExprD>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
-    Marker: AggregateMarker,
+    Marker: AggregateMarker + AggregateInDialect<D>,
+    ExprD: DialectInScope<D>,
 {
 }
 
-impl<GroupByCols, Tables, P> HavingPredicate<GroupByCols, Tables, P>
-    for Expr<bool, (), NonAggregate>
+impl<GroupByCols, Tables, ExprD, P, D> HavingPredicate<GroupByCols, Tables, P, D>
+    for Expr<bool, (), NonAggregate, ExprD>
+where
+    ExprD: DialectInScope<D>,
 {
 }
 
@@ -97,12 +102,12 @@ impl<GroupByCols, Tables, P> HavingPredicate<GroupByCols, Tables, P>
     label = "the projected column is neither part of the GROUP BY clause nor an aggregate",
     note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
 )]
-pub trait GroupedSelectTarget<GroupByCols, P = At<0>>: SelectTarget {
+pub trait GroupedSelectTarget<GroupByCols, P = At<0>, D = ()>: SelectTarget {
     /// The Rust type produced for this projection in a grouped query.
     type Output;
 }
 
-impl<GroupByCols, C, P> GroupedSelectTarget<GroupByCols, P> for C
+impl<GroupByCols, C, P, D> GroupedSelectTarget<GroupByCols, P, D> for C
 where
     C: Column,
     GroupByCols: ColumnInGroupBy<C, P>,
@@ -114,12 +119,13 @@ where
 ///
 /// An aggregate collapses the rows of a group into a single value, so it may
 /// reference a column the query does not group by.
-impl<GroupByCols, T, Scope, Marker> GroupedSelectTarget<GroupByCols, At<0>>
-    for Expr<T, Scope, Marker>
+impl<GroupByCols, T, Scope, Marker, ExprD, D>
+    GroupedSelectTarget<GroupByCols, At<0>, D> for Expr<T, Scope, Marker, ExprD>
 where
     T: 'static + Send + Sync,
     Scope: 'static + Send + Sync,
-    Marker: AggregateMarker,
+    Marker: AggregateMarker + AggregateInDialect<D>,
+    ExprD: DialectInScope<D>,
 {
     type Output = T;
 }
@@ -173,8 +179,11 @@ where
 ///         .select((OrderUserId, Expr::column::<OrderTotal>().without_scope()));
 /// }
 /// ```
-impl<GroupByCols, T: 'static + Send + Sync> GroupedSelectTarget<GroupByCols, At<0>>
-    for Expr<T, (), NonAggregate>
+impl<GroupByCols, T, ExprD, D> GroupedSelectTarget<GroupByCols, At<0>, D>
+    for Expr<T, (), NonAggregate, ExprD>
+where
+    T: 'static + Send + Sync,
+    ExprD: DialectInScope<D>,
 {
     type Output = T;
 }
@@ -193,11 +202,13 @@ impl<
         T: 'static + Send + Sync,
         Scope: 'static + Send + Sync,
         Cols: 'static + Send + Sync,
-        D,
+        WinD,
+        StmtD,
         Positions,
-    > GroupedSelectTarget<GroupByCols, Positions> for WindowExpr<T, Scope, Cols, D>
+    > GroupedSelectTarget<GroupByCols, Positions, StmtD> for WindowExpr<T, Scope, Cols, WinD>
 where
     Cols: WindowColsInGroupBy<GroupByCols, Positions>,
+    WinD: DialectInScope<StmtD>,
 {
     type Output = T;
 }
@@ -208,14 +219,14 @@ where
     label = "one of the projected columns is neither grouped nor an aggregate",
     note = "add the column to `group_by` or wrap it into an aggregate such as `count`, `sum`, `avg`, `min`, or `max`"
 )]
-pub trait GroupedSelection<GroupByCols, Positions>: Selection {}
+pub trait GroupedSelection<GroupByCols, Positions, D = ()>: Selection {}
 
 macro_rules! impl_grouped_selection {
     ($($target:ident $position:ident),+) => {
-        impl<GroupByCols, $($target, $position),+> GroupedSelection<GroupByCols, ($($position,)+)>
-            for ($($target,)+)
+        impl<GroupByCols, D, $($target, $position),+>
+            GroupedSelection<GroupByCols, ($($position,)+), D> for ($($target,)+)
         where
-            $($target: GroupedSelectTarget<GroupByCols, $position>,)+
+            $($target: GroupedSelectTarget<GroupByCols, $position, D>,)+
         {
         }
     };
@@ -384,7 +395,7 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     >
     where
         S: SelectionFor<Tables, Positions, D>
-            + GroupedSelection<GroupByCols, GroupPositions>
+            + GroupedSelection<GroupByCols, GroupPositions, D>
             + Send
             + Sync
             + 'static,
@@ -460,10 +471,14 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// rejected: the grouping dropped the per-row value that column would name.
     /// Compare grouped columns with [`having_col`](GroupedQuery::having_col)
     /// instead, and filter rows before grouping with `where_`.
-    pub fn having<Scope, Aggr, P>(mut self, predicate: Expr<bool, Scope, Aggr>) -> Self
+    pub fn having<Scope, Aggr, ExprD, P>(
+        mut self,
+        predicate: Expr<bool, Scope, Aggr, ExprD>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
-        Expr<bool, Scope, Aggr>: HavingPredicate<GroupByCols, Tables, P>,
+        ExprD: DialectInScope<D>,
+        Expr<bool, Scope, Aggr, ExprD>: HavingPredicate<GroupByCols, Tables, P, D>,
         Aggr: AggregateInDialect<D>,
     {
         self.query = self.query.having(predicate);
@@ -478,8 +493,13 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// users above ten. The column must be part of the `GROUP BY` clause, which is
     /// exactly what a bare column reference inside
     /// [`having`](GroupedQuery::having) lacks.
-    pub fn having_col<C, PGroup, PTable>(mut self, _col: C, predicate: Expr<bool, C::Table>) -> Self
+    pub fn having_col<C, ExprD, PGroup, PTable>(
+        mut self,
+        _col: C,
+        predicate: Expr<bool, C::Table, NonAggregate, ExprD>,
+    ) -> Self
     where
+        ExprD: DialectInScope<D>,
         C: Column,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
         Tables: TableInScope<C::Table, PTable>,
@@ -591,13 +611,14 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ///     .select((OrderUserId, Expr::count_all()))
     ///     .order_by_expr_desc(Expr::count_all());
     /// ```
-    pub fn order_by_expr<T, Scope, Marker, P>(
+    pub fn order_by_expr<T, Scope, Marker, ExprD, P>(
         mut self,
-        expression: Expr<T, Scope, Marker>,
+        expression: Expr<T, Scope, Marker, ExprD>,
         direction: OrderDirection,
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
         Marker: AggregateMarker + AggregateInDialect<D>,
     {
         let criterion = OrderCriterion::new(expression.into_kind(), direction);
@@ -606,15 +627,16 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Appends an ordering criterion for `expression` fixing where NULL values sort.
-    pub fn order_by_expr_nulls<T, Scope, Marker, P>(
+    pub fn order_by_expr_nulls<T, Scope, Marker, ExprD, P>(
         mut self,
-        expression: Expr<T, Scope, Marker>,
+        expression: Expr<T, Scope, Marker, ExprD>,
         direction: OrderDirection,
         nulls: NullsOrder,
     ) -> Self
     where
         D: SupportsNullsOrdering,
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
         Marker: AggregateMarker + AggregateInDialect<D>,
     {
         let criterion = OrderCriterion::new(expression.into_kind(), direction).nulls(nulls);
@@ -623,18 +645,26 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Appends an ascending ordering criterion for the aggregate `expression`.
-    pub fn order_by_expr_asc<T, Scope, Marker, P>(self, expression: Expr<T, Scope, Marker>) -> Self
+    pub fn order_by_expr_asc<T, Scope, Marker, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, Marker, ExprD>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
         Marker: AggregateMarker + AggregateInDialect<D>,
     {
         self.order_by_expr(expression, OrderDirection::Asc)
     }
 
     /// Appends a descending ordering criterion for the aggregate `expression`.
-    pub fn order_by_expr_desc<T, Scope, Marker, P>(self, expression: Expr<T, Scope, Marker>) -> Self
+    pub fn order_by_expr_desc<T, Scope, Marker, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, Marker, ExprD>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
         Marker: AggregateMarker + AggregateInDialect<D>,
     {
         self.order_by_expr(expression, OrderDirection::Desc)
