@@ -380,4 +380,21 @@ mod tests {
 
         assert!(error.to_string().contains("more than one projection"));
     }
+
+    #[test]
+    fn keyword_markers_without_a_raw_form_are_rejected() {
+        let projections = projection_list("Crate, Super");
+        let error =
+            expand_projections(&projections).expect_err("the marker cannot name a field");
+
+        assert!(error.to_string().contains("raw-identifier form"));
+    }
+
+    #[test]
+    fn keyword_markers_accept_an_explicit_alias() {
+        let projections = projection_list("Crate as crate_id, Super: users::Super");
+        let expanded = expand_projections(&projections).expect("aliases name the fields");
+
+        assert!(expanded.to_string().contains("__RurqeSelection"));
+    }
 }

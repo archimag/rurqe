@@ -166,3 +166,33 @@ fn field_key(field: &Ident) -> String {
         None => name,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::quote;
+
+    #[test]
+    fn keyword_markers_without_a_raw_form_are_rejected() {
+        let error = expand(quote! {
+            pub struct Bad {
+                Crate,
+            }
+        })
+        .expect_err("the marker cannot name a field");
+
+        assert!(error.to_string().contains("raw-identifier form"));
+    }
+
+    #[test]
+    fn keyword_markers_accept_an_explicit_alias() {
+        let expanded = expand(quote! {
+            pub struct Good {
+                crate_id: Crate,
+            }
+        })
+        .expect("the alias names the field");
+
+        assert!(expanded.to_string().contains("struct Good"));
+    }
+}

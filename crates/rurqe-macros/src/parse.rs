@@ -89,16 +89,19 @@ impl ProjectionItem {
     /// An explicit alias always wins. A column marker is named after its column
     /// (`users::EMAIL` and `users.email` both become `email`), converting the
     /// marker name to snake_case and falling back to a raw identifier for Rust
-    /// keywords (`users::Type` becomes `r#type`). A computed projection without a
-    /// name has no column to be named after and is reported as a compile error.
+    /// keywords (`users::Type` becomes `r#type`). A column whose name cannot
+    /// become a field identifier at all — a keyword with no raw-identifier form
+    /// such as `crate` or `self`, or a name that is not an identifier — and a
+    /// computed projection with no column to be named after are reported as
+    /// errors instead of panicking, and each of them names the alias remedy.
     pub fn field_ident(&self) -> syn::Result<Ident> {
         if let Some(alias) = &self.alias {
             return Ok(alias.clone());
         }
 
         match &self.target {
-            ProjectionTarget::Column(path) => Ok(column_field_ident(path)),
-            ProjectionTarget::Expr(expr) => expr_field_ident(expr).ok_or_else(|| {
+            ProjectionTarget::Column(path) => column_field_ident(path),
+            ProjectionTarget::Expr(expr) => expr_field_ident(expr)?.ok_or_else(|| {
                 syn::Error::new_spanned(
                     expr,
                     "projection expression has no column to be named after; \
@@ -167,7 +170,7 @@ fn split_naming(tokens: Vec<TokenTree>) -> syn::Result<(Option<Ident>, TokenStre
 }
 
 /// Derives the field identifier of a schema column marker path.
-fn column_field_ident(path: &Path) -> Ident {
+fn column_field_ident(path: &Path) -> syn::Result<Ident> {
     match path.segments.last() {
         Some(segment) => match segment_label(segment) {
             Some(label) => to_ident(&label, segment.ident.span()),
@@ -178,16 +181,19 @@ fn column_field_ident(path: &Path) -> Ident {
 }
 
 /// Derives the field identifier of an expression, if it names a column.
-fn expr_field_ident(expr: &Expr) -> Option<Ident> {
+fn expr_field_ident(expr: &Expr) -> syn::Result<Option<Ident>> {
     match expr {
         Expr::Field(field) => match &field.member {
-            Member::Named(name) => Some(to_ident(&to_snake_case(&name.to_string()), name.span())),
-            Member::Unnamed(_) => None,
+            Member::Named(name) => Ok(Some(to_ident(
+                &to_snake_case(&name.to_string()),
+                name.span(),
+            )?)),
+            Member::Unnamed(_) => Ok(None),
         },
-        Expr::Path(path) if path.qself.is_none() => Some(column_field_ident(&path.path)),
+        Expr::Path(path) if path.qself.is_none() => Ok(Some(column_field_ident(&path.path)?)),
         Expr::Paren(paren) => expr_field_ident(&paren.expr),
         Expr::Group(group) => expr_field_ident(&group.expr),
-        _ => None,
+        _ => Ok(None),
     }
 }
 
@@ -222,9 +228,63 @@ fn type_label(ty: &Type) -> Option<String> {
     }
 }
 
-/// Parses `label` as an identifier, falling back to a raw identifier for keywords.
-fn to_ident(label: &str, span: Span) -> Ident {
-    syn::parse_str::<Ident>(label).unwrap_or_else(|_| Ident::new_raw(label, span))
+/// Keywords that have no raw-identifier spelling and therefore cannot name a field.
+const NON_RAW_KEYWORDS: &[&str] = &["Self", "_", "crate", "self", "super"];
+
+/// Parses `label` as an identifier, spelling a keyword as a raw identifier.
+///
+/// A label that cannot become an identifier at all — the keywords without a raw
+/// form (`crate`, `self`, `super`, `Self`, `_`) and every spelling that is not an
+/// identifier (`1st`) — is reported as an error, because `Ident::new` and
+/// `Ident::new_raw` both panic on such a label and a proc macro must not abort
+/// the compiler run. The diagnostic points at the offending marker and names the
+/// alias remedy, which always works because an explicit alias is used verbatim.
+fn to_ident(label: &str, span: Span) -> syn::Result<Ident> {
+    // A raw-identifier spelling names the same field as its bare keyword.
+    let label = label.strip_prefix("r#").unwrap_or(label);
+
+    if syn::parse_str::<Ident>(label).is_ok() {
+        return Ok(Ident::new(label, span));
+    }
+
+    // The label is a keyword or not an identifier at all, so a raw identifier is
+    // the only remaining spelling for it.
+    if NON_RAW_KEYWORDS.contains(&label) {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{label}` is a Rust keyword with no raw-identifier form, so it cannot name \
+                 a projection field; name the projection explicitly with `as <alias>` or \
+                 `alias: <target>`"
+            ),
+        ));
+    }
+
+    if !is_ascii_identifier(label) {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{label}` is not a Rust identifier, so the projected column cannot name a \
+                 field; name the projection explicitly with `as <alias>` or `alias: <target>`"
+            ),
+        ));
+    }
+
+    Ok(Ident::new_raw(label, span))
+}
+
+/// Reports whether `label` is spelled as an ASCII Rust identifier.
+///
+/// The check guards the raw-identifier construction above: a label that is not
+/// an identifier shape cannot be spelled as a raw identifier either, while every
+/// keyword that still has a raw form is spelled in ASCII.
+fn is_ascii_identifier(label: &str) -> bool {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// A list or tuple of projection items.
@@ -403,5 +463,73 @@ mod tests {
         let item: ProjectionItem = parse_str("users::Type").expect("valid projection");
         let ident = item.field_ident().expect("named");
         assert_eq!(ident.to_string(), "r#type");
+    }
+
+    #[test]
+    fn keywords_without_a_raw_form_are_reported() {
+        for source in ["Crate", "Self", "Super", "users::Crate"] {
+            let item: ProjectionItem = parse_str(source).expect("valid projection");
+            let error = item
+                .field_ident()
+                .expect_err("a keyword without a raw form cannot name a field");
+            let message = error.to_string();
+
+            assert!(
+                message.contains("raw-identifier form"),
+                "unexpected message for `{source}`: {message}"
+            );
+            assert!(message.contains("as <alias>"), "no remedy in: {message}");
+        }
+    }
+
+    #[test]
+    fn keywords_without_a_raw_form_accept_an_explicit_alias() {
+        let item: ProjectionItem = parse_str("Crate as crate_id").expect("valid projection");
+        assert_eq!(item.field_ident().expect("named"), "crate_id");
+
+        let item: ProjectionItem = parse_str("Super: users::Super").expect("valid projection");
+        assert_eq!(
+            item.field_ident().expect("named"),
+            "Super",
+            "an explicit alias is used verbatim"
+        );
+    }
+
+    #[test]
+    fn raw_and_unicode_spellings_name_their_field() {
+        assert_eq!(
+            to_ident("type", Span::call_site())
+                .expect("a keyword with a raw form is spellable")
+                .to_string(),
+            "r#type"
+        );
+        assert_eq!(
+            to_ident("r#type", Span::call_site())
+                .expect("a raw spelling names the same field")
+                .to_string(),
+            "r#type"
+        );
+        assert_eq!(
+            to_ident("grüße", Span::call_site())
+                .expect("a unicode identifier is spellable")
+                .to_string(),
+            "grüße"
+        );
+
+        let item: ProjectionItem = parse_str("users.r#type").expect("valid projection");
+        assert_eq!(item.field_ident().expect("named"), "r#type");
+    }
+
+    #[test]
+    fn labels_that_are_not_identifiers_are_reported() {
+        for label in ["", "r#", "1st", "_²", "a-b"] {
+            let error = to_ident(label, Span::call_site())
+                .expect_err("a label that is not an identifier cannot name a field");
+
+            assert!(
+                error.to_string().contains("is not a Rust identifier"),
+                "unexpected message for `{label}`: {error}"
+            );
+        }
     }
 }
