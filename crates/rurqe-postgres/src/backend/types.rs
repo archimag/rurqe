@@ -197,6 +197,8 @@ impl ToSql for SqlValParam<'_> {
             SqlVal::F64(value) => encode_float(*value, self.0, column_ty, out),
             SqlVal::Text(value) => text_to_sql(value, column_ty, out),
             SqlVal::Bytes(value) => value.as_slice().to_sql(column_ty, out),
+            #[cfg(feature = "decimal")]
+            SqlVal::Decimal(decimal) => decimal_to_sql(*decimal, self.0, column_ty, out),
             #[cfg(feature = "uuid")]
             SqlVal::Uuid(value) => {
                 if column_ty == &Type::UUID {
@@ -382,6 +384,52 @@ fn decimal_text(value: &SqlVal) -> Option<String> {
         SqlVal::Decimal(decimal) => Some(decimal.to_string()),
         _ => None,
     }
+}
+
+/// Encodes an exact decimal into the representation of its column.
+///
+/// A `NUMERIC` column was already encoded by the wire codec before this point, so
+/// the remaining columns are the ones a decimal reaches by conversion: an integer
+/// column receives the truncated value at its own width, a `REAL` column the
+/// closest single precision number, and every other column the textual form of the
+/// value, exactly as a text parameter would reach it.
+#[cfg(feature = "decimal")]
+fn decimal_to_sql(
+    decimal: rust_decimal::Decimal,
+    value: &SqlVal,
+    column_ty: &Type,
+    out: &mut BytesMut,
+) -> Result<IsNull, Box<dyn StdError + Sync + Send>> {
+    // The conversion into a floating point number is provided by the primitive
+    // conversion trait rather than by an inherent method of the decimal type, so
+    // the trait is brought into scope for the two conversion arms below.
+    use rust_decimal::prelude::ToPrimitive;
+
+    if column_ty == &Type::INT2 || column_ty == &Type::INT4 || column_ty == &Type::INT8 {
+        let number = decimal_integer(&decimal).ok_or_else(|| out_of_range(value, column_ty))?;
+        return encode_integer(number, value, column_ty, out);
+    }
+    if column_ty == &Type::FLOAT4 || column_ty == &Type::FLOAT8 {
+        let number = decimal
+            .to_f64()
+            .ok_or_else(|| out_of_range(value, column_ty))?;
+        return encode_float(number, value, column_ty, out);
+    }
+
+    decimal.to_string().to_sql(column_ty, out)
+}
+
+/// Renders the integer part of an exact decimal.
+///
+/// The mantissa carries every digit of the value scaled by `10^scale`, so the
+/// integer part is the mantissa divided by that scale. The division runs in a 128
+/// bit integer, which holds both the mantissa and the largest scale a decimal can
+/// declare, and a value outside the 64 bit range reports `None` rather than
+/// wrapping around.
+#[cfg(feature = "decimal")]
+fn decimal_integer(decimal: &rust_decimal::Decimal) -> Option<i64> {
+    let divisor = 10i128.checked_pow(decimal.scale())?;
+    i64::try_from(decimal.mantissa() / divisor).ok()
 }
 
 /// Encodes an integer at the width of the column it is bound to.
@@ -614,6 +662,20 @@ fn extended_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
         return Ok(SqlVal::Bytes(
             Vec::<u8>::from_sql(ty, payload).map_err(decode_failure)?,
         ));
+    }
+
+    // An exact decimal column keeps every digit of its value instead of passing
+    // through the textual form a column mapped onto `String` carries: the payload
+    // already renders the decimal text, which is parsed back into the exact type.
+    // A payload the exact type cannot represent, such as the `NaN` sentinel, keeps
+    // its textual form.
+    #[cfg(feature = "decimal")]
+    if ty == &Type::NUMERIC {
+        if let Ok(text) = Wire::Numeric.decode(payload) {
+            if let Ok(decimal) = text.parse::<rust_decimal::Decimal>() {
+                return Ok(SqlVal::Decimal(decimal));
+            }
+        }
     }
 
     // A build without the crate backing a value family still reads its columns:

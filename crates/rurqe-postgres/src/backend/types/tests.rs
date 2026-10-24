@@ -368,10 +368,14 @@ fn arrays_of_enums_and_domains_decode_their_elements() {
     SqlValParam(&SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())]))
         .to_sql_checked(&amounts, &mut buffer)
         .unwrap();
+    let decoded = decode_value(&amounts, &buffer[..]).expect("the decimal array is decodable");
+    #[cfg(feature = "decimal")]
     assert_eq!(
-        decode_value(&amounts, &buffer[..]).expect("the decimal array is decodable"),
-        SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())])
+        decoded,
+        SqlVal::Array(vec![SqlVal::Decimal(rust_decimal::Decimal::new(125, 1))])
     );
+    #[cfg(not(feature = "decimal"))]
+    assert_eq!(decoded, SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())]));
 }
 
 #[test]
@@ -448,6 +452,80 @@ fn uuid_json_and_temporal_values_bind_directly() {
         date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
         IsNull::No
     ));
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn a_numeric_column_binds_an_exact_decimal() {
+    let value = rust_decimal::Decimal::new(12_345_678, 3);
+
+    let mut buffer = BytesMut::new();
+    assert!(matches!(
+        SqlValParam(&SqlVal::Decimal(value))
+            .to_sql_checked(&Type::NUMERIC, &mut buffer)
+            .unwrap(),
+        IsNull::No
+    ));
+
+    assert_eq!(
+        decode_value(&Type::NUMERIC, &buffer[..]).expect("the numeric value is decodable"),
+        SqlVal::Decimal(value)
+    );
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn an_exact_decimal_binds_an_integer_column_at_its_width() {
+    let value = rust_decimal::Decimal::new(75, 1);
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Decimal(value))
+        .to_sql_checked(&Type::INT2, &mut buffer)
+        .unwrap();
+    assert_eq!(buffer.to_vec(), vec![0u8, 7]);
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Decimal(value))
+        .to_sql_checked(&Type::INT8, &mut buffer)
+        .unwrap();
+    assert_eq!(buffer.to_vec(), 7i64.to_be_bytes().to_vec());
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn an_exact_decimal_out_of_the_range_of_an_integer_column_is_rejected() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::Decimal(rust_decimal::Decimal::MAX))
+        .to_sql_checked(&Type::INT8, &mut buffer)
+    {
+        Ok(_) => panic!("the value does not fit a bigint column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("out of the range"));
+    assert!(error.to_string().contains("int8"));
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn an_exact_decimal_binds_a_real_column() {
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Decimal(rust_decimal::Decimal::new(15, 1)))
+        .to_sql_checked(&Type::FLOAT4, &mut buffer)
+        .unwrap();
+
+    assert_eq!(buffer.to_vec(), 1.5f32.to_be_bytes().to_vec());
+}
+
+#[cfg(feature = "decimal")]
+#[test]
+fn an_exact_decimal_binds_a_textual_column() {
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Decimal(rust_decimal::Decimal::new(1500, 3)))
+        .to_sql_checked(&Type::TEXT, &mut buffer)
+        .unwrap();
+
+    assert_eq!(buffer.to_vec(), b"1.500".to_vec());
 }
 
 #[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]

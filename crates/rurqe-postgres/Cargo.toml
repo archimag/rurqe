@@ -15,6 +15,7 @@ chrono = { version = "0.4", optional = true }
 deadpool-postgres = { version = "0.14", optional = true }
 postgres = { version = "0.19", optional = true }
 r2d2 = { version = "0.8", optional = true }
+rust_decimal = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 tokio-postgres = { version = "0.7", optional = true }
 uuid = { version = "1", optional = true }
@@ -29,7 +30,7 @@ deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
 r2d2 = ["dep:r2d2", "postgres"]
 # A value family is forwarded to the drivers that are compiled in, so a driver
 # receives the encodings of exactly the families this crate enables.
-decimal = ["rurqe-core/decimal"]
+decimal = ["dep:rust_decimal", "rurqe-core/decimal"]
 chrono = [
     "dep:chrono",
     "rurqe-core/chrono",
