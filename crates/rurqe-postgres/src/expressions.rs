@@ -215,9 +215,19 @@ where
     }
 
     fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool, C::Table> {
-        let elements: Vec<String> = keys.iter().map(|key| quote_array_element(key)).collect();
-        let array = format!("{{{}}}", elements.join(","));
-        column_binary_op::<C>("?|", &array)
+        // `jsonb ?| text[]` reads an array operand, so every key binds as one
+        // element of a single array parameter. A text literal would have the
+        // driver describe the parameter as `text`, which PostgreSQL rejects for
+        // the `text[]` operand of the operator.
+        Expr::from_kind(ExprKind::DialectOp {
+            op: "?|",
+            lhs: Box::new(C::expr_kind()),
+            rhs: Box::new(ExprKind::Value(SqlVal::Array(
+                keys.iter()
+                    .map(|key| SqlVal::Text((*key).to_owned()))
+                    .collect(),
+            ))),
+        })
     }
 
     fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
@@ -336,23 +346,6 @@ fn column_binary_op<C: Column>(op: &'static str, val: &str) -> Expr<bool, C::Tab
         lhs: Box::new(C::expr_kind()),
         rhs: Box::new(ExprKind::Value(SqlVal::Text(val.to_owned()))),
     })
-}
-
-/// Quotes a single element of a PostgreSQL array literal.
-///
-/// Elements are double-quoted so that separators stay inert, and both `"` and
-/// `\` are backslash-escaped as the array literal syntax requires.
-fn quote_array_element(element: &str) -> String {
-    let mut quoted = String::with_capacity(element.len() + 2);
-    quoted.push('"');
-    for ch in element.chars() {
-        if ch == '"' || ch == '\\' {
-            quoted.push('\\');
-        }
-        quoted.push(ch);
-    }
-    quoted.push('"');
-    quoted
 }
 
 /// Builds a `to_tsvector(?)` expression.
@@ -540,8 +533,8 @@ fn array_quantifier(quantifier: &'static str, array: ExprKind, value: ExprKind) 
 #[cfg(test)]
 mod tests {
     use super::{
-        plainto_tsquery, quote_array_element, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions,
-        PgJson, PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
+        plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions, PgJson,
+        PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
         PgTextSearchValue, PgTextValue,
     };
     use crate::dialect::Postgres;
@@ -676,18 +669,17 @@ mod tests {
     }
 
     #[test]
-    fn array_elements_are_quoted_and_escaped() {
-        assert_eq!(quote_array_element("plain"), "\"plain\"");
-        assert_eq!(quote_array_element("a\"b"), "\"a\\\"b\"");
-        assert_eq!(quote_array_element("a\\b"), "\"a\\\\b\"");
-    }
-
-    #[test]
-    fn json_has_any_keys_binds_a_quoted_array_literal() {
+    fn json_has_any_keys_binds_one_array_parameter() {
         let expr = DocMetadata.json_has_any_keys(&["a", "b\"c"]);
         let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
         assert_eq!(sql, "(\"metadata\" ?| $1)");
-        assert_eq!(params, vec![SqlVal::Text("{\"a\",\"b\\\"c\"}".to_owned())]);
+        assert_eq!(
+            params,
+            vec![SqlVal::Array(vec![
+                SqlVal::Text("a".to_owned()),
+                SqlVal::Text("b\"c".to_owned()),
+            ])]
+        );
     }
 
     #[test]

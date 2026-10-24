@@ -1480,6 +1480,8 @@ mod postgres_extension_traits {
         );
         assert_eq!(key.params, vec![SqlVal::Text("active".to_owned())]);
 
+        // `?|` reads a `text[]` operand, so every key binds as its own element of a
+        // single array parameter instead of a joined array literal.
         let any_keys = rendered(DocMetadata.json_has_any_keys(&["a", "b"]));
         assert_eq!(
             any_keys.sql,
@@ -1487,7 +1489,10 @@ mod postgres_extension_traits {
         );
         assert_eq!(
             any_keys.params,
-            vec![SqlVal::Text("{\"a\",\"b\"}".to_owned())]
+            vec![SqlVal::Array(vec![
+                SqlVal::Text("a".to_owned()),
+                SqlVal::Text("b".to_owned()),
+            ])]
         );
     }
 
