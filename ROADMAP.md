@@ -31,6 +31,7 @@ The roadmap is structured into vertical slices: **at the end of each phase, the 
 | **Phase 17** [x] | Relational Depth, Row Expressions & Locking | Row expressions `(a, b)`, pessimistic locking (`FOR UPDATE`), scalar subqueries as `Expr<T>`, window frames, `FILTER (WHERE)`, `EXCLUDED` | Relational Algebra & Transactional Soundness (Completed) |
 | **Phase 18** [x] | Kysely DX, Dynamic Builders & Nested DTOs | Typed nested records (`nest_many`/`nest_one` via native JSON), fluent conditional builders (`.when`, `.if_some`), derived tables, DB-first enums, PostgreSQL arrays (`T[]`) | High-Ergonomics Relational Power (Completed) |
 | **Phase 19** [x] | Expression Polish, Practical DML & Advanced Ordering | Arithmetic `std::ops`, partial upsert `ON CONFLICT WHERE`, `NULLS FIRST/LAST`, `Decimal`, scalar SQL functions, JSONB extraction, `FULL OUTER JOIN` | High-ROI Relational Polish (Completed) |
+| **Phase 20** [ ] | Absolute SQL Soundness: Scoping, Grouping & Ordering Typestates | Unaliased duplicate join guards, subquery arity/type checks in `IN`, sound function grouping, `DISTINCT`/`DISTINCT ON` & compound `ORDER BY` typestates | Uncompromising SQL Soundness (Planned) |
 
 ---
 
@@ -880,6 +881,52 @@ Eliminate the remaining need for untyped raw SQL escape hatches (`sql!`) in comm
 
 ---
 
+## Phase 20: Absolute SQL Soundness: Relational Scoping, Grouping & Ordering Typestates
+
+### Objective
+Fulfill the core vision of **Absolute SQL Correctness** (`Vision.md § 1.5.1`) by turning the remaining classes of runtime-failing SQL into compile-time rejections: prevent unaliased duplicate table joins, enforce strict subquery column arity and type congruence in `IN` predicates, propagate column grouping provenance through scalar functions (`coalesce`, `nullif`, `greatest`, `least`, `CASE`), and introduce typestate constraints for ordering clauses in `DISTINCT`, `DISTINCT ON`, and compound set operations (`UNION`, `INTERSECT`, `EXCEPT`).
+
+### Key Deliverables
+- [ ] **Disjoint Relation Scope & Unaliased Duplicate Join Prevention:**
+  - Introduce static disjointness guards (`TableNotInScope<T>` or `DisjointRelation<Scope, T>`) for `.inner_join`, `.left_join`, `.cross_join`, and `.full_outer_join`.
+  - Joining a table already present in the query's relation scope without an explicit alias (`table_alias!`, `users.as_alias("u2")`) fails to compile with an actionable diagnostic explaining that identical relations must be aliased to avoid ambiguous SQL table references.
+- [ ] **Strict Subquery Arity & Type Soundness for `IN` Predicates:**
+  - Constrain scalar `.in_subquery(sub)` and `.not_in_subquery(sub)` on `Expr<T>` / `Column<RustType = T>` to only accept subqueries projecting exactly one column of type `T` (`SelectQuery<D, Tables, (T,), HasProjection>`).
+  - Constrain row-value tuple predicates `(c1, c2).in_subquery(sub)` to only accept subqueries whose projection tuple matches the exact arity and types `(T1, T2)`. Multi-column or arity-mismatched subqueries are rejected at compile time.
+- [ ] **Sound Grouped Expression Propagation in Scalar Functions:**
+  - Extend grouping provenance traits (`GroupedSelectTarget`, `ColumnInGroupBy`) to composite expressions: scalar functions (`coalesce`, `nullif`, `greatest`, `least`) and `case().when().then().end()`.
+  - If any input expression or branch references an ungrouped column, the resulting expression does not implement `GroupedSelectTarget` and cannot be projected in a `GroupedQuery`, preventing grouping-bypass queries from compiling.
+- [ ] **Compile-Time Ordering Typestates for `DISTINCT` & `DISTINCT ON`:**
+  - Transition `SelectQuery` to a distinct-checked typestate upon `.distinct()`: `.order_by*` methods require sorting criteria to implement `InProjection<ProjectedCols>`, rejecting ordering by unprojected columns at compile time.
+  - In PostgreSQL `DISTINCT ON (cols)` queries, enforce that the leading criteria in `.order_by*` match the exact sequence of expressions specified in `distinct_on`, preventing runtime PostgreSQL syntax errors.
+- [ ] **Compound Query (`UNION`, `INTERSECT`, `EXCEPT`) `ORDER BY` Typestate:**
+  - Restrict trailing `.order_by*` clauses on compound queries (`SetOpAst`) to reference only the projected columns or 1-based positional indices of the compound result, rejecting table-qualified column references from constituent subqueries.
+
+### Example Usage
+```rust
+use rurqe::postgres::prelude::*;
+
+// 1. Rejected at compile time: duplicate unaliased join
+// let _ = select_from(users).inner_join(users, users.id.eq(users.id)); // ERROR: users already in scope, use alias
+
+// 2. Rejected at compile time: arity mismatch in IN subquery
+// let _ = users.id.in_subquery(select_from(orders).select((orders.id, orders.user_id))); // ERROR: expected (i64,), got (i64, i64)
+
+// 3. Rejected at compile time: ungrouped column hidden inside coalesce
+// let _ = select_from(users)
+//     .group_by(users.id)
+//     .select((users.id, coalesce(users.name, "anon"))); // ERROR: users.name is neither grouped nor aggregated
+
+// 4. Guaranteed valid SQL: DISTINCT with matching ORDER BY
+let unique_names = select_from(users)
+    .select(users.name)
+    .distinct()
+    .order_by_asc(users.name)
+    .fetch_all(&mut conn)?;
+```
+
+---
+
 ## Backlog: Future Architectural Horizons [Post-0.1.0]
 
 The following capabilities represent valuable, high-utility SQL features that require specialized multi-step type designs, dedicated typestates, or engine-specific handling, and are scheduled for evolution cycles after the 0.1.0 core stabilization:
@@ -902,9 +949,6 @@ The following capabilities represent valuable, high-utility SQL features that re
    - Modular TLS support (`postgres-rustls` or `postgres-native-tls`) behind an optional Cargo feature flag, enabling encrypted connections when `sslmode=require` or `sslmode=verify-full` is specified.
 9. **Automated `schema.lock` Parity in Stage Verification:**
    - Extension to `cargo db stage verify` validating that the committed `schema.lock` snapshot matches the declarative stage catalog bit-for-bit without requiring a separate drift step.
-10. **Compile-Time Ordering Typestate Constraints for `DISTINCT` and `DISTINCT ON`:**
-    - Typestate guards preventing `ORDER BY` on unprojected expressions when `DISTINCT` is active.
-    - Compile-time or builder validation ensuring `DISTINCT ON (expressions)` match the leftmost criteria of the trailing `ORDER BY` clause.
 
 ---
 
