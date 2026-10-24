@@ -14,6 +14,19 @@
 //! treats every versioned migration at or below the marked version as already
 //! applied while the active tail above it still runs.
 //!
+//! # Blocking entry points
+//!
+//! [`cold_start`] is a blocking lifecycle entry point, exactly like
+//! [`Migrator::migrate`](crate::runner::Migrator::migrate),
+//! [`Migrator::baseline`](crate::runner::Migrator::baseline),
+//! [`Migrator::repair`](crate::runner::Migrator::repair), and
+//! [`Migrator::status`](crate::runner::Migrator::status), which
+//! [`EmbeddedMigrations`](crate::embedded::EmbeddedMigrations) mirrors in its
+//! synchronous methods. Every one of them emits the runtime advisory through
+//! [`warn_if_in_tokio_runtime`](crate::sleeper::warn_if_in_tokio_runtime) before
+//! blocking the calling thread, so an application that embeds the lifecycle into
+//! an asynchronous startup path is told to offload it through `spawn_blocking`.
+//!
 //! ```
 //! use rurqe_migrate::{
 //!     cold_start, DeclarativeStage, InMemoryBackend, SchemaCatalog, StageMarker, StageScript,
@@ -42,6 +55,7 @@ use crate::history::SchemaHistoryEntry;
 use crate::migration::{parse_script_attributes, MigrationKind};
 use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
 use crate::scripts::sql_scripts;
+use crate::sleeper::warn_if_in_tokio_runtime;
 use crate::version::MigrationVersion;
 
 /// The synthetic script name the cold-start marker is recorded under.
@@ -266,11 +280,16 @@ pub struct ColdStartReport {
 /// same catalog digest is left untouched and reported as a no-op; any other
 /// history is rejected, because a cold start never overwrites an initialised
 /// database.
+///
+/// The call blocks the calling thread for as long as the DDL takes, so it
+/// reports the runtime advisory described in the module documentation before
+/// reaching the backend.
 pub fn cold_start<B: MigrationBackend>(
     backend: &mut B,
     stage: &DeclarativeStage,
     marker: &StageMarker,
 ) -> Result<ColdStartReport, Error> {
+    warn_if_in_tokio_runtime("cold_start");
     let mut guard = LockGuard::acquire(backend)?;
     guard.ensure_schema_history_table()?;
     let history = guard.read_history()?;
@@ -640,6 +659,34 @@ mod tests {
             .expect_err("cold start fails on bad script");
         assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
         assert!(!failing_backend.locked);
+    }
+
+    #[test]
+    fn cold_start_outside_a_tokio_runtime_does_not_panic() {
+        let mut backend = InMemoryBackend::new();
+        let report = cold_start(&mut backend, &stage(), &marker())
+            .expect("a cold start outside a runtime succeeds");
+
+        assert_eq!(report.installed_rank, Some(1));
+        assert!(!backend.locked);
+    }
+
+    /// The advisory has to stay a warning: the blocking entry point keeps working
+    /// inside a runtime, exactly like the migration lifecycle it belongs to.
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn cold_start_inside_a_tokio_runtime_still_succeeds() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+        rt.block_on(async {
+            let mut backend = InMemoryBackend::new();
+            let report = cold_start(&mut backend, &stage(), &marker())
+                .expect("the blocking entry point stays callable inside a runtime");
+
+            assert_eq!(report.installed_rank, Some(1));
+            assert!(!backend.locked);
+        });
     }
 
     #[test]
