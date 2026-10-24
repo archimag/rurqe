@@ -50,16 +50,18 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
         self.to_ast().render::<D>(sql, params);
     }
 
-    /// Renders the query into SQL text and its ordered parameter list.
+    /// Validates pre-flight SQL semantics and renders the query into SQL text and its ordered parameter list.
     ///
     /// The method is reachable only once the query records a projection, so a
     /// query rendered without `select` is rejected at compile time in debug and
     /// release builds alike; see [`ProjectionPresent`].
-    pub fn build(&self) -> BuiltQuery {
+    pub fn build(&self) -> Result<BuiltQuery, crate::query::BuildError> {
+        let ast = self.to_ast();
+        ast.validate()?;
         let mut sql = String::new();
         let mut params = Vec::new();
-        self.render_into(&mut sql, &mut params);
-        BuiltQuery { sql, params }
+        ast.render::<D>(&mut sql, &mut params);
+        Ok(BuiltQuery { sql, params })
     }
 
     /// Wraps the query into a [`Subquery`] carrying this statement as plain data.

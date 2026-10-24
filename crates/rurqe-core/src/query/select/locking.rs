@@ -53,7 +53,8 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     ///     .limit(1)
     ///     .for_update()
     ///     .skip_locked()
-    ///     .build();
+    ///     .build()
+    ///     .expect("valid query");
     ///
     /// assert_eq!(
     ///     built.sql,
@@ -103,7 +104,8 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     ///     .where_(Expr::column::<JobId>().eq(7i64))
     ///     .for_share()
     ///     .nowait()
-    ///     .build();
+    ///     .build()
+    ///     .expect("valid query");
     ///
     /// assert_eq!(
     ///     built.sql,

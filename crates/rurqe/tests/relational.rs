@@ -98,7 +98,8 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
         .inner_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
         .select(cols!(UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -124,7 +125,8 @@ fn cross_join_renders_an_unconditional_cartesian_product() {
         .cross_join_table(Order)
         .select((UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -156,7 +158,7 @@ fn full_outer_join_lifts_both_sides_into_options() {
         .select((UserId, OrderId))
         .where_(Expr::column::<OrderTotal>().gt(10.0));
 
-    let built = query.build();
+    let built = query.build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -186,7 +188,7 @@ fn left_join_lifts_joined_columns_into_options() {
         .from::<User>()
         .left_join_table(Order, Expr::column::<OrderUserId>().eq(3i64));
     let total = query.nullable::<OrderTotal>();
-    let built = query.select((UserId, total)).build();
+    let built = query.select((UserId, total)).build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -215,7 +217,8 @@ fn aggregates_compose_with_group_by_and_having() {
         .having(Expr::sum::<OrderTotal>().lt(500.0))
         .order_by_desc(OrderUserId)
         .limit(10)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -239,7 +242,8 @@ fn aggregate_filter_where_and_distinct_aggregates_render_expected_sql() {
             sum(OrderTotal).filter_where(Expr::column::<OrderTotal>().gt(100.0)),
             avg_distinct(OrderTotal).filter_where(Expr::column::<OrderId>().gt(0i64)),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -260,7 +264,8 @@ fn aggregate_functions_cover_avg_min_and_max() {
         .having(Expr::avg::<OrderTotal>().gt(10.0))
         .having(Expr::min::<OrderId>().lt(100i64))
         .having(Expr::max::<OrderTotal>().lt(1000.0))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -282,7 +287,8 @@ fn joined_aggregations_group_rows_by_the_joined_table() {
         .select((UserName,))
         .having(Expr::count_all().gt(1i64))
         .order_by_asc(UserName)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -310,7 +316,8 @@ fn window_functions_render_over_clause_and_decode_rows() {
             lead(OrderTotal).over(Window::order_by_asc(OrderId)),
             Expr::sum::<OrderTotal>().over(Window::partition_by(OrderUserId)),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -359,7 +366,8 @@ fn cte_subquery_composes_with_main_query_and_decodes_rows() {
         )
         .select((UserId, UserName, SummaryOrderCount))
         .where_(Expr::column::<SummaryOrderCount>().gt(5i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -389,7 +397,8 @@ fn named_cte_renders_with_clause_and_binds_parameters() {
         .with(cte_named("active_orders", active_orders))
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().gt(10i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -413,7 +422,8 @@ fn a_derived_table_replaces_the_from_relation_of_a_query() {
         .where_(Expr::column::<SummaryUserId>().gt(10i64))
         .order_by_desc(SummaryOrderCount)
         .limit(2)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -445,7 +455,8 @@ fn a_derived_table_joins_a_stored_relation() {
         )
         .select((UserId, UserName, SummaryOrderCount))
         .where_(Expr::column::<SummaryOrderCount>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -476,7 +487,7 @@ fn a_left_joined_derived_table_lifts_its_columns_into_options() {
         )
         .select((UserId, SummaryOrderCount));
 
-    let built = query.build();
+    let built = query.build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -504,7 +515,8 @@ fn sql_macro_integrates_into_query_clauses_and_binds_typed_params() {
         .select((UserId, sql!(<i64> "COUNT(*)")))
         .where_(Expr::column::<UserActive>().eq(true))
         .where_(custom_filter)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -531,7 +543,8 @@ fn raw_sql_macro_escapes_and_formats_subexpressions() {
     let built = select_from::<Postgres<Pg16>, User>()
         .select((UserId,))
         .where_(expr)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -547,7 +560,8 @@ fn sql_macro_composes_with_group_by_and_having() {
         .select((OrderUserId, sql!(<i64> "COUNT(*)")))
         .having(sql!(bool, "SUM(total) > ?", 250.0))
         .having(Expr::count_all().lt(100i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -569,7 +583,8 @@ fn null_predicates_and_case_expressions_render_typed_sql() {
         .from::<Order>()
         .select((OrderId, tier))
         .where_(Expr::column::<OrderTotal>().is_not_null())
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -591,7 +606,8 @@ fn null_predicates_and_case_expressions_render_typed_sql() {
         .from::<Order>()
         .select((OrderId,))
         .where_(Expr::column::<OrderTotal>().is_null())
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         nulls.sql,
@@ -618,7 +634,8 @@ fn subquery_predicates_filter_rows_and_bind_parameters_in_order() {
                 .select((OrderId,))
                 .where_(Expr::column::<OrderTotal>().lt(5.0)),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -648,7 +665,7 @@ fn active_customers() -> Query<Postgres<Pg16>, User, (i64, String)> {
 
 #[test]
 fn set_operations_combine_case_and_exists_queries() {
-    let built = active_customers().union_all(active_customers()).build();
+    let built = active_customers().union_all(active_customers()).build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -674,11 +691,11 @@ fn set_operations_combine_case_and_exists_queries() {
     }
 
     assert_eq!(
-        base().intersect(base()).build().sql,
+        base().intersect(base()).build().expect("valid query").sql,
         "SELECT \"user_id\" FROM \"orders\" INTERSECT SELECT \"user_id\" FROM \"orders\""
     );
     assert_eq!(
-        base().except(base()).build().sql,
+        base().except(base()).build().expect("valid query").sql,
         "SELECT \"user_id\" FROM \"orders\" EXCEPT SELECT \"user_id\" FROM \"orders\""
     );
 }
@@ -704,7 +721,8 @@ fn self_join_with_aliases_qualifies_repeated_table_references() {
             AliasedCol::<ManagerAlias, UserId>::new(),
             AliasedCol::<ManagerAlias, UserName>::new(),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -720,7 +738,8 @@ fn cross_join_lateral_renders_correlated_subquery() {
     let built = select_from::<Postgres<Pg16>, User>()
         .cross_join_lateral(latest_order_per_user().as_lateral::<RecentOrder>())
         .select((UserId, RecentTotal))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -737,7 +756,7 @@ fn left_join_lateral_lifts_columns_into_options() {
         .left_join_lateral(latest_order_per_user().as_lateral::<RecentOrder>());
     let total = query.nullable::<RecentTotal>();
 
-    let built = query.select((UserId, total)).build();
+    let built = query.select((UserId, total)).build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -788,7 +807,8 @@ fn a_scalar_subquery_compares_without_an_explicit_conversion() {
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((OrderId,))
         .where_(Expr::column::<OrderTotal>().gt(average))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -803,7 +823,8 @@ fn a_row_value_expression_compares_a_tuple_as_one_value() {
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((OrderId,))
         .where_((OrderUserId, OrderId).gte((2i64, 10i64)))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -821,7 +842,8 @@ fn a_row_value_expression_matches_the_rows_of_a_subquery() {
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((OrderId,))
         .where_((OrderUserId, OrderId).in_subquery(pairs))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -841,7 +863,8 @@ fn a_keyset_cursor_walks_a_row_value_ordering() {
         .order_by_desc(OrderUserId)
         .order_by_desc(OrderId)
         .limit(10)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -861,7 +884,8 @@ fn a_query_locks_the_rows_it_claims_until_the_transaction_ends() {
         .limit(1)
         .for_update()
         .skip_locked()
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -875,7 +899,8 @@ fn a_query_locks_the_rows_it_claims_until_the_transaction_ends() {
         .select((OrderId,))
         .for_share()
         .nowait()
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(shared.sql, "SELECT \"id\" FROM \"orders\" FOR SHARE NOWAIT");
     assert!(shared.params.is_empty());
@@ -900,7 +925,8 @@ fn window_frames_restrict_the_rows_a_window_reads() {
                 WindowFrameBound::following(1),
             )),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -921,7 +947,8 @@ fn a_filtered_aggregate_restricts_the_rows_it_reads() {
         .group_by(OrderUserId)
         .select((OrderUserId, spent.clone()))
         .having(spent.gt(500.0))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -963,7 +990,8 @@ mod value_based_dsl {
             .where_(UserId.gt(10i64))
             .order_by_asc(UserId)
             .limit(20)
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -979,7 +1007,8 @@ mod value_based_dsl {
         let built = select_from(User)
             .left_join_table(Order, OrderUserId.eq(Expr::column::<UserId>()))
             .select(cols!(UserId, OrderTotal))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -1000,7 +1029,8 @@ mod value_based_dsl {
             .select((OrderUserId, Expr::count_all()))
             .having(Expr::count_all().gt(1i64))
             .order_by_desc(OrderUserId)
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             grouped.sql,
@@ -1014,7 +1044,8 @@ mod value_based_dsl {
                 OrderId,
                 row_number().over(Window::partition_by(OrderUserId).order_by_desc(OrderTotal)),
             ))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             ranked.sql,
@@ -1029,7 +1060,7 @@ mod value_based_dsl {
         }
 
         assert_eq!(
-            active().union_all(active()).build().sql,
+            active().union_all(active()).build().expect("valid query").sql,
             "SELECT \"id\" FROM \"users\" WHERE (\"active\" = $1) \
              UNION ALL SELECT \"id\" FROM \"users\" WHERE (\"active\" = $2)"
         );
@@ -1086,6 +1117,7 @@ fn an_optional_select_predicate_keeps_the_query_renderable() {
                 query.where_(Expr::column::<UserName>().eq(name))
             })
             .build()
+            .expect("valid query")
     }
 
     let filtered = build(Some("alice"), true);
@@ -1110,7 +1142,8 @@ fn an_absent_optional_select_predicate_leaves_the_query_unfiltered() {
     let built = select_from::<Postgres<Pg16>, User>()
         .select((UserId,))
         .where_opt(None::<Expr<bool, User>>)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
     assert!(built.params.is_empty());
@@ -1220,7 +1253,8 @@ mod phase18_relational {
             .where_(PostTags.any("rust".to_owned()))
             .order_by_asc(PostId)
             .limit(5)
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -1266,7 +1300,8 @@ mod phase18_relational {
                         .select(select!(CommentBody as body)),
                 ),
             ))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -1311,7 +1346,8 @@ mod phase18_relational {
             })
             .where_opt(absent)
             .order_by_desc(CountTotal)
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -1337,7 +1373,8 @@ mod phase18_relational {
             .where_(PostTags.array_contains(vec!["rust".to_owned()]))
             .where_(PostScores.array_overlaps(vec![1i64, 2i64]))
             .where_(PostMood.eq("very_sad"))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -1356,7 +1393,8 @@ mod phase18_relational {
         let quantifier = select_from::<Postgres<Pg16>, Post>()
             .select((PostId,))
             .where_(PostScores.all(0i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             quantifier.sql,
@@ -1402,6 +1440,7 @@ mod postgres_extension_traits {
             .select((DocId,))
             .where_(predicate)
             .build()
+            .expect("valid query")
     }
 
     #[test]
@@ -1500,7 +1539,8 @@ mod postgres_extension_traits {
     fn json_extraction_projects_the_addressed_member() {
         let member = select_from::<Postgres<Pg16>, Doc>()
             .select((DocId, DocMetadata.json_get_text("owner")))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             member.sql,
@@ -1510,7 +1550,8 @@ mod postgres_extension_traits {
 
         let indexed = select_from::<Postgres<Pg16>, Doc>()
             .select((DocMetadata.json_get(0i32),))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(indexed.sql, "SELECT (\"metadata\" -> $1) FROM \"docs\"");
         assert_eq!(indexed.params, vec![SqlVal::I32(0)]);
@@ -1535,7 +1576,8 @@ mod postgres_extension_traits {
             .select((PayloadId,))
             .where_(PayloadData.json_contains("{\"a\": 1}"))
             .where_(PayloadData.json_has_key("a"))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -1557,7 +1599,8 @@ fn greatest_and_least_render_their_comparison_functions() {
 
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((OrderId, greatest(OrderTotal, [1.0, 2.0])))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1567,7 +1610,8 @@ fn greatest_and_least_render_their_comparison_functions() {
 
     let lowest = select_from::<Postgres<Pg16>, Order>()
         .select((least(OrderTotal, [1.0]),))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(lowest.sql, "SELECT LEAST(\"total\", $1) FROM \"orders\"");
     assert_eq!(lowest.params, vec![SqlVal::F64(1.0)]);
@@ -1581,7 +1625,8 @@ fn the_null_safe_predicates_compare_against_absent_values() {
         .select((OrderId,))
         .where_(is_distinct_from(OrderTotal, 0.0))
         .where_(is_not_distinct_from(OrderUserId, 7i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1602,7 +1647,8 @@ fn an_ordering_can_fix_where_nulls_sort() {
         ))
         .order_by_desc_nulls_last(OrderTotal)
         .limit(3)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

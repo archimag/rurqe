@@ -298,7 +298,8 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     ///         .from::<Order>()
     ///         .group_by(OrderUserId)
     ///         .select((OrderUserId, Expr::sum::<OrderTotal>()))
-    ///         .build();
+    ///         .build()
+    ///         .expect("valid grouped query");
     ///
     ///     assert_eq!(
     ///         built.sql,
@@ -697,11 +698,11 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
 impl<D: Dialect, Tables: TableScope, Output, GroupByCols, P: ProjectionPresent>
     GroupedQuery<D, Tables, Output, GroupByCols, P>
 {
-    /// Renders the grouped statement into SQL text and its ordered parameter list.
+    /// Validates pre-flight SQL semantics and renders the grouped statement into SQL text and its ordered parameter list.
     ///
     /// Like [`SelectQuery::build`], the method is reachable only once the query
     /// projects its rows, so a grouped query without a projection never renders.
-    pub fn build(&self) -> BuiltQuery {
+    pub fn build(&self) -> Result<BuiltQuery, crate::query::BuildError> {
         self.query.build()
     }
 }

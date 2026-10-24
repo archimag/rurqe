@@ -159,7 +159,8 @@ fn expressions_render_through_the_select_target_trait() {
     let built = SelectQuery::<TestDialect>::new()
         .from::<User>()
         .select(select!(UserId, Expr::sum::<UserId>() as total))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT id, SUM(id) FROM users");
     assert!(built.params.is_empty());
@@ -170,7 +171,8 @@ fn selection_starts_a_query_directly_from_a_table() {
     let built = select!(UserId, UserEmail as contact_email)
         .from(User)
         .where_(Expr::column::<UserId>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
@@ -181,7 +183,8 @@ fn selection_starts_a_query_from_a_table_value() {
     let built = select!(UserId, UserEmail as contact_email)
         .from_table::<TestDialect, _>(User)
         .where_(Expr::column::<UserId>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
@@ -215,7 +218,8 @@ fn selection_feeds_the_query_builder() {
     let built = SelectQuery::<TestDialect>::new()
         .from::<User>()
         .select(select!(UserId, UserEmail as contact_email))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT id, email FROM users");
 }
@@ -226,7 +230,8 @@ fn selections_project_from_a_grouped_query() {
         .from::<Order>()
         .group_by(OrderId)
         .select(select!(OrderId, order_count: Expr::count_all()))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT id, COUNT(*) FROM orders GROUP BY id");
     assert!(built.params.is_empty());
@@ -368,7 +373,8 @@ mod question_mark_dialect_scope {
         let built = select!(UserId, UserEmail as contact_email)
             .from(User)
             .where_(Expr::column::<UserId>().gt(1i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,

@@ -521,7 +521,7 @@ mod tests {
         >();
 
         // The wrapped statement keeps rendering the rows it projects.
-        let built = lines::<PgMock>().build();
+        let built = lines::<PgMock>().build().expect("valid lines query");
         assert_eq!(built.sql, "SELECT \"sku\", \"qty\" FROM \"lines\"");
         assert!(built.params.is_empty());
     }

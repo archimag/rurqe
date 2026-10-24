@@ -26,7 +26,8 @@ fn builds_parameterised_select_for_postgres() {
         .order_by(UserName, OrderDirection::Asc)
         .limit(20)
         .offset(5)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -47,7 +48,7 @@ fn selection_determines_row_type() {
             .from::<User>()
             .select((UserId, UserName));
 
-    assert_eq!(query.build().sql, "SELECT \"id\", \"name\" FROM \"users\"");
+    assert_eq!(query.build().expect("valid query").sql, "SELECT \"id\", \"name\" FROM \"users\"");
 }
 
 #[test]
@@ -56,7 +57,7 @@ fn single_column_selection_yields_one_element_tuple() {
         .from::<User>()
         .select((UserId,));
 
-    assert_eq!(query.build().sql, "SELECT \"id\" FROM \"users\"");
+    assert_eq!(query.build().expect("valid query").sql, "SELECT \"id\" FROM \"users\"");
 }
 
 #[test]
@@ -80,7 +81,8 @@ fn predicates_support_comparisons_and_boolean_composition() {
                 .eq(true)
                 .or(Expr::column::<UserId>().lt(5i64)),
         )
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

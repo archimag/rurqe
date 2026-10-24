@@ -253,7 +253,7 @@ fn outer_joins_lift_newtype_columns_into_options() {
         .left_join::<AccountAudit, _, _>(Expr::column::<AuditAccountId>().eq(UserId(7)))
         .select((AccountId, AuditAccountId));
 
-    let built = query.build();
+    let built = query.build().expect("valid query");
 
     assert_eq!(
         built.sql,

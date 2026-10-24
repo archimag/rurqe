@@ -26,7 +26,7 @@ pub trait ExecutableQuery {
     type Row;
 
     /// Renders the statement into SQL text and its ordered parameter list.
-    fn build_query(&self) -> BuiltQuery;
+    fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError>;
 }
 
 impl<D: Dialect, Tables: TableScope, Output, Lock> ExecutableQuery
@@ -34,7 +34,7 @@ impl<D: Dialect, Tables: TableScope, Output, Lock> ExecutableQuery
 {
     type Row = Output;
 
-    fn build_query(&self) -> BuiltQuery {
+    fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
         self.build()
     }
 }
@@ -44,8 +44,8 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> ExecutableQuery
 {
     type Row = Returning;
 
-    fn build_query(&self) -> BuiltQuery {
-        self.build()
+    fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
+        Ok(self.build())
     }
 }
 
@@ -56,8 +56,8 @@ where
 {
     type Row = Returning;
 
-    fn build_query(&self) -> BuiltQuery {
-        self.build()
+    fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
+        Ok(self.build())
     }
 }
 
@@ -66,8 +66,8 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> Executab
 {
     type Row = Returning;
 
-    fn build_query(&self) -> BuiltQuery {
-        self.build()
+    fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
+        Ok(self.build())
     }
 }
 
@@ -76,7 +76,7 @@ impl<D: Dialect, Tables: TableScope, Output, GroupByCols> ExecutableQuery
 {
     type Row = Output;
 
-    fn build_query(&self) -> BuiltQuery {
+    fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
         self.build()
     }
 }
@@ -101,6 +101,8 @@ pub trait QueryBackend {
 /// Error raised while executing a query through [`QueryBackendExt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionError<E> {
+    /// Pre-flight query validation detected invalid SQL semantics.
+    Build(crate::query::BuildError),
     /// The driver failed to execute the statement.
     Backend(E),
     /// A produced row did not match the row type of the query.
@@ -120,6 +122,19 @@ pub enum ExecutionError<E> {
 }
 
 impl<E> ExecutionError<E> {
+    /// Returns `true` when pre-flight query validation failed.
+    pub fn is_build(&self) -> bool {
+        matches!(self, ExecutionError::Build(_))
+    }
+
+    /// Borrows the validation error details when pre-flight query validation failed.
+    pub fn as_build(&self) -> Option<&crate::query::BuildError> {
+        match self {
+            ExecutionError::Build(error) => Some(error),
+            _ => None,
+        }
+    }
+
     /// Returns `true` when the query produced no rows at all.
     pub fn is_not_found(&self) -> bool {
         matches!(self, ExecutionError::NoRows)
@@ -147,7 +162,8 @@ impl<E> ExecutionError<E> {
     pub fn as_backend(&self) -> Option<&E> {
         match self {
             ExecutionError::Backend(error) => Some(error),
-            ExecutionError::RowDecode { .. }
+            ExecutionError::Build(_)
+            | ExecutionError::RowDecode { .. }
             | ExecutionError::NoRows
             | ExecutionError::MultipleRows { .. } => None,
         }
@@ -157,7 +173,8 @@ impl<E> ExecutionError<E> {
     pub fn into_backend(self) -> Option<E> {
         match self {
             ExecutionError::Backend(error) => Some(error),
-            ExecutionError::RowDecode { .. }
+            ExecutionError::Build(_)
+            | ExecutionError::RowDecode { .. }
             | ExecutionError::NoRows
             | ExecutionError::MultipleRows { .. } => None,
         }
@@ -173,6 +190,7 @@ impl<E> From<E> for ExecutionError<E> {
 impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ExecutionError::Build(error) => write!(f, "invalid query: {error}"),
             ExecutionError::Backend(error) => write!(f, "database backend error: {error}"),
             ExecutionError::RowDecode { row_index, source } => {
                 write!(f, "failed to decode row {row_index}: {source}")
@@ -193,6 +211,7 @@ impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
 impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            ExecutionError::Build(error) => Some(error),
             ExecutionError::Backend(error) => Some(error),
             ExecutionError::RowDecode { source, .. } => Some(source),
             ExecutionError::NoRows | ExecutionError::MultipleRows { .. } => None,
@@ -213,7 +232,7 @@ pub trait QueryBackendExt: QueryBackend {
         Q: ExecutableQuery,
         Q::Row: FromRow,
     {
-        let built = query.build_query();
+        let built = query.build_query().map_err(ExecutionError::Build)?;
         let rows = self.fetch_raw(&built).map_err(ExecutionError::Backend)?;
         rows.iter()
             .enumerate()
@@ -255,7 +274,7 @@ pub trait QueryBackendExt: QueryBackend {
     where
         Q: ExecutableQuery,
     {
-        let built = query.build_query();
+        let built = query.build_query().map_err(ExecutionError::Build)?;
         self.execute_raw(&built).map_err(ExecutionError::Backend)
     }
 }
@@ -319,7 +338,7 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
         Q::Row: FromRow + Send,
     {
         async move {
-            let built = query.build_query();
+            let built = query.build_query().map_err(ExecutionError::Build)?;
             let rows = self
                 .fetch_raw(&built)
                 .await
@@ -378,7 +397,7 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
         Q: ExecutableQuery + Sync,
     {
         async move {
-            let built = query.build_query();
+            let built = query.build_query().map_err(ExecutionError::Build)?;
             self.execute_raw(&built)
                 .await
                 .map_err(ExecutionError::Backend)

@@ -185,7 +185,7 @@ fn a_row_predicate_filters_a_query() {
         .where_((UserId, UserName).gt((10i64, "root")));
 
     assert_eq!(
-        query.build().sql,
+        query.build().expect("valid query").sql,
         "SELECT \"id\" FROM \"users\" WHERE ((\"id\", \"name\") > ($1, $2))"
     );
 }

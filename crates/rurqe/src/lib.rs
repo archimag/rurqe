@@ -17,7 +17,9 @@ pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 pub use rurqe_core::dml::{excluded, Excluded, ExecutableDelete, ExecutableUpdate};
 pub use rurqe_core::expr::{RowExpr, RowValues};
 pub use rurqe_core::query::{LockedQuery, Query, TableSelection};
-pub use rurqe_core::{cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec};
+pub use rurqe_core::{
+    cte, cte_named, dense_rank, lag, lead, rank, row_number, BuildError, Window, WindowSpec,
+};
 pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
@@ -269,7 +271,8 @@ crate::pin_dialect_version! {
 ///
 /// let built = select_from::<Postgres, User>()
 ///     .select(cols!(UserId))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// // A single-relation statement keeps the bare column name; the reference is
 /// // qualified only once the statement spans several relations.
@@ -565,7 +568,8 @@ crate::pin_dialect_version! {
 ///     .select((JobId,))
 ///     .for_update()
 ///     .skip_locked()
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(built.sql, "SELECT \"id\" FROM \"jobs\" FOR UPDATE SKIP LOCKED");
 /// ```
@@ -609,7 +613,8 @@ crate::pin_dialect_version! {
 /// let built = select_from::<Postgres<Pg16>, Order>()
 ///     .select((OrderId,))
 ///     .where_(Expr::column::<OrderTotal>().gt(average))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(
 ///     built.sql,
@@ -942,7 +947,8 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 ///     .from::<User>()
 ///     .select((UserId,))
 ///     .where_(Expr::column::<UserId>().eq(7i64))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(
 ///     built.sql,
@@ -971,7 +977,8 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 ///     .order_by_desc(OrderUserId)
 ///     .order_by_desc(OrderId)
 ///     .limit(10)
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(
 ///     built.sql,
@@ -1010,9 +1017,9 @@ pub mod prelude {
 
     pub use rurqe_core::{
         cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, BinaryOp,
-        BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect, ExecutableQuery,
-        ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
-        LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt,
+        BuildError, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect,
+        ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr,
+        IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt,
         RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible,
         SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
         ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,

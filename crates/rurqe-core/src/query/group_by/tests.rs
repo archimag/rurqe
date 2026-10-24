@@ -94,7 +94,8 @@ fn a_grouped_query_accepts_a_constant_projection() {
         .from::<Order>()
         .group_by(OrderUserId)
         .select((OrderUserId, counted))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -123,7 +124,8 @@ fn a_grouped_query_accepts_aggregates_over_ungrouped_columns() {
         .select((OrderUserId, Expr::count_all(), Expr::sum::<OrderTotal>()))
         .having(Expr::count_all().gt(1i64))
         .order_by_expr_desc(Expr::sum::<OrderTotal>())
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -145,7 +147,8 @@ fn a_grouped_query_accepts_a_window_over_its_grouped_columns() {
             OrderUserId,
             row_number().over(Window::partition_by(OrderUserId).order_by_asc(OrderTotal)),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

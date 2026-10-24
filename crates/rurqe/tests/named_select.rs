@@ -56,7 +56,8 @@ fn select_macro_renders_sql_and_decodes_named_fields() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<User>()
         .select(select!(UserId, UserName as contact_email, UserActive))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -86,7 +87,8 @@ fn named_projection_composes_with_filters_and_pagination() {
         .where_(Expr::column::<UserId>().gt(10i64))
         .order_by_asc(UserId)
         .limit(5)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -134,7 +136,8 @@ fn postgres_select_macro_starts_query_from_table_without_turbofish() {
     let built = select!(UserId, UserName as contact_email)
         .from(User)
         .where_(Expr::column::<UserId>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -150,7 +153,8 @@ fn sqlite_select_macro_starts_query_from_table_without_turbofish() {
     let built = select!(UserId, UserName as contact_email)
         .from(User)
         .where_(Expr::column::<UserId>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -168,7 +172,8 @@ fn postgres_versioned_prelude_pins_the_dialect_without_turbofish() {
     let selected = select!(UserId, UserName as contact_email)
         .from(User)
         .where_(Expr::column::<UserId>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         selected.sql,
@@ -203,7 +208,8 @@ fn sqlite_3_35_prelude_gates_returning_on_the_pinned_version() {
     let selected = select!(UserId, UserName as contact_email)
         .from(User)
         .where_(Expr::column::<UserId>().eq(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         selected.sql,
@@ -350,7 +356,8 @@ fn postgres_renders_every_capability_gated_clause() {
     let lateral = select_from(User)
         .cross_join_lateral(latest.as_lateral::<LatestAudit>())
         .select(cols!(UserId, LatestAuditNote))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         lateral.sql,

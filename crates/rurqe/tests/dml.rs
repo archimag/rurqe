@@ -70,7 +70,7 @@ fn selecting_moves_the_query_into_the_projected_typestate() {
     assert_projected(&query);
 
     assert_eq!(
-        query.build().sql,
+        query.build().expect("valid query").sql,
         "SELECT \"id\", \"name\", \"active\" FROM \"users\""
     );
 }

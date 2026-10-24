@@ -25,11 +25,12 @@ pub use expr::{
 };
 pub use nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
 pub use query::{
-    cte, cte_named, dense_rank, lag, lead, rank, row_number, BuiltQuery, Cte, DerivedTable,
-    ExecutableQuery, ExecutionError, GroupBy, GroupByInScope, IsolationLevel, LagLeadFn,
-    LockedQuery, OrderDirection, PartitionBy, Query, QueryBackend, QueryBackendExt, SelectQuery,
-    SelectTarget, SelectTargetInScope, Selection, SelectionInScope, TransactionBackend,
-    TransactionContext, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+    cte, cte_named, dense_rank, lag, lead, rank, row_number, BuildError, BuiltQuery, Cte,
+    DerivedTable, ExecutableQuery, ExecutionError, GroupBy, GroupByInScope, IsolationLevel,
+    LagLeadFn, LockedQuery, OrderDirection, PartitionBy, Query, QueryBackend, QueryBackendExt,
+    SelectQuery, SelectTarget, SelectTargetInScope, Selection, SelectionInScope,
+    TransactionBackend, TransactionContext, Window, WindowExpr, WindowExprKind, WindowFn,
+    WindowSpec,
 };
 pub use row::{FromRow, FromSqlValue, RowDecodeError};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

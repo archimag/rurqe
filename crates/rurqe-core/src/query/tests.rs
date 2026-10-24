@@ -72,7 +72,8 @@ fn distinct_renders_distinct_keyword() {
         .from::<User>()
         .select((UserId,))
         .distinct()
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT DISTINCT \"id\" FROM \"users\"");
 }
@@ -83,7 +84,8 @@ fn distinct_on_renders_distinct_on_clause() {
         .from::<User>()
         .select((UserId, UserName))
         .distinct_on(UserId)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -99,7 +101,8 @@ fn renders_selection_from_filter_and_pagination() {
         .where_(Expr::column::<UserId>().gt(10i64))
         .limit(20)
         .offset(5)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -115,7 +118,10 @@ fn selection_determines_row_type() {
             .from::<User>()
             .select((UserId,));
 
-    assert_eq!(query.build().sql, "SELECT \"id\" FROM \"users\"");
+    assert_eq!(
+        query.build().expect("valid query").sql,
+        "SELECT \"id\" FROM \"users\""
+    );
 }
 
 #[test]
@@ -125,7 +131,8 @@ fn repeated_predicates_are_combined_with_and() {
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().gt(1i64))
         .where_(Expr::column::<UserName>().eq("root"))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -144,7 +151,8 @@ fn order_by_renders_asc_and_desc() {
         .select((UserId, UserName))
         .order_by(UserId, OrderDirection::Desc)
         .order_by_asc(UserName)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -164,7 +172,8 @@ fn the_projection_typestate_gates_the_statement_renderer() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .select((UserId,))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
 }
@@ -177,7 +186,10 @@ fn inner_join_renders_join_clause_before_filter() {
             .inner_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
             .select((UserId, OrderId));
 
-    let built = query.where_(Expr::column::<UserId>().gt(1i64)).build();
+    let built = query
+        .where_(Expr::column::<UserId>().gt(1i64))
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -198,7 +210,8 @@ fn joined_scope_tracks_every_table_in_from_order() {
             Expr::column::<UserId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
         )
         .select((OrderId,))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -228,7 +241,8 @@ fn cross_join_renders_unconditional_cross_join() {
         .from::<User>()
         .cross_join::<Order>()
         .select((UserId, OrderId))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -240,7 +254,8 @@ fn cross_join_renders_unconditional_cross_join() {
         .from_table(User)
         .cross_join_table(Order)
         .select((UserId, OrderId))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built_value.sql, built.sql);
 }
@@ -258,7 +273,7 @@ fn full_outer_join_lifts_both_relations_into_options() {
             )
             .select((UserId, OrderId));
 
-    let built = query.build();
+    let built = query.build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -274,7 +289,8 @@ fn full_outer_join_lifts_both_relations_into_options() {
             Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
         )
         .select((UserId, OrderId))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(built_value.sql, built.sql);
 }
@@ -325,7 +341,7 @@ fn left_join_renders_left_keyword_and_composes_with_inner_join() {
         );
     let total = query.nullable::<OrderTotal>();
 
-    let built = query.select((OrderId, total)).build();
+    let built = query.select((OrderId, total)).build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -360,7 +376,7 @@ fn left_joined_columns_are_lifted_without_explicit_markers() {
         .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(7i64))
         .select((UserId, OrderTotal));
 
-    let built = query.build();
+    let built = query.build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -379,7 +395,7 @@ fn inner_joined_columns_keep_their_declared_types() {
             .select((UserId, OrderId, OrderTotal));
 
     assert_eq!(
-        query.build().sql,
+        query.build().expect("valid query").sql,
         "SELECT \"users\".\"id\", \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" \
          INNER JOIN \"orders\" ON (\"users\".\"id\" = \"orders\".\"user_id\")"
     );
@@ -399,7 +415,7 @@ fn nested_left_join_stays_nullable_inside_an_inner_join() {
             .select((OrderId,));
 
     assert_eq!(
-        query.build().sql,
+        query.build().expect("valid query").sql,
         "SELECT \"orders\".\"id\" FROM \"users\" LEFT JOIN \"orders\" \
          ON (\"orders\".\"user_id\" = $1) INNER JOIN \"users\" AS \"m\" \
          ON (\"users\".\"id\" = \"m\".\"id\")"
@@ -431,7 +447,10 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
         query
     };
 
-    assert_eq!(automatic.build(), explicit.build());
+    assert_eq!(
+        automatic.build().expect("valid query"),
+        explicit.build().expect("valid query")
+    );
 
     // An already nullable column keeps a single layer of `Option`.
     let single_layer: SelectQuery<
@@ -445,7 +464,7 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
         .select((Nullable::<OrderTotal>::new(),));
 
     assert_eq!(
-        single_layer.build().sql,
+        single_layer.build().expect("valid query").sql,
         "SELECT \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
          ON (\"orders\".\"user_id\" = $1)"
     );
@@ -457,14 +476,16 @@ fn group_by_renders_single_column_and_tuple() {
         .from::<User>()
         .group_by(UserId)
         .select((UserId,))
-        .build();
+        .build()
+        .expect("valid query");
     assert_eq!(single.sql, "SELECT \"id\" FROM \"users\" GROUP BY \"id\"");
 
     let tuple = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .group_by((UserId, UserName))
         .select((UserId, UserName))
-        .build();
+        .build()
+        .expect("valid query");
     assert_eq!(
         tuple.sql,
         "SELECT \"id\", \"name\" FROM \"users\" GROUP BY \"id\", \"name\""
@@ -478,7 +499,8 @@ fn multiple_group_by_calls_append_columns() {
         .group_by(UserId)
         .group_by(UserName)
         .select((UserId, UserName))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -493,7 +515,8 @@ fn having_renders_aggregate_filters_and_binds_parameters() {
         .group_by(OrderUserId)
         .select((OrderUserId,))
         .having(Expr::count_all().gt(5i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -512,7 +535,8 @@ fn repeated_having_calls_are_combined_with_and() {
         .having(Expr::count_all().gt(2i64))
         .having(Expr::sum::<OrderTotal>().lt(100.0))
         .order_by_asc(OrderUserId)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -539,6 +563,7 @@ fn fetch_all_renders_the_query_and_decodes_rows() {
         .from::<User>()
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().gt(10i64));
+    let query_built = query.build().expect("valid query");
 
     let mut backend = MockBackend {
         rows: vec![
@@ -554,7 +579,7 @@ fn fetch_all_renders_the_query_and_decodes_rows() {
         rows,
         vec![(11i64, "root".to_owned()), (12i64, "guest".to_owned())]
     );
-    assert_eq!(backend.executed, vec![query.build()]);
+    assert_eq!(backend.executed, vec![query_built]);
 }
 
 #[test]
@@ -629,14 +654,14 @@ fn execute_reports_affected_rows_without_decoding() {
     };
 
     assert_eq!(backend.execute(&query), Ok(1));
-    assert_eq!(backend.executed, vec![query.build_query()]);
+    assert_eq!(backend.executed, vec![query.build_query().expect("valid query")]);
 }
 
 #[test]
 fn executable_queries_expose_built_sql_and_row_type() {
     let insert =
         InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
-    assert_eq!(insert.build_query(), insert.build());
+    assert_eq!(insert.build_query(), Ok(insert.build()));
 
     fn assert_row<Q: ExecutableQuery<Row = (i64, String)>>() {}
 
@@ -847,7 +872,8 @@ fn window_functions_render_expected_over_clauses() {
             lead(UserName).over(Window::empty()),
             Expr::count_all().over(Window::partition_by(UserId)),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -874,7 +900,8 @@ fn single_cte_renders_with_clause_and_binds_sequential_parameters() {
         .from::<User>()
         .select((UserId, UserName))
         .where_(Expr::column::<UserName>().eq("root"))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -904,7 +931,8 @@ fn multiple_ctes_render_comma_separated_clauses() {
         .from::<User>()
         .select((UserId,))
         .where_(Expr::column::<UserId>().eq(7i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -942,7 +970,8 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
         )
         .select((UserId, UserName, SummaryTotal))
         .where_(Expr::column::<SummaryTotal>().lt(500.0))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -970,7 +999,8 @@ fn raw_sql_renders_sequential_placeholders_in_query_clauses() {
         ))
         .where_(Expr::column::<UserId>().gt(10i64))
         .where_(raw_pred)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -999,7 +1029,8 @@ fn subquery_predicates_render_nested_queries_with_sequential_parameters() {
         .select((UserId,))
         .where_(Expr::column::<UserId>().in_subquery(large_orders))
         .where_(Expr::not_exists(recent_orders))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1027,7 +1058,8 @@ fn a_correlated_reference_names_its_table_inside_a_single_relation_subquery() {
         .from::<Order>()
         .select((OrderId, OrderTotal))
         .where_(Expr::exists(earlier))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1047,7 +1079,8 @@ fn not_in_subquery_renders_negated_membership() {
         .from::<Order>()
         .select((OrderId,))
         .where_(Expr::column::<OrderTotal>().not_in_subquery(totals))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1068,7 +1101,8 @@ fn union_renders_combined_query_and_binds_parameters_in_order() {
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().lt(5i64))
         .union(other)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1087,19 +1121,19 @@ fn set_operation_keywords_render_expected_sql() {
     }
 
     assert_eq!(
-        base().union(base()).build().sql,
+        base().union(base()).build().expect("valid query").sql,
         "SELECT \"id\" FROM \"users\" UNION SELECT \"id\" FROM \"users\""
     );
     assert_eq!(
-        base().union_all(base()).build().sql,
+        base().union_all(base()).build().expect("valid query").sql,
         "SELECT \"id\" FROM \"users\" UNION ALL SELECT \"id\" FROM \"users\""
     );
     assert_eq!(
-        base().intersect(base()).build().sql,
+        base().intersect(base()).build().expect("valid query").sql,
         "SELECT \"id\" FROM \"users\" INTERSECT SELECT \"id\" FROM \"users\""
     );
     assert_eq!(
-        base().except(base()).build().sql,
+        base().except(base()).build().expect("valid query").sql,
         "SELECT \"id\" FROM \"users\" EXCEPT SELECT \"id\" FROM \"users\""
     );
 }
@@ -1117,7 +1151,8 @@ fn chained_set_operations_keep_trailing_order_by_and_limit_on_the_union() {
         .union_all(base())
         .order_by_asc(UserId)
         .limit(3)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1137,6 +1172,7 @@ fn union_query_is_executable_and_decodes_rows() {
                 .from::<User>()
                 .select((UserId,)),
         );
+    let query_built = query.build().expect("valid query");
 
     let mut backend = MockBackend {
         rows: vec![vec![SqlVal::I64(1)]],
@@ -1145,7 +1181,7 @@ fn union_query_is_executable_and_decodes_rows() {
 
     let rows = backend.fetch_all(&query).expect("rows decode");
     assert_eq!(rows, vec![(1i64,)]);
-    assert_eq!(backend.executed, vec![query.build()]);
+    assert_eq!(backend.executed, vec![query_built]);
 }
 
 crate::table_alias! {
@@ -1167,7 +1203,8 @@ fn aliased_table_renders_as_clause_and_qualifies_columns() {
             AliasedCol::<UserAlias, UserName>::new(),
         ))
         .where_(Expr::column::<AliasedCol<UserAlias, UserId>>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1184,7 +1221,8 @@ fn aliased_table_participates_in_joins() {
             Expr::column::<UserId>().eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
         )
         .select((UserId, AliasedCol::<OrderAlias, OrderTotal>::new()))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1203,7 +1241,7 @@ fn left_joined_aliased_table_lifts_columns_into_options() {
         );
     let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
 
-    let built = query.select((UserId, total)).build();
+    let built = query.select((UserId, total)).build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1232,7 +1270,8 @@ fn cross_join_lateral_renders_inline_correlated_subquery() {
         .from::<User>()
         .cross_join_lateral(latest_order_per_user_scope().as_lateral::<RecentOrder>())
         .select((UserId, RecentTotal))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1249,7 +1288,7 @@ fn left_join_lateral_renders_on_true_and_lifts_columns_into_options() {
         .left_join_lateral(latest_order_per_user_scope().as_lateral::<RecentOrder>());
     let total = query.nullable::<RecentTotal>();
 
-    let built = query.select((UserId, total)).build();
+    let built = query.select((UserId, total)).build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1273,7 +1312,8 @@ fn lateral_join_binds_subquery_parameters_before_the_outer_filter() {
         .cross_join_lateral(sub.as_lateral::<RecentOrder>())
         .select((UserId, RecentTotal))
         .where_(Expr::column::<UserId>().gt(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1294,7 +1334,7 @@ fn group_by_transitions_to_the_grouped_typestate() {
             .select((OrderUserId,));
 
     assert_eq!(
-        query.build().sql,
+        query.build().expect("valid query").sql,
         "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\""
     );
 }
@@ -1316,7 +1356,8 @@ fn grouped_selection_accepts_grouped_columns_and_aggregates() {
         .order_by_asc(OrderUserId)
         .limit(5)
         .offset(2)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1334,7 +1375,8 @@ fn chained_group_by_extends_the_grouped_columns() {
         .group_by(UserId)
         .group_by(UserName)
         .select((UserId, UserName))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1355,7 +1397,8 @@ fn grouped_selection_accepts_window_expressions() {
             OrderUserId,
             row_number().over(Window::partition_by(OrderUserId).order_by_asc(OrderId)),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1378,7 +1421,8 @@ fn grouped_queries_order_and_filter_by_aggregates_and_grouped_columns() {
             OrderDirection::Asc,
             NullsOrder::Last,
         )
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1395,6 +1439,7 @@ fn grouped_queries_are_executable() {
         .from::<Order>()
         .group_by(OrderUserId)
         .select((OrderUserId, Expr::count_all()));
+    let query_built = query.build().expect("valid query");
 
     let mut backend = MockBackend {
         rows: vec![vec![SqlVal::I64(1), SqlVal::I64(3)]],
@@ -1404,10 +1449,13 @@ fn grouped_queries_are_executable() {
     let rows = backend.fetch_all(&query).expect("grouped rows decode");
 
     assert_eq!(rows, vec![(1i64, 3i64)]);
-    assert_eq!(backend.executed, vec![query.build()]);
+    assert_eq!(backend.executed, vec![query_built.clone()]);
 
-    let built = query.build();
-    assert_eq!(query.into_select().build(), built);
+    let built = query_built;
+    assert_eq!(
+        query.into_select().build().expect("valid query"),
+        built
+    );
 }
 
 #[test]
@@ -1454,7 +1502,8 @@ fn order_by_and_group_by_qualify_aliased_columns() {
             AliasedCol::<ManagerAlias, UserName>::new(),
         ))
         .order_by(AliasedCol::<UserAlias, UserId>::new(), OrderDirection::Asc)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1477,7 +1526,8 @@ fn unaliased_table_reference_ignores_a_preceding_aliased_instance_of_the_same_ta
             Expr::column::<AliasedCol<ManagerAlias, UserId>>().eq(Expr::column::<UserId>()),
         )
         .select((UserId,))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1497,7 +1547,8 @@ fn distinct_on_qualifies_aliased_columns() {
         ))
         .distinct_on(AliasedCol::<OrderAlias, OrderUserId>::new())
         .order_by_asc(AliasedCol::<OrderAlias, OrderTotal>::new())
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1519,7 +1570,8 @@ fn window_specifications_and_lag_qualify_aliased_columns() {
                 .offset(1)
                 .over(window),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1535,7 +1587,8 @@ fn value_table_argument_infers_the_from_table() {
         .from_table(User)
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().gt(10i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1550,7 +1603,8 @@ fn value_join_arguments_infer_joined_tables() {
         .from_table(User)
         .inner_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
         .select((UserId, OrderTotal))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1573,7 +1627,7 @@ fn value_left_join_arguments_lift_columns_into_options() {
         .select((UserId, OrderTotal));
 
     assert_eq!(
-        query.build().sql,
+        query.build().expect("valid query").sql,
         "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" LEFT JOIN \"orders\" \
          ON (\"orders\".\"user_id\" = $1)"
     );
@@ -1763,7 +1817,12 @@ fn a_compound_ordering_reads_the_output_columns_of_the_projection() {
         .from::<Order>()
         .select((OrderId, OrderTotal));
 
-    let built = joined.union(plain).order_by_asc(UserId).limit(3).build();
+    let built = joined
+        .union(plain)
+        .order_by_asc(UserId)
+        .limit(3)
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1779,7 +1838,8 @@ fn greatest_and_least_project_the_comparison_functions() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderId, greatest(OrderTotal, [1.0, 2.0])))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1790,7 +1850,8 @@ fn greatest_and_least_project_the_comparison_functions() {
     let lowest = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((least(OrderTotal, [1.0]),))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(lowest.sql, "SELECT LEAST(\"total\", $1) FROM \"orders\"");
     assert_eq!(lowest.params, vec![SqlVal::F64(1.0)]);
@@ -1803,7 +1864,8 @@ fn the_null_safe_predicates_compare_absent_values() {
         .select((OrderId,))
         .where_(is_distinct_from(OrderTotal, 0.0))
         .where_(is_not_distinct_from(OrderUserId, 7i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1823,7 +1885,8 @@ fn a_window_ordering_can_fix_where_nulls_sort() {
                 Window::partition_by(OrderUserId).order_by_desc_nulls_last(OrderTotal),
             ),
         ))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

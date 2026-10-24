@@ -304,7 +304,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 /// dialect using `from_table::<Dialect, _>(table)`:
                 ///
                 /// ```text
-                /// select!(UserId, UserEmail).from_table::<Postgres, _>(users).build()
+                /// select!(UserId, UserEmail).from_table::<Postgres, _>(users).build().expect("valid query")
                 /// ```
                 pub fn from_table<__D, __T>(
                     self,

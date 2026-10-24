@@ -80,7 +80,8 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///     .from::<User>()
     ///     .select((UserId,))
     ///     .where_(Expr::column::<UserId>().in_subquery(buyers))
-    ///     .build();
+    ///     .build()
+    ///     .expect("valid query");
     ///
     /// assert_eq!(
     ///     built.sql,
