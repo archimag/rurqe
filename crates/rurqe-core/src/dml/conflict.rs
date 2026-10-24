@@ -88,21 +88,25 @@ impl Conflict {
                 assignments,
                 predicate,
             } => {
-                sql.push_str(" DO UPDATE SET ");
-                for (index, (name, value)) in assignments.iter().enumerate() {
-                    if index > 0 {
-                        sql.push_str(", ");
+                if assignments.is_empty() {
+                    sql.push_str(" DO NOTHING");
+                } else {
+                    sql.push_str(" DO UPDATE SET ");
+                    for (index, (name, value)) in assignments.iter().enumerate() {
+                        if index > 0 {
+                            sql.push_str(", ");
+                        }
+                        D::push_quoted_identifier(sql, name);
+                        sql.push_str(" = ");
+                        // The clause addresses the inserted row and its proposed
+                        // `EXCLUDED` row, both of which are referenced explicitly, so
+                        // a column of the target table stays unqualified.
+                        value.render::<D>(sql, params, &[]);
                     }
-                    D::push_quoted_identifier(sql, name);
-                    sql.push_str(" = ");
-                    // The clause addresses the inserted row and its proposed
-                    // `EXCLUDED` row, both of which are referenced explicitly, so
-                    // a column of the target table stays unqualified.
-                    value.render::<D>(sql, params, &[]);
-                }
-                if let Some(predicate) = predicate {
-                    sql.push_str(" WHERE ");
-                    render_expr::<D>(sql, params, predicate, &[]);
+                    if let Some(predicate) = predicate {
+                        sql.push_str(" WHERE ");
+                        render_expr::<D>(sql, params, predicate, &[]);
+                    }
                 }
             }
         }
@@ -363,10 +367,6 @@ where
     {
         let mut columns = Vec::new();
         assignments.extend_assignments(&mut columns);
-        debug_assert!(
-            !columns.is_empty(),
-            "an ON CONFLICT DO UPDATE requires at least one column assignment"
-        );
 
         let mut deduped_assignments: Vec<(&'static str, AssignValue)> = Vec::new();
         for item in columns {
@@ -380,13 +380,19 @@ where
             }
         }
 
+        let action = if deduped_assignments.is_empty() {
+            ConflictAction::DoNothing
+        } else {
+            ConflictAction::DoUpdate {
+                assignments: deduped_assignments,
+                predicate: self.update_predicate,
+            }
+        };
+
         self.query.with_conflict(Conflict {
             target: self.target,
             target_predicate: self.target_predicate,
-            action: ConflictAction::DoUpdate {
-                assignments: deduped_assignments,
-                predicate: self.update_predicate,
-            },
+            action,
         })
     }
 }
@@ -394,13 +400,43 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::Merged;
+    use crate::dml::{AssignColumn, ColumnAssign};
+    use crate::expr::Expression;
+    use core::fmt::Write;
+
+    struct MockDialect;
+
+    impl Dialect for MockDialect {
+        fn push_quoted_identifier(out: &mut String, ident: &str) {
+            out.push('"');
+            out.push_str(ident);
+            out.push('"');
+        }
+
+        fn push_placeholder(out: &mut String, index: usize) {
+            let _ = write!(out, "${index}");
+        }
+    }
+
+    impl SupportsOnConflict for MockDialect {}
 
     crate::table! {
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
+    }
+
+    struct EmptyAssignments;
+
+    impl AssignmentSet<User> for EmptyAssignments {
+        fn extend_assignments<'a>(&'a self, _out: &mut Vec<AssignColumn<'a>>) {}
+        fn into_assignments(self, _out: &mut Vec<(&'static str, AssignValue)>) {}
+    }
+
+    impl AssignmentScope for EmptyAssignments {
+        type Scope = ();
+        type Dialect = ();
     }
 
     fn assert_target_scope<S: ConflictTargetScope<User>>() {}
@@ -414,7 +450,7 @@ mod tests {
         assert_target_scope::<Unscoped>();
 
         // Comparing two columns of the inserted table reads the same table twice.
-        assert_target_scope::<Merged<User, User>>();
+        assert_target_scope::<(User, User)>();
     }
 
     #[test]
@@ -425,7 +461,37 @@ mod tests {
 
         // A predicate comparing the stored row with the proposed one reads both,
         // whichever side of the comparison names them.
-        assert_update_scope::<Merged<User, Excluded<User>>>();
-        assert_update_scope::<Merged<Excluded<User>, User>>();
+        assert_update_scope::<(User, Excluded<User>)>();
+        assert_update_scope::<(Excluded<User>, User)>();
+    }
+
+    #[test]
+    fn empty_assignment_set_degrades_to_do_nothing() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .do_update(EmptyAssignments)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO NOTHING"
+        );
+    }
+
+    #[test]
+    fn empty_assignment_set_with_predicates_degrades_to_do_nothing() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .target_where(UserId.gt(0i64))
+            .update_where(UserName.ne("root"))
+            .do_update(EmptyAssignments)
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") WHERE (\"id\" > $3) DO NOTHING"
+        );
     }
 }
