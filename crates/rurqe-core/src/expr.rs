@@ -17,6 +17,7 @@ mod array;
 mod ast;
 mod builder;
 mod functions;
+mod operand;
 mod ops;
 mod qualify;
 mod render;
@@ -40,6 +41,7 @@ pub use functions::{
     avg, avg_distinct, coalesce, count, count_all, count_distinct, greatest, is_distinct_from,
     is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, SqlCastTarget,
 };
+pub use operand::FunctionOperand;
 pub use ops::{
     AnySubquery, CombineAggr, CombinedAggr, Expression, InSubquery, IntoExpr, IntoExprList,
     Numeric, NumericOperand, SqlCompatible, StringExpression,

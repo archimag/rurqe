@@ -20,7 +20,8 @@ pub use dml::{
 };
 pub use expr::{
     greatest, is_distinct_from, is_not_distinct_from, least, nullif, Aggregate, AggregateFunc,
-    BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, NullsOrder, SqlArrayElement, SqlCastTarget,
+    BinaryOp, Expr, ExprKind, FunctionOperand, IntoExpr, NonAggregate, NullsOrder, SqlArrayElement,
+    SqlCastTarget,
     SqlCompatible, SqlVal, ToSqlVal,
 };
 pub use nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};

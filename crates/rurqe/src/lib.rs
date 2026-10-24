@@ -1018,8 +1018,9 @@ pub mod prelude {
     pub use rurqe_core::{
         cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, BinaryOp,
         BuildError, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect,
-        ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr,
-        IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt,
+        ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, FunctionOperand,
+        GroupBy, IntoExpr, IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend,
+        QueryBackendExt,
         RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible,
         SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
         ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
