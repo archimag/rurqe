@@ -100,6 +100,24 @@ fn fetch_optional_returns_none_for_absent_rows() {
 }
 
 #[test]
+fn ilike_filters_case_insensitively_through_lower_folding() {
+    let mut adapter = seeded();
+
+    let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserName,))
+        .where_(Expr::column::<UserName>().ilike("R%"))
+        .order_by_asc(UserId);
+
+    // SQLite has no `ILIKE`, so the predicate renders as
+    // `LOWER("name") LIKE LOWER(?)`: `root` matches through the case folding
+    // alone, while the case-sensitive `LIKE 'R%'` would match no seeded row.
+    let rows = adapter.fetch_all(&query).expect("fetch all succeeds");
+
+    assert_eq!(rows, vec![("root".to_owned(),)]);
+}
+
+#[test]
 fn an_array_parameter_binds_as_a_json_document_and_decodes_back() {
     let mut adapter = seeded();
 

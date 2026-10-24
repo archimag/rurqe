@@ -61,6 +61,10 @@ impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 /// Identifiers are double-quoted and escaped by doubling embedded quotes, while
 /// bind parameters use anonymous `?` placeholders.
 ///
+/// SQLite has no `ILIKE` operator, so the dialect keeps
+/// [`Dialect::SUPPORTS_ILIKE`] disabled and a case-insensitive predicate renders
+/// as `LOWER(...) LIKE LOWER(...)` instead of the unsupported keyword.
+///
 /// Versions below 3.24 do not implement [`SupportsOnConflict`]:
 ///
 /// ```compile_fail
@@ -117,6 +121,11 @@ impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
 
 impl<V: SqliteVersion> Dialect for Sqlite<V> {
+    // SQLite knows only the case-sensitive `LIKE` operator, so a
+    // case-insensitive predicate folds both operands with `LOWER` instead of
+    // rendering `ILIKE`, which the engine cannot parse.
+    const SUPPORTS_ILIKE: bool = false;
+
     // SQLite has no row-level JSON aggregation, so a nested collection assembles
     // every object field by field and collects the objects with
     // `json_group_array`.
@@ -164,6 +173,15 @@ impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsJsonAggregation for
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rurqe_core::expr::{render_expr, Expr, SqlVal};
+    use rurqe_core::table;
+
+    table! {
+        /// The `users` fixture table used by the rendering regression test.
+        User => "users" {
+            UserName => "name": String,
+        }
+    }
 
     #[test]
     fn quotes_standard_and_escaped_identifiers() {
@@ -228,5 +246,41 @@ mod tests {
         assert_json_aggregation::<Sqlite<Sqlite3_30>>();
         assert_json_aggregation::<Sqlite<Sqlite3_35>>();
         assert_json_aggregation::<Sqlite>();
+    }
+
+    #[test]
+    fn ilike_folds_both_operands_instead_of_rendering_the_keyword() {
+        let predicate = Expr::column::<UserName>().ilike("A%");
+        let mut sql = String::new();
+        let mut params = Vec::new();
+
+        render_expr::<Sqlite<Sqlite3_35>>(&mut sql, &mut params, predicate.kind(), &[]);
+
+        // SQLite only knows the case-sensitive `LIKE`, so the predicate keeps its
+        // case-insensitive semantics by folding both operands.
+        assert_eq!(sql, "(LOWER(\"name\") LIKE LOWER(?))");
+        assert!(!sql.contains("ILIKE"));
+        assert_eq!(params, vec![SqlVal::Text("A%".to_owned())]);
+    }
+
+    #[test]
+    fn engine_flags_are_never_permissive_by_default() {
+        fn assert_flags<D: Dialect>() {
+            assert!(
+                !D::SUPPORTS_ILIKE,
+                "SQLite has no ILIKE operator and must fold both operands"
+            );
+            assert!(
+                !D::SUPPORTS_JSONB_ROW_AGG,
+                "SQLite has no native JSON row aggregation"
+            );
+        }
+
+        assert_flags::<Sqlite<Sqlite3_0>>();
+        assert_flags::<Sqlite<Sqlite3_24>>();
+        assert_flags::<Sqlite<Sqlite3_25>>();
+        assert_flags::<Sqlite<Sqlite3_30>>();
+        assert_flags::<Sqlite<Sqlite3_35>>();
+        assert_flags::<Sqlite>();
     }
 }
