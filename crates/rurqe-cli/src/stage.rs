@@ -17,12 +17,13 @@
 //! defaults, nullability, keys, and indexes that drifted are reported as an
 //! actionable diagnostic instead of surfacing as a production incident.
 //!
-//! The scratch state starts from nothing and is emptied again between the two
+//! The scratch state starts from nothing and is thrown away between the two
 //! sides. `--scratch-url` selects it: a `sqlite:` URL or a `*.db` / `*.sqlite` /
 //! `*.sqlite3` path is materialised in memory (`:memory:`) or in a file the
-//! verification requires to be empty, while a PostgreSQL URL creates a throwaway
-//! `rurqe_scratch_…` database on the server behind the URL, builds both sides
-//! inside it, and drops it once the verification ends. Every script is replayed
+//! verification requires to be empty and deletes once its side ends, while a
+//! PostgreSQL URL creates a throwaway `rurqe_scratch_…` database on the server
+//! behind the URL, builds both sides inside it, and drops it once the
+//! verification ends. Every script is replayed
 //! under the transactionality it declares, so a `-- rurqe:no-transaction` script
 //! commits statement by statement exactly as it does in production. Neither side
 //! runs inside a transaction block of its own, so statements such as
@@ -87,8 +88,21 @@ struct Script<'a> {
 /// The variants are dispatched statically, so a verification pays for exactly
 /// the engine it targets and no trait object sits on the hot path.
 enum SandboxKind {
-    /// An in-memory SQLite database, so the file behind the URL is untouched.
-    Sqlite(rusqlite::Connection),
+    /// An in-memory SQLite database, so the filesystem stays untouched.
+    ///
+    /// Every side opens its own memory database, so nothing is left to undo.
+    SqliteMemory(rusqlite::Connection),
+    /// A file-backed SQLite database, deleted once its side ends.
+    ///
+    /// Deleting the file is the only reset that also clears the database header
+    /// (`PRAGMA user_version`, `PRAGMA application_id`) and the connection
+    /// settings a replayed script can change.
+    SqliteFile {
+        /// The live connection of the current side.
+        connection: rusqlite::Connection,
+        /// The file the connection was opened in, removed again on discard.
+        path: String,
+    },
     /// An ephemeral PostgreSQL database, dropped once the verification ends.
     ///
     /// The sandbox carries live clients and a database name, so it is boxed to
@@ -107,21 +121,26 @@ impl SandboxKind {
                 .map(Box::new)
                 .map(SandboxKind::Postgres)
                 .map_err(|message| StageError::Sandbox { message }),
-            DatabaseTarget::SqliteMemory => open_sqlite_scratch(None, scratch_url),
-            DatabaseTarget::SqliteFile(path) => {
-                open_sqlite_scratch(Some(path.as_str()), scratch_url)
-            }
+            DatabaseTarget::SqliteMemory => open_sqlite_memory(scratch_url),
+            DatabaseTarget::SqliteFile(path) => open_sqlite_file(&path, scratch_url),
         }
     }
 
-    /// Empties the scratch state once a side of the equation was introspected.
+    /// Throws the scratch state away once a side of the equation was introspected.
     ///
-    /// A file-backed SQLite scratch is reused by the next side, so everything the
-    /// replay created is dropped again. The ephemeral PostgreSQL database is
-    /// dropped together with its sandbox, so nothing is left to undo there.
-    fn reset(&mut self) -> Result<(), StageError> {
+    /// The in-memory SQLite database closes with its connection, the file-backed
+    /// one is deleted together with its write-ahead log, and the ephemeral
+    /// PostgreSQL database is dropped with its sandbox. A script that committed
+    /// half of its statements therefore leaves nothing behind for the next side.
+    fn discard(self) -> Result<(), StageError> {
         match self {
-            SandboxKind::Sqlite(connection) => reset_sqlite_scratch(connection),
+            // Closing the connection disposes of the whole in-memory database.
+            SandboxKind::SqliteMemory(_) => Ok(()),
+            SandboxKind::SqliteFile { connection, path } => {
+                drop(connection);
+                remove_scratch_file(&path)
+            }
+            // The sandbox drops the ephemeral database together with its clients.
             SandboxKind::Postgres(_) => Ok(()),
         }
     }
@@ -133,7 +152,9 @@ impl SandboxKind {
     /// its own, exactly as the migration runner replays it in production.
     fn apply(&mut self, sql: &str, transactional: bool) -> Result<(), String> {
         match self {
-            SandboxKind::Sqlite(connection) => apply_sqlite(connection, sql, transactional),
+            SandboxKind::SqliteMemory(connection) | SandboxKind::SqliteFile { connection, .. } => {
+                apply_sqlite(connection, sql, transactional)
+            }
             SandboxKind::Postgres(sandbox) => {
                 if transactional {
                     sandbox.apply_transactional(sql)
@@ -147,7 +168,7 @@ impl SandboxKind {
     /// Introspects the catalog currently materialised by the scratch state.
     fn catalog(&mut self) -> Result<SchemaCatalog, String> {
         match self {
-            SandboxKind::Sqlite(connection) => {
+            SandboxKind::SqliteMemory(connection) | SandboxKind::SqliteFile { connection, .. } => {
                 introspect_sqlite(connection).map_err(|error| error.to_string())
             }
             SandboxKind::Postgres(sandbox) => sandbox.catalog(),
@@ -156,7 +177,7 @@ impl SandboxKind {
 }
 
 /// The user objects a SQLite scratch database currently holds.
-const SQLITE_SCRATCH_OBJECTS: &str = "SELECT type, name FROM sqlite_master \
+const SQLITE_SCRATCH_OBJECTS: &str = "SELECT name FROM sqlite_master \
      WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' \
      ORDER BY name";
 
@@ -183,29 +204,41 @@ fn apply_sqlite(
     transaction.commit().map_err(|error| error.to_string())
 }
 
-/// Opens the SQLite scratch database the classified `target` names.
+/// Opens the in-memory SQLite scratch database a bare `sqlite:` target names.
 ///
-/// Without a path — `:memory:`, an empty value, or a bare `sqlite:` prefix the
-/// target has already reduced to nothing — the replay happens in memory and
-/// never touches the filesystem. A real path opens that file and is required to
-/// be empty.
-fn open_sqlite_scratch(path: Option<&str>, scratch_url: &str) -> Result<SandboxKind, StageError> {
-    let connection = match path {
-        Some(path) => rusqlite::Connection::open(path),
-        None => rusqlite::Connection::open_in_memory(),
-    }
-    .map_err(|error| StageError::Sandbox {
+/// `:memory:`, an empty value, and a bare `sqlite:` prefix the target has
+/// already reduced to nothing all end up here, so the replay never touches the
+/// filesystem.
+fn open_sqlite_memory(scratch_url: &str) -> Result<SandboxKind, StageError> {
+    rusqlite::Connection::open_in_memory()
+        .map(SandboxKind::SqliteMemory)
+        .map_err(|error| StageError::Sandbox {
+            message: format!(
+                "failed to open the SQLite scratch database `{}`: {error}",
+                redact_database_url(scratch_url)
+            ),
+        })
+}
+
+/// Opens the file-backed SQLite scratch database the target names.
+///
+/// The file is required to be empty, and it is deleted once the side that opened
+/// it ends, so a file that outlives its verification can never feed one side of
+/// the equation with the state of another.
+fn open_sqlite_file(path: &str, scratch_url: &str) -> Result<SandboxKind, StageError> {
+    let connection = rusqlite::Connection::open(path).map_err(|error| StageError::Sandbox {
         message: format!(
             "failed to open the SQLite scratch database `{}`: {error}",
             redact_database_url(scratch_url)
         ),
     })?;
 
-    if path.is_some() {
-        ensure_scratch_is_empty(&connection, scratch_url)?;
-    }
+    ensure_scratch_is_empty(&connection, scratch_url)?;
 
-    Ok(SandboxKind::Sqlite(connection))
+    Ok(SandboxKind::SqliteFile {
+        connection,
+        path: path.to_owned(),
+    })
 }
 
 /// Refuses a scratch database that already holds user objects.
@@ -219,7 +252,7 @@ fn ensure_scratch_is_empty(
         return Ok(());
     }
 
-    let names: Vec<&str> = objects.iter().map(|(_, name)| name.as_str()).collect();
+    let names: Vec<&str> = objects.iter().map(String::as_str).collect();
 
     Err(StageError::Sandbox {
         message: format!(
@@ -231,8 +264,8 @@ fn ensure_scratch_is_empty(
     })
 }
 
-/// The `(kind, name)` pairs of the user objects of a SQLite scratch database.
-fn scratch_objects(connection: &rusqlite::Connection) -> Result<Vec<(String, String)>, StageError> {
+/// The names of the user objects of a SQLite scratch database.
+fn scratch_objects(connection: &rusqlite::Connection) -> Result<Vec<String>, StageError> {
     let mut statement = connection
         .prepare(SQLITE_SCRATCH_OBJECTS)
         .map_err(|error| StageError::Sandbox {
@@ -240,11 +273,11 @@ fn scratch_objects(connection: &rusqlite::Connection) -> Result<Vec<(String, Str
         })?;
 
     let objects = statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map([], |row| row.get::<_, String>(0))
         .map_err(|error| StageError::Sandbox {
             message: format!("failed to inspect the SQLite scratch database: {error}"),
         })?
-        .collect::<Result<Vec<(String, String)>, _>>()
+        .collect::<Result<Vec<String>, _>>()
         .map_err(|error| StageError::Sandbox {
             message: format!("failed to read the SQLite scratch database: {error}"),
         })?;
@@ -252,54 +285,29 @@ fn scratch_objects(connection: &rusqlite::Connection) -> Result<Vec<(String, Str
     Ok(objects)
 }
 
-/// Drops every user object the replay left in a SQLite scratch database.
-fn reset_sqlite_scratch(connection: &rusqlite::Connection) -> Result<(), StageError> {
-    let foreign_keys_enabled = connection
-        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
-        .map(|value| value != 0)
-        .unwrap_or(false);
+/// Deletes the file a scratch database was materialised in.
+///
+/// The write-ahead log and the shared-memory index are removed together with the
+/// database itself, because a sidecar that outlives its database would otherwise
+/// reach the file a later side creates under the same name.
+fn remove_scratch_file(path: &str) -> Result<(), StageError> {
+    for suffix in ["", "-wal", "-shm"] {
+        let target = format!("{path}{suffix}");
 
-    if foreign_keys_enabled {
-        connection
-            .execute_batch("PRAGMA foreign_keys = OFF;")
-            .map_err(|error| StageError::Sandbox {
-                message: format!(
-                    "failed to disable foreign keys in the SQLite scratch database: {error}"
-                ),
-            })?;
+        match std::fs::remove_file(&target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(StageError::Sandbox {
+                    message: format!(
+                        "failed to delete the SQLite scratch database `{target}`: {error}"
+                    ),
+                })
+            }
+        }
     }
 
-    let drop_result = (|| -> Result<(), StageError> {
-        for (kind, name) in scratch_objects(connection)? {
-            let quoted = name.replace('"', "\"\"");
-            let statement = if kind == "view" {
-                format!("DROP VIEW IF EXISTS \"{quoted}\"")
-            } else {
-                format!("DROP TABLE IF EXISTS \"{quoted}\"")
-            };
-
-            connection
-                .execute_batch(&statement)
-                .map_err(|error| StageError::Sandbox {
-                    message: format!("failed to empty the SQLite scratch database: {error}"),
-                })?;
-        }
-        Ok(())
-    })();
-
-    let restore_result = if foreign_keys_enabled {
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|error| StageError::Sandbox {
-                message: format!(
-                    "failed to restore foreign keys in the SQLite scratch database: {error}"
-                ),
-            })
-    } else {
-        Ok(())
-    };
-
-    drop_result.and(restore_result)
+    Ok(())
 }
 
 /// One side of the Golden Equation: the declarative stage and the tail that must
@@ -350,7 +358,7 @@ impl<'a> GoldenEquation<'a> {
     /// Both states are built in the scratch database named by `scratch_url` and
     /// introspected through the same engine adapter the codegen toolchain uses, so
     /// the comparison is bit-for-bit at the catalog level. A file-backed scratch
-    /// database has to be empty before the verification starts and is emptied again
+    /// database has to be empty before the verification starts and is deleted again
     /// between the two sides. Any divergence is returned as
     /// [`StageError::Diverged`] carrying the full report.
     pub fn verify(&self, scratch_url: &str) -> Result<GoldenReport, StageError> {
@@ -519,8 +527,9 @@ pub fn materialise_stage(
 
 /// Materialises `scripts` in the scratch state and introspects the result.
 ///
-/// The scratch state is emptied again afterwards, so a file-backed scratch
-/// database is reusable by the next side of the equation.
+/// A file-backed scratch database is deleted afterwards, so the next side of the
+/// equation starts from a fresh file: no object, `PRAGMA`, or database-header
+/// field the replay left behind can reach it.
 fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalog, StageError> {
     let mut sandbox = SandboxKind::open(scratch_url)?;
 
@@ -530,15 +539,15 @@ fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalo
             .map_err(|message| StageError::Sandbox { message })
     });
 
-    // A file-backed scratch database is reused by the next side of the equation,
-    // so the replay is undone whether or not it succeeded: a replay that stopped
-    // halfway would otherwise leave its tables for that side to build on.
-    let reset = sandbox.reset();
+    // The sandbox is discarded whether or not the replay succeeded: a script that
+    // stopped halfway would otherwise leave the part it committed — a table, a
+    // header `PRAGMA`, a connection setting — for the next side to build on.
+    let discard = sandbox.discard();
 
-    match (replay, reset) {
+    match (replay, discard) {
         (Ok(catalog), Ok(())) => Ok(catalog),
         // The replay failed, so its diagnostic describes the real problem and the
-        // reset merely happened on the way out.
+        // discard merely happened on the way out.
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error),
     }
@@ -914,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_scratch_database_is_emptied_between_the_sides() {
+    fn a_file_scratch_database_is_recreated_between_the_sides() {
         let path = scratch_path("reuse");
         let url = path.to_string_lossy().into_owned();
         let stage = stage(&[("users.sql", USERS)]);
@@ -926,9 +935,33 @@ mod tests {
 
         GoldenEquation::new(&stage, &tail)
             .verify(&url)
-            .expect("the emptied scratch is reusable");
+            .expect("the deleted scratch is recreated by the next verification");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_file_scratch_database_keeps_no_state_between_the_sides() {
+        let path = scratch_path("state");
+        let url = path.to_string_lossy().into_owned();
+
+        // `PRAGMA user_version` lives in the database header, so it outlives every
+        // `DROP TABLE`, and the trigger disappears only together with its table. A
+        // cleanup of `sqlite_master` would therefore carry both into the next side.
+        let ddl = "PRAGMA user_version = 42;\n\
+                   CREATE TABLE users (id INTEGER PRIMARY KEY);\n\
+                   CREATE TRIGGER users_touch AFTER INSERT ON users BEGIN SELECT 1; END;";
+        let stage = stage(&[("schema.sql", ddl)]);
+        let tail = tail(&[("V1__schema.sql", ddl)]);
+
+        GoldenEquation::new(&stage, &tail)
+            .verify(&url)
+            .expect("each side starts from a scratch that holds nothing");
+
+        assert!(
+            !path.exists(),
+            "the file-backed scratch database is deleted after the verification"
+        );
     }
 
     #[test]
