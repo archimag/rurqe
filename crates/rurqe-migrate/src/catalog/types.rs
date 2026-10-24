@@ -297,11 +297,7 @@ pub struct TableDef {
 
 impl TableDef {
     /// Creates a table definition without foreign keys, indexes, and checks.
-    pub fn new(
-        name: impl Into<String>,
-        columns: Vec<ColumnDef>,
-        primary_key: Vec<String>,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, columns: Vec<ColumnDef>, primary_key: Vec<String>) -> Self {
         Self {
             name: name.into(),
             columns,

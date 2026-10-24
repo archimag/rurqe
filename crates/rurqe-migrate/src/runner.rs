@@ -268,10 +268,7 @@ impl Migrator {
         let history = guard.read_history()?;
         self.validate_history(&history, migrations)?;
         self.validate_catalog_hash(&mut guard, &history)?;
-        tracing::debug!(
-            history_entries = history.len(),
-            "validated schema history"
-        );
+        tracing::debug!(history_entries = history.len(), "validated schema history");
 
         let sorted = Self::sort_migrations(migrations);
         let baseline_version = history
@@ -292,11 +289,7 @@ impl Migrator {
             }
         }
 
-        let mut current_rank = history
-            .iter()
-            .map(|e| e.installed_rank)
-            .max()
-            .unwrap_or(0);
+        let mut current_rank = history.iter().map(|e| e.installed_rank).max().unwrap_or(0);
 
         let mut report = MigrationReport::default();
 
@@ -361,12 +354,7 @@ impl Migrator {
             });
         }
 
-        let next_rank = history
-            .iter()
-            .map(|e| e.installed_rank)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let next_rank = history.iter().map(|e| e.installed_rank).max().unwrap_or(0) + 1;
 
         tracing::info!(version = %version, description = description, "recording baseline");
 
@@ -392,10 +380,8 @@ impl Migrator {
         let history = guard.read_history()?;
         let mut report = RepairReport::default();
 
-        let migrations_by_script: BTreeMap<&str, &Migration> = migrations
-            .iter()
-            .map(|m| (m.script.as_str(), m))
-            .collect();
+        let migrations_by_script: BTreeMap<&str, &Migration> =
+            migrations.iter().map(|m| (m.script.as_str(), m)).collect();
 
         let mut tx = guard.begin()?;
 
@@ -516,10 +502,8 @@ impl Migrator {
             checkpoint.validate_history(history)?;
         }
 
-        let migrations_by_script: BTreeMap<&str, &Migration> = migrations
-            .iter()
-            .map(|m| (m.script.as_str(), m))
-            .collect();
+        let migrations_by_script: BTreeMap<&str, &Migration> =
+            migrations.iter().map(|m| (m.script.as_str(), m)).collect();
 
         for entry in history {
             if !entry.success {
@@ -627,12 +611,8 @@ fn apply_migration<B: MigrationBackend>(
             }
         };
 
-        let entry = SchemaHistoryEntry::applied(
-            installed_rank,
-            migration,
-            current_timestamp(),
-            elapsed_ms,
-        );
+        let entry =
+            SchemaHistoryEntry::applied(installed_rank, migration, current_timestamp(), elapsed_ms);
         tx.record_entry(&entry)?;
         tx.commit()?;
         tracing::info!(
@@ -666,12 +646,8 @@ fn apply_migration<B: MigrationBackend>(
         }
     };
 
-    let entry = SchemaHistoryEntry::applied(
-        installed_rank,
-        migration,
-        current_timestamp(),
-        elapsed_ms,
-    );
+    let entry =
+        SchemaHistoryEntry::applied(installed_rank, migration, current_timestamp(), elapsed_ms);
     let mut tx = guard.begin()?;
     tx.record_entry(&entry)?;
     tx.commit()?;
@@ -881,7 +857,8 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
     }
 
     fn delete_entry(&mut self, installed_rank: i64) -> Result<(), Error> {
-        self.staged_history.retain(|e| e.installed_rank != installed_rank);
+        self.staged_history
+            .retain(|e| e.installed_rank != installed_rank);
         Ok(())
     }
 
@@ -1138,7 +1115,10 @@ mod tests {
     struct TransactionOnlyBackend(InMemoryBackend);
 
     impl MigrationBackend for TransactionOnlyBackend {
-        type Transaction<'a> = InMemoryTransaction<'a> where Self: 'a;
+        type Transaction<'a>
+            = InMemoryTransaction<'a>
+        where
+            Self: 'a;
 
         fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
             self.0.ensure_schema_history_table()

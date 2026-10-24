@@ -151,7 +151,9 @@ impl Checkpoint {
         }
 
         let pruned_up_to_version = pruned_up_to_version.ok_or_else(|| {
-            invalid(format!("missing `{VERSION_KEY}` in `[{CHECKPOINT_SECTION}]`"))
+            invalid(format!(
+                "missing `{VERSION_KEY}` in `[{CHECKPOINT_SECTION}]`"
+            ))
         })?;
         let schema_hash = schema_hash
             .ok_or_else(|| invalid(format!("missing `{HASH_KEY}` in `[{CHECKPOINT_SECTION}]`")))?;
@@ -383,8 +385,11 @@ mod tests {
 
         assert_eq!(Checkpoint::load(&path), Ok(None));
 
-        std::fs::write(&path, format!("[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"{HASH}\"\n"))
-            .expect("write the marker");
+        std::fs::write(
+            &path,
+            format!("[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"{HASH}\"\n"),
+        )
+        .expect("write the marker");
         let loaded = Checkpoint::load(&path).expect("the marker is valid");
         let _ = std::fs::remove_file(&path);
 

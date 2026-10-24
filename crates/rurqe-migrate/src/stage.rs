@@ -291,7 +291,8 @@ pub fn cold_start<B: MigrationBackend>(
             Err(error) => return Err(error),
         };
 
-        if existing.checksum == Some(current) && existing.version.as_ref() == Some(&marker.version) {
+        if existing.checksum == Some(current) && existing.version.as_ref() == Some(&marker.version)
+        {
             tracing::debug!(version = %marker.version, "stage is already recorded");
             return Ok(ColdStartReport::default());
         }
@@ -447,10 +448,7 @@ mod tests {
     }
 
     fn stage_directory(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "rurqe-stage-{}-{name}",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("rurqe-stage-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("create the stage directory");
         path
@@ -580,8 +578,11 @@ mod tests {
         cold_start(&mut backend, &stage(), &marker())
             .expect("the first run initialises the schema");
 
-        let changed =
-            StageMarker::new(version("3.2"), StageMarker::DESCRIPTION, Checksum::of(b"other"));
+        let changed = StageMarker::new(
+            version("3.2"),
+            StageMarker::DESCRIPTION,
+            Checksum::of(b"other"),
+        );
         let error = cold_start(&mut backend, &stage(), &changed)
             .expect_err("a diverged stage cannot masquerade as a cold start");
 

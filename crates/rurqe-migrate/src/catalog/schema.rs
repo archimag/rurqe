@@ -317,8 +317,8 @@ fn finish_view(
     next: usize,
 ) -> Result<(ViewDef, usize), Error> {
     let name = name.ok_or_else(|| lock_error("view section is missing a `name` entry"))?;
-    let definition = definition
-        .ok_or_else(|| lock_error("view section is missing a `definition` entry"))?;
+    let definition =
+        definition.ok_or_else(|| lock_error("view section is missing a `definition` entry"))?;
     Ok((ViewDef::new(name, definition), next))
 }
 
@@ -364,8 +364,8 @@ fn finish_trigger(
     let name = name.ok_or_else(|| lock_error("trigger section is missing a `name` entry"))?;
     let table_name =
         table_name.ok_or_else(|| lock_error("trigger section is missing a `table` entry"))?;
-    let definition = definition
-        .ok_or_else(|| lock_error("trigger section is missing a `definition` entry"))?;
+    let definition =
+        definition.ok_or_else(|| lock_error("trigger section is missing a `definition` entry"))?;
     Ok((TriggerDef::new(name, table_name, definition), next))
 }
 
@@ -444,7 +444,8 @@ impl TableBuilder {
             .sort_by(|left, right| left.name.cmp(&right.name));
         self.foreign_keys
             .sort_by(|left, right| left.name.cmp(&right.name));
-        self.indexes.sort_by(|left, right| left.name.cmp(&right.name));
+        self.indexes
+            .sort_by(|left, right| left.name.cmp(&right.name));
         TableDef {
             name: self.name,
             columns: self.columns,
@@ -472,11 +473,7 @@ fn lock_error(message: impl Into<String>) -> Error {
 }
 
 /// Dispatches one buffered table-body item to the matching parser.
-fn apply_table_item(
-    table: &mut TableBuilder,
-    item: &str,
-    defaults: Defaults,
-) -> Result<(), Error> {
+fn apply_table_item(table: &mut TableBuilder, item: &str, defaults: Defaults) -> Result<(), Error> {
     let item = item.trim_start();
     if item.starts_with("column ") {
         table.columns.push(parse_column(item, defaults)?);
@@ -629,15 +626,30 @@ fn parse_fk_action_and_rest(input: &str) -> Result<(ForeignKeyAction, &str), Err
     let input = input.trim_start();
     let lower = input.to_ascii_lowercase();
     if let Some(rest) = lower.strip_prefix("no action") {
-        Ok((ForeignKeyAction::NoAction, &input[input.len() - rest.len()..]))
+        Ok((
+            ForeignKeyAction::NoAction,
+            &input[input.len() - rest.len()..],
+        ))
     } else if let Some(rest) = lower.strip_prefix("set default") {
-        Ok((ForeignKeyAction::SetDefault, &input[input.len() - rest.len()..]))
+        Ok((
+            ForeignKeyAction::SetDefault,
+            &input[input.len() - rest.len()..],
+        ))
     } else if let Some(rest) = lower.strip_prefix("set null") {
-        Ok((ForeignKeyAction::SetNull, &input[input.len() - rest.len()..]))
+        Ok((
+            ForeignKeyAction::SetNull,
+            &input[input.len() - rest.len()..],
+        ))
     } else if let Some(rest) = lower.strip_prefix("restrict") {
-        Ok((ForeignKeyAction::Restrict, &input[input.len() - rest.len()..]))
+        Ok((
+            ForeignKeyAction::Restrict,
+            &input[input.len() - rest.len()..],
+        ))
     } else if let Some(rest) = lower.strip_prefix("cascade") {
-        Ok((ForeignKeyAction::Cascade, &input[input.len() - rest.len()..]))
+        Ok((
+            ForeignKeyAction::Cascade,
+            &input[input.len() - rest.len()..],
+        ))
     } else {
         Err(lock_error("unrecognised foreign key action"))
     }

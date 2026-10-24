@@ -267,8 +267,7 @@ fn a_membership_list_carries_the_tables_its_candidates_read() {
         ExprKind::InList { negated: false, .. }
     ));
 
-    let negated: Expr<bool, (User, Order)> =
-        UserId.not_in_list(vec![Expr::column::<OrderQty>()]);
+    let negated: Expr<bool, (User, Order)> = UserId.not_in_list(vec![Expr::column::<OrderQty>()]);
     assert!(matches!(
         negated.kind(),
         ExprKind::InList { negated: true, .. }
@@ -385,17 +384,17 @@ fn column_markers_are_expressions() {
 #[test]
 fn string_columns_match_like_patterns() {
     assert_eq!(UserName.like("A%"), Expr::column::<UserName>().like("A%"));
-    assert_eq!(
-        UserName.ilike("a%"),
-        Expr::column::<UserName>().ilike("a%")
-    );
+    assert_eq!(UserName.ilike("a%"), Expr::column::<UserName>().ilike("a%"));
 }
 
 #[test]
 fn aggregate_helpers_build_expected_expressions() {
     assert_eq!(count(), Expr::<i64>::count_all());
     assert_eq!(count_all(), Expr::<i64>::count_all());
-    assert_eq!(count_distinct(UserId), Expr::<i64>::count_distinct::<UserId>());
+    assert_eq!(
+        count_distinct(UserId),
+        Expr::<i64>::count_distinct::<UserId>()
+    );
     assert_eq!(sum(UserId), Expr::<i64>::sum::<UserId>());
     assert_eq!(sum_distinct(UserId), Expr::<i64>::sum_distinct::<UserId>());
     assert_eq!(avg(UserId), Expr::<f64>::avg::<UserId>());
@@ -498,7 +497,13 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
         panic!("expected aggregate with filter");
     };
     assert!(*distinct);
-    assert!(matches!(**filter, ExprKind::Binary { op: BinaryOp::And, .. }));
+    assert!(matches!(
+        **filter,
+        ExprKind::Binary {
+            op: BinaryOp::And,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -530,14 +535,32 @@ fn expressions_carry_table_scopes_across_operators() {
     // Cross-table comparison merges scopes into a tuple
     let cross_eq: Expr<bool, (User, Order)> =
         Expr::column::<UserId>().eq(Expr::column::<OrderUserId>());
-    assert!(matches!(cross_eq.kind(), ExprKind::Binary { op: BinaryOp::Eq, .. }));
+    assert!(matches!(
+        cross_eq.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Eq,
+            ..
+        }
+    ));
 
     // and / or preserve and merge table scopes
     let and_expr: Expr<bool, (User, Order)> = UserId.eq(1i64).and(OrderUserId.eq(2i64));
-    assert!(matches!(and_expr.kind(), ExprKind::Binary { op: BinaryOp::And, .. }));
+    assert!(matches!(
+        and_expr.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::And,
+            ..
+        }
+    ));
 
     let or_expr: Expr<bool, (User, Order)> = UserId.eq(1i64).or(OrderUserId.eq(2i64));
-    assert!(matches!(or_expr.kind(), ExprKind::Binary { op: BinaryOp::Or, .. }));
+    assert!(matches!(
+        or_expr.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Or,
+            ..
+        }
+    ));
 
     // between preserves table scope
     let between_expr: Expr<bool, User> = UserId.between(1i64, 10i64);
@@ -545,17 +568,35 @@ fn expressions_carry_table_scopes_across_operators() {
 
     // like and ilike preserve table scope
     let like_expr: Expr<bool, User> = UserName.like("alice%");
-    assert!(matches!(like_expr.kind(), ExprKind::Like { case_insensitive: false, .. }));
+    assert!(matches!(
+        like_expr.kind(),
+        ExprKind::Like {
+            case_insensitive: false,
+            ..
+        }
+    ));
 
     let ilike_expr: Expr<bool, User> = UserName.ilike("alice%");
-    assert!(matches!(ilike_expr.kind(), ExprKind::Like { case_insensitive: true, .. }));
+    assert!(matches!(
+        ilike_expr.kind(),
+        ExprKind::Like {
+            case_insensitive: true,
+            ..
+        }
+    ));
 
     // is_null and is_not_null preserve table scope
     let null_expr: Expr<bool, User> = UserName.is_null();
-    assert!(matches!(null_expr.kind(), ExprKind::IsNull { negated: false, .. }));
+    assert!(matches!(
+        null_expr.kind(),
+        ExprKind::IsNull { negated: false, .. }
+    ));
 
     let not_null_expr: Expr<bool, User> = UserName.is_not_null();
-    assert!(matches!(not_null_expr.kind(), ExprKind::IsNull { negated: true, .. }));
+    assert!(matches!(
+        not_null_expr.kind(),
+        ExprKind::IsNull { negated: true, .. }
+    ));
 }
 
 #[test]

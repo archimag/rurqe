@@ -20,9 +20,9 @@ use std::time::Duration;
 mod tests;
 
 pub use args::{parse_args, CliCommand, CliError};
-pub use redact::redact_database_url;
 pub(crate) use args::{resolve_cleanup_url, resolve_equation_url};
 pub(crate) use connection::{connect, Connection};
+pub use redact::redact_database_url;
 
 use self::commands::{
     apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage,

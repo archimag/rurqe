@@ -145,15 +145,27 @@ mod tests {
             "postgres://db.internal/app.db",
             "postgresql://db.internal:5432/app.sqlite3",
         ] {
-            assert_eq!(DatabaseTarget::parse(url), DatabaseTarget::Postgres, "{url}");
-            assert_eq!(detect_dialect(Some(url)), DatabaseDialect::Postgres, "{url}");
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                DatabaseTarget::Postgres,
+                "{url}"
+            );
+            assert_eq!(
+                detect_dialect(Some(url)),
+                DatabaseDialect::Postgres,
+                "{url}"
+            );
         }
     }
 
     #[test]
     fn a_keyword_connection_string_is_never_taken_for_a_file() {
         for url in ["host=db.internal dbname=app.db", "dbname=app.db user=app"] {
-            assert_eq!(DatabaseTarget::parse(url), DatabaseTarget::Postgres, "{url}");
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                DatabaseTarget::Postgres,
+                "{url}"
+            );
         }
     }
 

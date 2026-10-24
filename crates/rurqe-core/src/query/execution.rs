@@ -181,7 +181,10 @@ impl<E: fmt::Display> fmt::Display for ExecutionError<E> {
                 f.write_str("expected exactly one row, but the query returned none")
             }
             ExecutionError::MultipleRows { count } => {
-                write!(f, "expected at most one row, but the query returned {count}")
+                write!(
+                    f,
+                    "expected at most one row, but the query returned {count}"
+                )
             }
         }
     }
@@ -192,8 +195,7 @@ impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
         match self {
             ExecutionError::Backend(error) => Some(error),
             ExecutionError::RowDecode { source, .. } => Some(source),
-            ExecutionError::NoRows
-            | ExecutionError::MultipleRows { .. } => None,
+            ExecutionError::NoRows | ExecutionError::MultipleRows { .. } => None,
         }
     }
 }
@@ -223,7 +225,10 @@ pub trait QueryBackendExt: QueryBackend {
     }
 
     /// Executes `query` and decodes at most one row.
-    fn fetch_optional<Q>(&mut self, query: &Q) -> Result<Option<Q::Row>, ExecutionError<Self::Error>>
+    fn fetch_optional<Q>(
+        &mut self,
+        query: &Q,
+    ) -> Result<Option<Q::Row>, ExecutionError<Self::Error>>
     where
         Q: ExecutableQuery,
         Q::Row: FromRow,
@@ -448,7 +453,10 @@ impl TransactionContext {
 }
 
 /// Runs a parameterless statement through a [`QueryBackend`].
-fn execute_statement<B: QueryBackend + ?Sized>(backend: &mut B, sql: String) -> Result<(), B::Error> {
+fn execute_statement<B: QueryBackend + ?Sized>(
+    backend: &mut B,
+    sql: String,
+) -> Result<(), B::Error> {
     backend
         .execute_raw(&BuiltQuery {
             sql,

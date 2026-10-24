@@ -248,10 +248,7 @@ mod tests {
 
     #[test]
     fn escaped_quotes_do_not_close_a_value() {
-        assert_eq!(
-            strip_comment("a = \"x\\\"#y\" # tail"),
-            "a = \"x\\\"#y\" "
-        );
+        assert_eq!(strip_comment("a = \"x\\\"#y\" # tail"), "a = \"x\\\"#y\" ");
     }
 
     #[test]

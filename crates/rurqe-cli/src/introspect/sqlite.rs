@@ -7,14 +7,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rurqe_migrate::catalog::{CheckDef, ColumnDef, EnumDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind};
+use rurqe_migrate::catalog::{
+    CheckDef, ColumnDef, EnumDef, ForeignKeyDef, SchemaCatalog, TableDef, TypeKind,
+};
 
 use crate::cli::CliError;
 
 use super::types::{
-    fold_indexes, map_sqlite_declared_type_to_kind, parse_foreign_key_action,
-    RawCatalogSections, RawCheckMetadata, RawIndexMetadata, RawTriggerMetadata,
-    RawViewMetadata,
+    fold_indexes, map_sqlite_declared_type_to_kind, parse_foreign_key_action, RawCatalogSections,
+    RawCheckMetadata, RawIndexMetadata, RawTriggerMetadata, RawViewMetadata,
 };
 
 mod check_enums;
@@ -79,7 +80,10 @@ pub(crate) fn sqlite_foreign_key_list(table: &str) -> String {
 
 /// Builds the `PRAGMA index_list` query for `table`.
 pub(crate) fn sqlite_index_list(table: &str) -> String {
-    format!("PRAGMA index_list(\"{}\");", escape_sqlite_identifier(table))
+    format!(
+        "PRAGMA index_list(\"{}\");",
+        escape_sqlite_identifier(table)
+    )
 }
 
 /// Builds the `PRAGMA index_info` query for `index`.
@@ -187,10 +191,7 @@ pub fn catalog_from_sqlite_metadata_with_sections(
                 enums_by_name
                     .entry(enum_name.clone())
                     .or_insert_with(|| variants);
-                check_enums.insert(
-                    (table.name.clone(), col_name),
-                    enum_name,
-                );
+                check_enums.insert((table.name.clone(), col_name), enum_name);
             }
         }
     }

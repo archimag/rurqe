@@ -8,8 +8,8 @@
 mod array;
 mod driver;
 mod fallback;
-mod numeric;
 mod network;
+mod numeric;
 mod wire;
 
 #[cfg(test)]
@@ -210,11 +210,8 @@ impl ToSql for SqlValParam<'_> {
                 if column_ty == &Type::TIMESTAMP {
                     value.to_sql(column_ty, out)
                 } else if column_ty == &Type::TIMESTAMPTZ {
-                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-                        *value,
-                        chrono::Utc,
-                    )
-                    .to_sql(column_ty, out)
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(*value, chrono::Utc)
+                        .to_sql(column_ty, out)
                 } else {
                     value.to_string().to_sql(column_ty, out)
                 }

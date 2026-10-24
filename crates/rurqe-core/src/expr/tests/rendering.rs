@@ -176,8 +176,7 @@ fn raw_sql_splits_fragments_and_preserves_escaped_question_marks() {
         .expect("escaped markers are not placeholders");
     assert_eq!(braces_escaped, vec!["data ? 'key' AND age > ", ""]);
 
-    let zero_params =
-        parse_raw_sql("data ?? 'key'", 0).expect("escaped markers need no parameter");
+    let zero_params = parse_raw_sql("data ?? 'key'", 0).expect("escaped markers need no parameter");
     assert_eq!(zero_params, vec!["data ? 'key'"]);
 }
 
@@ -225,7 +224,11 @@ fn empty_membership_renders_a_constant_predicate() {
     assert_eq!(sql, "1 = 0");
     assert!(params.is_empty());
 
-    let (sql, params) = render(Expr::column::<UserId>().not_in_list(Vec::<i64>::new()).kind());
+    let (sql, params) = render(
+        Expr::column::<UserId>()
+            .not_in_list(Vec::<i64>::new())
+            .kind(),
+    );
     assert_eq!(sql, "1 = 1");
     assert!(params.is_empty());
 }
@@ -260,8 +263,7 @@ impl crate::dialect::Dialect for LowerDialect {
 
 #[test]
 fn ilike_folds_both_operands_on_a_dialect_without_ilike() {
-    let (sql, params) =
-        render_with::<LowerDialect>(Expr::column::<UserName>().ilike("a%").kind());
+    let (sql, params) = render_with::<LowerDialect>(Expr::column::<UserName>().ilike("a%").kind());
 
     assert_eq!(sql, "(LOWER(\"name\") LIKE LOWER(?))");
     assert_eq!(params, vec![SqlVal::Text("a%".to_owned())]);
@@ -279,7 +281,10 @@ fn between_builds_and_renders_range_predicate() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::Between {
-            operand: Box::new(ExprKind::Column { table: "users", name: "id" }),
+            operand: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id"
+            }),
             low: Box::new(ExprKind::Value(SqlVal::I64(10))),
             high: Box::new(ExprKind::Value(SqlVal::I64(20))),
         }
@@ -296,7 +301,10 @@ fn in_list_builds_and_renders_membership() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::InList {
-            operand: Box::new(ExprKind::Column { table: "users", name: "id" }),
+            operand: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id"
+            }),
             values: vec![
                 ExprKind::Value(SqlVal::I64(1)),
                 ExprKind::Value(SqlVal::I64(2)),
@@ -308,15 +316,16 @@ fn in_list_builds_and_renders_membership() {
 
     let (sql, params) = render(predicate.kind());
     assert_eq!(sql, "(\"id\" IN (?, ?, ?))");
-    assert_eq!(
-        params,
-        vec![SqlVal::I64(1), SqlVal::I64(2), SqlVal::I64(3)]
-    );
+    assert_eq!(params, vec![SqlVal::I64(1), SqlVal::I64(2), SqlVal::I64(3)]);
 }
 
 #[test]
 fn not_in_list_renders_negated_membership() {
-    let (sql, params) = render(Expr::column::<UserName>().not_in_list(vec!["a", "b"]).kind());
+    let (sql, params) = render(
+        Expr::column::<UserName>()
+            .not_in_list(vec!["a", "b"])
+            .kind(),
+    );
     assert_eq!(sql, "(\"name\" NOT IN (?, ?))");
     assert_eq!(
         params,

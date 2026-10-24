@@ -29,11 +29,11 @@ mod tests;
 
 pub use array::SqlArrayElement;
 pub use ast::{
-    CaseBranch, CaseBuilder, CteAst, DialectInScope, ExprKind, HasBranches, JoinAst, JoinKind,
-    LockClause, LockStrength, LockWait, MergeDialect, MergedDialect, NoBranches, NullsOrder,
-    OrderCriterion, OrderDirection, RequiresAll, RequiresDistinctFrom, RequiresGreatest,
-    RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind, Subquery, SubqueryOp, WindowExprKind,
-    WindowFrame, WindowFrameBound, WindowFrameKind, DerivedAst,
+    CaseBranch, CaseBuilder, CteAst, DerivedAst, DialectInScope, ExprKind, HasBranches, JoinAst,
+    JoinKind, LockClause, LockStrength, LockWait, MergeDialect, MergedDialect, NoBranches,
+    NullsOrder, OrderCriterion, OrderDirection, RequiresAll, RequiresDistinctFrom,
+    RequiresGreatest, RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind, Subquery, SubqueryOp,
+    WindowExprKind, WindowFrame, WindowFrameBound, WindowFrameKind,
 };
 pub use builder::{Aggregate, AggregateMarker, Expr, FilteredAggregate, NonAggregate};
 pub use functions::{
@@ -47,6 +47,6 @@ pub use ops::{
 pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use row::{RowExpr, RowValues};
 pub use scope::{MergeScope, Merged, Unscoped};
-pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};
 #[cfg(feature = "serde_json")]
 pub use val::Json;
+pub use val::{AggregateFunc, BinaryOp, SqlVal, ToSqlVal};

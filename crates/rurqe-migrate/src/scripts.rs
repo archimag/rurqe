@@ -60,8 +60,8 @@ pub fn sql_scripts(dir: &Path) -> Result<Option<Vec<SqlScript>>, Error> {
         let entry = entry.map_err(|error| read_failure(dir, &error))?;
         let path = entry.path();
 
-        let is_script = path.extension().and_then(|extension| extension.to_str())
-            == Some(SCRIPT_EXTENSION);
+        let is_script =
+            path.extension().and_then(|extension| extension.to_str()) == Some(SCRIPT_EXTENSION);
 
         if !is_script || !path.is_file() {
             continue;

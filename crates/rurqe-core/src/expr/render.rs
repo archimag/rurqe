@@ -180,7 +180,11 @@ fn qualifier_of(relations: &[TableRef], table: &'static str) -> Option<&'static 
         .any(|relation| relation.name == table && relation.alias.is_none())
     {
         // A bare name stays unambiguous only while the statement addresses one relation.
-        return if relations.len() > 1 { Some(table) } else { None };
+        return if relations.len() > 1 {
+            Some(table)
+        } else {
+            None
+        };
     }
 
     match relations.iter().find(|relation| relation.name == table) {
@@ -312,7 +316,11 @@ pub fn render_expr<D: Dialect>(
         ExprKind::IsNull { operand, negated } => {
             sql.push('(');
             render_expr::<D>(sql, params, operand, relations);
-            sql.push_str(if *negated { " IS NOT NULL)" } else { " IS NULL)" });
+            sql.push_str(if *negated {
+                " IS NOT NULL)"
+            } else {
+                " IS NULL)"
+            });
         }
         ExprKind::Like {
             operand,
@@ -330,7 +338,11 @@ pub fn render_expr<D: Dialect>(
                 sql.push(')');
             } else {
                 render_expr::<D>(sql, params, operand, relations);
-                sql.push_str(if *case_insensitive { " ILIKE " } else { " LIKE " });
+                sql.push_str(if *case_insensitive {
+                    " ILIKE "
+                } else {
+                    " LIKE "
+                });
                 render_expr::<D>(sql, params, pattern, relations);
             }
             sql.push(')');

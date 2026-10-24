@@ -52,7 +52,10 @@ fn a_row_value_comparison_renders_a_native_tuple_comparison() {
     let (sql, params) = render(predicate.kind());
 
     assert_eq!(sql, "((\"id\", \"name\") > ($1, $2))");
-    assert_eq!(params, vec![SqlVal::I64(10), SqlVal::Text("root".to_owned())]);
+    assert_eq!(
+        params,
+        vec![SqlVal::I64(10), SqlVal::Text("root".to_owned())]
+    );
 }
 
 #[test]
@@ -106,9 +109,10 @@ fn rows_of_up_to_eight_elements_compare_as_one_value() {
         "((\"id\", \"name\", \"id\") = ($1, $2, $3))"
     );
 
-    let eight = (UserId, UserName, UserId, UserName, UserId, UserName, UserId, UserName).eq((
-        1i64, "a", 2i64, "b", 3i64, "c", 4i64, "d",
-    ));
+    let eight = (
+        UserId, UserName, UserId, UserName, UserId, UserName, UserId, UserName,
+    )
+        .eq((1i64, "a", 2i64, "b", 3i64, "c", 4i64, "d"));
     assert_eq!(
         render(eight.kind()).0,
         "((\"id\", \"name\", \"id\", \"name\", \"id\", \"name\", \"id\", \"name\") = ($1, $2, $3, $4, $5, $6, $7, $8))"

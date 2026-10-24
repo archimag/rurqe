@@ -240,7 +240,10 @@ fn the_equation_demands_an_explicit_scratch_url() {
     // pointed at, so it must never adopt `DATABASE_URL`, which routinely names a
     // production server in CI and on a developer workstation.
     let missing = resolve_equation_url(None).expect_err("no scratch database is configured");
-    assert!(missing.to_string().contains("--scratch-url"), "got {missing}");
+    assert!(
+        missing.to_string().contains("--scratch-url"),
+        "got {missing}"
+    );
 
     let blank = resolve_equation_url(Some("   ".to_owned()))
         .expect_err("a blank scratch database URL is not a target");
@@ -438,8 +441,8 @@ fn stage_and_prune_require_their_boundaries() {
         .expect_err("the stage version is required");
     assert!(missing_version.to_string().contains("--version"));
 
-    let missing_action = parse_args(&["rurqe".into(), "stage".into()])
-        .expect_err("the stage action is required");
+    let missing_action =
+        parse_args(&["rurqe".into(), "stage".into()]).expect_err("the stage action is required");
     assert!(missing_action.to_string().contains("stage action"));
 
     let missing_before =

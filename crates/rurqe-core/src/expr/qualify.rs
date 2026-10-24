@@ -21,7 +21,10 @@ use super::ast::{CaseBranch, ExprKind};
 /// Rewrites every bare column reference of `kind` into an explicit one.
 pub(super) fn qualify_references(kind: ExprKind) -> ExprKind {
     match kind {
-        ExprKind::Column { table, name } => ExprKind::QualifiedColumn { table, column: name },
+        ExprKind::Column { table, name } => ExprKind::QualifiedColumn {
+            table,
+            column: name,
+        },
         ExprKind::Row { values } => ExprKind::Row {
             values: values.into_iter().map(qualify_references).collect(),
         },

@@ -1,8 +1,6 @@
 //! Free-function helpers building aggregate, window, and scalar expressions.
 
-use super::ast::{
-    ExprKind, MergeDialect, MergedDialect, RequiresDistinctFrom, RequiresGreatest,
-};
+use super::ast::{ExprKind, MergeDialect, MergedDialect, RequiresDistinctFrom, RequiresGreatest};
 use super::builder::{Aggregate, Expr, NonAggregate};
 use super::ops::IntoExpr;
 use super::scope::{MergeScope, Merged};

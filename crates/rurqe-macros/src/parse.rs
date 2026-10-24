@@ -316,9 +316,11 @@ mod tests {
 
     #[test]
     fn parses_named_expression_projections() {
-        let item: ProjectionItem =
-            parse_str("total: Expr::count_all()").expect("valid projection");
-        assert_eq!(item.alias.as_ref().map(|a| a.to_string()), Some("total".into()));
+        let item: ProjectionItem = parse_str("total: Expr::count_all()").expect("valid projection");
+        assert_eq!(
+            item.alias.as_ref().map(|a| a.to_string()),
+            Some("total".into())
+        );
         assert!(matches!(item.target, ProjectionTarget::Expr(_)));
         assert_eq!(item.field_ident().expect("named"), "total");
     }
@@ -327,7 +329,10 @@ mod tests {
     fn parses_expression_projections_with_trailing_alias() {
         let item: ProjectionItem =
             parse_str("Expr::sum::<UserId>() as total").expect("valid projection");
-        assert_eq!(item.alias.as_ref().map(|a| a.to_string()), Some("total".into()));
+        assert_eq!(
+            item.alias.as_ref().map(|a| a.to_string()),
+            Some("total".into())
+        );
         assert!(matches!(item.target, ProjectionTarget::Expr(_)));
     }
 
@@ -340,9 +345,8 @@ mod tests {
 
     #[test]
     fn parses_comma_separated_projection_list() {
-        let list: ProjectionList =
-            parse_str("users::ID, users::EMAIL as contact_email, is_active")
-                .expect("valid projection list");
+        let list: ProjectionList = parse_str("users::ID, users::EMAIL as contact_email, is_active")
+            .expect("valid projection list");
         assert_eq!(list.len(), 3);
         assert_eq!(list.items[0].field_ident().expect("named"), "id");
         assert_eq!(list.items[1].field_ident().expect("named"), "contact_email");

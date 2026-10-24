@@ -12,7 +12,11 @@ fn migrator_executes_versioned_then_repeatable_in_order() {
 
     let m1 = Migration::parse("V2__add_orders.sql", "CREATE TABLE orders (id INT);").unwrap();
     let m2 = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT);").unwrap();
-    let r1 = Migration::parse("R__users_view.sql", "CREATE VIEW users_v AS SELECT * FROM users;").unwrap();
+    let r1 = Migration::parse(
+        "R__users_view.sql",
+        "CREATE VIEW users_v AS SELECT * FROM users;",
+    )
+    .unwrap();
 
     let report = migrator
         .migrate(&mut backend, &[m1.clone(), r1.clone(), m2.clone()])
@@ -21,11 +25,7 @@ fn migrator_executes_versioned_then_repeatable_in_order() {
     assert_eq!(report.applied_count, 3);
     assert_eq!(
         report.applied_scripts,
-        vec![
-            "V1__init.sql",
-            "V2__add_orders.sql",
-            "R__users_view.sql"
-        ]
+        vec!["V1__init.sql", "V2__add_orders.sql", "R__users_view.sql"]
     );
 
     let history = &backend.history;
@@ -125,19 +125,19 @@ fn repair_fixes_checksums_and_removes_failed_entries() {
     let migrator = Migrator::new();
 
     let m1 = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT);").unwrap();
-    migrator.migrate(&mut backend, &[m1]).expect("init succeeds");
+    migrator
+        .migrate(&mut backend, &[m1])
+        .expect("init succeeds");
 
     // Manually inject a failed entry
     let m2 = Migration::parse("V2__broken.sql", "BROKEN SQL").unwrap();
-    backend.history.push(rurqe_migrate::SchemaHistoryEntry::failed(
-        2,
-        &m2,
-        "now",
-        10,
-    ));
+    backend
+        .history
+        .push(rurqe_migrate::SchemaHistoryEntry::failed(2, &m2, "now", 10));
 
     // Tamper m1
-    let m1_new = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT, email TEXT);").unwrap();
+    let m1_new =
+        Migration::parse("V1__init.sql", "CREATE TABLE users (id INT, email TEXT);").unwrap();
 
     let repair_report = migrator
         .repair(&mut backend, std::slice::from_ref(&m1_new))
@@ -157,7 +157,9 @@ fn status_reports_pending_applied_and_modified_states() {
     let migrator = Migrator::new();
 
     let m1 = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT);").unwrap();
-    migrator.migrate(&mut backend, &[m1]).expect("first migration");
+    migrator
+        .migrate(&mut backend, &[m1])
+        .expect("first migration");
 
     let m1_tampered = Migration::parse("V1__init.sql", "CREATE TABLE users (id BIGINT);").unwrap();
     let m2 = Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INT);").unwrap();
@@ -262,16 +264,14 @@ fn embedded_migrations_macro_and_lifecycle_execution() {
     assert_eq!(report.applied_count, 3);
     assert_eq!(
         report.applied_scripts,
-        vec![
-            "V1__init.sql",
-            "V2__add_items.sql",
-            "R__users_view.sql"
-        ]
+        vec!["V1__init.sql", "V2__add_items.sql", "R__users_view.sql"]
     );
 
     let statuses = embedded.status(&mut backend).expect("status succeeds");
     assert_eq!(statuses.len(), 3);
-    assert!(statuses.iter().all(|s| s.status == MigrationStatusKind::Applied));
+    assert!(statuses
+        .iter()
+        .all(|s| s.status == MigrationStatusKind::Applied));
 }
 
 #[test]
@@ -288,7 +288,9 @@ fn embedded_migrations_tuple_syntax_and_deref_coercion() {
     let migrator = Migrator::new();
 
     // Deref coercion into &[Migration]
-    let report = migrator.migrate(&mut backend, &embedded).expect("migrate via deref");
+    let report = migrator
+        .migrate(&mut backend, &embedded)
+        .expect("migrate via deref");
     assert_eq!(report.applied_count, 2);
 }
 
@@ -341,7 +343,9 @@ fn baseline_rejects_non_empty_history() {
     let migrator = Migrator::new();
 
     let m1 = Migration::parse("V1__init.sql", "CREATE TABLE users (id INT);").unwrap();
-    migrator.migrate(&mut backend, &[m1]).expect("first migration");
+    migrator
+        .migrate(&mut backend, &[m1])
+        .expect("first migration");
 
     let err = migrator
         .baseline(&mut backend, "2.0.0".parse().unwrap(), "too late")

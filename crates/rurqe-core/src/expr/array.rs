@@ -202,12 +202,11 @@ mod tests {
 
         assert!(matches!(
             error,
-            RowDecodeError::TypeMismatch {
-                found: "null",
-                ..
-            }
+            RowDecodeError::TypeMismatch { found: "null", .. }
         ));
-        assert!(error.to_string().contains("cannot decode a SQL `null` value"));
+        assert!(error
+            .to_string()
+            .contains("cannot decode a SQL `null` value"));
     }
 
     #[test]
@@ -217,10 +216,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            RowDecodeError::TypeMismatch {
-                found: "text",
-                ..
-            }
+            RowDecodeError::TypeMismatch { found: "text", .. }
         ));
     }
 

@@ -14,12 +14,10 @@ pub use rurqe_macros as macros;
 #[cfg(feature = "macros")]
 pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
-pub use rurqe_core::{
-    cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
-};
 pub use rurqe_core::dml::{excluded, Excluded, ExecutableDelete, ExecutableUpdate};
 pub use rurqe_core::expr::{RowExpr, RowValues};
 pub use rurqe_core::query::{LockedQuery, Query, TableSelection};
+pub use rurqe_core::{cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec};
 pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
@@ -1003,14 +1001,13 @@ pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};
 
     pub use rurqe_core::{
-        cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc,
-        BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect, ExecutableQuery,
+        cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, BinaryOp,
+        BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect, ExecutableQuery,
         ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
         LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, RowDecodeError,
         SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible, SqlVal,
-        SupportsDistinctOn,
-        SupportsOnConflict, SupportsReturning, Table, TableInScope, ToSqlVal, Window, WindowExpr,
-        WindowExprKind, WindowFn, WindowSpec,
+        SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope, ToSqlVal,
+        Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
     };
 
     pub use rurqe_core::{GroupByInScope, SelectionInScope};

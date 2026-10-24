@@ -85,7 +85,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<String, String> {
         SIGN_POSITIVE_INFINITY => return Ok("Infinity".to_owned()),
         SIGN_NEGATIVE_INFINITY => return Ok("-Infinity".to_owned()),
         SIGN_POSITIVE | SIGN_NEGATIVE => {}
-        other => return Err(format!("a NUMERIC value carries the unknown sign 0x{other:04X}")),
+        other => {
+            return Err(format!(
+                "a NUMERIC value carries the unknown sign 0x{other:04X}"
+            ))
+        }
     }
 
     let payload = bytes.get(HEADER_OCTETS..).unwrap_or_default();
@@ -286,7 +290,10 @@ mod tests {
 
     #[test]
     fn the_sentinels_decode_into_their_keywords() {
-        assert_eq!(decode(&[0, 0, 0, 0, 0xC0, 0x00, 0, 0]), Ok("NaN".to_owned()));
+        assert_eq!(
+            decode(&[0, 0, 0, 0, 0xC0, 0x00, 0, 0]),
+            Ok("NaN".to_owned())
+        );
         assert_eq!(
             decode(&[0, 0, 0, 0, 0xD0, 0x00, 0, 0]),
             Ok("Infinity".to_owned())

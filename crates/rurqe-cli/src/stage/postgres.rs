@@ -368,8 +368,8 @@ mod tests {
             "unexpected name: {name}"
         );
 
-        let created = parse_scratch_database_timestamp(&name)
-            .expect("a generated name records its creation");
+        let created =
+            parse_scratch_database_timestamp(&name).expect("a generated name records its creation");
         let earliest = before.checked_sub(Duration::from_secs(1)).unwrap_or(before);
         let latest = after.checked_add(Duration::from_secs(1)).unwrap_or(after);
 
@@ -446,5 +446,4 @@ mod tests {
             now()
         ));
     }
-
 }

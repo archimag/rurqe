@@ -6,9 +6,7 @@ use crate::schema::{Column, TableInScope};
 
 use super::SelectQuery;
 
-impl<D: Dialect, Tables, Output, Projected, Lock>
-    SelectQuery<D, Tables, Output, Projected, Lock>
-{
+impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
     /// Appends an ordering criterion for column `col` with `direction`.
     ///
     /// An ordering written before a set operation belongs to the left query and

@@ -48,6 +48,7 @@ pub use self::group_by::{
     GroupSetColumns, GroupedQuery, GroupedSelectTarget, GroupedSelection, HavingPredicate,
     WindowColsInGroupBy,
 };
+pub use self::savepoint::{InvalidSavepointName, SavepointName};
 pub use self::scope::{
     CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
     LeftLateralJoined, NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope,
@@ -61,7 +62,6 @@ pub use self::selection::{
     ApplyNullability, ColumnInScope, MakeNullable, Nullable, SelectTarget, SelectTargetInScope,
     Selection, SelectionFor, SelectionInScope, TableSelection,
 };
-pub use self::savepoint::{InvalidSavepointName, SavepointName};
 pub use self::set_ops::{SetOpAst, SetOpKind};
 pub use self::transaction::{TransactionGuard, TransactionStatus, TransactionalConnection};
 pub use self::window::{

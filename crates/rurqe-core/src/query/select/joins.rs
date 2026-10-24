@@ -15,9 +15,7 @@ use crate::schema::{ExprInScope, Table};
 
 use super::SelectQuery;
 
-impl<D: Dialect, Tables, Output, Projected, Lock>
-    SelectQuery<D, Tables, Output, Projected, Lock>
-{
+impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
     /// Joins the table `T` to the query with an `INNER JOIN` restricted by `on`.
     ///
     /// Joining a table the query already addresses renders its name twice in the

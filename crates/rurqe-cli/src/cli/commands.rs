@@ -21,7 +21,9 @@ mod stage;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use self::migrate::{apply_migrations, baseline_database, repair_history, report_status};
+pub(crate) use self::migrate::{
+    apply_migrations, baseline_database, repair_history, report_status,
+};
 pub(crate) use self::prune::prune_migrations;
 pub(crate) use self::stage::{cleanup_stage, commit_stage, initialise_stage, verify_stage};
 
@@ -128,8 +130,8 @@ fn temporary_sibling(path: &Path) -> PathBuf {
 fn write_temporary(temporary: &Path, contents: &str, path: &Path) -> Result<(), CliError> {
     use std::io::Write;
 
-    let mut file = std::fs::File::create(temporary)
-        .map_err(|error| write_failure(temporary, path, &error))?;
+    let mut file =
+        std::fs::File::create(temporary).map_err(|error| write_failure(temporary, path, &error))?;
     file.write_all(contents.as_bytes())
         .map_err(|error| write_failure(temporary, path, &error))?;
     file.sync_all()

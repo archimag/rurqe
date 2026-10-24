@@ -8,11 +8,11 @@ use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
 use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
-use super::selection::{AggregateInDialect, Selection, SelectionFor, SelectTarget};
 use super::select::{
     BuiltQuery, HasProjection, LockUnavailable, NoProjection, OrderDirection, ProjectionPresent,
     SelectQuery,
 };
+use super::selection::{AggregateInDialect, SelectTarget, Selection, SelectionFor};
 use super::window::WindowExpr;
 
 // The type-level column sets and the membership checks live in a sibling module, so
@@ -53,8 +53,6 @@ impl<GroupByCols, Tables, P> HavingPredicate<GroupByCols, Tables, P>
     for Expr<bool, (), NonAggregate>
 {
 }
-
-
 
 /// Derives the row item produced by a projection in a `GROUP BY` query.
 ///
@@ -398,9 +396,7 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     }
 }
 
-impl<D: Dialect, Tables, GroupByCols>
-    GroupedQuery<D, Tables, (), GroupByCols, NoProjection>
-{
+impl<D: Dialect, Tables, GroupByCols> GroupedQuery<D, Tables, (), GroupByCols, NoProjection> {
     /// Groups the rows further by `columns`, appending them to the grouping.
     ///
     /// Further grouping is only permitted before projections are fixed.
@@ -482,11 +478,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// users above ten. The column must be part of the `GROUP BY` clause, which is
     /// exactly what a bare column reference inside
     /// [`having`](GroupedQuery::having) lacks.
-    pub fn having_col<C, PGroup, PTable>(
-        mut self,
-        _col: C,
-        predicate: Expr<bool, C::Table>,
-    ) -> Self
+    pub fn having_col<C, PGroup, PTable>(mut self, _col: C, predicate: Expr<bool, C::Table>) -> Self
     where
         C: Column,
         GroupByCols: ColumnInGroupBy<C, PGroup>,
@@ -625,10 +617,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Appends an ascending ordering criterion for the aggregate `expression`.
-    pub fn order_by_expr_asc<T, Scope, Marker, P>(
-        self,
-        expression: Expr<T, Scope, Marker>,
-    ) -> Self
+    pub fn order_by_expr_asc<T, Scope, Marker, P>(self, expression: Expr<T, Scope, Marker>) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
         Marker: AggregateMarker + AggregateInDialect<D>,
@@ -637,10 +626,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Appends a descending ordering criterion for the aggregate `expression`.
-    pub fn order_by_expr_desc<T, Scope, Marker, P>(
-        self,
-        expression: Expr<T, Scope, Marker>,
-    ) -> Self
+    pub fn order_by_expr_desc<T, Scope, Marker, P>(self, expression: Expr<T, Scope, Marker>) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
         Marker: AggregateMarker + AggregateInDialect<D>,

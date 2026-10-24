@@ -26,10 +26,16 @@ fn seeded() -> SqliteConnection {
         .execute_batch(CREATE_USERS)
         .expect("create users table");
     connection
-        .execute("INSERT INTO users (id, name) VALUES (?1, ?2)", (1i64, "root"))
+        .execute(
+            "INSERT INTO users (id, name) VALUES (?1, ?2)",
+            (1i64, "root"),
+        )
         .expect("insert first row");
     connection
-        .execute("INSERT INTO users (id, name) VALUES (?1, ?2)", (2i64, "guest"))
+        .execute(
+            "INSERT INTO users (id, name) VALUES (?1, ?2)",
+            (2i64, "guest"),
+        )
         .expect("insert second row");
     SqliteConnection::new(connection)
 }
@@ -299,8 +305,14 @@ fn typed_execution_errors_are_inspectable_without_boxing() {
     // The prepare-time failure carries a concrete driver variant that depends
     // on the bundled SQLite version, so the driver message is inspected instead
     // of a single variant.
-    assert!(backend.to_string().contains("missing_function"), "unexpected error: {backend}");
+    assert!(
+        backend.to_string().contains("missing_function"),
+        "unexpected error: {backend}"
+    );
 
     let owned = failed.into_backend().expect("driver error is owned");
-    assert!(owned.to_string().contains("missing_function"), "unexpected error: {owned}");
+    assert!(
+        owned.to_string().contains("missing_function"),
+        "unexpected error: {owned}"
+    );
 }

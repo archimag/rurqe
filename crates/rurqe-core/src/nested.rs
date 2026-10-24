@@ -402,10 +402,7 @@ mod tests {
     impl FromSqlValue for OrderLine {
         fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
             let object = json_object(value)?;
-            Ok((
-                nested_field(&object, "sku")?,
-                nested_field(&object, "qty")?,
-            ))
+            Ok((nested_field(&object, "sku")?, nested_field(&object, "qty")?))
         }
     }
 
@@ -559,7 +556,11 @@ mod tests {
         ] {
             let value = json_to_sql_value(&document);
 
-            assert_eq!(sql_val_to_json(&value), document, "round trip of {document}");
+            assert_eq!(
+                sql_val_to_json(&value),
+                document,
+                "round trip of {document}"
+            );
         }
     }
 

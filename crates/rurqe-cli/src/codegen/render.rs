@@ -179,9 +179,7 @@ mod tests {
         assert!(code.contains("UsersEmail => \"email\": Option<String>"));
         assert!(code.contains("pub struct UsersRecord"));
         assert!(code.contains("impl FromRow for UsersRecord"));
-        assert!(
-            code.contains("fn try_from_row(values: &[SqlVal]) -> Result<Self, RowDecodeError>")
-        );
+        assert!(code.contains("fn try_from_row(values: &[SqlVal]) -> Result<Self, RowDecodeError>"));
         assert!(code.contains("RowDecodeError::ArityMismatch"));
     }
 

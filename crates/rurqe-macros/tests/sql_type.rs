@@ -146,7 +146,10 @@ fn transparent_newtypes_delegate_to_the_wrapped_value() {
 
 #[test]
 fn binary_newtypes_round_trip_and_validate_length() {
-    assert_eq!(Txid([1, 2, 3, 4]).to_sql_val(), SqlVal::Bytes(vec![1, 2, 3, 4]));
+    assert_eq!(
+        Txid([1, 2, 3, 4]).to_sql_val(),
+        SqlVal::Bytes(vec![1, 2, 3, 4])
+    );
     assert_eq!(
         Txid::from_sql_value(&SqlVal::Bytes(vec![1, 2, 3, 4])),
         Ok(Txid([1, 2, 3, 4]))
@@ -156,14 +159,11 @@ fn binary_newtypes_round_trip_and_validate_length() {
         SqlVal::Bytes(vec![5, 6, 7, 8])
     );
 
-    let short = Txid::from_sql_value(&SqlVal::Bytes(vec![1, 2, 3]))
-        .expect_err("short blobs are rejected");
+    let short =
+        Txid::from_sql_value(&SqlVal::Bytes(vec![1, 2, 3])).expect_err("short blobs are rejected");
     assert!(matches!(
         short,
-        RowDecodeError::InvalidValue {
-            found: "bytes",
-            ..
-        }
+        RowDecodeError::InvalidValue { found: "bytes", .. }
     ));
     assert!(short.to_string().contains("expected 4 bytes"));
 
@@ -185,10 +185,7 @@ fn text_newtypes_encode_through_display_and_decode_through_from_str() {
         .expect_err("texts outside the domain are rejected");
     assert!(matches!(
         invalid,
-        RowDecodeError::InvalidValue {
-            found: "text",
-            ..
-        }
+        RowDecodeError::InvalidValue { found: "text", .. }
     ));
     assert!(invalid.to_string().contains("addr_"));
 
@@ -319,10 +316,7 @@ fn enum_newtypes_decode_their_labels() {
         .expect_err("a label outside the enum is rejected");
     assert!(matches!(
         unknown,
-        RowDecodeError::InvalidValue {
-            found: "text",
-            ..
-        }
+        RowDecodeError::InvalidValue { found: "text", .. }
     ));
     assert!(unknown.to_string().contains("grumpy"));
 

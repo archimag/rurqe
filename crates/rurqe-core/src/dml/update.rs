@@ -14,8 +14,8 @@
 use core::marker::PhantomData;
 
 use super::{
-    AssignValue, AssignmentScope, AssignmentSet, AssignmentsPresent, ExecutableMutation,
-    Filtered, HasAssignments, NoAssignments, Unfiltered,
+    AssignValue, AssignmentScope, AssignmentSet, AssignmentsPresent, ExecutableMutation, Filtered,
+    HasAssignments, NoAssignments, Unfiltered,
 };
 use crate::dialect::{Dialect, SupportsReturning, SupportsUpdateFrom};
 use crate::dml::render_expr;
@@ -143,10 +143,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     /// referencing a table the `UPDATE` does not reach fails to compile, exactly
     /// like a filter of the same shape. Such a table is introduced with
     /// [`from`](UpdateQuery::from) before the assignment is recorded.
-    pub fn set<S, P>(
-        mut self,
-        set: S,
-    ) -> UpdateQuery<D, T, State, Returning, Scope, HasAssignments>
+    pub fn set<S, P>(mut self, set: S) -> UpdateQuery<D, T, State, Returning, Scope, HasAssignments>
     where
         S: AssignmentSet<T> + AssignmentScope,
         <S as AssignmentScope>::Scope: ExprInScope<Scope, P> + ScopePositions<P>,
@@ -584,10 +581,7 @@ mod tests {
 
         assert_assigned(&query);
         assert_eq!(query.build().sql, "UPDATE \"users\" SET \"name\" = $1");
-        assert_eq!(
-            query.build().params,
-            vec![SqlVal::Text("root".to_owned())]
-        );
+        assert_eq!(query.build().params, vec![SqlVal::Text("root".to_owned())]);
     }
 
     #[test]

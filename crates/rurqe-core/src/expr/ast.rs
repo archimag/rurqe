@@ -13,10 +13,10 @@ use crate::schema::Column;
 mod statement;
 
 pub use statement::{
-    CteAst, DialectInScope, JoinAst, JoinKind, LockClause, LockStrength, LockWait, MergeDialect,
-    MergedDialect, NullsOrder, OrderCriterion, OrderDirection, RequiresAll, RequiresDistinctFrom,
-    RequiresGreatest, RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind, WindowExprKind,
-    WindowFrame, WindowFrameBound, WindowFrameKind, DerivedAst,
+    CteAst, DerivedAst, DialectInScope, JoinAst, JoinKind, LockClause, LockStrength, LockWait,
+    MergeDialect, MergedDialect, NullsOrder, OrderCriterion, OrderDirection, RequiresAll,
+    RequiresDistinctFrom, RequiresGreatest, RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind,
+    WindowExprKind, WindowFrame, WindowFrameBound, WindowFrameKind,
 };
 
 /// The shape of a SQL expression tree.

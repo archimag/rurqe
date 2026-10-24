@@ -137,7 +137,9 @@ fn drift_verification_catches_divergence_with_actionable_error() {
         DriftError::Drift(report) => {
             let msg = report.to_string();
             assert!(msg.contains("Schema drift detected!"));
-            assert!(msg.contains("Table `products`: column `sku` exists in database but is missing from snapshot."));
+            assert!(msg.contains(
+                "Table `products`: column `sku` exists in database but is missing from snapshot."
+            ));
             assert!(msg.contains("Hint: Run `cargo db-codegen` to update code and snapshot."));
         }
         other => panic!("expected Drift, got {other:?}"),

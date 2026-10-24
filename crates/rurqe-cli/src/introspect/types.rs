@@ -397,7 +397,9 @@ pub fn catalog_from_metadata_with_sections(
                     .with_actions(fk.on_delete, fk.on_update)
             });
         constraint.columns.push(fk.column_name.clone());
-        constraint.referenced_columns.push(fk.referenced_column.clone());
+        constraint
+            .referenced_columns
+            .push(fk.referenced_column.clone());
     }
 
     for check in sections.checks {

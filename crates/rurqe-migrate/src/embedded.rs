@@ -82,10 +82,7 @@ impl EmbeddedMigrations {
     }
 
     /// Runs all pending versioned and modified repeatable migrations against `backend`.
-    pub fn migrate<B: MigrationBackend>(
-        &self,
-        backend: &mut B,
-    ) -> Result<MigrationReport, Error> {
+    pub fn migrate<B: MigrationBackend>(&self, backend: &mut B) -> Result<MigrationReport, Error> {
         Migrator::new().migrate(backend, &self.migrations)
     }
 
@@ -98,10 +95,7 @@ impl EmbeddedMigrations {
     }
 
     /// Repairs schema history against updated embedded script checksums and purges failed entries.
-    pub fn repair<B: MigrationBackend>(
-        &self,
-        backend: &mut B,
-    ) -> Result<RepairReport, Error> {
+    pub fn repair<B: MigrationBackend>(&self, backend: &mut B) -> Result<RepairReport, Error> {
         Migrator::new().repair(backend, &self.migrations)
     }
 

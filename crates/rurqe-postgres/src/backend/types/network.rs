@@ -107,7 +107,11 @@ pub(super) fn decode_address(bytes: &[u8]) -> Result<String, String> {
                 .map_err(|_| format!("an IPv6 address carries {length} octets"))?;
             (Ipv6Addr::from(address).to_string(), BITS_IPV6)
         }
-        other => return Err(format!("a network address carries the unknown family {other}")),
+        other => {
+            return Err(format!(
+                "a network address carries the unknown family {other}"
+            ))
+        }
     };
 
     if bits > complete {

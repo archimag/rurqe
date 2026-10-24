@@ -50,11 +50,7 @@ impl SchemaDiff {
     /// The traversal lives here once and takes the `wording` of the verifier, so
     /// the drift report and the golden-equation report never describe the same
     /// finding with two drifting implementations.
-    pub fn write_details(
-        &self,
-        f: &mut fmt::Formatter<'_>,
-        wording: DiffWording,
-    ) -> fmt::Result {
+    pub fn write_details(&self, f: &mut fmt::Formatter<'_>, wording: DiffWording) -> fmt::Result {
         let DiffWording { expected, live } = wording;
 
         for enum_name in &self.missing_enums {
@@ -297,7 +293,9 @@ pub enum DriftError {
     /// catalog, so its absence would let a schema file that no codegen produced
     /// pass verification silently. The structural diff is carried along, so the
     /// report still names whatever else drifted.
-    MissingSchemaHash { diff: Box<SchemaDiff> },
+    MissingSchemaHash {
+        diff: Box<SchemaDiff>,
+    },
     InvalidLock(String),
     Io(String),
 }
@@ -761,9 +759,11 @@ mod tests {
 
     #[test]
     fn enum_drift_is_detected_and_reported() {
-        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![
-            EnumDef::new("user_role", vec!["admin".to_owned(), "member".to_owned()]),
-        ]);
+        let baseline =
+            SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![EnumDef::new(
+                "user_role",
+                vec!["admin".to_owned(), "member".to_owned()],
+            )]);
         let lock = baseline.to_lock();
 
         // Extra enum in live database
@@ -776,28 +776,27 @@ mod tests {
         match err {
             DriftError::Drift(report) => {
                 assert_eq!(report.diff.extra_enums, vec!["task_state".to_owned()]);
-                assert!(report.to_string().contains("Enum `task_state` exists in database but is missing from snapshot."));
+                assert!(report.to_string().contains(
+                    "Enum `task_state` exists in database but is missing from snapshot."
+                ));
             }
             other => panic!("expected Drift, got {other:?}"),
         }
 
         // Altered variants in live database
-        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![
-            EnumDef::new(
+        let live_altered =
+            SchemaCatalog::new(vec![users_table(Vec::new())]).with_enums(vec![EnumDef::new(
                 "user_role",
-                vec![
-                    "admin".to_owned(),
-                    "member".to_owned(),
-                    "guest".to_owned(),
-                ],
-            ),
-        ]);
+                vec!["admin".to_owned(), "member".to_owned(), "guest".to_owned()],
+            )]);
 
         let err2 = verify_drift(&live_altered, &lock, None).unwrap_err();
         match err2 {
             DriftError::Drift(report) => {
                 assert_eq!(report.diff.altered_enums, vec!["user_role".to_owned()]);
-                assert!(report.to_string().contains("Enum `user_role` definition differs between database and snapshot."));
+                assert!(report.to_string().contains(
+                    "Enum `user_role` definition differs between database and snapshot."
+                ));
             }
             other => panic!("expected Drift, got {other:?}"),
         }
@@ -812,7 +811,10 @@ mod tests {
         )])]);
 
         let lock = catalog.to_lock();
-        let code = format!("pub const SCHEMA_HASH: &str = \"{}\";", catalog.schema_hash());
+        let code = format!(
+            "pub const SCHEMA_HASH: &str = \"{}\";",
+            catalog.schema_hash()
+        );
 
         assert!(verify_drift(&catalog, &lock, Some(&code)).is_ok());
     }
@@ -1152,7 +1154,8 @@ mod tests {
 
     #[test]
     fn hash_extraction_prefers_real_constant_after_comment() {
-        let code = "// pub const SCHEMA_HASH: &str = \"dead\";\npub const SCHEMA_HASH: &str = \"live\";";
+        let code =
+            "// pub const SCHEMA_HASH: &str = \"dead\";\npub const SCHEMA_HASH: &str = \"live\";";
         assert_eq!(extract_schema_hash(code), Some("live".to_owned()));
     }
 
@@ -1182,9 +1185,11 @@ mod tests {
             other => panic!("expected Drift, got {other:?}"),
         }
 
-        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())]).with_views(vec![
-            ViewDef::new("active_users", "SELECT id, email FROM users"),
-        ]);
+        let live_altered =
+            SchemaCatalog::new(vec![users_table(Vec::new())]).with_views(vec![ViewDef::new(
+                "active_users",
+                "SELECT id, email FROM users",
+            )]);
         match verify_drift(&live_altered, &lock, None).unwrap_err() {
             DriftError::Drift(report) => {
                 assert_eq!(report.diff.altered_views, vec!["active_users".to_owned()]);
@@ -1222,9 +1227,12 @@ mod tests {
             other => panic!("expected Drift, got {other:?}"),
         }
 
-        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())]).with_triggers(vec![
-            TriggerDef::new("users_audit", "users", "BEGIN; UPDATE x; END;"),
-        ]);
+        let live_altered =
+            SchemaCatalog::new(vec![users_table(Vec::new())]).with_triggers(vec![TriggerDef::new(
+                "users_audit",
+                "users",
+                "BEGIN; UPDATE x; END;",
+            )]);
         match verify_drift(&live_altered, &lock, None).unwrap_err() {
             DriftError::Drift(report) => {
                 assert_eq!(report.diff.altered_triggers, vec!["users_audit".to_owned()]);
@@ -1235,8 +1243,9 @@ mod tests {
 
     #[test]
     fn check_constraint_drift_is_reported() {
-        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())
-            .with_check(CheckDef::new("users_age_check", "age >= 0"))]);
+        let baseline = SchemaCatalog::new(vec![
+            users_table(Vec::new()).with_check(CheckDef::new("users_age_check", "age >= 0"))
+        ]);
         let lock = baseline.to_lock();
 
         let live = SchemaCatalog::new(vec![users_table(Vec::new())]);
@@ -1264,8 +1273,9 @@ mod tests {
             other => panic!("expected Drift, got {other:?}"),
         }
 
-        let live_altered = SchemaCatalog::new(vec![users_table(Vec::new())
-            .with_check(CheckDef::new("users_age_check", "age > 0"))]);
+        let live_altered = SchemaCatalog::new(vec![
+            users_table(Vec::new()).with_check(CheckDef::new("users_age_check", "age > 0"))
+        ]);
         match verify_drift(&live_altered, &lock, None).unwrap_err() {
             DriftError::Drift(report) => {
                 assert_eq!(
@@ -1279,28 +1289,34 @@ mod tests {
 
     #[test]
     fn whitespace_differences_in_check_expressions_are_ignored() {
-        let baseline = SchemaCatalog::new(vec![users_table(Vec::new())
-            .with_check(CheckDef::new("users_age_check", "age >= 0"))]);
+        let baseline = SchemaCatalog::new(vec![
+            users_table(Vec::new()).with_check(CheckDef::new("users_age_check", "age >= 0"))
+        ]);
         let lock = baseline.to_lock();
 
-        let live = SchemaCatalog::new(vec![users_table(Vec::new())
-            .with_check(CheckDef::new("users_age_check", "age   >=    0"))]);
+        let live =
+            SchemaCatalog::new(vec![users_table(Vec::new())
+                .with_check(CheckDef::new("users_age_check", "age   >=    0"))]);
         assert!(verify_drift(&live, &lock, None).is_ok());
     }
 
     #[test]
     fn index_attribute_drift_is_reported() {
-        let baseline = SchemaCatalog::new(vec![users_table(vec![
-            IndexDef::new("users_email_idx", vec!["email".to_owned()], false)
-                .with_method("btree")
-                .with_predicate("email IS NOT NULL"),
-        ])]);
+        let baseline = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            false,
+        )
+        .with_method("btree")
+        .with_predicate("email IS NOT NULL")])]);
         let lock = baseline.to_lock();
 
-        let live = SchemaCatalog::new(vec![users_table(vec![
-            IndexDef::new("users_email_idx", vec!["email".to_owned()], false)
-                .with_method("hash"),
-        ])]);
+        let live = SchemaCatalog::new(vec![users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            false,
+        )
+        .with_method("hash")])]);
 
         match verify_drift(&live, &lock, None).unwrap_err() {
             DriftError::Drift(report) => {

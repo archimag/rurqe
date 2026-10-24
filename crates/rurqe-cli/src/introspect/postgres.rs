@@ -14,9 +14,8 @@ use crate::cli::CliError;
 
 use super::types::{
     catalog_from_metadata_with_sections, parse_foreign_key_action, RawCatalogSections,
-    RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata,
-    RawIndexMetadata, RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata,
-    RawViewMetadata,
+    RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
+    RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata,
 };
 
 /// Query to fetch all user tables of the introspected schema.
@@ -261,7 +260,10 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
 /// catalog statements run both on a bare client and inside an open transaction:
 /// a scratch schema can therefore be introspected before its transaction
 /// commits, and the golden equation reads it through the same queries.
-pub fn introspect_postgres_schema<C>(client: &mut C, schema: &str) -> Result<SchemaCatalog, CliError>
+pub fn introspect_postgres_schema<C>(
+    client: &mut C,
+    schema: &str,
+) -> Result<SchemaCatalog, CliError>
 where
     C: postgres::GenericClient,
 {
@@ -282,27 +284,39 @@ where
         })
     })?;
 
-    let raw_pks = query_catalog(client, POSTGRES_PRIMARY_KEYS, schema, "primary keys", |row| {
-        Ok(RawPrimaryKeyMetadata {
-            table_name: read_column(row, 0, "primary keys", "table_name")?,
-            column_name: read_column(row, 1, "primary keys", "column_name")?,
-        })
-    })?;
+    let raw_pks = query_catalog(
+        client,
+        POSTGRES_PRIMARY_KEYS,
+        schema,
+        "primary keys",
+        |row| {
+            Ok(RawPrimaryKeyMetadata {
+                table_name: read_column(row, 0, "primary keys", "table_name")?,
+                column_name: read_column(row, 1, "primary keys", "column_name")?,
+            })
+        },
+    )?;
 
-    let raw_fks = query_catalog(client, POSTGRES_FOREIGN_KEYS, schema, "foreign keys", |row| {
-        let on_delete: String = read_column(row, 5, "foreign keys", "on_delete")?;
-        let on_update: String = read_column(row, 6, "foreign keys", "on_update")?;
+    let raw_fks = query_catalog(
+        client,
+        POSTGRES_FOREIGN_KEYS,
+        schema,
+        "foreign keys",
+        |row| {
+            let on_delete: String = read_column(row, 5, "foreign keys", "on_delete")?;
+            let on_update: String = read_column(row, 6, "foreign keys", "on_update")?;
 
-        Ok(RawForeignKeyMetadata {
-            name: read_column(row, 0, "foreign keys", "conname")?,
-            table_name: read_column(row, 1, "foreign keys", "table_name")?,
-            column_name: read_column(row, 2, "foreign keys", "column_name")?,
-            referenced_table: read_column(row, 3, "foreign keys", "referenced_table")?,
-            referenced_column: read_column(row, 4, "foreign keys", "referenced_column")?,
-            on_delete: parse_foreign_key_action(&on_delete),
-            on_update: parse_foreign_key_action(&on_update),
-        })
-    })?;
+            Ok(RawForeignKeyMetadata {
+                name: read_column(row, 0, "foreign keys", "conname")?,
+                table_name: read_column(row, 1, "foreign keys", "table_name")?,
+                column_name: read_column(row, 2, "foreign keys", "column_name")?,
+                referenced_table: read_column(row, 3, "foreign keys", "referenced_table")?,
+                referenced_column: read_column(row, 4, "foreign keys", "referenced_column")?,
+                on_delete: parse_foreign_key_action(&on_delete),
+                on_update: parse_foreign_key_action(&on_update),
+            })
+        },
+    )?;
 
     let raw_indexes = query_catalog(client, POSTGRES_INDEXES, schema, "indexes", |row| {
         Ok(RawIndexMetadata {

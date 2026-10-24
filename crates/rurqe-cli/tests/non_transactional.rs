@@ -38,7 +38,8 @@ const DIRECTIVE_INDEX: &str =
     "-- executeInTransaction=false\nCREATE INDEX users_email_idx ON users (email);";
 
 /// A PostgreSQL stage declaring both the table and the index.
-const PG_USERS_WITH_INDEX: &str = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);\n\
+const PG_USERS_WITH_INDEX: &str =
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);\n\
                                    CREATE INDEX users_email_idx ON users (email);";
 
 /// The PostgreSQL concurrent index, replayable only outside a transaction.
@@ -104,12 +105,18 @@ fn mixed_transactional_and_non_transactional_scripts_apply_in_one_run() {
 
     let tail = load_migrations_from_dir(&migrations_dir).expect("the scripts are loaded");
     assert_eq!(tail.len(), 3);
-    assert!(tail[0].is_transactional(), "V1 stays inside the transaction");
+    assert!(
+        tail[0].is_transactional(),
+        "V1 stays inside the transaction"
+    );
     assert!(
         !tail[1].is_transactional(),
         "the `.notx.sql` suffix keeps V2 outside the transaction"
     );
-    assert!(tail[2].is_transactional(), "V3 stays inside the transaction");
+    assert!(
+        tail[2].is_transactional(),
+        "V3 stays inside the transaction"
+    );
 
     let db = workspace.join("app.db");
     let connection = rusqlite::Connection::open(&db).expect("open the sqlite database");
@@ -139,10 +146,7 @@ fn the_header_directive_keeps_a_script_out_of_the_transaction() {
     let migrations_dir = workspace.join("migrations");
     write_scripts(
         &migrations_dir,
-        &[
-            ("V1__users.sql", USERS),
-            ("V2__index.sql", DIRECTIVE_INDEX),
-        ],
+        &[("V1__users.sql", USERS), ("V2__index.sql", DIRECTIVE_INDEX)],
     );
 
     let tail = load_migrations_from_dir(&migrations_dir).expect("the scripts are loaded");

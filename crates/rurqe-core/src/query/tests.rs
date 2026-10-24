@@ -107,7 +107,9 @@ fn renders_selection_from_filter_and_pagination() {
 #[test]
 fn selection_determines_row_type() {
     let query: SelectQuery<MockDialect, User, (i64,), HasProjection> =
-        SelectQuery::<MockDialect>::new().from::<User>().select((UserId,));
+        SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,));
 
     assert_eq!(query.build().sql, "SELECT \"id\" FROM \"users\"");
 }
@@ -263,7 +265,10 @@ fn full_outer_join_lifts_both_relations_into_options() {
 
     let built_value = SelectQuery::<MockDialect>::new()
         .from_table(User)
-        .full_outer_join_table(Order, Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+        .full_outer_join_table(
+            Order,
+            Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
+        )
         .select((UserId, OrderId))
         .build();
 
@@ -430,11 +435,10 @@ fn explicit_nullable_marker_matches_automatic_lifting() {
         LeftJoined<User, Order>,
         (Option<f64>,),
         HasProjection,
-    > =
-        SelectQuery::<MockDialect>::new()
-            .from::<User>()
-            .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64))
-            .select((Nullable::<OrderTotal>::new(),));
+    > = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(3i64))
+        .select((Nullable::<OrderTotal>::new(),));
 
     assert_eq!(
         single_layer.build().sql,
@@ -612,8 +616,8 @@ fn fetch_all_reports_the_row_that_fails_to_decode() {
 
 #[test]
 fn execute_reports_affected_rows_without_decoding() {
-    let query = InsertQuery::<MockDialect, User>::new()
-        .values((UserId::set(1i64), UserName::set("root")));
+    let query =
+        InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
 
     let mut backend = MockBackend {
         affected: 1,
@@ -626,8 +630,8 @@ fn execute_reports_affected_rows_without_decoding() {
 
 #[test]
 fn executable_queries_expose_built_sql_and_row_type() {
-    let insert = InsertQuery::<MockDialect, User>::new()
-        .values((UserId::set(1i64), UserName::set("root")));
+    let insert =
+        InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
     assert_eq!(insert.build_query(), insert.build());
 
     fn assert_row<Q: ExecutableQuery<Row = (i64, String)>>() {}
@@ -929,7 +933,9 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .with(summary_cte)
         .from::<User>()
-        .inner_join::<ActiveSummary, _, _>(Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()))
+        .inner_join::<ActiveSummary, _, _>(
+            Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()),
+        )
         .select((UserId, UserName, SummaryTotal))
         .where_(Expr::column::<SummaryTotal>().lt(500.0))
         .build();
@@ -1418,7 +1424,8 @@ fn group_set_resolves_grouped_column_positions() {
 
     assert_grouped::<Grouping, UserName, At<0>>();
     assert_grouped::<Grouping, UserId, Next<At<0>>>();
-    assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, (Next<At<0>>, At<0>, At<0>)>();
+    assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, (Next<At<0>>, At<0>, At<0>)>(
+    );
 }
 
 crate::table_alias! {
@@ -1711,8 +1718,8 @@ fn async_execute_reports_affected_rows_without_decoding() {
         affected: 2,
         ..MockAsyncBackend::default()
     };
-    let query = InsertQuery::<MockDialect, User>::new()
-        .values((UserId::set(1i64), UserName::set("root")));
+    let query =
+        InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
 
     assert_eq!(block_on(backend.execute(&query)), Ok(2));
 }

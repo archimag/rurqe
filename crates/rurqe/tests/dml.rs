@@ -199,7 +199,10 @@ fn allow_all_permits_full_table_mutations() {
         .allow_all();
     assert_update_filtered(&update_query);
 
-    assert_eq!(update_query.build().sql, "UPDATE \"users\" SET \"active\" = $1");
+    assert_eq!(
+        update_query.build().sql,
+        "UPDATE \"users\" SET \"active\" = $1"
+    );
 
     let delete_query = delete_from::<Postgres, User>().allow_all();
     assert_delete_filtered(&delete_query);
@@ -334,8 +337,8 @@ fn insert_from_select_copies_rows_without_round_tripping() {
 
 #[test]
 fn insert_from_select_supports_returning_projection() {
-    let source = select_from::<Postgres, ArchivedUser>()
-        .select((ArchivedId, ArchivedName, ArchivedActive));
+    let source =
+        select_from::<Postgres, ArchivedUser>().select((ArchivedId, ArchivedName, ArchivedActive));
 
     let built = insert_into::<Postgres, User>()
         .columns((UserId, UserName, UserActive))

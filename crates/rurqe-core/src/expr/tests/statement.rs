@@ -236,7 +236,10 @@ fn a_window_expression_renders_its_partition_and_ordering() {
     let window = ExprKind::Window {
         kind: Box::new(WindowExprKind::RowNumber),
         partition_by: vec![UserId::expr_kind()],
-        order_by: vec![OrderCriterion::new(UserId::expr_kind(), OrderDirection::Desc)],
+        order_by: vec![OrderCriterion::new(
+            UserId::expr_kind(),
+            OrderDirection::Desc,
+        )],
         frame: None,
     };
 
@@ -268,7 +271,10 @@ fn lag_and_lead_render_their_offsets() {
             offset: None,
         }),
         partition_by: Vec::new(),
-        order_by: vec![OrderCriterion::new(UserId::expr_kind(), OrderDirection::Asc)],
+        order_by: vec![OrderCriterion::new(
+            UserId::expr_kind(),
+            OrderDirection::Asc,
+        )],
         frame: None,
     };
     assert_eq!(render(&lead).0, "LEAD(\"id\") OVER (ORDER BY \"id\" ASC)");

@@ -142,8 +142,7 @@ impl SetOperand for LockUnavailable {}
 /// ```text
 /// let query: Query<Postgres, Users, (i64, String)> = ...
 /// ```
-pub type Query<D, Tables = (), Output = ()> =
-    SelectQuery<D, Tables, Output, HasProjection, NoLock>;
+pub type Query<D, Tables = (), Output = ()> = SelectQuery<D, Tables, Output, HasProjection, NoLock>;
 
 /// A `SELECT` query that projects its rows and requests a row-level lock.
 ///
@@ -434,9 +433,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     }
 }
 
-impl<D: Dialect, Tables, Output, Projected, Lock>
-    SelectQuery<D, Tables, Output, Projected, Lock>
-{
+impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
     /// Selects `selection`, fixing the row type of the query to the selection row.
     ///
     /// The selection is captured as dialect-neutral AST nodes at the call site,
@@ -451,13 +448,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     pub fn select<S, Positions>(
         mut self,
         selection: S,
-    ) -> SelectQuery<
-        D,
-        Tables,
-        <S as SelectionFor<Tables, Positions>>::Row,
-        HasProjection,
-        Lock,
-    >
+    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions>>::Row, HasProjection, Lock>
     where
         Tables: TableScope,
         S: SelectionFor<Tables, Positions>,

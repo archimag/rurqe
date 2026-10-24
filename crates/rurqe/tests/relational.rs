@@ -304,7 +304,9 @@ fn window_functions_render_over_clause_and_decode_rows() {
             row_number().over(window.clone()),
             rank().over(window.clone()),
             dense_rank().over(window.clone()),
-            lag(OrderTotal).offset(1).over(Window::order_by_asc(OrderId)),
+            lag(OrderTotal)
+                .offset(1)
+                .over(Window::order_by_asc(OrderId)),
             lead(OrderTotal).over(Window::order_by_asc(OrderId)),
             Expr::sum::<OrderTotal>().over(Window::partition_by(OrderUserId)),
         ))
@@ -893,12 +895,10 @@ fn window_frames_restrict_the_rows_a_window_reads() {
                         WindowFrameBound::CurrentRow,
                     ),
             ),
-            dense_rank().over(
-                Window::order_by_desc(OrderTotal).range_between(
-                    WindowFrameBound::preceding(1),
-                    WindowFrameBound::following(1),
-                ),
-            ),
+            dense_rank().over(Window::order_by_desc(OrderTotal).range_between(
+                WindowFrameBound::preceding(1),
+                WindowFrameBound::following(1),
+            )),
         ))
         .build();
 
@@ -1023,7 +1023,9 @@ mod value_based_dsl {
         );
 
         fn active() -> Query<Postgres, User, (i64,)> {
-            select_from(User).select((UserId,)).where_(UserActive.eq(true))
+            select_from(User)
+                .select((UserId,))
+                .where_(UserActive.eq(true))
         }
 
         assert_eq!(
@@ -1279,7 +1281,10 @@ mod phase18_relational {
                 body: "only".to_owned(),
             }))
         );
-        assert_eq!(Option::<CommentRow>::from_sql_value(&SqlVal::Null), Ok(None));
+        assert_eq!(
+            Option::<CommentRow>::from_sql_value(&SqlVal::Null),
+            Ok(None)
+        );
     }
 
     #[test]

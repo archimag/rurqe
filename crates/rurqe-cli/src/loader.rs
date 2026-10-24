@@ -62,8 +62,7 @@ mod tests {
 
     #[test]
     fn parses_the_scripts_of_a_directory() {
-        let dir =
-            std::env::temp_dir().join(format!("rurqe-loader-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("rurqe-loader-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create the migration directory");
         std::fs::write(dir.join("V1__init.sql"), "CREATE TABLE users (id INT);")
@@ -84,10 +83,7 @@ mod tests {
 
     #[test]
     fn a_missing_directory_holds_no_migrations() {
-        let dir = std::env::temp_dir().join(format!(
-            "rurqe-loader-absent-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("rurqe-loader-absent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(load_migrations_from_dir(&dir)

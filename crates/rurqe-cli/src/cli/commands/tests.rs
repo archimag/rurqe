@@ -31,7 +31,11 @@ fn scripts(dir: &Path, names: &[&str]) {
 fn checkpoint_file(path: &Path, version: &str) {
     std::fs::write(
         path,
-        Checkpoint::new(version.parse().expect("a valid version"), Checksum::of(b"stage")).render(),
+        Checkpoint::new(
+            version.parse().expect("a valid version"),
+            Checksum::of(b"stage"),
+        )
+        .render(),
     )
     .expect("write the checkpoint");
 }
@@ -96,10 +100,9 @@ fn committing_the_stage_anchors_the_checkpoint() {
     commit_stage(version("3.2"), ":memory:", &lock_path, &checkpoint_path)
         .expect("an empty database commits cleanly");
 
-    let catalog = SchemaCatalog::from_lock(
-        &std::fs::read_to_string(&lock_path).expect("read the lock"),
-    )
-    .expect("the lock is canonical");
+    let catalog =
+        SchemaCatalog::from_lock(&std::fs::read_to_string(&lock_path).expect("read the lock"))
+            .expect("the lock is canonical");
     let checkpoint = Checkpoint::load(&checkpoint_path)
         .expect("the checkpoint is readable")
         .expect("the checkpoint exists");
@@ -128,7 +131,12 @@ fn prune_removes_only_the_scripts_below_the_boundary() {
     let migrations_dir = dir.join("migrations");
     scripts(
         &migrations_dir,
-        &["V1__init.sql", "V2__orders.sql", "V9__tail.sql", "R__view.sql"],
+        &[
+            "V1__init.sql",
+            "V2__orders.sql",
+            "V9__tail.sql",
+            "R__view.sql",
+        ],
     );
     let checkpoint_path = dir.join("checkpoint.toml");
     checkpoint_file(&checkpoint_path, "9");

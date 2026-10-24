@@ -114,10 +114,12 @@ pub trait FromSqlValue: Sized {
 impl FromSqlValue for i16 {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
-            SqlVal::I32(wide) => i16::try_from(*wide)
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into a 16-bit integer")),
-            SqlVal::I64(wide) => i16::try_from(*wide)
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into a 16-bit integer")),
+            SqlVal::I32(wide) => i16::try_from(*wide).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into a 16-bit integer")
+            }),
+            SqlVal::I64(wide) => i16::try_from(*wide).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into a 16-bit integer")
+            }),
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -127,8 +129,9 @@ impl FromSqlValue for i32 {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::I32(narrow) => Ok(*narrow),
-            SqlVal::I64(wide) => i32::try_from(*wide)
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into a 32-bit integer")),
+            SqlVal::I64(wide) => i32::try_from(*wide).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into a 32-bit integer")
+            }),
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -137,10 +140,12 @@ impl FromSqlValue for i32 {
 impl FromSqlValue for u32 {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
-            SqlVal::I32(narrow) => u32::try_from(i64::from(*narrow))
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into an unsigned 32-bit integer")),
-            SqlVal::I64(wide) => u32::try_from(*wide)
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into an unsigned 32-bit integer")),
+            SqlVal::I32(narrow) => u32::try_from(i64::from(*narrow)).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into an unsigned 32-bit integer")
+            }),
+            SqlVal::I64(wide) => u32::try_from(*wide).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into an unsigned 32-bit integer")
+            }),
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -158,10 +163,12 @@ impl FromSqlValue for i64 {
 impl FromSqlValue for usize {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
-            SqlVal::I32(narrow) => usize::try_from(i64::from(*narrow))
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into an unsigned index")),
-            SqlVal::I64(wide) => usize::try_from(*wide)
-                .map_err(|_| invalid_value::<Self>(value, "value does not fit into an unsigned index")),
+            SqlVal::I32(narrow) => usize::try_from(i64::from(*narrow)).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into an unsigned index")
+            }),
+            SqlVal::I64(wide) => usize::try_from(*wide).map_err(|_| {
+                invalid_value::<Self>(value, "value does not fit into an unsigned index")
+            }),
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -252,9 +259,8 @@ impl FromSqlValue for rust_decimal::Decimal {
             // into the exact type.
             SqlVal::I32(number) => Ok(Decimal::from(*number)),
             SqlVal::I64(number) => Ok(Decimal::from(*number)),
-            SqlVal::F64(number) => {
-                Decimal::try_from(*number).map_err(|error| invalid_value::<Self>(value, &error.to_string()))
-            }
+            SqlVal::F64(number) => Decimal::try_from(*number)
+                .map_err(|error| invalid_value::<Self>(value, &error.to_string())),
             SqlVal::Text(text) => text
                 .parse::<Decimal>()
                 .map_err(|error| invalid_value::<Self>(value, &error.to_string())),
@@ -315,11 +321,15 @@ impl FromSqlValue for chrono::NaiveDateTime {
         match value {
             SqlVal::NaiveDateTime(dt) => Ok(*dt),
             SqlVal::DateTimeUtc(dt) => Ok(dt.naive_utc()),
-            SqlVal::Text(text) => chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
-                .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f"))
-                .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S"))
-                .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S"))
-                .map_err(|e| invalid_value::<Self>(value, &e.to_string())),
+            SqlVal::Text(text) => {
+                chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
+                    .or_else(|_| {
+                        chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
+                    })
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S"))
+                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S"))
+                    .map_err(|e| invalid_value::<Self>(value, &e.to_string()))
+            }
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -330,13 +340,18 @@ impl FromSqlValue for chrono::DateTime<chrono::Utc> {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::DateTimeUtc(dt) => Ok(*dt),
-            SqlVal::NaiveDateTime(ndt) => Ok(chrono::DateTime::from_naive_utc_and_offset(*ndt, chrono::Utc)),
+            SqlVal::NaiveDateTime(ndt) => Ok(chrono::DateTime::from_naive_utc_and_offset(
+                *ndt,
+                chrono::Utc,
+            )),
             SqlVal::Text(text) => {
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
                     return Ok(dt.with_timezone(&chrono::Utc));
                 }
                 chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S%.f")
-                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f"))
+                    .or_else(|_| {
+                        chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
+                    })
                     .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S"))
                     .or_else(|_| chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S"))
                     .map(|naive| chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc))
@@ -558,30 +573,21 @@ mod tests {
         let error = i32::from_sql_value(&SqlVal::I64(i64::MAX)).expect_err("overflow is rejected");
         assert!(matches!(
             error,
-            RowDecodeError::InvalidValue {
-                found: "int64",
-                ..
-            }
+            RowDecodeError::InvalidValue { found: "int64", .. }
         ));
         assert!(error.to_string().contains("32-bit integer"));
 
         let error = u32::from_sql_value(&SqlVal::I32(-1)).expect_err("negatives are rejected");
         assert!(matches!(
             error,
-            RowDecodeError::InvalidValue {
-                found: "int32",
-                ..
-            }
+            RowDecodeError::InvalidValue { found: "int32", .. }
         ));
 
-        let error =
-            i16::from_sql_value(&SqlVal::I64(i64::from(i32::MAX))).expect_err("overflow is rejected");
+        let error = i16::from_sql_value(&SqlVal::I64(i64::from(i32::MAX)))
+            .expect_err("overflow is rejected");
         assert!(matches!(
             error,
-            RowDecodeError::InvalidValue {
-                found: "int64",
-                ..
-            }
+            RowDecodeError::InvalidValue { found: "int64", .. }
         ));
     }
 
@@ -593,10 +599,7 @@ mod tests {
         let error = bool::from_sql_value(&SqlVal::I64(2)).expect_err("only 0 and 1 decode");
         assert!(matches!(
             error,
-            RowDecodeError::InvalidValue {
-                found: "int64",
-                ..
-            }
+            RowDecodeError::InvalidValue { found: "int64", .. }
         ));
         assert!(error.to_string().contains("0 or 1"));
     }
@@ -710,10 +713,7 @@ mod tests {
     fn from_row_wraps_try_from_row() {
         assert_eq!(<(i64,)>::from_row(&[SqlVal::I64(1)]), Some((1,)));
         assert_eq!(<(i64,)>::from_row(&[]), None);
-        assert_eq!(
-            <(i64,)>::from_row(&[SqlVal::Text("1".to_owned())]),
-            None
-        );
+        assert_eq!(<(i64,)>::from_row(&[SqlVal::Text("1".to_owned())]), None);
     }
 
     #[derive(Debug, PartialEq, Eq)]

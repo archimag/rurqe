@@ -332,7 +332,10 @@ fn pruning_removes_only_the_scripts_the_checkpoint_folded_in() {
         &[
             ("V1__init.sql", USERS),
             ("V2__orders.sql", ORDERS),
-            ("V9__tail.sql", "CREATE TABLE audit (id INTEGER PRIMARY KEY);"),
+            (
+                "V9__tail.sql",
+                "CREATE TABLE audit (id INTEGER PRIMARY KEY);",
+            ),
             (
                 "R__view.sql",
                 "CREATE VIEW active_users AS SELECT id FROM users;",
@@ -412,7 +415,10 @@ fn pruning_refuses_to_drop_scripts_the_tail_still_needs() {
     ]))
     .expect_err("pruning without a committed checkpoint is rejected");
 
-    assert!(error.to_string().contains("commit the stage"), "got {error}");
+    assert!(
+        error.to_string().contains("commit the stage"),
+        "got {error}"
+    );
 }
 
 #[test]
@@ -462,10 +468,7 @@ fn an_outdated_database_is_blocked_by_the_checkpoint() {
     };
 
     assert_eq!(report.applied_count, 1);
-    assert_eq!(
-        report.applied_scripts,
-        vec!["V3__orders.sql".to_owned()]
-    );
+    assert_eq!(report.applied_scripts, vec!["V3__orders.sql".to_owned()]);
     assert_eq!(tables(&db), vec!["orders".to_owned(), "users".to_owned()]);
 }
 
@@ -565,7 +568,10 @@ fn the_golden_equation_reports_a_tail_that_lost_a_column() {
     write_scripts(&stage_dir, &[("users.sql", USERS)]);
     write_scripts(
         &migrations,
-        &[("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")],
+        &[(
+            "V1__users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+        )],
     );
 
     let stage = path_string(&stage_dir);
@@ -644,10 +650,7 @@ fn the_base_stage_anchors_an_incremental_tail() {
     ]))
     .expect_err("the tail alters a table nothing created");
 
-    assert!(
-        error.to_string().contains("V2__email.sql"),
-        "got {error}"
-    );
+    assert!(error.to_string().contains("V2__email.sql"), "got {error}");
 }
 
 #[test]
@@ -787,7 +790,9 @@ fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_ha
     .expect_err("the diverged stage hash blocks the tail");
 
     assert!(
-        error.to_string().contains("has diverged from the checkpoint"),
+        error
+            .to_string()
+            .contains("has diverged from the checkpoint"),
         "got {error}"
     );
     assert_eq!(tables(&db), vec!["users".to_owned()]);
@@ -1012,7 +1017,9 @@ fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
     .expect_err("the drifted catalog diverges from the checkpoint hash");
 
     assert!(
-        error.to_string().contains("has diverged from the checkpoint"),
+        error
+            .to_string()
+            .contains("has diverged from the checkpoint"),
         "got {error}"
     );
     assert_eq!(tables(&db), vec!["users".to_owned()]);

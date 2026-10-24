@@ -30,10 +30,7 @@ where
 }
 
 /// Executes `query` through an asynchronous client and returns affected rows.
-pub(crate) async fn execute_raw_async<C>(
-    client: &C,
-    query: &BuiltQuery,
-) -> Result<u64, PgError>
+pub(crate) async fn execute_raw_async<C>(client: &C, query: &BuiltQuery) -> Result<u64, PgError>
 where
     C: tokio_postgres::GenericClient,
 {
@@ -91,10 +88,7 @@ impl AsyncQueryBackend for PgAsyncConnection {
         fetch_raw_async(&self.client, query)
     }
 
-    fn execute_raw(
-        &self,
-        query: &BuiltQuery,
-    ) -> impl Future<Output = Result<u64, PgError>> + Send {
+    fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
         execute_raw_async(&self.client, query)
     }
 }
@@ -142,10 +136,7 @@ impl AsyncQueryBackend for PgAsyncTransaction<'_> {
         fetch_raw_async(&self.inner, query)
     }
 
-    fn execute_raw(
-        &self,
-        query: &BuiltQuery,
-    ) -> impl Future<Output = Result<u64, PgError>> + Send {
+    fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
         execute_raw_async(&self.inner, query)
     }
 }

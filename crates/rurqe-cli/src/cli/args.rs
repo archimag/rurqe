@@ -693,8 +693,8 @@ fn parse_prune(tokens: &[&str]) -> Result<CliCommand, CliError> {
         }
     }
 
-    let before =
-        before.ok_or_else(|| CliError("missing required `--before` argument for prune".to_owned()))?;
+    let before = before
+        .ok_or_else(|| CliError("missing required `--before` argument for prune".to_owned()))?;
 
     Ok(CliCommand::Prune {
         before,

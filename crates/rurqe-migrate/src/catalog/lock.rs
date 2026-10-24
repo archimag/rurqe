@@ -76,7 +76,11 @@ pub(super) fn render_lock(
             push_quoted(&mut out, &column.name);
             out.push_str(": ");
             out.push_str(&column.type_kind.canonical());
-            out.push_str(if column.nullable { " null" } else { " not null" });
+            out.push_str(if column.nullable {
+                " null"
+            } else {
+                " not null"
+            });
             if let Some(default) = &column.default {
                 out.push_str(" default ");
                 push_default(&mut out, default);

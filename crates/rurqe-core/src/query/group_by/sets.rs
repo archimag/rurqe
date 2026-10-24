@@ -160,16 +160,8 @@ impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column, C5: Column, C6: Colum
         GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>;
 }
 
-impl<
-        Prev,
-        C1: Column,
-        C2: Column,
-        C3: Column,
-        C4: Column,
-        C5: Column,
-        C6: Column,
-        C7: Column,
-    > GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6, C7)
+impl<Prev, C1: Column, C2: Column, C3: Column, C4: Column, C5: Column, C6: Column, C7: Column>
+    GroupByColumns<Prev> for (C1, C2, C3, C4, C5, C6, C7)
 {
     type Columns = GroupSet<
         GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>,
@@ -191,7 +183,10 @@ impl<
 {
     type Columns = GroupSet<
         GroupSet<
-            GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>, C6>,
+            GroupSet<
+                GroupSet<GroupSet<GroupSet<GroupSet<GroupSet<Prev, C1>, C2>, C3>, C4>, C5>,
+                C6,
+            >,
             C7,
         >,
         C8,
@@ -210,9 +205,8 @@ pub trait ColumnInGroupBy<C, P = At<0>> {}
 impl<Prev, C: Column> ColumnInGroupBy<C, At<0>> for GroupSet<Prev, C> {}
 
 // Inductive case: columns of the inner set sit one position deeper.
-impl<Prev, C: Column, Target: Column, P> ColumnInGroupBy<Target, Next<P>> for GroupSet<Prev, C>
-where
-    Prev: ColumnInGroupBy<Target, P>,
+impl<Prev, C: Column, Target: Column, P> ColumnInGroupBy<Target, Next<P>> for GroupSet<Prev, C> where
+    Prev: ColumnInGroupBy<Target, P>
 {
 }
 

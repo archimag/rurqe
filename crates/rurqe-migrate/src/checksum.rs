@@ -158,7 +158,10 @@ mod tests {
         let block = [b'x'; 64];
 
         assert_eq!(incremental([block.as_slice()]), sha256(&block));
-        assert_eq!(incremental([block.as_slice(), block.as_slice()]), sha256(&[block; 2].concat()));
+        assert_eq!(
+            incremental([block.as_slice(), block.as_slice()]),
+            sha256(&[block; 2].concat())
+        );
         assert_eq!(
             incremental([block.as_slice(), b"tail".as_slice()]),
             sha256(&[block.as_slice(), b"tail".as_slice()].concat())

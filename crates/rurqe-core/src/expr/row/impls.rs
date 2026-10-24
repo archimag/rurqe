@@ -111,8 +111,7 @@ where
     }
 }
 
-impl<T1, T2, T3, T4, T5, L1, L2, L3, L4, L5> RowExpr<(T1, T2, T3, T4, T5)>
-    for (L1, L2, L3, L4, L5)
+impl<T1, T2, T3, T4, T5, L1, L2, L3, L4, L5> RowExpr<(T1, T2, T3, T4, T5)> for (L1, L2, L3, L4, L5)
 where
     L1: Expression<T1>,
     L2: Expression<T2>,
@@ -177,8 +176,8 @@ where
 }
 
 #[allow(clippy::type_complexity)]
-impl<T1, T2, T3, T4, T5, T6, T7, L1, L2, L3, L4, L5, L6, L7>
-    RowExpr<(T1, T2, T3, T4, T5, T6, T7)> for (L1, L2, L3, L4, L5, L6, L7)
+impl<T1, T2, T3, T4, T5, T6, T7, L1, L2, L3, L4, L5, L6, L7> RowExpr<(T1, T2, T3, T4, T5, T6, T7)>
+    for (L1, L2, L3, L4, L5, L6, L7)
 where
     L1: Expression<T1>,
     L2: Expression<T2>,
@@ -255,8 +254,15 @@ where
         MergeDialect<L6::Dialect>,
     RowDialect6<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect, L6::Dialect>:
         MergeDialect<L7::Dialect>,
-    RowDialect7<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect, L6::Dialect, L7::Dialect>:
-        MergeDialect<L8::Dialect>,
+    RowDialect7<
+        L1::Dialect,
+        L2::Dialect,
+        L3::Dialect,
+        L4::Dialect,
+        L5::Dialect,
+        L6::Dialect,
+        L7::Dialect,
+    >: MergeDialect<L8::Dialect>,
 {
     type Scope = RowScope8<
         L1::Scope,
@@ -417,8 +423,8 @@ where
 }
 
 #[allow(clippy::type_complexity)]
-impl<T1, T2, T3, T4, T5, T6, T7, V1, V2, V3, V4, V5, V6, V7>
-    RowValues<(T1, T2, T3, T4, T5, T6, T7)> for (V1, V2, V3, V4, V5, V6, V7)
+impl<T1, T2, T3, T4, T5, T6, T7, V1, V2, V3, V4, V5, V6, V7> RowValues<(T1, T2, T3, T4, T5, T6, T7)>
+    for (V1, V2, V3, V4, V5, V6, V7)
 where
     V1: IntoExpr<T1>,
     V2: IntoExpr<T2>,
@@ -495,8 +501,15 @@ where
         MergeDialect<V6::Dialect>,
     RowDialect6<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect, V6::Dialect>:
         MergeDialect<V7::Dialect>,
-    RowDialect7<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect, V6::Dialect, V7::Dialect>:
-        MergeDialect<V8::Dialect>,
+    RowDialect7<
+        V1::Dialect,
+        V2::Dialect,
+        V3::Dialect,
+        V4::Dialect,
+        V5::Dialect,
+        V6::Dialect,
+        V7::Dialect,
+    >: MergeDialect<V8::Dialect>,
 {
     type Scope = RowScope8<
         V1::Scope,

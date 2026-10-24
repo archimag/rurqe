@@ -296,7 +296,9 @@ mod rusqlite_backend {
         fn to_sql(&self) -> ::rusqlite::Result<ToSqlOutput<'_>> {
             match self.0 {
                 SqlVal::Null => Ok(ToSqlOutput::Borrowed(ValueRef::Null)),
-                SqlVal::I32(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(i64::from(*value)))),
+                SqlVal::I32(value) => {
+                    Ok(ToSqlOutput::Borrowed(ValueRef::Integer(i64::from(*value))))
+                }
                 SqlVal::I64(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value))),
                 SqlVal::F64(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Real(*value))),
                 SqlVal::Bool(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value as i64))),
@@ -424,15 +426,15 @@ mod rusqlite_backend {
             ValueRef::Null => SqlVal::Null,
             ValueRef::Integer(value) => SqlVal::I64(value),
             ValueRef::Real(value) => SqlVal::F64(value),
-            ValueRef::Text(bytes) => SqlVal::Text(String::from_utf8(bytes.to_vec()).map_err(
-                |error| {
+            ValueRef::Text(bytes) => {
+                SqlVal::Text(String::from_utf8(bytes.to_vec()).map_err(|error| {
                     ::rusqlite::Error::FromSqlConversionFailure(
                         index,
                         ::rusqlite::types::Type::Text,
                         Box::new(error),
                     )
-                },
-            )?),
+                })?)
+            }
             ValueRef::Blob(bytes) => SqlVal::Bytes(bytes.to_vec()),
         })
     }

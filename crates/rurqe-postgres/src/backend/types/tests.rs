@@ -304,7 +304,9 @@ fn an_array_column_binds_one_value_per_element() {
     let mut buffer = BytesMut::new();
     let param = SqlValParam(&SqlVal::Array(vec![SqlVal::I64(1), SqlVal::I64(2)]));
     assert!(matches!(
-        param.to_sql_checked(&Type::INT8_ARRAY, &mut buffer).unwrap(),
+        param
+            .to_sql_checked(&Type::INT8_ARRAY, &mut buffer)
+            .unwrap(),
         IsNull::No
     ));
 
@@ -433,7 +435,9 @@ fn uuid_json_and_temporal_values_bind_directly() {
         .unwrap();
     let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
     assert!(matches!(
-        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+        timestamp_param
+            .to_sql(&Type::TIMESTAMP, &mut buffer)
+            .unwrap(),
         IsNull::No
     ));
 
@@ -468,7 +472,9 @@ fn text_parameters_bind_to_uuid_json_and_temporal_types() {
     let mut buffer = BytesMut::new();
     let timestamp_param = SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()));
     assert!(matches!(
-        timestamp_param.to_sql(&Type::TIMESTAMP, &mut buffer).unwrap(),
+        timestamp_param
+            .to_sql(&Type::TIMESTAMP, &mut buffer)
+            .unwrap(),
         IsNull::No
     ));
 

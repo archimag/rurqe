@@ -246,7 +246,10 @@ fn sql_type_mapping_covers_builtin_kinds() {
 #[test]
 fn type_parameters_do_not_hide_the_builtin_kinds() {
     assert_eq!(map_sql_type_to_kind("varchar(255)"), TypeKind::Text);
-    assert_eq!(map_sql_type_to_kind("character varying(80)"), TypeKind::Text);
+    assert_eq!(
+        map_sql_type_to_kind("character varying(80)"),
+        TypeKind::Text
+    );
     assert_eq!(map_sql_type_to_kind("smallint"), TypeKind::Int32);
     assert_eq!(map_sql_type_to_kind("int2"), TypeKind::Int32);
 }
@@ -347,7 +350,10 @@ fn sqlite_declared_types_follow_the_affinity_rules() {
         map_sqlite_declared_type_to_kind("UNSIGNED BIG INT"),
         TypeKind::Int64
     );
-    assert_eq!(map_sqlite_declared_type_to_kind("VARCHAR(255)"), TypeKind::Text);
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("VARCHAR(255)"),
+        TypeKind::Text
+    );
     assert_eq!(map_sqlite_declared_type_to_kind("CLOB"), TypeKind::Text);
     assert_eq!(map_sqlite_declared_type_to_kind("BLOB"), TypeKind::Bytes);
     assert_eq!(map_sqlite_declared_type_to_kind(""), TypeKind::Bytes);
@@ -356,7 +362,10 @@ fn sqlite_declared_types_follow_the_affinity_rules() {
         map_sqlite_declared_type_to_kind("DOUBLE PRECISION"),
         TypeKind::Float64
     );
-    assert_eq!(map_sqlite_declared_type_to_kind("BOOLEAN"), TypeKind::Boolean);
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("BOOLEAN"),
+        TypeKind::Boolean
+    );
     assert_eq!(map_sqlite_declared_type_to_kind("UUID"), TypeKind::Uuid);
     assert_eq!(
         map_sqlite_declared_type_to_kind("DATETIME"),
@@ -642,10 +651,7 @@ fn sqlite_introspect_discovers_check_enum_constraints() {
     );
 
     let state_col = &catalog.tables[0].columns[1];
-    assert_eq!(
-        state_col.type_kind,
-        TypeKind::Enum("state".to_owned())
-    );
+    assert_eq!(state_col.type_kind, TypeKind::Enum("state".to_owned()));
 }
 
 #[test]

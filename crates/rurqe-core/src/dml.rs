@@ -387,7 +387,9 @@ mod tests {
     fn collect_columns<T: Table, S: AssignmentSet<T>>(set: &S) -> Vec<&'static str> {
         let mut out = Vec::new();
         set.extend_assignments(&mut out);
-        out.into_iter().map(|assignment| assignment.column).collect()
+        out.into_iter()
+            .map(|assignment| assignment.column)
+            .collect()
     }
 
     fn take_columns<T: Table, S: AssignmentSet<T>>(set: S) -> Vec<&'static str> {

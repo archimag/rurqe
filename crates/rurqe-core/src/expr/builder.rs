@@ -365,10 +365,7 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         WinD: MergeDialect<D>,
     {
         let window = window.retype_dialect::<D>();
-        crate::query::WindowExpr::of_window(
-            crate::query::WindowExprKind::Expr(self.kind),
-            window,
-        )
+        crate::query::WindowExpr::of_window(crate::query::WindowExprKind::Expr(self.kind), window)
     }
 
     /// Converts the expression to the SQL type named by the cast target `U`.

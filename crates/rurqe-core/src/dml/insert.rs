@@ -16,9 +16,7 @@ use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::expr::{DialectInScope, SelectAst};
-use crate::query::{
-    BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
-};
+use crate::query::{BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection};
 use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table, TableRef};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
@@ -379,7 +377,9 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
     }
 }
 
-impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> InsertQuery<D, T, Values, Returning> {
+impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
+    InsertQuery<D, T, Values, Returning>
+{
     /// Renders the statement into SQL text and its ordered parameter list.
     ///
     /// The statement only becomes renderable once a row source was recorded
@@ -450,10 +450,7 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
 
         let mut assignments: Vec<(&'static str, AssignValue)> = Vec::new();
         for item in raw_assignments {
-            if let Some(existing) = assignments
-                .iter_mut()
-                .find(|(col, _)| *col == item.column)
-            {
+            if let Some(existing) = assignments.iter_mut().find(|(col, _)| *col == item.column) {
                 existing.1 = item.value.clone();
             } else {
                 assignments.push((item.column, item.value.clone()));
@@ -465,18 +462,11 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         // yet, so all rows assign the same columns in the same order and the
         // column list only has to be recorded for the first row.
         if self.rows.is_empty() {
-            self.columns = assignments
-                .iter()
-                .map(|(col, _)| *col)
-                .collect();
+            self.columns = assignments.iter().map(|(col, _)| *col).collect();
         }
 
-        self.rows.push(
-            assignments
-                .into_iter()
-                .map(|(_, value)| value)
-                .collect(),
-        );
+        self.rows
+            .push(assignments.into_iter().map(|(_, value)| value).collect());
     }
 
     fn retype<D2: Dialect, T2: Table, Values2, Returning2>(

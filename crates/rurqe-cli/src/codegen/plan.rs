@@ -274,7 +274,9 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         TypeKind::Json if domain_types => "serde_json::Value".to_owned(),
         TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime".to_owned(),
         TypeKind::Date if domain_types => "chrono::NaiveDate".to_owned(),
-        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String".to_owned(),
+        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => {
+            "String".to_owned()
+        }
         TypeKind::Enum(name) => table_type_ident(name),
         TypeKind::Other(_) => "String".to_owned(),
         TypeKind::Array(_) => "String".to_owned(),
@@ -404,7 +406,10 @@ mod tests {
             "uuid::Uuid"
         );
         assert_eq!(
-            rust_type_of(&ColumnDef::new("created_at", TypeKind::Timestamp, true), &options),
+            rust_type_of(
+                &ColumnDef::new("created_at", TypeKind::Timestamp, true),
+                &options
+            ),
             "Option<chrono::NaiveDateTime>"
         );
     }
@@ -427,7 +432,10 @@ mod tests {
         );
         // ... and an already optional override is never wrapped twice.
         assert_eq!(
-            rust_type_of(&ColumnDef::new("deleted_at", TypeKind::Timestamp, true), &options),
+            rust_type_of(
+                &ColumnDef::new("deleted_at", TypeKind::Timestamp, true),
+                &options
+            ),
             "Option<chrono::NaiveDateTime>"
         );
     }
@@ -461,7 +469,10 @@ mod tests {
             "Option<serde_json::Value>"
         );
         assert_eq!(
-            rust_type_of(&ColumnDef::new("created_at", TypeKind::Timestamp, false), &options),
+            rust_type_of(
+                &ColumnDef::new("created_at", TypeKind::Timestamp, false),
+                &options
+            ),
             "chrono::NaiveDateTime"
         );
         assert_eq!(
@@ -479,7 +490,10 @@ mod tests {
             "String"
         );
         assert_eq!(
-            rust_type_of(&ColumnDef::new("created_at", TypeKind::Timestamp, true), &options),
+            rust_type_of(
+                &ColumnDef::new("created_at", TypeKind::Timestamp, true),
+                &options
+            ),
             "Option<String>"
         );
     }
@@ -531,9 +545,11 @@ mod tests {
         );
         assert_eq!(
             rust_type_of(
-                &ColumnDef::new("moods", TypeKind::Array(Box::new(TypeKind::Enum(
-                    "user_mood".to_owned()
-                ))), true),
+                &ColumnDef::new(
+                    "moods",
+                    TypeKind::Array(Box::new(TypeKind::Enum("user_mood".to_owned()))),
+                    true
+                ),
                 &options,
             ),
             "Option<Vec<UserMood>>"
@@ -557,7 +573,10 @@ mod tests {
             "std::option::Option<uuid::Uuid>"
         );
         assert_eq!(
-            rust_type_of(&ColumnDef::new("deleted_at", TypeKind::Timestamp, true), &options),
+            rust_type_of(
+                &ColumnDef::new("deleted_at", TypeKind::Timestamp, true),
+                &options
+            ),
             "core::option::Option<chrono::NaiveDateTime>"
         );
     }

@@ -302,9 +302,9 @@ impl<T> From<T> for Json<T> {
 fn encode_json<T: serde::Serialize>(value: &T) -> SqlVal {
     match serde_json::to_value(value) {
         Ok(json) => SqlVal::Json(json),
-        Err(error) => SqlVal::EncodingError(format!(
-            "the value cannot be encoded as JSON: {error}"
-        )),
+        Err(error) => {
+            SqlVal::EncodingError(format!("the value cannot be encoded as JSON: {error}"))
+        }
     }
 }
 
@@ -823,10 +823,7 @@ mod tests {
             String::from("root").to_sql_val(),
             SqlVal::Text("root".to_owned())
         );
-        assert_eq!(
-            Vec::from([1u8, 2]).to_sql_val(),
-            SqlVal::Bytes(vec![1, 2])
-        );
+        assert_eq!(Vec::from([1u8, 2]).to_sql_val(), SqlVal::Bytes(vec![1, 2]));
         assert_eq!(SqlVal::I64(1).to_sql_val(), SqlVal::I64(1));
     }
 
@@ -898,10 +895,7 @@ mod tests {
         assert!(matches!(encoded, SqlVal::EncodingError(_)));
         assert!(encoded.to_string().contains("not serialisable"));
 
-        assert_eq!(
-            Json(1i64).to_sql_val(),
-            SqlVal::Json(serde_json::json!(1))
-        );
+        assert_eq!(Json(1i64).to_sql_val(), SqlVal::Json(serde_json::json!(1)));
     }
 
     #[cfg(feature = "decimal")]

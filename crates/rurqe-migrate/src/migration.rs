@@ -46,7 +46,9 @@ pub struct ScriptAttributes {
 
 impl Default for ScriptAttributes {
     fn default() -> Self {
-        Self { transactional: true }
+        Self {
+            transactional: true,
+        }
     }
 }
 
@@ -147,7 +149,9 @@ impl Migration {
 /// `executeInTransaction=false`, `execute_in_transaction=false`, or
 /// `transactional=false`.
 pub fn parse_script_attributes(script_name: &str, sql: &str) -> ScriptAttributes {
-    let named_non_transactional = script_name.to_lowercase().ends_with(NON_TRANSACTIONAL_SUFFIX);
+    let named_non_transactional = script_name
+        .to_lowercase()
+        .ends_with(NON_TRANSACTIONAL_SUFFIX);
     let declared_non_transactional = mentions_non_transactional_directive(&comment_text(sql));
 
     ScriptAttributes {
@@ -275,7 +279,9 @@ fn parse_script_name(
             (Some(version), description)
         }
         MigrationKind::Repeatable => {
-            let description = rest.strip_prefix(DESCRIPTION_SEPARATOR).ok_or_else(invalid)?;
+            let description = rest
+                .strip_prefix(DESCRIPTION_SEPARATOR)
+                .ok_or_else(invalid)?;
             (None, description)
         }
         // The kind is derived from the script-name prefix above, so a baseline

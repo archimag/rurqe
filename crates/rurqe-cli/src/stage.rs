@@ -189,10 +189,7 @@ fn apply_sqlite(
 /// target has already reduced to nothing — the replay happens in memory and
 /// never touches the filesystem. A real path opens that file and is required to
 /// be empty.
-fn open_sqlite_scratch(
-    path: Option<&str>,
-    scratch_url: &str,
-) -> Result<SandboxKind, StageError> {
+fn open_sqlite_scratch(path: Option<&str>, scratch_url: &str) -> Result<SandboxKind, StageError> {
     let connection = match path {
         Some(path) => rusqlite::Connection::open(path),
         None => rusqlite::Connection::open_in_memory(),
@@ -236,12 +233,11 @@ fn ensure_scratch_is_empty(
 
 /// The `(kind, name)` pairs of the user objects of a SQLite scratch database.
 fn scratch_objects(connection: &rusqlite::Connection) -> Result<Vec<(String, String)>, StageError> {
-    let mut statement =
-        connection
-            .prepare(SQLITE_SCRATCH_OBJECTS)
-            .map_err(|error| StageError::Sandbox {
-                message: format!("failed to inspect the SQLite scratch database: {error}"),
-            })?;
+    let mut statement = connection
+        .prepare(SQLITE_SCRATCH_OBJECTS)
+        .map_err(|error| StageError::Sandbox {
+            message: format!("failed to inspect the SQLite scratch database: {error}"),
+        })?;
 
     let objects = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -528,8 +524,11 @@ pub fn materialise_stage(
 fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalog, StageError> {
     let mut sandbox = SandboxKind::open(scratch_url)?;
 
-    let replay = apply_scripts(&mut sandbox, scripts)
-        .and_then(|()| sandbox.catalog().map_err(|message| StageError::Sandbox { message }));
+    let replay = apply_scripts(&mut sandbox, scripts).and_then(|()| {
+        sandbox
+            .catalog()
+            .map_err(|message| StageError::Sandbox { message })
+    });
 
     // A file-backed scratch database is reused by the next side of the equation,
     // so the replay is undone whether or not it succeeded: a replay that stopped
@@ -588,8 +587,8 @@ mod tests {
     #[test]
     fn materialise_stage_introspects_catalog() {
         let stage = stage(&[("users.sql", USERS)]);
-        let catalog = materialise_stage(&stage, ":memory:")
-            .expect("stage materialises in SQLite scratch");
+        let catalog =
+            materialise_stage(&stage, ":memory:").expect("stage materialises in SQLite scratch");
 
         assert_eq!(catalog.tables.len(), 1);
         assert_eq!(catalog.tables[0].name, "users");
@@ -611,7 +610,10 @@ mod tests {
     #[test]
     fn the_tail_must_create_every_stage_table() {
         let stage = stage(&[
-            ("orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);"),
+            (
+                "orders.sql",
+                "CREATE TABLE orders (id INTEGER PRIMARY KEY);",
+            ),
             ("users.sql", USERS),
         ]);
         let tail = tail(&[("V1__users.sql", USERS)]);
@@ -700,7 +702,10 @@ mod tests {
 
         // V1 would fail if applied on top of base because table users already exists
         let tail = tail(&[
-            ("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);"),
+            (
+                "V1__users.sql",
+                "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+            ),
             (
                 "V2__email.sql",
                 "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
@@ -762,7 +767,9 @@ mod tests {
             }
             other => panic!("expected BaseStageHashMismatch, got {other:?}"),
         }
-        assert!(error.to_string().contains("base stage catalog hash mismatch"));
+        assert!(error
+            .to_string()
+            .contains("base stage catalog hash mismatch"));
     }
 
     #[test]

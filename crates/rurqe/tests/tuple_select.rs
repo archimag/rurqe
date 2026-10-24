@@ -44,19 +44,17 @@ fn builds_parameterised_select_for_postgres() {
 fn selection_determines_row_type() {
     let query: SelectQuery<Postgres, User, (i64, String), HasProjection> =
         SelectQuery::<Postgres>::new()
-        .from::<User>()
-        .select((UserId, UserName));
+            .from::<User>()
+            .select((UserId, UserName));
 
-    assert_eq!(
-        query.build().sql,
-        "SELECT \"id\", \"name\" FROM \"users\""
-    );
+    assert_eq!(query.build().sql, "SELECT \"id\", \"name\" FROM \"users\"");
 }
 
 #[test]
 fn single_column_selection_yields_one_element_tuple() {
-    let query: SelectQuery<Postgres, User, (i64,), HasProjection> =
-        SelectQuery::<Postgres>::new().from::<User>().select((UserId,));
+    let query: SelectQuery<Postgres, User, (i64,), HasProjection> = SelectQuery::<Postgres>::new()
+        .from::<User>()
+        .select((UserId,));
 
     assert_eq!(query.build().sql, "SELECT \"id\" FROM \"users\"");
 }

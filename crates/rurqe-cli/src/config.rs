@@ -74,8 +74,7 @@ impl CodegenConfig {
             }
 
             if line.starts_with('[') {
-                current_section =
-                    Some(section_name(line, number).map_err(from_toml)?.to_owned());
+                current_section = Some(section_name(line, number).map_err(from_toml)?.to_owned());
                 continue;
             }
 

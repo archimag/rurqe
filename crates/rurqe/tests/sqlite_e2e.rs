@@ -63,9 +63,7 @@ fn sqlite_crud_cycle_round_trips_through_the_facade() {
         UserActive::set(false),
         UserScore::set(7i32),
     ));
-    let affected = db
-        .execute(&insert_guest)
-        .expect("insert affects one row");
+    let affected = db.execute(&insert_guest).expect("insert affects one row");
     assert_eq!(affected, 1);
 
     let active_query = select_from::<Sqlite<Sqlite3_35>, User>()
@@ -86,9 +84,7 @@ fn sqlite_crud_cycle_round_trips_through_the_facade() {
 
     let delete_query =
         delete_from::<Sqlite<Sqlite3_35>, User>().where_(Expr::column::<UserId>().eq(1i64));
-    let removed = db
-        .execute(&delete_query)
-        .expect("delete affects one row");
+    let removed = db.execute(&delete_query).expect("delete affects one row");
     assert_eq!(removed, 1);
 
     let missing_query = select_from::<Sqlite<Sqlite3_35>, User>()
@@ -187,8 +183,7 @@ fn typed_sqlite_errors_are_inspectable_through_the_facade() {
     // Driver failures stay typed and reachable through `as_backend`.
     let broken = select_from::<Sqlite<Sqlite3_35>, User>().select((
         UserId,
-        Expr::<i64>::raw("missing_function()", vec![])
-            .expect("a template without placeholders"),
+        Expr::<i64>::raw("missing_function()", vec![]).expect("a template without placeholders"),
     ));
     let failed = db
         .fetch_all(&broken)
@@ -199,10 +194,16 @@ fn typed_sqlite_errors_are_inspectable_through_the_facade() {
     // The prepare-time failure carries a concrete driver variant that depends
     // on the bundled SQLite version, so the driver message is inspected instead
     // of a single variant.
-    assert!(backend.to_string().contains("missing_function"), "unexpected error: {backend}");
+    assert!(
+        backend.to_string().contains("missing_function"),
+        "unexpected error: {backend}"
+    );
 
     let owned = failed.into_backend().expect("driver error is owned");
-    assert!(owned.to_string().contains("missing_function"), "unexpected error: {owned}");
+    assert!(
+        owned.to_string().contains("missing_function"),
+        "unexpected error: {owned}"
+    );
 }
 
 #[test]
@@ -239,8 +240,10 @@ fn a_json_aggregate_decodes_into_the_elements_of_an_array() {
 
     // A value that is not a JSON array of the element type is reported instead
     // of decoding into an empty collection.
-    let broken = select_from::<Sqlite<Sqlite3_35>, User>().select((
-        Expr::<Vec<i64>>::raw("\"name\"", Vec::new()).expect("a template without placeholders"),
-    ));
+    let broken = select_from::<Sqlite<Sqlite3_35>, User>().select((Expr::<Vec<i64>>::raw(
+        "\"name\"",
+        Vec::new(),
+    )
+    .expect("a template without placeholders"),));
     assert!(db.fetch_one(&broken).is_err());
 }

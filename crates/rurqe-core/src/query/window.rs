@@ -370,9 +370,7 @@ impl<Scope, Cols, D> WindowSpec<Scope, Cols, D> {
     /// the ones of its specification, so folding the two markers together here
     /// keeps the specification's clauses while widening what its reader must
     /// support.
-    pub(crate) fn retype_dialect<Extra>(
-        self,
-    ) -> WindowSpec<Scope, Cols, MergedDialect<D, Extra>>
+    pub(crate) fn retype_dialect<Extra>(self) -> WindowSpec<Scope, Cols, MergedDialect<D, Extra>>
     where
         D: MergeDialect<Extra>,
     {

@@ -35,13 +35,10 @@ fn render<T, Scope, Cols>(expression: &WindowExpr<T, Scope, Cols>) -> String {
 
 #[test]
 fn a_rows_frame_renders_after_the_partition() {
-    let window = row_number().over(
-        Window::partition_by(UserId)
-            .rows_between(
-                WindowFrameBound::UnboundedPreceding,
-                WindowFrameBound::CurrentRow,
-            ),
-    );
+    let window = row_number().over(Window::partition_by(UserId).rows_between(
+        WindowFrameBound::UnboundedPreceding,
+        WindowFrameBound::CurrentRow,
+    ));
 
     assert_eq!(
         render(&window),
@@ -52,12 +49,10 @@ fn a_rows_frame_renders_after_the_partition() {
 
 #[test]
 fn a_range_frame_renders_after_the_ordering() {
-    let window = dense_rank().over(
-        Window::order_by_desc(UserId).range_between(
-            WindowFrameBound::preceding(2),
-            WindowFrameBound::following(2),
-        ),
-    );
+    let window = dense_rank().over(Window::order_by_desc(UserId).range_between(
+        WindowFrameBound::preceding(2),
+        WindowFrameBound::following(2),
+    ));
 
     assert_eq!(
         render(&window),

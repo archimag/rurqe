@@ -479,8 +479,7 @@ mod tests {
     /// Statically requires `T` to have `Option<T>` as its nullable form.
     fn lifts_into_an_option<T>()
     where
-        T: MakeNullable<Nullable = Option<T>>
-            + ApplyNullability<NullableRel, Output = Option<T>>,
+        T: MakeNullable<Nullable = Option<T>> + ApplyNullability<NullableRel, Output = Option<T>>,
     {
     }
 

@@ -214,7 +214,10 @@ impl SqlOptions {
         if meta.path.is_ident("as") {
             let value: Ident = meta.value()?.parse()?;
             if self.storage.replace(value.clone()).is_some() {
-                return Err(syn::Error::new_spanned(value, "`as` is given more than once"));
+                return Err(syn::Error::new_spanned(
+                    value,
+                    "`as` is given more than once",
+                ));
             }
             return Ok(());
         }

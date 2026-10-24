@@ -172,10 +172,7 @@ fn selection_starts_a_query_directly_from_a_table() {
         .where_(Expr::column::<UserId>().gt(1i64))
         .build();
 
-    assert_eq!(
-        built.sql,
-        "SELECT id, email FROM users WHERE (id > $1)"
-    );
+    assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
@@ -186,10 +183,7 @@ fn selection_starts_a_query_from_a_table_value() {
         .where_(Expr::column::<UserId>().gt(1i64))
         .build();
 
-    assert_eq!(
-        built.sql,
-        "SELECT id, email FROM users WHERE (id > $1)"
-    );
+    assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
@@ -197,11 +191,9 @@ fn selection_starts_a_query_from_a_table_value() {
 fn left_joined_columns_are_lifted_into_options() {
     let selection = select!(UserId, OrderTotal);
 
-    let row = decode_scoped::<_, LeftJoined<User, Order>, _>(
-        &selection,
-        &[SqlVal::I64(1), SqlVal::Null],
-    )
-    .expect("row decodes");
+    let row =
+        decode_scoped::<_, LeftJoined<User, Order>, _>(&selection, &[SqlVal::I64(1), SqlVal::Null])
+            .expect("row decodes");
 
     assert_eq!(row.user_id, 1);
     assert_eq!(row.order_total, None);
@@ -254,8 +246,8 @@ fn a_projected_record_publishes_the_keys_of_its_fields() {
 #[test]
 fn a_projected_record_reads_the_object_of_a_nested_row() {
     let selection = select!(UserId, UserEmail as contact_email);
-    let witness = decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())])
-        .expect("row decodes");
+    let witness =
+        decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())]).expect("row decodes");
 
     let document = SqlVal::Json(serde_json::json!({ "user_id": 7, "contact_email": "ops" }));
     let row = read_nested(&witness, &document).expect("the nested row decodes");
@@ -267,8 +259,11 @@ fn a_projected_record_reads_the_object_of_a_nested_row() {
 #[test]
 fn a_projected_record_writes_the_object_of_a_nested_row() {
     let selection = select!(UserId, UserEmail as contact_email);
-    let row = decode(&selection, &[SqlVal::I64(7), SqlVal::Text("ops".to_owned())])
-        .expect("row decodes");
+    let row = decode(
+        &selection,
+        &[SqlVal::I64(7), SqlVal::Text("ops".to_owned())],
+    )
+    .expect("row decodes");
 
     assert_eq!(
         row.to_sql_val(),
@@ -279,8 +274,8 @@ fn a_projected_record_writes_the_object_of_a_nested_row() {
 #[test]
 fn a_collection_of_projected_records_decodes_from_a_json_array() {
     let selection = select!(UserId, UserEmail as contact_email);
-    let witness = decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())])
-        .expect("row decodes");
+    let witness =
+        decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())]).expect("row decodes");
 
     let document = SqlVal::Json(serde_json::json!([
         { "user_id": 1, "contact_email": "root" },
@@ -298,8 +293,8 @@ fn a_collection_of_projected_records_decodes_from_a_json_array() {
 #[test]
 fn a_missing_field_of_a_nested_selection_is_reported() {
     let selection = select!(UserId, UserEmail as contact_email);
-    let witness = decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())])
-        .expect("row decodes");
+    let witness =
+        decode(&selection, &[SqlVal::I64(0), SqlVal::Text(String::new())]).expect("row decodes");
 
     let document = SqlVal::Json(serde_json::json!({ "user_id": 1 }));
     let error = read_nested(&witness, &document).expect_err("the missing field is reported");

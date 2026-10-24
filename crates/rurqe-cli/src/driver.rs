@@ -354,9 +354,7 @@ impl<'a> SqliteMigrationTransaction<'a> {
 
 impl MigrationTransaction for SqliteMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
-        self.connection()?
-            .execute_batch(sql)
-            .map_err(backend_error)
+        self.connection()?.execute_batch(sql).map_err(backend_error)
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
@@ -644,7 +642,9 @@ impl<'a> PostgresMigrationTransaction<'a> {
 
 impl MigrationTransaction for PostgresMigrationTransaction<'_> {
     fn execute(&mut self, sql: &str) -> Result<(), Error> {
-        self.transaction()?.batch_execute(sql).map_err(backend_error)
+        self.transaction()?
+            .batch_execute(sql)
+            .map_err(backend_error)
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
@@ -858,7 +858,9 @@ mod tests {
         }
 
         {
-            let mut step = backend.begin().expect("a second step opens inside the lock");
+            let mut step = backend
+                .begin()
+                .expect("a second step opens inside the lock");
             step.execute("CREATE TABLE oops (;")
                 .expect_err("the broken statement fails");
             step.rollback().expect("the step is rolled back");
@@ -980,12 +982,9 @@ mod tests {
 
     #[test]
     fn a_held_advisory_lock_times_out_with_its_identifier() {
-        let error = poll_advisory_lock(
-            MIGRATION_LOCK_ID,
-            Duration::ZERO,
-            Duration::ZERO,
-            || Ok(false),
-        )
+        let error = poll_advisory_lock(MIGRATION_LOCK_ID, Duration::ZERO, Duration::ZERO, || {
+            Ok(false)
+        })
         .expect_err("a lock nobody releases times out");
 
         let message = match error {
@@ -993,7 +992,10 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         };
 
-        assert!(message.contains(&MIGRATION_LOCK_ID.to_string()), "{message}");
+        assert!(
+            message.contains(&MIGRATION_LOCK_ID.to_string()),
+            "{message}"
+        );
         assert!(
             message.contains(&format!("0x{:016x}", MIGRATION_LOCK_ID)),
             "{message}"

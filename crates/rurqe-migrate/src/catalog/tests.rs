@@ -115,7 +115,10 @@ fn empty_catalog_renders_only_the_header() {
 fn schema_hash_follows_the_canonical_snapshot() {
     let catalog = SchemaCatalog::new(vec![users()]);
 
-    assert_eq!(catalog.checksum(), Checksum::of(catalog.to_lock().as_bytes()));
+    assert_eq!(
+        catalog.checksum(),
+        Checksum::of(catalog.to_lock().as_bytes())
+    );
     assert_eq!(catalog.schema_hash(), catalog.checksum().to_hex());
     assert_eq!(catalog.schema_hash().len(), 64);
 }
@@ -126,7 +129,10 @@ fn hash_const_embeds_the_schema_hash() {
 
     assert_eq!(
         catalog.hash_const(),
-        format!("pub const SCHEMA_HASH: &str = \"{}\";", catalog.schema_hash())
+        format!(
+            "pub const SCHEMA_HASH: &str = \"{}\";",
+            catalog.schema_hash()
+        )
     );
 }
 
@@ -150,8 +156,16 @@ fn type_kinds_render_canonical_names() {
     assert_eq!(
         rendered,
         vec![
-            "boolean", "int32", "int64", "float64", "text", "bytes", "uuid", "json",
-            "timestamp", "date",
+            "boolean",
+            "int32",
+            "int64",
+            "float64",
+            "text",
+            "bytes",
+            "uuid",
+            "json",
+            "timestamp",
+            "date",
         ]
     );
     assert_eq!(TypeKind::Uuid.to_string(), "uuid");
@@ -160,7 +174,10 @@ fn type_kinds_render_canonical_names() {
         TypeKind::Enum("mood".to_owned()).to_string(),
         "enum \"mood\""
     );
-    assert_eq!(TypeKind::Array(Box::new(TypeKind::Int64)).to_string(), "int64[]");
+    assert_eq!(
+        TypeKind::Array(Box::new(TypeKind::Int64)).to_string(),
+        "int64[]"
+    );
     assert_eq!(
         TypeKind::Array(Box::new(TypeKind::Enum("mood".to_owned()))).to_string(),
         "enum \"mood\"[]"
@@ -221,9 +238,7 @@ fn from_lock_decodes_escaped_identifiers() {
 fn from_lock_round_trips_multi_line_defaults() {
     let catalog = SchemaCatalog::new(vec![TableDef::new(
         "events",
-        vec![
-            ColumnDef::new("payload", TypeKind::Text, true).with_default("line one\nline two")
-        ],
+        vec![ColumnDef::new("payload", TypeKind::Text, true).with_default("line one\nline two")],
         Vec::new(),
     )]);
 
@@ -380,10 +395,10 @@ fn from_lock_rejects_malformed_enum_sections() {
         SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nname = \"m\"\nnonsense = 1\n")
             .is_err()
     );
-    assert!(
-        SchemaCatalog::from_lock("schema lock v1\n\n[[enum]]\nname = \"m\"\nvariants = [\"a\"\n")
-            .is_err()
-    );
+    assert!(SchemaCatalog::from_lock(
+        "schema lock v1\n\n[[enum]]\nname = \"m\"\nvariants = [\"a\"\n"
+    )
+    .is_err());
 }
 
 #[test]
@@ -438,10 +453,7 @@ fn schema_lock_v3_round_trips_checks_views_triggers_and_attributes() {
             vec!["id".to_owned()],
         )
         .with_check(CheckDef::new("positive_price", "price > 0"))
-        .with_index(
-            IndexDef::new("idx_expr", Vec::new(), false)
-                .with_expression("lower(category)"),
-        )
+        .with_index(IndexDef::new("idx_expr", Vec::new(), false).with_expression("lower(category)"))
         .with_index(
             IndexDef::new("idx_prod_cat", vec!["category".to_owned()], false)
                 .with_method("btree")
@@ -506,5 +518,8 @@ fn schema_lock_v2_and_v1_legacy_snapshots_are_parsed_with_defaults() {
     );
 
     let parsed_v1 = SchemaCatalog::from_lock(v1_snapshot).expect("v1 parses cleanly");
-    assert_eq!(parsed_v1.tables[0].foreign_keys[0].on_delete, ForeignKeyAction::NoAction);
+    assert_eq!(
+        parsed_v1.tables[0].foreign_keys[0].on_delete,
+        ForeignKeyAction::NoAction
+    );
 }

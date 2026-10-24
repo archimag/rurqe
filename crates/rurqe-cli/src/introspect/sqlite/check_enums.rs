@@ -10,10 +10,7 @@ use std::collections::BTreeSet;
 
 /// Parses deterministic `CHECK (<col> IN ('val1', 'val2', ...))` enum constraints
 /// from the table DDL `sql`.
-pub fn parse_sqlite_check_enums(
-    sql: &str,
-    known_columns: &[&str],
-) -> Vec<(String, Vec<String>)> {
+pub fn parse_sqlite_check_enums(sql: &str, known_columns: &[&str]) -> Vec<(String, Vec<String>)> {
     let mut results = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -39,8 +36,7 @@ pub fn parse_sqlite_check_enums(
         }
 
         if i + 5 <= bytes.len() && bytes[i..i + 5].eq_ignore_ascii_case(b"check") {
-            let prev_ok = i == 0
-                || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+            let prev_ok = i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
             let next_idx = i + 5;
             let next_ok = next_idx < bytes.len()
                 && (bytes[next_idx].is_ascii_whitespace() || bytes[next_idx] == b'(');
