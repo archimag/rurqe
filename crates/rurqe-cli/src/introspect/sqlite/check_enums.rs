@@ -72,16 +72,17 @@ pub fn parse_sqlite_check_enums(sql: &str, known_columns: &[&str]) -> Vec<(Strin
 /// Returns `Some((inner_slice, total_length_consumed))`.
 ///
 /// The scan skips string literals and quoted identifiers, so a parenthesis
-/// written inside a value never closes the block early. The sibling scanner of
-/// the catalog module reuses it to read a `CHECK` clause without duplicating the
-/// quote handling.
+/// written inside a value never closes the block early. A block whose
+/// parentheses do not balance is refused instead of being read wrongly, and the
+/// sibling scanner of the catalog module reuses it to read a `CHECK` clause
+/// without duplicating the quote handling.
 pub(super) fn extract_paren_block(s: &str) -> Option<(&str, usize)> {
     if !s.starts_with('(') {
         return None;
     }
 
     let bytes = s.as_bytes();
-    let mut depth = 0;
+    let mut depth: usize = 0;
     let mut i = 0;
 
     while i < bytes.len() {
@@ -135,15 +136,16 @@ pub(super) fn extract_paren_block(s: &str) -> Option<(&str, usize)> {
                 }
             }
             b'(' => {
-                depth += 1;
+                depth = depth.saturating_add(1);
                 i += 1;
             }
             b')' => {
-                depth -= 1;
+                let balanced = depth.checked_sub(1)?;
                 i += 1;
-                if depth == 0 {
+                if balanced == 0 {
                     return Some((&s[1..i - 1], i));
                 }
+                depth = balanced;
             }
             _ => {
                 i += 1;
@@ -298,7 +300,7 @@ fn is_enclosed_in_parens(s: &str) -> bool {
     }
 
     let bytes = s.as_bytes();
-    let mut depth = 0;
+    let mut depth: usize = 0;
     let mut i = 0;
 
     while i < bytes.len() {
@@ -319,11 +321,15 @@ fn is_enclosed_in_parens(s: &str) -> bool {
                 }
             }
             b'(' => {
-                depth += 1;
+                depth = depth.saturating_add(1);
                 i += 1;
             }
             b')' => {
-                depth -= 1;
+                let balanced = match depth.checked_sub(1) {
+                    Some(balanced) => balanced,
+                    None => return false,
+                };
+                depth = balanced;
                 i += 1;
                 if depth == 0 && i < bytes.len() {
                     return false;
@@ -368,5 +374,44 @@ mod tests {
         let sql = "CREATE TABLE notes (body TEXT DEFAULT 'CHECK (state IN (''a''))');";
 
         assert_eq!(parse_sqlite_check_enums(sql, &["body"]), Vec::new());
+    }
+
+    #[test]
+    fn a_stray_closing_parenthesis_never_breaks_the_scan() {
+        assert_eq!(extract_paren_block(")"), None);
+        assert_eq!(extract_paren_block(")("), None);
+
+        let sql = "CREATE TABLE tasks (state TEXT, CHECK (state IN ('new', 'done'))));";
+
+        assert_eq!(
+            parse_sqlite_check_enums(sql, &["state"]),
+            vec![(
+                "state".to_owned(),
+                vec!["new".to_owned(), "done".to_owned()]
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unclosed_parenthesis_yields_no_constraint() {
+        assert_eq!(extract_paren_block("('a'"), None);
+        assert_eq!(extract_paren_block("('a'), 'b'"), Some(("'a'", 5)));
+
+        let sql = "CREATE TABLE tasks (state TEXT, CHECK (state IN ('new', 'done')";
+
+        assert_eq!(parse_sqlite_check_enums(sql, &["state"]), Vec::new());
+    }
+
+    #[test]
+    fn a_parenthesis_inside_a_literal_never_closes_the_block() {
+        assert_eq!(extract_paren_block("('a)')"), Some(("'a)'", 6)));
+    }
+
+    #[test]
+    fn an_unbalanced_expression_is_never_read_as_a_literal_wrapper() {
+        assert!(!is_enclosed_in_parens(")("));
+        assert!(!is_enclosed_in_parens("(("));
+        assert!(!is_enclosed_in_parens("()()"));
+        assert!(is_enclosed_in_parens("('a)')"));
     }
 }
