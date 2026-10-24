@@ -19,6 +19,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::{create_schema_history_table_sql, SchemaHistoryEntry};
 use crate::migration::{Migration, MigrationKind};
+use crate::sleeper::warn_if_in_tokio_runtime;
 use crate::version::MigrationVersion;
 
 /// Abstract database connection capable of opening transactional scopes.
@@ -262,6 +263,7 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<MigrationReport, Error> {
+        warn_if_in_tokio_runtime("Migrator::migrate");
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         self.validate_version_uniqueness(migrations)?;
@@ -340,6 +342,7 @@ impl Migrator {
         version: MigrationVersion,
         description: &str,
     ) -> Result<SchemaHistoryEntry, Error> {
+        warn_if_in_tokio_runtime("Migrator::baseline");
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -375,6 +378,7 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<RepairReport, Error> {
+        warn_if_in_tokio_runtime("Migrator::repair");
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -409,6 +413,7 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<Vec<MigrationStatus>, Error> {
+        warn_if_in_tokio_runtime("Migrator::status");
         backend.ensure_schema_history_table()?;
         let history = backend.read_history()?;
 

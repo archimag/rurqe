@@ -37,6 +37,7 @@ pub mod migration;
 pub mod mini_toml;
 pub mod runner;
 pub mod scripts;
+pub mod sleeper;
 pub mod stage;
 pub mod version;
 
@@ -54,6 +55,7 @@ pub use runner::{
     InMemoryBackend, InMemoryTransaction, MigrationBackend, MigrationReport, MigrationStatus,
     MigrationStatusKind, MigrationTransaction, Migrator, RepairReport,
 };
+pub use sleeper::{warn_if_in_tokio_runtime, NoopSleeper, Sleeper, ThreadSleeper};
 pub use stage::{
     cold_start, ColdStartReport, DeclarativeStage, StageMarker, StageScript, STAGE_SCRIPT,
 };

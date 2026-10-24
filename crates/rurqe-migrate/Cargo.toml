@@ -9,4 +9,9 @@ description = "Flyway-compatible migration model, checksums, and schema history 
 
 [dependencies]
 sha2 = "0.11"
+tokio = { version = "1", optional = true, default-features = false, features = ["rt"] }
 tracing = "0.1"
+
+[features]
+default = []
+tokio = ["dep:tokio"]

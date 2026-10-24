@@ -850,6 +850,7 @@ name = "rurqe-migrate"
 version = "0.1.0"
 dependencies = [
  "sha2",
+ "tokio",
  "tracing",
 ]
 
@@ -863,6 +864,7 @@ dependencies = [
  "postgres",
  "r2d2",
  "rurqe-core",
+ "rust_decimal",
  "serde_json",
  "tokio-postgres",
  "tracing",
