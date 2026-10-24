@@ -113,6 +113,24 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
         }
     }
 
+    /// Adds the `USING` source `table` to the `DELETE` statement.
+    ///
+    /// The value-based spelling of [`using`](DeleteQuery::using): the table
+    /// marker is zero-sized, so the argument carries no data and fixes `S` at
+    /// compile time without a turbofish. Available only for dialects
+    /// implementing [`SupportsDeleteUsing`], so the clause stays unreachable on
+    /// an engine that cannot parse it.
+    pub fn using_table<S: Table>(
+        self,
+        _table: S,
+    ) -> DeleteQuery<D, T, State, Returning, Scope::Output>
+    where
+        D: SupportsDeleteUsing,
+        Scope: ExtendScope<S>,
+    {
+        self.using::<S>()
+    }
+
     /// Restricts the deletion to rows matching `predicate`.
     ///
     /// Repeated calls combine conditions with SQL `AND`. Calling this method
@@ -378,5 +396,20 @@ mod tests {
 
         assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
         assert_eq!(built.params, vec![SqlVal::I64(5)]);
+    }
+
+    #[test]
+    fn using_table_infers_the_source_table_from_the_value() {
+        let built = DeleteQuery::<MockDialect, User>::new()
+            .using_table(Account)
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "DELETE FROM \"users\" USING \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
+        );
+        assert!(built.params.is_empty());
     }
 }

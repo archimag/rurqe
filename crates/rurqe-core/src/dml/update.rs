@@ -133,6 +133,24 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         }
     }
 
+    /// Adds the `FROM` source `table` to the `UPDATE` statement.
+    ///
+    /// The value-based spelling of [`from`](UpdateQuery::from): the table marker
+    /// is zero-sized, so the argument carries no data and fixes `S` at compile
+    /// time without a turbofish. Available only for dialects implementing
+    /// [`SupportsUpdateFrom`], so the clause stays unreachable on an engine that
+    /// cannot parse it.
+    pub fn from_table<S: Table>(
+        self,
+        _table: S,
+    ) -> UpdateQuery<D, T, State, Returning, Scope::Output, Assignments>
+    where
+        D: SupportsUpdateFrom,
+        Scope: ExtendScope<S>,
+    {
+        self.from::<S>()
+    }
+
     /// Appends the column assignments from `set` to the `UPDATE` statement.
     ///
     /// The first call transitions the query from [`NoAssignments`] to
@@ -674,5 +692,21 @@ mod tests {
             built.params,
             vec![SqlVal::Text("alice".to_owned()), SqlVal::I64(1)]
         );
+    }
+
+    #[test]
+    fn from_table_infers_the_source_table_from_the_value() {
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .from_table(Account)
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .build();
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
+        );
+        assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
     }
 }
