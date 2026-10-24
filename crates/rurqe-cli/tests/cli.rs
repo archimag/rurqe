@@ -7,7 +7,8 @@ use rurqe_cli::cli::{parse_args, CliCommand};
 use rurqe_cli::codegen::{generate_schema_rs, CodegenOptions};
 use rurqe_cli::drift::{verify_drift, DriftError};
 use rurqe_cli::introspect::{
-    catalog_from_metadata, RawColumnMetadata, RawPrimaryKeyMetadata, RawTableMetadata,
+    catalog_from_metadata, introspect_database, introspect_database_schema, RawColumnMetadata,
+    RawPrimaryKeyMetadata, RawTableMetadata,
 };
 use rurqe_cli::run_cli;
 use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
@@ -176,6 +177,27 @@ fn catalog_introspected_from_raw_metadata() {
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].columns.len(), 2);
     assert_eq!(catalog.tables[0].columns[1].type_kind, TypeKind::Timestamp);
+}
+
+#[test]
+fn a_schema_qualified_introspection_reads_the_single_sqlite_catalog() {
+    let workspace = temp_workspace("schema-qualified");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);")
+            .expect("create schema");
+    }
+
+    let url = path_string(&db);
+    let default_schema = introspect_database(&url).expect("the default schema is introspected");
+    let named_schema = introspect_database_schema(&url, "tenant_a")
+        .expect("sqlite holds one catalog, whatever schema name is passed");
+
+    assert_eq!(default_schema.tables.len(), 1);
+    assert_eq!(named_schema.tables[0].name, "users");
+    assert_eq!(default_schema.to_lock(), named_schema.to_lock());
+    assert_eq!(default_schema.checksum(), named_schema.checksum());
 }
 
 #[test]

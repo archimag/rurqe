@@ -21,7 +21,7 @@ use rurqe_migrate::migration::MigrationKind;
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::introspect::{introspect_postgres, introspect_postgres_schema, introspect_sqlite};
+use crate::introspect::{introspect_postgres_schema, introspect_sqlite, DEFAULT_SCHEMA};
 
 /// Number of columns written by [`SchemaHistoryEntry`].
 const HISTORY_COLUMN_COUNT: usize = 9;
@@ -442,6 +442,7 @@ impl Drop for SqliteMigrationTransaction<'_> {
 /// [`MigrationBackend`] over a `postgres` client.
 pub struct PostgresMigrationBackend {
     client: postgres::Client,
+    schema: String,
     lock_held: bool,
     lock_timeout: Duration,
 }
@@ -451,9 +452,26 @@ impl PostgresMigrationBackend {
     pub fn new(client: postgres::Client) -> Self {
         Self {
             client,
+            schema: DEFAULT_SCHEMA.to_owned(),
             lock_held: false,
             lock_timeout: DEFAULT_ADVISORY_LOCK_TIMEOUT,
         }
+    }
+
+    /// Selects the PostgreSQL schema the recorded catalog digest describes.
+    ///
+    /// `public` suits a deployment keeping its tables in the default schema,
+    /// while a project owning a schema of its own names it here, so the digest a
+    /// migration records describes the very tables the declarative stage
+    /// declares instead of an unrelated `public` catalog.
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = schema.into();
+        self
+    }
+
+    /// The PostgreSQL schema the recorded catalog digest describes.
+    pub fn schema(&self) -> &str {
+        &self.schema
     }
 
     /// Overrides how long a run waits for the advisory lock before giving up.
@@ -466,9 +484,10 @@ impl PostgresMigrationBackend {
         self
     }
 
-    /// Introspects the schema catalog of the `public` schema.
+    /// Introspects the schema catalog of the selected schema.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
-        introspect_postgres(&mut self.client).map_err(backend_error)
+        let schema = self.schema.clone();
+        introspect_postgres_schema(&mut self.client, &schema).map_err(backend_error)
     }
 }
 
@@ -512,8 +531,12 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        let schema = self.schema.clone();
         let tx = self.client.transaction().map_err(backend_error)?;
-        Ok(PostgresMigrationTransaction { tx: Some(tx) })
+        Ok(PostgresMigrationTransaction {
+            tx: Some(tx),
+            schema,
+        })
     }
 
     fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
@@ -598,6 +621,7 @@ impl Drop for PostgresMigrationBackend {
 /// Transactional boundary of a [`PostgresMigrationBackend`] step.
 pub struct PostgresMigrationTransaction<'a> {
     tx: Option<postgres::Transaction<'a>>,
+    schema: String,
 }
 
 impl<'a> PostgresMigrationTransaction<'a> {
@@ -607,13 +631,14 @@ impl<'a> PostgresMigrationTransaction<'a> {
         })
     }
 
-    /// Introspects the `public` schema as the open transaction sees it.
+    /// Introspects the selected schema as the open transaction sees it.
     ///
     /// The catalog statements run over the transaction itself, so a step reads
     /// the changes it has applied so far and nobody else observes them until the
     /// transaction commits.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
-        introspect_postgres_schema(self.transaction()?, "public").map_err(backend_error)
+        let schema = self.schema.clone();
+        introspect_postgres_schema(self.transaction()?, &schema).map_err(backend_error)
     }
 }
 

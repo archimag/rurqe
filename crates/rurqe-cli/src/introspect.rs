@@ -4,8 +4,8 @@
 //! introspection in [`sqlite`], and PostgreSQL `information_schema` /
 //! `pg_catalog` introspection in [`postgres`]. This facade re-exports the public
 //! surface and keeps the engine-agnostic entry points (`detect_dialect`,
-//! `introspect_database`, `introspect_connection`) plus the backward-compatible
-//! [`IntrospectQueries`] container.
+//! `introspect_database`, `introspect_database_schema`) that open a connection
+//! from a database URL.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
@@ -31,23 +31,47 @@ pub use types::{
     RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata,
 };
 
+/// Name of the schema introspected when the caller names none.
+///
+/// A PostgreSQL database keeps its tables in named schemas, and `public` is the
+/// one an ordinary single-schema deployment uses. SQLite has no schema layer at
+/// all, so the name is ignored there and the single catalog of the opened file is
+/// read.
+pub const DEFAULT_SCHEMA: &str = "public";
+
 /// Introspects the schema catalog of a live database identified by its connection URL or path.
+///
+/// The engine-agnostic entry point reads [`DEFAULT_SCHEMA`]; use
+/// [`introspect_database_schema`] to name another PostgreSQL schema.
 pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
-    let mut connection = connect(url)?;
-    introspect_connection(&mut connection)
+    introspect_database_schema(url, DEFAULT_SCHEMA)
 }
 
-/// Introspects the schema catalog of an already opened [`Connection`].
+/// Introspects `schema` of the live database identified by `url`.
+///
+/// A PostgreSQL catalog is read from the named schema, so a deployment keeping
+/// its tables outside `public` is described by the very tables it declares
+/// there. A SQLite database holds a single unnamed catalog, so the name is
+/// ignored rather than rejected: the same project then introspects both engines
+/// without branching on the dialect.
+pub fn introspect_database_schema(url: &str, schema: &str) -> Result<SchemaCatalog, CliError> {
+    let mut connection = connect(url)?;
+    introspect_connection_schema(&mut connection, schema)
+}
+
+/// Introspects `schema` of an already opened [`Connection`].
 ///
 /// Engine dispatch lives next to the catalog logic, so callers (including tests)
-/// can hand in an open SQLite or PostgreSQL handle without going through URL parsing.
-pub(crate) fn introspect_connection(
+/// can hand in an open SQLite or PostgreSQL handle without going through URL
+/// parsing. The schema name reaches only the PostgreSQL side; a SQLite
+/// connection has no schema layer, so its single catalog is read whatever name
+/// the caller passes.
+pub(crate) fn introspect_connection_schema(
     connection: &mut Connection,
+    schema: &str,
 ) -> Result<SchemaCatalog, CliError> {
     match connection {
         Connection::Sqlite(conn) => introspect_sqlite(conn),
-        Connection::Postgres(client) => introspect_postgres(client),
+        Connection::Postgres(client) => introspect_postgres_schema(client, schema),
     }
 }
-
-
