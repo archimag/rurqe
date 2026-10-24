@@ -57,7 +57,7 @@ where
     type Row = Returning;
 
     fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
-        Ok(self.build())
+        self.build()
     }
 }
 
@@ -67,7 +67,7 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope> Executab
     type Row = Returning;
 
     fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
-        Ok(self.build())
+        self.build()
     }
 }
 

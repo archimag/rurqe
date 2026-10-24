@@ -17,7 +17,9 @@ use super::{ExecutableMutation, Filtered, Unfiltered};
 use crate::dialect::{Dialect, SupportsDeleteUsing, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
-use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
+use crate::query::{
+    register_relation, BuildError, BuiltQuery, ScopePositions, Selection, TableSelection,
+};
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
 /// A `DELETE` statement targeting table `T`.
@@ -42,7 +44,7 @@ use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 /// query.build();
 /// ```
 pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (), Scope = T> {
-    using_tables: Vec<&'static str>,
+    using_tables: Vec<TableRef>,
     filter: Option<ExprKind>,
     returning: Vec<ExprKind>,
     _marker: DeleteMarker<D, T, State, Returning, Scope>,
@@ -104,7 +106,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
         D: SupportsDeleteUsing,
         Scope: ExtendScope<S>,
     {
-        self.using_tables.push(S::NAME);
+        self.using_tables.push(S::table_ref());
         DeleteQuery {
             using_tables: self.using_tables,
             filter: self.filter,
@@ -224,26 +226,37 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
     DeleteQuery<D, T, State, Returning, Scope>
 {
     /// Renders the statement into SQL text and its ordered parameter list.
-    pub fn build(&self) -> BuiltQuery {
+    ///
+    /// The deleted table and every `USING` source share one namespace, so the
+    /// statement is validated before it is rendered: a source repeating an
+    /// effective name already taken — the deleted table itself or another
+    /// source — is reported as [`BuildError::DuplicateRelation`] instead of
+    /// reaching the engine.
+    pub fn build(&self) -> Result<BuiltQuery, BuildError> {
+        // The deleted table and every `USING` source are in scope of the filter
+        // and of the projections, so a column of either one is qualified as soon
+        // as the statement addresses more than the target table — and the same
+        // list states the namespace the statement has to keep unambiguous.
+        let mut relations = Vec::with_capacity(1 + self.using_tables.len());
+        register_relation(&mut relations, TableRef::plain(T::NAME))?;
+        for source in &self.using_tables {
+            register_relation(&mut relations, *source)?;
+        }
+
         let mut sql = String::from("DELETE FROM ");
         D::push_quoted_identifier(&mut sql, T::NAME);
 
         if !self.using_tables.is_empty() {
             sql.push_str(" USING ");
-            for (index, name) in self.using_tables.iter().enumerate() {
+            for (index, relation) in self.using_tables.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                // A source renders exactly as the `Table` it was introduced
+                // with, so an aliased source keeps the alias it is addressed by.
+                relation.render::<D>(&mut sql);
             }
         }
-
-        // The deleted table and every `USING` source are in scope of the filter
-        // and of the projections, so a column of either one is qualified as soon
-        // as the statement addresses more than the target table.
-        let mut relations = Vec::with_capacity(1 + self.using_tables.len());
-        relations.push(TableRef::plain(T::NAME));
-        relations.extend(self.using_tables.iter().copied().map(TableRef::plain));
 
         let mut params = Vec::new();
         if let Some(filter) = &self.filter {
@@ -265,7 +278,7 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
             }
         }
 
-        BuiltQuery { sql, params }
+        Ok(BuiltQuery { sql, params })
     }
 }
 
@@ -304,7 +317,8 @@ mod tests {
     fn filtered_delete_renders_table_and_where() {
         let built = DeleteQuery::<MockDialect, User>::new()
             .where_(Expr::column::<UserId>().eq(5i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
         assert_eq!(built.params, vec![SqlVal::I64(5)]);
@@ -312,7 +326,10 @@ mod tests {
 
     #[test]
     fn allow_all_renders_unfiltered_delete() {
-        let built = DeleteQuery::<MockDialect, User>::new().allow_all().build();
+        let built = DeleteQuery::<MockDialect, User>::new()
+            .allow_all()
+            .build()
+            .expect("valid query");
 
         assert_eq!(built.sql, "DELETE FROM \"users\"");
         assert!(built.params.is_empty());
@@ -323,7 +340,8 @@ mod tests {
         let built = DeleteQuery::<MockDialect, User>::new()
             .where_(Expr::column::<UserId>().gt(1i64))
             .where_(Expr::column::<UserName>().eq("guest"))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -340,7 +358,8 @@ mod tests {
         let built = DeleteQuery::<MockDialect, User>::new()
             .where_(Expr::column::<UserId>().eq(5i64))
             .returning((UserId, UserName))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -361,7 +380,8 @@ mod tests {
         let built = DeleteQuery::<MockDialect, User>::new()
             .using::<Account>()
             .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -377,7 +397,8 @@ mod tests {
             .using::<Account>()
             .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
             .returning((UserId, UserName))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -392,7 +413,10 @@ mod tests {
     fn from_table_infers_the_deleted_table_from_the_value() {
         let query: DeleteQuery<MockDialect, User> = DeleteQuery::from_table(User);
 
-        let built = query.where_(Expr::column::<UserId>().eq(5i64)).build();
+        let built = query
+            .where_(Expr::column::<UserId>().eq(5i64))
+            .build()
+            .expect("valid query");
 
         assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
         assert_eq!(built.params, vec![SqlVal::I64(5)]);
@@ -403,11 +427,76 @@ mod tests {
         let built = DeleteQuery::<MockDialect, User>::new()
             .using_table(Account)
             .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
             "DELETE FROM \"users\" USING \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
+        );
+        assert!(built.params.is_empty());
+    }
+
+    use crate::schema::Aliased;
+
+    crate::table_alias! {
+        /// The `a` alias of the accounts relation.
+        AccountAlias => "a"
+    }
+
+    #[test]
+    fn a_source_listed_twice_is_rejected_before_rendering() {
+        let query = DeleteQuery::<MockDialect, User>::new()
+            .using::<Account>()
+            .using::<Account>()
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::DuplicateRelation { name: "accounts" })
+        );
+    }
+
+    #[test]
+    fn a_source_equal_to_the_deleted_table_is_rejected_before_rendering() {
+        let query = DeleteQuery::<MockDialect, User>::new()
+            .using::<User>()
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::DuplicateRelation { name: "users" })
+        );
+    }
+
+    #[test]
+    fn the_same_alias_used_twice_is_rejected_before_rendering() {
+        let query = DeleteQuery::<MockDialect, User>::new()
+            .using::<Aliased<Account, AccountAlias>>()
+            .using::<Aliased<Account, AccountAlias>>()
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::DuplicateRelation { name: "a" })
+        );
+    }
+
+    #[test]
+    fn alias_distinguished_occurrences_of_one_table_are_accepted() {
+        // The alias makes the second occurrence reachable under its own name, so
+        // the statement addresses two distinct relations.
+        let built = DeleteQuery::<MockDialect, User>::new()
+            .using::<Account>()
+            .using::<Aliased<Account, AccountAlias>>()
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "DELETE FROM \"users\" USING \"accounts\", \"accounts\" AS \"a\" \
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert!(built.params.is_empty());

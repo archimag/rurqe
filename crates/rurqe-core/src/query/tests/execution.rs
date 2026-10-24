@@ -367,7 +367,8 @@ fn a_mutation_predicate_renders_against_the_mutated_table() {
     let built = UpdateQuery::<MockDialect, User>::new()
         .set(UserName::set("root"))
         .where_(Expr::column::<UserId>().eq(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

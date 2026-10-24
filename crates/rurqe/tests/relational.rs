@@ -1084,7 +1084,8 @@ mod value_based_dsl {
         let updated = update(User)
             .set(UserActive::set(false))
             .where_(UserId.eq(1i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             updated.sql,
@@ -1095,7 +1096,8 @@ mod value_based_dsl {
         let deleted = delete_from(User)
             .where_(UserId.eq(1i64))
             .returning((UserName,))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             deleted.sql,
@@ -1154,7 +1156,8 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
     let updated = update::<Postgres<Pg16>, User>()
         .set(UserName::set("root"))
         .where_opt(None::<Expr<bool, User>>)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(updated.sql, "UPDATE \"users\" SET \"name\" = $1");
     assert_eq!(updated.params, vec![SqlVal::Text("root".to_owned())]);
@@ -1162,7 +1165,8 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
     let filtered = update::<Postgres<Pg16>, User>()
         .set(UserName::set("root"))
         .where_opt(Some(Expr::column::<UserId>().eq(1i64)))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         filtered.sql,
@@ -1175,7 +1179,8 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
 
     let deleted = delete_from::<Postgres<Pg16>, User>()
         .where_opt(None::<Expr<bool, User>>)
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(deleted.sql, "DELETE FROM \"users\"");
     assert!(deleted.params.is_empty());

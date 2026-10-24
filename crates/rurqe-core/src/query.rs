@@ -66,6 +66,7 @@ pub use self::selection::{
 };
 pub use self::set_ops::{SetOpAst, SetOpKind};
 pub use self::transaction::{TransactionGuard, TransactionStatus, TransactionalConnection};
+pub(crate) use self::validate::register_relation;
 pub use self::validate::BuildError;
 pub use self::window::{
     dense_rank, lag, lead, rank, row_number, LagLeadFn, PartitionBy, Window, WindowColumnSet,

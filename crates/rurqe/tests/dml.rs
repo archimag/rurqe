@@ -172,7 +172,7 @@ fn where_moves_update_and_delete_into_the_filtered_typestate() {
         .where_(Expr::column::<UserId>().eq(1i64));
     assert_update_filtered(&update_query);
 
-    let built = update_query.build();
+    let built = update_query.build().expect("valid query");
     assert_eq!(
         built.sql,
         "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
@@ -187,7 +187,7 @@ fn where_moves_update_and_delete_into_the_filtered_typestate() {
     assert_delete_filtered(&delete_query);
 
     assert_eq!(
-        delete_query.build().sql,
+        delete_query.build().expect("valid query").sql,
         "DELETE FROM \"users\" WHERE (\"active\" = $1)"
     );
 }
@@ -200,14 +200,17 @@ fn allow_all_permits_full_table_mutations() {
     assert_update_filtered(&update_query);
 
     assert_eq!(
-        update_query.build().sql,
+        update_query.build().expect("valid query").sql,
         "UPDATE \"users\" SET \"active\" = $1"
     );
 
     let delete_query = delete_from::<Postgres, User>().allow_all();
     assert_delete_filtered(&delete_query);
 
-    assert_eq!(delete_query.build().sql, "DELETE FROM \"users\"");
+    assert_eq!(
+        delete_query.build().expect("valid query").sql,
+        "DELETE FROM \"users\""
+    );
 }
 
 #[test]
@@ -216,7 +219,8 @@ fn update_returning_decodes_into_a_named_dto() {
         .set((UserName::set("bob"), UserActive::set(false)))
         .where_(Expr::column::<UserId>().gt(10i64))
         .returning(cols!(UserId, UserName as contact_email, UserActive))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -249,7 +253,8 @@ fn delete_returning_projects_selection_columns() {
     let built = delete_from::<Postgres, User>()
         .where_(Expr::column::<UserActive>().eq(false))
         .returning((UserId, UserName))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -373,7 +378,8 @@ fn mutation_filters_keep_the_scope_of_column_markers() {
     let updated = update::<Postgres, User>()
         .set(UserActive::set(true))
         .where_(UserId.eq(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         updated.sql,
@@ -383,7 +389,8 @@ fn mutation_filters_keep_the_scope_of_column_markers() {
 
     let deleted = delete_from::<Postgres, User>()
         .where_(UserName.eq("guest"))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(deleted.sql, "DELETE FROM \"users\" WHERE (\"name\" = $1)");
     assert_eq!(deleted.params, vec![SqlVal::Text("guest".to_owned())]);
@@ -475,7 +482,8 @@ fn an_assignment_renders_an_arithmetic_expression() {
     let built = update::<Postgres, User>()
         .set(UserId::set_expr(Expr::column::<UserId>() + 1i64))
         .where_(Expr::column::<UserId>().gt(10i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

@@ -20,7 +20,9 @@ use super::{
 use crate::dialect::{Dialect, SupportsReturning, SupportsUpdateFrom};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
-use crate::query::{BuiltQuery, ScopePositions, Selection, TableSelection};
+use crate::query::{
+    register_relation, BuildError, BuiltQuery, ScopePositions, Selection, TableSelection,
+};
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
 /// An `UPDATE` statement targeting table `T`.
@@ -55,7 +57,7 @@ pub struct UpdateQuery<
     Assignments = NoAssignments,
 > {
     assignments: Vec<(&'static str, AssignValue)>,
-    from_tables: Vec<&'static str>,
+    from_tables: Vec<TableRef>,
     filter: Option<ExprKind>,
     returning: Vec<ExprKind>,
     _marker: UpdateMarker<D, T, State, Returning, Scope, Assignments>,
@@ -123,7 +125,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         D: SupportsUpdateFrom,
         Scope: ExtendScope<S>,
     {
-        self.from_tables.push(S::NAME);
+        self.from_tables.push(S::table_ref());
         UpdateQuery {
             assignments: self.assignments,
             from_tables: self.from_tables,
@@ -318,18 +320,26 @@ where
     ///
     /// The statement only becomes renderable once a column value was recorded
     /// through [`set`](UpdateQuery::set); the [`AssignmentsPresent`] bound
-    /// enforces that at compile time.
-    pub fn build(&self) -> BuiltQuery {
+    /// enforces that at compile time. The mutated table and every `FROM` source
+    /// share one namespace, so the statement is validated before it is rendered:
+    /// a source repeating an effective name already taken — the mutated table
+    /// itself or another source — is reported as
+    /// [`BuildError::DuplicateRelation`] instead of reaching the engine.
+    pub fn build(&self) -> Result<BuiltQuery, BuildError> {
+        // The mutated table and every `FROM` source are in scope of the
+        // assignments, of the filter, and of the projections, so a column of
+        // either one is qualified as soon as the statement addresses more than
+        // the target table — and the same list states the namespace the
+        // statement has to keep unambiguous.
+        let mut relations = Vec::with_capacity(1 + self.from_tables.len());
+        register_relation(&mut relations, TableRef::plain(T::NAME))?;
+        for source in &self.from_tables {
+            register_relation(&mut relations, *source)?;
+        }
+
         let mut sql = String::from("UPDATE ");
         D::push_quoted_identifier(&mut sql, T::NAME);
         sql.push_str(" SET ");
-
-        // The mutated table and every `FROM` source are in scope of the
-        // assignments and of the filter, so a column of either one is qualified
-        // as soon as the statement addresses more than the target table.
-        let mut relations = Vec::with_capacity(1 + self.from_tables.len());
-        relations.push(TableRef::plain(T::NAME));
-        relations.extend(self.from_tables.iter().copied().map(TableRef::plain));
 
         let mut params = Vec::new();
         for (index, (name, value)) in self.assignments.iter().enumerate() {
@@ -343,11 +353,13 @@ where
 
         if !self.from_tables.is_empty() {
             sql.push_str(" FROM ");
-            for (index, name) in self.from_tables.iter().enumerate() {
+            for (index, relation) in self.from_tables.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                // A source renders exactly as the `Table` it was introduced
+                // with, so an aliased source keeps the alias it is addressed by.
+                relation.render::<D>(&mut sql);
             }
         }
 
@@ -370,7 +382,7 @@ where
             }
         }
 
-        BuiltQuery { sql, params }
+        Ok(BuiltQuery { sql, params })
     }
 }
 
@@ -412,7 +424,8 @@ mod tests {
         let built = UpdateQuery::<MockDialect, User>::new()
             .set(UserName::set("alice"))
             .where_(Expr::column::<UserId>().eq(1i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -429,7 +442,8 @@ mod tests {
         let built = UpdateQuery::<MockDialect, User>::new()
             .set((UserName::set("bob"), UserActive::set(true)))
             .where_(Expr::column::<UserId>().gt(10i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -451,7 +465,8 @@ mod tests {
             .set(UserName::set("first"))
             .set(UserName::set("second"))
             .where_(Expr::column::<UserId>().eq(1i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -468,7 +483,8 @@ mod tests {
         let built = UpdateQuery::<MockDialect, User>::new()
             .set((UserName::set("first"), UserName::set("second")))
             .where_(Expr::column::<UserId>().eq(1i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -486,7 +502,8 @@ mod tests {
             .set(UserName::set("charlie"))
             .set(UserActive::set(false))
             .where_(Expr::column::<UserId>().eq(42i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -507,7 +524,8 @@ mod tests {
         let built = UpdateQuery::<MockDialect, User>::new()
             .set((UserId::default_value(), UserName::set("root")))
             .where_(Expr::column::<UserId>().eq(0i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -524,7 +542,8 @@ mod tests {
         let built = UpdateQuery::<MockDialect, User>::new()
             .set(UserActive::set(true))
             .allow_all()
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(built.sql, "UPDATE \"users\" SET \"active\" = $1");
         assert_eq!(built.params, vec![SqlVal::Bool(true)]);
@@ -544,7 +563,7 @@ mod tests {
             .where_if(None::<Expr<bool, User>>);
         assert_unfiltered(&pending);
 
-        let explicit = pending.allow_all().build();
+        let explicit = pending.allow_all().build().expect("valid query");
         assert_eq!(explicit.sql, "UPDATE \"users\" SET \"name\" = $1");
         assert_eq!(explicit.params, vec![SqlVal::Text("root".to_owned())]);
 
@@ -552,7 +571,8 @@ mod tests {
             .set(UserName::set("root"))
             .where_if(Some(Expr::column::<UserId>().eq(1i64)))
             .allow_all()
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             filtered.sql,
@@ -570,7 +590,8 @@ mod tests {
             .set(UserName::set("dave"))
             .where_(Expr::column::<UserId>().gt(1i64))
             .where_(Expr::column::<UserActive>().eq(true))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -598,8 +619,14 @@ mod tests {
             .allow_all();
 
         assert_assigned(&query);
-        assert_eq!(query.build().sql, "UPDATE \"users\" SET \"name\" = $1");
-        assert_eq!(query.build().params, vec![SqlVal::Text("root".to_owned())]);
+        assert_eq!(
+            query.build().expect("valid query").sql,
+            "UPDATE \"users\" SET \"name\" = $1"
+        );
+        assert_eq!(
+            query.build().expect("valid query").params,
+            vec![SqlVal::Text("root".to_owned())]
+        );
     }
 
     #[test]
@@ -608,7 +635,8 @@ mod tests {
             .set(UserName::set("alice"))
             .where_(Expr::column::<UserId>().eq(1i64))
             .returning((UserId, UserName))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -633,7 +661,8 @@ mod tests {
             .set(UserName::set("alice"))
             .from::<Account>()
             .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -650,7 +679,8 @@ mod tests {
             .set(UserName::set("alice"))
             .allow_all()
             .returning((UserId, UserName))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -666,7 +696,8 @@ mod tests {
             .from::<Account>()
             .set(UserId::set_expr(Expr::column::<AccountId>()))
             .allow_all()
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -682,7 +713,8 @@ mod tests {
         let built = query
             .set(UserName::set("alice"))
             .where_(Expr::column::<UserId>().eq(1i64))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -700,11 +732,82 @@ mod tests {
             .set(UserName::set("alice"))
             .from_table(Account)
             .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
             "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" \
+             WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
+        );
+        assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
+    }
+
+    use crate::schema::Aliased;
+
+    crate::table_alias! {
+        /// The `a` alias of the accounts relation.
+        AccountAlias => "a"
+    }
+
+    #[test]
+    fn a_source_listed_twice_is_rejected_before_rendering() {
+        // The statement would name one relation twice in its `FROM` list, which
+        // the engine answers with `table name specified more than once`.
+        let query = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .from::<Account>()
+            .from::<Account>()
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::DuplicateRelation { name: "accounts" })
+        );
+    }
+
+    #[test]
+    fn a_source_equal_to_the_mutated_table_is_rejected_before_rendering() {
+        let query = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .from::<User>()
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::DuplicateRelation { name: "users" })
+        );
+    }
+
+    #[test]
+    fn the_same_alias_used_twice_is_rejected_before_rendering() {
+        let query = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .from::<Aliased<Account, AccountAlias>>()
+            .from::<Aliased<Account, AccountAlias>>()
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::DuplicateRelation { name: "a" })
+        );
+    }
+
+    #[test]
+    fn alias_distinguished_occurrences_of_one_table_are_accepted() {
+        // The alias makes the second occurrence reachable under its own name, so
+        // the statement addresses two distinct relations.
+        let built = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("alice"))
+            .from::<Account>()
+            .from::<Aliased<Account, AccountAlias>>()
+            .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\", \"accounts\" AS \"a\" \
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);

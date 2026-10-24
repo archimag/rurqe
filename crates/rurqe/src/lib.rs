@@ -806,7 +806,8 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 /// let built = update::<Postgres, User>()
 ///     .set(UserName::set("root"))
 ///     .where_(Expr::column::<UserId>().eq(1i64))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(
 ///     built.sql,
@@ -906,7 +907,8 @@ pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
 ///
 /// let built = delete_from::<Postgres, User>()
 ///     .where_(Expr::column::<UserId>().eq(1i64))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
 /// ```

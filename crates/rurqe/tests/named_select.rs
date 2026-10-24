@@ -190,13 +190,18 @@ fn postgres_versioned_prelude_pins_the_dialect_without_turbofish() {
         "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2)"
     );
 
-    let updated = update(User).set(UserName::set("root")).allow_all().build();
+    let updated = update(User)
+        .set(UserName::set("root"))
+        .allow_all()
+        .build()
+        .expect("valid query");
 
     assert_eq!(updated.sql, "UPDATE \"users\" SET \"name\" = $1");
 
     let deleted = delete_from(User)
         .where_(Expr::column::<UserId>().eq(1i64))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(deleted.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
 }
@@ -294,7 +299,8 @@ fn postgres_renders_every_capability_gated_clause() {
     let deleted = delete_from(User)
         .using::<AuditLog>()
         .where_(UserId.eq(Expr::column::<AuditUserId>()))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         deleted.sql,
@@ -308,7 +314,8 @@ fn postgres_renders_every_capability_gated_clause() {
         .set(UserName::set("root"))
         .from::<AuditLog>()
         .where_(UserId.eq(Expr::column::<AuditUserId>()))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         updated.sql,
@@ -321,7 +328,8 @@ fn postgres_renders_every_capability_gated_clause() {
     let updated_returning = delete_from(User)
         .where_(UserId.eq(1i64))
         .returning((UserName,))
-        .build();
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         updated_returning.sql,

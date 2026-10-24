@@ -116,6 +116,39 @@ impl fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
+/// The effective name a relation is referenced under.
+///
+/// The name is the alias the relation carries, or its table name when it has
+/// none, so two occurrences collide exactly when they are addressed by the same
+/// name — whether the collision comes from a repeated table without an alias or
+/// from a repeated alias.
+fn effective_relation_name(relation: &TableRef) -> &'static str {
+    relation.alias.unwrap_or(relation.name)
+}
+
+/// Records `relation` under its effective name, rejecting a second occurrence.
+///
+/// A statement addresses its relations through one namespace, so every relation
+/// it introduces has to be reachable under a distinct name. `SELECT` statements
+/// register the relations of their `FROM` / `JOIN` clauses here, and the DML
+/// builders register the mutated table next to every `FROM` or `USING` source,
+/// so the rule is stated once and the same collision is reported wherever
+/// relations are assembled.
+pub(crate) fn register_relation(
+    relations: &mut Vec<TableRef>,
+    relation: TableRef,
+) -> Result<(), BuildError> {
+    let name = effective_relation_name(&relation);
+    if relations
+        .iter()
+        .any(|registered| effective_relation_name(registered) == name)
+    {
+        return Err(BuildError::DuplicateRelation { name });
+    }
+    relations.push(relation);
+    Ok(())
+}
+
 impl SelectAst {
     /// Performs recursive pre-flight validation on the query AST and all embedded subqueries.
     pub fn validate(&self) -> Result<(), BuildError> {
@@ -198,18 +231,14 @@ impl<'a> StatementRef<'a> {
     /// aliased relation would be dropped and the statement would read the stored
     /// table instead — see [`reject_shadowed_derived`].
     fn validate_relations(&self) -> Result<(), BuildError> {
-        let mut names = Vec::with_capacity(self.joins.len() + 1);
+        let mut relations = Vec::with_capacity(self.joins.len() + 1);
         if let Some(from) = self.from {
             reject_shadowed_derived(&from, self.derived)?;
-            names.push(from.alias.unwrap_or(from.name));
+            register_relation(&mut relations, from)?;
         }
         for join in self.joins {
             reject_shadowed_derived(&join.table, self.derived)?;
-            let name = join.table.alias.unwrap_or(join.table.name);
-            if names.contains(&name) {
-                return Err(BuildError::DuplicateRelation { name });
-            }
-            names.push(name);
+            register_relation(&mut relations, join.table)?;
         }
         Ok(())
     }
@@ -678,6 +707,38 @@ mod tests {
         assert_eq!(
             reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[]),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn registering_one_relation_twice_reports_the_effective_name() {
+        let mut relations = Vec::new();
+        assert_eq!(
+            register_relation(&mut relations, TableRef::plain("users")),
+            Ok(())
+        );
+        assert_eq!(
+            register_relation(&mut relations, TableRef::plain("users")),
+            Err(BuildError::DuplicateRelation { name: "users" })
+        );
+    }
+
+    #[test]
+    fn alias_distinguished_occurrences_of_one_table_are_accepted() {
+        let mut relations = Vec::new();
+        assert_eq!(
+            register_relation(&mut relations, TableRef::plain("accounts")),
+            Ok(())
+        );
+        assert_eq!(
+            register_relation(&mut relations, TableRef::aliased("accounts", "a")),
+            Ok(())
+        );
+        // A reference resolves through the alias, so reusing it collides even
+        // though the underlying tables differ.
+        assert_eq!(
+            register_relation(&mut relations, TableRef::aliased("customers", "a")),
+            Err(BuildError::DuplicateRelation { name: "a" })
         );
     }
 }
