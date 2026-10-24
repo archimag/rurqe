@@ -11,7 +11,9 @@ use rurqe_migrate::version::MigrationVersion;
 use crate::cli::{connect, redact_database_url, CliError, Connection};
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
-use crate::stage::postgres::sweep_stale_scratch_databases;
+use crate::stage::postgres::{
+    current_owner_tag, find_stale_scratch_databases, sweep_stale_scratch_databases,
+};
 use crate::stage::GoldenEquation;
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
@@ -19,16 +21,13 @@ use super::{cli_error, write_file};
 
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
 ///
-/// Every verification against a PostgreSQL server builds its replay inside a
-/// throwaway `rurqe_scratch_…` database and drops it again, so a verification
-/// that was killed before it could clean up leaves one behind. The sweep dates
-/// each database by the instant its name records and drops the ones older than
-/// `older_than` — the same opportunistic cleanup a verification runs before it
-/// creates a scratch database of its own, exposed here for an explicit run.
-///
-/// SQLite needs no sweep: a verification opens either an in-memory database or a
-/// file the operator owns, so nothing is ever left behind on a shared server.
-pub(crate) fn cleanup_stage(scratch_url: &str, older_than: Duration) -> Result<(), CliError> {
+/// Requires explicit confirmation via `force` (`--yes` / `--force`) before dropping.
+/// Without confirmation, candidate databases are listed and an error is reported.
+pub(crate) fn cleanup_stage(
+    scratch_url: &str,
+    older_than: Duration,
+    force: bool,
+) -> Result<(), CliError> {
     if DatabaseTarget::parse(scratch_url).dialect() != DatabaseDialect::Postgres {
         println!(
             "Nothing to sweep: `{}` addresses a SQLite scratch database, which a verification \
@@ -48,14 +47,42 @@ pub(crate) fn cleanup_stage(scratch_url: &str, older_than: Duration) -> Result<(
         }
     };
 
+    let owner_tag = current_owner_tag();
+    let candidates =
+        find_stale_scratch_databases(&mut admin, older_than, &owner_tag).map_err(cli_error)?;
+
+    if candidates.is_empty() {
+        println!(
+            "No PostgreSQL scratch database on `{}` is older than {} second(s)",
+            redact_database_url(scratch_url),
+            older_than.as_secs()
+        );
+        return Ok(());
+    }
+
+    if !force {
+        println!(
+            "Found {} stale PostgreSQL scratch database(s) on `{}` older than {} second(s):",
+            candidates.len(),
+            redact_database_url(scratch_url),
+            older_than.as_secs()
+        );
+        for database in &candidates {
+            println!("  - {database}");
+        }
+        return Err(CliError(
+            "`stage cleanup` requires `--yes` (or `--force`) to confirm dropping stale scratch databases"
+                .to_owned(),
+        ));
+    }
+
     let dropped =
         sweep_stale_scratch_databases(&mut admin, older_than, scratch_url).map_err(cli_error)?;
 
     if dropped.is_empty() {
         println!(
-            "No PostgreSQL scratch database on `{}` is older than {} second(s)",
-            redact_database_url(scratch_url),
-            older_than.as_secs()
+            "No PostgreSQL scratch database on `{}` could be dropped",
+            redact_database_url(scratch_url)
         );
         return Ok(());
     }

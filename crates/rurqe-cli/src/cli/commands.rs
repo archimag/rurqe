@@ -177,7 +177,7 @@ STAGE OPTIONS:
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
                      [--checkpoint-path <path>] [--scratch-url <url>]
     stage commit     --version <version> [--lock-path <path>] [--checkpoint-path <path>]
-    stage cleanup    [--scratch-url <url>] [--older-than <secs>]
+    stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force]
     prune            --before <version> [--migrations-dir <dir>] [--dry-run]
 
 CONFIGURATION:

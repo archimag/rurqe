@@ -77,6 +77,7 @@ pub enum CliCommand {
         scratch_url: Option<String>,
         database_url: Option<String>,
         older_than_secs: u64,
+        force: bool,
     },
     Prune {
         before: MigrationVersion,
@@ -627,6 +628,7 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut scratch_url = None;
     let mut database_url = None;
     let mut older_than_secs = DEFAULT_CLEANUP_AGE;
+    let mut force = false;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -641,6 +643,10 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--older-than" => {
                 older_than_secs = parse_seconds(flag, take_value(tokens, &mut idx, flag)?)?;
             }
+            "--yes" | "-y" | "--force" => {
+                force = true;
+                idx += 1;
+            }
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage cleanup"
@@ -653,6 +659,7 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
         scratch_url,
         database_url,
         older_than_secs,
+        force,
     })
 }
 

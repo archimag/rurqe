@@ -187,9 +187,10 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             scratch_url,
             database_url,
             older_than_secs,
+            force,
         } => {
             let url = resolve_cleanup_url(scratch_url.or(database_url))?;
-            cleanup_stage(&url, Duration::from_secs(older_than_secs))
+            cleanup_stage(&url, Duration::from_secs(older_than_secs), force)
         }
         CliCommand::Prune {
             before,

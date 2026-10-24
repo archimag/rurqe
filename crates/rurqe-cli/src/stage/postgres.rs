@@ -26,18 +26,28 @@ use crate::introspect::introspect_postgres;
 /// The prefix every scratch database name carries.
 const SCRATCH_PREFIX: &str = "rurqe_scratch_";
 
+/// The prefix marking the owner of a scratch database in its description comment.
+const OWNER_PREFIX: &str = "rurqe:owner=";
+
+/// Timeout statements applied to prevent DROP DATABASE from blocking indefinitely.
+const DROP_TIMEOUT_SQL: &str = "SET statement_timeout = '5s'; SET lock_timeout = '5s'";
+
+/// Resets database timeouts after dropping a scratch database.
+const RESET_TIMEOUT_SQL: &str = "SET statement_timeout = '0'; SET lock_timeout = '0'";
+
 /// The age after which an abandoned scratch database is swept away.
 pub(crate) const DEFAULT_SCRATCH_MAX_AGE: Duration = Duration::from_secs(3_600);
 
-/// The scratch databases the server currently holds.
+/// The scratch databases and their object descriptions the server currently holds.
 ///
 /// The pattern narrows the catalog scan to the names this module creates, while
-/// the prefix is checked again on every row, so an underscore standing for any
-/// single character in `LIKE` costs nothing.
-const SCRATCH_DATABASES_SQL: &str = "SELECT datname FROM pg_database \
-     WHERE datname LIKE 'rurqe_scratch_%' AND datname <> current_database() \
-       AND datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user) \
-     ORDER BY datname";
+/// the prefix and owner comment are checked again on every row, so an underscore
+/// standing for any single character in `LIKE` costs nothing.
+const SCRATCH_DATABASES_SQL: &str = "SELECT d.datname, shobj_description(d.oid, 'pg_database') \
+     FROM pg_database d \
+     WHERE d.datname LIKE 'rurqe_scratch_%' AND d.datname <> current_database() \
+       AND d.datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user) \
+     ORDER BY d.datname";
 
 /// Scratch state backed by an ephemeral PostgreSQL database of its own.
 ///
@@ -110,6 +120,17 @@ impl PostgresSandbox {
             ));
         }
 
+        let owner_tag = current_owner_tag();
+        let comment_sql = format!("COMMENT ON DATABASE \"{database}\" IS '{owner_tag}'");
+        if let Err(error) = admin.batch_execute(&comment_sql) {
+            tracing::warn!(
+                url = %redacted_url,
+                database = %database,
+                %error,
+                "failed to tag the scratch database with its owner marker"
+            );
+        }
+
         match attach_scratch_database(config, &database) {
             Ok(client) => Ok(Self {
                 admin,
@@ -165,6 +186,65 @@ impl PostgresSandbox {
     }
 }
 
+/// Formats the owner tag embedded into the scratch database comment.
+pub(crate) fn current_owner_tag() -> String {
+    format!("{OWNER_PREFIX}{}", owner_identifier())
+}
+
+/// Derives a stable identifier for the current host / process environment.
+fn owner_identifier() -> String {
+    if let Ok(id) = std::env::var("RURQE_HOST_ID") {
+        let trimmed = id.trim();
+        if !trimmed.is_empty() {
+            return sanitize_owner_id(trimmed);
+        }
+    }
+    if let Ok(host) = std::env::var("HOSTNAME") {
+        let trimmed = host.trim();
+        if !trimmed.is_empty() {
+            return sanitize_owner_id(trimmed);
+        }
+    }
+    if let Ok(host) = std::env::var("HOST") {
+        let trimmed = host.trim();
+        if !trimmed.is_empty() {
+            return sanitize_owner_id(trimmed);
+        }
+    }
+    if let Ok(content) = std::fs::read_to_string("/etc/hostname") {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            return sanitize_owner_id(trimmed);
+        }
+    }
+    if let Ok(user) = std::env::var("USER") {
+        let trimmed = user.trim();
+        if !trimmed.is_empty() {
+            return sanitize_owner_id(trimmed);
+        }
+    }
+    "default".to_owned()
+}
+
+/// Sanitizes an owner string into safe ASCII characters for database comments.
+fn sanitize_owner_id(s: &str) -> String {
+    let sanitized: String = s
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .take(64)
+        .collect();
+    if sanitized.is_empty() {
+        "default".to_owned()
+    } else {
+        sanitized
+    }
+}
+
+/// Checks whether the database comment matches the expected owner marker.
+pub(super) fn is_matching_owner(comment: Option<&str>, expected_owner: &str) -> bool {
+    comment.map(str::trim) == Some(expected_owner.trim())
+}
+
 /// Hands out a scratch database name no concurrent verification can collide with.
 ///
 /// The leading second makes an abandoned scratch datable, the process id and the
@@ -218,6 +298,57 @@ pub(super) fn is_scratch_database_stale(name: &str, max_age: Duration, now: Syst
     }
 }
 
+/// Checks whether a scratch database is eligible for sweep by matching owner and staleness.
+pub(super) fn is_scratch_database_candidate(
+    name: &str,
+    comment: Option<&str>,
+    expected_owner: &str,
+    max_age: Duration,
+    now: SystemTime,
+) -> bool {
+    if !is_matching_owner(comment, expected_owner) {
+        return false;
+    }
+    is_scratch_database_stale(name, max_age, now)
+}
+
+/// Lists the scratch databases matching the owner marker and abandoned for longer than `max_age`.
+pub(crate) fn find_stale_scratch_databases(
+    admin: &mut postgres::Client,
+    max_age: Duration,
+    expected_owner: &str,
+) -> Result<Vec<String>, String> {
+    let rows = admin
+        .query(SCRATCH_DATABASES_SQL, &[])
+        .map_err(|error| format!("failed to list the scratch databases: {error}"))?;
+
+    let now = SystemTime::now();
+    let mut candidates = Vec::new();
+
+    for row in rows {
+        let name: String = row
+            .try_get(0)
+            .map_err(|error| format!("failed to read a scratch database name: {error}"))?;
+        let description: Option<String> = row
+            .try_get(1)
+            .map_err(|error| format!("failed to read a scratch database description: {error}"))?;
+
+        if !is_scratch_database_candidate(
+            &name,
+            description.as_deref(),
+            expected_owner,
+            max_age,
+            now,
+        ) {
+            continue;
+        }
+
+        candidates.push(name);
+    }
+
+    Ok(candidates)
+}
+
 /// Drops the scratch databases abandoned for longer than `max_age`.
 ///
 /// Returns the names of the databases that are gone afterwards. A database the
@@ -228,23 +359,23 @@ pub(crate) fn sweep_stale_scratch_databases(
     max_age: Duration,
     source: &str,
 ) -> Result<Vec<String>, String> {
-    let rows = admin
-        .query(SCRATCH_DATABASES_SQL, &[])
-        .map_err(|error| format!("failed to list the scratch databases: {error}"))?;
+    let owner_tag = current_owner_tag();
+    let candidates = find_stale_scratch_databases(admin, max_age, &owner_tag)?;
 
-    let now = SystemTime::now();
     let redacted_source = redact_database_url(source);
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    tracing::info!(
+        url = %redacted_source,
+        count = candidates.len(),
+        databases = ?candidates,
+        "sweeping stale postgres scratch databases"
+    );
+
     let mut dropped = Vec::new();
-
-    for row in rows {
-        let name: String = row
-            .try_get(0)
-            .map_err(|error| format!("failed to read a scratch database name: {error}"))?;
-
-        if !is_scratch_database_stale(&name, max_age, now) {
-            continue;
-        }
-
+    for name in candidates {
         // The sweep never forces a drop: a scratch database the server refuses to
         // release is simply retried on a later run, so a verification can never
         // terminate sessions on a database it did not abandon itself.
@@ -291,30 +422,34 @@ fn attach_scratch_database(
 
 /// Drops a scratch database, removing everything the verification built inside it.
 ///
-/// `WITH (FORCE)` terminates sessions still attached to the database and needs
-/// PostgreSQL 13 or newer, so a plain drop is the fallback for older servers.
+/// Sets statement and lock timeouts so the operation cannot hang indefinitely.
+/// Plain `DROP DATABASE` is always preferred; `WITH (FORCE)` is only attempted
+/// for self-owned teardown when plain drop fails and `force` is explicitly requested.
 /// Returns whether the database is gone afterwards.
 fn drop_scratch_database(admin: &mut postgres::Client, database: &str, force: bool) -> bool {
-    // A name read back from the catalog is not necessarily the one this process
-    // generated, so the quoting escapes an embedded quote.
     let quoted = database.replace('"', "\"\"");
     let plain = format!("DROP DATABASE IF EXISTS \"{quoted}\"");
 
-    // A database this process created for its own verification is forced down so
-    // an abandoned replay session cannot keep it alive. A database only met through
-    // the catalog is dropped without `FORCE`, so the sweep never terminates the
-    // sessions of another verification.
+    // Guard drop from blocking indefinitely on catalog or lock contention.
+    let _ = admin.batch_execute(DROP_TIMEOUT_SQL);
+
     if !force {
-        return admin.batch_execute(&plain).is_ok();
+        let ok = admin.batch_execute(&plain).is_ok();
+        let _ = admin.batch_execute(RESET_TIMEOUT_SQL);
+        return ok;
     }
 
-    let forced = format!("DROP DATABASE IF EXISTS \"{quoted}\" WITH (FORCE)");
-
-    if admin.batch_execute(&forced).is_ok() {
+    // A database this process created for its own verification first attempts a graceful drop.
+    if admin.batch_execute(&plain).is_ok() {
+        let _ = admin.batch_execute(RESET_TIMEOUT_SQL);
         return true;
     }
 
-    admin.batch_execute(&plain).is_ok()
+    // Only when graceful drop fails do we attempt WITH (FORCE), still bounded by the timeout.
+    let forced = format!("DROP DATABASE IF EXISTS \"{quoted}\" WITH (FORCE)");
+    let ok = admin.batch_execute(&forced).is_ok();
+    let _ = admin.batch_execute(RESET_TIMEOUT_SQL);
+    ok
 }
 
 impl Drop for PostgresSandbox {
@@ -443,6 +578,59 @@ mod tests {
         assert!(!is_scratch_database_stale(
             "rurqe_scratch_1700003600_4321_0",
             Duration::from_secs(1),
+            now()
+        ));
+    }
+
+    #[test]
+    fn owner_tag_matches_expected() {
+        let tag = current_owner_tag();
+        assert!(tag.starts_with(OWNER_PREFIX));
+        assert!(is_matching_owner(Some(&tag), &tag));
+        assert!(!is_matching_owner(Some("rurqe:owner=other-host"), &tag));
+        assert!(!is_matching_owner(None, &tag));
+    }
+
+    #[test]
+    fn candidate_selection_requires_matching_owner_and_age() {
+        let owner = "rurqe:owner=test-host";
+        let stale_name = "rurqe_scratch_1699999000_4321_0";
+        let fresh_name = "rurqe_scratch_1699999995_4321_0";
+        let max_age = Duration::from_secs(600);
+
+        // Stale and matching owner -> candidate
+        assert!(is_scratch_database_candidate(
+            stale_name,
+            Some(owner),
+            owner,
+            max_age,
+            now()
+        ));
+
+        // Stale but mismatched owner -> NOT candidate
+        assert!(!is_scratch_database_candidate(
+            stale_name,
+            Some("rurqe:owner=other-host"),
+            owner,
+            max_age,
+            now()
+        ));
+
+        // Stale but no owner comment -> NOT candidate
+        assert!(!is_scratch_database_candidate(
+            stale_name,
+            None,
+            owner,
+            max_age,
+            now()
+        ));
+
+        // Matching owner but fresh -> NOT candidate
+        assert!(!is_scratch_database_candidate(
+            fresh_name,
+            Some(owner),
+            owner,
+            max_age,
             now()
         ));
     }

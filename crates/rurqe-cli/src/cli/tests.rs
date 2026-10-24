@@ -349,6 +349,7 @@ fn parses_stage_cleanup_with_its_defaults() {
             scratch_url: None,
             database_url: None,
             older_than_secs: 3_600,
+            force: false,
         }
     );
 }
@@ -374,6 +375,7 @@ fn parses_stage_cleanup_options() {
             scratch_url: Some("postgres://db.internal:5432/app".into()),
             database_url: Some("postgres://db.internal:5432/fallback".into()),
             older_than_secs: 600,
+            force: false,
         }
     );
 }
@@ -395,8 +397,27 @@ fn parses_stage_cleanup_with_a_single_url_flag() {
             scratch_url: None,
             database_url: Some(":memory:".into()),
             older_than_secs: 3_600,
+            force: false,
         }
     );
+}
+
+#[test]
+fn parses_stage_cleanup_with_confirmation_flags() {
+    for flag in ["--yes", "-y", "--force"] {
+        let cmd =
+            parse_args(&["rurqe".into(), "stage".into(), "cleanup".into(), flag.into()]).unwrap();
+
+        assert_eq!(
+            cmd,
+            CliCommand::StageCleanup {
+                scratch_url: None,
+                database_url: None,
+                older_than_secs: 3_600,
+                force: true,
+            }
+        );
+    }
 }
 
 #[test]
