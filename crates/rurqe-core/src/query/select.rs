@@ -29,6 +29,8 @@ mod ordering;
 mod render;
 mod set_ops;
 
+pub use self::ordering::OrderBy;
+
 /// The rendered SQL text of a query together with its bound parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuiltQuery {
