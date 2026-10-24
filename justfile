@@ -22,3 +22,4 @@ clippy:
 [doc('Run cargo test across the workspace')]
 test:
     cargo test --workspace
+    cargo test -p rurqe-sqlite --features r2d2 --doc

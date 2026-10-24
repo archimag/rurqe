@@ -17,3 +17,10 @@ rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
 tracing = "0.1"
 r2d2 = { version = "0.8", optional = true }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
+
+# The release line of the pool manager built against `rusqlite` 0.31, so the
+# manager's connection type is the exact `::rusqlite::Connection` the pool
+# adapter is generic over. Only the documentation example needs it: the pool
+# itself stays generic over any `r2d2::ManageConnection`.
+[dev-dependencies]
+r2d2_sqlite = "0.24"

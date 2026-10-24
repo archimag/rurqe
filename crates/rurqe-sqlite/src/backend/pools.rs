@@ -21,10 +21,17 @@ use super::rusqlite::{execute_raw_with, fetch_raw_with};
 /// ```
 /// use r2d2_sqlite::SqliteConnectionManager;
 ///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let manager = SqliteConnectionManager::memory();
-/// let pool = r2d2::Pool::builder().max_size(4).build(manager).unwrap();
+/// let pool = r2d2::Pool::builder().max_size(4).build(manager)?;
 /// let _pool = rurqe_sqlite::SqlitePool::new(pool);
+/// # Ok(())
+/// # }
 /// ```
+///
+/// The manager comes from the `r2d2_sqlite` development dependency, so the
+/// example is compiled and run by the crate's documentation tests whenever the
+/// `r2d2` feature is enabled.
 pub struct SqlitePool<M: ManageConnection> {
     pool: r2d2::Pool<M>,
 }
