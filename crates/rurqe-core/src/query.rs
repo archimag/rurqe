@@ -51,13 +51,14 @@ pub use self::group_by::{
 };
 pub use self::savepoint::{InvalidSavepointName, SavepointName};
 pub use self::scope::{
-    CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
+    Compound, CrossJoined, CrossLateralJoined, FullOuterJoined, JoinKind, Joined, LeftJoined,
     LeftLateralJoined, NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope,
     TableScope,
 };
 pub use self::select::{
     BuiltQuery, HasProjection, LockUnavailable, Locked, LockedQuery, NoLock, NoProjection,
     NullsOrder, OrderBy, OrderDirection, ProjectionPresent, Query, SelectQuery, SetOperand,
+    TailClosed,
 };
 pub use self::selection::{
     ApplyNullability, ColumnInScope, MakeNullable, Nullable, SelectTarget, SelectTargetInScope,

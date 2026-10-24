@@ -71,8 +71,32 @@ pub struct Locked;
 /// reaches [`SelectQuery`] again only through
 /// [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select), which
 /// returns an unlocked query carrying this marker.
+///
+/// Combining the query with a set operation also moves it into the
+/// [`Compound`](crate::query::Compound) scope, where the ordering of the combined
+/// rows names output columns and positions instead of relations in scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockUnavailable;
+
+/// Typestate marker indicating that a compound statement recorded its ordering tail.
+///
+/// A statement combined with `UNION`, `INTERSECT`, or `EXCEPT` sorts the rows the
+/// combination produced, so its ordering belongs to the whole result rather than
+/// to one operand. SQL binds it there: no operand can follow it, and
+/// `A UNION B ORDER BY ... UNION C` is rejected by the engine.
+///
+/// The state is reached from the set-operation path — `order_by_index` and
+/// `order_by_output` move the query here — and it stays reachable for every
+/// further criterion, so a compound statement still orders by as many output
+/// columns as it projects. What the state rules out is another operand:
+/// [`SetOperand`] has no implementation for it, which leaves `union`,
+/// `union_all`, `intersect`, and `except` unreachable.
+///
+/// ```text
+/// first.union(second).order_by_index_asc(1).union(third) // rejected
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TailClosed;
 
 /// Statically asserts that a `SELECT` query records the rows it projects.
 ///
@@ -123,10 +147,54 @@ impl ProjectionPresent for HasProjection {}
 /// statement can neither keep the row-level lock of an operand nor accept a new
 /// one: a query that already requests a lock carries [`Locked`] and does not
 /// implement this trait.
+///
+/// A compound statement that already recorded the ordering of its combined rows
+/// carries [`TailClosed`] for the same reason: SQL binds that ordering to the
+/// whole result, so another operand would have to be combined before it instead
+/// of after it.
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::query::{HasProjection, SelectQuery};
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// fn base() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
+///     SelectQuery::<MockDialect>::new()
+///         .from::<User>()
+///         .select((UserId,))
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the ordering of the combined rows already exists, so no
+///     // operand may follow it.
+///     let _ = base()
+///         .union(base())
+///         .order_by_output_asc(UserId)
+///         .union(base());
+/// }
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be combined with another statement",
-    label = "this statement requests a row-level lock",
-    note = "remove the `FOR UPDATE` or `FOR SHARE` clause before combining the statement with `UNION`, `INTERSECT`, or `EXCEPT`"
+    label = "this statement requests a row-level lock or already ordered its combined rows",
+    note = "remove the `FOR UPDATE` or `FOR SHARE` clause before combining the statement with `UNION`, `INTERSECT`, or `EXCEPT`",
+    note = "a compound statement that already recorded the ordering of its combined rows takes no further operand, because SQL binds that ordering to the whole result"
 )]
 pub trait SetOperand {}
 

@@ -24,6 +24,18 @@ pub enum BuildError {
         /// The 0-based position of the first mismatched ordering criterion.
         position: usize,
     },
+    /// The `ORDER BY` of a compound statement names a position outside its projections.
+    CompoundOrderIndex {
+        /// The 1-based position the ordering names.
+        index: u32,
+        /// The number of projected columns of the statement.
+        columns: usize,
+    },
+    /// The `ORDER BY` of a compound statement names a column it does not project.
+    CompoundOrderColumn {
+        /// The output column name the ordering names.
+        column: &'static str,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -43,6 +55,20 @@ impl fmt::Display for BuildError {
                      PostgreSQL requires ORDER BY expressions to begin with the exact expressions listed in DISTINCT ON"
                 )
             }
+            BuildError::CompoundOrderIndex { index, columns } => {
+                write!(
+                    f,
+                    "ORDER BY position {index} of a compound query does not address one of its {columns} projected column(s); \
+                     a compound statement sorts the columns its projection list produced, so a position has to fall between 1 and {columns}"
+                )
+            }
+            BuildError::CompoundOrderColumn { column } => {
+                write!(
+                    f,
+                    "ORDER BY names column `{column}`, which the compound query does not project; \
+                     a compound statement sorts its combined rows, so the ordering may only reference an output column name or a 1-based position"
+                )
+            }
         }
     }
 }
@@ -54,6 +80,7 @@ impl SelectAst {
     pub fn validate(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
         self.validate_distinct_on_prefix()?;
+        self.validate_compound_order()?;
 
         for cte in &self.ctes {
             cte.query.validate()?;
@@ -148,6 +175,69 @@ impl SelectAst {
             }
         }
         Ok(())
+    }
+
+    /// Rejects a compound ordering that addresses no output column of the statement.
+    ///
+    /// A statement combined with `UNION`, `INTERSECT`, or `EXCEPT` sorts the rows
+    /// the combination produced, and PostgreSQL accepts only result column names or
+    /// 1-based positions in that `ORDER BY` clause — an expression, a function, or a
+    /// table-qualified reference is rejected with `invalid UNION/INTERSECT/EXCEPT
+    /// ORDER BY clause`. The clause is assembled as plain data, so the rule is
+    /// checked here and surfaces as
+    /// [`BuildError::CompoundOrderIndex`] or [`BuildError::CompoundOrderColumn`]
+    /// instead of reaching the engine.
+    ///
+    /// A position has to fall inside the projection list, and an output column name
+    /// has to be produced by it. The name of a projection is the column it reads or
+    /// the alias it carries, so an expression projected without an alias produces no
+    /// name and is addressed by its position instead.
+    fn validate_compound_order(&self) -> Result<(), BuildError> {
+        let columns = self.projections.len();
+        for criterion in &self.compound_order_by {
+            match &criterion.expr {
+                ExprKind::Raw { fragments, params } if params.is_empty() => {
+                    let position = fragments
+                        .first()
+                        .and_then(|fragment| fragment.parse::<u32>().ok());
+                    if let Some(index) = position {
+                        if index == 0 || index as usize > columns {
+                            return Err(BuildError::CompoundOrderIndex { index, columns });
+                        }
+                    }
+                }
+                ExprKind::Column { name, .. } if !self.projects_output(name) => {
+                    return Err(BuildError::CompoundOrderColumn { column: name });
+                }
+                ExprKind::QualifiedColumn { column, .. } if !self.projects_output(column) => {
+                    return Err(BuildError::CompoundOrderColumn { column });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the projections expose the output column `column`.
+    fn projects_output(&self, column: &'static str) -> bool {
+        self.projections
+            .iter()
+            .any(|projection| projection_output_name(projection) == Some(column))
+    }
+}
+
+/// Resolves the output name a projection exposes to a compound ordering.
+///
+/// A column projection is named after its column, a qualified one after the column
+/// it reads, and an aliased projection after its alias. Any other projection —
+/// a function call, an aggregate, or a computed expression — exposes no name, so the
+/// caller addresses it by its 1-based position instead.
+fn projection_output_name(projection: &ExprKind) -> Option<&'static str> {
+    match projection {
+        ExprKind::Column { name, .. } => Some(name),
+        ExprKind::QualifiedColumn { column, .. } => Some(column),
+        ExprKind::Aliased { alias, .. } => Some(alias),
+        _ => None,
     }
 }
 
@@ -270,5 +360,25 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("ORDER BY criterion at position 1"));
         assert!(msg.contains("DISTINCT ON"));
+    }
+
+    #[test]
+    fn build_error_display_compound_order_index() {
+        let err = BuildError::CompoundOrderIndex {
+            index: 3,
+            columns: 2,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("ORDER BY position 3"));
+        assert!(msg.contains("2 projected column(s)"));
+        assert!(msg.contains("between 1 and 2"));
+    }
+
+    #[test]
+    fn build_error_display_compound_order_column() {
+        let err = BuildError::CompoundOrderColumn { column: "total" };
+        let msg = err.to_string();
+        assert!(msg.contains("`total`"));
+        assert!(msg.contains("output column name or a 1-based position"));
     }
 }

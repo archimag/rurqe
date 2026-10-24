@@ -1192,7 +1192,7 @@ fn chained_set_operations_keep_trailing_order_by_and_limit_on_the_union() {
     let built = base()
         .union(base())
         .union_all(base())
-        .order_by_asc(UserId)
+        .order_by_output_asc(UserId)
         .limit(3)
         .build()
         .expect("valid query");
@@ -1950,7 +1950,7 @@ fn a_compound_ordering_reads_the_output_columns_of_the_projection() {
 
     let built = joined
         .union(plain)
-        .order_by_asc(UserId)
+        .order_by_output_asc(UserId)
         .limit(3)
         .build()
         .expect("valid query");
@@ -2025,4 +2025,111 @@ fn a_window_ordering_can_fix_where_nulls_sort() {
          ORDER BY \"total\" DESC NULLS LAST) FROM \"orders\""
     );
     assert!(built.params.is_empty());
+}
+
+fn compound_user_query() -> SelectQuery<MockDialect, User, (i64, String), HasProjection> {
+    SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName))
+}
+
+#[test]
+fn a_compound_ordering_renders_a_position_and_an_output_column() {
+    let built = compound_user_query()
+        .union(compound_user_query())
+        .order_by_index(2, OrderDirection::Desc)
+        .order_by_output_asc(UserName)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"name\" FROM \"users\" UNION SELECT \"id\", \"name\" FROM \"users\" \
+         ORDER BY 2 DESC, \"name\" ASC"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_compound_ordering_position_outside_the_projection_is_rejected() {
+    assert_eq!(
+        compound_user_query()
+            .union(compound_user_query())
+            .order_by_index_asc(3)
+            .build(),
+        Err(BuildError::CompoundOrderIndex {
+            index: 3,
+            columns: 2,
+        })
+    );
+    assert_eq!(
+        compound_user_query()
+            .union(compound_user_query())
+            .order_by_index_asc(0)
+            .build(),
+        Err(BuildError::CompoundOrderIndex {
+            index: 0,
+            columns: 2,
+        })
+    );
+}
+
+#[test]
+fn a_compound_ordering_of_an_unprojected_output_column_is_rejected() {
+    // The ordering reads the output column names of the projections, so a column
+    // whose name the projection list does not produce cannot be ordered by, even
+    // when it is a column of a table the left query selects from.
+    assert_eq!(
+        compound_user_query()
+            .union(compound_user_query())
+            .order_by_output_asc(OrderTotal)
+            .build(),
+        Err(BuildError::CompoundOrderColumn { column: "total" })
+    );
+}
+
+#[test]
+fn a_compound_ordering_accepts_an_aliased_output_column() {
+    let left = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<Order, OrderAlias>>()
+        .select((AliasedCol::<OrderAlias, OrderTotal>::new(),));
+    let right = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderTotal,));
+
+    let built = left
+        .union(right)
+        .order_by_output_asc(AliasedCol::<OrderAlias, OrderTotal>::new())
+        .build()
+        .expect("valid query");
+
+    // The criterion names the output column, so the alias of the left statement
+    // never reaches the ordering of the combined result.
+    assert_eq!(
+        built.sql,
+        "SELECT \"o\".\"total\" FROM \"orders\" AS \"o\" UNION SELECT \"total\" FROM \"orders\" \
+         ORDER BY \"total\" ASC"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_compound_ordering_can_fix_where_nulls_sort() {
+    fn base() -> SelectQuery<MockDialect, Order, (i64, f64), HasProjection> {
+        SelectQuery::<MockDialect>::new()
+            .from::<Order>()
+            .select((OrderId, OrderTotal))
+    }
+
+    let built = base()
+        .union(base())
+        .order_by_output_desc_nulls_last(OrderTotal)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\", \"total\" FROM \"orders\" UNION SELECT \"id\", \"total\" FROM \"orders\" \
+         ORDER BY \"total\" DESC NULLS LAST"
+    );
 }

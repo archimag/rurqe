@@ -1062,9 +1062,9 @@ pub mod prelude {
     };
 
     pub use rurqe_core::query::{
-        AsyncQueryBackend, AsyncQueryBackendExt, CrossJoined, FullOuterJoined, HasProjection,
-        JoinKind, Joined, LeftJoined, Locked, NoLock, NoProjection, Nullable, ProjectionPresent,
-        SetOpKind, TableScope,
+        AsyncQueryBackend, AsyncQueryBackendExt, Compound, CrossJoined, FullOuterJoined,
+        HasProjection, JoinKind, Joined, LeftJoined, Locked, NoLock, NoProjection, Nullable,
+        ProjectionPresent, SetOpKind, TableScope, TailClosed,
     };
 
     pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};

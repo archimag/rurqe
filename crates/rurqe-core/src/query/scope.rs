@@ -99,6 +99,28 @@ impl<T: Table> TableScope for T {
     }
 }
 
+/// The scope of a statement whose rows are combined by a set operation.
+///
+/// `UNION`, `INTERSECT`, and `EXCEPT` combine the rows of several statements into
+/// one result, so the columns of the combined statement no longer belong to a
+/// table: they are the output columns of the first projection list. The scope
+/// therefore names no relation at all, which leaves a table-qualified column
+/// reference structurally unreachable — [`TableInScope`] has no implementation
+/// for this scope — while the ordering of the combined rows goes through the
+/// output-column and position builders of the query instead:
+///
+/// ```text
+/// let combined = first.union(second).order_by_index_asc(1);
+/// ```
+///
+/// The relations of the statements being combined stay reachable through the
+/// statements themselves, which the combined query carries as its operands.
+pub struct Compound;
+
+impl TableScope for Compound {
+    fn push_table_names(_out: &mut Vec<&'static str>) {}
+}
+
 /// Pins the scope positions `P` an expression scope `Self` is checked against.
 ///
 /// [`ExprInScope`](crate::schema::ExprInScope) accepts an expression referencing
