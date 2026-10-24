@@ -53,6 +53,7 @@ impl SelectAst {
     /// Performs recursive pre-flight validation on the query AST and all embedded subqueries.
     pub fn validate(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
+        self.validate_distinct_on_prefix()?;
 
         for cte in &self.ctes {
             cte.query.validate()?;
@@ -120,6 +121,31 @@ impl SelectAst {
                 return Err(BuildError::DuplicateRelation { name });
             }
             names.push(name);
+        }
+        Ok(())
+    }
+
+    /// Rejects a `DISTINCT ON (...)` statement whose `ORDER BY` clause does not
+    /// begin with the expressions of that clause.
+    ///
+    /// PostgreSQL requires the leading `ORDER BY` expressions to match the
+    /// `DISTINCT ON` expressions left-to-right, because that ordering decides
+    /// which of the duplicate rows survives. The rule compares expressions
+    /// structurally and ignores the direction and null placement of each
+    /// criterion, so the check runs on the assembled statement data during
+    /// [`SelectAst::validate`] and surfaces as
+    /// [`BuildError::DistinctOnOrderMismatch`]. An absent `ORDER BY` clause stays
+    /// valid: the engine accepts it and leaves the surviving row
+    /// undetermined.
+    fn validate_distinct_on_prefix(&self) -> Result<(), BuildError> {
+        if self.distinct_on.is_empty() || self.order_by.is_empty() {
+            return Ok(());
+        }
+        for (position, expected) in self.distinct_on.iter().enumerate() {
+            match self.order_by.get(position) {
+                Some(criterion) if &criterion.expr == expected => {}
+                _ => return Err(BuildError::DistinctOnOrderMismatch { position }),
+            }
         }
         Ok(())
     }

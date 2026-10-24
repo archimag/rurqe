@@ -12,7 +12,7 @@ use super::builder::{Aggregate, Expr, FilteredAggregate, NonAggregate};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::ToSqlVal;
 use crate::dialect::Dialect;
-use crate::query::{HasProjection, SelectQuery, TableScope};
+use crate::query::{HasProjection, LockUnavailable, SelectQuery, TableScope};
 use crate::schema::{Column, Table};
 
 /// Statically asserts that a value of type `ValType` may be compared with a
@@ -295,6 +295,22 @@ where
     }
 }
 
+// A deduplicated statement cannot request a row-level lock, but it is still a
+// plain statement an enclosing one can nest, so it participates in the
+// predicates that read a nested query. Only the lockable queries excluded by
+// the impl above — the ones carrying `Locked` — stay statements of their own.
+impl<D, Tables, Output> AnySubquery for SelectQuery<D, Tables, Output, HasProjection, LockUnavailable>
+where
+    D: Dialect,
+    Tables: TableScope,
+{
+    type Dialect = D;
+
+    fn into_subquery(self) -> Subquery {
+        self.into_subquery()
+    }
+}
+
 /// A statement nested as the right-hand side of a membership predicate.
 ///
 /// The `Row` parameter is the row the predicate compares, so the nested query has
@@ -351,6 +367,15 @@ where
 pub trait InSubquery<Row>: AnySubquery {}
 
 impl<D, Tables, Row> InSubquery<Row> for SelectQuery<D, Tables, Row, HasProjection>
+where
+    D: Dialect,
+    Tables: TableScope,
+{
+}
+
+// A deduplicated statement compares its rows like any other nested query, so it
+// accepts the same row contract in a membership predicate.
+impl<D, Tables, Row> InSubquery<Row> for SelectQuery<D, Tables, Row, HasProjection, LockUnavailable>
 where
     D: Dialect,
     Tables: TableScope,
