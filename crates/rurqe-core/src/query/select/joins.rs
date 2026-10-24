@@ -54,6 +54,9 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     ///     .from::<User>()
     ///     .inner_join::<User, _, _>(Expr::column::<UserId>().eq(1i64));
     /// ```
+    #[doc(hidden)]
+    /// Prefer [`inner_join_table`](Self::inner_join_table): passing the table
+    /// value infers `T` and the joined scope without a turbofish.
     pub fn inner_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
@@ -67,6 +70,15 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins `table` to the query with an `INNER JOIN` restricted by `on`.
+    ///
+    /// This is the preferred entry point: taking the table value lets the
+    /// compiler infer `T`, the joined scope and the position marker, so no
+    /// turbofish and no explicit `At<0>` appears at the call site.
+    ///
+    /// Joining a table the query already addresses renders its name twice in the
+    /// `FROM` clause, which the engine rejects as `table name specified more than
+    /// once` unless the second relation is aliased with an
+    /// [`Aliased`](crate::schema::Aliased) marker.
     pub fn inner_join_table<T: Table, Scope, P>(
         self,
         _table: T,
@@ -81,6 +93,9 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins the table `T` to the query with a `LEFT JOIN` restricted by `on`.
+    #[doc(hidden)]
+    /// Prefer [`left_join_table`](Self::left_join_table): passing the table value
+    /// infers `T` and the joined scope without a turbofish.
     pub fn left_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
@@ -94,6 +109,11 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins `table` to the query with a `LEFT JOIN` restricted by `on`.
+    ///
+    /// This is the preferred entry point: taking the table value lets the
+    /// compiler infer `T`, the joined scope and the position marker, so no
+    /// turbofish and no explicit `At<0>` appears at the call site. The
+    /// left-joined columns reach the projected row as `Option<T>`.
     pub fn left_join_table<T: Table, Scope, P>(
         self,
         _table: T,
@@ -108,6 +128,9 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins the table `T` to the query with an unconditional `CROSS JOIN`.
+    #[doc(hidden)]
+    /// Prefer [`cross_join_table`](Self::cross_join_table): passing the table
+    /// value infers `T` and the joined scope without a turbofish.
     pub fn cross_join<T: Table>(
         self,
     ) -> SelectQuery<D, CrossJoined<Tables, T>, Output, Projected, Lock>
@@ -119,6 +142,10 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins `table` to the query with an unconditional `CROSS JOIN`.
+    ///
+    /// This is the preferred entry point: taking the table value lets the
+    /// compiler infer `T`, the joined scope and the position marker, so no
+    /// turbofish and no explicit `At<0>` appears at the call site.
     pub fn cross_join_table<T: Table>(
         self,
         _table: T,
@@ -131,6 +158,9 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins the table `T` to the query with a `FULL OUTER JOIN` restricted by `on`.
+    #[doc(hidden)]
+    /// Prefer [`full_outer_join_table`](Self::full_outer_join_table): passing the
+    /// table value infers `T` and the joined scope without a turbofish.
     pub fn full_outer_join<T: Table, Scope, P>(
         self,
         on: Expr<bool, Scope>,
@@ -150,6 +180,10 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Joins `table` to the query with a `FULL OUTER JOIN` restricted by `on`.
+    ///
+    /// This is the preferred entry point: taking the table value lets the
+    /// compiler infer `T`, the joined scope and the position marker, so no
+    /// turbofish and no explicit `At<0>` appears at the call site.
     pub fn full_outer_join_table<T: Table, Scope, P>(
         self,
         _table: T,
