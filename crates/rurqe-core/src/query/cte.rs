@@ -200,9 +200,16 @@ impl<T, Row, D> fmt::Debug for DerivedTable<T, Row, D> {
 
 impl<T: Table, Row, D: Dialect> DerivedTable<T, Row, D> {
     /// Exposes `query` as a derived table referenced through the marker `T`.
+    ///
+    /// The relation is registered under the name the rendering pass addresses it
+    /// by: the alias the marker exposes it under, or its table name when the
+    /// marker carries none. Recording the bare table name of an aliased marker
+    /// would leave the subquery unmatched, so the statement would read the stored
+    /// table of that name instead of the rows of `query`.
     pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
+        let reference = T::table_ref();
         Self {
-            name: T::NAME,
+            name: reference.alias.unwrap_or(reference.name),
             query: query.to_ast(),
             _marker: PhantomData,
         }

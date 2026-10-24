@@ -12,23 +12,20 @@ use super::{render_expr, render_expressions, render_ordered_expressions};
 
 /// Renders a relation of the statement, inlining the subquery of a derived table.
 ///
-/// A relation whose name matches a derived table of the statement renders as
+/// A relation the statement registered as a derived table renders as
 /// `(SELECT ...) AS "name"`, while every other relation renders as the table
-/// reference it already is. Only a plain reference can stand for a derived
-/// table: an aliased one is addressed through its alias, while a derived table is
-/// addressed through the name of the marker it exposes, so the reference would
-/// name a relation the statement never declared.
+/// reference it already is. The relation is matched by the name the rendered
+/// clause addresses it by — the alias it is referenced under, or its table name
+/// when it carries none — so the subquery an aliased marker registered is
+/// inlined instead of falling back to the stored table of the same name.
 fn render_relation<D: Dialect>(
     sql: &mut String,
     params: &mut Vec<SqlVal>,
     table: &TableRef,
     derived: &[DerivedAst],
 ) {
-    let subquery = if table.alias.is_none() {
-        derived.iter().find(|entry| entry.name == table.name)
-    } else {
-        None
-    };
+    let name = table.alias.unwrap_or(table.name);
+    let subquery = derived.iter().find(|entry| entry.name == name);
 
     match subquery {
         Some(subquery) => {
@@ -227,7 +224,10 @@ impl<'a> StatementRef<'a> {
                     sql.push('(');
                     StatementRef::from(lateral).render::<D>(sql, params);
                     sql.push_str(") AS ");
-                    D::push_quoted_identifier(sql, join.table.name);
+                    // The lateral subquery is declared under the name the relation
+                    // is addressed by, so its columns stay reachable through the
+                    // alias an aliased marker references them with.
+                    D::push_quoted_identifier(sql, join.table.alias.unwrap_or(join.table.name));
                 }
                 None => render_relation::<D>(sql, params, &join.table, self.derived),
             }

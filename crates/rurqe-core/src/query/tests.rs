@@ -1295,6 +1295,7 @@ fn left_joined_aliased_table_lifts_columns_into_options() {
 
 crate::table! {
     RecentOrder => "recent" {
+        RecentId => "id": i64,
         RecentTotal => "total": f64,
     }
 }
@@ -1366,6 +1367,81 @@ fn lateral_join_binds_subquery_parameters_before_the_outer_filter() {
          LIMIT 1) AS \"recent\" WHERE (\"users\".\"id\" > $2)"
     );
     assert_eq!(built.params, vec![SqlVal::F64(10.0), SqlVal::I64(1)]);
+}
+
+#[test]
+fn an_aliased_marker_inlines_the_derived_subquery_it_registers() {
+    // The derived relation is registered under the alias its marker exposes it
+    // under, so the statement selects from the rows of the subquery instead of
+    // silently reading the stored table of the same name.
+    let derived = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderTotal,))
+        .as_table::<Aliased<RecentOrder, OrderAlias>>();
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from_subquery(derived)
+        .select((Expr::column::<AliasedCol<OrderAlias, RecentTotal>>(),))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"o\".\"total\" FROM (SELECT \"total\" FROM \"orders\") AS \"o\""
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn an_aliased_derived_table_joins_under_its_alias() {
+    let derived = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId, OrderTotal))
+        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
+        .as_table::<Aliased<RecentOrder, OrderAlias>>();
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .inner_join_subquery(
+            derived,
+            Expr::column::<UserId>().eq(Expr::column::<AliasedCol<OrderAlias, RecentId>>()),
+        )
+        .select((UserId, Expr::column::<AliasedCol<OrderAlias, RecentTotal>>()))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" INNER JOIN \
+         (SELECT \"id\", \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\")) AS \"o\" \
+         ON (\"users\".\"id\" = \"o\".\"id\")"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn an_aliased_marker_declares_the_lateral_relation_under_its_alias() {
+    // The lateral relation is declared under the alias the marker addresses its
+    // columns with, so the qualified references of its projection resolve.
+    let latest = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderTotal,))
+        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
+        .limit(1);
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .cross_join_lateral(latest.as_lateral::<Aliased<RecentOrder, OrderAlias>>())
+        .select((UserId, Expr::column::<AliasedCol<OrderAlias, RecentTotal>>()))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" CROSS JOIN LATERAL \
+         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\") LIMIT 1) AS \"o\""
+    );
+    assert!(built.params.is_empty());
 }
 
 #[test]

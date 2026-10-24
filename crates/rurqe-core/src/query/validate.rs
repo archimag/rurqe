@@ -5,7 +5,8 @@
 
 use core::fmt;
 
-use crate::expr::{ExprKind, SelectAst, WindowExprKind};
+use crate::expr::{DerivedAst, ExprKind, SelectAst, WindowExprKind};
+use crate::schema::TableRef;
 
 /// An error returned when pre-flight query validation detects invalid SQL semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,16 @@ pub enum BuildError {
     CompoundOrderColumn {
         /// The output column name the ordering names.
         column: &'static str,
+    },
+    /// An aliased relation registered its derived subquery under another name.
+    ///
+    /// The subquery is inlined under the name it was registered with, so a
+    /// relation addressed through an alias while its derived subquery carries the
+    /// bare table name leaves nothing to inline: the statement would read the
+    /// stored table instead of the rows of the subquery, without any diagnostic.
+    AliasedDerivedRelation {
+        /// The alias the relation is addressed by.
+        name: &'static str,
     },
 }
 
@@ -67,6 +78,14 @@ impl fmt::Display for BuildError {
                     f,
                     "ORDER BY names column `{column}`, which the compound query does not project; \
                      a compound statement sorts its combined rows, so the ordering may only reference an output column name or a 1-based position"
+                )
+            }
+            BuildError::AliasedDerivedRelation { name } => {
+                write!(
+                    f,
+                    "derived relation is addressed as `{name}` but its subquery is registered under another name; \
+                     rendering the statement would read the stored table the relation names instead of the rows of the subquery, \
+                     so a derived table has to be registered under the alias it is referenced by"
                 )
             }
         }
@@ -128,7 +147,8 @@ impl SelectAst {
         Ok(())
     }
 
-    /// Rejects a statement whose relations collide under one effective name.
+    /// Rejects a statement whose relations collide under one effective name or
+    /// shadow the derived subquery they registered.
     ///
     /// The effective name of a relation is the alias it is referenced under, or
     /// its table name when it carries none. Two relations sharing it render a
@@ -137,12 +157,20 @@ impl SelectAst {
     /// is dispatched. Derived tables and lateral subqueries participate under
     /// the name of the marker they are exposed as, which is the name the
     /// rendered clause gives them.
+    ///
+    /// A derived relation is additionally checked against the subquery registered
+    /// for it: rendering inlines that subquery under the name it was registered
+    /// with, so a registration that only matches the bare table name of an
+    /// aliased relation would be dropped and the statement would read the stored
+    /// table instead — see [`reject_shadowed_derived`].
     fn validate_relations(&self) -> Result<(), BuildError> {
         let mut names = Vec::with_capacity(self.joins.len() + 1);
         if let Some(from) = &self.from {
+            reject_shadowed_derived(from, &self.derived)?;
             names.push(from.alias.unwrap_or(from.name));
         }
         for join in &self.joins {
+            reject_shadowed_derived(&join.table, &self.derived)?;
             let name = join.table.alias.unwrap_or(join.table.name);
             if names.contains(&name) {
                 return Err(BuildError::DuplicateRelation { name });
@@ -224,6 +252,31 @@ impl SelectAst {
             .iter()
             .any(|projection| projection_output_name(projection) == Some(column))
     }
+}
+
+/// Rejects a relation that would read a stored table instead of its derived subquery.
+///
+/// A derived relation renders inline under the name its subquery was registered
+/// with, which has to be the name the relation is addressed by: its alias, or its
+/// table name when it carries none. Registering the subquery under the bare table
+/// name of an aliased relation leaves nothing to inline, so the statement would
+/// read the physical table while every column reference still resolves through the
+/// alias — a silent substitution of the data source rather than a diagnostic. The
+/// check keeps such an arrangement out of the engine.
+fn reject_shadowed_derived(
+    relation: &TableRef,
+    derived: &[DerivedAst],
+) -> Result<(), BuildError> {
+    let Some(alias) = relation.alias else {
+        return Ok(());
+    };
+    if derived.iter().any(|entry| entry.name == alias) {
+        return Ok(());
+    }
+    if derived.iter().any(|entry| entry.name == relation.name) {
+        return Err(BuildError::AliasedDerivedRelation { name: alias });
+    }
+    Ok(())
 }
 
 /// Resolves the output name a projection exposes to a compound ordering.
@@ -380,5 +433,70 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("`total`"));
         assert!(msg.contains("output column name or a 1-based position"));
+    }
+
+    #[test]
+    fn build_error_display_aliased_derived_relation() {
+        let err = BuildError::AliasedDerivedRelation { name: "o" };
+        let msg = err.to_string();
+        assert!(msg.contains("addressed as `o`"));
+        assert!(msg.contains("registered under another name"));
+    }
+
+    /// Builds a statement AST without any clause, used as the body of a derived
+    /// subquery in the registration checks below.
+    fn empty_ast() -> SelectAst {
+        SelectAst {
+            ctes: Vec::new(),
+            distinct: false,
+            distinct_on: Vec::new(),
+            projections: Vec::new(),
+            from: None,
+            joins: Vec::new(),
+            derived: Vec::new(),
+            filter: None,
+            group_by: Vec::new(),
+            having: None,
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
+            set_operations: Vec::new(),
+            compound_order_by: Vec::new(),
+            compound_limit: None,
+            compound_offset: None,
+            lock: None,
+        }
+    }
+
+    /// Registers a derived subquery under `name`.
+    fn derived(name: &'static str) -> DerivedAst {
+        DerivedAst {
+            name,
+            query: empty_ast(),
+        }
+    }
+
+    #[test]
+    fn a_derived_relation_registered_under_the_base_name_of_its_alias_is_rejected() {
+        assert_eq!(
+            reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[derived("recent")]),
+            Err(BuildError::AliasedDerivedRelation { name: "o" })
+        );
+    }
+
+    #[test]
+    fn a_derived_relation_registered_under_the_name_it_is_addressed_by_is_accepted() {
+        assert_eq!(
+            reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[derived("o")]),
+            Ok(())
+        );
+        assert_eq!(
+            reject_shadowed_derived(&TableRef::plain("recent"), &[derived("recent")]),
+            Ok(())
+        );
+        assert_eq!(
+            reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[]),
+            Ok(())
+        );
     }
 }
