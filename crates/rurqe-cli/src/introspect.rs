@@ -22,7 +22,8 @@ pub use crate::target::{detect_dialect, DatabaseDialect};
 pub use postgres::{introspect_postgres, introspect_postgres_schema};
 pub use sqlite::{
     catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections, introspect_sqlite,
-    RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
+    parse_sqlite_check_enums, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
+    RawSqliteTableMetadata,
 };
 pub use types::{
     catalog_from_metadata, catalog_from_metadata_with_sections, map_sql_type_to_kind,
