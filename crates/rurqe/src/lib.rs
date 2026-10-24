@@ -730,7 +730,8 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 ///
 /// let built = insert_into::<Postgres, User>()
 ///     .values((UserId::set(1i64), UserName::set("root")))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(
 ///     built.sql,
@@ -794,7 +795,8 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 ///     .values((UserId::set(1i64), UserName::set("root")))
 ///     .on_conflict((UserId,))
 ///     .do_update((UserName::set_expr(excluded(UserName)),))
-///     .build();
+///     .build()
+///     .expect("valid query");
 ///
 /// assert_eq!(
 ///     built.sql,

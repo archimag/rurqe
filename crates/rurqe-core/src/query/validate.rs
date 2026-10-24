@@ -423,7 +423,13 @@ fn projection_output_name(projection: &ExprKind) -> Option<&'static str> {
     }
 }
 
-fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
+/// Validates a single expression, recursing into every statement it embeds.
+///
+/// The check is shared by the clause validation of a `SELECT` statement and by
+/// the DML builders, which walk their embedded expressions — column assignments
+/// and conflict predicates — through it, so a violation nested anywhere in a
+/// statement is reported through one typed error before SQL is rendered.
+pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
     match expr {
         ExprKind::Column { .. }
         | ExprKind::QualifiedColumn { .. }

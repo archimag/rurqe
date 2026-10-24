@@ -23,6 +23,7 @@ use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::expr::{render_expr, DialectInScope, Expr, ExprKind, NonAggregate, SqlVal, Unscoped};
+use crate::query::{validate_expr, BuildError};
 use crate::schema::Table;
 
 use super::{AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery};
@@ -59,6 +60,33 @@ pub struct Conflict {
 }
 
 impl Conflict {
+    /// Validates the expressions and assignments embedded in the clause.
+    ///
+    /// The target predicate, the update predicate, and an expression assignment
+    /// of the `DO UPDATE` branch may all carry a nested statement, so the clause
+    /// is audited before the statement renders and a semantic violation inside
+    /// one of them is reported as [`BuildError`].
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        if let Some(predicate) = &self.target_predicate {
+            validate_expr(predicate)?;
+        }
+        match &self.action {
+            ConflictAction::DoNothing => Ok(()),
+            ConflictAction::DoUpdate {
+                assignments,
+                predicate,
+            } => {
+                for (_, value) in assignments {
+                    value.validate()?;
+                }
+                if let Some(predicate) = predicate {
+                    validate_expr(predicate)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Appends the clause to `sql`, binding every value to `params`.
     pub(crate) fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
         sql.push_str(" ON CONFLICT");
@@ -471,7 +499,7 @@ mod tests {
             .values((UserId::set(1i64), UserName::set("root")))
             .on_conflict((UserId,))
             .do_update(EmptyAssignments)
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -487,7 +515,7 @@ mod tests {
             .target_where(UserId.gt(0i64))
             .update_where(UserName.ne("root"))
             .do_update(EmptyAssignments)
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,

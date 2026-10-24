@@ -79,7 +79,7 @@ fn selecting_moves_the_query_into_the_projected_typestate() {
 fn insert_renders_columns_defaults_and_parameters() {
     let built = insert_into::<Postgres, User>()
         .values((UserId::default_value(), UserName::set("root")))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -96,7 +96,7 @@ fn bulk_insert_renders_one_row_per_assignment_set() {
             (UserId::set(2i64), UserName::set("b")),
         ])
         .expect("the row source is not empty")
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -134,7 +134,7 @@ fn insert_returning_projects_named_fields() {
             UserActive::set(true),
         ))
         .returning(select!(UserId, UserName as contact_email, UserActive))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -269,7 +269,7 @@ fn on_conflict_do_nothing_skips_conflicting_rows() {
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .do_nothing()
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -289,7 +289,7 @@ fn on_conflict_do_update_upserts_typed_assignments_before_returning() {
         .on_conflict((UserId,))
         .do_update((UserName::set("upserted"), UserActive::set(true)))
         .returning((UserId,))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -330,7 +330,7 @@ fn insert_from_select_copies_rows_without_round_tripping() {
 
     let built = insert_into::<Postgres, User>()
         .from_select((UserId, UserName, UserActive), source)
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -349,7 +349,7 @@ fn insert_from_select_supports_returning_projection() {
         .columns((UserId, UserName, UserActive))
         .from_select(source)
         .returning((UserId,))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -407,7 +407,7 @@ fn a_partial_conflict_target_and_a_conditional_update_close_the_upsert() {
         .target_where(Expr::column::<UserId>().gt(0i64))
         .update_where(Expr::column::<UserName>().ne("root"))
         .do_update(UserName::set("upserted"))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -436,7 +436,7 @@ fn the_update_predicate_compares_the_stored_row_with_the_proposed_one() {
         .on_conflict((UserId,))
         .update_where(excluded(UserName).ne(Expr::column::<UserName>()))
         .do_update(UserName::set_expr(excluded(UserName)))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -458,7 +458,7 @@ fn a_partial_conflict_target_restricts_a_do_nothing_clause() {
         .on_conflict((UserId,))
         .target_where(Expr::column::<UserId>().gt(0i64))
         .do_nothing()
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,

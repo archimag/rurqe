@@ -125,6 +125,18 @@ pub enum AssignValue {
 }
 
 impl AssignValue {
+    /// Validates the expression the value carries, when it carries one.
+    ///
+    /// A bound value and the `DEFAULT` keyword embed no statement data, so only
+    /// an expression assignment — which may read a nested subquery — takes part
+    /// in the pre-flight validation of the statement that renders it.
+    pub(crate) fn validate(&self) -> Result<(), crate::query::BuildError> {
+        match self {
+            AssignValue::Value(_) | AssignValue::Default => Ok(()),
+            AssignValue::Expr(expr) => crate::query::validate_expr(expr),
+        }
+    }
+
     /// Appends the value to `sql`, binding it to `params` when it carries a parameter.
     ///
     /// `relations` names the relations of the statement being rendered, so an

@@ -183,7 +183,7 @@ fn postgres_versioned_prelude_pins_the_dialect_without_turbofish() {
 
     let inserted = insert_into(User)
         .values((UserId::set(1i64), UserName::set("root")))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         inserted.sql,
@@ -226,7 +226,7 @@ fn sqlite_3_35_prelude_gates_returning_on_the_pinned_version() {
     let inserted = insert_into(User)
         .values((UserId::set(7i64), UserName::set("root")))
         .returning(cols!(UserId, UserName as contact_email))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         inserted.sql,
@@ -248,7 +248,7 @@ fn sqlite_3_24_prelude_gates_on_conflict_on_the_pinned_version() {
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .do_nothing()
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -342,7 +342,7 @@ fn postgres_renders_every_capability_gated_clause() {
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .do_nothing()
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         upserted.sql,
@@ -387,7 +387,7 @@ fn an_upsert_copies_the_proposed_row_from_excluded() {
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .do_update((UserName::set_expr(excluded(UserName)),))
-        .build();
+        .build().expect("valid query");
 
     assert_eq!(
         built.sql,

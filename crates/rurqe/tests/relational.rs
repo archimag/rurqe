@@ -1070,7 +1070,7 @@ mod value_based_dsl {
     fn dml_entrypoints_take_table_values() {
         let inserted = insert_into(User)
             .values((UserId::set(1i64), UserName::set("root")))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             inserted.sql,

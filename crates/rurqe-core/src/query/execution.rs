@@ -45,7 +45,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> ExecutableQuery
     type Row = Returning;
 
     fn build_query(&self) -> Result<BuiltQuery, crate::query::BuildError> {
-        Ok(self.build())
+        self.build()
     }
 }
 

@@ -116,7 +116,7 @@ fn execute_reports_affected_rows_without_decoding() {
 fn executable_queries_expose_built_sql_and_row_type() {
     let insert =
         InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
-    assert_eq!(insert.build_query(), Ok(insert.build()));
+    assert_eq!(insert.build_query(), insert.build());
 
     fn assert_row<Q: ExecutableQuery<Row = (i64, String)>>() {}
 

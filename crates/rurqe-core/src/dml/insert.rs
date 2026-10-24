@@ -16,7 +16,9 @@ use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::expr::{DialectInScope, SelectAst};
-use crate::query::{BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection};
+use crate::query::{
+    BuildError, BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
+};
 use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table, TableRef};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
@@ -387,7 +389,25 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// [`values_many`](InsertQuery::values_many), or
     /// [`from_select`](InsertQuery::from_select); the [`InsertSource`] bound
     /// enforces that at compile time.
-    pub fn build(&self) -> BuiltQuery {
+    ///
+    /// The embedded statements and expressions are validated before any SQL is
+    /// rendered: a source `SELECT`, a scalar expression assigned to a column,
+    /// and the predicates and assignments of an `ON CONFLICT` clause may all
+    /// carry a nested statement, so a semantic violation inside one of them is
+    /// reported as [`BuildError`] instead of reaching the engine.
+    pub fn build(&self) -> Result<BuiltQuery, BuildError> {
+        if let Some(select) = &self.select {
+            select.validate()?;
+        }
+        for row in &self.rows {
+            for value in row {
+                value.validate()?;
+            }
+        }
+        if let Some(conflict) = &self.conflict {
+            conflict.validate()?;
+        }
+
         let mut sql = String::from("INSERT INTO ");
         D::push_quoted_identifier(&mut sql, T::NAME);
 
@@ -439,7 +459,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
             }
         }
 
-        BuiltQuery { sql, params }
+        Ok(BuiltQuery { sql, params })
     }
 }
 
@@ -530,7 +550,7 @@ mod tests {
                 UserName::set("first"),
                 UserName::set("second"),
             ))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -548,7 +568,7 @@ mod tests {
             .values((UserId::set(1i64), UserName::set("root")))
             .on_conflict((UserId,))
             .do_update((UserName::set("first"), UserName::set("second")))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -568,7 +588,7 @@ mod tests {
     fn single_row_insert_renders_columns_and_parameters() {
         let built = InsertQuery::<MockDialect, User>::new()
             .values((UserId::set(1i64), UserName::set("root")))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -584,7 +604,7 @@ mod tests {
     fn single_assignment_inserts_one_column() {
         let built = InsertQuery::<MockDialect, User>::new()
             .values(UserId::set(9i64))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(built.sql, "INSERT INTO \"users\" (\"id\") VALUES ($1)");
         assert_eq!(built.params, vec![SqlVal::I64(9)]);
@@ -598,7 +618,7 @@ mod tests {
                 (UserId::set(2i64), UserName::set("b")),
             ])
             .expect("the row source is not empty")
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -630,7 +650,7 @@ mod tests {
     fn default_values_render_as_keyword() {
         let built = InsertQuery::<MockDialect, User>::new()
             .values((UserId::default_value(), UserName::set("root")))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -645,7 +665,7 @@ mod tests {
             InsertQuery::<MockDialect, User>::new().values(UserId::set(1i64));
 
         assert_eq!(
-            query.build().sql,
+            query.build().expect("valid query").sql,
             "INSERT INTO \"users\" (\"id\") VALUES ($1)"
         );
     }
@@ -664,7 +684,7 @@ mod tests {
         let built = InsertQuery::<MockDialect, User>::new()
             .values((UserId::set(1i64), UserName::set("root")))
             .returning((UserId, UserName))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -681,7 +701,7 @@ mod tests {
         let built = InsertQuery::<MockDialect, User>::new()
             .values((UserId::set(1i64), UserName::set("root")))
             .on_conflict_do_nothing()
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -699,7 +719,7 @@ mod tests {
             .values((UserId::set(1i64), UserName::set("root")))
             .on_conflict((UserId,))
             .do_nothing()
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -717,7 +737,7 @@ mod tests {
             .values((UserId::set(1i64), UserName::set("root")))
             .on_conflict((UserId,))
             .do_update(UserName::set("upserted"))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -741,7 +761,7 @@ mod tests {
             .values((UserId::set(1i64), UserName::set("root")))
             .on_conflict((UserId,))
             .do_update(UserName::set_expr(excluded(UserName)))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -762,7 +782,7 @@ mod tests {
             .on_conflict((UserId,))
             .target_where(Expr::column::<UserId>().gt(0i64))
             .do_update(UserName::set("upserted"))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -788,7 +808,7 @@ mod tests {
             .on_conflict((UserId,))
             .update_where(Expr::column::<UserName>().ne("root"))
             .do_update(UserName::set("upserted"))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -815,7 +835,7 @@ mod tests {
             .on_conflict((UserId,))
             .update_where(excluded(UserName).ne(Expr::column::<UserName>()))
             .do_update(UserName::set_expr(excluded(UserName)))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -837,7 +857,7 @@ mod tests {
             .target_where(Expr::column::<UserId>().gt(0i64))
             .update_where(Expr::column::<UserName>().ne("root"))
             .do_update(UserName::set("upserted"))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -862,7 +882,7 @@ mod tests {
             .on_conflict((UserId, UserName))
             .do_update((UserName::set("bob"),))
             .returning((UserId, UserName))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -890,7 +910,7 @@ mod tests {
         let built = InsertQuery::<MockDialect, User>::new()
             .columns((UserId, UserName))
             .from_select(source)
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -910,7 +930,7 @@ mod tests {
 
         let built = InsertQuery::<MockDialect, User>::new()
             .from_select((UserId, UserName), source)
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -934,7 +954,7 @@ mod tests {
             .on_conflict((UserId,))
             .do_update(UserName::set("migrated"))
             .returning((UserId, UserName))
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -955,7 +975,7 @@ mod tests {
         let built = InsertQuery::<MockDialect, User>::new()
             .columns(UserId)
             .from_select(source)
-            .build();
+            .build().expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -970,7 +990,8 @@ mod tests {
 
         let built = query
             .values((UserId::set(1i64), UserName::set("root")))
-            .build();
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             built.sql,
@@ -979,6 +1000,49 @@ mod tests {
         assert_eq!(
             built.params,
             vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_source_select_with_a_duplicate_relation_is_rejected() {
+        use crate::expr::Expr;
+
+        // The source addresses `archive_users` twice under one name, so the
+        // engine would refuse the `INSERT ... SELECT` after it left the builder.
+        let source = SelectQuery::<MockDialect>::new()
+            .from::<ArchiveUser>()
+            .inner_join::<ArchiveUser, _, _>(Expr::column::<ArchiveId>().without_scope().eq(1i64))
+            .select((Expr::count_all(),));
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .from_select((UserId,), source)
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::DuplicateRelation { name: "archive_users" })
+        );
+    }
+
+    #[test]
+    fn a_conflict_predicate_embedding_an_invalid_subquery_is_rejected() {
+        use crate::expr::Expr;
+
+        let invalid = SelectQuery::<MockDialect>::new()
+            .from::<ArchiveUser>()
+            .inner_join::<ArchiveUser, _, _>(Expr::column::<ArchiveId>().without_scope().eq(1i64))
+            .select((Expr::count_all(),));
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .update_where(Expr::not_exists(invalid))
+            .do_update(UserName::set("upserted"))
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::DuplicateRelation { name: "archive_users" })
         );
     }
 }
