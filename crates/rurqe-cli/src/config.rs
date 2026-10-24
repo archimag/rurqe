@@ -1,7 +1,8 @@
 //! Project configuration for the code generation toolchain.
 //!
-//! `cargo db-codegen` reads the optional `[codegen.type_overrides]` table of the
-//! `rurqe.toml` file in the working directory. Every entry maps a
+//! `cargo db-codegen` reads the optional `[codegen]` table and its
+//! `[codegen.type_overrides]` sub-table from the `rurqe.toml` file in the working
+//! directory. Every override entry maps a
 //! `table.column` schema path onto the Rust type generated for that column, so
 //! domain newtypes (`uuid::Uuid`, `chrono::NaiveDateTime`, money wrappers)
 //! survive code generation instead of degrading to the engine-neutral fallback.
@@ -12,7 +13,9 @@
 //! users.created_at = "chrono::NaiveDateTime"
 //! ```
 //!
-//! Only that single table is interpreted. The reader is a deliberately small
+//! Both tables are interpreted: `[codegen]` carries the `domain_types` switch
+//! enabling the domain mappings, and `[codegen.type_overrides]` keeps the
+//! per-column overrides. The reader is a deliberately small
 //! line-oriented parser instead of a full TOML implementation, so the toolchain
 //! keeps its dependency footprint; unrelated sections are ignored and malformed
 //! entries are reported with their line number.
@@ -248,6 +251,16 @@ mod tests {
         let config_false = CodegenConfig::parse("[codegen]\ndomain_types = false\n")
             .expect("codegen section parsed");
         assert!(!config_false.domain_types());
+    }
+
+    #[test]
+    fn domain_types_are_off_by_default() {
+        let config = CodegenConfig::parse("").expect("an empty file is valid");
+        assert!(!config.domain_types());
+
+        let config = CodegenConfig::parse("[codegen.type_overrides]\n")
+            .expect("an empty overrides table is valid");
+        assert!(!config.domain_types());
     }
 
     #[test]
