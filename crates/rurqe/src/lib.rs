@@ -1,6 +1,29 @@
 //! RURQE: Rust Universal Relational Query Engine.
 //!
 //! An ergonomic, strictly type-safe SQL query builder and relational execution engine for Rust.
+//!
+//! # PostgreSQL feature matrix
+//!
+//! The PostgreSQL surface is split in two halves. The dialect half — the
+//! `postgres` module with `Postgres`, `Pg14`, `Pg15`, and `Pg16`, together with
+//! the dialect items of every prelude — is compiled by any PostgreSQL adapter
+//! feature, so a typed query can always be named, composed, and built. The
+//! adapter half is compiled only by the feature that owns the driver:
+//!
+//! | Feature | Driver items it adds |
+//! |---|---|
+//! | `postgres` | `PgConnection`, over the synchronous `postgres` driver |
+//! | `tokio-postgres` | `PgAsyncConnection`, over the asynchronous `tokio-postgres` driver |
+//! | `deadpool-postgres` | `PgAsyncPool`, over the asynchronous driver |
+//! | `r2d2` | `PgPool`, over the synchronous driver |
+//!
+//! Every one of them enables the dialect surface, and none of them pulls the
+//! other drivers into the dependency graph, so a build that enables a single
+//! adapter still names the dialect:
+//!
+//! ```text
+//! cargo build -p rurqe --no-default-features --features tokio-postgres
+//! ```
 
 use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
 use rurqe_core::query::NoProjection;
@@ -59,7 +82,16 @@ pub use rurqe_core::{GroupByInScope, SelectionInScope};
 /// written: a module without extra items names them relative to its parent
 /// module and imports that scope, while a module with extra items resolves them
 /// from those items, which is why it needs no glob import of its own.
-#[cfg(any(feature = "postgres", feature = "sqlite"))]
+// The macro is compiled with any feature that generates a pinned dialect
+// module, which includes every PostgreSQL adapter and not only the synchronous
+// driver.
+#[cfg(any(
+    feature = "postgres",
+    feature = "tokio-postgres",
+    feature = "deadpool-postgres",
+    feature = "r2d2",
+    feature = "sqlite"
+))]
 #[macro_export]
 macro_rules! pin_dialect_version {
     // The items shared by both module shapes, expanded inside the module.
@@ -176,9 +208,22 @@ macro_rules! pin_dialect_version {
     };
 }
 
-#[cfg(feature = "postgres")]
+// The dialect surface is compiled as soon as any PostgreSQL adapter feature is
+// enabled: bundling the crate must never become a precondition for naming
+// `Postgres` or one of its version markers.
+#[cfg(any(
+    feature = "postgres",
+    feature = "tokio-postgres",
+    feature = "deadpool-postgres",
+    feature = "r2d2"
+))]
 crate::pin_dialect_version! {
     /// PostgreSQL dialect, version markers, and the runtime driver adapters.
+    ///
+    /// The module is compiled with any PostgreSQL adapter feature, so a build
+    /// that enables only `tokio-postgres`, `deadpool-postgres`, or `r2d2` still
+    /// names the dialect and its version markers; the driver items inside it
+    /// stay behind the feature that owns them.
     ///
     /// The module mirrors the `rurqe-postgres` crate, so paths such as
     /// `rurqe::postgres::PgConnection` stay reachable, and adds PostgreSQL-pinned
@@ -1087,12 +1132,25 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
-    #[cfg(feature = "postgres")]
+    // The dialect items reach the prelude with any PostgreSQL adapter feature, so
+    // an asynchronous or pooled build names `Postgres` without the synchronous
+    // driver; the driver items below keep their own feature.
+    #[cfg(any(
+        feature = "postgres",
+        feature = "tokio-postgres",
+        feature = "deadpool-postgres",
+        feature = "r2d2"
+    ))]
     pub use rurqe_postgres::{
-        JsonKey, Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions, PgConnection, PgJson,
+        JsonKey, Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions, /* PgConnection is imported below */ PgJson,
         PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
         PgTextSearchValue, PgTextValue, PgVersion, Postgres,
     };
+
+    /// The synchronous `postgres` adapter, compiled by the `postgres` feature and
+    /// by `r2d2`, which pools that driver.
+    #[cfg(any(feature = "postgres", feature = "r2d2"))]
+    pub use rurqe_postgres::PgConnection;
 
     #[cfg(feature = "tokio-postgres")]
     pub use rurqe_postgres::PgAsyncConnection;
