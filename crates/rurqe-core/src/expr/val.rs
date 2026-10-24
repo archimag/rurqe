@@ -636,6 +636,26 @@ macro_rules! impl_sql_newtype {
             }
         }
 
+        impl $crate::expr::FunctionOperand<$ty> for $ty {
+            type Scope = ();
+            type Aggr = $crate::expr::NonAggregate;
+            type Dialect = ();
+
+            fn into_operand_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+
+        impl<'a> $crate::expr::FunctionOperand<$ty> for &'a $ty {
+            type Scope = ();
+            type Aggr = $crate::expr::NonAggregate;
+            type Dialect = ();
+
+            fn into_operand_kind(self) -> $crate::expr::ExprKind {
+                $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
+            }
+        }
+
         $($extra)*
     };
     (@encode bytes $value:expr) => {

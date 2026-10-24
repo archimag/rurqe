@@ -19,9 +19,10 @@
 //! Rust identifier.
 //!
 //! Every mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`,
-//! `MakeNullable`, and the expression-compatibility impls, so a derived type
-//! composes with the expression builders exactly like a built-in scalar and is
-//! lifted into `Option<Self>` when it is projected from an outer join.
+//! `MakeNullable`, the expression-compatibility impls, and the matching
+//! scalar-function operand impls, so a derived type composes with the expression
+//! builders exactly like a built-in scalar and is lifted into `Option<Self>` when
+//! it is projected from an outer join.
 //!
 //! [`impl_sql_binary_newtype!`]: rurqe_core::impl_sql_binary_newtype
 //! [`impl_sql_text_newtype!`]: rurqe_core::impl_sql_text_newtype
@@ -591,14 +592,21 @@ fn text_decode_impl(name: &Ident) -> TokenStream {
 }
 
 /// Emits the operand-compatibility impls of the derived newtype.
+///
+/// Every [`IntoExpr`](rurqe_core::expr::IntoExpr) impl has a matching
+/// [`FunctionOperand`](rurqe_core::expr::FunctionOperand) impl next to it, so a
+/// derived type is accepted as an argument of a scalar function call as well as
+/// as a comparison operand.
 fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
     let owned = owned_expression_impl(name);
+    let owned_operands = function_operand_impl(name);
 
     match storage {
-        Storage::Transparent => owned,
+        Storage::Transparent => quote! { #owned #owned_operands },
         Storage::Bytes { .. } => {
             let borrowed = borrowed_expression_impl(name);
-            quote! { #owned #borrowed }
+            let borrowed_operands = borrowed_function_operand_impl(name);
+            quote! { #owned #borrowed #owned_operands #borrowed_operands }
         }
         Storage::Text => text_expression_impls(name),
     }
@@ -609,7 +617,12 @@ fn text_expression_impls(name: &Ident) -> TokenStream {
     let owned = owned_expression_impl(name);
     let borrowed = borrowed_expression_impl(name);
     let strings = string_expression_impl(name);
-    quote! { #owned #borrowed #strings }
+    let owned_operands = function_operand_impl(name);
+    let borrowed_operands = borrowed_function_operand_impl(name);
+    quote! {
+        #owned #borrowed #strings
+        #owned_operands #borrowed_operands
+    }
 }
 
 /// Emits the owned-value operand compatibility of the derived type.
@@ -679,3 +692,43 @@ fn string_expression_impl(name: &Ident) -> TokenStream {
         }
     }
 }
+
+/// Emits the owned-value scalar-function operand compatibility of the derived type.
+fn function_operand_impl(name: &Ident) -> TokenStream {
+    quote! {
+        impl ::rurqe_core::expr::FunctionOperand<#name> for #name {
+            type Scope = ();
+            type Aggr = ::rurqe_core::expr::NonAggregate;
+            type Dialect = ();
+
+            fn into_operand_kind(self) -> ::rurqe_core::expr::ExprKind {
+                ::rurqe_core::expr::ExprKind::Value(
+                    ::rurqe_core::expr::ToSqlVal::to_sql_val(self),
+                )
+            }
+        }
+    }
+}
+
+/// Emits the borrowed-value scalar-function operand compatibility of the derived type.
+fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
+    quote! {
+        impl<'a> ::rurqe_core::expr::FunctionOperand<#name> for &'a #name {
+            type Scope = ();
+            type Aggr = ::rurqe_core::expr::NonAggregate;
+            type Dialect = ();
+
+            fn into_operand_kind(self) -> ::rurqe_core::expr::ExprKind {
+                ::rurqe_core::expr::ExprKind::Value(
+                    ::rurqe_core::expr::ToSqlVal::to_sql_val(self),
+                )
+            }
+        }
+    }
+}
+
+// A text literal reaches a text-stored newtype through `IntoExpr`, which is what
+// binds it in a comparison or a scalar function argument. The mutable operand
+// impls of the type itself are emitted once, by `function_operand_impl` and
+// `borrowed_function_operand_impl`, so the literal forms are not repeated here:
+// the same implementation cannot be declared twice.

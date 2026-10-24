@@ -11,7 +11,10 @@ use std::fmt;
 use std::str::FromStr;
 
 use rurqe_core::dialect::Dialect;
-use rurqe_core::expr::{Expr, Expression, SqlVal, ToSqlVal};
+use rurqe_core::expr::{
+    coalesce, greatest, least, nullif, Expr, ExprKind, Expression, FunctionOperand, NonAggregate,
+    SqlVal, ToSqlVal,
+};
 use rurqe_core::query::{HasProjection, LeftJoined, MakeNullable, SelectQuery};
 use rurqe_core::row::{FromSqlValue, RowDecodeError};
 use rurqe_macros::SqlType;
@@ -47,7 +50,7 @@ impl TryFrom<&[u8]> for Txid {
 
 #[derive(Debug, PartialEq, Eq, SqlType)]
 #[sql(as = Text)]
-struct Address(String);
+pub struct Address(String);
 
 impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -98,6 +101,59 @@ rurqe_core::table! {
         PostMood => "mood": Mood,
     }
 }
+
+rurqe_core::table! {
+    /// The `wallets` table typed with a text-stored domain newtype.
+    Wallet => "wallets" {
+        WalletId => "id": i64,
+        WalletAddress => "address": Address,
+    }
+}
+
+/// A text-stored domain type declared with the declarative helper macro.
+#[derive(Debug, PartialEq, Eq)]
+struct Nonce(String);
+
+impl fmt::Display for Nonce {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Nonce {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() == 8 {
+            Ok(Nonce(value.to_owned()))
+        } else {
+            Err("nonces are eight characters wide")
+        }
+    }
+}
+
+rurqe_core::impl_sql_text_newtype!(Nonce);
+
+/// A binary domain type declared with the declarative helper macro.
+#[derive(Debug, PartialEq, Eq)]
+struct Digest([u8; 2]);
+
+impl AsRef<[u8]> for Digest {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl TryFrom<&[u8]> for Digest {
+    type Error = &'static str;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        let bytes: [u8; 2] = slice.try_into().map_err(|_| "expected two bytes")?;
+        Ok(Digest(bytes))
+    }
+}
+
+rurqe_core::impl_sql_binary_newtype!(Digest);
 
 /// A dialect rendering named placeholders, enough to build a query in these tests.
 struct MockDialect;
@@ -362,4 +418,176 @@ fn enum_newtypes_bind_as_parameters_and_decode_from_options() {
         <Option<Mood> as FromSqlValue>::from_sql_value(&SqlVal::Null),
         Ok(None)
     );
+}
+
+/// Asserts that `O` is an operand of a scalar function call returning `T`.
+fn assert_function_operand<T, O>()
+where
+    O: FunctionOperand<T, Scope = (), Aggr = NonAggregate, Dialect = ()>,
+{
+}
+
+#[test]
+fn derived_newtypes_are_scalar_function_operands() {
+    // A delegated newtype contributes the value it wraps.
+    assert_function_operand::<UserId, UserId>();
+    assert_function_operand::<Email, Email>();
+
+    // A binary newtype is accepted by value and by reference.
+    assert_function_operand::<Txid, Txid>();
+    assert_function_operand::<Txid, &Txid>();
+
+    // A text newtype carries the operand impls of its own value.
+    assert_function_operand::<Address, Address>();
+    assert_function_operand::<Address, &Address>();
+
+    // An enum is stored as the label of its variant.
+    assert_function_operand::<Mood, Mood>();
+    assert_function_operand::<Mood, &Mood>();
+
+    assert_eq!(
+        UserId(7).into_operand_kind(),
+        ExprKind::Value(SqlVal::I64(7))
+    );
+    assert_eq!(
+        Address::from_str("addr_1")
+            .expect("the address is inside the domain")
+            .into_operand_kind(),
+        ExprKind::Value(SqlVal::Text("addr_1".to_owned()))
+    );
+    assert_eq!(
+        Mood::Sad.into_operand_kind(),
+        ExprKind::Value(SqlVal::Text("very_sad".to_owned()))
+    );
+}
+
+#[test]
+fn macro_declared_newtypes_are_scalar_function_operands() {
+    assert_function_operand::<Nonce, Nonce>();
+    assert_function_operand::<Nonce, &Nonce>();
+    assert_function_operand::<Digest, Digest>();
+    assert_function_operand::<Digest, &Digest>();
+
+    assert_eq!(
+        Nonce::from_str("nonce123")
+            .expect("the nonce is inside the domain")
+            .into_operand_kind(),
+        ExprKind::Value(SqlVal::Text("nonce123".to_owned()))
+    );
+    assert_eq!(
+        Digest([1, 2]).into_operand_kind(),
+        ExprKind::Value(SqlVal::Bytes(vec![1, 2]))
+    );
+}
+
+#[test]
+fn derived_newtypes_bind_as_scalar_function_arguments() {
+    let coalesced = coalesce(AccountId, UserId(0));
+
+    assert_eq!(
+        coalesced.kind(),
+        &ExprKind::Function {
+            name: "COALESCE",
+            args: vec![
+                ExprKind::Column {
+                    table: "accounts",
+                    name: "id",
+                },
+                ExprKind::Value(SqlVal::I64(0)),
+            ],
+        }
+    );
+
+    let email = Email {
+        value: "root@example.com".to_owned(),
+    };
+    assert_eq!(
+        coalesce(AccountEmail, email).kind(),
+        &ExprKind::Function {
+            name: "COALESCE",
+            args: vec![
+                ExprKind::Column {
+                    table: "accounts",
+                    name: "email",
+                },
+                ExprKind::Value(SqlVal::Text("root@example.com".to_owned())),
+            ],
+        }
+    );
+
+    let address = Address::from_str("addr_0").expect("the address is inside the domain");
+    assert_eq!(
+        nullif(WalletAddress, address).kind(),
+        &ExprKind::Function {
+            name: "NULLIF",
+            args: vec![
+                ExprKind::Column {
+                    table: "wallets",
+                    name: "address",
+                },
+                ExprKind::Value(SqlVal::Text("addr_0".to_owned())),
+            ],
+        }
+    );
+
+    // A text literal binds as the same domain value the column reads.
+    assert_eq!(
+        nullif(WalletAddress, "addr_1").kind(),
+        &ExprKind::Function {
+            name: "NULLIF",
+            args: vec![
+                ExprKind::Column {
+                    table: "wallets",
+                    name: "address",
+                },
+                ExprKind::Value(SqlVal::Text("addr_1".to_owned())),
+            ],
+        }
+    );
+
+    assert_eq!(
+        greatest(AccountId, [UserId(1), UserId(2)]).kind(),
+        &ExprKind::Function {
+            name: "GREATEST",
+            args: vec![
+                ExprKind::Column {
+                    table: "accounts",
+                    name: "id",
+                },
+                ExprKind::Value(SqlVal::I64(1)),
+                ExprKind::Value(SqlVal::I64(2)),
+            ],
+        }
+    );
+
+    assert_eq!(
+        least(AccountId, [UserId(1)]).kind(),
+        &ExprKind::Function {
+            name: "LEAST",
+            args: vec![
+                ExprKind::Column {
+                    table: "accounts",
+                    name: "id",
+                },
+                ExprKind::Value(SqlVal::I64(1)),
+            ],
+        }
+    );
+}
+
+#[test]
+fn derived_newtypes_are_case_branches() {
+    let id = Expr::<UserId>::case()
+        .when(AccountId.eq(UserId(7)), UserId(1))
+        .else_(UserId(2))
+        .end();
+
+    assert!(matches!(id.kind(), ExprKind::Case { .. }));
+
+    let address = Expr::<Address>::case()
+        .when(WalletId.eq(1i64), Expr::column::<WalletAddress>())
+        .else_("addr_0")
+        .end();
+
+    assert!(matches!(address.kind(), ExprKind::Case { .. }));
 }
