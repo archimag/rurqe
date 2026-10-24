@@ -318,15 +318,6 @@ impl<T> Expr<T, ()> {
     pub fn raw_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
         Self::new(ExprKind::Raw { fragments, params })
     }
-
-    /// Builds a raw SQL expression carrying an explicit relation scope.
-    #[doc(hidden)]
-    pub fn raw_fragments_with_scope<Scope>(
-        fragments: Vec<String>,
-        params: Vec<SqlVal>,
-    ) -> Expr<T, Scope> {
-        Expr::new(ExprKind::Raw { fragments, params })
-    }
 }
 
 impl Expr<(), ()> {
