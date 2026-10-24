@@ -9,6 +9,7 @@
 //! cold start anchors the very digest `schema.lock` and `checkpoint.toml` carry
 //! whatever engine executed the declarative stage.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rurqe_migrate::catalog::SchemaCatalog;
@@ -19,6 +20,7 @@ use rurqe_migrate::history::{
 };
 use rurqe_migrate::migration::MigrationKind;
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
+use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, Sleeper, ThreadSleeper};
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::introspect::{introspect_postgres_schema, introspect_sqlite, DEFAULT_SCHEMA};
@@ -142,10 +144,15 @@ fn rollback_savepoint_sql() -> String {
 /// another runner frees later, and a wait that runs out — is verified without a
 /// PostgreSQL daemon. A failing round is reported unchanged, because a lost
 /// connection cannot be healed by waiting.
+///
+/// The pause between two rounds is delegated to `sleeper`, so a caller picks
+/// whether the wait blocks the thread ([`ThreadSleeper`]) or performs no pause at
+/// all (`rurqe_migrate::sleeper::NoopSleeper`) in tests and dry runs.
 fn poll_advisory_lock<F>(
     lock_id: i64,
     timeout: Duration,
     interval: Duration,
+    sleeper: &dyn Sleeper,
     mut attempt: F,
 ) -> Result<usize, Error>
 where
@@ -162,7 +169,7 @@ where
 
         let elapsed = start.elapsed();
         if elapsed >= timeout {
-            let lock_hex = format!("0x{:016x}", lock_id as u64);
+            let lock_hex = format!("0x{lock_id:016x}");
             return Err(Error::Backend(format!(
                 "could not acquire the PostgreSQL advisory lock {lock_id} ({lock_hex}) \
                  within {timeout:?} ({attempts} attempt(s), waited {elapsed:?}): another \
@@ -170,11 +177,17 @@ where
             )));
         }
 
-        std::thread::sleep(interval.min(timeout.saturating_sub(elapsed)));
+        sleeper.sleep(interval.min(timeout.saturating_sub(elapsed)));
     }
 }
 
 /// [`MigrationBackend`] over a `rusqlite` connection.
+///
+/// The adapter is synchronous and blocking: every statement runs on the calling
+/// thread, and [`acquire_lock`](MigrationBackend::acquire_lock) waits for the
+/// SQLite write lock through the driver busy handler. Invoke it from a blocking
+/// context — `tokio::task::spawn_blocking`, a dedicated thread, or plain
+/// synchronous code — never directly on an asynchronous worker thread.
 pub struct SqliteMigrationBackend {
     conn: rusqlite::Connection,
     lock_held: bool,
@@ -277,6 +290,7 @@ impl MigrationBackend for SqliteMigrationBackend {
     }
 
     fn acquire_lock(&mut self) -> Result<(), Error> {
+        warn_if_in_tokio_runtime("SqliteMigrationBackend::acquire_lock");
         let timeout = self.lock_timeout;
         self.conn.busy_timeout(timeout).map_err(backend_error)?;
         self.conn.execute_batch("BEGIN IMMEDIATE").map_err(|err| {
@@ -438,11 +452,21 @@ impl Drop for SqliteMigrationTransaction<'_> {
 }
 
 /// [`MigrationBackend`] over a `postgres` client.
+///
+/// The adapter is synchronous and blocking: it owns a `postgres::Client` whose
+/// calls run on the calling thread, and
+/// [`acquire_lock`](MigrationBackend::acquire_lock) polls the advisory lock by
+/// pausing between attempts. Invoke it from a blocking context —
+/// `tokio::task::spawn_blocking`, a dedicated thread, or plain synchronous code —
+/// never directly on an asynchronous worker thread. [`Self::with_sleeper`]
+/// replaces the default [`ThreadSleeper`] when a caller supplies its own pause
+/// strategy.
 pub struct PostgresMigrationBackend {
     client: postgres::Client,
     schema: String,
     lock_held: bool,
     lock_timeout: Duration,
+    sleeper: Arc<dyn Sleeper>,
 }
 
 impl PostgresMigrationBackend {
@@ -453,6 +477,7 @@ impl PostgresMigrationBackend {
             schema: DEFAULT_SCHEMA.to_owned(),
             lock_held: false,
             lock_timeout: DEFAULT_ADVISORY_LOCK_TIMEOUT,
+            sleeper: Arc::new(ThreadSleeper),
         }
     }
 
@@ -479,6 +504,17 @@ impl PostgresMigrationBackend {
     /// fast instead of hanging forever.
     pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
+        self
+    }
+
+    /// Replaces the strategy pausing execution between two advisory lock rounds.
+    ///
+    /// The default [`ThreadSleeper`] blocks the calling thread, which suits a
+    /// synchronous runner. A caller that already drives its own scheduler — or a
+    /// test asserting how often the wait happened — supplies its own
+    /// implementation instead.
+    pub fn with_sleeper(mut self, sleeper: impl Sleeper + 'static) -> Self {
+        self.sleeper = Arc::new(sleeper);
         self
     }
 
@@ -542,6 +578,7 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn acquire_lock(&mut self) -> Result<(), Error> {
+        warn_if_in_tokio_runtime("PostgresMigrationBackend::acquire_lock");
         let lock_id = MIGRATION_LOCK_ID;
         let timeout = self.lock_timeout;
 
@@ -551,13 +588,20 @@ impl MigrationBackend for PostgresMigrationBackend {
             "acquiring the PostgreSQL advisory lock"
         );
 
+        let sleeper = Arc::clone(&self.sleeper);
         let client = &mut self.client;
-        let outcome = poll_advisory_lock(lock_id, timeout, ADVISORY_LOCK_RETRY_INTERVAL, || {
-            let row = client
-                .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_id])
-                .map_err(backend_error)?;
-            row.try_get(0).map_err(backend_error)
-        });
+        let outcome = poll_advisory_lock(
+            lock_id,
+            timeout,
+            ADVISORY_LOCK_RETRY_INTERVAL,
+            sleeper.as_ref(),
+            || {
+                let row = client
+                    .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_id])
+                    .map_err(backend_error)?;
+                row.try_get(0).map_err(backend_error)
+            },
+        );
 
         match outcome {
             Ok(attempts) => {
@@ -723,7 +767,36 @@ mod tests {
     use super::*;
     use rurqe_migrate::migration::Migration;
     use rurqe_migrate::runner::Migrator;
+    use rurqe_migrate::sleeper::NoopSleeper;
+    use std::sync::Mutex;
     use std::time::Duration;
+
+    /// A [`Sleeper`] recording the pause of every waiting round.
+    #[derive(Default)]
+    struct RecordingSleeper {
+        pauses: Mutex<Vec<Duration>>,
+    }
+
+    impl RecordingSleeper {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn pauses(&self) -> Vec<Duration> {
+            self.pauses
+                .lock()
+                .map(|guard| guard.to_vec())
+                .unwrap_or_default()
+        }
+    }
+
+    impl Sleeper for RecordingSleeper {
+        fn sleep(&self, duration: Duration) {
+            if let Ok(mut guard) = self.pauses.lock() {
+                guard.push(duration);
+            }
+        }
+    }
 
     fn backend() -> SqliteMigrationBackend {
         SqliteMigrationBackend::new(rusqlite::Connection::open_in_memory().unwrap())
@@ -948,6 +1021,7 @@ mod tests {
             MIGRATION_LOCK_ID,
             Duration::from_secs(1),
             Duration::ZERO,
+            &NoopSleeper,
             || {
                 calls += 1;
                 Ok(true)
@@ -966,6 +1040,7 @@ mod tests {
             MIGRATION_LOCK_ID,
             Duration::from_secs(1),
             Duration::ZERO,
+            &NoopSleeper,
             || {
                 if pending == 0 {
                     Ok(true)
@@ -981,10 +1056,42 @@ mod tests {
     }
 
     #[test]
+    fn every_waiting_round_pauses_through_the_configured_sleeper() {
+        let sleeper = RecordingSleeper::new();
+        let interval = Duration::from_millis(5);
+        let mut pending = 2u32;
+
+        let attempts = poll_advisory_lock(
+            MIGRATION_LOCK_ID,
+            Duration::from_secs(1),
+            interval,
+            &sleeper,
+            || {
+                if pending == 0 {
+                    Ok(true)
+                } else {
+                    pending -= 1;
+                    Ok(false)
+                }
+            },
+        )
+        .expect("the lock becomes free after two waiting rounds");
+
+        // The round that takes the lock never pauses, so only the two rejected
+        // rounds ask the sleeper to wait.
+        assert_eq!(attempts, 3);
+        assert_eq!(sleeper.pauses(), vec![interval, interval]);
+    }
+
+    #[test]
     fn a_held_advisory_lock_times_out_with_its_identifier() {
-        let error = poll_advisory_lock(MIGRATION_LOCK_ID, Duration::ZERO, Duration::ZERO, || {
-            Ok(false)
-        })
+        let error = poll_advisory_lock(
+            MIGRATION_LOCK_ID,
+            Duration::ZERO,
+            Duration::ZERO,
+            &NoopSleeper,
+            || Ok(false),
+        )
         .expect_err("a lock nobody releases times out");
 
         let message = match error {
@@ -997,7 +1104,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.contains(&format!("0x{:016x}", MIGRATION_LOCK_ID)),
+            message.contains(&format!("0x{MIGRATION_LOCK_ID:016x}")),
             "{message}"
         );
     }
@@ -1008,6 +1115,7 @@ mod tests {
             MIGRATION_LOCK_ID,
             Duration::from_secs(1),
             Duration::ZERO,
+            &NoopSleeper,
             || Err(Error::Backend("connection lost".to_owned())),
         )
         .expect_err("a failing backend is reported unchanged");
