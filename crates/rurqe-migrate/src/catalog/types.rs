@@ -17,6 +17,8 @@ pub enum TypeKind {
     Int64,
     /// `DOUBLE PRECISION` / `FLOAT8`.
     Float64,
+    /// `NUMERIC` / `DECIMAL`.
+    Numeric,
     /// `TEXT` / `VARCHAR`.
     Text,
     /// `BYTEA` / `BLOB`.
@@ -56,6 +58,7 @@ impl TypeKind {
             TypeKind::Int32 => out.push_str("int32"),
             TypeKind::Int64 => out.push_str("int64"),
             TypeKind::Float64 => out.push_str("float64"),
+            TypeKind::Numeric => out.push_str("numeric"),
             TypeKind::Text => out.push_str("text"),
             TypeKind::Bytes => out.push_str("bytes"),
             TypeKind::Uuid => out.push_str("uuid"),

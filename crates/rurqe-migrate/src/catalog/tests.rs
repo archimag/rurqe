@@ -143,6 +143,7 @@ fn type_kinds_render_canonical_names() {
         TypeKind::Int32,
         TypeKind::Int64,
         TypeKind::Float64,
+        TypeKind::Numeric,
         TypeKind::Text,
         TypeKind::Bytes,
         TypeKind::Uuid,
@@ -160,6 +161,7 @@ fn type_kinds_render_canonical_names() {
             "int32",
             "int64",
             "float64",
+            "numeric",
             "text",
             "bytes",
             "uuid",
@@ -169,6 +171,7 @@ fn type_kinds_render_canonical_names() {
         ]
     );
     assert_eq!(TypeKind::Uuid.to_string(), "uuid");
+    assert_eq!(TypeKind::Numeric.to_string(), "numeric");
     assert_eq!(TypeKind::Other("inet".to_owned()).to_string(), "inet");
     assert_eq!(
         TypeKind::Enum("mood".to_owned()).to_string(),
@@ -215,6 +218,26 @@ fn from_lock_round_trips_the_canonical_snapshot() {
     let reparsed = SchemaCatalog::from_lock(&catalog.to_lock()).unwrap();
 
     assert_eq!(reparsed, catalog);
+}
+
+#[test]
+fn numeric_columns_round_trip_through_the_lock() {
+    let catalog = SchemaCatalog::new(vec![TableDef::new(
+        "invoices",
+        // Declared in the canonical order the snapshot sorts columns into,
+        // so the reparsed catalog equals the one that rendered it.
+        vec![
+            ColumnDef::new("discount", TypeKind::Numeric, true),
+            ColumnDef::new("total", TypeKind::Numeric, false).with_default("0"),
+        ],
+        Vec::new(),
+    )]);
+
+    let lock = catalog.to_lock();
+
+    assert!(lock.contains("column \"discount\": numeric null"));
+    assert!(lock.contains("column \"total\": numeric not null default \"0\""));
+    assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }
 
 #[test]

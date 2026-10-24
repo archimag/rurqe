@@ -819,6 +819,7 @@ fn parse_type_kind(text: &str) -> Result<TypeKind, Error> {
         "int32" => TypeKind::Int32,
         "int64" => TypeKind::Int64,
         "float64" => TypeKind::Float64,
+        "numeric" => TypeKind::Numeric,
         "text" => TypeKind::Text,
         "bytes" => TypeKind::Bytes,
         "uuid" => TypeKind::Uuid,

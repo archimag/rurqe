@@ -247,11 +247,12 @@ fn optional_path(ty: &syn::Type) -> bool {
 /// An array column is represented as `Vec<..>` of its element type, and an enum
 /// column as the element type it is declared over.
 ///
-/// `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific `Other` columns are
-/// represented as `String` by default, because the generated module then compiles
-/// without extra dependencies. With [`CodegenOptions::domain_types`] enabled they
-/// map onto `uuid::Uuid`, `serde_json::Value`, `chrono::NaiveDateTime`, and
-/// `chrono::NaiveDate` instead.
+/// `Uuid`, `Json`, `Timestamp`, `Date`, `Numeric` and engine-specific `Other`
+/// columns are represented as `String` by default, because the generated module
+/// then compiles without extra dependencies. With
+/// [`CodegenOptions::domain_types`] enabled they map onto `uuid::Uuid`,
+/// `serde_json::Value`, `chrono::NaiveDateTime`, `chrono::NaiveDate`, and
+/// `rust_decimal::Decimal` instead.
 fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -> String {
     if let TypeKind::Array(inner) = kind {
         let element = type_kind_to_rust_type(inner, false, domain_types);
@@ -274,9 +275,9 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         TypeKind::Json if domain_types => "serde_json::Value".to_owned(),
         TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime".to_owned(),
         TypeKind::Date if domain_types => "chrono::NaiveDate".to_owned(),
-        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => {
-            "String".to_owned()
-        }
+        TypeKind::Numeric if domain_types => "rust_decimal::Decimal".to_owned(),
+        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date
+        | TypeKind::Numeric => "String".to_owned(),
         TypeKind::Enum(name) => table_type_ident(name),
         TypeKind::Other(_) => "String".to_owned(),
         TypeKind::Array(_) => "String".to_owned(),
@@ -479,6 +480,14 @@ mod tests {
             rust_type_of(&ColumnDef::new("on_day", TypeKind::Date, true), &options),
             "Option<chrono::NaiveDate>"
         );
+        assert_eq!(
+            rust_type_of(&ColumnDef::new("total", TypeKind::Numeric, false), &options),
+            "rust_decimal::Decimal"
+        );
+        assert_eq!(
+            rust_type_of(&ColumnDef::new("discount", TypeKind::Numeric, true), &options),
+            "Option<rust_decimal::Decimal>"
+        );
     }
 
     #[test]
@@ -494,6 +503,10 @@ mod tests {
                 &ColumnDef::new("created_at", TypeKind::Timestamp, true),
                 &options
             ),
+            "Option<String>"
+        );
+        assert_eq!(
+            rust_type_of(&ColumnDef::new("total", TypeKind::Numeric, true), &options),
             "Option<String>"
         );
     }
