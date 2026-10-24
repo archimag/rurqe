@@ -558,7 +558,7 @@ Expand the RURQE type system beyond primitive scalars to support standard Rust e
 
 ### Key Deliverables
 - [x] **Observability & Logging Facade (`tracing`):**
-  - Integrate the `tracing` facade (`info!`, `warn!`, `error!`, `trace!`) in `rurqe-postgres`, `rurqe-sqlite`, `rurqe-migrate`, and the `rurqe` facade without adding dependencies to the zero-overhead `rurqe-core`.
+  - Integrate the `tracing` facade (`info!`, `warn!`, `error!`, `trace!`) in `rurqe-postgres`, `rurqe-sqlite`, `rurqe-migrate`, and the `rurqe` facade. The default dependency graph of the zero-overhead `rurqe-core` carries no observability dependency: the lifecycle events of `TransactionGuard` are emitted into the `tracing` facade behind the optional `tracing` Cargo feature (default off), which the `rurqe` facade enables for its consumers, so a direct consumer of `rurqe-core` builds without `tracing` in its graph while the events only the guard observes — savepoint nesting and connection poisoning — remain available through the facade.
   - Instrument connection lifecycles, transaction boundaries (`BEGIN`, `COMMIT`, `ROLLBACK`), savepoints, and migration executions (`V...`, `R...`).
 - [x] **Modular Cargo Feature Flags:**
   - `feature = "uuid"`: support for `uuid::Uuid` across AST expressions, DML mutations, row decoding, and zero-allocation binary protocol bindings in Postgres and SQLite.

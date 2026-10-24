@@ -132,6 +132,7 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
             let savepoint = connection.transaction_status().open_savepoint();
             match connection.savepoint(&savepoint) {
                 Ok(()) => {
+                    #[cfg(feature = "tracing")]
                     tracing::debug!(savepoint = %savepoint, "creating savepoint");
                     Ok(TransactionGuard {
                         connection,
@@ -148,6 +149,7 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
         } else {
             connection.begin(None)?;
             connection.transaction_status().mark_open(true);
+            #[cfg(feature = "tracing")]
             tracing::info!("beginning transaction");
             Ok(TransactionGuard {
                 connection,
@@ -171,10 +173,12 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
         match connection.rollback() {
             Ok(()) => {
                 connection.transaction_status().mark_closed();
+                #[cfg(feature = "tracing")]
                 tracing::warn!("recovered a connection whose rollback had failed");
                 Ok(())
             }
             Err(error) => {
+                #[cfg(feature = "tracing")]
                 tracing::error!(
                     "rolling back the abandoned transaction failed again; the connection has to be discarded"
                 );
@@ -205,10 +209,12 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
         if self.outer {
             self.connection.commit()?;
             self.connection.transaction_status().mark_closed();
+            #[cfg(feature = "tracing")]
             tracing::info!("committed transaction");
         } else if let Some(savepoint) = self.savepoint.as_ref() {
             self.connection.release_savepoint(savepoint)?;
             self.connection.transaction_status().close_savepoint();
+            #[cfg(feature = "tracing")]
             tracing::debug!(savepoint = %savepoint, "released savepoint");
         }
         Ok(())
@@ -238,6 +244,7 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
             match self.connection.rollback() {
                 Ok(()) => {
                     self.connection.transaction_status().mark_closed();
+                    #[cfg(feature = "tracing")]
                     tracing::warn!("rolled back transaction");
                 }
                 Err(_) => {
@@ -246,6 +253,7 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
                     // connection: the next `begin` retries this rollback instead
                     // of opening a fresh transaction on top of the abandoned one.
                     self.connection.transaction_status().mark_poisoned();
+                    #[cfg(feature = "tracing")]
                     tracing::error!(
                         "rolling back the transaction failed; the connection stays poisoned until it is discarded"
                     );
@@ -258,9 +266,11 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
             };
             if closed {
                 self.connection.transaction_status().close_savepoint();
+                #[cfg(feature = "tracing")]
                 tracing::warn!(savepoint = %savepoint, "rolled back to savepoint");
             } else {
                 self.connection.transaction_status().mark_poisoned();
+                #[cfg(feature = "tracing")]
                 tracing::error!(
                     savepoint = %savepoint,
                     "rolling back to the savepoint failed; the connection stays poisoned until it is discarded"
