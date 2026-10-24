@@ -273,6 +273,21 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         _ => rest,
     };
 
+    // A cargo entrypoint forces its subcommand from the executable name, so the
+    // universal flags are handled here: `cargo db-migrate --help` would otherwise
+    // reach the migrate flag loop and be rejected as an unknown option. `-V`
+    // names the program version unambiguously, while `--version` stays available
+    // to `baseline`, which demands it as its own argument.
+    if let Some(first) = rest.first().copied() {
+        match first {
+            "--help" | "-h" => return Ok(CliCommand::Help),
+            "-V" => return Ok(CliCommand::Version),
+            "--version" if entrypoint == Entrypoint::CargoDbBaseline => {}
+            "--version" | "-v" => return Ok(CliCommand::Version),
+            _ => {}
+        }
+    }
+
     let Some((first, remaining)) = rest.split_first() else {
         return Ok(entrypoint.default_command().unwrap_or(CliCommand::Help));
     };

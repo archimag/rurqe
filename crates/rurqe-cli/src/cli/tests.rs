@@ -466,3 +466,46 @@ fn parses_codegen_command() {
         }
     );
 }
+
+#[test]
+fn cargo_entrypoints_answer_the_universal_flags() {
+    // The cargo-dispatched binaries force their subcommand from the executable
+    // name, so `cargo db-migrate --help` must still print the help instead of
+    // failing with `unknown option `--help` for migrate`.
+    assert_eq!(
+        parse_args(&["cargo-db-migrate".into(), "--help".into()]).unwrap(),
+        CliCommand::Help
+    );
+    assert_eq!(
+        parse_args(&["cargo-db-codegen".into(), "-h".into()]).unwrap(),
+        CliCommand::Help
+    );
+    assert_eq!(
+        parse_args(&["cargo-db-verify".into(), "--version".into()]).unwrap(),
+        CliCommand::Version
+    );
+    assert_eq!(
+        parse_args(&["cargo-db-baseline".into(), "-V".into()]).unwrap(),
+        CliCommand::Version
+    );
+}
+
+#[test]
+fn baseline_keeps_its_version_argument_under_a_cargo_entrypoint() {
+    // `--version` on the baseline entrypoint names the baseline, not the program.
+    let cmd = parse_args(&[
+        "cargo-db-baseline".into(),
+        "--version".into(),
+        "1.0.0".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::Baseline {
+            version: "1.0.0".parse().unwrap(),
+            description: "baseline".into(),
+            database_url: None,
+        }
+    );
+}
