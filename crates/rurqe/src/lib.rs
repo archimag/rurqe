@@ -1047,9 +1047,9 @@ pub mod prelude {
 
     pub use rurqe_core::expr::{
         avg, avg_distinct, coalesce, count, count_all, count_distinct, greatest, is_distinct_from,
-        is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, CaseBranch, CaseBuilder,
-        Expression, InSubquery, IntoExprList, LockClause, LockStrength, LockWait, RowExpr,
-        RowValues, SqlCastTarget, StringExpression, Subquery, SubqueryOp, WindowFrame,
+        is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, AnySubquery, CaseBranch,
+        CaseBuilder, Expression, InSubquery, IntoExprList, LockClause, LockStrength, LockWait,
+        RowExpr, RowValues, SqlCastTarget, StringExpression, Subquery, SubqueryOp, WindowFrame,
         WindowFrameBound, WindowFrameKind,
     };
 

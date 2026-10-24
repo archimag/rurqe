@@ -34,8 +34,63 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// Builds an `IN (subquery)` predicate matching this expression.
     ///
     /// The nested query renders inline with the enclosing statement, so its
-    /// parameters continue the placeholder numbering of the outer query.
-    pub fn in_subquery<S: InSubquery>(
+    /// parameters continue the placeholder numbering of the outer query. It has to
+    /// project a single column holding the compared type, because an `IN`
+    /// predicate compares one value with a set of values:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         out.push('$');
+    ///         out.push_str(&index.to_string());
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `users` table.
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// let buyers = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .select((OrderUserId,));
+    ///
+    /// let built = SelectQuery::<MockDialect>::new()
+    ///     .from::<User>()
+    ///     .select((UserId,))
+    ///     .where_(Expr::column::<UserId>().in_subquery(buyers))
+    ///     .build();
+    ///
+    /// assert_eq!(
+    ///     built.sql,
+    ///     "SELECT \"id\" FROM \"users\" WHERE (\"id\" IN (SELECT \"user_id\" FROM \"orders\"))"
+    /// );
+    /// ```
+    ///
+    /// A nested query of another shape is rejected at the call site; see
+    /// [`InSubquery`](crate::expr::InSubquery) for the shapes it refuses.
+    pub fn in_subquery<S: InSubquery<(T,)>>(
         self,
         subquery: S,
     ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
@@ -51,7 +106,11 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 
     /// Builds a `NOT IN (subquery)` predicate matching this expression.
-    pub fn not_in_subquery<S: InSubquery>(
+    ///
+    /// The negation keeps the contract of the positive form: the nested query
+    /// still has to project a single column of the compared type, as
+    /// [`in_subquery`](Self::in_subquery) requires.
+    pub fn not_in_subquery<S: InSubquery<(T,)>>(
         self,
         subquery: S,
     ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>

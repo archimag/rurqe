@@ -4,7 +4,7 @@
 use core::marker::PhantomData;
 
 use super::builder::{Aggregate, Expr, NonAggregate};
-use super::ops::{CombineAggr, CombinedAggr, InSubquery, IntoExpr};
+use super::ops::{AnySubquery, CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::dialect::Dialect;
@@ -587,7 +587,11 @@ impl<Scope, Aggr, D> Expr<bool, Scope, Aggr, D> {
 
 impl Expr<bool, ()> {
     /// Builds an `EXISTS (subquery)` predicate.
-    pub fn exists<S: InSubquery>(subquery: S) -> Expr<bool, (), NonAggregate, S::Dialect> {
+    ///
+    /// `EXISTS` tests whether the nested statement returns any row, so the columns
+    /// it projects take no part in the predicate and any projected query is
+    /// accepted.
+    pub fn exists<S: AnySubquery>(subquery: S) -> Expr<bool, (), NonAggregate, S::Dialect> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
@@ -597,7 +601,11 @@ impl Expr<bool, ()> {
     }
 
     /// Builds a `NOT EXISTS (subquery)` predicate.
-    pub fn not_exists<S: InSubquery>(subquery: S) -> Expr<bool, (), NonAggregate, S::Dialect> {
+    ///
+    /// The negation tests the same existence condition, so the projection of the
+    /// nested statement stays unconstrained, exactly as [`exists`](Self::exists)
+    /// leaves it.
+    pub fn not_exists<S: AnySubquery>(subquery: S) -> Expr<bool, (), NonAggregate, S::Dialect> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,

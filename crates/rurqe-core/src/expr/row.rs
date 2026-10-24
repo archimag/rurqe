@@ -232,9 +232,56 @@ pub trait RowExpr<Row> {
 
     /// Builds an `IN (subquery)` membership predicate matching the row.
     ///
-    /// The nested query must project as many columns as the row has elements;
-    /// it renders inline, so its parameters continue the placeholder numbering
-    /// of the enclosing statement.
+    /// The nested query renders inline, so its parameters continue the placeholder
+    /// numbering of the enclosing statement. It must project as many columns as the
+    /// row has elements, and every projected column must hold the type of the row
+    /// element it is compared with, because the two tuples are compared element by
+    /// element. A query of another shape is rejected at the call site:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::RowExpr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         out.push('$');
+    ///         out.push_str(&index.to_string());
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `users` table.
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///         UserName => "name": String,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderId => "id": i64,
+    ///         OrderName => "name": String,
+    ///     }
+    /// }
+    ///
+    /// let pairs = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .select((OrderName, OrderId));
+    ///
+    /// // Fails to compile: the row compares an integer with a string in its first
+    /// // position, while the nested query projects them the other way round.
+    /// let _ = (UserId, UserName).in_subquery(pairs);
+    /// ```
     #[allow(clippy::type_complexity)]
     fn in_subquery<S>(
         self,
@@ -243,12 +290,16 @@ pub trait RowExpr<Row> {
     where
         Self: Sized,
         Self::Dialect: MergeDialect<S::Dialect>,
-        S: InSubquery,
+        S: InSubquery<Row>,
     {
         Expr::new(row_membership::<Row, Self, S>(self, subquery, false))
     }
 
     /// Builds a `NOT IN (subquery)` negated membership predicate matching the row.
+    ///
+    /// The negation keeps the contract of the positive form: the nested query
+    /// still has to project the same tuple as the compared row, as
+    /// [`in_subquery`](Self::in_subquery) requires.
     #[allow(clippy::type_complexity)]
     fn not_in_subquery<S>(
         self,
@@ -257,7 +308,7 @@ pub trait RowExpr<Row> {
     where
         Self: Sized,
         Self::Dialect: MergeDialect<S::Dialect>,
-        S: InSubquery,
+        S: InSubquery<Row>,
     {
         Expr::new(row_membership::<Row, Self, S>(self, subquery, true))
     }
@@ -310,7 +361,7 @@ where
 fn row_membership<Row, L, S>(lhs: L, subquery: S, negated: bool) -> ExprKind
 where
     L: RowExpr<Row>,
-    S: InSubquery,
+    S: InSubquery<Row>,
 {
     let mut elements = Vec::new();
     lhs.push_elements(&mut elements);
