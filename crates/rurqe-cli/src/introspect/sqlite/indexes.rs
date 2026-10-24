@@ -3,8 +3,7 @@
 use crate::cli::CliError;
 use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
-use super::checks::matching_close;
-use super::lexer::{tokenize, SqlKeyword, TokenKind};
+use super::lexer::{matching_close, tokenize, SqlKeyword, TokenKind};
 use super::{sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGGERS, SQLITE_VIEWS};
 
 /// Collects the secondary indexes declared on `table`.

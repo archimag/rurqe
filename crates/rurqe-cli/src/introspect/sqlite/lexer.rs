@@ -415,129 +415,48 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
     tokens
 }
 
+/// The token index of the parenthesis closing the one at `open`.
+///
+/// The scan runs over the token stream of [`tokenize`], so a parenthesis written
+/// inside a literal, a quoted identifier, or a comment never affects the depth of
+/// the one being closed. An unbalanced stream reports `None`.
+pub fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
+    if tokens.get(open).map(|token| token.kind) != Some(TokenKind::OpenParen) {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.kind {
+            TokenKind::OpenParen => depth = depth.checked_add(1)?,
+            TokenKind::CloseParen => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 /// Extracts the balanced text inside `(...)` starting at `sql[0] == '('`.
 ///
 /// Returns `Some((inner_slice, total_length_consumed))`.
 ///
-/// Correctly accounts for single-line comments (`--`), block comments (`/* */`),
-/// string literals (`'...'` with `''`), double-quoted identifiers (`"..."`),
-/// backtick identifiers (`` `...` ``), and bracketed identifiers (`[...]`).
-/// Parentheses inside comments and quotes do not affect balancing.
+/// The extraction delegates to the shared [`matching_close`] scanner over the
+/// token stream, so parentheses inside comments, literals, and quoted
+/// identifiers do not affect balancing.
 pub fn extract_paren_block(sql: &str) -> Option<(&str, usize)> {
     if !sql.starts_with('(') {
         return None;
     }
 
-    let mut depth: usize = 0;
-    let mut i = 0;
-
-    while i < sql.len() {
-        let rem = &sql[i..];
-
-        if rem.starts_with("--") {
-            i += 2;
-            if let Some(pos) = sql[i..].find('\n') {
-                i += pos + 1;
-            } else {
-                i = sql.len();
-            }
-            continue;
-        }
-
-        if rem.starts_with("/*") {
-            i += 2;
-            if let Some(pos) = sql[i..].find("*/") {
-                i += pos + 2;
-            } else {
-                i = sql.len();
-            }
-            continue;
-        }
-
-        let ch = rem.chars().next()?;
-        match ch {
-            '\'' => {
-                i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
-                    if r.starts_with("''") {
-                        i += 2;
-                    } else if r.starts_with('\'') {
-                        i += 1;
-                        break;
-                    } else if let Some(c) = r.chars().next() {
-                        i += c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            '"' => {
-                i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
-                    if r.starts_with("\"\"") {
-                        i += 2;
-                    } else if r.starts_with('"') {
-                        i += 1;
-                        break;
-                    } else if let Some(c) = r.chars().next() {
-                        i += c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            '`' => {
-                i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
-                    if r.starts_with("``") {
-                        i += 2;
-                    } else if r.starts_with('`') {
-                        i += 1;
-                        break;
-                    } else if let Some(c) = r.chars().next() {
-                        i += c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            '[' => {
-                i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
-                    if r.starts_with("]]") {
-                        i += 2;
-                    } else if r.starts_with(']') {
-                        i += 1;
-                        break;
-                    } else if let Some(c) = r.chars().next() {
-                        i += c.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            '(' => {
-                depth = depth.checked_add(1)?;
-                i += 1;
-            }
-            ')' => {
-                depth = depth.checked_sub(1)?;
-                i += 1;
-                if depth == 0 {
-                    return Some((&sql[1..i - 1], i));
-                }
-            }
-            _ => {
-                i += ch.len_utf8();
-            }
-        }
-    }
-
-    None
+    let tokens = tokenize(sql);
+    let close = matching_close(&tokens, 0)?;
+    Some((&sql[1..tokens[close].span.0], tokens[close].span.1))
 }
 
 /// Checks whether `sql` (trimmed) is enclosed in a single balanced pair of parentheses.
@@ -793,5 +712,16 @@ mod tests {
             .find(|t| t.unescaped_string() == "активен")
             .expect("find active literal");
         assert_eq!(active_lit.kind, TokenKind::StringLiteral);
+    }
+
+    #[test]
+    fn matching_close_balances_parentheses_across_literals_and_comments() {
+        let sql = "CHECK ((status) IN ('a)', \"b)\", [c)])) /* ) */";
+        let tokens = tokenize(sql);
+
+        assert_eq!(matching_close(&tokens, 0), None);
+        assert_eq!(matching_close(&tokens, 1), Some(tokens.len() - 1));
+        assert_eq!(matching_close(&tokens, 2), Some(4));
+        assert_eq!(matching_close(&tokenize("(unclosed"), 0), None);
     }
 }

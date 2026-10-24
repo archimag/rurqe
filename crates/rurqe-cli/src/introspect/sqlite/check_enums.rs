@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use super::lexer::{tokenize, SqlKeyword, Token, TokenKind};
+use super::lexer::{matching_close, tokenize, SqlKeyword, Token, TokenKind};
 
 /// Parses deterministic `CHECK (<col> IN ('val1', 'val2', ...))` enum constraints
 /// from the table DDL `sql`.
@@ -173,29 +173,6 @@ fn trim_parens(tokens: &[Token<'_>], mut start: usize, mut end: usize) -> (usize
     }
 
     (start, end)
-}
-
-/// The index of the parenthesis closing the one at `open`.
-fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
-    if tokens.get(open).map(|token| token.kind) != Some(TokenKind::OpenParen) {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match token.kind {
-            TokenKind::OpenParen => depth = depth.checked_add(1)?,
-            TokenKind::CloseParen => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

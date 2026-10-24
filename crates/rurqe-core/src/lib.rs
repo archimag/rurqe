@@ -1,5 +1,6 @@
 //! Core type-safe SQL AST, schema traits, and dialect abstractions for RURQE.
 
+pub mod calendar;
 pub mod dialect;
 pub mod dml;
 pub mod expr;

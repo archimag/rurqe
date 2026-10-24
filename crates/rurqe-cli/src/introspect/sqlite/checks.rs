@@ -7,7 +7,7 @@ use rurqe_migrate::catalog::CheckDef;
 use crate::introspect::types::RawCheckMetadata;
 
 use super::check_enums::{parse_check_clause, parse_sqlite_check_enums};
-use super::lexer::{tokenize, SqlKeyword, Token, TokenKind};
+use super::lexer::{matching_close, tokenize, SqlKeyword, Token, TokenKind};
 use super::{RawSqliteColumnMetadata, RawSqliteTableMetadata};
 
 /// Collects the check constraints declared by the tables of the schema.
@@ -161,27 +161,4 @@ fn names_an_enum_column(expression: &str, enum_columns: &BTreeSet<String>) -> bo
     }
 
     parse_check_clause(&tokenize(expression), &known).is_some()
-}
-
-/// The token index of the parenthesis closing the one at `open`.
-pub(super) fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
-    if tokens.get(open).map(|token| token.kind) != Some(TokenKind::OpenParen) {
-        return None;
-    }
-
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match token.kind {
-            TokenKind::OpenParen => depth = depth.checked_add(1)?,
-            TokenKind::CloseParen => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
 }

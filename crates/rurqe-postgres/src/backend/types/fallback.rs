@@ -9,6 +9,9 @@
 
 use super::driver::types::Type;
 
+#[cfg(not(feature = "chrono"))]
+use rurqe_core::calendar::civil_from_days;
+
 /// Renders the value of a column of a family this build has no crate for.
 ///
 /// Returns `None` when `ty` belongs to no such family, which leaves the payload to
@@ -182,35 +185,6 @@ fn read_days(payload: &[u8]) -> Result<i32, String> {
     })?;
 
     Ok(i32::from_be_bytes(octets))
-}
-
-/// Converts a number of days since 1970-01-01 into its civil date.
-///
-/// The conversion splits the day count into four hundred year eras, then into the
-/// year, the day of the year, and finally the month and the day, so the calendar
-/// of a value is computed without a calendar library.
-#[cfg(not(feature = "chrono"))]
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let shifted = days + 719_468;
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted - 146_096
-    } / 146_097;
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_position = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_position + 2) / 5 + 1;
-    let month = if month_position < 10 {
-        month_position + 3
-    } else {
-        month_position - 9
-    };
-
-    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[cfg(all(

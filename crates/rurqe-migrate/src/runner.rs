@@ -927,6 +927,17 @@ mod tests {
         assert_eq!(format_timestamp(951_782_400), "2000-02-29 00:00:00");
     }
 
+    #[test]
+    fn civil_dates_match_the_shared_reference_vectors() {
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(58), (1970, 2, 28));
+        assert_eq!(civil_from_days(59), (1970, 3, 1));
+        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+        assert_eq!(civil_from_days(-25_508), (1900, 3, 1));
+        assert_eq!(civil_from_days(47_541), (2100, 3, 1));
+    }
+
     fn boundary(version: &str) -> Checkpoint {
         Checkpoint::new(
             version.parse().expect("a valid version"),
