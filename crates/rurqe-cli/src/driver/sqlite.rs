@@ -125,10 +125,68 @@ impl MigrationBackend for SqliteMigrationBackend {
         })
     }
 
+    /// Executes a script marked non-transactional in autocommit mode.
+    ///
+    /// The run lock is held as an open `BEGIN IMMEDIATE` transaction, and the
+    /// statements a script marks itself non-transactional for are exactly the
+    /// ones SQLite rejects inside a transaction — `VACUUM`, several `PRAGMA`
+    /// settings. The lock transaction is committed first, so the script runs
+    /// outside any transaction the runner opened and every statement it
+    /// completes is durable on its own. A script that fails midway therefore
+    /// leaves its completed statements in the database: that is the documented
+    /// contract of a non-transactional script, and the history row records the
+    /// failure for a subsequent `repair`.
+    ///
+    /// Between the `COMMIT` and the re-take below the write lock is free:
+    /// SQLite materialises its single-writer lock only as a transaction, so
+    /// another runner may hold the lock for as long as its own run lasts. A
+    /// runner that cannot re-take the lock keeps going without it — every
+    /// following step opens its own `IMMEDIATE` transaction — and
+    /// [`release_lock`](MigrationBackend::release_lock) tolerates the missing
+    /// lock transaction.
     fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
-        self.conn.execute_batch(sql).map_err(backend_error)
+        if self.lock_held {
+            self.conn.execute_batch("COMMIT").map_err(backend_error)?;
+            self.lock_held = false;
+        }
+
+        let result = self.conn.execute_batch(sql).map_err(backend_error);
+
+        if !self.conn.is_autocommit() {
+            // The script opened a transaction it never closed. The leftover
+            // transaction is rolled back so the connection stays usable for
+            // the failure record, and the diagnostic names the imbalance of
+            // the script instead of the lock error a re-take would report.
+            let _ = self.conn.execute_batch("ROLLBACK");
+            return Err(Error::Backend(
+                "non-transactional script left a transaction open; balance the BEGIN \
+                 statements of a script marked non-transactional"
+                    .to_owned(),
+            ));
+        }
+
+        // Take the write lock again so the history row of the script and the
+        // remaining steps of the run stay serialised.
+        if let Err(error) = self.acquire_lock() {
+            tracing::warn!(
+                error = %error,
+                "failed to re-take the SQLite migration lock after a non-transactional script"
+            );
+        }
+
+        result
     }
 
+    /// Takes the SQLite write lock for the duration of a migration run.
+    ///
+    /// SQLite materialises its single-writer lock as a transaction, so the
+    /// lock is held as an open `BEGIN IMMEDIATE` until
+    /// [`release_lock`](MigrationBackend::release_lock) commits it. A script
+    /// marked non-transactional cannot run inside that transaction, so
+    /// [`execute_non_transactional`](MigrationBackend::execute_non_transactional)
+    /// commits the lock transaction before such a script and takes the lock
+    /// again afterwards; between those statements another runner may hold
+    /// the write lock for as long as its own run lasts.
     fn acquire_lock(&mut self) -> Result<(), Error> {
         warn_if_in_tokio_runtime("SqliteMigrationBackend::acquire_lock");
         let timeout = self.lock_timeout;
@@ -148,6 +206,14 @@ impl MigrationBackend for SqliteMigrationBackend {
         // already unusable cannot commit, and the file lock is released by the
         // driver once the connection closes.
         self.lock_held = false;
+        // A non-transactional script ends the lock transaction and a failed
+        // re-take leaves the connection in autocommit, so a connection
+        // holding no transaction has nothing to commit — the driver would
+        // reject the statement with `cannot commit - no transaction is
+        // active`.
+        if self.conn.is_autocommit() {
+            return Ok(());
+        }
         self.conn.execute_batch("COMMIT").map_err(backend_error)
     }
 }
