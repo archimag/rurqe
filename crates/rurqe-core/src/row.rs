@@ -178,6 +178,17 @@ impl FromSqlValue for f64 {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::F64(value) => Ok(*value),
+            // A nested document reports a fractional value as the exact decimal
+            // holding its digits, so a floating point field of the same row reads
+            // the number the document carries.
+            #[cfg(feature = "decimal")]
+            SqlVal::Decimal(decimal) => {
+                use rust_decimal::prelude::ToPrimitive;
+
+                decimal.to_f64().ok_or_else(|| {
+                    invalid_value::<Self>(value, "value does not fit into a 64-bit float")
+                })
+            }
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -794,6 +805,15 @@ mod tests {
         fn assert_from_row<R: FromRow>() {}
 
         assert_from_row::<<(UserId, UserName, UserActive) as Selection>::Row>();
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn floating_point_values_accept_an_exact_decimal() {
+        assert_eq!(
+            f64::from_sql_value(&SqlVal::Decimal(rust_decimal::Decimal::new(125, 1))),
+            Ok(12.5)
+        );
     }
 
     #[cfg(feature = "decimal")]

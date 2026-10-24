@@ -146,23 +146,68 @@ where
     type Output = Option<Row>;
 }
 
+/// The exact value of a JSON number the integer representation cannot carry.
+///
+/// PostgreSQL aggregates a `NUMERIC` column into a nested document as a JSON
+/// number, and the digits identifying that value live in the textual form of the
+/// number. Reading them back into an exact decimal keeps the value the column
+/// declares, where a floating point representation would round it.
+///
+/// The conversion reports `None` for a number the decimal type cannot hold, so
+/// the caller falls back to the next representation of the value.
+#[cfg(all(feature = "serde_json", feature = "decimal"))]
+fn exact_json_number(number: &serde_json::Number) -> Option<SqlVal> {
+    number
+        .to_string()
+        .parse::<rust_decimal::Decimal>()
+        .ok()
+        .map(SqlVal::Decimal)
+}
+
+/// The exact value of a JSON number the integer representation cannot carry.
+///
+/// A build without the `decimal` feature carries no exact decimal value, so the
+/// number keeps the floating point representation it was parsed with.
+#[cfg(all(feature = "serde_json", not(feature = "decimal")))]
+fn exact_json_number(_number: &serde_json::Number) -> Option<SqlVal> {
+    None
+}
+
+/// Converts one JSON number into the SQL value carrying it.
+///
+/// An integer stays an integer, and a number the integer representation cannot
+/// carry — a fraction, or an integer wider than the signed 64-bit range — keeps
+/// every digit of its textual form whenever an exact decimal is compiled in.
+#[cfg(feature = "serde_json")]
+fn json_number_to_sql_value(number: &serde_json::Number) -> SqlVal {
+    if let Some(value) = number.as_i64() {
+        return SqlVal::I64(value);
+    }
+
+    if let Some(value) = exact_json_number(number) {
+        return value;
+    }
+
+    match number.as_f64() {
+        Some(value) => SqlVal::F64(value),
+        None => SqlVal::Text(number.to_string()),
+    }
+}
+
 /// Converts a JSON value of a nested document into the matching SQL value.
 ///
 /// Scalars keep their natural representation, so a field of a nested row decodes
 /// through exactly the same [`FromSqlValue`](crate::row::FromSqlValue) contract a
-/// column of the same type decodes through.
+/// column of the same type decodes through. A number wider than the integer
+/// representation, or one carrying a fraction, keeps its exact digits when the
+/// `decimal` feature is compiled in, so a `NUMERIC` column of a nested row never
+/// passes through a floating point approximation.
 #[cfg(feature = "serde_json")]
 pub fn json_to_sql_value(value: &serde_json::Value) -> SqlVal {
     match value {
         serde_json::Value::Null => SqlVal::Null,
         serde_json::Value::Bool(value) => SqlVal::Bool(*value),
-        serde_json::Value::Number(number) => match number.as_i64() {
-            Some(value) => SqlVal::I64(value),
-            None => match number.as_f64() {
-                Some(value) => SqlVal::F64(value),
-                None => SqlVal::Text(number.to_string()),
-            },
-        },
+        serde_json::Value::Number(number) => json_number_to_sql_value(number),
         serde_json::Value::String(text) => SqlVal::Text(text.clone()),
         other => SqlVal::Json(other.clone()),
     }
@@ -175,11 +220,12 @@ pub fn json_to_sql_value(value: &serde_json::Value) -> SqlVal {
 /// the document bound as a parameter and the document decoded from a result row
 /// carry the same values whichever engine produced them.
 ///
-/// A value of a kind a JSON document cannot carry — a binary blob, an exact
-/// decimal, a UUID, or a temporal value — keeps the text it is displayed with,
-/// which is the scalar form [`FromSqlValue`](crate::row::FromSqlValue) parses back
-/// into the same type. A floating point value JSON cannot represent, `NaN` and the
-/// two infinities, becomes `null` instead of failing the encoding.
+/// A value of a kind a JSON document cannot carry — a binary blob, a UUID, or a
+/// temporal value — keeps the text it is displayed with, which is the scalar form
+/// [`FromSqlValue`](crate::row::FromSqlValue) parses back into the same type. An
+/// exact decimal becomes a JSON number while that number keeps every digit of it,
+/// and the same text otherwise. A floating point value JSON cannot represent,
+/// `NaN` and the two infinities, becomes `null` instead of failing the encoding.
 #[cfg(feature = "serde_json")]
 pub fn sql_val_to_json(value: &SqlVal) -> serde_json::Value {
     match value {
@@ -188,6 +234,8 @@ pub fn sql_val_to_json(value: &SqlVal) -> serde_json::Value {
         SqlVal::I32(number) => serde_json::Value::from(*number),
         SqlVal::I64(number) => serde_json::Value::from(*number),
         SqlVal::F64(number) => json_number(*number),
+        #[cfg(feature = "decimal")]
+        SqlVal::Decimal(value) => json_decimal(*value),
         SqlVal::Text(text) => serde_json::Value::String(text.clone()),
         SqlVal::Json(document) => document.clone(),
         SqlVal::Array(values) => {
@@ -204,6 +252,26 @@ fn json_number(value: f64) -> serde_json::Value {
     match serde_json::Number::from_f64(value) {
         Some(number) => serde_json::Value::Number(number),
         None => serde_json::Value::Null,
+    }
+}
+
+/// Builds the JSON representation of an exact decimal value.
+///
+/// A decimal a JSON number carries with every digit preserved is written as that
+/// number, so the object of a nested row has the shape the engine produces for a
+/// `NUMERIC` column. A value the number cannot carry exactly — its digit string
+/// does not survive the floating point form of a JSON number — is written as text
+/// instead, which [`json_to_sql_value`] reads back into the same exact value.
+#[cfg(all(feature = "serde_json", feature = "decimal"))]
+fn json_decimal(value: rust_decimal::Decimal) -> serde_json::Value {
+    let text = value.to_string();
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(serde_json::Value::Number(number))
+            if number.to_string().parse::<rust_decimal::Decimal>().ok() == Some(value) =>
+        {
+            serde_json::Value::Number(number)
+        }
+        _ => serde_json::Value::String(text),
     }
 }
 
@@ -359,8 +427,6 @@ mod tests {
     struct PgMock;
 
     impl Dialect for PgMock {
-        const SUPPORTS_JSONB_ROW_AGG: bool = true;
-
         fn push_quoted_identifier(out: &mut String, ident: &str) {
             out.push('"');
             out.push_str(ident);
@@ -577,10 +643,71 @@ mod tests {
             SqlVal::Json(serde_json::json!({ "sku": "a", "qty": 2 }))
         );
 
+        assert_eq!(OrderLine::from_sql_value(&row), Ok(("a".to_owned(), 2)));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn an_integer_wider_than_the_signed_range_keeps_every_digit() {
+        use rust_decimal::Decimal;
+
+        let document: serde_json::Value = serde_json::from_str(r#"{"id":18446744073709551615}"#)
+            .expect("the document is valid JSON");
+        let object = json_object(&json_to_sql_value(&document)).expect("the object decodes");
+
+        let id: Decimal = nested_field(&object, "id").expect("the wide number decodes");
+
         assert_eq!(
-            OrderLine::from_sql_value(&row),
-            Ok(("a".to_owned(), 2))
+            id,
+            "18446744073709551615"
+                .parse::<Decimal>()
+                .expect("the expected value is a decimal")
         );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn a_fractional_number_carries_the_decimal_kind() {
+        use rust_decimal::Decimal;
+
+        assert_eq!(
+            json_to_sql_value(&serde_json::json!(12.5)),
+            SqlVal::Decimal(Decimal::new(125, 1))
+        );
+        assert_eq!(
+            json_to_sql_value(&serde_json::json!(7)),
+            SqlVal::I64(7),
+            "an integer keeps the integer representation"
+        );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn a_fractional_number_decodes_into_its_exact_decimal() {
+        use rust_decimal::Decimal;
+
+        let document = serde_json::json!({ "total": 12.5 });
+        let object = json_object(&json_to_sql_value(&document)).expect("the object decodes");
+
+        let total: Decimal = nested_field(&object, "total").expect("the number decodes");
+
+        assert_eq!(total, Decimal::new(125, 1));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn an_exact_decimal_round_trips_through_a_nested_field() {
+        use rust_decimal::Decimal;
+
+        let exact = "123456789012345678.90123456"
+            .parse::<Decimal>()
+            .expect("the value fits into a decimal");
+        let row = multiset_object(&[("total", SqlVal::Decimal(exact))]);
+        let object = json_object(&row).expect("the row decodes");
+
+        let decoded: Decimal = nested_field(&object, "total").expect("the total decodes");
+
+        assert_eq!(decoded, exact);
     }
 }
 
