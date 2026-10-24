@@ -23,6 +23,8 @@ use crate::schema::TableRef;
 mod nested;
 mod statement;
 
+pub(crate) use statement::StatementRef;
+
 /// Why a raw SQL template cannot be paired with the parameters supplied for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawSqlError {

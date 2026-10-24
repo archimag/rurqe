@@ -38,31 +38,33 @@ fn render_relation<D: Dialect>(
     }
 }
 
-/// A borrowed view of a `SELECT` statement AST.
+/// A borrowed view of a `SELECT` statement.
 ///
 /// Borrows all clauses from either a [`SelectAst`] or directly from the query
-/// builder, avoiding cloning of clause vectors during statement rendering.
+/// builder, so both pre-flight validation and rendering read the recorded
+/// statement in place instead of cloning its clause vectors — and the subqueries
+/// embedded in them — on every build.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct StatementRef<'a> {
-    pub ctes: &'a [CteAst],
-    pub distinct: bool,
-    pub distinct_on: &'a [ExprKind],
-    pub projections: &'a [ExprKind],
-    pub projection_aliases: Option<&'a [&'static str]>,
-    pub from: Option<TableRef>,
-    pub joins: &'a [JoinAst],
-    pub derived: &'a [DerivedAst],
-    pub filter: Option<&'a ExprKind>,
-    pub group_by: &'a [ExprKind],
-    pub having: Option<&'a ExprKind>,
-    pub order_by: &'a [OrderCriterion],
-    pub limit: Option<u32>,
-    pub offset: Option<u32>,
-    pub set_operations: &'a [SetOpAst],
-    pub compound_order_by: &'a [OrderCriterion],
-    pub compound_limit: Option<u32>,
-    pub compound_offset: Option<u32>,
-    pub lock: Option<LockClause>,
+pub(crate) struct StatementRef<'a> {
+    pub(crate) ctes: &'a [CteAst],
+    pub(crate) distinct: bool,
+    pub(crate) distinct_on: &'a [ExprKind],
+    pub(crate) projections: &'a [ExprKind],
+    pub(crate) projection_aliases: Option<&'a [&'static str]>,
+    pub(crate) from: Option<TableRef>,
+    pub(crate) joins: &'a [JoinAst],
+    pub(crate) derived: &'a [DerivedAst],
+    pub(crate) filter: Option<&'a ExprKind>,
+    pub(crate) group_by: &'a [ExprKind],
+    pub(crate) having: Option<&'a ExprKind>,
+    pub(crate) order_by: &'a [OrderCriterion],
+    pub(crate) limit: Option<u32>,
+    pub(crate) offset: Option<u32>,
+    pub(crate) set_operations: &'a [SetOpAst],
+    pub(crate) compound_order_by: &'a [OrderCriterion],
+    pub(crate) compound_limit: Option<u32>,
+    pub(crate) compound_offset: Option<u32>,
+    pub(crate) lock: Option<LockClause>,
 }
 
 impl<'a> From<&'a SelectAst> for StatementRef<'a> {

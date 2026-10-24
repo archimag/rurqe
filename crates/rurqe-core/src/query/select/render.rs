@@ -5,7 +5,9 @@
 //! the dialect-neutral [`SelectAst`] and hand the AST to the renderer.
 
 use crate::dialect::Dialect;
-use crate::expr::{Expr, ExprKind, NonAggregate, SelectAst, SqlVal, Subquery, SubqueryOp};
+use crate::expr::{
+    Expr, ExprKind, NonAggregate, SelectAst, SqlVal, StatementRef, Subquery, SubqueryOp,
+};
 use crate::query::cte::{Cte, DerivedTable, Lateral};
 use crate::query::scope::TableScope;
 use crate::schema::{Table, TableRef};
@@ -45,9 +47,46 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
         }
     }
 
+    /// Borrows the recorded clauses of the query as a statement view.
+    ///
+    /// The view references the clause vectors the builder already owns, so
+    /// validating and rendering a query reads the recorded statement in place
+    /// instead of cloning its clauses — and the subqueries embedded in them — on
+    /// every build. [`SelectQuery::to_ast`] stays the owning conversion the
+    /// embedding entry points need.
+    pub(crate) fn statement(&self) -> StatementRef<'_> {
+        let from = self.from.or_else(|| {
+            let mut tables: Vec<TableRef> = Vec::new();
+            Tables::push_table_refs(&mut tables);
+            tables.first().copied()
+        });
+
+        StatementRef {
+            ctes: &self.ctes,
+            distinct: self.distinct,
+            distinct_on: &self.distinct_on,
+            projections: &self.projections,
+            projection_aliases: None,
+            from,
+            joins: &self.joins,
+            derived: &self.derived,
+            filter: self.filter.as_ref(),
+            group_by: &self.group_by,
+            having: self.having.as_ref(),
+            order_by: &self.order_by,
+            limit: self.limit,
+            offset: self.offset,
+            set_operations: &self.set_operations,
+            compound_order_by: &self.compound_order_by,
+            compound_limit: self.compound_limit,
+            compound_offset: self.compound_offset,
+            lock: self.lock,
+        }
+    }
+
     /// Renders the query statement and parameters into the target buffers.
     pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        self.to_ast().render::<D>(sql, params);
+        self.statement().render::<D>(sql, params);
     }
 
     /// Validates pre-flight SQL semantics and renders the query into SQL text and its ordered parameter list.
@@ -56,11 +95,11 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     /// query rendered without `select` is rejected at compile time in debug and
     /// release builds alike; see [`ProjectionPresent`].
     pub fn build(&self) -> Result<BuiltQuery, crate::query::BuildError> {
-        let ast = self.to_ast();
-        ast.validate()?;
+        let statement = self.statement();
+        statement.validate()?;
         let mut sql = String::new();
         let mut params = Vec::new();
-        ast.render::<D>(&mut sql, &mut params);
+        statement.render::<D>(&mut sql, &mut params);
         Ok(BuiltQuery { sql, params })
     }
 

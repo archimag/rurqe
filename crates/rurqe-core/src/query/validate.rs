@@ -2,10 +2,15 @@
 //!
 //! Validates semantic SQL rules deterministically before query execution,
 //! guaranteeing zero database rejection.
+//!
+//! The rules are checked on the borrowed [`StatementRef`] view of a statement, so
+//! building a query validates the clause vectors the builder already owns instead
+//! of a deep copy of them. [`SelectAst::validate`] delegates to the same view, so
+//! the nested statements embedded in an expression stay checked as well.
 
 use core::fmt;
 
-use crate::expr::{DerivedAst, ExprKind, SelectAst, WindowExprKind};
+use crate::expr::{DerivedAst, ExprKind, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
 
 /// An error returned when pre-flight query validation detects invalid SQL semantics.
@@ -114,20 +119,31 @@ impl std::error::Error for BuildError {}
 impl SelectAst {
     /// Performs recursive pre-flight validation on the query AST and all embedded subqueries.
     pub fn validate(&self) -> Result<(), BuildError> {
+        StatementRef::from(self).validate()
+    }
+}
+
+impl<'a> StatementRef<'a> {
+    /// Performs recursive pre-flight validation on the borrowed statement and all
+    /// embedded subqueries.
+    ///
+    /// The statement is read in place, so validating a query allocates nothing for
+    /// the clauses it validates.
+    pub(crate) fn validate(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
         self.validate_distinct_on_prefix()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
 
-        for cte in &self.ctes {
+        for cte in self.ctes {
             cte.query.validate()?;
         }
 
-        for derived in &self.derived {
+        for derived in self.derived {
             derived.query.validate()?;
         }
 
-        for join in &self.joins {
+        for join in self.joins {
             if let Some(lateral) = &join.lateral {
                 lateral.validate()?;
             }
@@ -136,29 +152,29 @@ impl SelectAst {
             }
         }
 
-        for proj in &self.projections {
+        for proj in self.projections {
             validate_expr(proj)?;
         }
-        for dist_on in &self.distinct_on {
+        for dist_on in self.distinct_on {
             validate_expr(dist_on)?;
         }
-        if let Some(filter) = &self.filter {
+        if let Some(filter) = self.filter {
             validate_expr(filter)?;
         }
-        for gb in &self.group_by {
+        for gb in self.group_by {
             validate_expr(gb)?;
         }
-        if let Some(having) = &self.having {
+        if let Some(having) = self.having {
             validate_expr(having)?;
         }
-        for order in &self.order_by {
+        for order in self.order_by {
             validate_expr(&order.expr)?;
         }
-        for order in &self.compound_order_by {
+        for order in self.compound_order_by {
             validate_expr(&order.expr)?;
         }
 
-        for set_op in &self.set_operations {
+        for set_op in self.set_operations {
             set_op.query.validate()?;
         }
 
@@ -183,12 +199,12 @@ impl SelectAst {
     /// table instead — see [`reject_shadowed_derived`].
     fn validate_relations(&self) -> Result<(), BuildError> {
         let mut names = Vec::with_capacity(self.joins.len() + 1);
-        if let Some(from) = &self.from {
-            reject_shadowed_derived(from, &self.derived)?;
+        if let Some(from) = self.from {
+            reject_shadowed_derived(&from, self.derived)?;
             names.push(from.alias.unwrap_or(from.name));
         }
-        for join in &self.joins {
-            reject_shadowed_derived(&join.table, &self.derived)?;
+        for join in self.joins {
+            reject_shadowed_derived(&join.table, self.derived)?;
             let name = join.table.alias.unwrap_or(join.table.name);
             if names.contains(&name) {
                 return Err(BuildError::DuplicateRelation { name });
@@ -206,7 +222,7 @@ impl SelectAst {
     /// which of the duplicate rows survives. The rule compares expressions
     /// structurally and ignores the direction and null placement of each
     /// criterion, so the check runs on the assembled statement data during
-    /// [`SelectAst::validate`] and surfaces as
+    /// [`StatementRef::validate`] and surfaces as
     /// [`BuildError::DistinctOnOrderMismatch`]. An absent `ORDER BY` clause stays
     /// valid: the engine accepts it and leaves the surviving row
     /// undetermined.
@@ -231,7 +247,7 @@ impl SelectAst {
     /// rejects the statement otherwise with `for SELECT DISTINCT, ORDER BY
     /// expressions must appear in select list`. The rule compares the assembled
     /// expressions rather than their types, so it runs on the statement data
-    /// during [`SelectAst::validate`] and surfaces as
+    /// during [`StatementRef::validate`] and surfaces as
     /// [`BuildError::DistinctOrderNotProjected`]. A projection exposed under an
     /// alias matches the expression the alias names, and a bare 1-based
     /// position matches the projection it addresses.
@@ -279,7 +295,7 @@ impl SelectAst {
     /// name and is addressed by its position instead.
     fn validate_compound_order(&self) -> Result<(), BuildError> {
         let columns = self.projections.len();
-        for criterion in &self.compound_order_by {
+        for criterion in self.compound_order_by {
             match &criterion.expr {
                 ExprKind::Raw { .. } => {
                     if let Some(index) = raw_order_position(&criterion.expr) {
