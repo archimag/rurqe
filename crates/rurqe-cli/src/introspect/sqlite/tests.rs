@@ -213,6 +213,22 @@ fn a_named_check_keeps_its_declared_name() {
 }
 
 #[test]
+fn a_key_constraint_name_is_not_attributed_to_a_check() {
+    let sql = "CREATE TABLE users (\n\
+                 id INTEGER CONSTRAINT users_pk PRIMARY KEY CHECK (id > 0),\n\
+                 email TEXT CONSTRAINT users_email_uq UNIQUE CHECK (length(email) > 0)\n\
+               );";
+
+    let checks = parse_sqlite_checks("users", sql, &["id", "email"]);
+
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[0].name, "users_check_0");
+    assert_eq!(checks[0].expression, "id > 0");
+    assert_eq!(checks[1].name, "users_check_1");
+    assert_eq!(checks[1].expression, "length(email) > 0");
+}
+
+#[test]
 fn an_enum_check_stays_an_enum() {
     let sql = "CREATE TABLE tasks (\n\
                  status TEXT NOT NULL CHECK (status IN ('todo', 'done'))\n\

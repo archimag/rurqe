@@ -84,9 +84,10 @@ pub(super) fn parse_sqlite_checks(
 ///
 /// The scan runs over the token stream of the shared lexer, so a `CHECK` or a
 /// `CONSTRAINT` written inside a literal, a quoted identifier, or a comment is
-/// never read as a constraint. A `CONSTRAINT <name>` seen before a check names
-/// it; a comma ends the current table element and clears a name that belonged to
-/// another constraint.
+/// never read as a constraint. A `CONSTRAINT <name>` names a check only when it
+/// directly precedes it, so a name attached to a `PRIMARY KEY`, `UNIQUE`,
+/// `FOREIGN KEY`, or another table element never leaks onto a later check. A
+/// comma ends the current table element and clears a pending name.
 pub(super) fn scan_check_constraints(sql: &str) -> Vec<(Option<String>, String)> {
     let tokens = tokenize(sql);
     let mut results = Vec::new();
@@ -100,12 +101,21 @@ pub(super) fn scan_check_constraints(sql: &str) -> Vec<(Option<String>, String)>
                 index += 1;
             }
             TokenKind::Keyword(SqlKeyword::Constraint) => {
-                match tokens.get(index + 1).and_then(name_of) {
-                    Some(name) => {
+                // Only `CONSTRAINT <name> CHECK (...)` hands its name to a
+                // check; a name declaring a key, a foreign key, or any other
+                // table element names that element and never a check.
+                match (
+                    tokens.get(index + 1).and_then(name_of),
+                    tokens.get(index + 2).map(|token| token.kind),
+                ) {
+                    (Some(name), Some(TokenKind::Keyword(SqlKeyword::Check))) => {
                         pending = Some(name);
                         index += 2;
                     }
-                    None => index += 1,
+                    _ => {
+                        pending = None;
+                        index += 1;
+                    }
                 }
             }
             TokenKind::Keyword(SqlKeyword::Check) => {
