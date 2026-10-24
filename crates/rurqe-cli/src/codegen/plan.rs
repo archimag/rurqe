@@ -203,10 +203,38 @@ fn column_rust_type(table: &str, column: &ColumnDef, options: &CodegenOptions) -
 /// Wraps `rust_type` into `Option<..>` for a nullable column unless it already
 /// spells an optional type, so an override is never wrapped twice.
 fn apply_nullability(rust_type: &str, nullable: bool) -> String {
-    if nullable && !rust_type.starts_with("Option<") {
+    if nullable && !is_optional_type(rust_type) {
         format!("Option<{rust_type}>")
     } else {
         rust_type.to_owned()
+    }
+}
+
+/// Reports whether `rust_type` spells an optional type.
+///
+/// The override is parsed as a Rust type instead of being matched textually, so
+/// every spelling of `Option` — `Option<T>`, `std::option::Option<T>`, or
+/// `::core::option::Option<T>` — is recognised and the column type is never
+/// wrapped twice. A type the parser rejects stays as written, because an invalid
+/// override is trusted configuration that fails to compile on its own.
+fn is_optional_type(rust_type: &str) -> bool {
+    match syn::parse_str::<syn::Type>(rust_type) {
+        Ok(ty) => optional_path(&ty),
+        Err(_) => false,
+    }
+}
+
+/// Whether a parsed Rust type is an optional wrapper spelled through a path.
+fn optional_path(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Option" && !segment.arguments.is_empty()),
+        syn::Type::Paren(paren) => optional_path(&paren.elem),
+        syn::Type::Group(group) => optional_path(&group.elem),
+        _ => false,
     }
 }
 
@@ -247,9 +275,6 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime".to_owned(),
         TypeKind::Date if domain_types => "chrono::NaiveDate".to_owned(),
         TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date => "String".to_owned(),
-        TypeKind::Other(name) if domain_types && names_exact_decimal(name) => {
-            "rust_decimal::Decimal".to_owned()
-        }
         TypeKind::Enum(name) => table_type_ident(name),
         TypeKind::Other(_) => "String".to_owned(),
         TypeKind::Array(_) => "String".to_owned(),
@@ -260,21 +285,6 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
     } else {
         base
     }
-}
-
-/// Reports whether a catalog type spelling names an exact decimal type.
-///
-/// PostgreSQL reports `NUMERIC` and `DECIMAL` through `information_schema` with
-/// the precision they were declared with, and the catalog keeps such a spelling
-/// as [`TypeKind::Other`], so the type parameters are cut before the name is
-/// compared.
-fn names_exact_decimal(name: &str) -> bool {
-    let base = match name.find('(') {
-        Some(index) => name.get(..index).unwrap_or(name),
-        None => name,
-    };
-
-    matches!(base.trim(), "numeric" | "decimal")
 }
 
 #[cfg(test)]
@@ -531,33 +541,24 @@ mod tests {
     }
 
     #[test]
-    fn decimal_columns_map_to_an_exact_type_under_domain_types() {
-        let options = CodegenOptions {
-            domain_types: true,
-            ..CodegenOptions::default()
-        };
+    fn a_qualified_optional_override_is_not_wrapped_twice() {
+        let mut options = CodegenOptions::default();
+        options.type_overrides.insert(
+            "users.id".to_owned(),
+            "std::option::Option<uuid::Uuid>".to_owned(),
+        );
+        options.type_overrides.insert(
+            "users.deleted_at".to_owned(),
+            "core::option::Option<chrono::NaiveDateTime>".to_owned(),
+        );
 
         assert_eq!(
-            rust_type_of(
-                &ColumnDef::new("total", TypeKind::Other("numeric".to_owned()), false),
-                &options,
-            ),
-            "rust_decimal::Decimal"
+            rust_type_of(&ColumnDef::new("id", TypeKind::Int64, true), &options),
+            "std::option::Option<uuid::Uuid>"
         );
         assert_eq!(
-            rust_type_of(
-                &ColumnDef::new("total", TypeKind::Other("numeric(10,2)".to_owned()), true),
-                &options,
-            ),
-            "Option<rust_decimal::Decimal>"
-        );
-        // Without the domain mapping the column keeps the dependency-free type.
-        assert_eq!(
-            rust_type_of(
-                &ColumnDef::new("total", TypeKind::Other("numeric".to_owned()), false),
-                &CodegenOptions::default(),
-            ),
-            "String"
+            rust_type_of(&ColumnDef::new("deleted_at", TypeKind::Timestamp, true), &options),
+            "core::option::Option<chrono::NaiveDateTime>"
         );
     }
 }
