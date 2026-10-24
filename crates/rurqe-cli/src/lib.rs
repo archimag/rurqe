@@ -15,7 +15,7 @@ mod driver;
 mod loader;
 mod target;
 
-pub use cli::{parse_args, run_cli, CliCommand, CliError};
+pub use cli::{parse_args, run_cli, CliCommand, CliError, CommandOutput};
 pub use codegen::{generate_schema_rs, CodegenError, CodegenOptions};
 pub use config::{CodegenConfig, ConfigError};
 pub use drift::{verify_drift, DiffWording, DriftError, DriftReport, SchemaDiff};
@@ -30,10 +30,17 @@ pub use loader::{load_migrations_from_dir, read_migration_files};
 pub use stage::{GoldenEquation, GoldenReport, StageError};
 
 /// Main CLI execution entry point for standalone and Cargo subcommand binaries.
+///
+/// The report of a command is printed here, at the process boundary, so the
+/// command implementations stay callable as a library without writing to a
+/// stream of their own.
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
-    if let Err(err) = run_cli(args) {
-        eprintln!("Error: {err}");
-        std::process::exit(1);
+    match run_cli(args) {
+        Ok(output) => output.print(),
+        Err(err) => {
+            eprintln!("Error: {err}");
+            std::process::exit(1);
+        }
     }
 }

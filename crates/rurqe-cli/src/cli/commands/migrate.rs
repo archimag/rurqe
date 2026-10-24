@@ -6,7 +6,7 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::runner::{MigrationBackend, MigrationStatusKind, Migrator};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::cli::CliError;
+use crate::cli::{CliError, CommandOutput};
 use crate::loader::load_migrations_from_dir;
 
 use super::cli_error;
@@ -25,41 +25,52 @@ fn load_migrator(checkpoint_path: &Path) -> Result<Migrator, CliError> {
     }
 }
 
+/// Applies every pending migration and reports what ran.
 pub(crate) fn apply_migrations<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
     checkpoint_path: &Path,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
     let report = load_migrator(checkpoint_path)?
         .migrate(backend, &migrations)
         .map_err(cli_error)?;
 
-    println!(
+    let mut output = CommandOutput::new();
+    output.line(format!(
         "Applied {} migration(s) in {} ms",
         report.applied_count, report.total_time_ms
-    );
+    ));
     for script in &report.applied_scripts {
-        println!("  - {script}");
+        output.line(format!("  - {script}"));
     }
-    Ok(())
+    Ok(output)
 }
 
+/// Reports the status of every known migration against the recorded history.
 pub(crate) fn report_status<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
     let statuses = Migrator::new()
         .status(backend, &migrations)
         .map_err(cli_error)?;
 
+    let mut output = CommandOutput::new();
+
     if statuses.is_empty() {
-        println!("No migrations found in {}", migrations_dir.display());
-        return Ok(());
+        output.line(format!(
+            "No migrations found in {}",
+            migrations_dir.display()
+        ));
+        return Ok(output);
     }
 
-    println!("{:<40} {:<12} {:<10} STATUS", "SCRIPT", "KIND", "VERSION");
+    output.line(format!(
+        "{:<40} {:<12} {:<10} STATUS",
+        "SCRIPT", "KIND", "VERSION"
+    ));
     for status in &statuses {
         let state = match status.status {
             MigrationStatusKind::Pending => "Pending",
@@ -73,48 +84,50 @@ pub(crate) fn report_status<B: MigrationBackend>(
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_default();
-        println!(
+        output.line(format!(
             "{:<40} {:<12} {:<10} {}",
             status.script,
             status.kind.as_str(),
             version,
             state
-        );
+        ));
     }
-    Ok(())
+    Ok(output)
 }
 
+/// Rewrites the recorded checksums and purges failed attempts.
 pub(crate) fn repair_history<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
     let report = Migrator::new()
         .repair(backend, &migrations)
         .map_err(cli_error)?;
 
-    println!(
+    let mut output = CommandOutput::new();
+    output.line(format!(
         "Removed {} failed entr(ies), updated {} checksum(s)",
         report.removed_failed_entries,
         report.updated_checksums.len()
-    );
+    ));
     for script in &report.updated_checksums {
-        println!("  - {script}");
+        output.line(format!("  - {script}"));
     }
-    Ok(())
+    Ok(output)
 }
 
+/// Records a baseline marker without running the earlier migrations.
 pub(crate) fn baseline_database<B: MigrationBackend>(
     backend: &mut B,
     version: MigrationVersion,
     description: &str,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     let entry = Migrator::new()
         .baseline(backend, version, description)
         .map_err(cli_error)?;
-    println!(
+    Ok(CommandOutput::single(format!(
         "Baselined database at rank {} ({})",
         entry.installed_rank, entry.description
-    );
-    Ok(())
+    )))
 }

@@ -8,7 +8,7 @@ use rurqe_migrate::runner::MigrationBackend;
 use rurqe_migrate::stage::{cold_start, DeclarativeStage, StageMarker};
 use rurqe_migrate::version::MigrationVersion;
 
-use crate::cli::{connect, redact_database_url, CliError, Connection};
+use crate::cli::{connect, redact_database_url, CliError, CommandOutput, Connection};
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::postgres::{
@@ -22,19 +22,19 @@ use super::{cli_error, write_file};
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
 ///
 /// Requires explicit confirmation via `force` (`--yes` / `--force`) before dropping.
-/// Without confirmation, candidate databases are listed and an error is reported.
+/// Without confirmation, the candidates are named in the reported failure so the
+/// operator sees exactly what the confirmation would drop.
 pub(crate) fn cleanup_stage(
     scratch_url: &str,
     older_than: Duration,
     force: bool,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     if DatabaseTarget::parse(scratch_url).dialect() != DatabaseDialect::Postgres {
-        println!(
+        return Ok(CommandOutput::single(format!(
             "Nothing to sweep: `{}` addresses a SQLite scratch database, which a verification \
              opens in memory or in the file it is pointed at",
             redact_database_url(scratch_url)
-        );
-        return Ok(());
+        )));
     }
 
     let mut admin = match connect(scratch_url)? {
@@ -52,52 +52,49 @@ pub(crate) fn cleanup_stage(
         find_stale_scratch_databases(&mut admin, older_than, &owner_tag).map_err(cli_error)?;
 
     if candidates.is_empty() {
-        println!(
+        return Ok(CommandOutput::single(format!(
             "No PostgreSQL scratch database on `{}` is older than {} second(s)",
             redact_database_url(scratch_url),
             older_than.as_secs()
-        );
-        return Ok(());
+        )));
     }
 
     if !force {
-        println!(
-            "Found {} stale PostgreSQL scratch database(s) on `{}` older than {} second(s):",
+        let mut message = format!(
+            "`stage cleanup` requires `--yes` (or `--force`) to confirm dropping stale scratch \
+             databases; found {} stale database(s) on `{}` older than {} second(s):",
             candidates.len(),
             redact_database_url(scratch_url),
             older_than.as_secs()
         );
         for database in &candidates {
-            println!("  - {database}");
+            message.push_str(&format!("\n  - {database}"));
         }
-        return Err(CliError(
-            "`stage cleanup` requires `--yes` (or `--force`) to confirm dropping stale scratch databases"
-                .to_owned(),
-        ));
+        return Err(CliError(message));
     }
 
     let dropped =
         sweep_stale_scratch_databases(&mut admin, older_than, scratch_url).map_err(cli_error)?;
 
     if dropped.is_empty() {
-        println!(
+        return Ok(CommandOutput::single(format!(
             "No PostgreSQL scratch database on `{}` could be dropped",
             redact_database_url(scratch_url)
-        );
-        return Ok(());
+        )));
     }
 
-    println!(
+    let mut output = CommandOutput::new();
+    output.line(format!(
         "Dropped {} stale PostgreSQL scratch database(s) on `{}` older than {} second(s):",
         dropped.len(),
         redact_database_url(scratch_url),
         older_than.as_secs()
-    );
+    ));
     for database in &dropped {
-        println!("  - {database}");
+        output.line(format!("  - {database}"));
     }
 
-    Ok(())
+    Ok(output)
 }
 
 /// Loads the declarative stage from `dir`, rejecting an absent directory.
@@ -126,7 +123,7 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
     stage_dir: &Path,
     version: MigrationVersion,
     description: &str,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     let stage = load_stage(stage_dir)?;
 
     if stage.is_empty() {
@@ -140,23 +137,23 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
     let report = cold_start(backend, &stage, &marker).map_err(cli_error)?;
 
     if report.stage_scripts.is_empty() {
-        println!(
+        return Ok(CommandOutput::single(format!(
             "Database already initialised at stage {}; nothing to apply",
             marker.version()
-        );
-        return Ok(());
+        )));
     }
 
-    println!(
+    let mut output = CommandOutput::new();
+    output.line(format!(
         "Initialised the database from {} script(s) at stage {} in {} ms",
         report.stage_scripts.len(),
         marker.version(),
         report.total_time_ms
-    );
+    ));
     for script in &report.stage_scripts {
-        println!("  - {script}");
+        output.line(format!("  - {script}"));
     }
-    Ok(())
+    Ok(output)
 }
 
 /// Verifies the golden equation between the declarative stage and the tail.
@@ -169,7 +166,7 @@ pub(crate) fn verify_stage(
     migrations_dir: &Path,
     checkpoint_path: &Path,
     scratch_url: &str,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     let stage = load_stage(stage_dir)?;
     let base = base_stage_dir.map(load_stage).transpose()?;
     let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
@@ -184,14 +181,13 @@ pub(crate) fn verify_stage(
     }
     let report = equation.verify(scratch_url).map_err(cli_error)?;
 
-    println!(
+    Ok(CommandOutput::single(format!(
         "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {}, scratch `{}`)",
         stage_dir.display(),
         migrations_dir.display(),
         report.stage_hash(),
         redact_database_url(scratch_url)
-    );
-    Ok(())
+    )))
 }
 
 /// Seals the live database as the new declarative stage anchor.
@@ -200,7 +196,7 @@ pub(crate) fn commit_stage(
     database_url: &str,
     lock_path: &Path,
     checkpoint_path: &Path,
-) -> Result<(), CliError> {
+) -> Result<CommandOutput, CliError> {
     if let Some(existing) = Checkpoint::load(checkpoint_path).map_err(cli_error)? {
         if existing.pruned_up_to_version() > &version {
             return Err(CliError(format!(
@@ -223,12 +219,11 @@ pub(crate) fn commit_stage(
     write_file(lock_path, &lock)?;
     write_file(checkpoint_path, &checkpoint.render())?;
 
-    println!(
+    Ok(CommandOutput::single(format!(
         "Committed the stage to {} and anchored `{}` up to version {} (hash {})",
         lock_path.display(),
         checkpoint_path.display(),
         checkpoint.pruned_up_to_version(),
         catalog.schema_hash()
-    );
-    Ok(())
+    )))
 }

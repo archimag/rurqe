@@ -59,10 +59,10 @@ pub(super) fn resolve_schema_code(explicit: Option<PathBuf>) -> Result<Option<St
     let Some(path) = explicit else {
         let default = PathBuf::from("src/schema.rs");
         if !default.exists() {
-            eprintln!(
-                "warning: schema code `{}` not found; verifying against the lock snapshot only \
-                 (pass `--schema-path` to require the generated code)",
-                default.display()
+            tracing::warn!(
+                schema_code = %default.display(),
+                "schema code not found; verifying against the lock snapshot only \
+                 (pass `--schema-path` to require the generated code)"
             );
             return Ok(None);
         }
@@ -146,9 +146,12 @@ fn write_failure(temporary: &Path, path: &Path, error: &std::io::Error) -> CliEr
     CliError(format!("failed to write `{}`: {error}", path.display()))
 }
 
-pub(super) fn print_help() {
-    println!(
-        r#"RURQE Developer CLI
+/// The help text of the toolchain.
+///
+/// The text is returned instead of printed, so the process entry point decides
+/// where the help of the toolchain goes.
+pub(super) fn help_text() -> &'static str {
+    r#"RURQE Developer CLI
 
 USAGE:
     cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>] [--database-url <url>]
@@ -184,5 +187,4 @@ CONFIGURATION:
     `rurqe.toml` `[codegen.type_overrides]` maps a `table.column` onto the Rust
     type generated for it, e.g. `"users.id" = "uuid::Uuid"`.
 "#
-    );
 }

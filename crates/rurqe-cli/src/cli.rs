@@ -13,6 +13,7 @@ mod args;
 mod commands;
 mod connection;
 mod redact;
+mod report;
 
 use std::time::Duration;
 
@@ -23,11 +24,12 @@ pub use args::{parse_args, CliCommand, CliError};
 pub(crate) use args::{resolve_cleanup_url, resolve_equation_url};
 pub(crate) use connection::{connect, Connection};
 pub use redact::redact_database_url;
+pub use report::CommandOutput;
 
 use self::commands::{
-    apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage,
-    initialise_stage, print_help, prune_migrations, repair_history, report_status,
-    resolve_schema_code, verify_stage, write_file,
+    apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage, help_text,
+    initialise_stage, prune_migrations, repair_history, report_status, resolve_schema_code,
+    verify_stage, write_file,
 };
 use self::connection::resolve_database_url;
 
@@ -57,19 +59,26 @@ macro_rules! with_migration_backend {
     }};
 }
 
-/// Runs the CLI toolchain and prints execution outputs.
-pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
+/// Runs the CLI toolchain and returns the report it produced.
+///
+/// The command implementations of this crate are reachable as a library, so
+/// none of them writes to a stream of its own: the report comes back to the
+/// caller and the process entry point [`run`](crate::run) prints it. Warnings
+/// about the environment travel through the `tracing` facade instead, which
+/// leaves the sink to the application that embeds the crate.
+pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
     let cmd = parse_args(&args)?;
 
     match cmd {
         CliCommand::Help => {
-            print_help();
-            Ok(())
+            let mut output = CommandOutput::new();
+            output.text(help_text());
+            Ok(output)
         }
-        CliCommand::Version => {
-            println!("rurqe-cli {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
+        CliCommand::Version => Ok(CommandOutput::single(format!(
+            "rurqe-cli {}",
+            env!("CARGO_PKG_VERSION")
+        ))),
         CliCommand::MigrateUp {
             migrations_dir,
             checkpoint_path,
@@ -120,13 +129,12 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
                 .map_err(|err| CliError(format!("failed to generate schema code: {err}")))?;
             write_file(&output, &code)?;
             write_file(&lock_path, &catalog.to_lock())?;
-            println!(
+            Ok(CommandOutput::single(format!(
                 "Generated schema to {} and snapshot to {} (hash {})",
                 output.display(),
                 lock_path.display(),
                 catalog.schema_hash()
-            );
-            Ok(())
+            )))
         }
         CliCommand::Verify {
             database_url,
@@ -144,8 +152,10 @@ pub fn run_cli(args: Vec<String>) -> Result<(), CliError> {
             let catalog = introspect_database(&url)?;
             verify_drift(&catalog, &expected_lock, schema_code.as_deref())
                 .map_err(|err| CliError(err.to_string()))?;
-            println!("Schema verification passed against {}", lock_path.display());
-            Ok(())
+            Ok(CommandOutput::single(format!(
+                "Schema verification passed against {}",
+                lock_path.display()
+            )))
         }
         CliCommand::StageInit {
             stage_dir,

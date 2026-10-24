@@ -146,6 +146,8 @@ fn ssl_mode_name(ssl_mode: SslMode) -> String {
 /// `sslmode=disable` states the intent explicitly and stays silent; every other
 /// accepted mode — including the libpq default `prefer` — would have negotiated
 /// TLS, so the downgrade is reported instead of gaining the session silently.
+/// The notice travels through the `tracing` facade, which leaves the sink to the
+/// application embedding this crate.
 fn announce_cleartext(ssl_mode: SslMode) {
     if ssl_mode == SslMode::Disable {
         return;
@@ -153,11 +155,11 @@ fn announce_cleartext(ssl_mode: SslMode) {
 
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
-        eprintln!(
-            "warning: connecting to PostgreSQL without TLS (`sslmode={}`); credentials and data \
-             travel in cleartext. Terminate TLS in front of the server and connect to that local \
-             hop with `sslmode=disable`, or set `sslmode=disable` to acknowledge the plaintext path",
-            ssl_mode_name(ssl_mode)
+        tracing::warn!(
+            ssl_mode = %ssl_mode_name(ssl_mode),
+            "connecting to PostgreSQL without TLS; credentials and data travel in cleartext. \
+             Terminate TLS in front of the server and connect to that local hop with \
+             `sslmode=disable`, or set `sslmode=disable` to acknowledge the plaintext path"
         );
     });
 }
