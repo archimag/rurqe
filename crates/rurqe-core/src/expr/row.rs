@@ -21,8 +21,8 @@ mod impls;
 #[cfg(test)]
 mod tests;
 
-use super::ast::{ExprKind, SubqueryOp};
-use super::builder::Expr;
+use super::ast::{ExprKind, MergeDialect, MergedDialect, SubqueryOp};
+use super::builder::{Expr, NonAggregate};
 use super::ops::InSubquery;
 use super::scope::{MergeScope, Merged};
 use super::val::BinaryOp;
@@ -79,15 +79,28 @@ pub trait RowExpr<Row> {
     /// The tables the row references.
     type Scope;
 
+    /// The dialect marker of the row.
+    type Dialect;
+
     /// Appends the element expressions of the row, in declaration order.
     #[doc(hidden)]
     fn push_elements(self, values: &mut Vec<ExprKind>);
 
     /// Compares the row with `values` using the SQL `=` operator.
-    fn eq<Values>(self, values: Values) -> Expr<bool, Merged<Self::Scope, Values::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn eq<Values>(
+        self,
+        values: Values,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, Values::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, Values::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<Values::Scope>,
+        Self::Dialect: MergeDialect<Values::Dialect>,
         Values: RowValues<Row>,
     {
         Expr::new(row_comparison::<Row, Self, Values>(
@@ -98,10 +111,20 @@ pub trait RowExpr<Row> {
     }
 
     /// Compares the row with `values` using the SQL `<>` operator.
-    fn ne<Values>(self, values: Values) -> Expr<bool, Merged<Self::Scope, Values::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn ne<Values>(
+        self,
+        values: Values,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, Values::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, Values::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<Values::Scope>,
+        Self::Dialect: MergeDialect<Values::Dialect>,
         Values: RowValues<Row>,
     {
         Expr::new(row_comparison::<Row, Self, Values>(
@@ -112,10 +135,20 @@ pub trait RowExpr<Row> {
     }
 
     /// Compares the row with `values` using the SQL `>` operator.
-    fn gt<Values>(self, values: Values) -> Expr<bool, Merged<Self::Scope, Values::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn gt<Values>(
+        self,
+        values: Values,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, Values::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, Values::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<Values::Scope>,
+        Self::Dialect: MergeDialect<Values::Dialect>,
         Values: RowValues<Row>,
     {
         Expr::new(row_comparison::<Row, Self, Values>(
@@ -126,10 +159,20 @@ pub trait RowExpr<Row> {
     }
 
     /// Compares the row with `values` using the SQL `<` operator.
-    fn lt<Values>(self, values: Values) -> Expr<bool, Merged<Self::Scope, Values::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn lt<Values>(
+        self,
+        values: Values,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, Values::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, Values::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<Values::Scope>,
+        Self::Dialect: MergeDialect<Values::Dialect>,
         Values: RowValues<Row>,
     {
         Expr::new(row_comparison::<Row, Self, Values>(
@@ -140,10 +183,20 @@ pub trait RowExpr<Row> {
     }
 
     /// Compares the row with `values` using the SQL `>=` operator.
-    fn gte<Values>(self, values: Values) -> Expr<bool, Merged<Self::Scope, Values::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn gte<Values>(
+        self,
+        values: Values,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, Values::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, Values::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<Values::Scope>,
+        Self::Dialect: MergeDialect<Values::Dialect>,
         Values: RowValues<Row>,
     {
         Expr::new(row_comparison::<Row, Self, Values>(
@@ -154,10 +207,20 @@ pub trait RowExpr<Row> {
     }
 
     /// Compares the row with `values` using the SQL `<=` operator.
-    fn lte<Values>(self, values: Values) -> Expr<bool, Merged<Self::Scope, Values::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn lte<Values>(
+        self,
+        values: Values,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, Values::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, Values::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<Values::Scope>,
+        Self::Dialect: MergeDialect<Values::Dialect>,
         Values: RowValues<Row>,
     {
         Expr::new(row_comparison::<Row, Self, Values>(
@@ -172,18 +235,28 @@ pub trait RowExpr<Row> {
     /// The nested query must project as many columns as the row has elements;
     /// it renders inline, so its parameters continue the placeholder numbering
     /// of the enclosing statement.
-    fn in_subquery<S>(self, subquery: S) -> Expr<bool, Self::Scope>
+    #[allow(clippy::type_complexity)]
+    fn in_subquery<S>(
+        self,
+        subquery: S,
+    ) -> Expr<bool, Self::Scope, NonAggregate, MergedDialect<Self::Dialect, S::Dialect>>
     where
         Self: Sized,
+        Self::Dialect: MergeDialect<S::Dialect>,
         S: InSubquery,
     {
         Expr::new(row_membership::<Row, Self, S>(self, subquery, false))
     }
 
     /// Builds a `NOT IN (subquery)` negated membership predicate matching the row.
-    fn not_in_subquery<S>(self, subquery: S) -> Expr<bool, Self::Scope>
+    #[allow(clippy::type_complexity)]
+    fn not_in_subquery<S>(
+        self,
+        subquery: S,
+    ) -> Expr<bool, Self::Scope, NonAggregate, MergedDialect<Self::Dialect, S::Dialect>>
     where
         Self: Sized,
+        Self::Dialect: MergeDialect<S::Dialect>,
         S: InSubquery,
     {
         Expr::new(row_membership::<Row, Self, S>(self, subquery, true))
@@ -205,6 +278,9 @@ pub trait RowExpr<Row> {
 pub trait RowValues<Row> {
     /// The tables the values reference.
     type Scope;
+
+    /// The dialect marker of the values.
+    type Dialect;
 
     /// Appends the compared values, in declaration order.
     #[doc(hidden)]

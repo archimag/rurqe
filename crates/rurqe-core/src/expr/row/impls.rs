@@ -5,6 +5,7 @@
 //! [`IntoExpr`] would overlap with the concrete shape of the tuple element, so
 //! the arity is fixed by the implementation and the element types stay free.
 
+use crate::expr::ast::{MergeDialect, MergedDialect};
 use crate::expr::scope::{MergeScope, Merged};
 use crate::expr::{ExprKind, Expression, IntoExpr, RowExpr, RowValues};
 
@@ -29,13 +30,36 @@ type RowScope7<A, B, C, D, E, F, G> = Merged<RowScope6<A, B, C, D, E, F>, G>;
 /// The scope produced by merging the element scopes `A` through `H`.
 type RowScope8<A, B, C, D, E, F, G, H> = Merged<RowScope7<A, B, C, D, E, F, G>, H>;
 
+/// The dialect produced by merging the element dialects `A` and `B`.
+type RowDialect2<A, B> = MergedDialect<A, B>;
+
+/// The dialect produced by merging the element dialects `A` through `C`.
+type RowDialect3<A, B, C> = MergedDialect<RowDialect2<A, B>, C>;
+
+/// The dialect produced by merging the element dialects `A` through `D`.
+type RowDialect4<A, B, C, D> = MergedDialect<RowDialect3<A, B, C>, D>;
+
+/// The dialect produced by merging the element dialects `A` through `E`.
+type RowDialect5<A, B, C, D, E> = MergedDialect<RowDialect4<A, B, C, D>, E>;
+
+/// The dialect produced by merging the element dialects `A` through `F`.
+type RowDialect6<A, B, C, D, E, F> = MergedDialect<RowDialect5<A, B, C, D, E>, F>;
+
+/// The dialect produced by merging the element dialects `A` through `G`.
+type RowDialect7<A, B, C, D, E, F, G> = MergedDialect<RowDialect6<A, B, C, D, E, F>, G>;
+
+/// The dialect produced by merging the element dialects `A` through `H`.
+type RowDialect8<A, B, C, D, E, F, G, H> = MergedDialect<RowDialect7<A, B, C, D, E, F, G>, H>;
+
 impl<T1, T2, L1, L2> RowExpr<(T1, T2)> for (L1, L2)
 where
     L1: Expression<T1>,
     L2: Expression<T2>,
     L1::Scope: MergeScope<L2::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
 {
     type Scope = RowScope2<L1::Scope, L2::Scope>;
+    type Dialect = RowDialect2<L1::Dialect, L2::Dialect>;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expression().into_kind());
@@ -50,8 +74,11 @@ where
     L3: Expression<T3>,
     L1::Scope: MergeScope<L2::Scope>,
     RowScope2<L1::Scope, L2::Scope>: MergeScope<L3::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
+    RowDialect2<L1::Dialect, L2::Dialect>: MergeDialect<L3::Dialect>,
 {
     type Scope = RowScope3<L1::Scope, L2::Scope, L3::Scope>;
+    type Dialect = RowDialect3<L1::Dialect, L2::Dialect, L3::Dialect>;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expression().into_kind());
@@ -69,8 +96,12 @@ where
     L1::Scope: MergeScope<L2::Scope>,
     RowScope2<L1::Scope, L2::Scope>: MergeScope<L3::Scope>,
     RowScope3<L1::Scope, L2::Scope, L3::Scope>: MergeScope<L4::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
+    RowDialect2<L1::Dialect, L2::Dialect>: MergeDialect<L3::Dialect>,
+    RowDialect3<L1::Dialect, L2::Dialect, L3::Dialect>: MergeDialect<L4::Dialect>,
 {
     type Scope = RowScope4<L1::Scope, L2::Scope, L3::Scope, L4::Scope>;
+    type Dialect = RowDialect4<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect>;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expression().into_kind());
@@ -92,8 +123,13 @@ where
     RowScope2<L1::Scope, L2::Scope>: MergeScope<L3::Scope>,
     RowScope3<L1::Scope, L2::Scope, L3::Scope>: MergeScope<L4::Scope>,
     RowScope4<L1::Scope, L2::Scope, L3::Scope, L4::Scope>: MergeScope<L5::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
+    RowDialect2<L1::Dialect, L2::Dialect>: MergeDialect<L3::Dialect>,
+    RowDialect3<L1::Dialect, L2::Dialect, L3::Dialect>: MergeDialect<L4::Dialect>,
+    RowDialect4<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect>: MergeDialect<L5::Dialect>,
 {
     type Scope = RowScope5<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope>;
+    type Dialect = RowDialect5<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect>;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expression().into_kind());
@@ -119,8 +155,16 @@ where
     RowScope3<L1::Scope, L2::Scope, L3::Scope>: MergeScope<L4::Scope>,
     RowScope4<L1::Scope, L2::Scope, L3::Scope, L4::Scope>: MergeScope<L5::Scope>,
     RowScope5<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope>: MergeScope<L6::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
+    RowDialect2<L1::Dialect, L2::Dialect>: MergeDialect<L3::Dialect>,
+    RowDialect3<L1::Dialect, L2::Dialect, L3::Dialect>: MergeDialect<L4::Dialect>,
+    RowDialect4<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect>: MergeDialect<L5::Dialect>,
+    RowDialect5<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect>:
+        MergeDialect<L6::Dialect>,
 {
     type Scope = RowScope6<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope, L6::Scope>;
+    type Dialect =
+        RowDialect6<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect, L6::Dialect>;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expression().into_kind());
@@ -150,9 +194,26 @@ where
     RowScope5<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope>: MergeScope<L6::Scope>,
     RowScope6<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope, L6::Scope>:
         MergeScope<L7::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
+    RowDialect2<L1::Dialect, L2::Dialect>: MergeDialect<L3::Dialect>,
+    RowDialect3<L1::Dialect, L2::Dialect, L3::Dialect>: MergeDialect<L4::Dialect>,
+    RowDialect4<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect>: MergeDialect<L5::Dialect>,
+    RowDialect5<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect>:
+        MergeDialect<L6::Dialect>,
+    RowDialect6<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect, L6::Dialect>:
+        MergeDialect<L7::Dialect>,
 {
     type Scope =
         RowScope7<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope, L6::Scope, L7::Scope>;
+    type Dialect = RowDialect7<
+        L1::Dialect,
+        L2::Dialect,
+        L3::Dialect,
+        L4::Dialect,
+        L5::Dialect,
+        L6::Dialect,
+        L7::Dialect,
+    >;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expression().into_kind());
@@ -186,6 +247,16 @@ where
         MergeScope<L7::Scope>,
     RowScope7<L1::Scope, L2::Scope, L3::Scope, L4::Scope, L5::Scope, L6::Scope, L7::Scope>:
         MergeScope<L8::Scope>,
+    L1::Dialect: MergeDialect<L2::Dialect>,
+    RowDialect2<L1::Dialect, L2::Dialect>: MergeDialect<L3::Dialect>,
+    RowDialect3<L1::Dialect, L2::Dialect, L3::Dialect>: MergeDialect<L4::Dialect>,
+    RowDialect4<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect>: MergeDialect<L5::Dialect>,
+    RowDialect5<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect>:
+        MergeDialect<L6::Dialect>,
+    RowDialect6<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect, L6::Dialect>:
+        MergeDialect<L7::Dialect>,
+    RowDialect7<L1::Dialect, L2::Dialect, L3::Dialect, L4::Dialect, L5::Dialect, L6::Dialect, L7::Dialect>:
+        MergeDialect<L8::Dialect>,
 {
     type Scope = RowScope8<
         L1::Scope,
@@ -196,6 +267,16 @@ where
         L6::Scope,
         L7::Scope,
         L8::Scope,
+    >;
+    type Dialect = RowDialect8<
+        L1::Dialect,
+        L2::Dialect,
+        L3::Dialect,
+        L4::Dialect,
+        L5::Dialect,
+        L6::Dialect,
+        L7::Dialect,
+        L8::Dialect,
     >;
 
     fn push_elements(self, values: &mut Vec<ExprKind>) {
@@ -215,8 +296,10 @@ where
     V1: IntoExpr<T1>,
     V2: IntoExpr<T2>,
     V1::Scope: MergeScope<V2::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
 {
     type Scope = RowScope2<V1::Scope, V2::Scope>;
+    type Dialect = RowDialect2<V1::Dialect, V2::Dialect>;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expr_kind());
@@ -231,8 +314,11 @@ where
     V3: IntoExpr<T3>,
     V1::Scope: MergeScope<V2::Scope>,
     RowScope2<V1::Scope, V2::Scope>: MergeScope<V3::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
+    RowDialect2<V1::Dialect, V2::Dialect>: MergeDialect<V3::Dialect>,
 {
     type Scope = RowScope3<V1::Scope, V2::Scope, V3::Scope>;
+    type Dialect = RowDialect3<V1::Dialect, V2::Dialect, V3::Dialect>;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expr_kind());
@@ -250,8 +336,12 @@ where
     V1::Scope: MergeScope<V2::Scope>,
     RowScope2<V1::Scope, V2::Scope>: MergeScope<V3::Scope>,
     RowScope3<V1::Scope, V2::Scope, V3::Scope>: MergeScope<V4::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
+    RowDialect2<V1::Dialect, V2::Dialect>: MergeDialect<V3::Dialect>,
+    RowDialect3<V1::Dialect, V2::Dialect, V3::Dialect>: MergeDialect<V4::Dialect>,
 {
     type Scope = RowScope4<V1::Scope, V2::Scope, V3::Scope, V4::Scope>;
+    type Dialect = RowDialect4<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect>;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expr_kind());
@@ -273,8 +363,13 @@ where
     RowScope2<V1::Scope, V2::Scope>: MergeScope<V3::Scope>,
     RowScope3<V1::Scope, V2::Scope, V3::Scope>: MergeScope<V4::Scope>,
     RowScope4<V1::Scope, V2::Scope, V3::Scope, V4::Scope>: MergeScope<V5::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
+    RowDialect2<V1::Dialect, V2::Dialect>: MergeDialect<V3::Dialect>,
+    RowDialect3<V1::Dialect, V2::Dialect, V3::Dialect>: MergeDialect<V4::Dialect>,
+    RowDialect4<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect>: MergeDialect<V5::Dialect>,
 {
     type Scope = RowScope5<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope>;
+    type Dialect = RowDialect5<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect>;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expr_kind());
@@ -300,8 +395,16 @@ where
     RowScope3<V1::Scope, V2::Scope, V3::Scope>: MergeScope<V4::Scope>,
     RowScope4<V1::Scope, V2::Scope, V3::Scope, V4::Scope>: MergeScope<V5::Scope>,
     RowScope5<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope>: MergeScope<V6::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
+    RowDialect2<V1::Dialect, V2::Dialect>: MergeDialect<V3::Dialect>,
+    RowDialect3<V1::Dialect, V2::Dialect, V3::Dialect>: MergeDialect<V4::Dialect>,
+    RowDialect4<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect>: MergeDialect<V5::Dialect>,
+    RowDialect5<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect>:
+        MergeDialect<V6::Dialect>,
 {
     type Scope = RowScope6<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope, V6::Scope>;
+    type Dialect =
+        RowDialect6<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect, V6::Dialect>;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expr_kind());
@@ -331,9 +434,26 @@ where
     RowScope5<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope>: MergeScope<V6::Scope>,
     RowScope6<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope, V6::Scope>:
         MergeScope<V7::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
+    RowDialect2<V1::Dialect, V2::Dialect>: MergeDialect<V3::Dialect>,
+    RowDialect3<V1::Dialect, V2::Dialect, V3::Dialect>: MergeDialect<V4::Dialect>,
+    RowDialect4<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect>: MergeDialect<V5::Dialect>,
+    RowDialect5<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect>:
+        MergeDialect<V6::Dialect>,
+    RowDialect6<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect, V6::Dialect>:
+        MergeDialect<V7::Dialect>,
 {
     type Scope =
         RowScope7<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope, V6::Scope, V7::Scope>;
+    type Dialect = RowDialect7<
+        V1::Dialect,
+        V2::Dialect,
+        V3::Dialect,
+        V4::Dialect,
+        V5::Dialect,
+        V6::Dialect,
+        V7::Dialect,
+    >;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
         values.push(self.0.into_expr_kind());
@@ -367,6 +487,16 @@ where
         MergeScope<V7::Scope>,
     RowScope7<V1::Scope, V2::Scope, V3::Scope, V4::Scope, V5::Scope, V6::Scope, V7::Scope>:
         MergeScope<V8::Scope>,
+    V1::Dialect: MergeDialect<V2::Dialect>,
+    RowDialect2<V1::Dialect, V2::Dialect>: MergeDialect<V3::Dialect>,
+    RowDialect3<V1::Dialect, V2::Dialect, V3::Dialect>: MergeDialect<V4::Dialect>,
+    RowDialect4<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect>: MergeDialect<V5::Dialect>,
+    RowDialect5<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect>:
+        MergeDialect<V6::Dialect>,
+    RowDialect6<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect, V6::Dialect>:
+        MergeDialect<V7::Dialect>,
+    RowDialect7<V1::Dialect, V2::Dialect, V3::Dialect, V4::Dialect, V5::Dialect, V6::Dialect, V7::Dialect>:
+        MergeDialect<V8::Dialect>,
 {
     type Scope = RowScope8<
         V1::Scope,
@@ -377,6 +507,16 @@ where
         V6::Scope,
         V7::Scope,
         V8::Scope,
+    >;
+    type Dialect = RowDialect8<
+        V1::Dialect,
+        V2::Dialect,
+        V3::Dialect,
+        V4::Dialect,
+        V5::Dialect,
+        V6::Dialect,
+        V7::Dialect,
+        V8::Dialect,
     >;
 
     fn push_values(self, values: &mut Vec<ExprKind>) {
