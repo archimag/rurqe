@@ -41,7 +41,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut document_writes = TokenStream::new();
     let mut document_reads = TokenStream::new();
     let mut name_pushes = TokenStream::new();
-    let mut render_pushes = TokenStream::new();
     let mut projection_pushes = TokenStream::new();
     let mut selection_bounds = TokenStream::new();
     let mut scope_bounds = TokenStream::new();
@@ -152,21 +151,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         projection_pushes.extend(quote! {
             out.push(::rurqe_core::query::SelectTarget::to_expr_kind(&self.#field_index));
         });
-
-        render_pushes.extend(quote! {
-            {
-                if !first_projection {
-                    sql.push_str(", ");
-                }
-                first_projection = false;
-                ::rurqe_core::query::SelectTarget::render::<__D>(
-                    &self.#field_index,
-                    sql,
-                    params,
-                    relations,
-                );
-            }
-        });
     }
 
     let arity = Literal::usize_unsuffixed(projections.len());
@@ -267,17 +251,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                     out: &mut ::std::vec::Vec<::rurqe_core::expr::ExprKind>,
                 ) {
                     #projection_pushes
-                }
-
-                #[allow(unused_variables)]
-                fn render_projections<__D: ::rurqe_core::dialect::Dialect>(
-                    &self,
-                    sql: &mut ::std::string::String,
-                    params: &mut ::std::vec::Vec<::rurqe_core::expr::SqlVal>,
-                    relations: &[::rurqe_core::schema::TableRef],
-                ) {
-                    let mut first_projection = true;
-                    #render_pushes
                 }
             }
 

@@ -12,15 +12,18 @@
 //! the database cannot resolve, and the recorded column set is what a grouped
 //! query checks its window expressions against.
 
-use core::fmt::{self, Write};
+use core::fmt;
 use core::marker::PhantomData;
 
+#[cfg(test)]
 use crate::dialect::Dialect;
+#[cfg(test)]
+use crate::expr::render_expr;
 use crate::expr::{
-    render_expr, ExprKind, MergeScope, Merged, NullsOrder, OrderCriterion, SqlVal, WindowFrame,
-    WindowFrameBound, WindowFrameKind,
+    ExprKind, MergeScope, Merged, NullsOrder, OrderCriterion, WindowFrame, WindowFrameBound,
+    WindowFrameKind,
 };
-use crate::schema::{Column, ExprInScope, TableRef};
+use crate::schema::{Column, ExprInScope};
 
 // `WindowExprKind` describes the window nodes of the statement AST shared with
 // the expression module, so the canonical definition lives there.
@@ -292,54 +295,6 @@ impl<Scope, Cols> WindowSpec<Scope, Cols> {
         self.frame
     }
 
-    /// Renders the window contents inside `OVER (...)`, qualifying the
-    /// partitioned and ordered columns against `relations`.
-    pub fn render<D: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    ) {
-        let mut written = false;
-        if !self.partition_by.is_empty() {
-            written = true;
-            sql.push_str("PARTITION BY ");
-            for (index, expression) in self.partition_by.iter().enumerate() {
-                if index > 0 {
-                    sql.push_str(", ");
-                }
-                render_expr::<D>(sql, params, expression, relations);
-            }
-        }
-        if !self.order_by.is_empty() {
-            if written {
-                sql.push(' ');
-            }
-            written = true;
-            sql.push_str("ORDER BY ");
-            for (index, criterion) in self.order_by.iter().enumerate() {
-                if index > 0 {
-                    sql.push_str(", ");
-                }
-                render_expr::<D>(sql, params, &criterion.expr, relations);
-                sql.push(' ');
-                sql.push_str(criterion.direction.as_str());
-                if let Some(nulls) = criterion.nulls {
-                    sql.push(' ');
-                    sql.push_str(nulls.as_str());
-                }
-            }
-        }
-        // The frame closes the window contents, so it follows the ordering of the
-        // rows the frame slides over.
-        if let Some(frame) = self.frame {
-            if written {
-                sql.push(' ');
-            }
-            frame.render_into(sql);
-        }
-    }
-
     /// Re-types the specification to `NewScope` and `NewCols` while keeping the
     /// rendered clauses.
     ///
@@ -519,44 +474,6 @@ impl<T, Scope, Cols> WindowExpr<T, Scope, Cols> {
         }
     }
 
-    /// Renders this window function and its `OVER (...)` clause to `sql`.
-    ///
-    /// `relations` names the relations of the enclosing statement and qualifies
-    /// every column the window reads or orders by.
-    pub fn render<D: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    ) {
-        match &self.kind {
-            WindowExprKind::RowNumber => sql.push_str("ROW_NUMBER()"),
-            WindowExprKind::Rank => sql.push_str("RANK()"),
-            WindowExprKind::DenseRank => sql.push_str("DENSE_RANK()"),
-            WindowExprKind::Lag { column, offset } => {
-                sql.push_str("LAG(");
-                render_expr::<D>(sql, params, column, relations);
-                if let Some(off) = offset {
-                    let _ = write!(sql, ", {off}");
-                }
-                sql.push(')');
-            }
-            WindowExprKind::Lead { column, offset } => {
-                sql.push_str("LEAD(");
-                render_expr::<D>(sql, params, column, relations);
-                if let Some(off) = offset {
-                    let _ = write!(sql, ", {off}");
-                }
-                sql.push(')');
-            }
-            WindowExprKind::Expr(expr) => {
-                render_expr::<D>(sql, params, expr, relations);
-            }
-        }
-        sql.push_str(" OVER (");
-        self.window.render::<D>(sql, params, relations);
-        sql.push(')');
-    }
 }
 
 impl<T> WindowExpr<T, ()> {
@@ -576,10 +493,6 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Cols: 'static + Sen
 
     fn to_expr_kind(&self) -> ExprKind {
         WindowExpr::to_expr_kind(self)
-    }
-
-    fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>, relations: &[TableRef]) {
-        WindowExpr::render::<D>(self, sql, params, relations);
     }
 }
 

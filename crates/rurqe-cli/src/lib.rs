@@ -18,8 +18,8 @@ pub use drift::{verify_drift, DiffWording, DriftError, DriftReport, SchemaDiff};
 pub use driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 pub use introspect::{
     catalog_from_metadata, catalog_from_sqlite_metadata, detect_dialect, map_sql_type_to_kind,
-    DatabaseDialect, IntrospectQueries, RawColumnMetadata, RawForeignKeyMetadata,
-    RawIndexMetadata, RawPrimaryKeyMetadata, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
+    DatabaseDialect, RawColumnMetadata, RawForeignKeyMetadata, RawIndexMetadata,
+    RawPrimaryKeyMetadata, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
     RawSqliteTableMetadata, RawTableMetadata,
 };
 pub use loader::{load_migrations_from_dir, read_migration_files};

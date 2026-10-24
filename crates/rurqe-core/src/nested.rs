@@ -24,9 +24,9 @@
 //! decodes one representation whichever engine produced it.
 
 use crate::dialect::Dialect;
-use crate::expr::{render_expr, ExprKind, SqlArrayElement, SqlVal, Subquery};
+use crate::expr::{ExprKind, SqlArrayElement, SqlVal, Subquery};
 use crate::query::{HasProjection, SelectQuery, SelectTarget, SelectTargetInScope, TableScope};
-use crate::schema::{At, TableRef};
+use crate::schema::At;
 
 /// The row type a nested projection decodes into.
 ///
@@ -97,15 +97,6 @@ where
     fn to_expr_kind(&self) -> ExprKind {
         nested_kind(&self.0, false)
     }
-
-    fn render<MD: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    ) {
-        render_expr::<MD>(sql, params, &self.to_expr_kind(), relations);
-    }
 }
 
 // A nested projection reads from its own statement, so it references no table of
@@ -132,15 +123,6 @@ where
 
     fn to_expr_kind(&self) -> ExprKind {
         nested_kind(&self.0, true)
-    }
-
-    fn render<MD: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    ) {
-        render_expr::<MD>(sql, params, &self.to_expr_kind(), relations);
     }
 }
 

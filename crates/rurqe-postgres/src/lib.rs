@@ -12,8 +12,6 @@ pub use expressions::{
     PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
     PgTextSearchValue, PgTextValue,
 };
-#[allow(deprecated)]
-pub use expressions::PgExpressions;
 
 #[cfg(feature = "tokio-postgres")]
 pub use backend::async_conn::{PgAsyncConnection, PgAsyncTransaction};

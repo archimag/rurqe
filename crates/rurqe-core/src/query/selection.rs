@@ -2,9 +2,8 @@
 
 use core::marker::PhantomData;
 
-use crate::dialect::Dialect;
-use crate::expr::{render_expr, Expr, ExprKind, SqlVal};
-use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table, TableRef};
+use crate::expr::{Expr, ExprKind};
+use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
 
 use super::scope::{NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope};
 
@@ -26,20 +25,9 @@ pub trait SelectTarget {
     /// Builds the dialect-neutral AST node this target renders into.
     ///
     /// The node describes the projection as plain data, so the surrounding
-    /// statement can be assembled and rendered from the AST instead of
-    /// re-rendering every projection through its own closure.
+    /// statement is assembled and rendered from the AST exactly like every other
+    /// expression node, without a rendering path of its own.
     fn to_expr_kind(&self) -> ExprKind;
-
-    /// Renders this projection item to the SQL buffer and binds any parameters.
-    ///
-    /// `relations` names the relations of the enclosing statement, which decides
-    /// whether a projected column reference needs a table qualifier.
-    fn render<D: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    );
 }
 
 impl<C: Column> SelectTarget for C {
@@ -52,15 +40,6 @@ impl<C: Column> SelectTarget for C {
     fn to_expr_kind(&self) -> ExprKind {
         C::expr_kind()
     }
-
-    fn render<D: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    ) {
-        render_expr::<D>(sql, params, &C::expr_kind(), relations);
-    }
 }
 
 impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
@@ -70,15 +49,6 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
 
     fn to_expr_kind(&self) -> ExprKind {
         self.kind().clone()
-    }
-
-    fn render<D: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-        relations: &[TableRef],
-    ) {
-        render_expr::<D>(sql, params, self.kind(), relations);
     }
 }
 
@@ -380,26 +350,6 @@ pub trait Selection {
     fn push_projections(&self, out: &mut Vec<ExprKind>) {
         let _ = out;
     }
-
-    /// Renders all projection items into `sql`, separating them by commas.
-    ///
-    /// `relations` is forwarded to every projection item, so a selected column is
-    /// qualified exactly like any other column reference of the same statement.
-    fn render_projections<D: Dialect>(
-        &self,
-        sql: &mut String,
-        _params: &mut Vec<SqlVal>,
-        _relations: &[TableRef],
-    ) {
-        let mut names = Vec::new();
-        self.push_column_names(&mut names);
-        for (index, name) in names.into_iter().enumerate() {
-            if index > 0 {
-                sql.push_str(", ");
-            }
-            D::push_quoted_identifier(sql, name);
-        }
-    }
 }
 
 macro_rules! impl_selection {
@@ -416,23 +366,6 @@ macro_rules! impl_selection {
             fn push_projections(&self, out: &mut Vec<ExprKind>) {
                 let ($($target,)+) = self;
                 $(out.push($target.to_expr_kind());)+
-            }
-
-            fn render_projections<D: Dialect>(
-                &self,
-                sql: &mut String,
-                params: &mut Vec<SqlVal>,
-                relations: &[TableRef],
-            ) {
-                let ($($target,)+) = self;
-                let mut first = true;
-                $(
-                    if !first {
-                        sql.push_str(", ");
-                    }
-                    first = false;
-                    $target.render::<D>(sql, params, relations);
-                )+
             }
         }
     };

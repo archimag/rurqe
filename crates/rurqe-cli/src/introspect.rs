@@ -49,48 +49,4 @@ pub(crate) fn introspect_connection(
     }
 }
 
-/// Canonical PostgreSQL and SQLite catalog introspection queries.
-pub struct IntrospectQueries;
 
-impl IntrospectQueries {
-    /// Query to fetch user tables from the SQLite `sqlite_master` catalog.
-    pub const SQLITE_TABLES: &'static str = sqlite::SQLITE_TABLES;
-
-    /// Query to fetch all user tables in `public` schema.
-    pub const POSTGRES_TABLES: &'static str = postgres::POSTGRES_TABLES;
-
-    /// Query to fetch all columns in user tables.
-    pub const POSTGRES_COLUMNS: &'static str = postgres::POSTGRES_COLUMNS;
-
-    /// Query to fetch all primary key constraint columns.
-    pub const POSTGRES_PRIMARY_KEYS: &'static str = postgres::POSTGRES_PRIMARY_KEYS;
-
-    /// Query to fetch all foreign key columns in key order.
-    pub const POSTGRES_FOREIGN_KEYS: &'static str = postgres::POSTGRES_FOREIGN_KEYS;
-
-    /// Query to fetch the secondary indexes of user tables, one row per column.
-    pub const POSTGRES_INDEXES: &'static str = postgres::POSTGRES_INDEXES;
-
-    /// Query to fetch all user enum types and their variants in sort order.
-    pub const POSTGRES_ENUMS: &'static str = postgres::POSTGRES_ENUMS;
-
-    /// Builds the `PRAGMA table_info` query for `table`.
-    pub fn sqlite_table_info(table: &str) -> String {
-        sqlite::sqlite_table_info(table)
-    }
-
-    /// Builds the `PRAGMA foreign_key_list` query for `table`.
-    pub fn sqlite_foreign_key_list(table: &str) -> String {
-        sqlite::sqlite_foreign_key_list(table)
-    }
-
-    /// Builds the `PRAGMA index_list` query for `table`.
-    pub fn sqlite_index_list(table: &str) -> String {
-        sqlite::sqlite_index_list(table)
-    }
-
-    /// Builds the `PRAGMA index_info` query for `index`.
-    pub fn sqlite_index_info(index: &str) -> String {
-        sqlite::sqlite_index_info(index)
-    }
-}

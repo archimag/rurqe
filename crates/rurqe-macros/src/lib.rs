@@ -1,7 +1,6 @@
 //! Procedural macros for RURQE query builder and relational execution engine.
 
 mod dto;
-#[allow(dead_code)]
 mod parse;
 mod raw_sql;
 mod select;

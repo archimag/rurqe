@@ -435,26 +435,6 @@ fn introspect_database_handles_sqlite_memory() {
 }
 
 #[test]
-fn sqlite_pragma_queries_escape_embedded_quotes() {
-    assert_eq!(
-        IntrospectQueries::sqlite_table_info(r#"weird"name"#),
-        "PRAGMA table_info(\"weird\"\"name\");"
-    );
-    assert_eq!(
-        IntrospectQueries::sqlite_foreign_key_list(r#"weird"name"#),
-        "PRAGMA foreign_key_list(\"weird\"\"name\");"
-    );
-    assert_eq!(
-        IntrospectQueries::sqlite_index_list(r#"weird"name"#),
-        "PRAGMA index_list(\"weird\"\"name\");"
-    );
-    assert_eq!(
-        IntrospectQueries::sqlite_index_info(r#"weird"name"#),
-        "PRAGMA index_info(\"weird\"\"name\");"
-    );
-}
-
-#[test]
 fn introspect_sqlite_handles_table_names_with_double_quotes() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(

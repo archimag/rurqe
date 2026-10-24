@@ -29,13 +29,6 @@ const SCRATCH_PREFIX: &str = "rurqe_scratch_";
 /// The age after which an abandoned scratch database is swept away.
 pub(crate) const DEFAULT_SCRATCH_MAX_AGE: Duration = Duration::from_secs(3_600);
 
-/// The smallest value of the leading name field that names a second.
-///
-/// The legacy naming scheme put the process id first, which stays far below a
-/// million, while a count of seconds passed `10^9` in 2001, so the magnitude of
-/// the leading field tells the two schemes apart.
-const SECONDS_SCHEME_FLOOR: u64 = 1_000_000_000;
-
 /// The scratch databases the server currently holds.
 ///
 /// The pattern narrows the catalog scan to the names this module creates, while
@@ -192,26 +185,21 @@ fn scratch_database_name() -> String {
 
 /// The instant a scratch database name records, if it records one.
 ///
-/// Both naming schemes are understood: the current one carries the creation
-/// second in its leading field, while the legacy one carried the process id there
-/// and the creation instant in nanoseconds in the field after it. A name carrying
-/// neither — a foreign database, or one truncated or extended by hand — records
-/// no instant and is therefore never swept.
+/// The name carries the creation second in its leading field, followed by the
+/// process id and the sequence number that separate concurrent verifications. A
+/// name carrying no such fields — a foreign database, or one truncated or
+/// extended by hand — records no instant and is therefore never swept.
 pub(super) fn parse_scratch_database_timestamp(name: &str) -> Option<SystemTime> {
     let mut fields = name.strip_prefix(SCRATCH_PREFIX)?.split('_');
-    let leading = fields.next()?.parse::<u64>().ok()?;
-    let second = fields.next()?.parse::<u64>().ok()?;
+    let seconds = fields.next()?.parse::<u64>().ok()?;
+    let _pid = fields.next()?.parse::<u64>().ok()?;
     let _sequence = fields.next()?.parse::<u64>().ok()?;
 
     if fields.next().is_some() {
         return None;
     }
 
-    if leading >= SECONDS_SCHEME_FLOOR {
-        return UNIX_EPOCH.checked_add(Duration::from_secs(leading));
-    }
-
-    UNIX_EPOCH.checked_add(Duration::from_nanos(second))
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
 /// Whether a scratch database was abandoned longer than `max_age` ago.
@@ -405,14 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_name_records_its_nanoseconds() {
-        assert_eq!(
-            parse_scratch_database_timestamp("rurqe_scratch_4321_1700000000123456789_7"),
-            Some(UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789))
-        );
-    }
-
-    #[test]
     fn a_foreign_name_records_no_instant() {
         for name in [
             "app",
@@ -467,14 +447,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn a_legacy_name_is_aged_by_its_nanoseconds() {
-        let legacy = "rurqe_scratch_4321_1699999000000000000_0";
-
-        assert!(is_scratch_database_stale(
-            legacy,
-            Duration::from_secs(600),
-            now()
-        ));
-    }
 }

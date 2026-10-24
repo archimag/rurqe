@@ -79,15 +79,6 @@ pub struct ProjectionItem {
 }
 
 impl ProjectionItem {
-    /// Creates a new projection item for the column `column` with an optional alias.
-    pub fn new(column: Path, alias: Option<Ident>) -> Self {
-        Self {
-            attrs: Vec::new(),
-            target: ProjectionTarget::Column(column),
-            alias,
-        }
-    }
-
     /// Returns the column marker path of the item, if it projects a schema column.
     pub fn column_path(&self) -> Option<&Path> {
         self.target.column_path()
@@ -253,11 +244,6 @@ impl ProjectionList {
         self.items.len()
     }
 
-    /// Returns `true` if the projection list is empty.
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
     /// Returns a slice over the projection items.
     pub fn as_slice(&self) -> &[ProjectionItem] {
         &self.items
@@ -301,24 +287,6 @@ impl Parse for ProjectionList {
         }
 
         Ok(Self { items })
-    }
-}
-
-impl IntoIterator for ProjectionList {
-    type Item = ProjectionItem;
-    type IntoIter = std::vec::IntoIter<ProjectionItem>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.items.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a ProjectionList {
-    type Item = &'a ProjectionItem;
-    type IntoIter = std::slice::Iter<'a, ProjectionItem>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.items.iter()
     }
 }
 
