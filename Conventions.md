@@ -10,6 +10,12 @@
     * Escape-hatch interfaces (`sql!`, `raw_sql!`, `Expr::raw`, `fetch_raw`, `execute_raw`) exist exclusively as fallbacks for exotic or unmodeled database behavior.
     * Runtime errors (syntax errors from the engine, type mismatches, constraint violations) are permitted and must be surfaced cleanly via `Result<T, ExecutionError>`.
     * **Panic-Free Invariant:** Panics, aborts, or unwinds are strictly forbidden under all circumstances, even on completely malformed raw SQL, mixed placeholder tokens, or corrupt wire responses.
+* **Strictly Stable Rust Invariant:**
+  * Strictly forbid any nightly-only compiler flags, unstable language features, or unstable attributes (`#![feature(...)]`, `negative_impls`, `generic_const_exprs`, `specialization`).
+  * All architectural designs, type-level machinery, and typestates must compile deterministically and soundly on the stable Rust compiler (Rust MSRV).
+* **Two-Tier SQL Correctness & Pre-Flight Validation:**
+  * **Tier 1 (Compile-Time Type Soundness):** Enforce relational scope isolation, projection types, subquery arity/type matching in `IN`, outer-join nullability lifting, and capability gating via Rust's trait system on stable Rust.
+  * **Tier 2 (Pre-Flight AST Validation in `.build()`):** Complex multi-clause invariants requiring negative assertions (e.g. preventing unaliased duplicate relation joins) or dynamic clause alignment (e.g. `DISTINCT ON` order prefix matching) are validated deterministically during `.build()` before any network I/O, guaranteeing zero database-side semantic rejections via structured, typed error returns (`BuildError`).
 * **KISS, YAGNI, and DRY:**
   * No speculative fields, methods, or traits "just in case". Delete dead code immediately; do not leave it commented out.
   * Single Source of Truth (SSOT) for data structures, serialization formats, and validation rules.

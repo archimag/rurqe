@@ -48,9 +48,13 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 
 ### 1.5 Core Design Requirements
 
-#### 1.5.1 Absolute SQL Correctness
-Given an accurate database schema, every query accepted by RURQE must be semantically valid for the target database dialect and version.
-- **Soundness:** Invalid queries must be rejected at compile time.
+#### 1.5.1 Absolute SQL Correctness & Two-Tier Guarantee
+Given an accurate database schema, every query accepted and built by RURQE must be semantically valid for the target database dialect and version, guaranteeing **Zero Database Rejection**.
+- **Two-Tier Soundness Architecture:**
+  - **Tier 1 (Compile-Time Type Soundness):** All core SQL relational invariants—including relational scope isolation, projection types, outer-join nullability lifting, subquery arity and type congruence in `IN` predicates, and dialect capability gating—are enforced strictly at compile time on stable Rust.
+  - **Tier 2 (Pre-Flight Client-Side Validation in `.build()`):** Complex multi-clause semantic invariants that cannot be soundly expressed in stable Rust's open-world type system without nightly features (such as disjoint relation checks in unaliased duplicate `JOIN`s, or leading `ORDER BY` prefix alignment in PostgreSQL `DISTINCT ON`) are validated deterministically during `.build()` before any network dispatch.
+  - **Zero Database Rejection:** No syntactically or semantically invalid query reaches the database engine; errors are caught either at compile time or during local AST assembly.
+- **Soundness on Strictly Stable Rust:** Invalid queries are rejected using strictly stable Rust compiler capabilities (Rust MSRV). Nightly-only compiler flags or features (`#![feature(...)]`, `negative_impls`, `generic_const_exprs`) are strictly prohibited.
 - **Completeness:** Every valid SQL query must be expressible.
 - **Semantic Diagnostics:** Errors must clearly explain the violated SQL rule, not expose Rust type-system internals.
 
@@ -59,6 +63,7 @@ The primary public API must express SQL concepts, not Rust type-system machinery
 - **Automatic Inference:** Automatically infer types, scopes, nullability, and result structures.
 - **Internal Complexity Encapsulation:** Hide marker types, traits, generics, and typestate complexity from everyday application queries.
 - **Zero Machinery Leakage:** Require no knowledge of internal implementation mechanisms for regular query authoring.
+- **Pre-Flight Ergonomics:** High-level query composition retains fluent, unencumbered builder chaining while ensuring structural validation rules surface as clear, typed error diagnostics during query building rather than confusing type-solver cascades.
 - **Tiered Access:** Preserve a lower-level typed AST and macro escape-hatches (`sql!`, `raw_sql!`) for advanced and dialect-specific use cases.
 
 **Guiding Principle:** Maximum semantic guarantees and SQL expressiveness, minimum cognitive complexity for the developer.
