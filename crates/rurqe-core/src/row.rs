@@ -155,6 +155,17 @@ impl FromSqlValue for i64 {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::I64(value) => Ok(*value),
+            // An exact decimal column keeps every digit of its value, and an
+            // integer field reads the whole number it carries. A value the
+            // 64-bit range cannot hold is reported instead of wrapping around.
+            #[cfg(feature = "decimal")]
+            SqlVal::Decimal(decimal) => {
+                use rust_decimal::prelude::ToPrimitive;
+
+                decimal.to_i64().ok_or_else(|| {
+                    invalid_value::<Self>(value, "value does not fit into a 64-bit integer")
+                })
+            }
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -814,6 +825,24 @@ mod tests {
             f64::from_sql_value(&SqlVal::Decimal(rust_decimal::Decimal::new(125, 1))),
             Ok(12.5)
         );
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn integer_values_accept_an_exact_decimal() {
+        use rust_decimal::Decimal;
+
+        assert_eq!(
+            i64::from_sql_value(&SqlVal::Decimal(Decimal::from(7i64))),
+            Ok(7)
+        );
+
+        let error = i64::from_sql_value(&SqlVal::Decimal(Decimal::MAX))
+            .expect_err("the value exceeds the 64-bit integer range");
+        assert!(matches!(
+            error,
+            RowDecodeError::InvalidValue { found: "decimal", .. }
+        ));
     }
 
     #[cfg(feature = "decimal")]
