@@ -10,7 +10,7 @@ use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
-use crate::dialect::{Dialect, SupportsAggregateFilter};
+use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::schema::{Column, Table};
 
@@ -562,7 +562,31 @@ impl<T> Expr<T, ()> {
     }
 }
 
-impl<T, Scope> Expr<T, Scope, Aggregate> {
+/// Marker of an aggregate expression restricted by a `FILTER (WHERE ...)` clause.
+///
+/// A filtered aggregate collapses the rows of its group exactly like a plain
+/// aggregate; the marker only records that the aggregate no longer reads every
+/// row of the group. Arithmetic combinations with constants preserve it, so a
+/// filtered aggregate scaled by a value stays projectable from a grouped query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilteredAggregate;
+
+/// A marker stating that an expression collapses the rows of its group.
+///
+/// The marker is implemented by [`Aggregate`] and [`FilteredAggregate`], so the
+/// projection and filtering rules of a grouped query accept both kinds of
+/// aggregate.
+#[doc(hidden)]
+pub trait AggregateMarker {}
+
+impl AggregateMarker for Aggregate {}
+
+impl AggregateMarker for FilteredAggregate {}
+
+impl<T, Scope, Marker> Expr<T, Scope, Marker>
+where
+    Marker: AggregateMarker,
+{
     /// Marks the aggregate expression to evaluate only over `DISTINCT` values.
     pub fn distinct(mut self) -> Self {
         if let ExprKind::Aggregate {
@@ -576,32 +600,18 @@ impl<T, Scope> Expr<T, Scope, Aggregate> {
 
     /// Adds a `FILTER (WHERE ...)` clause restricting the rows this aggregate evaluates.
     ///
-    /// Multiple calls combine their conditions with the SQL `AND` operator.
+    /// Multiple calls combine their conditions with the SQL `AND` operator, and
+    /// the expression records the filter in its tree instead of in the statement
+    /// that renders it. The aggregate therefore stays a dialect-neutral value and
+    /// the caller chooses the dialect when rendering the statement it is
+    /// projected into.
     ///
-    /// A filtered aggregate is a dialect capability rather than plain SQL:
-    /// PostgreSQL knows the clause from its first version, while SQLite gained it
-    /// in 3.30.0. The dialect of the statement the aggregate is projected into is
-    /// therefore named explicitly and must implement
-    /// [`SupportsAggregateFilter`](crate::dialect::SupportsAggregateFilter).
+    /// The produced expression carries [`FilteredAggregate`], so the projection
+    /// and filtering rules of a grouped query keep accepting it while arithmetic
+    /// combinations with constants preserve the marker.
     ///
-    /// A dialect without the capability rejects the call at compile time instead
-    /// of rendering SQL the engine cannot parse:
-    ///
-    /// ```compile_fail
-    /// use rurqe_core::dialect::Dialect;
-    /// use rurqe_core::expr::{sum, Expr};
-    ///
-    /// struct FlatDialect;
-    ///
-    /// impl Dialect for FlatDialect {
-    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
-    ///         out.push_str(ident);
-    ///     }
-    ///
-    ///     fn push_placeholder(out: &mut String, index: usize) {
-    ///         let _ = index;
-    ///     }
-    /// }
+    /// ```
+    /// use rurqe_core::expr::{sum, Expr, ExprKind};
     ///
     /// rurqe_core::table! {
     ///     Order => "orders" {
@@ -609,16 +619,20 @@ impl<T, Scope> Expr<T, Scope, Aggregate> {
     ///     }
     /// }
     ///
-    /// // Fails to compile: `FlatDialect` has no `FILTER (WHERE ...)` clause.
-    /// let _ = sum(OrderTotal)
-    ///     .filter_where::<FlatDialect, _>(Expr::column::<OrderTotal>().gt(50.0));
+    /// let filtered = sum(OrderTotal)
+    ///     .filter_where(Expr::column::<OrderTotal>().gt(10.0))
+    ///     .filter_where(Expr::column::<OrderTotal>().lt(100.0));
+    ///
+    /// assert!(matches!(
+    ///     filtered.kind(),
+    ///     ExprKind::Aggregate { filter: Some(_), .. }
+    /// ));
     /// ```
-    pub fn filter_where<D, P>(
+    pub fn filter_where<P>(
         self,
         predicate: Expr<bool, P>,
-    ) -> Expr<T, Merged<Scope, P>, Aggregate>
+    ) -> Expr<T, Merged<Scope, P>, FilteredAggregate>
     where
-        D: SupportsAggregateFilter,
         Scope: MergeScope<P>,
     {
         let ExprKind::Aggregate {

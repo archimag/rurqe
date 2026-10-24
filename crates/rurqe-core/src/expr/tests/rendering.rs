@@ -27,7 +27,7 @@ fn filtered_and_distinct_aggregates_render_sql() {
 
     let (sql, params) = render(
         Expr::count::<UserId>()
-            .filter_where::<MockDialect, _>(UserId.gt(10i64))
+            .filter_where(UserId.gt(10i64))
             .kind(),
     );
     assert_eq!(sql, "COUNT(\"id\") FILTER (WHERE (\"id\" > ?))");
@@ -35,8 +35,8 @@ fn filtered_and_distinct_aggregates_render_sql() {
 
     let (sql, params) = render(
         sum_distinct(UserId)
-            .filter_where::<MockDialect, _>(UserId.gt(5i64))
-            .filter_where::<MockDialect, _>(UserId.lt(50i64))
+            .filter_where(UserId.gt(5i64))
+            .filter_where(UserId.lt(50i64))
             .kind(),
     );
     assert_eq!(

@@ -8,7 +8,7 @@
 //! then derives whether the arithmetic still collapses the rows of a group.
 
 use super::ast::{ExprKind, Subquery, SubqueryOp};
-use super::builder::{Aggregate, Expr, NonAggregate};
+use super::builder::{Aggregate, Expr, FilteredAggregate, NonAggregate};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::ToSqlVal;
 use crate::dialect::Dialect;
@@ -558,15 +558,45 @@ impl<RhsScope> CombineAggr<Aggregate, RhsScope> for Aggregate {
     type Output = Aggregate;
 }
 
+// A filtered aggregate collapses its group like a plain one, so combining it
+// with another aggregate stays an aggregate while keeping the filter recorded.
+impl<RhsScope> CombineAggr<Aggregate, RhsScope> for FilteredAggregate {
+    type Output = FilteredAggregate;
+}
+
+impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for Aggregate {
+    type Output = FilteredAggregate;
+}
+
+impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for FilteredAggregate {
+    type Output = FilteredAggregate;
+}
+
+// A filtered aggregate on the left combined with a per-row operand computes one
+// value per row, exactly like a plain aggregate does.
+impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for NonAggregate {
+    type Output = NonAggregate;
+}
+
 // A value referencing no table is the same in every row of a group, so it leaves
 // an aggregate standing.
 impl CombineAggr<NonAggregate, ()> for Aggregate {
     type Output = Aggregate;
 }
 
+// The same constant keeps a filtered aggregate standing, so a filtered aggregate
+// scaled by a value stays projectable from a grouped query.
+impl CombineAggr<NonAggregate, ()> for FilteredAggregate {
+    type Output = FilteredAggregate;
+}
+
 // A dropped scope names a column read that is checked against the enclosing
 // statement instead of the query, so it is no more constant than the column.
 impl CombineAggr<NonAggregate, Unscoped> for Aggregate {
+    type Output = NonAggregate;
+}
+
+impl CombineAggr<NonAggregate, Unscoped> for FilteredAggregate {
     type Output = NonAggregate;
 }
 
@@ -576,10 +606,18 @@ impl<T: Table> CombineAggr<NonAggregate, T> for Aggregate {
     type Output = NonAggregate;
 }
 
+impl<T: Table> CombineAggr<NonAggregate, T> for FilteredAggregate {
+    type Output = NonAggregate;
+}
+
 // A compound operand references the tables of every column it reads.
 macro_rules! impl_tuple_combine_aggr {
     ($($table:ident),+) => {
         impl<$($table: Table),+> CombineAggr<NonAggregate, ($($table,)+)> for Aggregate {
+            type Output = NonAggregate;
+        }
+
+        impl<$($table: Table),+> CombineAggr<NonAggregate, ($($table,)+)> for FilteredAggregate {
             type Output = NonAggregate;
         }
     };

@@ -435,8 +435,8 @@ fn column_aggregates_carry_the_table_of_their_column() {
 
 #[test]
 fn aggregate_scopes_merge_with_the_columns_their_predicates_read() {
-    let filtered: Expr<i64, (User, User), Aggregate> =
-        sum(UserId).filter_where::<MockDialect, _>(UserId.gt(0i64));
+    let filtered: Expr<i64, (User, User), FilteredAggregate> =
+        sum(UserId).filter_where(UserId.gt(0i64));
 
     assert!(matches!(
         filtered.kind(),
@@ -463,7 +463,7 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
         }
     );
 
-    let filtered = sum(UserId).filter_where::<MockDialect, _>(UserId.gt(10i64));
+    let filtered = sum(UserId).filter_where(UserId.gt(10i64));
     assert_eq!(
         filtered.kind(),
         &ExprKind::Aggregate {
@@ -486,8 +486,8 @@ fn distinct_and_filtered_aggregates_build_expected_ast() {
 
     let chained = Expr::count::<UserId>()
         .distinct()
-        .filter_where::<MockDialect, _>(UserId.gt(0i64))
-        .filter_where::<MockDialect, _>(UserId.lt(100i64));
+        .filter_where(UserId.gt(0i64))
+        .filter_where(UserId.lt(100i64));
 
     let ExprKind::Aggregate {
         distinct,
@@ -637,6 +637,34 @@ fn arithmetic_preserves_the_aggregation_marker() {
 
     assert!(matches!(
         adjusted.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn arithmetic_preserves_a_filtered_aggregate_next_to_a_constant() {
+    let filtered = sum(OrderTotal).filter_where(OrderQty.gt(0i64));
+
+    // A constant operand is the same in every row of the group, so the scaled
+    // filtered aggregate stays projectable from a grouped query.
+    let scaled: Expr<f64, _, FilteredAggregate> = filtered * 2.0f64;
+    assert!(matches!(
+        scaled.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Mul,
+            ..
+        }
+    ));
+
+    // An operand reading a column computes one value per row, so the arithmetic
+    // stops collapsing the group.
+    let untracked: Expr<f64, _, NonAggregate> =
+        sum(OrderTotal).filter_where(OrderQty.gt(0i64)) + OrderTax;
+    assert!(matches!(
+        untracked.kind(),
         ExprKind::Binary {
             op: BinaryOp::Add,
             ..

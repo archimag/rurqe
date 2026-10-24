@@ -3,7 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{Aggregate, Expr, NonAggregate, NullsOrder, OrderCriterion};
+use crate::expr::{AggregateMarker, Expr, NonAggregate, NullsOrder, OrderCriterion};
 use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
 use super::cte::{Cte, DerivedTable};
@@ -41,10 +41,11 @@ pub use self::sets::{
 )]
 pub trait HavingPredicate<GroupByCols, Tables, P = At<0>> {}
 
-impl<GroupByCols, Tables, Scope, P> HavingPredicate<GroupByCols, Tables, P>
-    for Expr<bool, Scope, Aggregate>
+impl<GroupByCols, Tables, Scope, Marker, P> HavingPredicate<GroupByCols, Tables, P>
+    for Expr<bool, Scope, Marker>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    Marker: AggregateMarker,
 {
 }
 
@@ -115,8 +116,12 @@ where
 ///
 /// An aggregate collapses the rows of a group into a single value, so it may
 /// reference a column the query does not group by.
-impl<GroupByCols, T: 'static + Send + Sync, Scope: 'static + Send + Sync>
-    GroupedSelectTarget<GroupByCols, At<0>> for Expr<T, Scope, Aggregate>
+impl<GroupByCols, T, Scope, Marker> GroupedSelectTarget<GroupByCols, At<0>>
+    for Expr<T, Scope, Marker>
+where
+    T: 'static + Send + Sync,
+    Scope: 'static + Send + Sync,
+    Marker: AggregateMarker,
 {
     type Output = T;
 }
@@ -587,13 +592,14 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ///     .select((OrderUserId, Expr::count_all()))
     ///     .order_by_expr_desc(Expr::count_all());
     /// ```
-    pub fn order_by_expr<T, Scope, P>(
+    pub fn order_by_expr<T, Scope, Marker, P>(
         mut self,
-        expression: Expr<T, Scope, Aggregate>,
+        expression: Expr<T, Scope, Marker>,
         direction: OrderDirection,
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        Marker: AggregateMarker,
     {
         let criterion = OrderCriterion::new(expression.into_kind(), direction);
         self.query.push_ordering(criterion);
@@ -601,14 +607,15 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Appends an ordering criterion for `expression` fixing where NULL values sort.
-    pub fn order_by_expr_nulls<T, Scope, P>(
+    pub fn order_by_expr_nulls<T, Scope, Marker, P>(
         mut self,
-        expression: Expr<T, Scope, Aggregate>,
+        expression: Expr<T, Scope, Marker>,
         direction: OrderDirection,
         nulls: NullsOrder,
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        Marker: AggregateMarker,
     {
         let criterion = OrderCriterion::new(expression.into_kind(), direction).nulls(nulls);
         self.query.push_ordering(criterion);
@@ -616,17 +623,25 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Appends an ascending ordering criterion for the aggregate `expression`.
-    pub fn order_by_expr_asc<T, Scope, P>(self, expression: Expr<T, Scope, Aggregate>) -> Self
+    pub fn order_by_expr_asc<T, Scope, Marker, P>(
+        self,
+        expression: Expr<T, Scope, Marker>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        Marker: AggregateMarker,
     {
         self.order_by_expr(expression, OrderDirection::Asc)
     }
 
     /// Appends a descending ordering criterion for the aggregate `expression`.
-    pub fn order_by_expr_desc<T, Scope, P>(self, expression: Expr<T, Scope, Aggregate>) -> Self
+    pub fn order_by_expr_desc<T, Scope, Marker, P>(
+        self,
+        expression: Expr<T, Scope, Marker>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        Marker: AggregateMarker,
     {
         self.order_by_expr(expression, OrderDirection::Desc)
     }
