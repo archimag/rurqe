@@ -1,17 +1,34 @@
-//! The generic [`Expr`] type and its fluent construction and comparison methods.
+//! The generic [`Expr`] type together with its markers and its plain constructors.
+//!
+//! Expressions are typed by the Rust type of their result: referencing a column
+//! yields an expression carrying the column's
+//! [`RustType`](crate::schema::Column::RustType), while comparing it with a value
+//! yields a boolean predicate. Operand compatibility is checked at the call site
+//! through [`SqlCompatible`](crate::expr::SqlCompatible), so a comparison between
+//! unrelated types simply does not compile.
+//!
+//! The fluent surface is split along the concerns it serves: [`predicates`] turns
+//! an expression into a comparison, a range, a membership test, or a null test,
+//! [`aggregates`] builds the aggregates and carries the markers the grouped-query
+//! rules rely on, and [`arithmetic`] overloads the arithmetic operators. This
+//! module keeps the [`Expr`] type itself, its aggregation markers, and the
+//! constructors that only assemble a node.
+
+mod aggregates;
+mod arithmetic;
+mod predicates;
+
+pub use aggregates::{AggregateMarker, FilteredAggregate};
 
 use core::marker::PhantomData;
-use core::ops::{Add, Div, Mul, Rem, Sub};
 
-use super::ast::{CaseBuilder, ExprKind, MergeDialect, MergedDialect, SubqueryOp};
+use super::ast::{CaseBuilder, ExprKind, MergeDialect, MergedDialect};
 use super::functions::SqlCastTarget;
-use super::ops::{
-    CombineAggr, CombinedAggr, InSubquery, IntoExpr, IntoExprList, Numeric, NumericOperand,
-};
+use super::ops::IntoExpr;
 use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
-use super::scope::{MergeScope, Merged, Merged3, Unscoped};
-use super::val::{AggregateFunc, BinaryOp, SqlVal};
+use super::scope::{MergeScope, Merged, Unscoped};
+use super::val::SqlVal;
 use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::schema::{Column, Table};
@@ -31,6 +48,13 @@ pub struct NonAggregate;
 /// by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Aggregate;
+
+/// Phantom marker carrying the result type, referenced scope, aggregation marker,
+/// and dialect marker of an [`Expr`].
+///
+/// The alias keeps the phantom field readable at its declaration site, mirroring
+/// the query and statement markers of the surrounding modules.
+type ExprMarker<T, Scope, Aggr, D> = PhantomData<fn() -> (T, Scope, Aggr, D)>;
 
 /// A SQL expression whose result has the Rust type `T`, which references the
 /// tables named by `Scope`, and which carries the aggregation marker `Aggr`.
@@ -63,13 +87,6 @@ pub struct Aggregate;
 ///     }
 /// );
 /// ```
-/// Phantom marker carrying the result type, referenced scope, aggregation marker,
-/// and dialect marker of an [`Expr`].
-///
-/// The alias keeps the phantom field readable at its declaration site, mirroring
-/// the query and statement markers of the surrounding modules.
-type ExprMarker<T, Scope, Aggr, D> = PhantomData<fn() -> (T, Scope, Aggr, D)>;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr<T, Scope = (), Aggr = NonAggregate, D = ()> {
     pub(super) kind: ExprKind,
@@ -105,226 +122,6 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         self.kind
     }
 
-    /// Builds an `IS NULL` predicate over this expression.
-    ///
-    /// The predicate compares against SQL `NULL` itself instead of a bound
-    /// parameter, so it works for any expression type, optional or not.
-    pub fn is_null(&self) -> Expr<bool, Scope, Aggr, D> {
-        Expr::new(ExprKind::IsNull {
-            operand: Box::new(self.kind.clone()),
-            negated: false,
-        })
-    }
-
-    /// Builds an `IS NOT NULL` predicate over this expression.
-    pub fn is_not_null(&self) -> Expr<bool, Scope, Aggr, D> {
-        Expr::new(ExprKind::IsNull {
-            operand: Box::new(self.kind.clone()),
-            negated: true,
-        })
-    }
-
-    /// Builds an `IN (subquery)` predicate matching this expression.
-    ///
-    /// The nested query renders inline with the enclosing statement, so its
-    /// parameters continue the placeholder numbering of the outer query.
-    pub fn in_subquery<S: InSubquery>(
-        self,
-        subquery: S,
-    ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
-    where
-        D: MergeDialect<S::Dialect>,
-    {
-        Expr::new(ExprKind::Subquery {
-            op: SubqueryOp::In,
-            operand: Some(Box::new(self.kind)),
-            query: subquery.into_subquery(),
-            negated: false,
-        })
-    }
-
-    /// Builds a `NOT IN (subquery)` predicate matching this expression.
-    pub fn not_in_subquery<S: InSubquery>(
-        self,
-        subquery: S,
-    ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
-    where
-        D: MergeDialect<S::Dialect>,
-    {
-        Expr::new(ExprKind::Subquery {
-            op: SubqueryOp::In,
-            operand: Some(Box::new(self.kind)),
-            query: subquery.into_subquery(),
-            negated: true,
-        })
-    }
-
-    /// Compares the expression with `value` using the SQL `=` operator.
-    #[allow(clippy::type_complexity)]
-    pub fn eq<V>(
-        self,
-        value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
-    where
-        Scope: MergeScope<V::Scope>,
-        D: MergeDialect<V::Dialect>,
-        V: IntoExpr<T>,
-    {
-        self.compare(BinaryOp::Eq, value.into_expr_kind())
-    }
-
-    /// Compares the expression with `value` using the SQL `<>` operator.
-    #[allow(clippy::type_complexity)]
-    pub fn ne<V>(
-        self,
-        value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
-    where
-        Scope: MergeScope<V::Scope>,
-        D: MergeDialect<V::Dialect>,
-        V: IntoExpr<T>,
-    {
-        self.compare(BinaryOp::Ne, value.into_expr_kind())
-    }
-
-    /// Compares the expression with `value` using the SQL `>` operator.
-    #[allow(clippy::type_complexity)]
-    pub fn gt<V>(
-        self,
-        value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
-    where
-        Scope: MergeScope<V::Scope>,
-        D: MergeDialect<V::Dialect>,
-        V: IntoExpr<T>,
-    {
-        self.compare(BinaryOp::Gt, value.into_expr_kind())
-    }
-
-    /// Compares the expression with `value` using the SQL `<` operator.
-    #[allow(clippy::type_complexity)]
-    pub fn lt<V>(
-        self,
-        value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
-    where
-        Scope: MergeScope<V::Scope>,
-        D: MergeDialect<V::Dialect>,
-        V: IntoExpr<T>,
-    {
-        self.compare(BinaryOp::Lt, value.into_expr_kind())
-    }
-
-    /// Builds a `BETWEEN low AND high` range predicate over this expression.
-    ///
-    /// Both bounds are inclusive and must be compatible with the expression type.
-    #[allow(clippy::type_complexity)]
-    pub fn between<L, H>(
-        self,
-        low: L,
-        high: H,
-    ) -> Expr<
-        bool,
-        Merged3<Scope, L::Scope, H::Scope>,
-        Aggr,
-        MergedDialect<MergedDialect<D, L::Dialect>, H::Dialect>,
-    >
-    where
-        Scope: MergeScope<L::Scope>,
-        Merged<Scope, L::Scope>: MergeScope<H::Scope>,
-        D: MergeDialect<L::Dialect>,
-        MergedDialect<D, L::Dialect>: MergeDialect<H::Dialect>,
-        L: IntoExpr<T>,
-        H: IntoExpr<T>,
-    {
-        Expr::new(ExprKind::Between {
-            operand: Box::new(self.kind),
-            low: Box::new(low.into_expr_kind()),
-            high: Box::new(high.into_expr_kind()),
-        })
-    }
-
-    /// Builds an `IN (value, ...)` membership predicate over this expression.
-    ///
-    /// Every candidate value must be compatible with the expression type, and the
-    /// tables the candidates reference join the scope of the predicate: a list of
-    /// bound values references no table and leaves the scope unchanged, while a
-    /// candidate reading a column of another table extends it, so the enclosing
-    /// query has to select from that table as well.
-    #[allow(clippy::type_complexity)]
-    pub fn in_list<I>(
-        self,
-        values: I,
-    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
-    where
-        Scope: MergeScope<I::Scope>,
-        D: MergeDialect<I::Dialect>,
-        I: IntoExprList<T>,
-    {
-        self.membership(values, false)
-    }
-
-    /// Builds a `NOT IN (value, ...)` negated membership predicate over this expression.
-    ///
-    /// The negation keeps the scope of the positive form: every candidate value
-    /// still has to be comparable with the expression, and the tables it
-    /// references still join the scope of the predicate.
-    #[allow(clippy::type_complexity)]
-    pub fn not_in_list<I>(
-        self,
-        values: I,
-    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
-    where
-        Scope: MergeScope<I::Scope>,
-        D: MergeDialect<I::Dialect>,
-        I: IntoExprList<T>,
-    {
-        self.membership(values, true)
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn membership<I>(
-        self,
-        values: I,
-        negated: bool,
-    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
-    where
-        Scope: MergeScope<I::Scope>,
-        D: MergeDialect<I::Dialect>,
-        I: IntoExprList<T>,
-    {
-        let mut candidates = Vec::new();
-        values.push_expr_kinds(&mut candidates);
-
-        if candidates.is_empty() {
-            // `x IN ()` is a syntax error in every dialect, so an empty
-            // membership degrades into a constant predicate: nothing is a member
-            // of an empty set, and everything is absent from it.
-            return Expr::new(ExprKind::Raw {
-                fragments: vec![String::from(if negated { "1 = 1" } else { "1 = 0" })],
-                params: Vec::new(),
-            });
-        }
-
-        Expr::new(ExprKind::InList {
-            operand: Box::new(self.kind),
-            values: candidates,
-            negated,
-        })
-    }
-
-    fn compare<TargetScope, TargetDialect>(
-        self,
-        op: BinaryOp,
-        rhs: ExprKind,
-    ) -> Expr<bool, TargetScope, Aggr, TargetDialect> {
-        Expr::new(ExprKind::Binary {
-            op,
-            lhs: Box::new(self.kind),
-            rhs: Box::new(rhs),
-        })
-    }
-
     /// Drops the relation scope from this expression, enabling its use in
     /// correlated subqueries referencing outer query relations.
     ///
@@ -342,10 +139,7 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// naming its own table instead of silently reading a column of the statement
     /// it is rendered into.
     pub fn without_scope(self) -> Expr<T, Unscoped, Aggr, D> {
-        Expr {
-            kind: qualify_references(self.kind),
-            _result: PhantomData,
-        }
+        Expr::new(qualify_references(self.kind))
     }
 
     /// Builds a window expression from this expression over `window`.
@@ -424,24 +218,6 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ) -> crate::query::LagLeadFn<Option<T>, C::Table, crate::query::WindowColumnSet<C>> {
         crate::query::lead(col)
     }
-
-    /// Builds an arithmetic expression applying `op` to this expression and `rhs`.
-    ///
-    /// The method backs the operator overloads of [`Expr`], so the operator is
-    /// applied without inspecting the operands: the database evaluates the
-    /// expression, which keeps an overflow or a division by zero the decision of
-    /// the server instead of the client.
-    fn arithmetic<TargetScope, TargetAggr, TargetDialect>(
-        self,
-        op: BinaryOp,
-        rhs: ExprKind,
-    ) -> Expr<T, TargetScope, TargetAggr, TargetDialect> {
-        Expr::new(ExprKind::Binary {
-            op,
-            lhs: Box::new(self.kind),
-            rhs: Box::new(rhs),
-        })
-    }
 }
 
 impl<T> Expr<T, ()> {
@@ -513,7 +289,7 @@ impl<T> Expr<T, ()> {
         query: SelectQuery<D, Tables, (T,), HasProjection>,
     ) -> Expr<T, (), NonAggregate, D> {
         Expr::new(ExprKind::Subquery {
-            op: SubqueryOp::Scalar,
+            op: super::ast::SubqueryOp::Scalar,
             operand: None,
             query: query.into_subquery(),
             negated: false,
@@ -551,178 +327,6 @@ impl<T> Expr<T, ()> {
     ) -> Expr<T, Scope> {
         Expr::new(ExprKind::Raw { fragments, params })
     }
-
-    /// Builds a `SUM(C)` expression for column `C`.
-    ///
-    /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped. It also
-    /// references the table of `C`, so a statement whose scope lacks that table
-    /// rejects it like any other column reference.
-    pub fn sum<C>() -> Expr<T, C::Table, Aggregate>
-    where
-        C: Column<RustType = T>,
-    {
-        Expr::new(ExprKind::Aggregate {
-            func: AggregateFunc::Sum,
-            distinct: false,
-            arg: Some(Box::new(C::expr_kind())),
-            filter: None,
-        })
-    }
-
-    /// Builds a `SUM(DISTINCT C)` expression for column `C`.
-    ///
-    /// The scope is the table of `C` in both the distinct and the plain form, so
-    /// the aggregate is checked against the statement it is projected into.
-    pub fn sum_distinct<C>() -> Expr<T, C::Table, Aggregate>
-    where
-        C: Column<RustType = T>,
-    {
-        Expr::new(ExprKind::Aggregate {
-            func: AggregateFunc::Sum,
-            distinct: true,
-            arg: Some(Box::new(C::expr_kind())),
-            filter: None,
-        })
-    }
-
-    /// Builds a `MIN(C)` expression for column `C`.
-    ///
-    /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped. It also
-    /// references the table of `C`, so a statement whose scope lacks that table
-    /// rejects it like any other column reference.
-    pub fn min<C>() -> Expr<T, C::Table, Aggregate>
-    where
-        C: Column<RustType = T>,
-    {
-        Expr::new(ExprKind::Aggregate {
-            func: AggregateFunc::Min,
-            distinct: false,
-            arg: Some(Box::new(C::expr_kind())),
-            filter: None,
-        })
-    }
-
-    /// Builds a `MAX(C)` expression for column `C`.
-    ///
-    /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped. It also
-    /// references the table of `C`, so a statement whose scope lacks that table
-    /// rejects it like any other column reference.
-    pub fn max<C>() -> Expr<T, C::Table, Aggregate>
-    where
-        C: Column<RustType = T>,
-    {
-        Expr::new(ExprKind::Aggregate {
-            func: AggregateFunc::Max,
-            distinct: false,
-            arg: Some(Box::new(C::expr_kind())),
-            filter: None,
-        })
-    }
-}
-
-/// Marker of an aggregate expression restricted by a `FILTER (WHERE ...)` clause.
-///
-/// A filtered aggregate collapses the rows of its group exactly like a plain
-/// aggregate; the marker only records that the aggregate no longer reads every
-/// row of the group. Arithmetic combinations with constants preserve it, so a
-/// filtered aggregate scaled by a value stays projectable from a grouped query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FilteredAggregate;
-
-/// A marker stating that an expression collapses the rows of its group.
-///
-/// The marker is implemented by [`Aggregate`] and [`FilteredAggregate`], so the
-/// projection and filtering rules of a grouped query accept both kinds of
-/// aggregate.
-#[doc(hidden)]
-pub trait AggregateMarker {}
-
-impl AggregateMarker for Aggregate {}
-
-impl AggregateMarker for FilteredAggregate {}
-
-impl<T, Scope, Marker, D> Expr<T, Scope, Marker, D>
-where
-    Marker: AggregateMarker,
-{
-    /// Marks the aggregate expression to evaluate only over `DISTINCT` values.
-    pub fn distinct(mut self) -> Self {
-        if let ExprKind::Aggregate {
-            ref mut distinct, ..
-        } = self.kind
-        {
-            *distinct = true;
-        }
-        self
-    }
-
-    /// Adds a `FILTER (WHERE ...)` clause restricting the rows this aggregate evaluates.
-    ///
-    /// Multiple calls combine their conditions with the SQL `AND` operator, and
-    /// the expression records the filter in its tree instead of in the statement
-    /// that renders it. The aggregate therefore stays a dialect-neutral value and
-    /// the caller chooses the dialect when rendering the statement it is
-    /// projected into.
-    ///
-    /// The produced expression carries [`FilteredAggregate`], so the projection
-    /// and filtering rules of a grouped query keep accepting it while arithmetic
-    /// combinations with constants preserve the marker.
-    ///
-    /// ```
-    /// use rurqe_core::expr::{sum, Expr, ExprKind};
-    ///
-    /// rurqe_core::table! {
-    ///     Order => "orders" {
-    ///         OrderTotal => "total": f64,
-    ///     }
-    /// }
-    ///
-    /// let filtered = sum(OrderTotal)
-    ///     .filter_where(Expr::column::<OrderTotal>().gt(10.0))
-    ///     .filter_where(Expr::column::<OrderTotal>().lt(100.0));
-    ///
-    /// assert!(matches!(
-    ///     filtered.kind(),
-    ///     ExprKind::Aggregate { filter: Some(_), .. }
-    /// ));
-    /// ```
-    pub fn filter_where<P, PredAggr, PredD>(
-        self,
-        predicate: Expr<bool, P, PredAggr, PredD>,
-    ) -> Expr<T, Merged<Scope, P>, FilteredAggregate, MergedDialect<D, PredD>>
-    where
-        Scope: MergeScope<P>,
-        D: MergeDialect<PredD>,
-    {
-        let ExprKind::Aggregate {
-            func,
-            distinct,
-            arg,
-            filter,
-        } = self.kind
-        else {
-            return Expr::new(self.kind);
-        };
-
-        let new_filter = match filter {
-            Some(existing) => Box::new(ExprKind::Binary {
-                op: BinaryOp::And,
-                lhs: existing,
-                rhs: Box::new(predicate.into_kind()),
-            }),
-            None => Box::new(predicate.into_kind()),
-        };
-
-        Expr::new(ExprKind::Aggregate {
-            func,
-            distinct,
-            arg,
-            filter: Some(new_filter),
-        })
-    }
 }
 
 impl Expr<(), ()> {
@@ -752,119 +356,5 @@ impl Expr<(), ()> {
             table: Q::NAME,
             column: C::NAME,
         })
-    }
-}
-
-// Arithmetic follows the standard operator traits, so a numeric expression
-// composes the way the SQL it renders reads: `Expr::column::<OrderTotal>() + 1.5`
-// renders `("total" + $1)`. The database evaluates the operator, which is why the
-// operands only have to carry the same numeric type and no value is folded on the
-// client. The aggregation marker of the produced expression is derived by
-// `CombineAggr` from the marker of the left operand and the operand on the right,
-// so an aggregate scaled by a constant stays projectable from a grouped query,
-// while an aggregate combined with a column read per row stops being one:
-//
-// ```text
-// SUM("total") + $1     -> an aggregate
-// SUM("total") + "tax"  -> one value per row
-// ```
-
-impl<T, Scope, Aggr, D, Rhs> Add<Rhs> for Expr<T, Scope, Aggr, D>
-where
-    T: Numeric,
-    Scope: MergeScope<Rhs::Scope>,
-    D: MergeDialect<Rhs::Dialect>,
-    Rhs: NumericOperand<T>,
-    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
-{
-    type Output = Expr<
-        T,
-        Merged<Scope, Rhs::Scope>,
-        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
-        MergedDialect<D, Rhs::Dialect>,
-    >;
-
-    fn add(self, rhs: Rhs) -> Self::Output {
-        self.arithmetic(BinaryOp::Add, rhs.into_operand_kind())
-    }
-}
-
-impl<T, Scope, Aggr, D, Rhs> Sub<Rhs> for Expr<T, Scope, Aggr, D>
-where
-    T: Numeric,
-    Scope: MergeScope<Rhs::Scope>,
-    D: MergeDialect<Rhs::Dialect>,
-    Rhs: NumericOperand<T>,
-    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
-{
-    type Output = Expr<
-        T,
-        Merged<Scope, Rhs::Scope>,
-        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
-        MergedDialect<D, Rhs::Dialect>,
-    >;
-
-    fn sub(self, rhs: Rhs) -> Self::Output {
-        self.arithmetic(BinaryOp::Sub, rhs.into_operand_kind())
-    }
-}
-
-impl<T, Scope, Aggr, D, Rhs> Mul<Rhs> for Expr<T, Scope, Aggr, D>
-where
-    T: Numeric,
-    Scope: MergeScope<Rhs::Scope>,
-    D: MergeDialect<Rhs::Dialect>,
-    Rhs: NumericOperand<T>,
-    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
-{
-    type Output = Expr<
-        T,
-        Merged<Scope, Rhs::Scope>,
-        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
-        MergedDialect<D, Rhs::Dialect>,
-    >;
-
-    fn mul(self, rhs: Rhs) -> Self::Output {
-        self.arithmetic(BinaryOp::Mul, rhs.into_operand_kind())
-    }
-}
-
-impl<T, Scope, Aggr, D, Rhs> Div<Rhs> for Expr<T, Scope, Aggr, D>
-where
-    T: Numeric,
-    Scope: MergeScope<Rhs::Scope>,
-    D: MergeDialect<Rhs::Dialect>,
-    Rhs: NumericOperand<T>,
-    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
-{
-    type Output = Expr<
-        T,
-        Merged<Scope, Rhs::Scope>,
-        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
-        MergedDialect<D, Rhs::Dialect>,
-    >;
-
-    fn div(self, rhs: Rhs) -> Self::Output {
-        self.arithmetic(BinaryOp::Div, rhs.into_operand_kind())
-    }
-}
-
-impl<T, Scope, Aggr, D, Rhs> Rem<Rhs> for Expr<T, Scope, Aggr, D>
-where
-    T: Numeric,
-    Scope: MergeScope<Rhs::Scope>,
-    D: MergeDialect<Rhs::Dialect>,
-    Rhs: NumericOperand<T>,
-    Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
-{
-    type Output = Expr<
-        T,
-        Merged<Scope, Rhs::Scope>,
-        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
-        MergedDialect<D, Rhs::Dialect>,
-    >;
-
-    fn rem(self, rhs: Rhs) -> Self::Output {
-        self.arithmetic(BinaryOp::Rem, rhs.into_operand_kind())
     }
 }
