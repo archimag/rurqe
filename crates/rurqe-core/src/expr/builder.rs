@@ -352,14 +352,19 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///
     /// The produced expression references the tables of both this expression and
     /// the window specification, so a window reading a table the query does not
-    /// select from is rejected at the call site.
-    pub fn over<WinScope, WinCols>(
+    /// select from is rejected at the call site. The dialect requirements of the
+    /// two sides merge as well, so an ordering fixing the placement of NULL values
+    /// keeps requiring a dialect that renders the modifier even when the
+    /// expression it is evaluated over is dialect-neutral.
+    pub fn over<WinScope, WinCols, WinD>(
         self,
-        window: crate::query::WindowSpec<WinScope, WinCols>,
-    ) -> crate::query::WindowExpr<T, Merged<Scope, WinScope>, WinCols>
+        window: crate::query::WindowSpec<WinScope, WinCols, WinD>,
+    ) -> crate::query::WindowExpr<T, Merged<Scope, WinScope>, WinCols, MergedDialect<WinD, D>>
     where
         Scope: MergeScope<WinScope>,
+        WinD: MergeDialect<D>,
     {
+        let window = window.retype_dialect::<D>();
         crate::query::WindowExpr::of_window(
             crate::query::WindowExprKind::Expr(self.kind),
             window,

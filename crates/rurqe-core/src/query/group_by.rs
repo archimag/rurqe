@@ -195,8 +195,9 @@ impl<
         T: 'static + Send + Sync,
         Scope: 'static + Send + Sync,
         Cols: 'static + Send + Sync,
+        D,
         Positions,
-    > GroupedSelectTarget<GroupByCols, Positions> for WindowExpr<T, Scope, Cols>
+    > GroupedSelectTarget<GroupByCols, Positions> for WindowExpr<T, Scope, Cols, D>
 where
     Cols: WindowColsInGroupBy<GroupByCols, Positions>,
 {
