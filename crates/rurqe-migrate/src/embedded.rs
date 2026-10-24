@@ -25,9 +25,19 @@ use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::Migration;
 use crate::runner::{MigrationBackend, MigrationReport, MigrationStatus, Migrator, RepairReport};
+use crate::sleeper::warn_if_in_tokio_runtime;
 use crate::version::MigrationVersion;
 
 /// A collection of migrations embedded directly into application binaries.
+///
+/// Every lifecycle method drives a [`MigrationBackend`], and a backend performs
+/// blocking I/O: the call runs on the calling thread until the database answers.
+/// Conventions.md §3 forbids that on an async worker thread, so a caller already
+/// running inside a Tokio runtime either uses the `*_async` wrappers (available
+/// with the `tokio` feature), which move the backend onto a dedicated blocking
+/// thread, or wraps the synchronous call in `tokio::task::spawn_blocking`
+/// itself. The synchronous methods additionally report such a call through
+/// [`warn_if_in_tokio_runtime`](crate::sleeper::warn_if_in_tokio_runtime).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedMigrations {
     migrations: Vec<Migration>,
@@ -82,30 +92,103 @@ impl EmbeddedMigrations {
     }
 
     /// Runs all pending versioned and modified repeatable migrations against `backend`.
+    ///
+    /// The backend blocks the calling thread, so an async worker thread must hand
+    /// the run to [`migrate_async`](Self::migrate_async) or to
+    /// `tokio::task::spawn_blocking` instead of calling this method directly
+    /// (Conventions.md §3).
     pub fn migrate<B: MigrationBackend>(&self, backend: &mut B) -> Result<MigrationReport, Error> {
+        warn_if_in_tokio_runtime("EmbeddedMigrations::migrate");
         Migrator::new().migrate(backend, &self.migrations)
     }
 
+    /// Runs all pending migrations on a dedicated blocking thread.
+    ///
+    /// The backend is moved into the blocking task and handed back together with
+    /// the report, so a connection that cannot be shared across threads stays
+    /// usable after the run. A panic inside the blocking task — which this crate
+    /// never produces — surfaces as [`Error::Backend`] instead of unwinding the
+    /// caller.
+    #[cfg(feature = "tokio")]
+    pub async fn migrate_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        mut backend: B,
+    ) -> Result<(MigrationReport, B), Error> {
+        let migrations = self.migrations.clone();
+        let joined = tokio::task::spawn_blocking(move || {
+            let report = Migrator::new().migrate(&mut backend, &migrations);
+            (report, backend)
+        })
+        .await;
+
+        match joined {
+            Ok((report, backend)) => report.map(|report| (report, backend)),
+            Err(error) => Err(Error::Backend(format!(
+                "blocking migration task failed: {error}"
+            ))),
+        }
+    }
+
     /// Inspects the status of embedded migrations against the database history.
+    ///
+    /// The backend blocks the calling thread, so an async worker thread must hand
+    /// the run to [`status_async`](Self::status_async) or to
+    /// `tokio::task::spawn_blocking` instead of calling this method directly
+    /// (Conventions.md §3).
     pub fn status<B: MigrationBackend>(
         &self,
         backend: &mut B,
     ) -> Result<Vec<MigrationStatus>, Error> {
+        warn_if_in_tokio_runtime("EmbeddedMigrations::status");
         Migrator::new().status(backend, &self.migrations)
     }
 
+    /// Inspects the status of the embedded migrations on a dedicated blocking thread.
+    ///
+    /// The backend is moved into the blocking task and handed back with the
+    /// statuses, so the caller keeps the connection it inspected. A panic inside
+    /// the blocking task surfaces as [`Error::Backend`] instead of unwinding the
+    /// caller.
+    #[cfg(feature = "tokio")]
+    pub async fn status_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        mut backend: B,
+    ) -> Result<(Vec<MigrationStatus>, B), Error> {
+        let migrations = self.migrations.clone();
+        let joined = tokio::task::spawn_blocking(move || {
+            let statuses = Migrator::new().status(&mut backend, &migrations);
+            (statuses, backend)
+        })
+        .await;
+
+        match joined {
+            Ok((statuses, backend)) => statuses.map(|statuses| (statuses, backend)),
+            Err(error) => Err(Error::Backend(format!(
+                "blocking status task failed: {error}"
+            ))),
+        }
+    }
+
     /// Repairs schema history against updated embedded script checksums and purges failed entries.
+    ///
+    /// The backend blocks the calling thread, so an async worker thread must wrap
+    /// this call in `tokio::task::spawn_blocking` (Conventions.md §3).
     pub fn repair<B: MigrationBackend>(&self, backend: &mut B) -> Result<RepairReport, Error> {
+        warn_if_in_tokio_runtime("EmbeddedMigrations::repair");
         Migrator::new().repair(backend, &self.migrations)
     }
 
     /// Establishes a baseline for pre-existing databases or squashes legacy migrations.
+    ///
+    /// The backend blocks the calling thread, so an async worker thread must wrap
+    /// this call in `tokio::task::spawn_blocking` (Conventions.md §3).
     pub fn baseline<B: MigrationBackend>(
         &self,
         backend: &mut B,
         version: MigrationVersion,
         description: &str,
     ) -> Result<SchemaHistoryEntry, Error> {
+        warn_if_in_tokio_runtime("EmbeddedMigrations::baseline");
         Migrator::new().baseline(backend, version, description)
     }
 }
@@ -174,4 +257,87 @@ macro_rules! embed_migrations {
             $(($script, $sql)),*
         ])
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::InMemoryBackend;
+
+    fn embedded() -> EmbeddedMigrations {
+        EmbeddedMigrations::new(&[
+            ("V1__users.sql", "CREATE TABLE users (id INTEGER);"),
+            ("V2__orders.sql", "CREATE TABLE orders (id INTEGER);"),
+        ])
+        .expect("valid migrations")
+    }
+
+    #[test]
+    fn migrate_reports_every_applied_script() {
+        let mut backend = InMemoryBackend::new();
+        let report = embedded()
+            .migrate(&mut backend)
+            .expect("the migration run succeeds");
+
+        assert_eq!(report.applied_count, 2);
+        assert_eq!(backend.history.len(), 2);
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn migrate_async_hands_the_backend_back() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let (report, backend) = runtime
+            .block_on(embedded().migrate_async(InMemoryBackend::new()))
+            .expect("the blocking run succeeds");
+
+        assert_eq!(report.applied_count, 2);
+        assert_eq!(report.applied_scripts.len(), 2);
+        assert_eq!(backend.history.len(), 2);
+        assert!(backend.history.iter().all(|entry| entry.success));
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn status_async_reports_the_applied_scripts() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let embedded = embedded();
+        let (_, backend) = runtime
+            .block_on(embedded.migrate_async(InMemoryBackend::new()))
+            .expect("the blocking run succeeds");
+
+        let (statuses, backend) = runtime
+            .block_on(embedded.status_async(backend))
+            .expect("the blocking status read succeeds");
+
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(statuses[0].status, crate::runner::MigrationStatusKind::Applied);
+        assert_eq!(statuses[1].status, crate::runner::MigrationStatusKind::Applied);
+        assert_eq!(backend.history.len(), 2);
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn migrate_async_surfaces_a_backend_failure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let mut backend = InMemoryBackend::new();
+        backend.failure_script = Some("BOOM".to_owned());
+        let embedded = EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")])
+            .expect("valid migrations");
+
+        let error = runtime
+            .block_on(embedded.migrate_async(backend))
+            .expect_err("the failing script aborts the run");
+
+        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+    }
 }

@@ -1106,7 +1106,8 @@ pub mod prelude {
 
     #[cfg(feature = "migrate")]
     pub use rurqe_migrate::{
-        embed_migrations, Checksum, EmbeddedMigrations, Migration, MigrationKind, MigrationStatus,
-        MigrationStatusKind, MigrationVersion, SchemaCatalog,
+        embed_migrations, warn_if_in_tokio_runtime, Checksum, EmbeddedMigrations, Migration,
+        MigrationKind, MigrationStatus, MigrationStatusKind, MigrationVersion, NoopSleeper,
+        SchemaCatalog, Sleeper, ThreadSleeper,
     };
 }
