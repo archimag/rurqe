@@ -7,7 +7,7 @@
 //! [`NumericOperand`] admits the right-hand side of arithmetic. [`CombineAggr`]
 //! then derives whether the arithmetic still collapses the rows of a group.
 
-use super::ast::{ExprKind, Subquery, SubqueryOp};
+use super::ast::{ExprKind, MergeDialect, MergedDialect, Subquery, SubqueryOp};
 use super::builder::{Aggregate, Expr, FilteredAggregate, NonAggregate};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
 use super::val::ToSqlVal;
@@ -33,7 +33,7 @@ impl<'a> SqlCompatible<String, &'a str> for &'a str {}
 
 impl<'a> SqlCompatible<Vec<u8>, &'a [u8]> for &'a [u8] {}
 
-impl<T, Scope, Aggr> SqlCompatible<T, Expr<T, Scope, Aggr>> for Expr<T, Scope, Aggr> {}
+impl<T, Scope, Aggr, D> SqlCompatible<T, Expr<T, Scope, Aggr, D>> for Expr<T, Scope, Aggr, D> {}
 
 /// A value or expression that can be compared with an expression of type `T`.
 ///
@@ -54,12 +54,16 @@ pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
     /// built expression keeps the scope of its columns.
     type Scope;
 
+    /// The dialect marker of the operand.
+    type Dialect;
+
     /// Converts `self` into an expression AST node.
     fn into_expr_kind(self) -> ExprKind;
 }
 
 impl IntoExpr<i32> for i32 {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -68,6 +72,7 @@ impl IntoExpr<i32> for i32 {
 
 impl IntoExpr<i64> for i64 {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -76,6 +81,7 @@ impl IntoExpr<i64> for i64 {
 
 impl IntoExpr<f64> for f64 {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -85,6 +91,7 @@ impl IntoExpr<f64> for f64 {
 #[cfg(feature = "decimal")]
 impl IntoExpr<rust_decimal::Decimal> for rust_decimal::Decimal {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -97,6 +104,7 @@ impl SqlCompatible<rust_decimal::Decimal, &rust_decimal::Decimal> for &rust_deci
 #[cfg(feature = "decimal")]
 impl IntoExpr<rust_decimal::Decimal> for &rust_decimal::Decimal {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -105,6 +113,7 @@ impl IntoExpr<rust_decimal::Decimal> for &rust_decimal::Decimal {
 
 impl IntoExpr<bool> for bool {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -113,6 +122,7 @@ impl IntoExpr<bool> for bool {
 
 impl IntoExpr<String> for String {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -121,6 +131,7 @@ impl IntoExpr<String> for String {
 
 impl IntoExpr<String> for &str {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -129,6 +140,7 @@ impl IntoExpr<String> for &str {
 
 impl IntoExpr<Vec<u8>> for Vec<u8> {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -137,14 +149,16 @@ impl IntoExpr<Vec<u8>> for Vec<u8> {
 
 impl IntoExpr<Vec<u8>> for &[u8] {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
     }
 }
 
-impl<T, Scope, Aggr> IntoExpr<T> for Expr<T, Scope, Aggr> {
+impl<T, Scope, Aggr, D> IntoExpr<T> for Expr<T, Scope, Aggr, D> {
     type Scope = Scope;
+    type Dialect = D;
 
     fn into_expr_kind(self) -> ExprKind {
         self.into_kind()
@@ -185,6 +199,9 @@ pub trait IntoExprList<T> {
     /// The scope of the tables the candidates reference.
     type Scope;
 
+    /// The dialect marker of the candidates.
+    type Dialect;
+
     /// Appends the candidate expressions to `values`.
     #[doc(hidden)]
     fn push_expr_kinds(self, values: &mut Vec<ExprKind>);
@@ -196,6 +213,7 @@ where
     V: IntoExpr<T>,
 {
     type Scope = V::Scope;
+    type Dialect = V::Dialect;
 
     fn push_expr_kinds(self, values: &mut Vec<ExprKind>) {
         for value in self {
@@ -222,6 +240,7 @@ where
     Tables: TableScope,
 {
     type Scope = ();
+    type Dialect = D;
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Subquery {
@@ -245,13 +264,30 @@ where
     note = "call `.select(...)` before nesting the query, so the statement projects the compared columns"
 )]
 pub trait InSubquery {
+    /// The dialect marker of the nested query.
+    type Dialect;
+
     /// Converts `self` into the nested statement it stands for.
     fn into_subquery(self) -> Subquery;
 }
 
-impl<S: Into<Subquery>> InSubquery for S {
+impl InSubquery for Subquery {
+    type Dialect = ();
+
     fn into_subquery(self) -> Subquery {
-        self.into()
+        self
+    }
+}
+
+impl<D, Tables, Output> InSubquery for SelectQuery<D, Tables, Output, HasProjection>
+where
+    D: Dialect,
+    Tables: TableScope,
+{
+    type Dialect = D;
+
+    fn into_subquery(self) -> Subquery {
+        self.into_subquery()
     }
 }
 
@@ -261,6 +297,7 @@ impl SqlCompatible<uuid::Uuid, &uuid::Uuid> for &uuid::Uuid {}
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for uuid::Uuid {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -270,6 +307,7 @@ impl IntoExpr<uuid::Uuid> for uuid::Uuid {
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for &uuid::Uuid {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -282,6 +320,7 @@ impl<'a> SqlCompatible<uuid::Uuid, &'a str> for &'a str {}
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for &str {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -294,6 +333,7 @@ impl SqlCompatible<chrono::NaiveDateTime, &chrono::NaiveDateTime> for &chrono::N
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -303,6 +343,7 @@ impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDateTime> for &chrono::NaiveDateTime {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -318,6 +359,7 @@ impl SqlCompatible<chrono::DateTime<chrono::Utc>, &chrono::DateTime<chrono::Utc>
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -327,6 +369,7 @@ impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::DateTime<chrono::Utc>> for &chrono::DateTime<chrono::Utc> {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -339,6 +382,7 @@ impl SqlCompatible<chrono::NaiveDate, &chrono::NaiveDate> for &chrono::NaiveDate
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -348,6 +392,7 @@ impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDate> for &chrono::NaiveDate {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -360,6 +405,7 @@ impl SqlCompatible<serde_json::Value, &serde_json::Value> for &serde_json::Value
 #[cfg(feature = "serde_json")]
 impl IntoExpr<serde_json::Value> for serde_json::Value {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -369,6 +415,7 @@ impl IntoExpr<serde_json::Value> for serde_json::Value {
 #[cfg(feature = "serde_json")]
 impl IntoExpr<serde_json::Value> for &serde_json::Value {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -378,6 +425,7 @@ impl IntoExpr<serde_json::Value> for &serde_json::Value {
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for crate::expr::Json<T> {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -393,6 +441,7 @@ impl<'a, T: serde::Serialize> SqlCompatible<crate::expr::Json<T>, &'a crate::exp
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<T> {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())
@@ -453,6 +502,9 @@ pub trait NumericOperand<T: Numeric> {
     /// `SUM("total") + SUM("tax")` an aggregate.
     type Aggr;
 
+    /// The dialect marker of the operand.
+    type Dialect;
+
     /// Converts `self` into the expression node of the operand.
     fn into_operand_kind(self) -> ExprKind;
 }
@@ -468,6 +520,7 @@ macro_rules! impl_scalar_numeric_operand {
             impl NumericOperand<$ty> for $ty {
                 type Scope = ();
                 type Aggr = NonAggregate;
+                type Dialect = ();
 
                 fn into_operand_kind(self) -> ExprKind {
                     ExprKind::Value(self.to_sql_val())
@@ -487,6 +540,7 @@ where
 {
     type Scope = C::Table;
     type Aggr = NonAggregate;
+    type Dialect = ();
 
     fn into_operand_kind(self) -> ExprKind {
         C::expr_kind()
@@ -495,12 +549,13 @@ where
 
 // A built expression keeps both the tables and the aggregation marker it was
 // constructed with.
-impl<T, Scope, Marker> NumericOperand<T> for Expr<T, Scope, Marker>
+impl<T, Scope, Marker, D> NumericOperand<T> for Expr<T, Scope, Marker, D>
 where
     T: Numeric,
 {
     type Scope = Scope;
     type Aggr = Marker;
+    type Dialect = D;
 
     fn into_operand_kind(self) -> ExprKind {
         self.into_kind()
@@ -662,15 +717,18 @@ pub trait Expression<T> {
     /// The scope of the tables the expression references.
     type Scope;
 
+    /// The dialect marker of the expression.
+    type Dialect;
+
     /// Converts `self` into the expression it stands for.
-    fn into_expression(self) -> Expr<T, Self::Scope>;
+    fn into_expression(self) -> Expr<T, Self::Scope, NonAggregate, Self::Dialect>;
 
     /// Drops the relation scope from this expression, enabling use in correlated subqueries.
     ///
     /// The dropped tables are replaced with the [`Unscoped`] marker, so the
     /// expression is accepted in every query scope without becoming
     /// indistinguishable from a constant.
-    fn without_scope(self) -> Expr<T, Unscoped>
+    fn without_scope(self) -> Expr<T, Unscoped, NonAggregate, Self::Dialect>
     where
         Self: Sized,
     {
@@ -678,47 +736,87 @@ pub trait Expression<T> {
     }
 
     /// Compares the expression with `value` using the SQL `=` operator.
-    fn eq<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn eq<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.into_expression().eq(value)
     }
 
     /// Compares the expression with `value` using the SQL `<>` operator.
-    fn ne<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn ne<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.into_expression().ne(value)
     }
 
     /// Compares the expression with `value` using the SQL `>` operator.
-    fn gt<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn gt<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.into_expression().gt(value)
     }
 
     /// Compares the expression with `value` using the SQL `<` operator.
-    fn lt<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn lt<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.into_expression().lt(value)
     }
 
     /// Builds an `IS NULL` predicate over the expression.
-    fn is_null(self) -> Expr<bool, Self::Scope>
+    fn is_null(self) -> Expr<bool, Self::Scope, NonAggregate, Self::Dialect>
     where
         Self: Sized,
     {
@@ -729,7 +827,7 @@ pub trait Expression<T> {
     }
 
     /// Builds an `IS NOT NULL` predicate over the expression.
-    fn is_not_null(self) -> Expr<bool, Self::Scope>
+    fn is_not_null(self) -> Expr<bool, Self::Scope, NonAggregate, Self::Dialect>
     where
         Self: Sized,
     {
@@ -745,11 +843,18 @@ pub trait Expression<T> {
         self,
         low: L,
         high: H,
-    ) -> Expr<bool, Merged3<Self::Scope, L::Scope, H::Scope>>
+    ) -> Expr<
+        bool,
+        Merged3<Self::Scope, L::Scope, H::Scope>,
+        NonAggregate,
+        MergedDialect<MergedDialect<Self::Dialect, L::Dialect>, H::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<L::Scope>,
         Merged<Self::Scope, L::Scope>: MergeScope<H::Scope>,
+        Self::Dialect: MergeDialect<L::Dialect>,
+        MergedDialect<Self::Dialect, L::Dialect>: MergeDialect<H::Dialect>,
         L: IntoExpr<T>,
         H: IntoExpr<T>,
     {
@@ -761,10 +866,20 @@ pub trait Expression<T> {
     /// The tables the candidates reference join the scope of the predicate, so a
     /// candidate reading a column of a table the query does not select from is
     /// rejected at the call site.
-    fn in_list<I>(self, values: I) -> Expr<bool, Merged<Self::Scope, I::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn in_list<I>(
+        self,
+        values: I,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, I::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, I::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<I::Scope>,
+        Self::Dialect: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
         self.into_expression().in_list(values)
@@ -774,29 +889,41 @@ pub trait Expression<T> {
     ///
     /// The negation keeps the scope of the positive form: every candidate value
     /// still has to be comparable with the expression.
-    fn not_in_list<I>(self, values: I) -> Expr<bool, Merged<Self::Scope, I::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn not_in_list<I>(
+        self,
+        values: I,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, I::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, I::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<I::Scope>,
+        Self::Dialect: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
         self.into_expression().not_in_list(values)
     }
 }
 
-impl<T, Scope> Expression<T> for Expr<T, Scope> {
+impl<T, Scope, D> Expression<T> for Expr<T, Scope, NonAggregate, D> {
     type Scope = Scope;
+    type Dialect = D;
 
-    fn into_expression(self) -> Expr<T, Scope> {
+    fn into_expression(self) -> Expr<T, Scope, NonAggregate, D> {
         self
     }
 }
 
 impl<C: Column> Expression<C::RustType> for C {
     type Scope = C::Table;
+    type Dialect = ();
 
-    fn into_expression(self) -> Expr<C::RustType, C::Table> {
-        Expr::<C::RustType, C::Table>::new(C::expr_kind())
+    fn into_expression(self) -> Expr<C::RustType, C::Table, NonAggregate, ()> {
+        Expr::<C::RustType, C::Table, NonAggregate, ()>::new(C::expr_kind())
     }
 }
 
@@ -813,42 +940,67 @@ pub trait StringExpression {
     /// The scope of the tables the expression references.
     type Scope;
 
+    /// The dialect marker of the expression.
+    type Dialect;
+
     /// Converts `self` into the string expression it stands for.
-    fn into_string_expression(self) -> Expr<String, Self::Scope>;
+    fn into_string_expression(self) -> Expr<String, Self::Scope, NonAggregate, Self::Dialect>;
 
     /// Builds a case-sensitive `LIKE` pattern-matching predicate.
-    fn like<V>(self, pattern: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn like<V>(
+        self,
+        pattern: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
         V: IntoExpr<String>,
     {
         self.into_string_expression().like(pattern)
     }
 
     /// Builds a case-insensitive `ILIKE` pattern-matching predicate.
-    fn ilike<V>(self, pattern: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn ilike<V>(
+        self,
+        pattern: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
         V: IntoExpr<String>,
     {
         self.into_string_expression().ilike(pattern)
     }
 }
 
-impl<Scope> StringExpression for Expr<String, Scope> {
+impl<Scope, D> StringExpression for Expr<String, Scope, NonAggregate, D> {
     type Scope = Scope;
+    type Dialect = D;
 
-    fn into_string_expression(self) -> Expr<String, Scope> {
+    fn into_string_expression(self) -> Expr<String, Scope, NonAggregate, D> {
         self
     }
 }
 
 impl<C: Column<RustType = String>> StringExpression for C {
     type Scope = C::Table;
+    type Dialect = ();
 
-    fn into_string_expression(self) -> Expr<String, C::Table> {
-        Expr::<String, C::Table>::new(C::expr_kind())
+    fn into_string_expression(self) -> Expr<String, C::Table, NonAggregate, ()> {
+        Expr::<String, C::Table, NonAggregate, ()>::new(C::expr_kind())
     }
 }

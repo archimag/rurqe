@@ -3,9 +3,11 @@
 use core::marker::PhantomData;
 use core::ops::{Add, Div, Mul, Rem, Sub};
 
-use super::ast::{CaseBuilder, ExprKind, Subquery, SubqueryOp};
+use super::ast::{CaseBuilder, ExprKind, MergeDialect, MergedDialect, SubqueryOp};
 use super::functions::SqlCastTarget;
-use super::ops::{CombineAggr, CombinedAggr, IntoExpr, IntoExprList, Numeric, NumericOperand};
+use super::ops::{
+    CombineAggr, CombinedAggr, InSubquery, IntoExpr, IntoExprList, Numeric, NumericOperand,
+};
 use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Merged3, Unscoped};
@@ -61,21 +63,21 @@ pub struct Aggregate;
 ///     }
 /// );
 /// ```
-/// Phantom marker carrying the result type, referenced scope, and aggregation
-/// marker of an [`Expr`].
+/// Phantom marker carrying the result type, referenced scope, aggregation marker,
+/// and dialect marker of an [`Expr`].
 ///
 /// The alias keeps the phantom field readable at its declaration site, mirroring
 /// the query and statement markers of the surrounding modules.
-type ExprMarker<T, Scope, Aggr> = PhantomData<fn() -> (T, Scope, Aggr)>;
+type ExprMarker<T, Scope, Aggr, D> = PhantomData<fn() -> (T, Scope, Aggr, D)>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expr<T, Scope = (), Aggr = NonAggregate> {
+pub struct Expr<T, Scope = (), Aggr = NonAggregate, D = ()> {
     pub(super) kind: ExprKind,
-    _result: ExprMarker<T, Scope, Aggr>,
+    _result: ExprMarker<T, Scope, Aggr, D>,
 }
 
-impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
-    pub(super) fn new(kind: ExprKind) -> Self {
+impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
+    pub(crate) fn new(kind: ExprKind) -> Self {
         Self {
             kind,
             _result: PhantomData,
@@ -107,7 +109,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///
     /// The predicate compares against SQL `NULL` itself instead of a bound
     /// parameter, so it works for any expression type, optional or not.
-    pub fn is_null(&self) -> Expr<bool, Scope, Aggr> {
+    pub fn is_null(&self) -> Expr<bool, Scope, Aggr, D> {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
             negated: false,
@@ -115,7 +117,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     }
 
     /// Builds an `IS NOT NULL` predicate over this expression.
-    pub fn is_not_null(&self) -> Expr<bool, Scope, Aggr> {
+    pub fn is_not_null(&self) -> Expr<bool, Scope, Aggr, D> {
         Expr::new(ExprKind::IsNull {
             operand: Box::new(self.kind.clone()),
             negated: true,
@@ -126,56 +128,88 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///
     /// The nested query renders inline with the enclosing statement, so its
     /// parameters continue the placeholder numbering of the outer query.
-    pub fn in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool, Scope> {
+    pub fn in_subquery<S: InSubquery>(
+        self,
+        subquery: S,
+    ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
+    where
+        D: MergeDialect<S::Dialect>,
+    {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::In,
             operand: Some(Box::new(self.kind)),
-            query: subquery.into(),
+            query: subquery.into_subquery(),
             negated: false,
         })
     }
 
     /// Builds a `NOT IN (subquery)` predicate matching this expression.
-    pub fn not_in_subquery<S: Into<Subquery>>(self, subquery: S) -> Expr<bool, Scope> {
+    pub fn not_in_subquery<S: InSubquery>(
+        self,
+        subquery: S,
+    ) -> Expr<bool, Scope, Aggr, MergedDialect<D, S::Dialect>>
+    where
+        D: MergeDialect<S::Dialect>,
+    {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::In,
             operand: Some(Box::new(self.kind)),
-            query: subquery.into(),
+            query: subquery.into_subquery(),
             negated: true,
         })
     }
 
     /// Compares the expression with `value` using the SQL `=` operator.
-    pub fn eq<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    pub fn eq<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Eq, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `<>` operator.
-    pub fn ne<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    pub fn ne<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Ne, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `>` operator.
-    pub fn gt<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    pub fn gt<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Gt, value.into_expr_kind())
     }
 
     /// Compares the expression with `value` using the SQL `<` operator.
-    pub fn lt<V>(self, value: V) -> Expr<bool, Merged<Scope, V::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    pub fn lt<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.compare(BinaryOp::Lt, value.into_expr_kind())
@@ -189,10 +223,17 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
         self,
         low: L,
         high: H,
-    ) -> Expr<bool, Merged3<Scope, L::Scope, H::Scope>, Aggr>
+    ) -> Expr<
+        bool,
+        Merged3<Scope, L::Scope, H::Scope>,
+        Aggr,
+        MergedDialect<MergedDialect<D, L::Dialect>, H::Dialect>,
+    >
     where
         Scope: MergeScope<L::Scope>,
         Merged<Scope, L::Scope>: MergeScope<H::Scope>,
+        D: MergeDialect<L::Dialect>,
+        MergedDialect<D, L::Dialect>: MergeDialect<H::Dialect>,
         L: IntoExpr<T>,
         H: IntoExpr<T>,
     {
@@ -210,9 +251,14 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// bound values references no table and leaves the scope unchanged, while a
     /// candidate reading a column of another table extends it, so the enclosing
     /// query has to select from that table as well.
-    pub fn in_list<I>(self, values: I) -> Expr<bool, Merged<Scope, I::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    pub fn in_list<I>(
+        self,
+        values: I,
+    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
     where
         Scope: MergeScope<I::Scope>,
+        D: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
         self.membership(values, false)
@@ -223,17 +269,28 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// The negation keeps the scope of the positive form: every candidate value
     /// still has to be comparable with the expression, and the tables it
     /// references still join the scope of the predicate.
-    pub fn not_in_list<I>(self, values: I) -> Expr<bool, Merged<Scope, I::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    pub fn not_in_list<I>(
+        self,
+        values: I,
+    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
     where
         Scope: MergeScope<I::Scope>,
+        D: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
         self.membership(values, true)
     }
 
-    fn membership<I>(self, values: I, negated: bool) -> Expr<bool, Merged<Scope, I::Scope>, Aggr>
+    #[allow(clippy::type_complexity)]
+    fn membership<I>(
+        self,
+        values: I,
+        negated: bool,
+    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
     where
         Scope: MergeScope<I::Scope>,
+        D: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
         let mut candidates = Vec::new();
@@ -256,7 +313,11 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
         })
     }
 
-    fn compare<TargetScope>(self, op: BinaryOp, rhs: ExprKind) -> Expr<bool, TargetScope, Aggr> {
+    fn compare<TargetScope, TargetDialect>(
+        self,
+        op: BinaryOp,
+        rhs: ExprKind,
+    ) -> Expr<bool, TargetScope, Aggr, TargetDialect> {
         Expr::new(ExprKind::Binary {
             op,
             lhs: Box::new(self.kind),
@@ -280,7 +341,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// an alias the reference cannot name. The qualifier keeps the reference
     /// naming its own table instead of silently reading a column of the statement
     /// it is rendered into.
-    pub fn without_scope(self) -> Expr<T, Unscoped, Aggr> {
+    pub fn without_scope(self) -> Expr<T, Unscoped, Aggr, D> {
         Expr {
             kind: qualify_references(self.kind),
             _result: PhantomData,
@@ -335,7 +396,7 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     ///     }
     /// );
     /// ```
-    pub fn cast<U: SqlCastTarget>(self) -> Expr<U, Scope, Aggr> {
+    pub fn cast<U: SqlCastTarget>(self) -> Expr<U, Scope, Aggr, D> {
         Expr::new(ExprKind::Cast {
             operand: Box::new(self.kind),
             target: U::SQL_TYPE,
@@ -368,11 +429,11 @@ impl<T, Scope, Aggr> Expr<T, Scope, Aggr> {
     /// applied without inspecting the operands: the database evaluates the
     /// expression, which keeps an overflow or a division by zero the decision of
     /// the server instead of the client.
-    fn arithmetic<TargetScope, TargetAggr>(
+    fn arithmetic<TargetScope, TargetAggr, TargetDialect>(
         self,
         op: BinaryOp,
         rhs: ExprKind,
-    ) -> Expr<T, TargetScope, TargetAggr> {
+    ) -> Expr<T, TargetScope, TargetAggr, TargetDialect> {
         Expr::new(ExprKind::Binary {
             op,
             lhs: Box::new(self.kind),
@@ -446,12 +507,10 @@ impl<T> Expr<T, ()> {
     ///         .select((UserId, UserName)),
     /// );
     /// ```
-    pub fn subquery<D, Tables>(query: SelectQuery<D, Tables, (T,), HasProjection>) -> Self
-    where
-        D: Dialect,
-        Tables: TableScope,
-    {
-        Self::new(ExprKind::Subquery {
+    pub fn subquery<D: Dialect, Tables: TableScope>(
+        query: SelectQuery<D, Tables, (T,), HasProjection>,
+    ) -> Expr<T, (), NonAggregate, D> {
+        Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Scalar,
             operand: None,
             query: query.into_subquery(),
@@ -583,7 +642,7 @@ impl AggregateMarker for Aggregate {}
 
 impl AggregateMarker for FilteredAggregate {}
 
-impl<T, Scope, Marker> Expr<T, Scope, Marker>
+impl<T, Scope, Marker, D> Expr<T, Scope, Marker, D>
 where
     Marker: AggregateMarker,
 {
@@ -628,12 +687,13 @@ where
     ///     ExprKind::Aggregate { filter: Some(_), .. }
     /// ));
     /// ```
-    pub fn filter_where<P>(
+    pub fn filter_where<P, PredAggr, PredD>(
         self,
-        predicate: Expr<bool, P>,
-    ) -> Expr<T, Merged<Scope, P>, FilteredAggregate>
+        predicate: Expr<bool, P, PredAggr, PredD>,
+    ) -> Expr<T, Merged<Scope, P>, FilteredAggregate, MergedDialect<D, PredD>>
     where
         Scope: MergeScope<P>,
+        D: MergeDialect<PredD>,
     {
         let ExprKind::Aggregate {
             func,
@@ -707,70 +767,100 @@ impl Expr<(), ()> {
 // SUM("total") + "tax"  -> one value per row
 // ```
 
-impl<T, Scope, Aggr, Rhs> Add<Rhs> for Expr<T, Scope, Aggr>
+impl<T, Scope, Aggr, D, Rhs> Add<Rhs> for Expr<T, Scope, Aggr, D>
 where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
+    D: MergeDialect<Rhs::Dialect>,
     Rhs: NumericOperand<T>,
     Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
+    type Output = Expr<
+        T,
+        Merged<Scope, Rhs::Scope>,
+        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
+        MergedDialect<D, Rhs::Dialect>,
+    >;
 
     fn add(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Add, rhs.into_operand_kind())
     }
 }
 
-impl<T, Scope, Aggr, Rhs> Sub<Rhs> for Expr<T, Scope, Aggr>
+impl<T, Scope, Aggr, D, Rhs> Sub<Rhs> for Expr<T, Scope, Aggr, D>
 where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
+    D: MergeDialect<Rhs::Dialect>,
     Rhs: NumericOperand<T>,
     Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
+    type Output = Expr<
+        T,
+        Merged<Scope, Rhs::Scope>,
+        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
+        MergedDialect<D, Rhs::Dialect>,
+    >;
 
     fn sub(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Sub, rhs.into_operand_kind())
     }
 }
 
-impl<T, Scope, Aggr, Rhs> Mul<Rhs> for Expr<T, Scope, Aggr>
+impl<T, Scope, Aggr, D, Rhs> Mul<Rhs> for Expr<T, Scope, Aggr, D>
 where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
+    D: MergeDialect<Rhs::Dialect>,
     Rhs: NumericOperand<T>,
     Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
+    type Output = Expr<
+        T,
+        Merged<Scope, Rhs::Scope>,
+        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
+        MergedDialect<D, Rhs::Dialect>,
+    >;
 
     fn mul(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Mul, rhs.into_operand_kind())
     }
 }
 
-impl<T, Scope, Aggr, Rhs> Div<Rhs> for Expr<T, Scope, Aggr>
+impl<T, Scope, Aggr, D, Rhs> Div<Rhs> for Expr<T, Scope, Aggr, D>
 where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
+    D: MergeDialect<Rhs::Dialect>,
     Rhs: NumericOperand<T>,
     Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
+    type Output = Expr<
+        T,
+        Merged<Scope, Rhs::Scope>,
+        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
+        MergedDialect<D, Rhs::Dialect>,
+    >;
 
     fn div(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Div, rhs.into_operand_kind())
     }
 }
 
-impl<T, Scope, Aggr, Rhs> Rem<Rhs> for Expr<T, Scope, Aggr>
+impl<T, Scope, Aggr, D, Rhs> Rem<Rhs> for Expr<T, Scope, Aggr, D>
 where
     T: Numeric,
     Scope: MergeScope<Rhs::Scope>,
+    D: MergeDialect<Rhs::Dialect>,
     Rhs: NumericOperand<T>,
     Aggr: CombineAggr<Rhs::Aggr, Rhs::Scope>,
 {
-    type Output = Expr<T, Merged<Scope, Rhs::Scope>, CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>>;
+    type Output = Expr<
+        T,
+        Merged<Scope, Rhs::Scope>,
+        CombinedAggr<Aggr, Rhs::Aggr, Rhs::Scope>,
+        MergedDialect<D, Rhs::Dialect>,
+    >;
 
     fn rem(self, rhs: Rhs) -> Self::Output {
         self.arithmetic(BinaryOp::Rem, rhs.into_operand_kind())

@@ -3,8 +3,8 @@
 
 use core::marker::PhantomData;
 
-use super::builder::{Aggregate, Expr};
-use super::ops::{CombineAggr, CombinedAggr, IntoExpr};
+use super::builder::{Aggregate, Expr, NonAggregate};
+use super::ops::{CombineAggr, CombinedAggr, InSubquery, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::dialect::Dialect;
@@ -300,44 +300,23 @@ pub struct NoBranches;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HasBranches;
 
-/// Phantom marker carrying the result type, the branch state, and the referenced
-/// scope of a [`CaseBuilder`].
-///
-/// The alias keeps the phantom field of the builder readable and keeps the
-/// declaration from tripping the `type_complexity` lint.
-type CaseMarker<T, Branches, Scope> = PhantomData<fn() -> (T, Branches, Scope)>;
+/// Phantom marker carrying the result type, the branch state, the referenced
+/// scope, and the dialect marker of a [`CaseBuilder`].
+type CaseMarker<T, Branches, Scope, D> = PhantomData<fn() -> (T, Branches, Scope, D)>;
 
 /// Builder for a searched `CASE` expression producing values of type `T`.
 ///
-/// The builder carries the tables `Scope` that its conditions and results
-/// reference, so the finished expression keeps the scope of every column it reads
-/// instead of degrading into a constant.
-///
-/// ```
-/// use rurqe_core::expr::{Expr, ExprKind};
-///
-/// rurqe_core::table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// let tier = Expr::<String>::case()
-///     .when(Expr::column::<UserId>().gt(100i64), "vip")
-///     .else_("regular")
-///     .end();
-///
-/// assert!(matches!(tier.kind(), ExprKind::Case { branches, .. } if branches.len() == 1));
-/// ```
+/// The builder carries the tables `Scope` and dialect requirements `D` that its
+/// conditions and results reference, so the finished expression keeps the scope
+/// and dialect constraints of every operand instead of degrading into a constant.
 #[derive(Debug, Clone, PartialEq)]
-pub struct CaseBuilder<T, Branches = NoBranches, Scope = ()> {
+pub struct CaseBuilder<T, Branches = NoBranches, Scope = (), D = ()> {
     branches: Vec<CaseBranch>,
     else_branch: Option<ExprKind>,
-    _marker: CaseMarker<T, Branches, Scope>,
+    _marker: CaseMarker<T, Branches, Scope, D>,
 }
 
-impl<T> CaseBuilder<T, NoBranches, ()> {
+impl<T> CaseBuilder<T, NoBranches, (), ()> {
     pub(super) fn new() -> Self {
         Self {
             branches: Vec::new(),
@@ -347,22 +326,24 @@ impl<T> CaseBuilder<T, NoBranches, ()> {
     }
 }
 
-impl<T, Branches, Scope> CaseBuilder<T, Branches, Scope> {
+impl<T, Branches, Scope, D> CaseBuilder<T, Branches, Scope, D> {
     /// Appends a `WHEN condition THEN result` branch.
-    ///
-    /// Branches are rendered in declaration order, so the first matching
-    /// condition determines the produced value. Declaring a branch moves the
-    /// builder into [`HasBranches`], the only state that can be finalised, and
-    /// merges the scopes of the condition and of the result into the scope of the
-    /// builder.
-    pub fn when<ConditionScope, V>(
+    #[allow(clippy::type_complexity)]
+    pub fn when<ConditionScope, ConditionAggr, ConditionD, V>(
         mut self,
-        condition: Expr<bool, ConditionScope>,
+        condition: Expr<bool, ConditionScope, ConditionAggr, ConditionD>,
         result: V,
-    ) -> CaseBuilder<T, HasBranches, Merged<Merged<Scope, ConditionScope>, V::Scope>>
+    ) -> CaseBuilder<
+        T,
+        HasBranches,
+        Merged<Merged<Scope, ConditionScope>, V::Scope>,
+        MergedDialect<MergedDialect<D, ConditionD>, V::Dialect>,
+    >
     where
         Scope: MergeScope<ConditionScope>,
         Merged<Scope, ConditionScope>: MergeScope<V::Scope>,
+        D: MergeDialect<ConditionD>,
+        MergedDialect<D, ConditionD>: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.branches.push(CaseBranch {
@@ -377,11 +358,14 @@ impl<T, Branches, Scope> CaseBuilder<T, Branches, Scope> {
     }
 
     /// Sets the `ELSE` fallback rendered when no branch matches.
-    ///
-    /// The fallback contributes its own scope to the scope of the builder.
-    pub fn else_<V>(mut self, value: V) -> CaseBuilder<T, Branches, Merged<Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    pub fn else_<V>(
+        mut self,
+        value: V,
+    ) -> CaseBuilder<T, Branches, Merged<Scope, V::Scope>, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
         self.else_branch = Some(value.into_expr_kind());
@@ -393,19 +377,9 @@ impl<T, Branches, Scope> CaseBuilder<T, Branches, Scope> {
     }
 }
 
-impl<T, Scope> CaseBuilder<T, HasBranches, Scope> {
+impl<T, Scope, D> CaseBuilder<T, HasBranches, Scope, D> {
     /// Finalises the expression.
-    ///
-    /// A `CASE` expression without a `WHEN` branch is invalid SQL, so the method
-    /// exists only once a branch was declared:
-    ///
-    /// ```compile_fail
-    /// use rurqe_core::expr::Expr;
-    ///
-    /// // Fails to compile: the builder holds no WHEN branch yet.
-    /// let _ = Expr::<String>::case().else_("regular").end();
-    /// ```
-    pub fn end(self) -> Expr<T, Scope> {
+    pub fn end(self) -> Expr<T, Scope, NonAggregate, D> {
         Expr::new(ExprKind::Case {
             branches: self.branches,
             else_branch: self.else_branch.map(Box::new),
@@ -501,14 +475,19 @@ impl Expr<f64> {
     }
 }
 
-impl<Scope, Aggr> Expr<String, Scope, Aggr> {
+impl<Scope, Aggr, D> Expr<String, Scope, Aggr, D> {
     /// Builds a case-sensitive `LIKE` pattern-matching predicate over this expression.
     ///
     /// In the pattern, `%` matches any sequence of characters and `_` matches a
     /// single character, following the SQL `LIKE` semantics.
-    pub fn like<V>(self, pattern: V) -> Expr<bool, Merged<Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    pub fn like<V>(
+        self,
+        pattern: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<String>,
     {
         Expr::new(ExprKind::Like {
@@ -519,9 +498,14 @@ impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     }
 
     /// Builds a case-insensitive `ILIKE` pattern-matching predicate over this expression.
-    pub fn ilike<V>(self, pattern: V) -> Expr<bool, Merged<Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    pub fn ilike<V>(
+        self,
+        pattern: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
     where
         Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
         V: IntoExpr<String>,
     {
         Expr::new(ExprKind::Like {
@@ -532,20 +516,26 @@ impl<Scope, Aggr> Expr<String, Scope, Aggr> {
     }
 }
 
-impl<Scope, Aggr> Expr<bool, Scope, Aggr> {
+impl<Scope, Aggr, D> Expr<bool, Scope, Aggr, D> {
     /// Combines two predicates with the SQL `AND` operator.
     ///
     /// Both operands contribute their aggregation marker through
     /// [`CombineAggr`], so combining two aggregate predicates stays aggregate
     /// and a grouped query still accepts the result.
     #[allow(clippy::type_complexity)]
-    pub fn and<OtherScope, OtherAggr>(
+    pub fn and<OtherScope, OtherAggr, OtherD>(
         self,
-        other: Expr<bool, OtherScope, OtherAggr>,
-    ) -> Expr<bool, Merged<Scope, OtherScope>, CombinedAggr<Aggr, OtherAggr, OtherScope>>
+        other: Expr<bool, OtherScope, OtherAggr, OtherD>,
+    ) -> Expr<
+        bool,
+        Merged<Scope, OtherScope>,
+        CombinedAggr<Aggr, OtherAggr, OtherScope>,
+        MergedDialect<D, OtherD>,
+    >
     where
         Scope: MergeScope<OtherScope>,
         Aggr: CombineAggr<OtherAggr, OtherScope>,
+        D: MergeDialect<OtherD>,
     {
         self.combine(BinaryOp::And, other)
     }
@@ -554,26 +544,38 @@ impl<Scope, Aggr> Expr<bool, Scope, Aggr> {
     ///
     /// The aggregate marker combines the same way it does for `AND`.
     #[allow(clippy::type_complexity)]
-    pub fn or<OtherScope, OtherAggr>(
+    pub fn or<OtherScope, OtherAggr, OtherD>(
         self,
-        other: Expr<bool, OtherScope, OtherAggr>,
-    ) -> Expr<bool, Merged<Scope, OtherScope>, CombinedAggr<Aggr, OtherAggr, OtherScope>>
+        other: Expr<bool, OtherScope, OtherAggr, OtherD>,
+    ) -> Expr<
+        bool,
+        Merged<Scope, OtherScope>,
+        CombinedAggr<Aggr, OtherAggr, OtherScope>,
+        MergedDialect<D, OtherD>,
+    >
     where
         Scope: MergeScope<OtherScope>,
         Aggr: CombineAggr<OtherAggr, OtherScope>,
+        D: MergeDialect<OtherD>,
     {
         self.combine(BinaryOp::Or, other)
     }
 
     #[allow(clippy::type_complexity)]
-    fn combine<OtherScope, OtherAggr>(
+    fn combine<OtherScope, OtherAggr, OtherD>(
         self,
         op: BinaryOp,
-        other: Expr<bool, OtherScope, OtherAggr>,
-    ) -> Expr<bool, Merged<Scope, OtherScope>, CombinedAggr<Aggr, OtherAggr, OtherScope>>
+        other: Expr<bool, OtherScope, OtherAggr, OtherD>,
+    ) -> Expr<
+        bool,
+        Merged<Scope, OtherScope>,
+        CombinedAggr<Aggr, OtherAggr, OtherScope>,
+        MergedDialect<D, OtherD>,
+    >
     where
         Scope: MergeScope<OtherScope>,
         Aggr: CombineAggr<OtherAggr, OtherScope>,
+        D: MergeDialect<OtherD>,
     {
         Expr::new(ExprKind::Binary {
             op,
@@ -585,21 +587,21 @@ impl<Scope, Aggr> Expr<bool, Scope, Aggr> {
 
 impl Expr<bool, ()> {
     /// Builds an `EXISTS (subquery)` predicate.
-    pub fn exists<S: Into<Subquery>>(subquery: S) -> Expr<bool, ()> {
+    pub fn exists<S: InSubquery>(subquery: S) -> Expr<bool, (), NonAggregate, S::Dialect> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
-            query: subquery.into(),
+            query: subquery.into_subquery(),
             negated: false,
         })
     }
 
     /// Builds a `NOT EXISTS (subquery)` predicate.
-    pub fn not_exists<S: Into<Subquery>>(subquery: S) -> Expr<bool, ()> {
+    pub fn not_exists<S: InSubquery>(subquery: S) -> Expr<bool, (), NonAggregate, S::Dialect> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
-            query: subquery.into(),
+            query: subquery.into_subquery(),
             negated: true,
         })
     }

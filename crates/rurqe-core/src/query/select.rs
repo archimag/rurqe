@@ -4,7 +4,8 @@ use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsDistinctOn};
 use crate::expr::{
-    BinaryOp, CteAst, DerivedAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause, SqlVal,
+    BinaryOp, CteAst, DerivedAst, DialectInScope, Expr, ExprKind, JoinAst, LockClause,
+    NonAggregate, SqlVal,
 };
 use crate::schema::{Column, ExprInScope, Table, TableInScope, TableRef};
 
@@ -463,9 +464,13 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     }
 
     /// Restricts the query to rows matching `predicate`.
-    pub fn where_<Scope, P>(mut self, predicate: Expr<bool, Scope>) -> Self
+    pub fn where_<Scope, P, PredD>(
+        mut self,
+        predicate: Expr<bool, Scope, NonAggregate, PredD>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         self.push_filter(predicate.into_kind());
         self
@@ -476,9 +481,13 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     /// A `SELECT` records its filter as statement data rather than as a typestate,
     /// so an absent predicate leaves the query unchanged and the returned query
     /// type stays the same.
-    pub fn where_opt<Scope, P>(self, predicate: Option<Expr<bool, Scope>>) -> Self
+    pub fn where_opt<Scope, P, PredD>(
+        self,
+        predicate: Option<Expr<bool, Scope, NonAggregate, PredD>>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         match predicate {
             Some(predicate) => self.where_(predicate),
@@ -525,9 +534,13 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     /// A `HAVING` clause filters the groups an aggregate produced, so the
     /// predicate is written over an aggregate — `count_all().gt(5i64)`, for
     /// instance — and keeps the aggregation marker of that comparison.
-    pub fn having<Scope, Aggr, P>(mut self, predicate: Expr<bool, Scope, Aggr>) -> Self
+    pub fn having<Scope, Aggr, P, PredD>(
+        mut self,
+        predicate: Expr<bool, Scope, Aggr, PredD>,
+    ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
     {
         let predicate = predicate.into_kind();
         let having = match self.having.take() {

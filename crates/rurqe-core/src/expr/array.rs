@@ -144,6 +144,7 @@ impl<T: SqlArrayElement> MakeNullable for Vec<T> {
 
 impl<T: SqlArrayElement> IntoExpr<Vec<T>> for Vec<T> {
     type Scope = ();
+    type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
         ExprKind::Value(self.to_sql_val())

@@ -5,7 +5,7 @@
 //! the dialect-neutral [`SelectAst`] and hand the AST to the renderer.
 
 use crate::dialect::Dialect;
-use crate::expr::{Expr, SelectAst, SqlVal, Subquery};
+use crate::expr::{Expr, ExprKind, NonAggregate, SelectAst, SqlVal, Subquery, SubqueryOp};
 use crate::query::cte::{Cte, DerivedTable, Lateral};
 use crate::query::scope::TableScope;
 use crate::schema::{Table, TableRef};
@@ -68,13 +68,23 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     }
 
     /// Builds an `EXISTS (subquery)` predicate over this query.
-    pub fn exists(&self) -> Expr<bool> {
-        Expr::exists(Subquery::new(self.to_ast()))
+    pub fn exists(&self) -> Expr<bool, (), NonAggregate, D> {
+        Expr::new(ExprKind::Subquery {
+            op: SubqueryOp::Exists,
+            operand: None,
+            query: Subquery::new(self.to_ast()),
+            negated: false,
+        })
     }
 
     /// Builds a `NOT EXISTS (subquery)` predicate over this query.
-    pub fn not_exists(&self) -> Expr<bool> {
-        Expr::not_exists(Subquery::new(self.to_ast()))
+    pub fn not_exists(&self) -> Expr<bool, (), NonAggregate, D> {
+        Expr::new(ExprKind::Subquery {
+            op: SubqueryOp::Exists,
+            operand: None,
+            query: Subquery::new(self.to_ast()),
+            negated: true,
+        })
     }
 }
 

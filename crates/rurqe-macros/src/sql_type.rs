@@ -614,6 +614,7 @@ fn owned_expression_impl(name: &Ident) -> TokenStream {
     quote! {
         impl ::rurqe_core::expr::IntoExpr<#name> for #name {
             type Scope = ();
+            type Dialect = ();
 
             fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                 ::rurqe_core::expr::ExprKind::Value(
@@ -631,6 +632,7 @@ fn borrowed_expression_impl(name: &Ident) -> TokenStream {
 
         impl<'a> ::rurqe_core::expr::IntoExpr<#name> for &'a #name {
             type Scope = ();
+            type Dialect = ();
 
             fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                 ::rurqe_core::expr::ExprKind::Value(
@@ -648,6 +650,7 @@ fn string_expression_impl(name: &Ident) -> TokenStream {
 
         impl<'a> ::rurqe_core::expr::IntoExpr<#name> for &'a str {
             type Scope = ();
+            type Dialect = ();
 
             fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                 ::rurqe_core::expr::ExprKind::Value(
@@ -663,6 +666,7 @@ fn string_expression_impl(name: &Ident) -> TokenStream {
 
         impl ::rurqe_core::expr::IntoExpr<#name> for ::std::string::String {
             type Scope = ();
+            type Dialect = ();
 
             fn into_expr_kind(self) -> ::rurqe_core::expr::ExprKind {
                 ::rurqe_core::expr::ExprKind::Value(

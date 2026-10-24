@@ -618,6 +618,7 @@ macro_rules! impl_sql_newtype {
 
         impl $crate::expr::IntoExpr<$ty> for $ty {
             type Scope = ();
+            type Dialect = ();
 
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
@@ -628,6 +629,7 @@ macro_rules! impl_sql_newtype {
 
         impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
             type Scope = ();
+            type Dialect = ();
 
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
                 $crate::expr::ExprKind::Value($crate::expr::ToSqlVal::to_sql_val(self))
@@ -669,6 +671,7 @@ macro_rules! impl_sql_text_newtype {
 
                 impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
                     type Scope = ();
+                    type Dialect = ();
 
                     fn into_expr_kind(self) -> $crate::expr::ExprKind {
                         $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self.to_owned()))
@@ -682,6 +685,7 @@ macro_rules! impl_sql_text_newtype {
 
                 impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
                     type Scope = ();
+                    type Dialect = ();
 
                     fn into_expr_kind(self) -> $crate::expr::ExprKind {
                         $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self))
