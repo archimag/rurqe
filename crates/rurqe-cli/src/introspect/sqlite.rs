@@ -19,8 +19,9 @@ use super::types::{
 };
 
 mod check_enums;
+pub(crate) mod lexer;
 
-use check_enums::extract_paren_block;
+use lexer::extract_paren_block;
 
 pub use check_enums::parse_sqlite_check_enums;
 
