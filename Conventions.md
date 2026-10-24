@@ -15,6 +15,10 @@
   * Single Source of Truth (SSOT) for data structures, serialization formats, and validation rules.
 * **Strict Typing over String Parsing:**
   * Drive control flow and business logic with strong `enum` types and typed DTOs. Never branch on text prefixes (`starts_with`), regex matching, or keyword searches.
+* **Standard Ecosystem Libraries over Hand-Rolled Code (No Reinventing the Wheel):**
+  * Strictly forbid rolling custom ad-hoc parsers for standardized data formats (TOML, JSON, YAML, SQL DDL), cryptographic primitives, character encodings, or protocol wire formats when mature, well-tested, de-facto standard community crates exist (e.g. `toml`, `serde`, `syn`, `sha2`).
+  * Minimizing Cargo dependency count ("zero-dep fetish") is explicitly rejected when achieved at the expense of specification compliance, validation strictness, or safety.
+  * All external configuration and metadata files (`checkpoint.toml`, `rurqe.toml`) must be parsed using standard crates into strongly-typed DTOs with strict validation enabled (e.g. `#[serde(deny_unknown_fields)]`). Silent ignoring of unrecognized sections or misspelled fields is strictly prohibited.
 * **Unidirectional Dependencies:**
   * Strictly layered architecture (Contracts/Types → Core/Domain Logic → Transport/Interface). Cyclic dependencies are forbidden.
 * **Rust 2018+ Module Layout (No `mod.rs`):**
