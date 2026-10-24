@@ -17,10 +17,9 @@ pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 pub use rurqe_core::{
     cte, cte_named, dense_rank, lag, lead, rank, row_number, Window, WindowSpec,
 };
-pub use rurqe_core::dml::{excluded, Excluded};
+pub use rurqe_core::dml::{excluded, Excluded, ExecutableDelete, ExecutableUpdate};
 pub use rurqe_core::expr::{RowExpr, RowValues};
-pub use rurqe_core::query::TableSelection;
-pub use rurqe_core::schema::Next;
+pub use rurqe_core::query::{LockedQuery, Query, TableSelection};
 pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
@@ -995,11 +994,16 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 ///     .select((OrderId,))
 ///     .where_((OrderUserId, OrderId).eq((1i64, 2i64, 3i64)));
 /// ```
+///
+/// The prelude also names the flat query shapes: [`Query`] is a `SELECT` that
+/// projects its rows and requests no lock, [`LockedQuery`] is one that claims its
+/// rows until the transaction ends, and [`ExecutableUpdate`] and
+/// [`ExecutableDelete`] are mutations whose filter is already settled.
 pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};
 
     pub use rurqe_core::{
-        cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc, At,
+        cte, cte_named, dense_rank, lag, lead, rank, row_number, table, AggregateFunc,
         BinaryOp, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect, ExecutableQuery,
         ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, GroupBy, IntoExpr, IsolationLevel,
         LagLeadFn, OrderDirection, PartitionBy, QueryBackend, QueryBackendExt, RowDecodeError,
@@ -1013,7 +1017,9 @@ pub mod prelude {
 
     pub use rurqe_core::query::TableSelection;
 
-    pub use rurqe_core::schema::Next;
+    pub use rurqe_core::query::{LockedQuery, Query};
+
+    pub use rurqe_core::dml::{ExecutableDelete, ExecutableUpdate};
 
     pub use rurqe_core::nested::{
         json_object, nest_many, nest_one, nested_field, MultisetRow, NestMany, NestOne, RowObject,

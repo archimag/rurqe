@@ -6,6 +6,7 @@
 //! through `FromRow`, and aggregate expressions compose with `GROUP BY` and
 //! `HAVING`.
 
+use rurqe::core::schema::{At, Next};
 use rurqe::prelude::*;
 
 table! {
