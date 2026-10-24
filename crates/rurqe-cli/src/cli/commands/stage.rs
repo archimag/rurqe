@@ -48,7 +48,8 @@ pub(crate) fn cleanup_stage(scratch_url: &str, older_than: Duration) -> Result<(
         }
     };
 
-    let dropped = sweep_stale_scratch_databases(&mut admin, older_than).map_err(cli_error)?;
+    let dropped =
+        sweep_stale_scratch_databases(&mut admin, older_than, scratch_url).map_err(cli_error)?;
 
     if dropped.is_empty() {
         println!(

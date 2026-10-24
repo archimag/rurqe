@@ -43,6 +43,7 @@ const SECONDS_SCHEME_FLOOR: u64 = 1_000_000_000;
 /// single character in `LIKE` costs nothing.
 const SCRATCH_DATABASES_SQL: &str = "SELECT datname FROM pg_database \
      WHERE datname LIKE 'rurqe_scratch_%' AND datname <> current_database() \
+       AND datdba = (SELECT oid FROM pg_roles WHERE rolname = current_user) \
      ORDER BY datname";
 
 /// Scratch state backed by an ephemeral PostgreSQL database of its own.
@@ -56,6 +57,8 @@ pub(super) struct PostgresSandbox {
     client: Option<postgres::Client>,
     /// The generated name of the scratch database.
     database: String,
+    /// The connection URL, credentials redacted, the sandbox was created through.
+    redacted_url: String,
 }
 
 impl PostgresSandbox {
@@ -75,7 +78,7 @@ impl PostgresSandbox {
         // finished, so it is cleared before a fresh one is created. The sweep is
         // opportunistic: a server that hides its catalog or refuses a drop must
         // never block a verification that is otherwise sound.
-        match sweep_stale_scratch_databases(&mut admin, DEFAULT_SCRATCH_MAX_AGE) {
+        match sweep_stale_scratch_databases(&mut admin, DEFAULT_SCRATCH_MAX_AGE, url) {
             Ok(dropped) if dropped.is_empty() => {}
             Ok(dropped) => {
                 tracing::info!(
@@ -97,28 +100,32 @@ impl PostgresSandbox {
 
         let database = scratch_database_name();
         let create = format!("CREATE DATABASE \"{database}\"");
+        let redacted_url = redact_database_url(url);
 
         // Database names cannot be bound as parameters, but the generated name only
         // carries ASCII alphanumerics and underscores, so rendering it is
         // injection-free.
+        tracing::warn!(
+            url = %redacted_url,
+            database = %database,
+            "creating a postgres scratch database"
+        );
         if let Err(error) = admin.batch_execute(&create) {
             return Err(format!(
-                "failed to create the scratch database on `{}`: {error}; the connected role \
-                 needs the CREATEDB privilege",
-                redact_database_url(url)
+                "failed to create the scratch database on `{redacted_url}`: {error}; the \
+                 connected role needs the CREATEDB privilege"
             ));
         }
-
-        tracing::info!(database = %database, "created postgres scratch database");
 
         match attach_scratch_database(config, &database) {
             Ok(client) => Ok(Self {
                 admin,
                 client: Some(client),
                 database,
+                redacted_url,
             }),
             Err(message) => {
-                let _ = drop_scratch_database(&mut admin, &database);
+                let _ = drop_scratch_database(&mut admin, &database, true);
                 Err(message)
             }
         }
@@ -231,12 +238,14 @@ pub(super) fn is_scratch_database_stale(name: &str, max_age: Duration, now: Syst
 pub(crate) fn sweep_stale_scratch_databases(
     admin: &mut postgres::Client,
     max_age: Duration,
+    source: &str,
 ) -> Result<Vec<String>, String> {
     let rows = admin
         .query(SCRATCH_DATABASES_SQL, &[])
         .map_err(|error| format!("failed to list the scratch databases: {error}"))?;
 
     let now = SystemTime::now();
+    let redacted_source = redact_database_url(source);
     let mut dropped = Vec::new();
 
     for row in rows {
@@ -248,11 +257,22 @@ pub(crate) fn sweep_stale_scratch_databases(
             continue;
         }
 
-        if drop_scratch_database(admin, &name) {
-            tracing::info!(database = %name, "dropped a stale postgres scratch database");
+        // The sweep never forces a drop: a scratch database the server refuses to
+        // release is simply retried on a later run, so a verification can never
+        // terminate sessions on a database it did not abandon itself.
+        if drop_scratch_database(admin, &name, false) {
+            tracing::warn!(
+                url = %redacted_source,
+                database = %name,
+                "dropped a stale postgres scratch database"
+            );
             dropped.push(name);
         } else {
-            tracing::warn!(database = %name, "failed to drop a stale postgres scratch database");
+            tracing::warn!(
+                url = %redacted_source,
+                database = %name,
+                "failed to drop a stale postgres scratch database"
+            );
         }
     }
 
@@ -286,10 +306,19 @@ fn attach_scratch_database(
 /// `WITH (FORCE)` terminates sessions still attached to the database and needs
 /// PostgreSQL 13 or newer, so a plain drop is the fallback for older servers.
 /// Returns whether the database is gone afterwards.
-fn drop_scratch_database(admin: &mut postgres::Client, database: &str) -> bool {
+fn drop_scratch_database(admin: &mut postgres::Client, database: &str, force: bool) -> bool {
     // A name read back from the catalog is not necessarily the one this process
     // generated, so the quoting escapes an embedded quote.
     let quoted = database.replace('"', "\"\"");
+    let plain = format!("DROP DATABASE IF EXISTS \"{quoted}\"");
+
+    // A database this process created for its own verification is forced down so
+    // an abandoned replay session cannot keep it alive. A database only met through
+    // the catalog is dropped without `FORCE`, so the sweep never terminates the
+    // sessions of another verification.
+    if !force {
+        return admin.batch_execute(&plain).is_ok();
+    }
 
     let forced = format!("DROP DATABASE IF EXISTS \"{quoted}\" WITH (FORCE)");
 
@@ -297,7 +326,6 @@ fn drop_scratch_database(admin: &mut postgres::Client, database: &str) -> bool {
         return true;
     }
 
-    let plain = format!("DROP DATABASE IF EXISTS \"{quoted}\"");
     admin.batch_execute(&plain).is_ok()
 }
 
@@ -310,10 +338,20 @@ impl Drop for PostgresSandbox {
             let _ = client.close();
         }
 
-        if drop_scratch_database(&mut self.admin, &self.database) {
-            tracing::info!(database = %self.database, "dropped postgres scratch database");
+        tracing::warn!(
+            url = %self.redacted_url,
+            database = %self.database,
+            "dropping the postgres scratch database"
+        );
+        if drop_scratch_database(&mut self.admin, &self.database, true) {
+            tracing::warn!(
+                url = %self.redacted_url,
+                database = %self.database,
+                "dropped the postgres scratch database"
+            );
         } else {
             tracing::warn!(
+                url = %self.redacted_url,
                 database = %self.database,
                 "failed to drop the postgres scratch database"
             );

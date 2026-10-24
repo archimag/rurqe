@@ -187,21 +187,26 @@ fn default_lock_path() -> PathBuf {
 
 /// Resolves the scratch database URL the golden equation is verified against.
 ///
-/// `--scratch-url` names the scratch database explicitly and wins over
-/// `--database-url`; both fall back through `DATABASE_URL`. No implicit sandbox is
-/// chosen when nothing is supplied: the verification replays schema DDL into that
-/// target, so silently selecting an in-memory SQLite engine would exercise a
-/// different engine than the project targets and hide the substitution from CI.
+/// `--scratch-url` names the scratch database explicitly and falls back to
+/// `--database-url`. The `DATABASE_URL` environment variable is deliberately never
+/// consulted: a PostgreSQL verification runs `CREATE DATABASE` and `DROP DATABASE`
+/// as the connected role, so an implicit target routinely names the production
+/// server the variable points at in CI and on a developer workstation. No implicit
+/// sandbox is chosen either: the verification replays schema DDL into that target,
+/// so silently selecting an in-memory SQLite engine would exercise a different
+/// engine than the project targets and hide the substitution from CI.
 pub(crate) fn resolve_equation_url(supplied: Option<String>) -> Result<String, CliError> {
-    scratch_url(supplied).ok_or_else(|| {
-        CliError(
-            "no scratch database URL provided: pass `--scratch-url <url>` (or \
-             `--database-url <url>`, or set the DATABASE_URL environment variable); the \
-             golden equation needs a disposable target such as `:memory:`, an empty SQLite \
-             file, or a PostgreSQL URL"
-                .to_owned(),
-        )
-    })
+    supplied
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CliError(
+                "no scratch database URL provided: pass `--scratch-url <url>` (or \
+                 `--database-url <url>`); the golden equation needs a disposable target such as \
+                 `:memory:`, an empty SQLite file, or a PostgreSQL URL, and never reads \
+                 DATABASE_URL"
+                    .to_owned(),
+            )
+        })
 }
 
 /// Resolves the server `stage cleanup` sweeps the abandoned scratch databases on.

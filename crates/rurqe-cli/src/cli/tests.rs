@@ -236,18 +236,21 @@ fn an_explicit_equation_url_is_used_verbatim() {
 
 #[test]
 fn the_equation_demands_an_explicit_scratch_url() {
-    // A non-empty `DATABASE_URL` is an explicit choice of the environment, so the
-    // fail-fast expectation only applies when nothing addresses a scratch database.
-    if std::env::var("DATABASE_URL").is_ok_and(|value| !value.trim().is_empty()) {
-        return;
-    }
-
+    // `stage verify` creates and drops a throwaway database on the server it is
+    // pointed at, so it must never adopt `DATABASE_URL`, which routinely names a
+    // production server in CI and on a developer workstation.
     let missing = resolve_equation_url(None).expect_err("no scratch database is configured");
     assert!(missing.to_string().contains("--scratch-url"), "got {missing}");
 
     let blank = resolve_equation_url(Some("   ".to_owned()))
         .expect_err("a blank scratch database URL is not a target");
     assert!(blank.to_string().contains("--scratch-url"), "got {blank}");
+
+    assert_eq!(
+        resolve_equation_url(Some(":memory:".to_owned()))
+            .expect("an explicit scratch database is accepted"),
+        ":memory:"
+    );
 }
 
 #[test]
