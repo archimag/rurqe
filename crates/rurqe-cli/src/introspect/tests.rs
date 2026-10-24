@@ -255,12 +255,33 @@ fn type_parameters_do_not_hide_the_builtin_kinds() {
 }
 
 #[test]
-fn unknown_types_keep_their_declared_precision() {
-    let numeric = map_sql_type_to_kind("numeric(18,4)");
-    assert_eq!(numeric, TypeKind::Other("numeric(18,4)".to_owned()));
+fn numeric_and_decimal_types_map_to_the_numeric_kind() {
+    assert_eq!(map_sql_type_to_kind("numeric"), TypeKind::Numeric);
+    assert_eq!(map_sql_type_to_kind("NUMERIC(18,4)"), TypeKind::Numeric);
+    assert_eq!(map_sql_type_to_kind("decimal"), TypeKind::Numeric);
+    assert_eq!(map_sql_type_to_kind("DECIMAL(10, 2)"), TypeKind::Numeric);
 
-    let decimal = map_sqlite_declared_type_to_kind("NUMERIC(10,2)");
-    assert_eq!(decimal, TypeKind::Other("numeric(10,2)".to_owned()));
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("NUMERIC"),
+        TypeKind::Numeric
+    );
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("NUMERIC(10,2)"),
+        TypeKind::Numeric
+    );
+    assert_eq!(
+        map_sqlite_declared_type_to_kind("DECIMAL(10,2)"),
+        TypeKind::Numeric
+    );
+}
+
+#[test]
+fn unknown_types_keep_their_declared_precision() {
+    let interval = map_sql_type_to_kind("interval(6)");
+    assert_eq!(interval, TypeKind::Other("interval(6)".to_owned()));
+
+    let custom = map_sqlite_declared_type_to_kind("CUSTOM(10,2)");
+    assert_eq!(custom, TypeKind::Other("custom(10,2)".to_owned()));
 }
 
 #[test]
@@ -275,7 +296,7 @@ fn array_spellings_map_to_their_element_type() {
     );
     assert_eq!(
         map_sql_type_to_kind("numeric(18,4)[]"),
-        TypeKind::Array(Box::new(TypeKind::Other("numeric(18,4)".to_owned())))
+        TypeKind::Array(Box::new(TypeKind::Numeric))
     );
 }
 

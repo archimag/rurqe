@@ -131,8 +131,8 @@ pub fn parse_foreign_key_action(text: &str) -> ForeignKeyAction {
 /// The mapping serves engines that report parameter-free type names, as
 /// PostgreSQL does through `information_schema.columns.data_type`, and stays
 /// tolerant of a parameterised spelling such as `varchar(255)`. A type outside
-/// the built-in set keeps its declared spelling, type parameters included, so a
-/// `numeric(10,2)` column never compares equal to a `numeric(18,4)` one inside
+/// the built-in set keeps its declared spelling, type parameters included, so an
+/// `interval(6)` column never compares equal to an `interval(3)` one inside
 /// `schema.lock`.
 ///
 /// An array spelling such as `text[]` maps to [`TypeKind::Array`] of the type
@@ -154,6 +154,7 @@ pub fn map_sql_type_to_kind(sql_type: &str) -> TypeKind {
         "integer" | "int" | "int4" | "serial" => TypeKind::Int32,
         "bigint" | "int8" | "bigserial" => TypeKind::Int64,
         "double precision" | "float8" | "real" | "float4" => TypeKind::Float64,
+        "numeric" | "decimal" => TypeKind::Numeric,
         "text" | "character varying" | "varchar" | "char" | "character" | "citext" => {
             TypeKind::Text
         }
@@ -183,15 +184,16 @@ pub fn map_sql_type_to_kind(sql_type: &str) -> TypeKind {
 /// 2. a type containing `CHAR`, `CLOB`, or `TEXT` maps to [`TypeKind::Text`];
 /// 3. a type containing `BLOB`, or an absent declared type, maps to
 ///    [`TypeKind::Bytes`];
-/// 4. a type containing `REAL`, `FLOA`, or `DOUB` maps to [`TypeKind::Float64`].
+/// 4. a type containing `REAL`, `FLOA`, or `DOUB` maps to [`TypeKind::Float64`];
+/// 5. a type containing `NUMERIC` or `DECIMAL` maps to [`TypeKind::Numeric`].
 ///
 /// Declared types naming a domain rather than a storage class (`BOOLEAN`,
 /// `UUID`, `JSON`, `DATE`, `DATETIME`) are recognised next, because SQLite
 /// stores their values as the text or integer the matching Rust type decodes.
-/// Everything else has the numeric affinity of SQLite, which keeps a value
-/// either as an integer or as a real depending on its magnitude and precision,
-/// so no single Rust type reads such a column reliably; the declared spelling is
-/// preserved through [`TypeKind::Other`] instead of guessing.
+/// A remaining declared type has the numeric affinity of SQLite, which keeps a
+/// value either as an integer or as a real depending on its magnitude and
+/// precision, so no single Rust type reads such a column reliably; the declared
+/// spelling is preserved through [`TypeKind::Other`] instead of guessing.
 pub fn map_sqlite_declared_type_to_kind(sql_type: &str) -> TypeKind {
     let declared = sql_type.trim();
     let lower = strip_type_parameters(declared).to_ascii_lowercase();
@@ -204,6 +206,8 @@ pub fn map_sqlite_declared_type_to_kind(sql_type: &str) -> TypeKind {
         TypeKind::Bytes
     } else if lower.contains("real") || lower.contains("floa") || lower.contains("doub") {
         TypeKind::Float64
+    } else if lower.contains("numeric") || lower.contains("decimal") {
+        TypeKind::Numeric
     } else if lower.contains("bool") {
         // SQLite keeps booleans as the integers 0 and 1, which the row decoder
         // accepts for a `bool` column.
