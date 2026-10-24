@@ -628,12 +628,21 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         self.filter = Some(filter);
     }
 
-    /// Restricts grouped rows to those satisfying `predicate`.
+    /// Records `predicate` as the `HAVING` clause of the statement.
     ///
     /// A `HAVING` clause filters the groups an aggregate produced, so the
     /// predicate is written over an aggregate — `count_all().gt(5i64)`, for
     /// instance — and keeps the aggregation marker of that comparison.
-    pub fn having<Scope, Aggr, P, PredD>(
+    ///
+    /// Only a grouped statement has groups to filter, so the clause is recorded
+    /// through [`GroupedQuery::having`](crate::query::GroupedQuery::having) and
+    /// [`GroupedQuery::having_col`](crate::query::GroupedQuery::having_col): the
+    /// rules that make a predicate valid read the grouping the query recorded, and
+    /// that grouping is known only while the query carries the grouped typestate.
+    /// The method therefore stays crate-private, which keeps an ungrouped query —
+    /// including the plain query [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select)
+    /// hands back — from rendering a `HAVING` clause the engine would reject.
+    pub(crate) fn having<Scope, Aggr, P, PredD>(
         mut self,
         predicate: Expr<bool, Scope, Aggr, PredD>,
     ) -> Self

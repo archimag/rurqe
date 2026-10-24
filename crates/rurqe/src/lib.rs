@@ -529,6 +529,7 @@ crate::pin_dialect_version! {
 ///
 /// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
 /// let _ = select_from::<Postgres, User>()
+///     .group_by(UserId)
 ///     .select((UserId,))
 ///     .having(Expr::column::<OrderTotal>().gt(1.0));
 /// ```

@@ -515,6 +515,42 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     /// rejected: the grouping dropped the per-row value that column would name.
     /// Compare grouped columns with [`having_col`](GroupedQuery::having_col)
     /// instead, and filter rows before grouping with `where_`.
+    ///
+    /// The clause exists only on a grouped query, so a statement that never
+    /// recorded its grouping cannot reach it:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: the query never grouped its rows, so it has no
+    ///     // `having` clause to record.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .select((OrderUserId,))
+    ///         .having(Expr::count_all().gt(1i64));
+    /// }
+    /// ```
     pub fn having<Scope, Aggr, ExprD, P>(
         mut self,
         predicate: Expr<bool, Scope, Aggr, ExprD>,
@@ -727,6 +763,20 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     }
 
     /// Returns the query of this state, dropping the grouping marker.
+    ///
+    /// The returned query keeps everything the grouped query already recorded —
+    /// the `GROUP BY` columns and the `HAVING` predicate — so a `HAVING` clause
+    /// has to be recorded before the conversion: the plain builder cannot record
+    /// one afterwards, because the grouping that decides whether a predicate is
+    /// valid is only known while the query still carries the grouped typestate.
+    ///
+    /// ```text
+    /// let query = select_from(Order)
+    ///     .group_by(OrderUserId)
+    ///     .select((OrderUserId,))
+    ///     .having(Expr::count_all().gt(1i64));
+    /// let plain = query.into_select(); // the HAVING clause stays recorded
+    /// ```
     ///
     /// A grouped statement produces one row per group, so the returned query
     /// carries `LockUnavailable`: PostgreSQL refuses a row-level lock on a

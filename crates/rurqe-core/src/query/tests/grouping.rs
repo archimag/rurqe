@@ -194,6 +194,49 @@ fn grouped_queries_are_executable() {
 }
 
 #[test]
+fn grouped_having_accepts_a_predicate_that_is_constant_within_a_group() {
+    // A fragment comparing two aggregates reads no column of the query, so it is
+    // constant within a group and filters the groups exactly like an aggregate
+    // comparison does — without being an aggregate expression itself.
+    let constant = Expr::<bool>::raw("SUM(total) > COUNT(*)", Vec::new())
+        .expect("a template without placeholders");
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .having(constant)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" HAVING SUM(total) > COUNT(*)"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn having_recorded_before_leaving_the_grouped_state_stays_in_the_statement() {
+    // The plain query handed back by `into_select` keeps the grouping and the
+    // `HAVING` clause the grouped state recorded, so the conversion preserves the
+    // statement instead of dropping its filter.
+    let grouped = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .having(Expr::count_all().gt(1i64));
+
+    let built = grouped.into_select().build().expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" HAVING (COUNT(*) > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
 fn group_set_resolves_grouped_column_positions() {
     type Grouping = GroupSet<GroupSet<EmptyGroupSet, UserId>, UserName>;
 
