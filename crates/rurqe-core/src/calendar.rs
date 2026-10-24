@@ -4,9 +4,13 @@
 //! date without a calendar dependency, so crates that must stay dependency-free
 //! share one implementation instead of growing private copies. `rurqe-migrate`
 //! keeps a deliberate duplicate of the algorithm in its migration runner
-//! because that crate does not depend on `rurqe-core`; both copies are pinned to
-//! the reference test vectors of `civil_dates_match_the_shared_reference_vectors`,
-//! so a change to the calendar rules has to be applied to both.
+//! because that crate does not depend on `rurqe-core` at build time. That
+//! duplicate is not held in place by prose: `rurqe-migrate` carries `rurqe-core`
+//! as a dev-dependency, and the migration runner's
+//! `the_calendar_conversion_matches_the_shared_core_implementation` test asserts
+//! that both copies agree for every day within ±500 years of the epoch, so a
+//! change to the calendar rules breaks that test instead of silently skewing the
+//! timestamps recorded in migration history.
 
 /// Converts days since the UNIX epoch into a proleptic Gregorian civil date.
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {

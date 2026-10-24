@@ -741,6 +741,12 @@ fn format_timestamp(unix_seconds: i64) -> String {
 }
 
 /// Converts days since the UNIX epoch into a proleptic Gregorian civil date.
+///
+/// The crate keeps this private copy because it does not depend on `rurqe-core`
+/// at build time. The dev-dependency on `rurqe-core` lets
+/// `the_calendar_conversion_matches_the_shared_core_implementation` prove the
+/// copy still agrees with `rurqe_core::calendar::civil_from_days` day by day, so
+/// the two implementations cannot drift apart unnoticed.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
@@ -936,6 +942,20 @@ mod tests {
         assert_eq!(civil_from_days(11_016), (2000, 2, 29));
         assert_eq!(civil_from_days(-25_508), (1900, 3, 1));
         assert_eq!(civil_from_days(47_541), (2100, 3, 1));
+    }
+
+    #[test]
+    fn the_calendar_conversion_matches_the_shared_core_implementation() {
+        // ±500 years of days around the epoch sweep every leap-century boundary
+        // the calendar rules care about: 1500, 1600, 1700, 1800, 1900, 2000,
+        // 2100, 2200, 2300 and 2400 all fall inside this range.
+        for days in -182_621..=182_621_i64 {
+            assert_eq!(
+                civil_from_days(days),
+                rurqe_core::calendar::civil_from_days(days),
+                "the migration calendar diverged from the shared core one on day {days}"
+            );
+        }
     }
 
     fn boundary(version: &str) -> Checkpoint {
