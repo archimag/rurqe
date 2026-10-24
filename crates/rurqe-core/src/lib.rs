@@ -19,7 +19,8 @@ pub use dml::{
     UpdateQuery,
 };
 pub use expr::{
-    Aggregate, AggregateFunc, BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, SqlArrayElement,
+    greatest, is_distinct_from, is_not_distinct_from, least, nullif, Aggregate, AggregateFunc,
+    BinaryOp, Expr, ExprKind, IntoExpr, NonAggregate, NullsOrder, SqlArrayElement, SqlCastTarget,
     SqlCompatible, SqlVal, ToSqlVal,
 };
 pub use nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
