@@ -377,8 +377,10 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
                         break;
                     }
                 }
-                if sql[i..].starts_with('.')
-                    && sql[i + 1..].starts_with(|d: char| d.is_ascii_digit())
+                if sql
+                    .get(i..)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|after_dot| after_dot.starts_with(|d: char| d.is_ascii_digit()))
                 {
                     i += 1;
                     while i < sql.len() {
@@ -678,6 +680,24 @@ mod tests {
         assert_eq!(tokens[6].kind, TokenKind::Dot);
         assert_eq!(tokens[7].kind, TokenKind::Other('>'));
         assert_eq!(tokens[8].kind, TokenKind::Other('='));
+    }
+
+    #[test]
+    fn tokenize_a_number_ending_at_a_trailing_dot() {
+        let tokens = tokenize("SELECT 1.");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[1].kind, TokenKind::Number);
+        assert_eq!(tokens[1].text, "1");
+        assert_eq!(tokens[1].span, (7, 8));
+        assert_eq!(tokens[2].kind, TokenKind::Dot);
+        assert_eq!(tokens[2].span, (8, 9));
+
+        let tokens = tokenize("(1.)");
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[1].kind, TokenKind::Number);
+        assert_eq!(tokens[1].text, "1");
+        assert_eq!(tokens[2].kind, TokenKind::Dot);
+        assert_eq!(tokens[3].kind, TokenKind::CloseParen);
     }
 
     #[test]
