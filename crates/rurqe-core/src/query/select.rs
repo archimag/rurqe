@@ -16,7 +16,7 @@ pub use crate::expr::{NullsOrder, OrderCriterion, OrderDirection};
 use super::cte::{Cte, DerivedTable};
 use super::group_by::{EmptyGroupSet, GroupBy, GroupByColumns, GroupByInScope, GroupedQuery};
 use super::scope::{ScopePositions, TableScope};
-use super::selection::{Nullable, Selection, SelectionFor};
+use super::selection::{AggregateInDialect, Nullable, Selection, SelectionFor};
 use super::set_ops::SetOpAst;
 
 // The builder is decomposed by responsibility: joins establish the relational
@@ -541,6 +541,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock>
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
         PredD: DialectInScope<D>,
+        Aggr: AggregateInDialect<D>,
     {
         let predicate = predicate.into_kind();
         let having = match self.having.take() {

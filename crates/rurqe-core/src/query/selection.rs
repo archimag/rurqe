@@ -2,7 +2,8 @@
 
 use core::marker::PhantomData;
 
-use crate::expr::{Expr, ExprKind};
+use crate::dialect::SupportsAggregateFilter;
+use crate::expr::{Aggregate, Expr, ExprKind, FilteredAggregate, NonAggregate};
 use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
 
 use super::scope::{NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope};
@@ -51,6 +52,31 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Aggr> SelectTarget
         self.kind().clone()
     }
 }
+
+/// Statically asserts that the aggregation marker `Self` is renderable on the dialect `D`.
+///
+/// A filtered aggregate renders as `SUM("total") FILTER (WHERE ...)`, the
+/// `FILTER` clause being an optional feature of SQL:2011 that an engine may not
+/// implement. The capability is recorded by
+/// [`SupportsAggregateFilter`](crate::dialect::SupportsAggregateFilter), so a
+/// statement carrying a filtered aggregate compiles only on a dialect whose
+/// engine can render it, and is rejected at the call site that embeds the
+/// expression rather than by the database at execution time.
+///
+/// An unfiltered aggregate, and an expression that aggregates nothing, render on
+/// every dialect.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be rendered by this dialect",
+    label = "the dialect does not support this aggregation",
+    note = "a filtered aggregate renders `FILTER (WHERE ...)`, so it needs a dialect implementing `SupportsAggregateFilter`"
+)]
+pub trait AggregateInDialect<D> {}
+
+impl<D> AggregateInDialect<D> for NonAggregate {}
+
+impl<D> AggregateInDialect<D> for Aggregate {}
+
+impl<D: SupportsAggregateFilter> AggregateInDialect<D> for FilteredAggregate {}
 
 /// Lifts a Rust value type into its nullable form.
 ///

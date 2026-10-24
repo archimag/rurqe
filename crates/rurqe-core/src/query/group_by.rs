@@ -8,7 +8,7 @@ use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
 use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
-use super::selection::{Selection, SelectionFor, SelectTarget};
+use super::selection::{AggregateInDialect, Selection, SelectionFor, SelectTarget};
 use super::select::{
     BuiltQuery, HasProjection, LockUnavailable, NoProjection, OrderDirection, ProjectionPresent,
     SelectQuery,
@@ -468,6 +468,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
         Expr<bool, Scope, Aggr>: HavingPredicate<GroupByCols, Tables, P>,
+        Aggr: AggregateInDialect<D>,
     {
         self.query = self.query.having(predicate);
         self
@@ -600,7 +601,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
-        Marker: AggregateMarker,
+        Marker: AggregateMarker + AggregateInDialect<D>,
     {
         let criterion = OrderCriterion::new(expression.into_kind(), direction);
         self.query.push_ordering(criterion);
@@ -616,7 +617,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
-        Marker: AggregateMarker,
+        Marker: AggregateMarker + AggregateInDialect<D>,
     {
         let criterion = OrderCriterion::new(expression.into_kind(), direction).nulls(nulls);
         self.query.push_ordering(criterion);
@@ -630,7 +631,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
-        Marker: AggregateMarker,
+        Marker: AggregateMarker + AggregateInDialect<D>,
     {
         self.order_by_expr(expression, OrderDirection::Asc)
     }
@@ -642,7 +643,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ) -> Self
     where
         Scope: ExprInScope<Tables, P> + ScopePositions<P>,
-        Marker: AggregateMarker,
+        Marker: AggregateMarker + AggregateInDialect<D>,
     {
         self.order_by_expr(expression, OrderDirection::Desc)
     }
