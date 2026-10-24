@@ -3,13 +3,17 @@
 
 pub mod cli;
 pub mod codegen;
-pub mod config;
-pub mod driver;
 pub mod drift;
 pub mod introspect;
-pub mod loader;
 pub mod stage;
-pub mod target;
+
+// Modules below are implementation details reached through the facade of this
+// crate root, so they stay private: only the items re-exported below are part of
+// the published surface.
+mod config;
+mod driver;
+mod loader;
+mod target;
 
 pub use cli::{parse_args, run_cli, CliCommand, CliError};
 pub use codegen::{generate_schema_rs, CodegenError, CodegenOptions};
