@@ -132,6 +132,32 @@ impl SetOperand for NoLock {}
 
 impl SetOperand for LockUnavailable {}
 
+/// A `SELECT` query that projects its rows and requests no row-level lock.
+///
+/// The alias names the everyday shape of a rendered statement, hiding the
+/// projection and lock typestates [`SelectQuery`] carries: every query reaches
+/// [`HasProjection`] through [`SelectQuery::select`] and keeps [`NoLock`] unless
+/// it requests a row-level lock.
+///
+/// ```text
+/// let query: Query<Postgres, Users, (i64, String)> = ...
+/// ```
+pub type Query<D, Tables = (), Output = ()> =
+    SelectQuery<D, Tables, Output, HasProjection, NoLock>;
+
+/// A `SELECT` query that projects its rows and requests a row-level lock.
+///
+/// The alias names a statement inside a transaction that claims its rows until
+/// the transaction ends, hiding the projection and lock typestates
+/// [`SelectQuery`] carries: it is reached after [`SelectQuery::for_update`] or
+/// [`SelectQuery::for_share`] moved the query into [`Locked`].
+///
+/// ```text
+/// let query: LockedQuery<Postgres, Users, (i64,)> = ...
+/// ```
+pub type LockedQuery<D, Tables = (), Output = ()> =
+    SelectQuery<D, Tables, Output, HasProjection, Locked>;
+
 /// Phantom marker carrying the dialect, scope, row type, and typestates of a query.
 type QueryMarker<D, Tables, Output, Projected, Lock> =
     PhantomData<fn() -> (D, Tables, Output, Projected, Lock)>;

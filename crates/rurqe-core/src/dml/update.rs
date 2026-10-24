@@ -66,6 +66,16 @@ pub struct UpdateQuery<
 type UpdateMarker<D, T, State, Returning, Scope, Assignments> =
     PhantomData<fn() -> (D, T, State, Returning, Scope, Assignments)>;
 
+/// An `UPDATE` statement that carries its assignments and a filter.
+///
+/// The alias names the everyday shape of a renderable update, hiding the
+/// filtering and assignment typestates [`UpdateQuery`] carries: a statement
+/// reaches it after recording at least one assignment and choosing its filter —
+/// either a `WHERE` predicate or an explicit
+/// [`allow_all`](UpdateQuery::allow_all).
+pub type ExecutableUpdate<D, T, Returning = (), Scope = T> =
+    UpdateQuery<D, T, Filtered, Returning, Scope, HasAssignments>;
+
 impl<D: Dialect, T: Table> UpdateQuery<D, T, Unfiltered, (), T> {
     /// Creates a new `UPDATE` statement targeting table `T` without a filter.
     pub fn new() -> Self {

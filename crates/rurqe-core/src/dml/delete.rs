@@ -53,6 +53,15 @@ pub struct DeleteQuery<D: Dialect, T: Table, State = Unfiltered, Returning = (),
 type DeleteMarker<D, T, State, Returning, Scope> =
     PhantomData<fn() -> (D, T, State, Returning, Scope)>;
 
+/// A `DELETE` statement that filters the rows it removes.
+///
+/// The alias names the everyday shape of a renderable deletion, hiding the
+/// filtering typestate [`DeleteQuery`] carries: a statement reaches it after
+/// choosing its filter — either a `WHERE` predicate or an explicit
+/// [`allow_all`](DeleteQuery::allow_all).
+pub type ExecutableDelete<D, T, Returning = (), Scope = T> =
+    DeleteQuery<D, T, Filtered, Returning, Scope>;
+
 impl<D: Dialect, T: Table> DeleteQuery<D, T, Unfiltered, (), T> {
     /// Creates a new `DELETE` statement targeting table `T` without a filter.
     pub fn new() -> Self {

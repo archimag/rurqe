@@ -21,11 +21,11 @@ pub mod scope;
 pub mod update;
 
 pub use conflict::{Conflict, ConflictAction, OnConflict};
-pub use delete::DeleteQuery;
+pub use delete::{DeleteQuery, ExecutableDelete};
 pub use excluded::{excluded, Excluded};
 pub use insert::{EmptyRows, InsertQuery};
 pub use scope::AssignmentScope;
-pub use update::UpdateQuery;
+pub use update::{ExecutableUpdate, UpdateQuery};
 
 use core::marker::PhantomData;
 
