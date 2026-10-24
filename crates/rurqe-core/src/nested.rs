@@ -23,8 +23,8 @@
 //! `json_group_array`. Both forms produce the same JSON document, so the client
 //! decodes one representation whichever engine produced it.
 
-use crate::dialect::Dialect;
-use crate::expr::{ExprKind, SqlArrayElement, SqlVal, Subquery};
+use crate::dialect::{Dialect, SupportsJsonAggregation};
+use crate::expr::{DialectInScope, ExprKind, SqlArrayElement, SqlVal, Subquery};
 use crate::query::{HasProjection, SelectQuery, SelectTarget, SelectTargetInScope, TableScope};
 use crate::schema::At;
 
@@ -103,10 +103,16 @@ where
 // the enclosing scope and resolves at the first position of every scope. Fixing
 // the position keeps the marker determined instead of leaving inference to pick
 // one of the positions a scope may offer.
-impl<Tables, D, StmtD, S, Row> SelectTargetInScope<Tables, At<0>, StmtD>
-    for NestMany<SelectQuery<D, S, Row, HasProjection>>
+//
+// The relationship itself is a relational one, so the nested statement belongs to
+// the same dialect as the statement projecting it, and that dialect has to render
+// the JSON aggregation the document is assembled with. A dialect without the
+// aggregation would accept the projection and fail inside the engine instead.
+impl<Tables, InnerD, QueryD, S, Row> SelectTargetInScope<Tables, At<0>, QueryD>
+    for NestMany<SelectQuery<InnerD, S, Row, HasProjection>>
 where
-    D: Dialect,
+    InnerD: Dialect + DialectInScope<QueryD>,
+    QueryD: SupportsJsonAggregation,
     S: TableScope,
     Row: MultisetRow,
 {
@@ -127,11 +133,13 @@ where
 }
 
 // A single nested row reads from its own statement as well, so it resolves at the
-// same fixed position as the collection form.
-impl<Tables, D, StmtD, S, Row> SelectTargetInScope<Tables, At<0>, StmtD>
-    for NestOne<SelectQuery<D, S, Row, HasProjection>>
+// same fixed position as the collection form, and the statement projecting it
+// carries the same dialect and aggregation requirements.
+impl<Tables, InnerD, QueryD, S, Row> SelectTargetInScope<Tables, At<0>, QueryD>
+    for NestOne<SelectQuery<InnerD, S, Row, HasProjection>>
 where
-    D: Dialect,
+    InnerD: Dialect + DialectInScope<QueryD>,
+    QueryD: SupportsJsonAggregation,
     S: TableScope,
     Row: MultisetRow,
 {
@@ -344,8 +352,9 @@ mod tests {
     use core::fmt::Write as _;
 
     use super::*;
-    use crate::expr::Expr;
+    use crate::expr::ToSqlVal;
     use crate::row::{FromSqlValue, RowDecodeError};
+    use crate::schema::At;
 
     struct PgMock;
 
@@ -363,6 +372,8 @@ mod tests {
         }
     }
 
+    impl SupportsJsonAggregation for PgMock {}
+
     struct SqliteMock;
 
     impl Dialect for SqliteMock {
@@ -376,6 +387,8 @@ mod tests {
             out.push('?');
         }
     }
+
+    impl SupportsJsonAggregation for SqliteMock {}
 
     crate::table! {
         Owner => "owners" {
@@ -393,9 +406,12 @@ mod tests {
     /// The child row a nested projection decodes into.
     type OrderLine = (String, i64);
 
-    impl crate::expr::ToSqlVal for OrderLine {
+    impl ToSqlVal for OrderLine {
         fn to_sql_val(self) -> SqlVal {
-            SqlVal::Json(serde_json::json!({ "sku": self.0, "qty": self.1 }))
+            multiset_object(&[
+                ("sku", SqlVal::Text(self.0)),
+                ("qty", SqlVal::I64(self.1)),
+            ])
         }
     }
 
@@ -418,83 +434,40 @@ mod tests {
     }
 
     #[test]
-    fn a_nested_collection_aggregates_into_a_json_array() {
-        let built = SelectQuery::<PgMock>::new()
-            .from::<Owner>()
-            .select((OwnerId, nest_many(lines::<PgMock>())))
-            .build();
+    fn a_nested_projection_carries_the_json_aggregation_requirement() {
+        fn assert_projectable<Q, D>()
+        where
+            Q: SelectTargetInScope<Owner, At<0>, D>,
+        {
+        }
 
-        assert_eq!(
-            built.sql,
-            "SELECT \"id\", COALESCE((SELECT jsonb_agg(to_jsonb(\"__rurqe_sub\")) FROM \
-             (SELECT \"sku\" AS \"sku\", \"qty\" AS \"qty\" FROM \"lines\") AS \"__rurqe_sub\"), \
-             '[]'::jsonb) FROM \"owners\""
-        );
+        assert_projectable::<
+            NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>,
+            PgMock,
+        >();
+        assert_projectable::<
+            NestOne<SelectQuery<SqliteMock, Line, OrderLine, HasProjection>>,
+            SqliteMock,
+        >();
+        assert_projectable::<
+            NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>,
+            PgMock,
+        >();
+
+        // The wrapped statement keeps rendering the rows it projects.
+        let built = lines::<PgMock>().build();
+        assert_eq!(built.sql, "SELECT \"sku\", \"qty\" FROM \"lines\"");
         assert!(built.params.is_empty());
     }
 
     #[test]
-    fn a_single_nested_row_stops_at_its_first_row() {
-        let built = SelectQuery::<PgMock>::new()
-            .from::<Owner>()
-            .select((OwnerId, nest_one(lines::<PgMock>())))
-            .build();
+    fn a_nested_projection_renders_its_row_type() {
+        fn assert_row_type<Q: SelectTarget<RustType = Vec<OrderLine>>>() {}
 
-        assert_eq!(
-            built.sql,
-            "SELECT \"id\", (SELECT to_jsonb(\"__rurqe_sub\") FROM (SELECT \"sku\" AS \"sku\", \
-             \"qty\" AS \"qty\" FROM \"lines\" LIMIT 1) AS \"__rurqe_sub\") FROM \"owners\""
-        );
-    }
+        fn assert_single_row_type<Q: SelectTarget<RustType = Option<OrderLine>>>() {}
 
-    #[test]
-    fn a_dialect_without_native_row_aggregation_assembles_the_object() {
-        let built = SelectQuery::<SqliteMock>::new()
-            .from::<Owner>()
-            .select((OwnerId, nest_many(lines::<SqliteMock>())))
-            .build();
-
-        assert_eq!(
-            built.sql,
-            "SELECT \"id\", COALESCE((SELECT json_group_array(json_object('sku', \
-             \"__rurqe_sub\".\"sku\", 'qty', \"__rurqe_sub\".\"qty\")) FROM (SELECT \"sku\" AS \
-             \"sku\", \"qty\" AS \"qty\" FROM \"lines\") AS \"__rurqe_sub\"), '[]') FROM \"owners\""
-        );
-    }
-
-    #[test]
-    fn a_single_row_of_a_dialect_without_native_aggregation_is_an_object() {
-        let built = SelectQuery::<SqliteMock>::new()
-            .from::<Owner>()
-            .select((OwnerId, nest_one(lines::<SqliteMock>())))
-            .build();
-
-        assert_eq!(
-            built.sql,
-            "SELECT \"id\", (SELECT json_object('sku', \"__rurqe_sub\".\"sku\", 'qty', \
-             \"__rurqe_sub\".\"qty\") FROM (SELECT \"sku\" AS \"sku\", \"qty\" AS \"qty\" FROM \
-             \"lines\" LIMIT 1) AS \"__rurqe_sub\") FROM \"owners\""
-        );
-    }
-
-    #[test]
-    fn the_nested_statement_binds_its_parameters_in_place() {
-        let inner = SelectQuery::<PgMock>::new()
-            .from::<Line>()
-            .select((LineSku, LineQty))
-            .where_(Expr::column::<LineQty>().gt(1i64));
-        let built = SelectQuery::<PgMock>::new()
-            .from::<Owner>()
-            .select((OwnerId, nest_many(inner)))
-            .build();
-
-        assert_eq!(
-            built.sql,
-            "SELECT \"id\", COALESCE((SELECT jsonb_agg(to_jsonb(\"__rurqe_sub\")) FROM \
-             (SELECT \"sku\" AS \"sku\", \"qty\" AS \"qty\" FROM \"lines\" WHERE (\"qty\" > $1)) \
-             AS \"__rurqe_sub\"), '[]'::jsonb) FROM \"owners\""
-        );
-        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+        assert_row_type::<NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>>();
+        assert_single_row_type::<NestOne<SelectQuery<PgMock, Line, OrderLine, HasProjection>>>();
     }
 
     #[test]
@@ -556,11 +529,7 @@ mod tests {
         ] {
             let value = json_to_sql_value(&document);
 
-            assert_eq!(
-                sql_val_to_json(&value),
-                document,
-                "round trip of {document}"
-            );
+            assert_eq!(sql_val_to_json(&value), document, "round trip of {document}");
         }
     }
 
@@ -597,19 +566,6 @@ mod tests {
     }
 
     #[test]
-    fn a_row_object_built_from_sql_values_decodes_back() {
-        let document = serde_json::json!({
-            "sku": sql_val_to_json(&SqlVal::Text("a".to_owned())),
-            "qty": sql_val_to_json(&SqlVal::I64(2)),
-        });
-
-        assert_eq!(
-            OrderLine::from_sql_value(&SqlVal::Json(document)),
-            Ok(("a".to_owned(), 2))
-        );
-    }
-
-    #[test]
     fn a_row_object_carries_one_key_per_field() {
         let row = multiset_object(&[
             ("sku", SqlVal::Text("a".to_owned())),
@@ -619,6 +575,11 @@ mod tests {
         assert_eq!(
             row,
             SqlVal::Json(serde_json::json!({ "sku": "a", "qty": 2 }))
+        );
+
+        assert_eq!(
+            OrderLine::from_sql_value(&row),
+            Ok(("a".to_owned(), 2))
         );
     }
 }

@@ -24,6 +24,8 @@ impl Dialect for MockDialect {
     }
 }
 
+impl crate::dialect::SupportsWindowFunctions for MockDialect {}
+
 crate::table! {
     User => "users" {
         UserId => "id": i64,

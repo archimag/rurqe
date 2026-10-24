@@ -24,13 +24,14 @@
 use core::fmt;
 use core::marker::PhantomData;
 
+use crate::dialect::SupportsWindowFunctions;
 #[cfg(test)]
 use crate::dialect::Dialect;
 #[cfg(test)]
 use crate::expr::render_expr;
 use crate::expr::{
-    ExprKind, MergeDialect, MergeScope, Merged, MergedDialect, NullsOrder, OrderCriterion,
-    RequiresNullsOrdering, WindowFrame, WindowFrameBound, WindowFrameKind,
+    DialectInScope, ExprKind, MergeDialect, MergeScope, Merged, MergedDialect, NullsOrder,
+    OrderCriterion, RequiresNullsOrdering, WindowFrame, WindowFrameBound, WindowFrameKind,
 };
 use crate::schema::{Column, ExprInScope};
 
@@ -571,10 +572,22 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Cols: 'static + Sen
     }
 }
 
-impl<Tables, T, Scope, Cols, D, StmtD, P> SelectTargetInScope<Tables, P, StmtD>
-    for WindowExpr<T, Scope, Cols, D>
+/// Statically asserts that the statement dialect renders the `OVER (...)` clause.
+///
+/// A window expression is evaluated by the engine, so the statement projecting it
+/// compiles only when its dialect declares window functions through
+/// [`SupportsWindowFunctions`]. The expression carries the dialect requirements
+/// of its specification and of the expression it wraps in `WinD`, which the
+/// statement dialect satisfies as well: an ordering fixing where NULL values
+/// sort, for instance, keeps the requirement of
+/// [`SupportsNullsOrdering`](crate::dialect::SupportsNullsOrdering) beside the
+/// window capability.
+impl<Tables, T, Scope, Cols, WinD, StmtD, P> SelectTargetInScope<Tables, P, StmtD>
+    for WindowExpr<T, Scope, Cols, WinD>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+    WinD: DialectInScope<StmtD>,
+    StmtD: SupportsWindowFunctions,
 {
     type Output = T;
 }
