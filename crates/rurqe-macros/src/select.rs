@@ -57,6 +57,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut position_args = Vec::new();
     let mut field_keys = Vec::new();
     let mut used_fields: Vec<String> = Vec::new();
+    let arity = Literal::usize_unsuffixed(projections.len());
 
     for (index, item) in projections.as_slice().iter().enumerate() {
         let field = item.field_ident()?;
@@ -87,7 +88,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #field: #record_param,
         });
         field_reads.extend(quote! {
-            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(&values[#field_index])?,
+            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(
+                values.get(#field_index).ok_or(
+                    ::rurqe_core::row::RowDecodeError::ArityMismatch {
+                        expected: #arity,
+                        actual: values.len(),
+                    },
+                )?,
+            )?,
         });
         document_writes.extend(quote! {
             (#key, ::rurqe_core::expr::ToSqlVal::to_sql_val(self.#field)),
@@ -153,8 +161,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             out.push(::rurqe_core::query::SelectTarget::to_expr_kind(&self.#field_index));
         });
     }
-
-    let arity = Literal::usize_unsuffixed(projections.len());
 
     Ok(quote! {
         {

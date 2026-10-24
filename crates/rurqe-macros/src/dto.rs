@@ -87,7 +87,14 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             #vis #field: <#column as ::rurqe_core::schema::Column>::RustType,
         });
         field_reads.extend(quote! {
-            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(&values[#field_index])?,
+            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(
+                values.get(#field_index).ok_or(
+                    ::rurqe_core::row::RowDecodeError::ArityMismatch {
+                        expected: #arity,
+                        actual: values.len(),
+                    },
+                )?,
+            )?,
         });
         document_writes.extend(quote! {
             (#key, ::rurqe_core::expr::ToSqlVal::to_sql_val(self.#field)),

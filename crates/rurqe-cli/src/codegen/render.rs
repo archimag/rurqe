@@ -143,9 +143,18 @@ fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions
     for (index, column) in table.columns.iter().enumerate() {
         out.push_str("            ");
         out.push_str(&column.field_ident);
-        out.push_str(": FromSqlValue::from_sql_value(&values[");
+        out.push_str(": FromSqlValue::from_sql_value(\n");
+        out.push_str("                values\n");
+        out.push_str("                    .get(");
         out.push_str(&index.to_string());
-        out.push_str("])?,\n");
+        out.push_str(")\n");
+        out.push_str("                    .ok_or(RowDecodeError::ArityMismatch {\n");
+        out.push_str("                        expected: ");
+        out.push_str(&arity);
+        out.push_str(",\n");
+        out.push_str("                        actual: values.len(),\n");
+        out.push_str("                    })?,\n");
+        out.push_str("            )?,\n");
     }
 
     out.push_str("        })\n");
@@ -181,6 +190,10 @@ mod tests {
         assert!(code.contains("impl FromRow for UsersRecord"));
         assert!(code.contains("fn try_from_row(values: &[SqlVal]) -> Result<Self, RowDecodeError>"));
         assert!(code.contains("RowDecodeError::ArityMismatch"));
+        // The generated row reader never indexes the slice directly, so a short
+        // response reports `ArityMismatch` instead of panicking.
+        assert!(code.contains("values\n                    .get(0)"));
+        assert!(!code.contains("values["));
     }
 
     #[test]
