@@ -1024,6 +1024,7 @@ dependencies = [
  "bytes",
  "chrono",
  "deadpool-postgres",
+ "futures-core",
  "postgres",
  "r2d2",
  "rurqe-core",

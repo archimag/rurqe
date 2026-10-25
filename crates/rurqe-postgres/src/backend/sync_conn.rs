@@ -1,5 +1,6 @@
 //! Synchronous execution adapter over [`postgres::Client`].
 
+use postgres::fallible_iterator::FallibleIterator;
 use postgres::types::ToSql;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
@@ -42,6 +43,32 @@ pub(crate) fn execute_raw_sync(
         .collect();
     let affected = client.execute(query.sql.as_str(), &bound)?;
     Ok(affected)
+}
+
+/// Executes `query` through a synchronous client and decodes at most `limit`
+/// rows, stopping the statement's row iterator once the limit is reached.
+///
+/// Without a limit the whole result set is fetched, exactly as
+/// [`fetch_raw_sync`] does.
+pub(crate) fn fetch_raw_limited_sync(
+    client: &mut postgres::Client,
+    query: &BuiltQuery,
+    limit: Option<usize>,
+) -> Result<Vec<Vec<SqlVal>>, PgError> {
+    match limit {
+        None => fetch_raw_sync(client, query),
+        Some(limit) => {
+            let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+            let rows = client
+                .query_raw(
+                    query.sql.as_str(),
+                    params.iter().map(|param| param as &(dyn ToSql + Sync)),
+                )?
+                .take(limit)
+                .collect::<Vec<_>>()?;
+            rows_to_sql_vals(rows)
+        }
+    }
 }
 
 /// A [`postgres::Client`] executing RURQE queries through the synchronous driver.
@@ -105,6 +132,14 @@ impl QueryBackend for PgConnection {
 
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
         fetch_raw_sync(&mut self.client, query)
+    }
+
+    fn fetch_raw_limited(
+        &mut self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        fetch_raw_limited_sync(&mut self.client, query, limit)
     }
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, PgError> {

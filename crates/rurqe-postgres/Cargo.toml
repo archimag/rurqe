@@ -13,6 +13,9 @@ tracing = "0.1"
 bytes = { version = "1", optional = true }
 chrono = { version = "0.4", optional = true }
 deadpool-postgres = { version = "0.14", optional = true }
+# Consuming the asynchronous driver's row stream needs the `Stream` trait, so
+# the dependency is enabled together with the `tokio-postgres` feature.
+futures-core = { version = "0.3", optional = true }
 postgres = { version = "0.19", optional = true }
 r2d2 = { version = "0.8", optional = true }
 rust_decimal = { version = "1", optional = true }
@@ -25,7 +28,7 @@ uuid = { version = "1", optional = true }
 # adapter: the shared binding layer needs `bytes`, while the asynchronous adapter
 # is compiled only when its own feature asks for it.
 postgres = ["dep:postgres", "dep:bytes"]
-tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "chrono", "serde_json", "uuid"]
+tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "dep:futures-core", "chrono", "serde_json", "uuid"]
 deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
 r2d2 = ["dep:r2d2", "postgres"]
 # A value family is forwarded to the drivers that are compiled in, so a driver

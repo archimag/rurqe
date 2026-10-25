@@ -109,6 +109,14 @@ impl QueryBackend for SqliteConnection {
         fetch_raw_with(&mut self.connection, query)
     }
 
+    fn fetch_raw_limited(
+        &mut self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        fetch_raw_limited_with(&mut self.connection, query, limit)
+    }
+
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
         execute_raw_with(&mut self.connection, query)
     }
@@ -119,13 +127,29 @@ pub(super) fn fetch_raw_with(
     connection: &mut Connection,
     query: &BuiltQuery,
 ) -> Result<Vec<Vec<SqlVal>>, ::rusqlite::Error> {
+    fetch_raw_limited_with(connection, query, None)
+}
+
+/// Fetches at most `limit` rows of `query` through a raw `rusqlite` connection.
+///
+/// The row loop stops as soon as `limit` rows have been read, so the remaining
+/// rows of an unbounded result set are never stepped over or decoded.
+pub(super) fn fetch_raw_limited_with(
+    connection: &mut Connection,
+    query: &BuiltQuery,
+    limit: Option<usize>,
+) -> Result<Vec<Vec<SqlVal>>, ::rusqlite::Error> {
     let mut statement = connection.prepare(&query.sql)?;
     let column_count = statement.column_count();
     let params = query.params.iter().map(SqlValParam);
     let mut rows = statement.query(::rusqlite::params_from_iter(params))?;
 
+    let limit = limit.unwrap_or(usize::MAX);
     let mut result = Vec::new();
-    while let Some(row) = rows.next()? {
+    while result.len() < limit {
+        let Some(row) = rows.next()? else {
+            break;
+        };
         let mut values = Vec::with_capacity(column_count);
         for index in 0..column_count {
             values.push(value_ref_to_sql_val(index, row.get_ref(index)?)?);

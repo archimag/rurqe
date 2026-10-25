@@ -2,6 +2,7 @@
 
 use core::future::Future;
 
+use futures_core::Stream;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 use tokio_postgres::types::ToSql;
@@ -47,6 +48,55 @@ where
         )
         .await?;
     Ok(affected)
+}
+
+/// Executes `query` through an asynchronous client and decodes at most `limit`
+/// rows, stopping the row stream once the limit is reached.
+///
+/// Without a limit the whole result set is fetched, exactly as
+/// [`fetch_raw_async`] does.
+pub(crate) async fn fetch_raw_limited_async<C>(
+    client: &C,
+    query: &BuiltQuery,
+    limit: Option<usize>,
+) -> Result<Vec<Vec<SqlVal>>, PgError>
+where
+    C: tokio_postgres::GenericClient + Sync,
+{
+    match limit {
+        None => fetch_raw_async(client, query).await,
+        Some(limit) => {
+            let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+            let stream = client
+                .query_raw(
+                    query.sql.as_str(),
+                    params.iter().map(|param| param as &(dyn ToSql + Sync)),
+                )
+                .await?;
+            rows_from_stream(stream, limit).await
+        }
+    }
+}
+
+/// Collects at most `limit` rows from the row stream of a `query_raw` call.
+///
+/// The stream is polled row by row and the loop stops as soon as `limit` rows
+/// have been collected, so the remaining rows of an unbounded result set are
+/// never read from the socket.
+async fn rows_from_stream(
+    stream: tokio_postgres::RowStream,
+    limit: usize,
+) -> Result<Vec<Vec<SqlVal>>, PgError> {
+    let mut stream = std::pin::pin!(stream);
+    let mut rows = Vec::new();
+    while rows.len() < limit {
+        let next = std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
+        match next {
+            Some(row) => rows.push(row?),
+            None => break,
+        }
+    }
+    rows_to_sql_vals(rows)
 }
 
 /// A [`tokio_postgres::Client`] executing RURQE queries asynchronously.
@@ -95,6 +145,14 @@ impl AsyncQueryBackend for PgAsyncConnection {
         fetch_raw_async(&self.client, query)
     }
 
+    fn fetch_raw_limited(
+        &self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
+        fetch_raw_limited_async(&self.client, query, limit)
+    }
+
     fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
         execute_raw_async(&self.client, query)
     }
@@ -141,6 +199,14 @@ impl AsyncQueryBackend for PgAsyncTransaction<'_> {
         query: &BuiltQuery,
     ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
         fetch_raw_async(&self.inner, query)
+    }
+
+    fn fetch_raw_limited(
+        &self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
+        fetch_raw_limited_async(&self.inner, query, limit)
     }
 
     fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
