@@ -34,7 +34,6 @@ pub mod embedded;
 pub mod error;
 pub mod history;
 pub mod migration;
-pub mod mini_toml;
 pub mod runner;
 pub mod scripts;
 pub mod sleeper;
@@ -59,4 +58,6 @@ pub use sleeper::{warn_if_in_tokio_runtime, NoopSleeper, Sleeper, ThreadSleeper}
 pub use stage::{
     cold_start, ColdStartReport, DeclarativeStage, StageMarker, StageScript, STAGE_SCRIPT,
 };
+#[cfg(feature = "tokio")]
+pub use stage::cold_start_async;
 pub use version::MigrationVersion;

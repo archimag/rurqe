@@ -29,10 +29,15 @@
 //! [`Migrator::repair`](crate::runner::Migrator::repair), and
 //! [`Migrator::status`](crate::runner::Migrator::status), which
 //! [`EmbeddedMigrations`](crate::embedded::EmbeddedMigrations) mirrors in its
-//! synchronous methods. Every one of them emits the runtime advisory through
-//! [`warn_if_in_tokio_runtime`](crate::sleeper::warn_if_in_tokio_runtime) before
-//! blocking the calling thread, so an application that embeds the lifecycle into
-//! an asynchronous startup path is told to offload it through `spawn_blocking`.
+//! synchronous methods. Every one of them blocks the calling thread until the
+//! backend answers, so `guard_blocking_entry` reports an active runtime before the
+//! database is reached: the call warns by default and is refused when this crate
+//! is compiled with the `strict-async` feature.
+//!
+//! `cold_start_async` (available with the `tokio` feature) is the sanctioned path
+//! for an asynchronous startup: it applies the stage on a dedicated blocking
+//! thread and hands the backend back together with the report, exactly like the
+//! `*_async` wrappers of [`EmbeddedMigrations`](crate::embedded::EmbeddedMigrations).
 //!
 //! ```
 //! use rurqe_migrate::{
@@ -62,7 +67,7 @@ use crate::history::SchemaHistoryEntry;
 use crate::migration::{parse_script_attributes, MigrationKind};
 use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
 use crate::scripts::sql_scripts;
-use crate::sleeper::warn_if_in_tokio_runtime;
+use crate::sleeper::guard_blocking_entry;
 use crate::version::MigrationVersion;
 
 /// The synthetic script name the cold-start marker is recorded under.
@@ -299,15 +304,30 @@ pub struct ColdStartReport {
 /// the next attempt reports the database as partially initialised instead of
 /// treating it as an unknown schema or as one that already carries history.
 ///
-/// The call blocks the calling thread for as long as the DDL takes, so it
-/// reports the runtime advisory described in the module documentation before
-/// reaching the backend.
+/// The call blocks the calling thread for as long as the DDL takes, so it guards
+/// the blocking entry described in the module documentation: the call warns by
+/// default and is refused under the `strict-async` feature. An asynchronous
+/// startup path uses `cold_start_async` instead, which runs the very same work on
+/// a dedicated blocking thread.
 pub fn cold_start<B: MigrationBackend>(
     backend: &mut B,
     stage: &DeclarativeStage,
     marker: &StageMarker,
 ) -> Result<ColdStartReport, Error> {
-    warn_if_in_tokio_runtime("cold_start");
+    guard_blocking_entry("cold_start")?;
+    cold_start_core(backend, stage, marker)
+}
+
+/// Guard-free core of [`cold_start`].
+///
+/// `cold_start_async` runs it on a `spawn_blocking` thread, where the
+/// blocking-entry guard cannot tell a blocking-pool thread from a worker thread and
+/// would refuse work that is exactly where it belongs.
+fn cold_start_core<B: MigrationBackend>(
+    backend: &mut B,
+    stage: &DeclarativeStage,
+    marker: &StageMarker,
+) -> Result<ColdStartReport, Error> {
     let mut guard = LockGuard::acquire(backend)?;
     guard.ensure_schema_history_table()?;
     let history = guard.read_history()?;
@@ -422,6 +442,42 @@ pub fn cold_start<B: MigrationBackend>(
         installed_rank: Some(entry.installed_rank),
         total_time_ms: elapsed_ms,
     })
+}
+
+/// Initialises an empty database from the declarative stage on a blocking thread.
+///
+/// This is the asynchronous counterpart of [`cold_start`]: the stage is applied on
+/// a dedicated blocking thread, so the runtime's worker threads stay free for as
+/// long as the DDL takes. The backend is moved into the blocking task and handed
+/// back together with the report, so a connection that cannot be shared across
+/// threads stays usable after the run. A panic inside the blocking task — which
+/// this crate never produces — surfaces as [`Error::Backend`] instead of unwinding
+/// the caller.
+///
+/// The task runs the guard-free core of the lifecycle, so it never trips the
+/// `strict-async` refusal: a blocking-pool thread is exactly where this work
+/// belongs, which makes this the sanctioned runtime path.
+#[cfg(feature = "tokio")]
+pub async fn cold_start_async<B: MigrationBackend + Send + 'static>(
+    mut backend: B,
+    stage: &DeclarativeStage,
+    marker: &StageMarker,
+) -> Result<(ColdStartReport, B), Error> {
+    let stage = stage.clone();
+    let marker = marker.clone();
+
+    let joined = tokio::task::spawn_blocking(move || {
+        let report = cold_start_core(&mut backend, &stage, &marker);
+        (report, backend)
+    })
+    .await;
+
+    match joined {
+        Ok((report, backend)) => report.map(|report| (report, backend)),
+        Err(error) => Err(Error::Backend(format!(
+            "blocking cold start task failed: {error}"
+        ))),
+    }
 }
 
 /// Writes `entry` in a transaction of its own.
@@ -760,10 +816,12 @@ mod tests {
         assert!(!backend.locked);
     }
 
-    /// The advisory has to stay a warning: the blocking entry point keeps working
-    /// inside a runtime, exactly like the migration lifecycle it belongs to.
+    /// The advisory stays a warning by default: the blocking entry point keeps
+    /// working inside a runtime, exactly like the migration lifecycle it belongs
+    /// to. Under `strict-async` the same call is refused instead, which the
+    /// `strict-async` test below covers.
     #[test]
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", not(feature = "strict-async")))]
     fn cold_start_inside_a_tokio_runtime_still_succeeds() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -774,6 +832,84 @@ mod tests {
                 .expect("the blocking entry point stays callable inside a runtime");
 
             assert_eq!(report.installed_rank, Some(1));
+            assert!(!backend.locked);
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn cold_start_async_initialises_the_database() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let (report, backend) = runtime
+            .block_on(cold_start_async(InMemoryBackend::new(), &stage(), &marker()))
+            .expect("the blocking cold start succeeds");
+
+        assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
+        assert_eq!(report.installed_rank, Some(1));
+        assert_eq!(backend.history.len(), 1);
+        assert!(backend.history[0].success);
+        assert_eq!(backend.history[0].script, STAGE_SCRIPT);
+        assert!(!backend.locked, "the lock is released before the task returns");
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn cold_start_async_surfaces_a_diverged_stage_digest() {
+        let mut backend = InMemoryBackend::new();
+        cold_start(&mut backend, &stage(), &marker())
+            .expect("the first run initialises the schema");
+
+        let changed = StageMarker::new(
+            version("3.2"),
+            StageMarker::DESCRIPTION,
+            Checksum::of(b"other"),
+        );
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let error = runtime
+            .block_on(cold_start_async(backend, &stage(), &changed))
+            .expect_err("a diverged stage cannot masquerade as a cold start");
+
+        assert!(matches!(error, Error::InvalidStage { .. }), "got {error:?}");
+    }
+
+    /// Under `strict-async` the synchronous entry point refuses to block a
+    /// Tokio-managed thread, while the `*_async` wrapper runs the same work on a
+    /// blocking-pool thread and therefore stays usable.
+    #[test]
+    #[cfg(feature = "strict-async")]
+    fn cold_start_is_refused_inside_a_runtime_under_strict_async() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        runtime.block_on(async {
+            let mut backend = InMemoryBackend::new();
+            let error = cold_start(&mut backend, &stage(), &marker())
+                .expect_err("`strict-async` refuses to block the runtime");
+
+            assert!(matches!(error, Error::Backend(_)), "got {error:?}");
+            assert!(backend.history.is_empty(), "the backend stays untouched");
+            assert!(
+                backend.executed_sql.is_empty(),
+                "nothing reached the backend"
+            );
+            assert!(!backend.locked);
+
+            let (report, backend) = cold_start_async(InMemoryBackend::new(), &stage(), &marker())
+                .await
+                .expect("the sanctioned runtime path initialises the database");
+
+            assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
+            assert_eq!(report.installed_rank, Some(1));
+            assert_eq!(backend.history.len(), 1);
+            assert!(backend.history[0].success);
             assert!(!backend.locked);
         });
     }
