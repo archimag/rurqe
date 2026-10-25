@@ -279,6 +279,15 @@ fn snapshot_boundary_stage(
         return Err(error);
     }
 
+    // Every staged script is flushed by `write_file` before it is renamed into
+    // the staging directory; flushing the directory itself makes their names
+    // durable too, so the swap below can only ever publish a boundary whose
+    // contents survive a power loss.
+    if let Err(error) = sync_directory(&staged) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
+    }
+
     swap_snapshot(&dir, &staged)
 }
 
@@ -360,6 +369,8 @@ pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
         discard_previous_snapshot(&previous);
     }
 
+    flush_boundary_parent(dir);
+
     Ok(())
 }
 
@@ -376,4 +387,58 @@ fn discard_previous_snapshot(previous: &Path) {
             "failed to discard the previous boundary snapshot"
         );
     }
+}
+
+/// Flushes the directory whose entries the installed snapshot was renamed into.
+///
+/// The rename is durable only once that directory is flushed, but the boundary
+/// has already replaced the previous one: a flush that cannot be completed only
+/// weakens the durability of a commit that is otherwise done, so reporting it
+/// would reject a swap that did happen.
+fn flush_boundary_parent(dir: &Path) {
+    let parent = parent_directory(dir);
+    if let Err(error) = sync_directory(parent) {
+        tracing::warn!(
+            directory = %parent.display(),
+            error = %error,
+            "failed to flush the directory holding the installed boundary snapshot"
+        );
+    }
+}
+
+/// The directory whose entries a rename of `dir` updates.
+fn parent_directory(dir: &Path) -> &Path {
+    dir.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// Flushes the entries of `dir` to the device.
+///
+/// The swap publishes a new name while keeping the staged contents, so the
+/// scripts are flushed one by one, the staging directory is flushed once all of
+/// their names are in it, and the parent is flushed after the rename. Only Unix
+/// exposes a directory as a file handle; a platform without that capability
+/// leaves the ordering to the filesystem instead of reporting every commit as
+/// a failure it cannot do anything about.
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> Result<(), CliError> {
+    let handle = std::fs::File::open(dir).map_err(|error| {
+        CliError(format!(
+            "failed to open the directory `{}`: {error}",
+            dir.display()
+        ))
+    })?;
+
+    handle.sync_all().map_err(|error| {
+        CliError(format!(
+            "failed to flush the directory `{}`: {error}",
+            dir.display()
+        ))
+    })
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_dir: &Path) -> Result<(), CliError> {
+    Ok(())
 }
