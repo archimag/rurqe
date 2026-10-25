@@ -509,18 +509,18 @@ fn encoding_failure(reason: &str) -> Box<dyn StdError + Sync + Send> {
     Box::new(::std::io::Error::other(reason.to_owned()))
 }
 
-/// Raw binary payload of a result column.
+/// Binary payload of a result column, borrowed from the row carrying it.
 ///
 /// The driver decodes a column only into a type that declares itself compatible
 /// with the column type, which leaves the values RURQE reads through its own
 /// codecs — arrays, decimals, network addresses, enum labels, extension types,
-/// and domains over any of them — out of reach. Reading the payload as raw bytes
-/// lets the adapter decode it itself.
-struct RawValue(Vec<u8>);
+/// and domains over any of them — out of reach. Reading the payload as borrowed
+/// bytes lets the adapter decode it itself without copying the column first.
+struct RawValue<'a>(&'a [u8]);
 
-impl<'a> FromSql<'a> for RawValue {
+impl<'a> FromSql<'a> for RawValue<'a> {
     fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn StdError + Sync + Send>> {
-        Ok(RawValue(raw.to_vec()))
+        Ok(RawValue(raw))
     }
 
     fn accepts(_: &Type) -> bool {
@@ -528,13 +528,83 @@ impl<'a> FromSql<'a> for RawValue {
     }
 }
 
-/// Decodes a driver row into the ordered values RURQE rows are built from.
-pub(crate) fn row_to_sql_vals(row: &Row) -> Result<Vec<SqlVal>, PgError> {
-    let mut values = Vec::with_capacity(row.columns().len());
-    for (index, column) in row.columns().iter().enumerate() {
-        values.push(column_value(row, index, column.type_())?);
+/// Classified decoding rules of a result column.
+///
+/// Classifying a column type resolves its domain chain and compares type names,
+/// which yields the same answer for every row a statement returns. Resolving it
+/// once per column keeps that work off the path taken for every decoded value.
+struct ColumnPlan<'a> {
+    /// The type the column is declared over, with its domain chain resolved.
+    base: &'a Type,
+    /// Textual representation of the column type, when it declares one.
+    wire: Option<Wire>,
+}
+
+impl<'a> ColumnPlan<'a> {
+    /// Classifies a column declared as `ty`.
+    fn of(ty: &'a Type) -> Self {
+        let base = base_type(ty);
+        Self {
+            base,
+            wire: wire_of(base),
+        }
     }
+}
+
+/// Decodes the rows of a result set into the ordered values RURQE rows are built
+/// from.
+///
+/// Every row a statement returns carries the same columns, so the decoding rules
+/// of each column are classified once from the first row and reused for the rest
+/// of the result set, and every payload is decoded straight from the borrowed row
+/// buffer.
+pub(crate) fn rows_to_sql_vals(rows: Vec<Row>) -> Result<Vec<Vec<SqlVal>>, PgError> {
+    let Some(first) = rows.first() else {
+        return Ok(Vec::new());
+    };
+
+    let plans: Vec<ColumnPlan<'_>> = first
+        .columns()
+        .iter()
+        .map(|column| ColumnPlan::of(column.type_()))
+        .collect();
+
+    rows.iter().map(|row| decode_row(&plans, row)).collect()
+}
+
+/// Decodes one row with the plans classified for its result set.
+fn decode_row(plans: &[ColumnPlan<'_>], row: &Row) -> Result<Vec<SqlVal>, PgError> {
+    let mut values = Vec::with_capacity(row.columns().len());
+
+    for (index, column) in row.columns().iter().enumerate() {
+        let declared = column.type_();
+        let raw: Option<RawValue<'_>> = row.try_get(index)?;
+
+        let decoded = match raw {
+            Some(raw) => match plans.get(index) {
+                Some(plan) => decode_payload(plan.base, plan.wire, raw.0),
+                // A row of another shape keeps decoding by classifying its own
+                // column instead of being reported as an unsupported type.
+                None => decode_value(declared, raw.0),
+            },
+            None => Ok(SqlVal::Null),
+        };
+
+        values.push(decoded.map_err(|failure| column_error(failure, declared))?);
+    }
+
     Ok(values)
+}
+
+/// Describes a column payload that cannot be decoded into a [`SqlVal`].
+fn column_error(failure: DecodeError, column_ty: &Type) -> PgError {
+    match failure {
+        DecodeError::Unsupported => PgError::UnsupportedType(column_ty.name().to_owned()),
+        DecodeError::Invalid(reason) => PgError::InvalidValue {
+            column_type: column_ty.name().to_owned(),
+            reason,
+        },
+    }
 }
 
 /// Why the binary payload of a column cannot be decoded into a [`SqlVal`].
@@ -558,38 +628,30 @@ impl DecodeError {
     }
 }
 
-/// Decodes one column of a row into the [`SqlVal`] of its declared type.
-fn column_value(row: &Row, index: usize, ty: &Type) -> Result<SqlVal, PgError> {
-    match row.try_get::<usize, Option<RawValue>>(index)? {
-        None => Ok(SqlVal::Null),
-        Some(raw) => decode_value(ty, &raw.0).map_err(|failure| match failure {
-            DecodeError::Unsupported => PgError::UnsupportedType(ty.name().to_owned()),
-            DecodeError::Invalid(reason) => PgError::InvalidValue {
-                column_type: ty.name().to_owned(),
-                reason,
-            },
-        }),
-    }
-}
-
 /// Decodes the binary payload of one value of the declared type `ty`.
 ///
 /// A column holding an array is decoded element by element, and every other
 /// column is decoded directly, so a column and an element of an array of the same
-/// type share one codec.
+/// type share one codec. Classifying the type here is what keeps an array element
+/// — which reaches this entry point without a plan of its own — decoding exactly
+/// like the column carrying it.
 fn decode_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
-    let ty = base_type(ty);
+    let plan = ColumnPlan::of(ty);
+    decode_payload(plan.base, plan.wire, payload)
+}
 
-    if let Kind::Array(elem_ty) = ty.kind() {
+/// Decodes the binary payload of a value whose column was already classified.
+fn decode_payload(base: &Type, wire: Option<Wire>, payload: &[u8]) -> Result<SqlVal, DecodeError> {
+    if let Kind::Array(elem_ty) = base.kind() {
         let elements = array::decode(elem_ty, payload).map_err(DecodeError::Invalid)?;
         return Ok(SqlVal::Array(elements));
     }
 
-    scalar_value(ty, payload)
+    scalar_value(base, wire, payload)
 }
 
 /// Decodes the binary payload of a value that is not an array.
-fn scalar_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
+fn scalar_value(ty: &Type, wire: Option<Wire>, payload: &[u8]) -> Result<SqlVal, DecodeError> {
     let value = if ty == &Type::BOOL {
         SqlVal::Bool(bool::from_sql(ty, payload).map_err(decode_failure)?)
     } else if ty == &Type::INT2 {
@@ -607,7 +669,7 @@ fn scalar_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
     } else if ty == &Type::FLOAT8 {
         SqlVal::F64(f64::from_sql(ty, payload).map_err(decode_failure)?)
     } else {
-        return extended_value(ty, payload);
+        return extended_value(ty, wire, payload);
     };
 
     Ok(value)
@@ -615,7 +677,7 @@ fn scalar_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
 
 /// Decodes a value whose type is recognised through its family rather than
 /// through one of the primitive scalars.
-fn extended_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
+fn extended_value(ty: &Type, wire: Option<Wire>, payload: &[u8]) -> Result<SqlVal, DecodeError> {
     #[cfg(feature = "uuid")]
     {
         if ty == &Type::UUID {
@@ -687,9 +749,10 @@ fn extended_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
 
     // A type outside the native scalars is decoded by the wire codec naming its
     // textual representation, which is also what makes an enum label, an
-    // extension type, or a domain over a native type readable.
-    match wire_of(ty) {
-        Some(wire) => wire
+    // extension type, or a domain over a native type readable. The plan of the
+    // column carries that classification, so it is not resolved a second time.
+    match wire {
+        Some(representation) => representation
             .decode(payload)
             .map(SqlVal::Text)
             .map_err(DecodeError::Invalid),

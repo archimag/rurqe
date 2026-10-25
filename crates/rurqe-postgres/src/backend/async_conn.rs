@@ -6,7 +6,7 @@ use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 use tokio_postgres::types::ToSql;
 
-use super::types::{row_to_sql_vals, PgError, SqlValParam};
+use super::types::{rows_to_sql_vals, PgError, SqlValParam};
 
 /// Executes `query` through an asynchronous client without decoding rows.
 ///
@@ -18,15 +18,20 @@ pub(crate) async fn fetch_raw_async<C>(
     query: &BuiltQuery,
 ) -> Result<Vec<Vec<SqlVal>>, PgError>
 where
-    C: tokio_postgres::GenericClient,
+    C: tokio_postgres::GenericClient + Sync,
 {
+    // The driver takes its parameters as one slice of borrowed trait objects, so
+    // the wrappers around the bound values are re-borrowed instead of their
+    // payloads being copied into a buffer of their own.
     let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
+    let bound: Vec<&(dyn ToSql + Sync)> = params
         .iter()
         .map(|param| param as &(dyn ToSql + Sync))
         .collect();
-    let rows = client.query(query.sql.as_str(), &refs).await?;
-    rows.iter().map(row_to_sql_vals).collect()
+    // The statement yields its whole result set at once, so every payload is
+    // decoded straight from the borrowed row buffer.
+    let rows = client.query(query.sql.as_str(), &bound).await?;
+    rows_to_sql_vals(rows)
 }
 
 /// Executes `query` through an asynchronous client and returns affected rows.
@@ -35,11 +40,13 @@ where
     C: tokio_postgres::GenericClient,
 {
     let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    Ok(client.execute(query.sql.as_str(), &refs).await?)
+    let affected = client
+        .execute_raw(
+            query.sql.as_str(),
+            params.iter().map(|param| param as &(dyn ToSql + Sync)),
+        )
+        .await?;
+    Ok(affected)
 }
 
 /// A [`tokio_postgres::Client`] executing RURQE queries asynchronously.

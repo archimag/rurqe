@@ -7,20 +7,25 @@ use rurqe_core::query::{
     TransactionalConnection,
 };
 
-use super::types::{row_to_sql_vals, PgError, SqlValParam};
+use super::types::{rows_to_sql_vals, PgError, SqlValParam};
 
 /// Executes `query` through a synchronous client without decoding rows.
 pub(crate) fn fetch_raw_sync(
     client: &mut postgres::Client,
     query: &BuiltQuery,
 ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+    // The driver takes its parameters as one slice of borrowed trait objects, so
+    // the wrappers around the bound values are re-borrowed instead of their
+    // payloads being copied into a buffer of their own.
     let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
+    let bound: Vec<&(dyn ToSql + Sync)> = params
         .iter()
         .map(|param| param as &(dyn ToSql + Sync))
         .collect();
-    let rows = client.query(query.sql.as_str(), &refs)?;
-    rows.iter().map(row_to_sql_vals).collect()
+    // The statement yields its whole result set at once, so every payload is
+    // decoded straight from the borrowed row buffer.
+    let rows = client.query(query.sql.as_str(), &bound)?;
+    rows_to_sql_vals(rows)
 }
 
 /// Executes `query` through a synchronous client and returns affected rows.
@@ -29,11 +34,14 @@ pub(crate) fn execute_raw_sync(
     query: &BuiltQuery,
 ) -> Result<u64, PgError> {
     let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let refs: Vec<&(dyn ToSql + Sync)> = params
+    // This driver offers no iterator form of `execute`, so the bound values are
+    // handed over as one slice of borrowed parameters.
+    let bound: Vec<&(dyn ToSql + Sync)> = params
         .iter()
         .map(|param| param as &(dyn ToSql + Sync))
         .collect();
-    Ok(client.execute(query.sql.as_str(), &refs)?)
+    let affected = client.execute(query.sql.as_str(), &bound)?;
+    Ok(affected)
 }
 
 /// A [`postgres::Client`] executing RURQE queries through the synchronous driver.
