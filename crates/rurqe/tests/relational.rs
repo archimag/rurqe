@@ -1553,13 +1553,15 @@ mod postgres_extension_traits {
         );
         assert_eq!(member.params, vec![SqlVal::Text("owner".to_owned())]);
 
+        // An array index is part of the statement as an integer literal, so the
+        // operator resolves to its `integer` overload on the server.
         let indexed = select_from::<Postgres<Pg16>, Doc>()
             .select((DocMetadata.json_get(0i32),))
             .build()
             .expect("valid query");
 
-        assert_eq!(indexed.sql, "SELECT (\"metadata\" -> $1) FROM \"docs\"");
-        assert_eq!(indexed.params, vec![SqlVal::I32(0)]);
+        assert_eq!(indexed.sql, "SELECT (\"metadata\" -> 0) FROM \"docs\"");
+        assert!(indexed.params.is_empty());
     }
 
     #[cfg(feature = "serde_json")]

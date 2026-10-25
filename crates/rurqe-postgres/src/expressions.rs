@@ -314,11 +314,26 @@ impl From<i32> for JsonKey {
 }
 
 impl JsonKey {
-    /// The bound parameter value the operator reads the path component from.
-    fn to_bindable(&self) -> SqlVal {
+    /// The operand the extraction operator reads the path component from.
+    fn to_operand(&self) -> ExprKind {
         match self {
-            JsonKey::Key(key) => SqlVal::Text(key.clone()),
-            JsonKey::Index(index) => SqlVal::I32(*index),
+            // An object key binds as a parameter, which the server types as the
+            // `text` operand of the operator.
+            JsonKey::Key(key) => ExprKind::Value(SqlVal::Text(key.clone())),
+            // An array index is written into the statement as an integer literal.
+            // The statement is sent without parameter type hints, so an untyped
+            // parameter of `->` / `->>` is resolved against both the `text` and
+            // the `integer` overload of the operator, and the server types the
+            // unknown argument as `text`. The adapter then refuses to encode the
+            // `i32` index for a text column, so the extraction aborts at bind
+            // time. A literal carries its `integer` type to the server, which
+            // selects the `integer` overload before any parameter is encoded.
+            // The literal is built from an `i32`, so it holds nothing but digits
+            // and a sign.
+            JsonKey::Index(index) => ExprKind::Raw {
+                fragments: vec![index.to_string()],
+                params: Vec::new(),
+            },
         }
     }
 }
@@ -326,12 +341,15 @@ impl JsonKey {
 /// Builds a `(<column> -> <path>)` extraction over the JSONB column `C`.
 ///
 /// The column stays symbolic, so its reference is qualified against the relations
-/// of the statement the extraction belongs to and quoted by the dialect.
+/// of the statement the extraction belongs to and quoted by the dialect. An object
+/// key is read from a bound parameter, while an array index is carried as an
+/// integer literal of the statement, so the server picks the `integer` overload of
+/// the operator instead of typing a parameter as `text`.
 fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Table> {
     Expr::from_kind(ExprKind::DialectOp {
         op,
         lhs: Box::new(C::expr_kind()),
-        rhs: Box::new(ExprKind::Value(key.to_bindable())),
+        rhs: Box::new(key.to_operand()),
     })
 }
 
@@ -850,15 +868,27 @@ mod tests {
 
     #[test]
     fn json_extraction_reads_an_array_index() {
+        // The index reaches the server as an integer literal, so the operator
+        // resolves to its `integer` overload instead of typing a bound parameter
+        // as `text` and rejecting the encoded `i32` at bind time.
         let value = DocMetadata.json_get(0i32);
         let (sql, params) = render(value.kind(), &[TableRef::plain("docs")]);
-        assert_eq!(sql, "(\"metadata\" -> $1)");
-        assert_eq!(params, vec![SqlVal::I32(0)]);
+        assert_eq!(sql, "(\"metadata\" -> 0)");
+        assert!(params.is_empty());
 
         let text = DocMetadata.json_get_text(JsonKey::Index(1));
         let (sql, params) = render(text.kind(), &[TableRef::plain("docs")]);
-        assert_eq!(sql, "(\"metadata\" ->> $1)");
-        assert_eq!(params, vec![SqlVal::I32(1)]);
+        assert_eq!(sql, "(\"metadata\" ->> 1)");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn json_extraction_keeps_a_negative_index_a_signed_integer_literal() {
+        let text = DocMetadata.json_get_text(-1i32);
+        let (sql, params) = render(text.kind(), &[TableRef::plain("docs")]);
+
+        assert_eq!(sql, "(\"metadata\" ->> -1)");
+        assert!(params.is_empty());
     }
 
     #[test]
