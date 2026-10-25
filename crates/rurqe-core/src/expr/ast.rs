@@ -283,6 +283,74 @@ impl Subquery {
     /// rendered expression does — is rendered through the crate-internal
     /// [`StatementRef`](crate::expr::StatementRef) view instead, so its clauses are
     /// not validated twice.
+    ///
+    /// # Rejection at render time
+    ///
+    /// Wrapping a hand-assembled statement in a [`Subquery`] does not lift it out
+    /// of the pre-flight pass, so a statement whose `FROM` and `JOIN` address one
+    /// relation is rejected here just as it is at the top level:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::{ExprKind, JoinAst, JoinKind, SelectAst, Subquery};
+    /// use rurqe_core::query::BuildError;
+    /// use rurqe_core::schema::TableRef;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, _index: usize) {
+    ///         out.push('?');
+    ///     }
+    /// }
+    ///
+    /// let ast = SelectAst {
+    ///     ctes: Vec::new(),
+    ///     distinct: false,
+    ///     distinct_on: Vec::new(),
+    ///     projections: vec![ExprKind::Column {
+    ///         table: "orders",
+    ///         name: "id",
+    ///     }],
+    ///     from: Some(TableRef::plain("orders")),
+    ///     joins: vec![JoinAst {
+    ///         kind: JoinKind::Inner,
+    ///         table: TableRef::plain("orders"),
+    ///         lateral: None,
+    ///         on: None,
+    ///     }],
+    ///     derived: Vec::new(),
+    ///     filter: None,
+    ///     group_by: Vec::new(),
+    ///     having: None,
+    ///     order_by: Vec::new(),
+    ///     limit: None,
+    ///     offset: None,
+    ///     set_operations: Vec::new(),
+    ///     compound_order_by: Vec::new(),
+    ///     compound_limit: None,
+    ///     compound_offset: None,
+    ///     lock: None,
+    /// };
+    ///
+    /// let nested = Subquery::new(ast);
+    ///
+    /// let mut sql = String::new();
+    /// let mut params = Vec::new();
+    ///
+    /// assert_eq!(
+    ///     nested.render::<MockDialect>(&mut sql, &mut params),
+    ///     Err(BuildError::DuplicateRelation { name: "orders" })
+    /// );
+    /// assert!(sql.is_empty());
+    /// assert!(params.is_empty());
+    /// ```
     pub fn render<D: Dialect>(
         &self,
         sql: &mut String,

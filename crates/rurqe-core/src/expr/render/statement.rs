@@ -310,6 +310,135 @@ impl SelectAst {
     /// pre-flight pass already accepted — as the fluent builders do — goes through
     /// the crate-internal [`StatementRef`] view instead, so the clauses are not
     /// validated twice.
+    ///
+    /// # Rejection at render time
+    ///
+    /// A statement assembled directly from AST data passes the same pre-flight
+    /// check as one built through the fluent builders, so a `FROM` clause and a
+    /// `JOIN` addressing one relation are rejected as soon as it is rendered, and
+    /// none of its SQL reaches the buffers:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::{ExprKind, JoinAst, JoinKind, SelectAst};
+    /// use rurqe_core::query::BuildError;
+    /// use rurqe_core::schema::TableRef;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, _index: usize) {
+    ///         out.push('?');
+    ///     }
+    /// }
+    ///
+    /// let ast = SelectAst {
+    ///     ctes: Vec::new(),
+    ///     distinct: false,
+    ///     distinct_on: Vec::new(),
+    ///     projections: vec![ExprKind::Column {
+    ///         table: "orders",
+    ///         name: "id",
+    ///     }],
+    ///     from: Some(TableRef::plain("orders")),
+    ///     joins: vec![JoinAst {
+    ///         kind: JoinKind::Inner,
+    ///         table: TableRef::plain("orders"),
+    ///         lateral: None,
+    ///         on: None,
+    ///     }],
+    ///     derived: Vec::new(),
+    ///     filter: None,
+    ///     group_by: Vec::new(),
+    ///     having: None,
+    ///     order_by: Vec::new(),
+    ///     limit: None,
+    ///     offset: None,
+    ///     set_operations: Vec::new(),
+    ///     compound_order_by: Vec::new(),
+    ///     compound_limit: None,
+    ///     compound_offset: None,
+    ///     lock: None,
+    /// };
+    ///
+    /// let mut sql = String::new();
+    /// let mut params = Vec::new();
+    ///
+    /// assert_eq!(
+    ///     ast.render::<MockDialect>(&mut sql, &mut params),
+    ///     Err(BuildError::DuplicateRelation { name: "orders" })
+    /// );
+    /// assert!(sql.is_empty());
+    /// assert!(params.is_empty());
+    /// ```
+    ///
+    /// A `DISTINCT ON (...)` clause combined with a row-level lock is rejected the
+    /// same way, because PostgreSQL refuses to deduplicate a statement that also
+    /// claims the rows it read:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::{
+    ///     ExprKind, LockClause, LockStrength, OrderCriterion, OrderDirection, SelectAst,
+    /// };
+    /// use rurqe_core::query::BuildError;
+    /// use rurqe_core::schema::TableRef;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, _index: usize) {
+    ///         out.push('?');
+    ///     }
+    /// }
+    ///
+    /// let customer = ExprKind::Column {
+    ///     table: "orders",
+    ///     name: "customer_id",
+    /// };
+    ///
+    /// let ast = SelectAst {
+    ///     ctes: Vec::new(),
+    ///     distinct: false,
+    ///     distinct_on: vec![customer.clone()],
+    ///     projections: vec![customer.clone()],
+    ///     from: Some(TableRef::plain("orders")),
+    ///     joins: Vec::new(),
+    ///     derived: Vec::new(),
+    ///     filter: None,
+    ///     group_by: Vec::new(),
+    ///     having: None,
+    ///     order_by: vec![OrderCriterion::new(customer, OrderDirection::Desc)],
+    ///     limit: None,
+    ///     offset: None,
+    ///     set_operations: Vec::new(),
+    ///     compound_order_by: Vec::new(),
+    ///     compound_limit: None,
+    ///     compound_offset: None,
+    ///     lock: Some(LockClause::new(LockStrength::Update)),
+    /// };
+    ///
+    /// let mut sql = String::new();
+    /// let mut params = Vec::new();
+    ///
+    /// assert_eq!(
+    ///     ast.render::<MockDialect>(&mut sql, &mut params),
+    ///     Err(BuildError::DistinctOnWithLock)
+    /// );
+    /// assert!(sql.is_empty());
+    /// ```
     pub fn render<D: Dialect>(
         &self,
         sql: &mut String,
