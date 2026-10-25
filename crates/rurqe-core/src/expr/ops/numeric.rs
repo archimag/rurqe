@@ -168,6 +168,14 @@ where
 /// The last two cases are what keeps the projection of a grouped query sound: the
 /// arithmetic reads a column the query neither groups by nor aggregates, which
 /// SQL rejects outside the `GROUP BY` clause.
+///
+/// A combination is never the aggregate call an operand ends with: the `DISTINCT`
+/// and `FILTER (WHERE ...)` clauses attach to a call, so the expression an
+/// operator builds over one — a bare call, or a call restricted by a filter that
+/// stays recorded in its tree — degrades the specific [`DirectAggregate`] and
+/// [`FilteredAggregate`] markers to the general [`Aggregate`] one. The marker a
+/// pair resolves to therefore states that the combination collapses the rows of
+/// its group while leaving both clauses reachable on the call alone.
 #[diagnostic::on_unimplemented(
     message = "the aggregation marker `{Self}` cannot be combined with a `{RhsAggr}` operand of scope `{RhsScope}`",
     label = "unsupported arithmetic operand",
@@ -194,61 +202,42 @@ impl<RhsScope> CombineAggr<Aggregate, RhsScope> for NonAggregate {
     type Output = NonAggregate;
 }
 
-// Two aggregates collapse their group.
-impl<RhsScope> CombineAggr<Aggregate, RhsScope> for Aggregate {
-    type Output = Aggregate;
-}
-
-// A direct aggregate call combined with another aggregate still collapses the
-// group, while the combination is no longer the call itself, so the result
-// degrades to the general marker.
-impl<RhsScope> CombineAggr<Aggregate, RhsScope> for DirectAggregate {
-    type Output = Aggregate;
-}
-
-impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for DirectAggregate {
-    type Output = Aggregate;
-}
-
-// A filtered aggregate keeps its filter recorded, so it stays the most specific
-// marker of the combination whichever side of the operator it sits on.
-impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for DirectAggregate {
-    type Output = FilteredAggregate;
-}
-
-impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for Aggregate {
-    type Output = Aggregate;
-}
-
-impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for FilteredAggregate {
-    type Output = FilteredAggregate;
-}
-
-// A per-row operand on the left reads a column of the group, so a direct call on
-// the right stops collapsing it.
+// A per-row operand on the left reads a column of the group, so a direct or a
+// filtered call on the right stops collapsing it as well.
 impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for NonAggregate {
     type Output = NonAggregate;
 }
 
-// A filtered aggregate collapses its group like a plain one, so combining it
-// with another aggregate stays an aggregate while keeping the filter recorded.
-impl<RhsScope> CombineAggr<Aggregate, RhsScope> for FilteredAggregate {
-    type Output = FilteredAggregate;
-}
-
-impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for Aggregate {
-    type Output = FilteredAggregate;
-}
-
-impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for FilteredAggregate {
-    type Output = FilteredAggregate;
-}
-
-// A filtered aggregate on the left combined with a per-row operand computes one
-// value per row, exactly like a plain aggregate does.
 impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for NonAggregate {
     type Output = NonAggregate;
 }
+
+// A combination is never the aggregate call an operand ends with: the `DISTINCT`
+// and `FILTER (WHERE ...)` clauses attach to a call, so an expression built over
+// one — a bare call, or a call restricted by a filter that stays recorded in its
+// tree — degrades to the general marker whichever side of the operator the call
+// sits on. The pairing therefore covers the whole matrix of the aggregate
+// markers: the combination keeps collapsing the rows of its group while neither
+// clause stays reachable on it.
+macro_rules! impl_aggregate_pair_combine {
+    ($($aggr:ident),+) => {
+        $(
+            impl<RhsScope> CombineAggr<Aggregate, RhsScope> for $aggr {
+                type Output = Aggregate;
+            }
+
+            impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for $aggr {
+                type Output = Aggregate;
+            }
+
+            impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for $aggr {
+                type Output = Aggregate;
+            }
+        )+
+    };
+}
+
+impl_aggregate_pair_combine!(Aggregate, DirectAggregate, FilteredAggregate);
 
 // A value referencing no table is the same in every row of a group, so it leaves
 // an aggregate standing.
@@ -263,10 +252,13 @@ impl CombineAggr<NonAggregate, ()> for DirectAggregate {
     type Output = Aggregate;
 }
 
-// The same constant keeps a filtered aggregate standing, so a filtered aggregate
-// scaled by a value stays projectable from a grouped query.
+// A constant scales the whole call, but the combination is no longer the call
+// itself, so a filtered aggregate scaled by a value degrades to the general
+// marker as well: it keeps collapsing its group and stays projectable from a
+// grouped query, while the filter recorded in its tree belongs to the call
+// instead of the combination that consumed it.
 impl CombineAggr<NonAggregate, ()> for FilteredAggregate {
-    type Output = FilteredAggregate;
+    type Output = Aggregate;
 }
 
 // A dropped scope names a column read that is checked against the enclosing

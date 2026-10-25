@@ -14,9 +14,12 @@
 //! keeps collapsing its group and therefore stays projectable from a grouped
 //! query, but its root node is the operator combining the calls, so SQL does not
 //! allow `DISTINCT` or `FILTER` on it and neither method exists for it.
-//! Restricting an aggregate with a `FILTER (WHERE ...)` clause switches it to the
-//! [`FilteredAggregate`] marker, which keeps accepting the clauses so repeated
-//! calls accumulate their conditions.
+//! Restricting an aggregate call with a `FILTER (WHERE ...)` clause switches it
+//! to the [`FilteredAggregate`] marker, which keeps the clauses reachable so
+//! repeated calls accumulate their conditions. The marker describes the call it
+//! restricts and nothing built over it: the filter stays recorded in the tree of
+//! the call, so a composite expression over a restricted call degrades to the
+//! general marker exactly like one over a bare call.
 
 use super::{Aggregate, Expr};
 use crate::expr::ast::{ExprKind, MergeDialect, MergedDialect};
@@ -110,12 +113,15 @@ impl<T> Expr<T, ()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DirectAggregate;
 
-/// Marker of an aggregate expression restricted by a `FILTER (WHERE ...)` clause.
+/// Marker of an aggregate call restricted by a `FILTER (WHERE ...)` clause.
 ///
-/// A filtered aggregate collapses the rows of its group exactly like a plain
-/// aggregate; the marker only records that the aggregate no longer reads every
-/// row of the group. Arithmetic combinations with constants preserve it, so a
-/// filtered aggregate scaled by a value stays projectable from a grouped query.
+/// The marker describes the call it restricts: the call collapses the rows of its
+/// group while skipping the rows its filter excludes, and repeated
+/// [`filter_where`](Expr::filter_where) calls accumulate their conditions on it.
+/// It never survives a composition: the clause belongs to the call itself, so an
+/// expression combining a restricted call — an arithmetic combination, a scalar
+/// function, a `CASE` branch — degrades to the general [`Aggregate`] marker,
+/// which keeps collapsing the group while offering no clause of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FilteredAggregate;
 
@@ -201,8 +207,8 @@ where
     /// The clause belongs to the aggregate call itself, so the method exists on
     /// [`DirectAggregate`] and [`FilteredAggregate`] only, and the produced
     /// expression carries [`FilteredAggregate`], so the projection and filtering
-    /// rules of a grouped query keep accepting it while arithmetic combinations
-    /// with constants preserve the marker.
+    /// rules of a grouped query keep accepting it and repeated calls keep
+    /// accumulating their conditions on the same call.
     ///
     /// ```
     /// use rurqe_core::expr::{sum, Expr, ExprKind};
@@ -238,6 +244,24 @@ where
     /// // Fails to compile: the arithmetic combination is an `Aggregate`, not the
     /// // aggregate call itself, so it takes no `FILTER` clause.
     /// let _ = (sum(OrderTotal) + 1.0)
+    ///     .filter_where(Expr::column::<OrderTotal>().gt(0.0));
+    /// ```
+    ///
+    /// A restricted call degrades exactly like a bare one, because the filter
+    /// recorded in its tree belongs to the call and to nothing built over it:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::expr::{sum, Expr};
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: the scaled filtered call is an `Aggregate` as well,
+    /// // so the `FILTER` clause it would take names no call to restrict.
+    /// let _ = (sum(OrderTotal).filter_where(Expr::column::<OrderTotal>().gt(0.0)) * 1.0)
     ///     .filter_where(Expr::column::<OrderTotal>().gt(0.0));
     /// ```
     pub fn filter_where<P, PredAggr, PredD>(

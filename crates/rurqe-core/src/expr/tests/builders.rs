@@ -690,12 +690,15 @@ fn arithmetic_preserves_the_aggregation_marker() {
 }
 
 #[test]
-fn arithmetic_preserves_a_filtered_aggregate_next_to_a_constant() {
+fn arithmetic_degrades_a_filtered_aggregate_next_to_a_constant() {
     let filtered = sum(OrderTotal).filter_where(OrderQty.gt(0i64));
 
     // A constant operand is the same in every row of the group, so the scaled
-    // filtered aggregate stays projectable from a grouped query.
-    let scaled: Expr<f64, _, FilteredAggregate> = filtered * 2.0f64;
+    // filtered aggregate keeps collapsing its group and stays projectable from
+    // a grouped query. The combination is no longer the call itself, though, so
+    // it degrades to the general `Aggregate` marker and takes no `FILTER` clause
+    // of its own.
+    let scaled: Expr<f64, _, Aggregate> = filtered * 2.0f64;
     assert!(matches!(
         scaled.kind(),
         ExprKind::Binary {
@@ -830,11 +833,11 @@ fn arithmetic_preserves_the_filter_of_a_direct_aggregate() {
 fn the_modifier_markers_separate_the_call_from_a_composite_expression() {
     // The call carries the marker that gates `distinct` and `filter_where` ...
     let call: Expr<f64, Order, DirectAggregate> = sum(OrderTotal);
-    // ... a filtered call keeps a marker of its own, which a constant preserves ...
+    // ... a filtered call keeps a marker of its own ...
     let filtered: Expr<f64, _, FilteredAggregate> = call.filter_where(OrderQty.gt(0i64));
-    // ... while combining a plain call degrades the expression to the general
+    // ... while combining either call degrades the expression to the general
     // grouping marker: it still collapses its group, but offers no modifier.
-    let scaled_filtered: Expr<f64, _, FilteredAggregate> = filtered * 2.0f64;
+    let scaled_filtered: Expr<f64, _, Aggregate> = filtered * 2.0f64;
     let scaled_call: Expr<f64, _, Aggregate> = sum(OrderTotal) * 2.0f64;
 
     assert!(matches!(
@@ -851,6 +854,48 @@ fn the_modifier_markers_separate_the_call_from_a_composite_expression() {
             ..
         }
     ));
+}
+
+#[test]
+fn compositions_fold_aggregate_calls_into_the_general_marker() {
+    // Whatever markers the operands carry, a combination is never the aggregate
+    // call itself, so every composition written over aggregates — arithmetic, a
+    // scalar function, a `CASE` branch — folds its operands into the general
+    // `Aggregate` marker and keeps `distinct` and `filter_where` off the
+    // produced tree.
+    fn assert_general<T, Scope, D>(_: Expr<T, Scope, Aggregate, D>) {}
+
+    // A composition consumes the expressions it folds, so every assertion
+    // builds its operands freshly instead of sharing one moved binding. The
+    // return types pin the markers and the merged scope of each call as well.
+    fn filtered() -> Expr<f64, (Order, Order), FilteredAggregate> {
+        sum(OrderTotal).filter_where(OrderQty.gt(0i64))
+    }
+
+    fn distinct() -> Expr<f64, Order, DirectAggregate> {
+        sum_distinct(OrderTotal)
+    }
+
+    // Arithmetic pairs cover the aggregate markers on either side of the
+    // operator, including the already-combined general one.
+    assert_general(sum(OrderTotal) + sum(OrderTax));
+    assert_general(sum(OrderTotal) + filtered());
+    assert_general(distinct() + filtered());
+    assert_general(filtered() + distinct());
+    assert_general(filtered() + filtered());
+    assert_general((sum(OrderTotal) + 1.0f64) + filtered());
+
+    // Scalar functions fold their aggregate arguments the same way.
+    assert_general(coalesce(filtered(), 0.0f64));
+    assert_general(nullif(filtered(), sum(OrderTax)));
+
+    // CASE branches fold the markers of their conditions and results as well.
+    assert_general(
+        Expr::<f64>::case()
+            .when(filtered().gt(0.0f64), sum(OrderTotal))
+            .else_(0.0f64)
+            .end(),
+    );
 }
 
 #[test]
