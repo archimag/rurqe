@@ -174,16 +174,27 @@ impl<T: Table> ConflictTargetScope<T> for () {}
 
 impl<T: Table> ConflictTargetScope<T> for Unscoped {}
 
-// A predicate reading the inserted table, and one comparing two of its columns.
+// A predicate reading the inserted table, and one comparing two or three of its
+// columns: a chain of `AND`-combined conditions folds through the `MergeScope`
+// lattice, which appends every table it merges.
 impl<T: Table> ConflictTargetScope<T> for T {}
 
 impl<T: Table> ConflictTargetScope<T> for (T, T) {}
+
+impl<T: Table> ConflictTargetScope<T> for (T, T, T) {}
 
 /// Statically asserts that an update predicate reads the inserted table and the
 /// row the statement proposed for it.
 ///
 /// Comparing the stored row with the proposed one is the canonical conditional
 /// update, so both relations are in scope of the trailing predicate.
+///
+/// The trait recognises the scopes a chain of up to three `AND`-combined
+/// conditions builds from those two relations: `{T}`, `Excluded<T>`, the empty
+/// scope, the dropped-scope marker, and the two- and three-element tuples the
+/// [`MergeScope`](crate::expr::MergeScope) lattice folds them into. A longer
+/// chain falls outside those bounds, so it does not compile instead of widening
+/// the predicate past what the clause can resolve.
 #[diagnostic::on_unimplemented(
     message = "the update predicate of table `{T}` reads a relation it cannot reach",
     label = "only columns of `{T}` and its `EXCLUDED` row are in scope of the update predicate",
@@ -204,6 +215,19 @@ impl<T: Table> ConflictUpdateScope<T> for (T, T) {}
 impl<T: Table> ConflictUpdateScope<T> for (T, Excluded<T>) {}
 
 impl<T: Table> ConflictUpdateScope<T> for (Excluded<T>, T) {}
+
+// A chain of three conditions folds its operands through the `MergeScope`
+// lattice one at a time, so each association of the stored row and the proposed
+// one produces a three-element scope. The proposed row is idempotent under
+// merging, so a chain never carries it twice and `(Excluded<T>, Excluded<T>, ..)`
+// has no form here.
+impl<T: Table> ConflictUpdateScope<T> for (T, T, T) {}
+
+impl<T: Table> ConflictUpdateScope<T> for (T, T, Excluded<T>) {}
+
+impl<T: Table> ConflictUpdateScope<T> for (T, Excluded<T>, T) {}
+
+impl<T: Table> ConflictUpdateScope<T> for (Excluded<T>, T, T) {}
 
 /// Marker of an `ON CONFLICT` clause that records no update predicate yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,6 +520,56 @@ mod tests {
         // whichever side of the comparison names them.
         assert_update_scope::<(User, Excluded<User>)>();
         assert_update_scope::<(Excluded<User>, User)>();
+    }
+
+    #[test]
+    fn a_three_term_target_predicate_reads_the_inserted_table() {
+        // Comparing three columns of the inserted table reads the same table
+        // three times, which the lattice folds into one three-element scope.
+        assert_target_scope::<(User, User, User)>();
+    }
+
+    #[test]
+    fn three_term_update_predicates_keep_the_stored_and_proposed_rows() {
+        // A chain of `AND`-combined conditions reads the stored row and the
+        // proposed one side by side, whichever association the chain builds.
+        assert_update_scope::<(User, User, User)>();
+        assert_update_scope::<(User, User, Excluded<User>)>();
+        assert_update_scope::<(User, Excluded<User>, User)>();
+        assert_update_scope::<(Excluded<User>, User, User)>();
+    }
+
+    #[test]
+    fn a_three_term_update_predicate_renders_both_relations() {
+        use crate::dml::excluded;
+
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .update_where(
+                UserName
+                    .eq("stored")
+                    .and(excluded(UserName).eq("proposed"))
+                    .and(UserName.ne("root")),
+            )
+            .do_update(UserName::set("upserted"))
+            .build().expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $3 WHERE (((\"name\" = $4) AND (EXCLUDED.\"name\" = $5)) AND (\"name\" <> $6))"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::Text("upserted".to_owned()),
+                SqlVal::Text("stored".to_owned()),
+                SqlVal::Text("proposed".to_owned()),
+                SqlVal::Text("root".to_owned()),
+            ]
+        );
     }
 
     #[test]

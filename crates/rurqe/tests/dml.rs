@@ -478,6 +478,49 @@ fn a_partial_conflict_target_restricts_a_do_nothing_clause() {
 }
 
 #[test]
+fn the_update_predicate_chains_the_stored_row_with_the_proposed_one() {
+    // The clause reads the stored row and the row the statement proposed for it
+    // in one predicate, so an upsert rewrites a conflicting row only when both
+    // relations agree. The scope of the chain is the three-element tuple the
+    // `MergeScope` lattice folds the conditions into.
+    let built = insert_into::<Postgres, User>()
+        .values((
+            UserId::set(1i64),
+            UserName::set("root"),
+            UserActive::set(false),
+        ))
+        .on_conflict((UserId,))
+        .update_where(
+            UserName
+                .eq("root")
+                .and(excluded(UserName).eq("root"))
+                .and(UserActive.eq(false)),
+        )
+        .do_update(UserName::set("upserted"))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\", \"active\") VALUES ($1, $2, $3) \
+         ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $4 \
+         WHERE (((\"name\" = $5) AND (EXCLUDED.\"name\" = $6)) AND (\"active\" = $7))"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::I64(1),
+            SqlVal::Text("root".to_owned()),
+            SqlVal::Bool(false),
+            SqlVal::Text("upserted".to_owned()),
+            SqlVal::Text("root".to_owned()),
+            SqlVal::Text("root".to_owned()),
+            SqlVal::Bool(false),
+        ]
+    );
+}
+
+#[test]
 fn an_assignment_renders_an_arithmetic_expression() {
     // The database computes the right-hand side, so the column keeps its own
     // value in the statement instead of being read and rewritten by the client.
