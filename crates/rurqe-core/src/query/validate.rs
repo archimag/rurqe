@@ -25,6 +25,18 @@ pub enum BuildError {
         /// The effective relation name that appears more than once.
         name: &'static str,
     },
+    /// A Common Table Expression was declared twice under one name.
+    ///
+    /// The engine binds one materialised relation per name a statement declares
+    /// in its `WITH` clause, so two declarations sharing a name render a
+    /// statement the engine rejects — PostgreSQL reports `WITH query name "..."
+    /// specified more than once`. Naming each expression distinctly through
+    /// `cte_named` or a distinct table marker in `as_cte` keeps the clause
+    /// well-formed.
+    DuplicateCte {
+        /// The CTE name that appears more than once.
+        name: &'static str,
+    },
     /// The leading `ORDER BY` expressions do not match the `DISTINCT ON` expressions.
     DistinctOnOrderMismatch {
         /// The 0-based position of the first mismatched ordering criterion.
@@ -104,6 +116,13 @@ impl fmt::Display for BuildError {
                     f,
                     "duplicate unaliased relation `{name}` in query scope; \
                      each occurrence of a table must have a distinct alias via `table_alias!` or `.as_alias(...)`"
+                )
+            }
+            BuildError::DuplicateCte { name } => {
+                write!(
+                    f,
+                    "duplicate CTE name `{name}` in the WITH clause; \
+                     name each Common Table Expression distinctly via `cte_named` or a distinct table marker in `as_cte`"
                 )
             }
             BuildError::DistinctOnOrderMismatch { position } => {
@@ -224,6 +243,7 @@ impl<'a> StatementRef<'a> {
     /// the clauses it validates.
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
+        self.validate_cte_names()?;
         self.validate_distinct_on_prefix()?;
         self.validate_distinct_on_lock()?;
         self.validate_distinct_order()?;
@@ -300,6 +320,29 @@ impl<'a> StatementRef<'a> {
         for join in self.joins {
             reject_shadowed_derived(&join.table, self.derived)?;
             register_relation(&mut relations, join.table)?;
+        }
+        Ok(())
+    }
+
+    /// Rejects a statement whose `WITH` clause declares one name twice.
+    ///
+    /// The engine binds one materialised relation per declared name, so two
+    /// entries sharing a name render a statement PostgreSQL refuses with `WITH
+    /// query name "..." specified more than once`. The names are plain data
+    /// recorded on the statement, so the rule is checked here and surfaces as
+    /// [`BuildError::DuplicateCte`] before any SQL is dispatched.
+    ///
+    /// A name matching a `FROM` or `JOIN` relation stays legal: SQL resolves
+    /// the references of a statement through the entries of its `WITH` clause
+    /// first, so a CTE shadowing a stored table keeps the statement
+    /// well-formed — only the declared CTE names are compared with each other.
+    fn validate_cte_names(&self) -> Result<(), BuildError> {
+        let mut seen: Vec<&'static str> = Vec::with_capacity(self.ctes.len());
+        for cte in self.ctes {
+            if seen.contains(&cte.name) {
+                return Err(BuildError::DuplicateCte { name: cte.name });
+            }
+            seen.push(cte.name);
         }
         Ok(())
     }
@@ -615,7 +658,7 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::{AggregateFunc, OrderCriterion, OrderDirection};
+    use crate::expr::{AggregateFunc, CteAst, OrderCriterion, OrderDirection};
 
     #[test]
     fn build_error_display_duplicate_relation() {
@@ -623,6 +666,47 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("duplicate unaliased relation `users`"));
         assert!(msg.contains("table_alias!"));
+    }
+
+    #[test]
+    fn build_error_display_duplicate_cte() {
+        let err = BuildError::DuplicateCte {
+            name: "active_users",
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate CTE name `active_users`"));
+        assert!(msg.contains("cte_named"));
+    }
+
+    #[test]
+    fn a_statement_declaring_one_cte_name_twice_is_rejected() {
+        let mut ast = empty_ast();
+        ast.ctes.push(cte("active_users"));
+        ast.ctes.push(cte("active_users"));
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::DuplicateCte {
+                name: "active_users"
+            })
+        );
+    }
+
+    #[test]
+    fn a_statement_declaring_differently_named_ctes_is_accepted() {
+        let mut ast = empty_ast();
+        ast.ctes.push(cte("active_users"));
+        ast.ctes.push(cte("large_orders"));
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    /// Declares an empty statement as a Common Table Expression named `name`.
+    fn cte(name: &'static str) -> CteAst {
+        CteAst {
+            name,
+            query: empty_ast(),
+        }
     }
 
     #[test]

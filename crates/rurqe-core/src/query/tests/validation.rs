@@ -1,6 +1,8 @@
 //! Pre-flight validation of the assembled statement.
 
-use super::{MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId};
+use super::{
+    MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId, User, UserId, UserName,
+};
 use crate::expr::{LockClause, LockStrength};
 use crate::query::*;
 use crate::schema::AliasedCol;
@@ -123,5 +125,52 @@ fn a_locked_statement_without_distinct_on_stays_valid() {
     assert_eq!(
         built.sql,
         "SELECT \"id\" FROM \"orders\" FOR UPDATE SKIP LOCKED"
+    );
+}
+
+#[test]
+fn a_duplicate_named_cte_is_rejected_before_rendering() {
+    let first = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName));
+    let second = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,));
+
+    let query = SelectQuery::<MockDialect>::new()
+        .with(cte_named("active_users", first))
+        .with(cte_named("active_users", second))
+        .from::<User>()
+        .select((UserId,));
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DuplicateCte {
+            name: "active_users"
+        })
+    );
+}
+
+#[test]
+fn two_differently_named_ctes_are_accepted() {
+    let active = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName));
+    let large = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,));
+
+    let built = SelectQuery::<MockDialect>::new()
+        .with(cte_named("active_users", active))
+        .with(cte_named("large_orders", large))
+        .from::<User>()
+        .select((UserId,))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "WITH \"active_users\" AS (SELECT \"id\", \"name\" FROM \"users\"), \
+         \"large_orders\" AS (SELECT \"id\" FROM \"orders\") SELECT \"id\" FROM \"users\""
     );
 }

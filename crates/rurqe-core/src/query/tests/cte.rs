@@ -99,3 +99,24 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
     );
     assert_eq!(built.params, vec![SqlVal::F64(50.0), SqlVal::F64(500.0)]);
 }
+
+#[test]
+fn a_cte_declared_twice_under_one_table_marker_is_rejected() {
+    let first = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,));
+    let second = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,));
+
+    let query = SelectQuery::<MockDialect>::new()
+        .with(first.as_cte::<User>())
+        .with(second.as_cte::<User>())
+        .from::<Order>()
+        .select((OrderId,));
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DuplicateCte { name: "users" })
+    );
+}
