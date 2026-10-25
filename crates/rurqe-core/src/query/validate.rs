@@ -406,6 +406,14 @@ impl<'a> StatementRef<'a> {
     /// see `validate_distinct_on_prefix` — because that clause decides which of
     /// the duplicate rows survives, so this rule stays dormant while the
     /// `DISTINCT ON` list is populated.
+    ///
+    /// The comparison runs on the canonical form of both sides — see
+    /// `equivalent_expressions` — instead of the exact node shapes the builders
+    /// happened to produce. The engine compares the expressions a statement
+    /// computes, so an alias on a projection does not hide the expression it
+    /// wraps, and a column addressed through `ExprKind::Column` matches the same
+    /// column addressed through `ExprKind::QualifiedColumn`. Comparing the raw
+    /// nodes would instead reject a statement the engine accepts.
     fn validate_distinct_order(&self) -> Result<(), BuildError> {
         if !self.distinct || !self.distinct_on.is_empty() || self.order_by.is_empty() {
             return Ok(());
@@ -416,11 +424,10 @@ impl<'a> StatementRef<'a> {
             {
                 continue;
             }
-            let ordered = projection_expr(&criterion.expr);
             if !self
                 .projections
                 .iter()
-                .any(|projection| projection_expr(projection) == ordered)
+                .any(|projection| equivalent_expressions(projection, &criterion.expr))
             {
                 return Err(BuildError::DistinctOrderNotProjected { position });
             }
@@ -521,15 +528,247 @@ fn raw_order_position(expr: &ExprKind) -> Option<u32> {
         .and_then(|fragment| fragment.parse::<u32>().ok())
 }
 
-/// Unwraps the expression a projection or an ordering criterion addresses.
+/// Unwraps every alias an expression carries, exposing the value it computes.
 ///
-/// A projection exposed under an alias wraps its expression in
-/// [`ExprKind::Aliased`], so an ordering criterion matching that expression
-/// compares against the wrapped node.
-fn projection_expr(expr: &ExprKind) -> &ExprKind {
+/// An alias only names the output column of the projection list; the expression it
+/// wraps is what the statement computes, so an `ORDER BY` criterion naming that
+/// expression has to match it rather than the wrapper. The loop drops nested
+/// wrappers as well, because a projection may be re-exposed under a second name.
+fn without_alias(expr: &ExprKind) -> &ExprKind {
+    let mut expr = expr;
+    while let ExprKind::Aliased { expr: wrapped, .. } = expr {
+        expr = wrapped;
+    }
+    expr
+}
+
+/// Resolves the `(table, column)` pair a column reference addresses.
+///
+/// One column is rendered from two node shapes — [`ExprKind::Column`] for a schema
+/// marker and [`ExprKind::QualifiedColumn`] for a reference built through a table
+/// alias — and both name the same column of the same relation, so the pair is the
+/// canonical form both shapes resolve to. A reference that is not a column at all
+/// resolves to nothing.
+fn column_reference(expr: &ExprKind) -> Option<(&'static str, &'static str)> {
     match expr {
-        ExprKind::Aliased { expr, .. } => expr,
-        other => other,
+        ExprKind::Column { table, name } => Some((table, name)),
+        ExprKind::QualifiedColumn { table, column } => Some((table, column)),
+        _ => None,
+    }
+}
+
+/// Compares two expressions in the canonical form the engine sees.
+///
+/// The engine compares the expressions a statement computes rather than the nodes a
+/// builder happened to produce, so both sides are normalised before they are
+/// matched:
+///
+/// - an alias is dropped by [`without_alias`], because it names the output column
+///   and not the computed value;
+/// - a column reference resolves to the `(table, column)` pair of
+///   [`column_reference`], so `ExprKind::Column` and `ExprKind::QualifiedColumn`
+///   naming one column match each other;
+/// - every composite node — an arithmetic operation, a function call, a `CAST`, a
+///   `CASE`, a row value, and the predicates built over them — is compared through
+///   its operands, so the normalisation reaches a column nested inside a computed
+///   projection;
+/// - a node the comparison does not decompose — a bound value, a raw fragment, a
+///   nested statement, a window call, or a nested collection — is compared
+///   structurally, which stays correct because none of those shapes hides a column
+///   reference the normalisation would have to resolve.
+fn equivalent_expressions(lhs: &ExprKind, rhs: &ExprKind) -> bool {
+    let lhs = without_alias(lhs);
+    let rhs = without_alias(rhs);
+
+    if let (Some(lhs), Some(rhs)) = (column_reference(lhs), column_reference(rhs)) {
+        return lhs == rhs;
+    }
+
+    match (lhs, rhs) {
+        (ExprKind::Row { values: lhs }, ExprKind::Row { values: rhs }) => {
+            equivalent_lists(lhs, rhs)
+        }
+        (
+            ExprKind::InList {
+                operand: lhs_operand,
+                values: lhs_values,
+                negated: lhs_negated,
+            },
+            ExprKind::InList {
+                operand: rhs_operand,
+                values: rhs_values,
+                negated: rhs_negated,
+            },
+        ) => {
+            lhs_negated == rhs_negated
+                && equivalent_expressions(lhs_operand, rhs_operand)
+                && equivalent_lists(lhs_values, rhs_values)
+        }
+        (
+            ExprKind::Binary {
+                op: lhs_op,
+                lhs: lhs_lhs,
+                rhs: lhs_rhs,
+            },
+            ExprKind::Binary {
+                op: rhs_op,
+                lhs: rhs_lhs,
+                rhs: rhs_rhs,
+            },
+        ) => {
+            lhs_op == rhs_op
+                && equivalent_expressions(lhs_lhs, rhs_lhs)
+                && equivalent_expressions(lhs_rhs, rhs_rhs)
+        }
+        (
+            ExprKind::DialectOp {
+                op: lhs_op,
+                lhs: lhs_lhs,
+                rhs: lhs_rhs,
+            },
+            ExprKind::DialectOp {
+                op: rhs_op,
+                lhs: rhs_lhs,
+                rhs: rhs_rhs,
+            },
+        ) => {
+            lhs_op == rhs_op
+                && equivalent_expressions(lhs_lhs, rhs_lhs)
+                && equivalent_expressions(lhs_rhs, rhs_rhs)
+        }
+        (
+            ExprKind::Aggregate {
+                func: lhs_func,
+                distinct: lhs_distinct,
+                arg: lhs_arg,
+                filter: lhs_filter,
+            },
+            ExprKind::Aggregate {
+                func: rhs_func,
+                distinct: rhs_distinct,
+                arg: rhs_arg,
+                filter: rhs_filter,
+            },
+        ) => {
+            lhs_func == rhs_func
+                && lhs_distinct == rhs_distinct
+                && equivalent_optional(lhs_arg.as_deref(), rhs_arg.as_deref())
+                && equivalent_optional(lhs_filter.as_deref(), rhs_filter.as_deref())
+        }
+        (
+            ExprKind::IsNull {
+                operand: lhs_operand,
+                negated: lhs_negated,
+            },
+            ExprKind::IsNull {
+                operand: rhs_operand,
+                negated: rhs_negated,
+            },
+        ) => lhs_negated == rhs_negated && equivalent_expressions(lhs_operand, rhs_operand),
+        (
+            ExprKind::Like {
+                operand: lhs_operand,
+                pattern: lhs_pattern,
+                case_insensitive: lhs_case_insensitive,
+            },
+            ExprKind::Like {
+                operand: rhs_operand,
+                pattern: rhs_pattern,
+                case_insensitive: rhs_case_insensitive,
+            },
+        ) => {
+            lhs_case_insensitive == rhs_case_insensitive
+                && equivalent_expressions(lhs_operand, rhs_operand)
+                && equivalent_expressions(lhs_pattern, rhs_pattern)
+        }
+        (
+            ExprKind::Between {
+                operand: lhs_operand,
+                low: lhs_low,
+                high: lhs_high,
+            },
+            ExprKind::Between {
+                operand: rhs_operand,
+                low: rhs_low,
+                high: rhs_high,
+            },
+        ) => {
+            equivalent_expressions(lhs_operand, rhs_operand)
+                && equivalent_expressions(lhs_low, rhs_low)
+                && equivalent_expressions(lhs_high, rhs_high)
+        }
+        (
+            ExprKind::Function {
+                name: lhs_name,
+                args: lhs_args,
+            },
+            ExprKind::Function {
+                name: rhs_name,
+                args: rhs_args,
+            },
+        ) => lhs_name == rhs_name && equivalent_lists(lhs_args, rhs_args),
+        (
+            ExprKind::Cast {
+                operand: lhs_operand,
+                target: lhs_target,
+            },
+            ExprKind::Cast {
+                operand: rhs_operand,
+                target: rhs_target,
+            },
+        ) => lhs_target == rhs_target && equivalent_expressions(lhs_operand, rhs_operand),
+        (
+            ExprKind::DistinctFrom {
+                lhs: lhs_lhs,
+                rhs: lhs_rhs,
+                negated: lhs_negated,
+            },
+            ExprKind::DistinctFrom {
+                lhs: rhs_lhs,
+                rhs: rhs_rhs,
+                negated: rhs_negated,
+            },
+        ) => {
+            lhs_negated == rhs_negated
+                && equivalent_expressions(lhs_lhs, rhs_lhs)
+                && equivalent_expressions(lhs_rhs, rhs_rhs)
+        }
+        (
+            ExprKind::Case {
+                branches: lhs_branches,
+                else_branch: lhs_else,
+            },
+            ExprKind::Case {
+                branches: rhs_branches,
+                else_branch: rhs_else,
+            },
+        ) => {
+            lhs_branches.len() == rhs_branches.len()
+                && lhs_branches.iter().zip(rhs_branches).all(|(lhs, rhs)| {
+                    equivalent_expressions(&lhs.condition, &rhs.condition)
+                        && equivalent_expressions(&lhs.result, &rhs.result)
+                })
+                && equivalent_optional(lhs_else.as_deref(), rhs_else.as_deref())
+        }
+        (lhs, rhs) => lhs == rhs,
+    }
+}
+
+/// Compares two expression lists element-wise in their canonical form.
+fn equivalent_lists(lhs: &[ExprKind], rhs: &[ExprKind]) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .zip(rhs)
+            .all(|(lhs, rhs)| equivalent_expressions(lhs, rhs))
+}
+
+/// Compares two optional expressions in their canonical form.
+fn equivalent_optional(lhs: Option<&ExprKind>, rhs: Option<&ExprKind>) -> bool {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => equivalent_expressions(lhs, rhs),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -795,6 +1034,89 @@ mod tests {
         ));
 
         assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_distinct_ordering_matches_a_column_addressed_through_the_other_node_shape() {
+        // A projection built from a schema marker and an ordering built through a
+        // table alias name the same column of the same relation, so both shapes
+        // resolve to one canonical reference.
+        let mut ast = empty_ast();
+        ast.distinct = true;
+        ast.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        });
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::QualifiedColumn {
+                table: "orders",
+                column: "total",
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_distinct_ordering_matches_an_aliased_computed_projection() {
+        // The projection is exposed under an alias and computes a `CAST` over a
+        // column marker, while the ordering names the same computation over the
+        // alias-qualified shape of that column.
+        let mut ast = empty_ast();
+        ast.distinct = true;
+        ast.projections.push(ExprKind::Aliased {
+            expr: Box::new(ExprKind::Cast {
+                operand: Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "total",
+                }),
+                target: "numeric",
+            }),
+            alias: "net_total",
+        });
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::Cast {
+                operand: Box::new(ExprKind::QualifiedColumn {
+                    table: "orders",
+                    column: "total",
+                }),
+                target: "numeric",
+            },
+            OrderDirection::Desc,
+        ));
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_distinct_ordering_of_another_computation_is_rejected() {
+        // The projection is computed as numeric while the ordering computes text,
+        // so the two expressions differ even though both read the same column.
+        let mut ast = empty_ast();
+        ast.distinct = true;
+        ast.projections.push(ExprKind::Cast {
+            operand: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }),
+            target: "numeric",
+        });
+        ast.order_by.push(OrderCriterion::new(
+            ExprKind::Cast {
+                operand: Box::new(ExprKind::QualifiedColumn {
+                    table: "orders",
+                    column: "total",
+                }),
+                target: "text",
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::DistinctOrderNotProjected { position: 0 })
+        );
     }
 
     #[test]
