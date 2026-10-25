@@ -13,6 +13,18 @@
 //! [`ColumnAssign::set_expr`](crate::dml::ColumnAssign::set_expr) records the
 //! resulting expression as the value of an assignment, so the proposed row is
 //! only reachable through a column of the matching Rust type.
+//!
+//! # Scope lattice
+//!
+//! The marker takes part in the [`MergeScope`] lattice exactly like a table
+//! does, so a predicate reading both the stored row and the proposed one keeps
+//! both scopes. Merging with a single table yields `(L, Excluded<T>)` on the
+//! left and `(Excluded<T>, R)` on the right. Tuple scopes extend that: up to
+//! eight tables followed by the marker, and the marker followed by up to four
+//! tables. The lattice is deliberately bounded there — a scope that would carry
+//! a second, distinct proposed-row member, and a tuple longer than those
+//! bounds, have no merge implementation, so such a chain is rejected while
+//! compiling instead of silently widening the scope.
 
 use core::marker::PhantomData;
 
@@ -84,6 +96,61 @@ impl<T: Table> MergeScope<Excluded<T>> for Unscoped {
     type Output = Excluded<T>;
 }
 
+// A scope spanning several tables keeps every one of them and appends the
+// proposed row at the end, which is how `expr::scope` folds a right-hand operand
+// into a tuple scope.
+macro_rules! impl_tuple_left_excluded_right {
+    ($($left:ident),+) => {
+        impl<$($left: Table,)+ T: Table> MergeScope<Excluded<T>> for ($($left,)+) {
+            type Output = ($($left,)+ Excluded<T>);
+        }
+    };
+}
+
+impl_tuple_left_excluded_right!(T1);
+impl_tuple_left_excluded_right!(T1, T2);
+impl_tuple_left_excluded_right!(T1, T2, T3);
+impl_tuple_left_excluded_right!(T1, T2, T3, T4);
+impl_tuple_left_excluded_right!(T1, T2, T3, T4, T5);
+impl_tuple_left_excluded_right!(T1, T2, T3, T4, T5, T6);
+impl_tuple_left_excluded_right!(T1, T2, T3, T4, T5, T6, T7);
+impl_tuple_left_excluded_right!(T1, T2, T3, T4, T5, T6, T7, T8);
+
+// A proposed row merged with a right-hand tuple scope is prepended to it, so the
+// marker keeps the leading position it holds when it merges with a single table.
+macro_rules! impl_excluded_left_tuple_right {
+    ($($right:ident),+) => {
+        impl<T: Table, $($right: Table),+> MergeScope<($($right,)+)> for Excluded<T> {
+            type Output = (Excluded<T>, $($right,)+);
+        }
+    };
+}
+
+impl_excluded_left_tuple_right!(R1);
+impl_excluded_left_tuple_right!(R1, R2);
+impl_excluded_left_tuple_right!(R1, R2, R3);
+impl_excluded_left_tuple_right!(R1, R2, R3, R4);
+
+// A scope that already pairs a table with the proposed row of another table
+// keeps that pairing and appends a newly merged table after it.
+impl<A: Table, E: Table, R: Table> MergeScope<R> for (A, Excluded<E>) {
+    type Output = (A, Excluded<E>, R);
+}
+
+impl<A: Table, E: Table, R: Table> MergeScope<R> for (Excluded<E>, A) {
+    type Output = (Excluded<E>, A, R);
+}
+
+// Merging the proposed row of a table the scope already carries adds nothing, so
+// re-reading the same column keeps the scope unchanged instead of growing it.
+impl<A: Table, T: Table> MergeScope<Excluded<T>> for (A, Excluded<T>) {
+    type Output = (A, Excluded<T>);
+}
+
+impl<A: Table, T: Table> MergeScope<Excluded<T>> for (Excluded<T>, A) {
+    type Output = (Excluded<T>, A);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +159,12 @@ mod tests {
     crate::table! {
         User => "users" {
             UserName => "name": String,
+        }
+    }
+
+    crate::table! {
+        Order => "orders" {
+            OrderId => "id": i64,
         }
     }
 
@@ -124,5 +197,37 @@ mod tests {
             Expr::column::<UserName>().ne(excluded(UserName));
         let _: Expr<bool, Merged<Excluded<User>, User>> =
             excluded(UserName).ne(Expr::column::<UserName>());
+    }
+
+    #[test]
+    fn a_tuple_scope_appends_the_proposed_row() {
+        assert_merged::<(User,), Excluded<User>, (User, Excluded<User>)>();
+        assert_merged::<(User, Order), Excluded<User>, (User, Order, Excluded<User>)>();
+    }
+
+    #[test]
+    fn a_proposed_row_prepends_to_a_tuple_scope() {
+        assert_merged::<Excluded<User>, (Order,), (Excluded<User>, Order)>();
+        assert_merged::<Excluded<User>, (Order, User), (Excluded<User>, Order, User)>();
+    }
+
+    #[test]
+    fn a_scope_pairing_a_table_with_the_proposed_row_appends_new_tables() {
+        assert_merged::<(User, Excluded<User>), User, (User, Excluded<User>, User)>();
+        assert_merged::<(Excluded<User>, User), Order, (Excluded<User>, User, Order)>();
+    }
+
+    #[test]
+    fn a_repeated_proposed_row_is_absorbed() {
+        assert_merged::<(User, Excluded<User>), Excluded<User>, (User, Excluded<User>)>();
+        assert_merged::<(Excluded<User>, User), Excluded<User>, (Excluded<User>, User)>();
+    }
+
+    #[test]
+    fn both_associations_of_a_three_term_chain_agree() {
+        // Left-associated: the proposed row pairs up with `User` before `Order`.
+        assert_merged::<(Excluded<User>, User), Order, (Excluded<User>, User, Order)>();
+        // Right-associated: `User` and `Order` merge into a tuple scope first.
+        assert_merged::<Excluded<User>, (User, Order), (Excluded<User>, User, Order)>();
     }
 }
