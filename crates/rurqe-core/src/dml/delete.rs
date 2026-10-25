@@ -18,7 +18,8 @@ use crate::dialect::{Dialect, SupportsDeleteUsing, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{
-    register_relation, BuildError, BuiltQuery, ScopePositions, Selection, TableSelection,
+    register_relation, reject_unresolved_qualifiers, BuildError, BuiltQuery, ScopePositions,
+    Selection, TableSelection,
 };
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
@@ -231,20 +232,39 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
     /// statement is validated before it is rendered: a source repeating an
     /// effective name already taken — the deleted table itself or another
     /// source — is reported as [`BuildError::DuplicateRelation`] instead of
-    /// reaching the engine.
+    /// reaching the engine. The target renders through its
+    /// [`Table::table_ref`](crate::schema::Table::table_ref), so a target
+    /// referenced under an alias renders its `AS "alias"` clause, and the
+    /// clause expressions are pre-flighted against the registered relations:
+    /// a reference qualified through a name the rendered statement does not
+    /// declare is reported as [`BuildError::UnresolvedQualifier`].
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The deleted table and every `USING` source are in scope of the filter
         // and of the projections, so a column of either one is qualified as soon
         // as the statement addresses more than the target table — and the same
-        // list states the namespace the statement has to keep unambiguous.
+        // list states the namespace the statement has to keep unambiguous. The
+        // target registers through its `table_ref`, so an aliased target
+        // occupies the namespace under its alias.
+        let target = T::table_ref();
         let mut relations = Vec::with_capacity(1 + self.using_tables.len());
-        register_relation(&mut relations, TableRef::plain(T::NAME))?;
+        register_relation(&mut relations, target)?;
         for source in &self.using_tables {
             register_relation(&mut relations, *source)?;
         }
 
+        // The filter and a `RETURNING` projection may qualify their column
+        // references through an alias, which only a rendered relation declares:
+        // a qualifier naming none of the registered relations is rejected
+        // before any SQL is rendered.
+        if let Some(filter) = &self.filter {
+            reject_unresolved_qualifiers(filter, &relations)?;
+        }
+        for projection in &self.returning {
+            reject_unresolved_qualifiers(projection, &relations)?;
+        }
+
         let mut sql = String::from("DELETE FROM ");
-        D::push_quoted_identifier(&mut sql, T::NAME);
+        target.render::<D>(&mut sql);
 
         if !self.using_tables.is_empty() {
             sql.push_str(" USING ");

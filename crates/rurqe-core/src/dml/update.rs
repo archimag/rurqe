@@ -22,7 +22,8 @@ use crate::dml::insert::merge_assignments;
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{
-    register_relation, BuildError, BuiltQuery, ScopePositions, Selection, TableSelection,
+    register_relation, reject_unresolved_qualifiers, BuildError, BuiltQuery, ScopePositions,
+    Selection, TableSelection,
 };
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
@@ -164,6 +165,33 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     /// referencing a table the `UPDATE` does not reach fails to compile, exactly
     /// like a filter of the same shape. Such a table is introduced with
     /// [`from`](UpdateQuery::from) before the assignment is recorded.
+    ///
+    /// Assignments target the mutated table itself, so a plain column marker
+    /// does not type-check against a target referenced under an alias — the
+    /// assignment has to be spelled through the alias as well:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dml::{ColumnAssign, UpdateQuery};
+    /// # use rurqe_core::dialect::Dialect;
+    /// # struct MockDialect;
+    /// # impl Dialect for MockDialect {
+    /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+    /// #     fn push_placeholder(_: &mut String, _: usize) {}
+    /// # }
+    /// # rurqe_core::table! {
+    /// #     User => "users" {
+    /// #         UserId => "id": i64,
+    /// #         UserName => "name": String,
+    /// #     }
+    /// # }
+    /// # rurqe_core::table_alias! { U => "u" }
+    /// use rurqe_core::schema::Aliased;
+    ///
+    /// // Fails to compile: `UserName` belongs to `User`, while the mutated
+    /// // table is `Aliased<User, U>`, so the assignment cannot target it.
+    /// let query: UpdateQuery<MockDialect, Aliased<User, U>> = UpdateQuery::new();
+    /// let _ = query.set(UserName::set("alice"));
+    /// ```
     pub fn set<S, P>(mut self, set: S) -> UpdateQuery<D, T, State, Returning, Scope, HasAssignments>
     where
         S: AssignmentSet<T> + AssignmentScope,
@@ -315,21 +343,46 @@ where
     /// share one namespace, so the statement is validated before it is rendered:
     /// a source repeating an effective name already taken — the mutated table
     /// itself or another source — is reported as
-    /// [`BuildError::DuplicateRelation`] instead of reaching the engine.
+    /// [`BuildError::DuplicateRelation`] instead of reaching the engine. The
+    /// target renders through its
+    /// [`Table::table_ref`](crate::schema::Table::table_ref), so a target
+    /// referenced under an alias renders its `AS "alias"` clause, and the
+    /// clause expressions are pre-flighted against the registered relations:
+    /// a reference qualified through a name the rendered statement does not
+    /// declare is reported as [`BuildError::UnresolvedQualifier`].
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The mutated table and every `FROM` source are in scope of the
         // assignments, of the filter, and of the projections, so a column of
         // either one is qualified as soon as the statement addresses more than
         // the target table — and the same list states the namespace the
-        // statement has to keep unambiguous.
+        // statement has to keep unambiguous. The target registers through its
+        // `table_ref`, so an aliased target occupies the namespace under its
+        // alias.
+        let target = T::table_ref();
         let mut relations = Vec::with_capacity(1 + self.from_tables.len());
-        register_relation(&mut relations, TableRef::plain(T::NAME))?;
+        register_relation(&mut relations, target)?;
         for source in &self.from_tables {
             register_relation(&mut relations, *source)?;
         }
 
+        // An assignment, the filter, and a `RETURNING` projection may qualify
+        // their column references through an alias, which only a rendered
+        // relation declares: a qualifier naming none of the registered
+        // relations is rejected before any SQL is rendered.
+        for (_, value) in &self.assignments {
+            if let AssignValue::Expr(expr) = value {
+                reject_unresolved_qualifiers(expr, &relations)?;
+            }
+        }
+        if let Some(filter) = &self.filter {
+            reject_unresolved_qualifiers(filter, &relations)?;
+        }
+        for projection in &self.returning {
+            reject_unresolved_qualifiers(projection, &relations)?;
+        }
+
         let mut sql = String::from("UPDATE ");
-        D::push_quoted_identifier(&mut sql, T::NAME);
+        target.render::<D>(&mut sql);
         sql.push_str(" SET ");
 
         let mut params = Vec::new();

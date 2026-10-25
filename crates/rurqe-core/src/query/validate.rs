@@ -92,6 +92,21 @@ pub enum BuildError {
         /// The alias the relation is addressed by.
         name: &'static str,
     },
+    /// A column reference is qualified by a name no rendered relation declares.
+    ///
+    /// A reference built through a table alias renders as `"alias"."column"`,
+    /// because the renderer emits the qualifier verbatim and the alias is the
+    /// only valid spelling of that relation. The statement therefore has to
+    /// declare the qualifier through one of the relations it renders — its
+    /// target, registered from `Table::table_ref`, or a `FROM` / `USING`
+    /// source. A clause expression qualifying a reference by a name nothing
+    /// declares leaves the statement unresolvable — PostgreSQL reports
+    /// `missing FROM-clause entry for table "..."` — so the mismatch is
+    /// reported before any SQL is rendered.
+    UnresolvedQualifier {
+        /// The qualifier no rendered relation declares.
+        name: &'static str,
+    },
     /// An `INSERT` row carries a different number of values than the statement columns.
     ///
     /// Every row of one `INSERT` statement assigns the same columns in the same
@@ -187,6 +202,14 @@ impl fmt::Display for BuildError {
                     "derived relation is addressed as `{name}` but its subquery is registered under another name; \
                      rendering the statement would read the stored table the relation names instead of the rows of the subquery, \
                      so a derived table has to be registered under the alias it is referenced by"
+                )
+            }
+            BuildError::UnresolvedQualifier { name } => {
+                write!(
+                    f,
+                    "column reference qualified as `{name}` matches no relation the statement renders; \
+                     render the target through `Table::table_ref` so an aliased relation carries its `AS` clause, \
+                     or introduce a `FROM` / `USING` source declaring the alias"
                 )
             }
             BuildError::InconsistentRows {
@@ -524,6 +547,141 @@ fn reject_shadowed_derived(
     }
     if derived.iter().any(|entry| entry.name == relation.name) {
         return Err(BuildError::AliasedDerivedRelation { name: alias });
+    }
+    Ok(())
+}
+
+/// Rejects a clause expression that qualifies a column reference by a name no
+/// rendered relation declares.
+///
+/// A reference built through a table alias renders as `"alias"."column"`,
+/// because the renderer emits the qualifier verbatim and the alias is the
+/// only valid spelling of that relation. The statement therefore has to
+/// declare the qualifier through one of the relations it renders: its target,
+/// registered from
+/// [`Table::table_ref`](crate::schema::Table::table_ref), or a `FROM` /
+/// `USING` source. The builder typestate keeps a statement assembled through
+/// its fluent methods aligned with the relations it renders, but a clause
+/// expression — a `SET` assignment, a filter, or a `RETURNING` projection —
+/// can still qualify a reference by a name nothing declares, which the engine
+/// answers with `missing FROM-clause entry for table "..."`. The DML builders
+/// therefore run this walk beside [`validate_expr`] before any SQL is
+/// rendered.
+///
+/// The walk mirrors [`validate_expr`] over the composite nodes of the current
+/// statement and stops at embedded statements: their references resolve
+/// through their own `FROM` scope, and a correlated reference reaches an
+/// enclosing statement through that scope, so neither is judged against the
+/// relations validated here.
+pub(crate) fn reject_unresolved_qualifiers(
+    expr: &ExprKind,
+    relations: &[TableRef],
+) -> Result<(), BuildError> {
+    match expr {
+        // A plain column reference names its own table, and the renderer
+        // resolves the qualifier it needs against the declared relations.
+        ExprKind::Column { .. } => Ok(()),
+        // `EXCLUDED` names the proposed row of an upsert, which carries no
+        // qualifier of its own.
+        ExprKind::Excluded { .. } => Ok(()),
+        ExprKind::Value(_) => Ok(()),
+        // Raw fragments are user text: any reference inside them reached the
+        // template already rendered.
+        ExprKind::Raw { .. } => Ok(()),
+        ExprKind::QualifiedColumn { table, .. } => {
+            // The scrutinee is borrowed, so the pattern binds the qualifier
+            // behind one reference; it is dereferenced for the comparison.
+            if relations
+                .iter()
+                .any(|relation| effective_relation_name(relation) == *table)
+            {
+                Ok(())
+            } else {
+                Err(BuildError::UnresolvedQualifier { name: table })
+            }
+        }
+        ExprKind::Row { values } | ExprKind::InList { values, .. } => {
+            reject_unresolved_qualifiers_each(values, relations)
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
+            reject_unresolved_qualifiers(lhs, relations)?;
+            reject_unresolved_qualifiers(rhs, relations)
+        }
+        ExprKind::Aggregate { arg, filter, .. } => {
+            if let Some(arg) = arg {
+                reject_unresolved_qualifiers(arg, relations)?;
+            }
+            if let Some(filter) = filter {
+                reject_unresolved_qualifiers(filter, relations)?;
+            }
+            Ok(())
+        }
+        ExprKind::Subquery { operand, .. } => match operand {
+            // The embedded statement resolves its own references through its
+            // `FROM` scope, so only the operand — which the current statement
+            // evaluates — is judged against the relations validated here.
+            Some(operand) => reject_unresolved_qualifiers(operand, relations),
+            None => Ok(()),
+        },
+        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
+            reject_unresolved_qualifiers(operand, relations)
+        }
+        ExprKind::Like { operand, pattern, .. } => {
+            reject_unresolved_qualifiers(operand, relations)?;
+            reject_unresolved_qualifiers(pattern, relations)
+        }
+        ExprKind::Between { operand, low, high } => {
+            reject_unresolved_qualifiers(operand, relations)?;
+            reject_unresolved_qualifiers(low, relations)?;
+            reject_unresolved_qualifiers(high, relations)
+        }
+        ExprKind::Function { args, .. } => reject_unresolved_qualifiers_each(args, relations),
+        ExprKind::DistinctFrom { lhs, rhs, .. } => {
+            reject_unresolved_qualifiers(lhs, relations)?;
+            reject_unresolved_qualifiers(rhs, relations)
+        }
+        ExprKind::Case { branches, else_branch } => {
+            for branch in branches {
+                reject_unresolved_qualifiers(&branch.condition, relations)?;
+                reject_unresolved_qualifiers(&branch.result, relations)?;
+            }
+            match else_branch {
+                Some(fallback) => reject_unresolved_qualifiers(fallback, relations),
+                None => Ok(()),
+            }
+        }
+        ExprKind::Window { kind, partition_by, order_by, .. } => {
+            match kind.as_ref() {
+                WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
+                    reject_unresolved_qualifiers(column, relations)?;
+                }
+                WindowExprKind::Expr(inner) => {
+                    reject_unresolved_qualifiers(inner, relations)?;
+                }
+                WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
+            }
+            reject_unresolved_qualifiers_each(partition_by, relations)?;
+            for criterion in order_by {
+                reject_unresolved_qualifiers(&criterion.expr, relations)?;
+            }
+            Ok(())
+        }
+        // A nested collection embeds a whole statement, which resolves its
+        // own references through its `FROM` scope.
+        ExprKind::Multiset { .. } => Ok(()),
+        // An alias names the output column of a projection; the expression it
+        // wraps is what the statement computes.
+        ExprKind::Aliased { expr, .. } => reject_unresolved_qualifiers(expr, relations),
+    }
+}
+
+/// Applies [`reject_unresolved_qualifiers`] to every expression of a list.
+fn reject_unresolved_qualifiers_each(
+    expressions: &[ExprKind],
+    relations: &[TableRef],
+) -> Result<(), BuildError> {
+    for expression in expressions {
+        reject_unresolved_qualifiers(expression, relations)?;
     }
     Ok(())
 }
@@ -1368,6 +1526,94 @@ mod tests {
         assert_eq!(
             register_relation(&mut relations, TableRef::aliased("customers", "a")),
             Err(BuildError::DuplicateRelation { name: "a" })
+        );
+    }
+
+    #[test]
+    fn build_error_display_unresolved_qualifier() {
+        let err = BuildError::UnresolvedQualifier { name: "u" };
+        let msg = err.to_string();
+        assert!(msg.contains("qualified as `u`"));
+        assert!(msg.contains("`Table::table_ref`"));
+    }
+
+    #[test]
+    fn a_reference_qualified_by_a_declared_relation_name_is_accepted() {
+        use crate::expr::BinaryOp;
+
+        let relations = [TableRef::aliased("users", "u"), TableRef::plain("accounts")];
+
+        // The alias of the target and the plain name of a `FROM` source are
+        // both declared by the rendered statement.
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &ExprKind::QualifiedColumn {
+                    table: "u",
+                    column: "id",
+                },
+                &relations,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &ExprKind::QualifiedColumn {
+                    table: "accounts",
+                    column: "id",
+                },
+                &relations,
+            ),
+            Ok(())
+        );
+
+        // A plain column reference states no qualifier of its own: the
+        // renderer resolves the qualifier it needs against the declared
+        // relations.
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &ExprKind::Column {
+                    table: "users",
+                    name: "id",
+                },
+                &relations,
+            ),
+            Ok(())
+        );
+
+        // The walk reaches a qualifier nested inside a composite expression.
+        let filter = ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::QualifiedColumn {
+                table: "ghosts",
+                column: "id",
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
+        };
+        assert_eq!(
+            reject_unresolved_qualifiers(&filter, &relations),
+            Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+        );
+    }
+
+    #[test]
+    fn a_reference_qualified_by_the_base_name_of_an_aliased_relation_is_rejected() {
+        let relations = [TableRef::aliased("users", "u")];
+
+        // The relation is only reachable as `u`, so a reference spelled
+        // through its base table name resolves to nothing the statement
+        // renders.
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &ExprKind::QualifiedColumn {
+                    table: "users",
+                    column: "id",
+                },
+                &relations,
+            ),
+            Err(BuildError::UnresolvedQualifier { name: "users" })
         );
     }
 }

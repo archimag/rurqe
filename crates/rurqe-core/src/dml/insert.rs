@@ -20,9 +20,10 @@ use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
 use crate::query::{
-    BuildError, BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
+    reject_unresolved_qualifiers, BuildError, BuiltQuery, HasProjection, SelectQuery, Selection,
+    TableScope, TableSelection,
 };
-use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table, TableRef};
+use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -401,8 +402,20 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// rendered: a source `SELECT`, a scalar expression assigned to a column,
     /// and the predicates and assignments of an `ON CONFLICT` clause may all
     /// carry a nested statement, so a semantic violation inside one of them is
-    /// reported as [`BuildError`] instead of reaching the engine.
+    /// reported as [`BuildError`] instead of reaching the engine. The
+    /// `RETURNING` projections are pre-flighted against the rendered target as
+    /// well: a reference qualified through a name the target does not declare
+    /// is reported as [`BuildError::UnresolvedQualifier`] before any SQL is
+    /// rendered.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
+        // The target renders through its `Table::table_ref`, so a target
+        // referenced under an alias renders its `AS "alias"` clause and is
+        // addressed under that alias.
+        let target = T::table_ref();
+        // The statement addresses the inserted table only, so an assigned
+        // expression reads its columns unqualified while a reference to any
+        // other relation keeps naming that relation.
+        let relations = [target];
         if let Some(select) = &self.select {
             select.validate()?;
         }
@@ -425,9 +438,16 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         if let Some(conflict) = &self.conflict {
             conflict.validate()?;
         }
+        // A `RETURNING` projection may qualify its references through the
+        // alias of an aliased target, which only the rendered target
+        // declares, so a qualifier naming no rendered relation is rejected
+        // before any SQL is rendered.
+        for projection in &self.returning {
+            reject_unresolved_qualifiers(projection, &relations)?;
+        }
 
         let mut sql = String::from("INSERT INTO ");
-        D::push_quoted_identifier(&mut sql, T::NAME);
+        target.render::<D>(&mut sql);
 
         sql.push_str(" (");
         for (index, name) in self.columns.iter().enumerate() {
@@ -439,10 +459,6 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         sql.push(')');
 
         let mut params = Vec::new();
-        // The statement addresses the inserted table only, so an assigned
-        // expression reads its columns unqualified while a reference to any other
-        // relation keeps naming that relation.
-        let relations = [TableRef::plain(T::NAME)];
         if let Some(select) = &self.select {
             sql.push(' ');
             // The source statement was validated at the top of `build`, so it is
