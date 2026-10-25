@@ -198,10 +198,11 @@ fn json_number_to_sql_value(number: &serde_json::Number) -> SqlVal {
 ///
 /// Scalars keep their natural representation, so a field of a nested row decodes
 /// through exactly the same [`FromSqlValue`](crate::row::FromSqlValue) contract a
-/// column of the same type decodes through. A number wider than the integer
-/// representation, or one carrying a fraction, keeps its exact digits when the
-/// `decimal` feature is compiled in, so a `NUMERIC` column of a nested row never
-/// passes through a floating point approximation.
+/// column of the same type decodes through: a binary field reads its canonical
+/// hexadecimal text back into the bytes it carries. A number wider than the
+/// integer representation, or one carrying a fraction, keeps its exact digits
+/// when the `decimal` feature is compiled in, so a `NUMERIC` column of a nested
+/// row never passes through a floating point approximation.
 #[cfg(feature = "serde_json")]
 pub fn json_to_sql_value(value: &serde_json::Value) -> SqlVal {
     match value {
@@ -220,12 +221,16 @@ pub fn json_to_sql_value(value: &serde_json::Value) -> SqlVal {
 /// the document bound as a parameter and the document decoded from a result row
 /// carry the same values whichever engine produced them.
 ///
-/// A value of a kind a JSON document cannot carry — a binary blob, a UUID, or a
-/// temporal value — keeps the text it is displayed with, which is the scalar form
-/// [`FromSqlValue`](crate::row::FromSqlValue) parses back into the same type. An
-/// exact decimal becomes a JSON number while that number keeps every digit of it,
-/// and the same text otherwise. A floating point value JSON cannot represent,
-/// `NaN` and the two infinities, becomes `null` instead of failing the encoding.
+/// A value of a kind a JSON document cannot carry — a UUID or a temporal value —
+/// keeps the text it is displayed with, which is the scalar form
+/// [`FromSqlValue`](crate::row::FromSqlValue) parses back into the same type. A
+/// binary value carries its canonical hexadecimal text instead, which
+/// [`FromSqlValue`](crate::row::FromSqlValue) for `Vec<u8>` parses back into the
+/// same bytes, so a binary field of a nested row survives the round trip rather
+/// than keeping a debug rendering no decoder accepts. An exact decimal becomes
+/// a JSON number while that number keeps every digit of it, and the same text
+/// otherwise. A floating point value JSON cannot represent, `NaN` and the two
+/// infinities, becomes `null` instead of failing the encoding.
 #[cfg(feature = "serde_json")]
 pub fn sql_val_to_json(value: &SqlVal) -> serde_json::Value {
     match value {
@@ -237,6 +242,11 @@ pub fn sql_val_to_json(value: &SqlVal) -> serde_json::Value {
         #[cfg(feature = "decimal")]
         SqlVal::Decimal(value) => json_decimal(*value),
         SqlVal::Text(text) => serde_json::Value::String(text.clone()),
+        // A binary value carries its canonical hexadecimal text instead of the
+        // debug rendering of its vector: `FromSqlValue` for `Vec<u8>` decodes
+        // that text back into the same bytes, so a binary field of a nested row
+        // round trips through the document.
+        SqlVal::Bytes(bytes) => serde_json::Value::String(crate::row::hex_encode(bytes)),
         SqlVal::Json(document) => document.clone(),
         SqlVal::Array(values) => {
             serde_json::Value::Array(values.iter().map(sql_val_to_json).collect())
@@ -494,6 +504,38 @@ mod tests {
         const FIELDS: &'static [&'static str] = &["sku", "qty"];
     }
 
+    /// The child row a nested projection decodes into, carrying a binary field.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Document {
+        name: String,
+        blob: Vec<u8>,
+    }
+
+    impl ToSqlVal for Document {
+        fn to_sql_val(self) -> SqlVal {
+            multiset_object(&[
+                ("name", SqlVal::Text(self.name)),
+                ("blob", SqlVal::Bytes(self.blob)),
+            ])
+        }
+    }
+
+    impl FromSqlValue for Document {
+        fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+            let object = json_object(value)?;
+            Ok(Document {
+                name: nested_field(&object, "name")?,
+                blob: nested_field(&object, "blob")?,
+            })
+        }
+    }
+
+    impl SqlArrayElement for Document {}
+
+    impl MultisetRow for Document {
+        const FIELDS: &'static [&'static str] = &["name", "blob"];
+    }
+
     /// The nested statement of the child rows of every owner.
     fn lines<D: Dialect>() -> SelectQuery<D, Line, OrderLine, HasProjection> {
         SelectQuery::new().from::<Line>().select((LineSku, LineQty))
@@ -560,6 +602,68 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_row_round_trips_a_blob_beside_scalars() {
+        let row = Document {
+            name: "avatar".to_owned(),
+            blob: vec![0x00, 0x01, 0x02, 0xfe, 0xff],
+        };
+        let bound = row.clone().to_sql_val();
+
+        // The binary field carries its canonical hexadecimal text, not the
+        // debug rendering of the vector, so the document decodes back into
+        // the same row.
+        assert_eq!(
+            bound,
+            SqlVal::Json(serde_json::json!({
+                "name": "avatar",
+                "blob": "000102feff",
+            }))
+        );
+        assert_eq!(Document::from_sql_value(&bound), Ok(row));
+    }
+
+    #[test]
+    fn a_nested_blob_field_decodes_the_bytea_text_postgres_reports() {
+        let object = json_object(&SqlVal::Json(serde_json::json!({
+            "name": "avatar",
+            "blob": r"\x000102feff",
+        })))
+        .expect("the object of the nested row decodes");
+
+        assert_eq!(
+            nested_field::<Vec<u8>>(&object, "blob"),
+            Ok(vec![0x00, 0x01, 0x02, 0xfe, 0xff])
+        );
+        assert_eq!(
+            nested_field::<String>(&object, "name"),
+            Ok("avatar".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_nested_collection_with_blobs_decodes_the_json_text_sqlite_reports() {
+        let rows = Vec::<Document>::from_sql_value(&SqlVal::Text(
+            r#"[{"name":"avatar","blob":"000102feff"},{"name":"logo","blob":"ff"}]"#
+                .to_owned(),
+        ))
+        .expect("the JSON text of a nested collection decodes");
+
+        assert_eq!(
+            rows,
+            vec![
+                Document {
+                    name: "avatar".to_owned(),
+                    blob: vec![0x00, 0x01, 0x02, 0xfe, 0xff],
+                },
+                Document {
+                    name: "logo".to_owned(),
+                    blob: vec![0xff],
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn a_single_nested_row_decodes_into_an_option() {
         let present = Option::<OrderLine>::from_sql_value(&SqlVal::Json(
             serde_json::json!({ "sku": "a", "qty": 2 }),
@@ -622,12 +726,16 @@ mod tests {
     #[test]
     fn a_value_without_a_json_counterpart_keeps_the_text_it_displays() {
         assert_eq!(
-            sql_val_to_json(&SqlVal::Bytes(vec![1, 2])),
-            serde_json::json!("[1, 2]")
-        );
-        assert_eq!(
             sql_val_to_json(&SqlVal::EncodingError("not encodable".to_owned())),
             serde_json::json!("not encodable")
+        );
+    }
+
+    #[test]
+    fn a_binary_value_carries_its_canonical_hexadecimal_text() {
+        assert_eq!(
+            sql_val_to_json(&SqlVal::Bytes(vec![0x00, 0x01, 0x02, 0xfe, 0xff])),
+            serde_json::json!("000102feff")
         );
     }
 

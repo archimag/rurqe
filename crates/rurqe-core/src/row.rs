@@ -255,8 +255,65 @@ impl FromSqlValue for Vec<u8> {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::Bytes(value) => Ok(value.clone()),
+            // A binary field of a nested row reaches the document as its
+            // canonical hexadecimal text, and an engine reporting a binary
+            // value as text reports the same form, so the text decodes back
+            // into the bytes it carries instead of reporting a mismatch.
+            SqlVal::Text(text) => hex_decode(text).ok_or_else(|| {
+                invalid_value::<Self>(value, "a binary value is encoded as hexadecimal text")
+            }),
             _ => Err(type_mismatch::<Self>(value)),
         }
+    }
+}
+
+/// Encodes `bytes` as the hexadecimal text a JSON document carries for a
+/// binary value.
+///
+/// The text is lowercase and carries no prefix, so a binary field of a nested
+/// row stays short and free of the characters JSON escapes. `hex_decode` reads
+/// the same form back, together with the prefixed variant PostgreSQL writes,
+/// so a binary field round trips whichever engine produced the document.
+#[cfg(feature = "serde_json")]
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    text
+}
+
+/// Decodes the hexadecimal text of a binary value into the bytes it carries.
+///
+/// Digits are case-insensitive, and the `\x` prefix of the bytea text
+/// PostgreSQL writes into a JSON document is accepted, so the text the engine
+/// produced decodes exactly like the canonical text `hex_encode` writes. Text
+/// that is not hexadecimal reports `None`, leaving the caller to name the
+/// target its diagnostic carries.
+pub(crate) fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    let digits = text.strip_prefix("\\x").unwrap_or(text).as_bytes();
+    if digits.len() % 2 != 0 {
+        return None;
+    }
+
+    let mut bytes = Vec::with_capacity(digits.len() / 2);
+    for pair in digits.chunks_exact(2) {
+        let high = hex_digit(pair[0])?;
+        let low = hex_digit(pair[1])?;
+        bytes.push(high << 4 | low);
+    }
+    Some(bytes)
+}
+
+/// Decodes one hexadecimal digit into the four bits it carries.
+fn hex_digit(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        b'A'..=b'F' => Some(digit - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -809,6 +866,59 @@ mod tests {
 
         let invalid = SqlVal::Text("invalid_address".to_owned());
         assert!(MockAddress::from_sql_value(&invalid).is_err());
+    }
+
+    #[test]
+    fn binary_values_decode_from_their_hexadecimal_text() {
+        assert_eq!(
+            Vec::<u8>::from_sql_value(&SqlVal::Text("000102feff".to_owned())),
+            Ok(vec![0x00, 0x01, 0x02, 0xfe, 0xff])
+        );
+        assert_eq!(
+            Vec::<u8>::from_sql_value(&SqlVal::Text("DEAD".to_owned())),
+            Ok(vec![0xde, 0xad]),
+            "digits are case-insensitive"
+        );
+        assert_eq!(
+            Vec::<u8>::from_sql_value(&SqlVal::Text(r"\x000102feff".to_owned())),
+            Ok(vec![0x00, 0x01, 0x02, 0xfe, 0xff]),
+            "the bytea text PostgreSQL reports decodes"
+        );
+        assert_eq!(
+            Vec::<u8>::from_sql_value(&SqlVal::Bytes(vec![1, 2])),
+            Ok(vec![1, 2]),
+            "a binary value keeps its native kind"
+        );
+    }
+
+    #[test]
+    fn binary_values_report_text_that_is_not_hexadecimal() {
+        let error = Vec::<u8>::from_sql_value(&SqlVal::Text("[1, 2]".to_owned()))
+            .expect_err("the debug rendering of a vector is not hexadecimal");
+
+        assert!(matches!(
+            error,
+            RowDecodeError::InvalidValue { found: "text", .. }
+        ));
+        assert!(error.to_string().contains("hexadecimal"));
+        assert!(Vec::<u8>::from_sql_value(&SqlVal::Text("010".to_owned())).is_err());
+        assert!(Vec::<u8>::from_sql_value(&SqlVal::Text("zz".to_owned())).is_err());
+        assert!(Vec::<u8>::from_sql_value(&SqlVal::Text("hello".to_owned())).is_err());
+        assert!(Vec::<u8>::from_sql_value(&SqlVal::Bool(true)).is_err());
+    }
+
+    #[test]
+    fn hexadecimal_text_decodes_into_its_bytes() {
+        assert_eq!(hex_decode("0001feff"), Some(vec![0x00, 0x01, 0xfe, 0xff]));
+        assert_eq!(hex_decode("0001FEFF"), Some(vec![0x00, 0x01, 0xfe, 0xff]));
+        assert_eq!(
+            hex_decode(r"\x0001feff"),
+            Some(vec![0x00, 0x01, 0xfe, 0xff])
+        );
+        assert_eq!(hex_decode(r"\x"), Some(Vec::new()));
+        assert_eq!(hex_decode("010"), None);
+        assert_eq!(hex_decode("zz"), None);
+        assert_eq!(hex_decode("hello"), None);
     }
 
     #[test]
