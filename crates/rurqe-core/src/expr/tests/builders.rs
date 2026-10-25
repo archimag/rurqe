@@ -852,3 +852,66 @@ fn the_modifier_markers_separate_the_call_from_a_composite_expression() {
         }
     ));
 }
+
+#[test]
+#[should_panic(expected = "the aggregation marker names an aggregate call, but the tree is not one")]
+fn a_forged_direct_aggregate_marker_cannot_silently_drop_a_filter() {
+    // `Expr::new` stays crate-internal, so only this crate can assemble a tree
+    // that disagrees with the aggregation marker it carries. The assertion
+    // keeps the forged marker loud in debug builds instead of letting the
+    // total fallback discard the predicate while the return type still
+    // advertises the `FILTER` clause.
+    let forged: Expr<i64, Order, DirectAggregate> = Expr::new(ExprKind::Column {
+        table: "orders",
+        name: "qty",
+    });
+
+    let _ = forged.filter_where(OrderQty.gt(0i64));
+}
+
+#[test]
+#[should_panic(expected = "the aggregation marker names an aggregate call, but the tree is not one")]
+fn a_forged_filtered_aggregate_marker_cannot_silently_ignore_distinct() {
+    // The `DISTINCT` modifier mutates the aggregate call it belongs to, so a
+    // forged marker on a non-aggregate tree would silently mutate nothing; the
+    // assertion fires before the method returns an expression that still
+    // carries the marker.
+    let forged: Expr<i64, Order, FilteredAggregate> = Expr::new(ExprKind::Column {
+        table: "orders",
+        name: "qty",
+    });
+
+    let _ = forged.distinct();
+}
+
+#[test]
+#[should_panic(expected = "raw SQL fragments must alternate with parameters")]
+fn unbalanced_raw_fragments_are_rejected() {
+    // The renderer binds a parameter after every fragment except the last, so
+    // a pair violating the interleaving invariant would dispatch SQL with a
+    // missing or a misplaced placeholder.
+    let _ = Expr::<i64>::raw_fragments(
+        vec!["qty > ".to_owned()],
+        vec![SqlVal::I64(1), SqlVal::I64(10)],
+    );
+}
+
+#[test]
+fn balanced_raw_fragments_bind_their_parameters_in_order() {
+    // One fragment more than parameters: the fragments alternate with the
+    // bound values, which is the shape `parse_raw_sql` splits a template into
+    // and the shape the renderer binds correctly.
+    let expr = Expr::<i64>::raw_fragments(
+        vec![
+            "qty + ".to_owned(),
+            " AND tax > ".to_owned(),
+            String::new(),
+        ],
+        vec![SqlVal::I64(1), SqlVal::I64(10)],
+    );
+
+    let (sql, params) = render(expr.kind());
+
+    assert_eq!(sql, "qty + ? AND tax > ?");
+    assert_eq!(params, vec![SqlVal::I64(1), SqlVal::I64(10)]);
+}

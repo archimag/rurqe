@@ -109,17 +109,6 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         }
     }
 
-    /// Builds an expression from an already assembled tree carrying the scope `Scope`.
-    ///
-    /// Dialect extensions describe their operands as AST nodes instead of
-    /// pre-rendered text, so a column reference keeps following the statement it
-    /// is rendered into: it is qualified in a multi-table query and keeps its
-    /// alias prefix.
-    #[doc(hidden)]
-    pub fn from_kind(kind: ExprKind) -> Self {
-        Self::new(kind)
-    }
-
     /// The expression tree of this expression.
     pub fn kind(&self) -> &ExprKind {
         &self.kind
@@ -228,6 +217,72 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 }
 
+impl<T, Scope, D> Expr<T, Scope, NonAggregate, D> {
+    /// Builds an expression from an already assembled tree carrying the scope `Scope`.
+    ///
+    /// Dialect extensions describe their operands as AST nodes instead of
+    /// pre-rendered text, so a column reference keeps following the statement it
+    /// is rendered into: it is qualified in a multi-table query and keeps its
+    /// alias prefix.
+    ///
+    /// The constructor builds per-row expressions only. The aggregate markers
+    /// [`DirectAggregate`] and [`FilteredAggregate`] state that the root of the
+    /// tree is the aggregate call itself — the property `distinct` and
+    /// `filter_where` rely on to attach their clause to the call they modify — so
+    /// an expression carrying one of them is assembled by the aggregate
+    /// constructors, which build the call, instead of from an arbitrary tree.
+    /// Forging the marker onto a non-aggregate tree does not compile:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::expr::{DirectAggregate, Expr, ExprKind};
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: the tree is a column reference, not an aggregate
+    /// // call, so the `DirectAggregate` marker cannot be named on the
+    /// // expression `from_kind` builds.
+    /// let _: Expr<f64, Order, DirectAggregate> = Expr::from_kind(ExprKind::Column {
+    ///     table: "orders",
+    ///     name: "total",
+    /// });
+    /// ```
+    ///
+    /// A tree that computes one value per row keeps the constructor reachable:
+    ///
+    /// ```
+    /// use rurqe_core::expr::{Expr, ExprKind};
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// let expr: Expr<f64, Order> = Expr::from_kind(ExprKind::Column {
+    ///     table: "orders",
+    ///     name: "total",
+    /// });
+    ///
+    /// assert_eq!(
+    ///     expr.kind(),
+    ///     &ExprKind::Column {
+    ///         table: "orders",
+    ///         name: "total",
+    ///     }
+    /// );
+    /// ```
+    #[doc(hidden)]
+    pub fn from_kind(kind: ExprKind) -> Self {
+        Self::new(kind)
+    }
+}
+
 impl<T> Expr<T, ()> {
     /// Builds an expression holding the literal `value` typed as `T`.
     ///
@@ -322,8 +377,22 @@ impl<T> Expr<T, ()> {
     /// template at compile time and split it into literal text fragments, so the
     /// constructor only binds the parameters and the runtime never re-parses the
     /// template on each call.
+    ///
+    /// The fragments interleave with the parameters: the renderer emits the
+    /// fragments in order and binds one parameter after every fragment except
+    /// the last, so a caller has to supply exactly one more fragment than
+    /// parameters — the shape [`parse_raw_sql`] splits a template into. An
+    /// unbalanced pair would dispatch SQL with a missing or a misplaced
+    /// placeholder, so the constructor asserts the invariant; a template that
+    /// still needs splitting goes through [`raw`](Self::raw), which validates the
+    /// census and returns a typed error.
     #[doc(hidden)]
     pub fn raw_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
+        debug_assert_eq!(
+            fragments.len(),
+            params.len() + 1,
+            "raw SQL fragments must alternate with parameters"
+        );
         Self::new(ExprKind::Raw { fragments, params })
     }
 }

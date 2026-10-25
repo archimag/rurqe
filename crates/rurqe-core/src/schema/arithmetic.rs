@@ -69,6 +69,12 @@ pub fn arithmetic_kind(op: BinaryOp, lhs: ExprKind, rhs: ExprKind) -> ExprKind {
 /// exist exactly for the columns whose Rust type is numeric, because the
 /// [operand](ColumnArithmetic) only has an implementation for such a type.
 ///
+/// Because every operand of a numeric column computes one value per row, the
+/// output names the [`NonAggregate`](crate::expr::NonAggregate) marker directly
+/// — the marker every [`CombineAggr`](crate::expr::CombineAggr) projection from
+/// `NonAggregate` resolves to — which also keeps the operator bodies on
+/// `Expr::from_kind`, the constructor that builds per-row expressions only.
+///
 /// The two bracket groups carry the extra generics and the extra bounds of a
 /// marker parameterised over a table alias, and stay empty for the markers
 /// [`table!`](crate::table) declares.
@@ -86,13 +92,12 @@ macro_rules! __rurqe_column_arithmetic {
             $($extra_bounds)*
             Rhs: $crate::schema::ColumnArithmetic<$column>,
             $scope: $crate::expr::MergeScope<Rhs::Scope>,
-            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
             (): $crate::expr::MergeDialect<Rhs::Dialect>,
         {
             type Output = $crate::expr::Expr<
                 <$column as $crate::schema::Column>::RustType,
                 $crate::expr::Merged<$scope, Rhs::Scope>,
-                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::NonAggregate,
                 $crate::expr::MergedDialect<(), Rhs::Dialect>,
             >;
 
@@ -110,13 +115,12 @@ macro_rules! __rurqe_column_arithmetic {
             $($extra_bounds)*
             Rhs: $crate::schema::ColumnArithmetic<$column>,
             $scope: $crate::expr::MergeScope<Rhs::Scope>,
-            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
             (): $crate::expr::MergeDialect<Rhs::Dialect>,
         {
             type Output = $crate::expr::Expr<
                 <$column as $crate::schema::Column>::RustType,
                 $crate::expr::Merged<$scope, Rhs::Scope>,
-                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::NonAggregate,
                 $crate::expr::MergedDialect<(), Rhs::Dialect>,
             >;
 
@@ -134,13 +138,12 @@ macro_rules! __rurqe_column_arithmetic {
             $($extra_bounds)*
             Rhs: $crate::schema::ColumnArithmetic<$column>,
             $scope: $crate::expr::MergeScope<Rhs::Scope>,
-            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
             (): $crate::expr::MergeDialect<Rhs::Dialect>,
         {
             type Output = $crate::expr::Expr<
                 <$column as $crate::schema::Column>::RustType,
                 $crate::expr::Merged<$scope, Rhs::Scope>,
-                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::NonAggregate,
                 $crate::expr::MergedDialect<(), Rhs::Dialect>,
             >;
 
@@ -158,13 +161,12 @@ macro_rules! __rurqe_column_arithmetic {
             $($extra_bounds)*
             Rhs: $crate::schema::ColumnArithmetic<$column>,
             $scope: $crate::expr::MergeScope<Rhs::Scope>,
-            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
             (): $crate::expr::MergeDialect<Rhs::Dialect>,
         {
             type Output = $crate::expr::Expr<
                 <$column as $crate::schema::Column>::RustType,
                 $crate::expr::Merged<$scope, Rhs::Scope>,
-                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::NonAggregate,
                 $crate::expr::MergedDialect<(), Rhs::Dialect>,
             >;
 
@@ -182,13 +184,12 @@ macro_rules! __rurqe_column_arithmetic {
             $($extra_bounds)*
             Rhs: $crate::schema::ColumnArithmetic<$column>,
             $scope: $crate::expr::MergeScope<Rhs::Scope>,
-            $crate::expr::NonAggregate: $crate::expr::CombineAggr<Rhs::Aggr, Rhs::Scope>,
             (): $crate::expr::MergeDialect<Rhs::Dialect>,
         {
             type Output = $crate::expr::Expr<
                 <$column as $crate::schema::Column>::RustType,
                 $crate::expr::Merged<$scope, Rhs::Scope>,
-                $crate::expr::CombinedAggr<$crate::expr::NonAggregate, Rhs::Aggr, Rhs::Scope>,
+                $crate::expr::NonAggregate,
                 $crate::expr::MergedDialect<(), Rhs::Dialect>,
             >;
 

@@ -172,9 +172,15 @@ where
     /// offers no `distinct`, which keeps the modifier from being written where SQL
     /// has no place for it.
     pub fn distinct(mut self) -> Self {
+        debug_assert!(
+            matches!(self.kind, ExprKind::Aggregate { .. }),
+            "the aggregation marker names an aggregate call, but the tree is not one"
+        );
         // The marker gate restricts the method to a call, so the tree is an
         // aggregate; matching it keeps the modifier on the call instead of
-        // rewriting the tree.
+        // rewriting the tree. The assertion keeps a forged marker loud in
+        // debug builds instead of letting the branch silently mutate nothing
+        // while the return type still advertises the modifier.
         if let ExprKind::Aggregate {
             ref mut distinct, ..
         } = self.kind
@@ -242,6 +248,10 @@ where
         Scope: MergeScope<P>,
         D: MergeDialect<PredD>,
     {
+        debug_assert!(
+            matches!(self.kind, ExprKind::Aggregate { .. }),
+            "the aggregation marker names an aggregate call, but the tree is not one"
+        );
         let ExprKind::Aggregate {
             func,
             distinct,
@@ -251,7 +261,9 @@ where
         else {
             // Only an aggregate call accepts the clause, so the tree is an
             // aggregate here; the branch keeps the method total — and the
-            // invariant panic-free — without ever being reached.
+            // invariant panic-free — without ever being reached. The
+            // assertion keeps a forged marker loud in debug builds instead
+            // of letting the branch discard `predicate` silently.
             return Expr::new(self.kind);
         };
 
