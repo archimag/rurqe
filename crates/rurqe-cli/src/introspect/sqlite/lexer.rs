@@ -4,10 +4,25 @@
 //! identifiers, quoted identifiers in all SQLite quotation styles (`"..."`,
 //! `` `...` ``, `[...]`), string literals (`'...'` with `''` escape), numbers,
 //! punctuation, line comments (`-- ...\n`), and block comments (`/* ... */`).
-
-#![allow(dead_code)]
-
-use std::fmt;
+//!
+//! # Owner decision: no `sqlparser` dependency
+//!
+//! `Conventions.md` forbids hand-rolled parsers where a mature crate covers the
+//! format, so the `sqlparser` crate (SQLite dialect) was evaluated for this
+//! module and rejected. Its consumers — the `CHECK ... IN (...)` enum recovery,
+//! the check collector, and the index reader — must report the *exact source
+//! spans* of sub-expressions, because the text they cut out of the DDL becomes
+//! the expression recorded in `schema.lock`, and a snapshot has to stay
+//! bit-stable across runs and across SQLite versions. `sqlparser` normalises the
+//! statement it parses and never hands back the byte range of an inner
+//! predicate, so the snapshot would be re-rendered from an AST instead of
+//! reproduced from the source it was declared in.
+//!
+//! The module therefore remains an explicitly documented lexical scanner, and
+//! the review recommendation is honoured the other way it allows: the scan is
+//! hardened by the seeded property suite in [`property_tests`], which pins span
+//! soundness, round-trip identity, paren balancing, and the handling of
+//! unterminated input over adversarial byte sequences.
 
 /// Recognised SQL keywords used during SQLite schema introspection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,22 +47,6 @@ impl SqlKeyword {
         } else {
             None
         }
-    }
-
-    /// Canonical uppercase name of the keyword.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Check => "CHECK",
-            Self::Constraint => "CONSTRAINT",
-            Self::In => "IN",
-            Self::Where => "WHERE",
-        }
-    }
-}
-
-impl fmt::Display for SqlKeyword {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
     }
 }
 
@@ -101,11 +100,6 @@ pub struct Token<'a> {
 }
 
 impl<'a> Token<'a> {
-    /// Creates a new token.
-    pub fn new(kind: TokenKind, text: &'a str, span: (usize, usize)) -> Self {
-        Self { kind, text, span }
-    }
-
     /// Unescapes an identifier token into its bare name.
     ///
     /// Strips enclosing quotes and unescapes doubled quote characters according
@@ -442,37 +436,8 @@ pub fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
     None
 }
 
-/// Extracts the balanced text inside `(...)` starting at `sql[0] == '('`.
-///
-/// Returns `Some((inner_slice, total_length_consumed))`.
-///
-/// The extraction delegates to the shared [`matching_close`] scanner over the
-/// token stream, so parentheses inside comments, literals, and quoted
-/// identifiers do not affect balancing.
-pub fn extract_paren_block(sql: &str) -> Option<(&str, usize)> {
-    if !sql.starts_with('(') {
-        return None;
-    }
-
-    let tokens = tokenize(sql);
-    let close = matching_close(&tokens, 0)?;
-    Some((&sql[1..tokens[close].span.0], tokens[close].span.1))
-}
-
-/// Checks whether `sql` (trimmed) is enclosed in a single balanced pair of parentheses.
-///
-/// Returns `true` only if the opening parenthesis at the start is balanced by the
-/// closing parenthesis at the very end of the expression.
-pub fn is_enclosed_in_parens(sql: &str) -> bool {
-    let s = sql.trim();
-    if !s.starts_with('(') || !s.ends_with(')') {
-        return false;
-    }
-    match extract_paren_block(s) {
-        Some((_, consumed)) => consumed == s.len(),
-        None => false,
-    }
-}
+#[cfg(test)]
+mod property_tests;
 
 #[cfg(test)]
 mod tests {
@@ -617,73 +582,6 @@ mod tests {
         assert_eq!(tokens[1].text, "1");
         assert_eq!(tokens[2].kind, TokenKind::Dot);
         assert_eq!(tokens[3].kind, TokenKind::CloseParen);
-    }
-
-    #[test]
-    fn extract_paren_block_balanced() {
-        assert_eq!(extract_paren_block("not a block"), None);
-        assert_eq!(extract_paren_block("(unclosed"), None);
-        assert_eq!(extract_paren_block("()"), Some(("", 2)));
-        assert_eq!(extract_paren_block("(a, (b, c))"), Some(("a, (b, c)", 11)));
-        assert_eq!(
-            extract_paren_block("(a, (b, c)), trailing"),
-            Some(("a, (b, c)", 11))
-        );
-    }
-
-    #[test]
-    fn extract_paren_block_with_comments_and_quotes() {
-        let sql = "(status IN ('val1', 'val2'))";
-        assert_eq!(
-            extract_paren_block(sql),
-            Some(("status IN ('val1', 'val2')", 28))
-        );
-
-        let with_block_comment = "(a /* (ignore paren) */ b)";
-        assert_eq!(
-            extract_paren_block(with_block_comment),
-            Some(("a /* (ignore paren) */ b", 26))
-        );
-
-        let with_line_comment = "(a -- (ignore paren)\n b)";
-        assert_eq!(
-            extract_paren_block(with_line_comment),
-            Some(("a -- (ignore paren)\n b", 24))
-        );
-
-        let with_quote_paren = "(a, 'string with ) paren', b)";
-        assert_eq!(
-            extract_paren_block(with_quote_paren),
-            Some(("a, 'string with ) paren', b", 29))
-        );
-
-        let with_ident_paren = r#"(a, "ident with ) paren", b)"#;
-        assert_eq!(
-            extract_paren_block(with_ident_paren),
-            Some((r#"a, "ident with ) paren", b"#, 28))
-        );
-
-        let with_bracket_paren = "(a, [bracket with ) paren], b)";
-        assert_eq!(
-            extract_paren_block(with_bracket_paren),
-            Some(("a, [bracket with ) paren], b", 30))
-        );
-    }
-
-    #[test]
-    fn is_enclosed_in_parens_scenarios() {
-        assert!(is_enclosed_in_parens("(x)"));
-        assert!(is_enclosed_in_parens("((x))"));
-        assert!(is_enclosed_in_parens("  (x)  "));
-        assert!(is_enclosed_in_parens("('a)')"));
-        assert!(is_enclosed_in_parens("(a /* ) */ b)"));
-        assert!(is_enclosed_in_parens("(a -- )\n b)"));
-
-        assert!(!is_enclosed_in_parens("(a) AND (b)"));
-        assert!(!is_enclosed_in_parens("()()"));
-        assert!(!is_enclosed_in_parens(")("));
-        assert!(!is_enclosed_in_parens("(("));
-        assert!(!is_enclosed_in_parens("x"));
     }
 
     #[test]
