@@ -3,9 +3,12 @@
 //! The v4 format replaces the bespoke text grammar of the v1–v3 snapshots with
 //! strongly typed TOML: every section is a struct carrying
 //! `#[serde(deny_unknown_fields)]`, so an unrecognized key or a misspelled
-//! field is rejected instead of silently ignored. [`parse_lock_toml`] reads a
-//! snapshot into a [`SchemaCatalog`] and applies the same canonical ordering
-//! the legacy reader produces, so both readers yield identical catalogs.
+//! field is rejected instead of silently ignored. [`render_lock_toml`]
+//! serializes a [`SchemaCatalog`] into the document and [`parse_lock_toml`]
+//! reads one back, and both apply the same canonical ordering — enums, tables,
+//! views, and triggers sorted by name, and each table's columns, checks,
+//! foreign keys, and indexes sorted by name as well — so a snapshot depends
+//! only on the schema content and never on declaration order.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,15 +27,22 @@ const LOCK_VERSION: u32 = 4;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockFile {
-    /// The version of the lock format, always `4` for this reader.
+    /// The version of the lock format, always `4`.
     version: u32,
     /// The enum types declared by the schema.
+    ///
+    /// The section collections default to empty, so a snapshot that omits an
+    /// empty section instead of writing it out still round-trips.
+    #[serde(default)]
     enums: Vec<EnumLock>,
     /// The tables of the schema.
+    #[serde(default)]
     tables: Vec<TableLock>,
     /// The views declared by the schema.
+    #[serde(default)]
     views: Vec<ViewLock>,
     /// The triggers declared by the schema.
+    #[serde(default)]
     triggers: Vec<TriggerLock>,
 }
 
@@ -290,6 +300,162 @@ impl From<FkActionLock> for ForeignKeyAction {
             FkActionLock::SetDefault => Self::SetDefault,
         }
     }
+}
+
+impl From<&ColumnDef> for ColumnLock {
+    fn from(column: &ColumnDef) -> Self {
+        Self {
+            name: column.name.clone(),
+            r#type: TypeLock::from(&column.type_kind),
+            nullable: column.nullable,
+            default: column.default.clone(),
+        }
+    }
+}
+
+impl From<&CheckDef> for CheckLock {
+    fn from(check: &CheckDef) -> Self {
+        Self {
+            name: check.name.clone(),
+            expression: check.expression.clone(),
+        }
+    }
+}
+
+impl From<&ForeignKeyDef> for ForeignKeyLock {
+    fn from(foreign_key: &ForeignKeyDef) -> Self {
+        Self {
+            name: foreign_key.name.clone(),
+            columns: foreign_key.columns.clone(),
+            referenced_table: foreign_key.referenced_table.clone(),
+            referenced_columns: foreign_key.referenced_columns.clone(),
+            on_delete: FkActionLock::from(foreign_key.on_delete),
+            on_update: FkActionLock::from(foreign_key.on_update),
+        }
+    }
+}
+
+impl From<&IndexDef> for IndexLock {
+    fn from(index: &IndexDef) -> Self {
+        Self {
+            name: index.name.clone(),
+            columns: index.columns.clone(),
+            unique: index.unique,
+            method: index.method.clone(),
+            predicate: index.predicate.clone(),
+            expression: index.expression.clone(),
+        }
+    }
+}
+
+impl From<&EnumDef> for EnumLock {
+    fn from(definition: &EnumDef) -> Self {
+        Self {
+            name: definition.name.clone(),
+            variants: definition.variants.clone(),
+        }
+    }
+}
+
+impl From<&ViewDef> for ViewLock {
+    fn from(view: &ViewDef) -> Self {
+        Self {
+            name: view.name.clone(),
+            definition: view.definition.clone(),
+        }
+    }
+}
+
+impl From<&TriggerDef> for TriggerLock {
+    fn from(trigger: &TriggerDef) -> Self {
+        Self {
+            name: trigger.name.clone(),
+            table: trigger.table_name.clone(),
+            definition: trigger.definition.clone(),
+        }
+    }
+}
+
+impl From<&TableDef> for TableLock {
+    /// Converts a table into its TOML DTO, sorting the columns, checks,
+    /// foreign keys, and indexes by name — the canonical order the reader
+    /// applies as well.
+    fn from(table: &TableDef) -> Self {
+        let mut columns: Vec<ColumnLock> = table.columns.iter().map(ColumnLock::from).collect();
+        columns.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let mut checks: Vec<CheckLock> = table.checks.iter().map(CheckLock::from).collect();
+        checks.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let mut foreign_keys: Vec<ForeignKeyLock> = table
+            .foreign_keys
+            .iter()
+            .map(ForeignKeyLock::from)
+            .collect();
+        foreign_keys.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let mut indexes: Vec<IndexLock> = table.indexes.iter().map(IndexLock::from).collect();
+        indexes.sort_by(|left, right| left.name.cmp(&right.name));
+
+        Self {
+            name: table.name.clone(),
+            columns,
+            primary_key: table.primary_key.clone(),
+            checks,
+            foreign_keys,
+            indexes,
+        }
+    }
+}
+
+impl From<&SchemaCatalog> for LockFile {
+    /// Converts a catalog into its TOML DTO, sorting the enums, tables, views,
+    /// and triggers by name — the canonical order the reader applies as well.
+    /// The labels of an enum keep their declaration order, because the order
+    /// of the labels is part of the enum type itself.
+    fn from(catalog: &SchemaCatalog) -> Self {
+        let mut enums: Vec<EnumLock> = catalog.enums.iter().map(EnumLock::from).collect();
+        enums.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let mut tables: Vec<TableLock> = catalog.tables.iter().map(TableLock::from).collect();
+        tables.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let mut views: Vec<ViewLock> = catalog.views.iter().map(ViewLock::from).collect();
+        views.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let mut triggers: Vec<TriggerLock> =
+            catalog.triggers.iter().map(TriggerLock::from).collect();
+        triggers.sort_by(|left, right| left.name.cmp(&right.name));
+
+        Self {
+            version: LOCK_VERSION,
+            enums,
+            tables,
+            views,
+            triggers,
+        }
+    }
+}
+
+/// Renders the canonical versioned TOML v4 `schema.lock` snapshot.
+///
+/// The catalog is serialized through the strongly typed DTOs above, which
+/// apply the same canonical ordering [`parse_lock_toml`] applies while
+/// reading, so two catalogs that differ only in declaration order render the
+/// very same document — and therefore the very same
+/// [`SchemaCatalog::schema_hash`].
+///
+/// Serializing the DTOs is total in practice: every value is a string, a
+/// number, a boolean, or a table of those, none of which the `toml` writer
+/// refuses. Should a serialization failure surface anyway, the fallback
+/// document below is emitted instead — a comment-only document the reader
+/// rejects, so a failed render can never silently publish an empty-but-valid
+/// catalog.
+pub(super) fn render_lock_toml(catalog: &SchemaCatalog) -> String {
+    let file = LockFile::from(catalog);
+
+    toml::to_string(&file)
+        .unwrap_or_else(|error| format!("# schema lock rendering failed: {error}\n"))
 }
 
 /// Parses a versioned TOML v4 `schema.lock` snapshot into a catalog.
@@ -646,5 +812,123 @@ definition = "EXECUTE FUNCTION log_order_update()"
         let reparsed: LockFile = toml::from_str(&rendered).expect("the rendering reparses");
 
         assert_eq!(reparsed, file);
+    }
+
+    #[test]
+    fn rendering_round_trips_a_catalog_exercising_every_kind() {
+        // Declared in the canonical order the writer sorts into, so the
+        // reparsed snapshot equals the catalog that rendered it.
+        let orders = TableDef::new(
+            "orders",
+            vec![
+                ColumnDef::new("active", TypeKind::Boolean, false),
+                ColumnDef::new("amount", TypeKind::Float64, false),
+                ColumnDef::new("big", TypeKind::Int64, false),
+                ColumnDef::new("day", TypeKind::Date, false),
+                ColumnDef::new("doc", TypeKind::Bytes, true),
+                ColumnDef::new(
+                    "flags",
+                    TypeKind::Array(Box::new(TypeKind::Boolean)),
+                    true,
+                ),
+                ColumnDef::new("id", TypeKind::Int32, false),
+                ColumnDef::new("jdoc", TypeKind::Json, true)
+                    .with_default(r#"'{"a": "b"}'"#),
+                ColumnDef::new("mood", TypeKind::Enum("mood".to_owned()), false),
+                ColumnDef::new(
+                    "moods",
+                    TypeKind::Array(Box::new(TypeKind::Enum("mood".to_owned()))),
+                    true,
+                ),
+                ColumnDef::new(
+                    "nested",
+                    TypeKind::Array(Box::new(TypeKind::Array(Box::new(TypeKind::Text)))),
+                    true,
+                ),
+                ColumnDef::new("notes", TypeKind::Text, true)
+                    .with_default("line one\nline two"),
+                ColumnDef::new("path", TypeKind::Text, true).with_default("C:\\dir"),
+                ColumnDef::new("price", TypeKind::Numeric, false),
+                ColumnDef::new("raw", TypeKind::Other("citext".to_owned()), true),
+                ColumnDef::new("stamp", TypeKind::Timestamp, false),
+                ColumnDef::new("uid", TypeKind::Uuid, false),
+            ],
+            vec!["id".to_owned()],
+        )
+        .with_check(CheckDef::new("chk_positive", "amount >= 0"))
+        .with_check(CheckDef::new("chk_range", "amount < 1000000"))
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "fk_cascade",
+                vec!["big".to_owned()],
+                "users",
+                vec!["id".to_owned()],
+            )
+            .with_on_delete(ForeignKeyAction::Cascade),
+        )
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "fk_default",
+                vec!["day".to_owned()],
+                "users",
+                vec!["id".to_owned()],
+            )
+            .with_on_delete(ForeignKeyAction::SetDefault),
+        )
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "fk_restrict",
+                vec!["doc".to_owned()],
+                "users",
+                vec!["id".to_owned()],
+            )
+            .with_on_update(ForeignKeyAction::Restrict),
+        )
+        .with_foreign_key(
+            ForeignKeyDef::new(
+                "fk_set_null",
+                vec!["flags".to_owned()],
+                "users",
+                vec!["id".to_owned()],
+            )
+            .with_actions(ForeignKeyAction::SetNull, ForeignKeyAction::NoAction),
+        )
+        .with_index(IndexDef::new(
+            "idx_columns",
+            vec!["amount".to_owned()],
+            true,
+        ))
+        .with_index(
+            IndexDef::new("idx_expression", Vec::new(), false)
+                .with_expression("lower(notes)"),
+        )
+        .with_index(
+            IndexDef::new("idx_partial", vec!["active".to_owned()], false)
+                .with_method("btree")
+                .with_predicate("active = 1"),
+        );
+
+        let catalog = SchemaCatalog::new(vec![orders])
+            .with_enums(vec![EnumDef::new(
+                "mood",
+                vec!["happy".to_owned(), "sad".to_owned()],
+            )])
+            .with_views(vec![ViewDef::new(
+                "expensive_orders",
+                "SELECT * FROM orders WHERE amount > 100",
+            )])
+            .with_triggers(vec![TriggerDef::new(
+                "audit_orders",
+                "orders",
+                "EXECUTE FUNCTION log_order_update()",
+            )]);
+
+        let lock = render_lock_toml(&catalog);
+
+        assert!(lock.starts_with("version = 4"), "got: {lock}");
+        assert_eq!(
+            SchemaCatalog::from_lock(&lock).expect("the rendering reparses"),
+            catalog
+        );
     }
 }

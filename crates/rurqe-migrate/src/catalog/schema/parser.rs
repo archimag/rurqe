@@ -1,4 +1,4 @@
-//! Parsing of a canonical `schema.lock` snapshot into a [`SchemaCatalog`].
+//! Parsing of a legacy `schema.lock` snapshot into a [`SchemaCatalog`].
 
 mod sections;
 mod table;
@@ -13,10 +13,10 @@ use self::sections::{parse_enum, parse_trigger, parse_view};
 use self::table::parse_table;
 use self::value::lock_error;
 
-/// Parses a canonical `schema.lock` snapshot back into a catalog.
+/// Parses a legacy `schema.lock` snapshot back into a catalog.
 ///
-/// The parser accepts exactly the representation produced by
-/// [`SchemaCatalog::to_lock`] and returns the catalog sorted by enum name,
+/// The parser accepts exactly the representation the retired v3 writer
+/// produced and returns the catalog sorted by enum name,
 /// table name, column name, foreign-key name, and index name, so the result
 /// equals the catalog that generated the snapshot. The labels of an enum keep
 /// the order they were rendered in.

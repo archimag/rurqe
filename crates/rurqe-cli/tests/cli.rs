@@ -434,8 +434,20 @@ fn run_cli_codegen_writes_schema_and_lock_from_live_sqlite() {
     let code = fs::read_to_string(&schema).expect("read generated schema");
     let snapshot = fs::read_to_string(&lock).expect("read schema lock");
 
-    assert!(snapshot.contains("table \"users\" {"));
-    assert!(snapshot.contains("column \"email\": text not null"));
+    // The snapshot is the versioned TOML v4 document, and it reads back into
+    // the catalog the live database produced.
+    assert!(snapshot.starts_with("version = 4"));
+    let parsed = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
+    assert_eq!(parsed.tables.len(), 1);
+    assert_eq!(parsed.tables[0].name, "users");
+    assert!(
+        parsed.tables[0].columns.iter().any(|column| {
+            column.name == "email" && column.type_kind == TypeKind::Text && !column.nullable
+        }),
+        "the email column survives the snapshot: {:?}",
+        parsed.tables[0].columns
+    );
+
     assert!(code.contains("pub const SCHEMA_HASH: &str = \""));
     assert!(code.contains("Users => \"users\""));
     assert!(code.contains("pub struct UsersRecord"));
@@ -515,8 +527,24 @@ fn run_cli_codegen_with_domain_types_maps_decimal_columns_and_verifies_cleanly()
     assert!(code.contains("pub discount: Option<rust_decimal::Decimal>,"));
 
     let snapshot = fs::read_to_string(&lock).expect("read schema lock");
-    assert!(snapshot.contains("column \"total\": numeric not null"));
-    assert!(snapshot.contains("column \"discount\": numeric null"));
+    let parsed = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
+    let columns = &parsed.tables[0].columns;
+    assert!(
+        columns.iter().any(|column| {
+            column.name == "total"
+                && column.type_kind == TypeKind::Numeric
+                && !column.nullable
+        }),
+        "the total column survives the snapshot: {columns:?}"
+    );
+    assert!(
+        columns.iter().any(|column| {
+            column.name == "discount"
+                && column.type_kind == TypeKind::Numeric
+                && column.nullable
+        }),
+        "the discount column survives the snapshot: {columns:?}"
+    );
 
     let verify_args = vec![
         "rurqe".to_owned(),
@@ -635,10 +663,29 @@ fn run_cli_codegen_and_verify_handles_check_enums_end_to_end() {
     run_cli(args).expect("codegen succeeds for check enums");
 
     let snapshot = fs::read_to_string(&lock).expect("read schema lock");
-    assert!(snapshot.contains("[[enum]]"));
-    assert!(snapshot.contains("name = \"status\""));
-    assert!(snapshot.contains("variants = [\"todo\", \"in_progress\", \"done\"]"));
-    assert!(snapshot.contains("column \"status\": enum \"status\" not null"));
+    let parsed = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
+    assert_eq!(parsed.enums.len(), 1);
+    assert_eq!(parsed.enums[0].name, "status");
+    assert_eq!(
+        parsed.enums[0].variants,
+        vec![
+            "todo".to_owned(),
+            "in_progress".to_owned(),
+            "done".to_owned()
+        ]
+    );
+    assert_eq!(parsed.tables.len(), 1);
+    let tasks = &parsed.tables[0];
+    assert_eq!(tasks.name, "tasks");
+    assert!(
+        tasks.columns.iter().any(|column| {
+            column.name == "status"
+                && column.type_kind == TypeKind::Enum("status".to_owned())
+                && !column.nullable
+        }),
+        "the status enum column survives the snapshot: {:?}",
+        tasks.columns
+    );
 
     let code = fs::read_to_string(&schema).expect("read generated schema");
     assert!(code.contains("#[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]"));

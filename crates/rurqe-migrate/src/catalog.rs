@@ -3,8 +3,9 @@
 //! The catalog is the single source of truth shared by introspection, code
 //! generation, and drift verification: it records enum types, tables, columns,
 //! primary keys, foreign keys, and secondary or unique indexes in an
-//! engine-independent form and renders them into a deterministic textual
-//! snapshot.
+//! engine-independent form and renders them into a deterministic snapshot —
+//! the versioned TOML v4 document, while snapshots of the legacy v1–v3 text
+//! formats remain readable.
 //!
 //! Determinism is achieved by sorting enum types, tables, columns, foreign keys,
 //! and indexes by name, so two catalogs built in a different declaration order
@@ -14,28 +15,23 @@
 //! ```
 //! use rurqe_migrate::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
 //!
+//! // Columns are declared in the canonical order the snapshot sorts them
+//! // into, so the parsed snapshot equals the catalog that rendered it.
 //! let catalog = SchemaCatalog::new(vec![TableDef::new(
 //!     "users",
 //!     vec![
-//!         ColumnDef::new("id", TypeKind::Int64, false),
 //!         ColumnDef::new("email", TypeKind::Text, false),
+//!         ColumnDef::new("id", TypeKind::Int64, false),
 //!     ],
 //!     vec!["id".to_owned()],
 //! )]);
 //!
-//! assert_eq!(
-//!     catalog.to_lock(),
-//!     concat!(
-//!         "schema lock v3\n",
-//!         "\n",
-//!         "table \"users\" {\n",
-//!         "  column \"email\": text not null\n",
-//!         "  column \"id\": int64 not null\n",
-//!         "  primary key (\"id\")\n",
-//!         "}\n",
-//!     )
-//! );
+//! let lock = catalog.to_lock();
 //!
+//! // The snapshot is the versioned TOML v4 document: the first line carries
+//! // the format version and the reader accepts the document straight back.
+//! assert!(lock.starts_with("version = 4"));
+//! assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 //! assert_eq!(catalog.schema_hash().len(), 64);
 //! ```
 

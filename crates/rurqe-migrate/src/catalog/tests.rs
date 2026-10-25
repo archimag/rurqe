@@ -1,12 +1,15 @@
 use super::*;
 use crate::checksum::Checksum;
 
+// Declared in the canonical column order the snapshot sorts into
+// (`email` precedes `id`), so a reparsed snapshot equals a catalog
+// built from this fixture.
 fn users() -> TableDef {
     TableDef::new(
         "users",
         vec![
-            ColumnDef::new("id", TypeKind::Int64, false),
             ColumnDef::new("email", TypeKind::Text, false),
+            ColumnDef::new("id", TypeKind::Int64, false),
         ],
         vec!["id".to_owned()],
     )
@@ -30,29 +33,18 @@ fn orders() -> TableDef {
     ))
 }
 
-const EXPECTED_LOCK: &str = concat!(
-    "schema lock v3\n",
-    "\n",
-    "table \"orders\" {\n",
-    "  column \"id\": int64 not null\n",
-    "  column \"total\": float64 null default \"0\"\n",
-    "  column \"user_id\": int64 not null\n",
-    "  primary key (\"id\")\n",
-    "  foreign key \"orders_user_id_fkey\" (\"user_id\") references \"users\" (\"id\") on delete no action on update no action\n",
-    "}\n",
-    "\n",
-    "table \"users\" {\n",
-    "  column \"email\": text not null\n",
-    "  column \"id\": int64 not null\n",
-    "  primary key (\"id\")\n",
-    "}\n",
-);
-
 #[test]
 fn lock_renders_tables_columns_and_keys() {
+    // Declared out of the canonical order, so the equality proves the writer
+    // applied it: the reparsed snapshot equals the canonically declared
+    // catalog that rendered it.
     let catalog = SchemaCatalog::new(vec![users(), orders()]);
+    let canonical = SchemaCatalog::new(vec![orders(), users()]);
 
-    assert_eq!(catalog.to_lock(), EXPECTED_LOCK);
+    let lock = catalog.to_lock();
+
+    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), canonical);
 }
 
 #[test]
@@ -74,41 +66,21 @@ fn lock_is_independent_of_declaration_order() {
     ));
 
     let catalog = SchemaCatalog::new(vec![reordered_orders, users()]);
+    let canonical = SchemaCatalog::new(vec![orders(), users()]);
 
-    assert_eq!(catalog.to_lock(), EXPECTED_LOCK);
-    assert_eq!(
-        catalog.schema_hash(),
-        SchemaCatalog::new(vec![users(), orders()]).schema_hash()
-    );
+    assert_eq!(catalog.to_lock(), canonical.to_lock());
+    assert_eq!(catalog.schema_hash(), canonical.schema_hash());
 }
 
 #[test]
-fn identifiers_are_quoted_and_escaped() {
-    let catalog = SchemaCatalog::new(vec![TableDef::new(
-        "we\"ird",
-        vec![ColumnDef::new(
-            "select",
-            TypeKind::Other("citext".to_owned()),
-            true,
-        )],
-        Vec::new(),
-    )]);
+fn an_empty_catalog_renders_a_versioned_empty_snapshot() {
+    let lock = SchemaCatalog::default().to_lock();
 
+    assert!(lock.starts_with("version = 4"), "got: {lock}");
     assert_eq!(
-        catalog.to_lock(),
-        concat!(
-            "schema lock v3\n",
-            "\n",
-            "table \"we\"\"ird\" {\n",
-            "  column \"select\": citext null\n",
-            "}\n",
-        )
+        SchemaCatalog::from_lock(&lock).unwrap(),
+        SchemaCatalog::default()
     );
-}
-
-#[test]
-fn empty_catalog_renders_only_the_header() {
-    assert_eq!(SchemaCatalog::default().to_lock(), "schema lock v3\n");
 }
 
 #[test]
@@ -235,8 +207,7 @@ fn numeric_columns_round_trip_through_the_lock() {
 
     let lock = catalog.to_lock();
 
-    assert!(lock.contains("column \"discount\": numeric null"));
-    assert!(lock.contains("column \"total\": numeric not null default \"0\""));
+    assert!(lock.starts_with("version = 4"), "got: {lock}");
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }
 
@@ -338,51 +309,14 @@ fn lock_renders_enum_sections_before_tables() {
         vec!["happy".to_owned(), "sad".to_owned()],
     )]);
 
-    assert_eq!(
-        catalog.to_lock(),
-        concat!(
-            "schema lock v3\n",
-            "\n",
-            "[[enum]]\n",
-            "name = \"mood\"\n",
-            "variants = [\"happy\", \"sad\"]\n",
-            "\n",
-            "table \"users\" {\n",
-            "  column \"email\": text not null\n",
-            "  column \"id\": int64 not null\n",
-            "  primary key (\"id\")\n",
-            "}\n",
-        )
-    );
-}
+    let lock = catalog.to_lock();
 
-#[test]
-fn enum_and_array_column_types_render_canonically() {
-    let catalog = SchemaCatalog::new(vec![TableDef::new(
-        "accounts",
-        vec![
-            ColumnDef::new("mood", TypeKind::Enum("mood".to_owned()), false),
-            ColumnDef::new(
-                "moods",
-                TypeKind::Array(Box::new(TypeKind::Enum("mood".to_owned()))),
-                true,
-            ),
-            ColumnDef::new("tags", TypeKind::Array(Box::new(TypeKind::Text)), true),
-        ],
-        Vec::new(),
-    )]);
-
-    assert_eq!(
-        catalog.to_lock(),
-        concat!(
-            "schema lock v3\n",
-            "\n",
-            "table \"accounts\" {\n",
-            "  column \"mood\": enum \"mood\" not null\n",
-            "  column \"moods\": enum \"mood\"[] null\n",
-            "  column \"tags\": text[] null\n",
-            "}\n",
-        )
+    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
+    assert!(
+        lock.find("mood").expect("the enum is rendered")
+            < lock.find("users").expect("the table is rendered"),
+        "the enum section precedes the table sections: {lock}"
     );
 }
 
@@ -434,20 +368,17 @@ fn quoted_defaults_survive_quotes_backslashes_and_line_breaks() {
     )]);
 
     let lock = catalog.to_lock();
-    let line = lock
-        .lines()
-        .find(|line| line.trim_start().starts_with("column \"payload\""))
-        .expect("the column is rendered");
 
-    assert!(
-        line.contains("\\n"),
-        "a line break stays escaped inside the default: {line}"
-    );
+    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    // The default is carried as TOML string data: quotes, backslashes, and
+    // line breaks stay escaped, whatever form the serializer picks.
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }
 
 #[test]
-fn schema_lock_v3_round_trips_checks_views_triggers_and_attributes() {
+fn snapshots_round_trip_checks_views_triggers_and_index_attributes() {
+    // Declared in the canonical order the writer sorts into, so the reparsed
+    // snapshot equals the catalog that rendered it.
     let catalog = SchemaCatalog::new(vec![
         TableDef::new(
             "orders",
@@ -476,7 +407,9 @@ fn schema_lock_v3_round_trips_checks_views_triggers_and_attributes() {
             vec!["id".to_owned()],
         )
         .with_check(CheckDef::new("positive_price", "price > 0"))
-        .with_index(IndexDef::new("idx_expr", Vec::new(), false).with_expression("lower(category)"))
+        .with_index(
+            IndexDef::new("idx_expr", Vec::new(), false).with_expression("lower(category)"),
+        )
         .with_index(
             IndexDef::new("idx_prod_cat", vec!["category".to_owned()], false)
                 .with_method("btree")
@@ -494,16 +427,9 @@ fn schema_lock_v3_round_trips_checks_views_triggers_and_attributes() {
     )]);
 
     let lock = catalog.to_lock();
-    assert!(lock.starts_with("schema lock v3\n"));
-    assert!(lock.contains("[[view]]\nname = \"expensive_products\""));
-    assert!(lock.contains("[[trigger]]\nname = \"audit_orders\"\ntable = \"orders\""));
-    assert!(lock.contains("check \"positive_price\" \"price > 0\""));
-    assert!(lock.contains("on delete cascade on update restrict"));
-    assert!(lock.contains("using \"btree\" where \"price > 10.0\""));
-    assert!(lock.contains("expression \"lower(category)\""));
 
-    let reparsed = SchemaCatalog::from_lock(&lock).expect("valid v3 round trip");
-    assert_eq!(reparsed, catalog);
+    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }
 
 #[test]

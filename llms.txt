@@ -576,11 +576,9 @@ let upsert = insert_into(Users)
 
 ## Pre-flight Build Validation (`BuildError`)
 
-Rendering a statement is fallible. `SelectQuery::build`, `UpdateQuery::build`, and `DeleteQuery::build` return `Result<BuiltQuery, BuildError>`, and every execution helper that renders through them (`fetch_all`, `fetch_optional`, `fetch_one`, `execute`) surfaces the same failure as `ExecutionError::Build`, reachable through `is_build()` and `as_build()` without touching the backend error.</search_F0789309B93E4F41>
-</edit>
-<edit path="llms.txt">
-<search>- `BuildError::DuplicateRelation { name }` — two relations share one effective name in `FROM` / `JOIN`. The effective name is the alias a relation is referenced under, or its table name when it carries none, so `FROM "users" JOIN "users"` collides exactly like two uses of one alias. Give each occurrence a distinct alias via `table_alias!` or `.as_alias(...)`.</search>
-<replace>- `BuildError::DuplicateRelation { name }` — two relations share one effective name in `FROM` / `JOIN`, or in the `FROM` / `USING` list of an `UPDATE` / `DELETE` next to the mutated table. The effective name is the alias a relation is referenced under, or its table name when it carries none, so `FROM "users" JOIN "users"` collides exactly like two uses of one alias, and `update(Users).from::<Users>()` collides with the mutated table itself. Give each occurrence a distinct alias via `table_alias!` or `.as_alias(...)`.
+Rendering a statement is fallible. `SelectQuery::build`, `UpdateQuery::build`, and `DeleteQuery::build` return `Result<BuiltQuery, BuildError>`, and every execution helper that renders through them (`fetch_all`, `fetch_optional`, `fetch_one`, `execute`) surfaces the same failure as `ExecutionError::Build`, reachable through `is_build()` and `as_build()` without touching the backend error.
+
+- `BuildError::DuplicateRelation { name }` — two relations share one effective name in `FROM` / `JOIN`, or in the `FROM` / `USING` list of an `UPDATE` / `DELETE` next to the mutated table. The effective name is the alias a relation is referenced under, or its table name when it carries none, so `FROM "users" JOIN "users"` collides exactly like two uses of one alias, and `update(Users).from::<Users>()` collides with the mutated table itself. Give each occurrence a distinct alias via `table_alias!` or `.as_alias(...)`.
 
 Before any SQL leaves the process, the renderer audits the assembled statement tree — the statement itself, its CTEs, its derived tables, its lateral joins, its set-operation operands, and every nested `IN` / `EXISTS` / `MULTISET` / scalar subquery — so a violation in a nested statement is reported through the same typed error as the outermost clause:
 
@@ -846,8 +844,10 @@ project/
 │   └── V052__index_billing.sql
 ├── checkpoint.toml               # pruned_up_to_version + schema_hash of the base stage
 ├── checkpoint-stage/             # Verbatim DDL snapshot of the checkpoint boundary
-└── schema.lock                   # Deterministic catalog snapshot (SCHEMA_HASH)
+└── schema.lock                   # Versioned TOML v4 catalog snapshot (SCHEMA_HASH)
 ```
+
+The `schema.lock` snapshot is the versioned TOML v4 document (`version = 4`): the writer serializes the engine-neutral `SchemaCatalog` through strongly typed `#[serde(deny_unknown_fields)]` DTOs, and enums, tables, views, and triggers — as well as each table's columns, checks, foreign keys, and indexes — are sorted by name, so the snapshot and its `SCHEMA_HASH` depend only on the schema content. Snapshots of the legacy v1–v3 text formats remain readable; a project upgrading from a pre-v4 snapshot re-runs `cargo db-codegen` (or `cargo rurqe stage commit`) once, because the snapshot bytes — and with them `SCHEMA_HASH` and the checkpoint hashes — change with the format.
 
 Absent `schema/` and `checkpoint.toml`, the runner keeps the classic sequential Flyway behaviour with no configuration at all.
 
