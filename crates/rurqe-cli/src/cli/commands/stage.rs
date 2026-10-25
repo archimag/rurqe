@@ -17,7 +17,10 @@ use crate::stage::postgres::{
 use crate::stage::GoldenEquation;
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
-use super::{cli_error, temporary_sibling, write_file};
+use super::{
+    artifact_directory, cli_error, sweep_stale_temporaries, temporary_sibling, write_file,
+    STALE_TEMPORARY_AGE,
+};
 
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
 ///
@@ -162,7 +165,9 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 /// [`GoldenEquation`] for its emptiness contract. When `--base-stage-dir` is
 /// omitted, the boundary snapshot `stage commit` recorded next to
 /// `checkpoint_path` is loaded as the base stage, so the boundary the tail
-/// replays over is the one the toolchain itself wrote.
+/// replays over is the one the toolchain itself wrote. A snapshot an interrupted
+/// commit parked under its backup name is named in the failure together with the
+/// rename that restores it.
 pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
@@ -177,10 +182,12 @@ pub(crate) fn verify_stage(
     // An explicit `--base-stage-dir` overrides the recorded snapshot; without
     // one, the snapshot `stage commit` wrote next to the marker is loaded, and
     // an absent snapshot leaves the base unset so the golden equation itself
-    // rejects a checkpoint that cannot be replayed from nothing.
+    // rejects a checkpoint that cannot be replayed from nothing. A snapshot an
+    // interrupted commit parked under its backup name is reported with the
+    // rename that restores it.
     let base = match base_stage_dir {
         Some(dir) => Some(load_stage(dir)?),
-        None => DeclarativeStage::load(&boundary_dir(checkpoint_path)).map_err(cli_error)?,
+        None => load_recorded_boundary(&boundary_dir(checkpoint_path))?,
     };
 
     let mut equation = match &base {
@@ -201,8 +208,71 @@ pub(crate) fn verify_stage(
     )))
 }
 
-/// The directory holding the verbatim DDL of a committed stage boundary.
-const CHECKPOINT_STAGE_DIR: &str = "checkpoint-stage";
+/// Loads the boundary snapshot `stage commit` recorded next to the marker.
+///
+/// An absent boundary directory is swept of the staging debris an interrupted
+/// commit left behind, and a parked backup still holding the only copy of the
+/// boundary is named together with the rename that restores it, so a swap the
+/// operating system killed between its two renames is recoverable without an
+/// operator guessing a hidden path.
+fn load_recorded_boundary(dir: &Path) -> Result<Option<DeclarativeStage>, CliError> {
+    if path_exists(dir)? {
+        return DeclarativeStage::load(dir).map_err(cli_error);
+    }
+
+    match sweep_stale_temporaries(dir, STALE_TEMPORARY_AGE) {
+        Ok(removed) => {
+            for path in removed {
+                tracing::debug!(
+                    artifact = %path.display(),
+                    "discarded a staged artifact an interrupted commit left behind"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(
+            error = %error,
+            "failed to sweep the staged artifacts of the boundary snapshot"
+        ),
+    }
+
+    let backup = boundary_backup(dir);
+    if path_exists(&backup)? {
+        return Err(CliError(format!(
+            "the boundary snapshot `{}` is missing while `{}` still holds the snapshot an \
+             interrupted commit parked there; restore it with `mv {} {}`",
+            dir.display(),
+            backup.display(),
+            backup.display(),
+            dir.display()
+        )));
+    }
+
+    DeclarativeStage::load(dir).map_err(cli_error)
+}
+
+/// Removes the staged siblings an interrupted commit abandoned next to its artifacts.
+///
+/// The sweep is opportunistic: the debris belongs to a process that is already
+/// gone, so a sweep that cannot complete is reported without failing a commit
+/// that is otherwise writable.
+fn sweep_commit_debris(artifacts: &[&Path]) {
+    for &artifact in artifacts {
+        match sweep_stale_temporaries(artifact, STALE_TEMPORARY_AGE) {
+            Ok(removed) => {
+                for path in removed {
+                    tracing::debug!(
+                        artifact = %path.display(),
+                        "discarded a staged artifact an interrupted commit left behind"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                error = %error,
+                "failed to sweep the staged artifacts of an interrupted commit"
+            ),
+        }
+    }
+}
 
 /// Seals the live database as the new declarative stage anchor.
 ///
@@ -217,6 +287,12 @@ pub(crate) fn commit_stage(
     lock_path: &Path,
     checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
+    // Debris of an interrupted commit is discarded first, so the artifacts
+    // written below never share a directory with the staged siblings a killed
+    // process left behind for good.
+    let boundary = boundary_dir(checkpoint_path);
+    sweep_commit_debris(&[lock_path, checkpoint_path, boundary.as_path()]);
+
     if let Some(existing) = Checkpoint::load(checkpoint_path).map_err(cli_error)? {
         if existing.pruned_up_to_version() > &version {
             return Err(CliError(format!(
@@ -245,20 +321,48 @@ pub(crate) fn commit_stage(
         "Committed the stage to {}, snapshotted the boundary to {}, and anchored `{}` up to \
          version {} (hash {})",
         lock_path.display(),
-        boundary_dir(checkpoint_path).display(),
+        boundary.display(),
         checkpoint_path.display(),
         checkpoint.pruned_up_to_version(),
         catalog.schema_hash()
     )))
 }
 
+/// The directory holding the verbatim DDL of a committed stage boundary.
+const CHECKPOINT_STAGE_DIR: &str = "checkpoint-stage";
+
+/// The suffix the previous boundary is parked under while a swap installs a new one.
+const PARKED_BOUNDARY_SUFFIX: &str = ".previous";
+
 /// The directory the boundary snapshot of the marker at `checkpoint_path` lives in.
 fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
-    checkpoint_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-        .join(CHECKPOINT_STAGE_DIR)
+    artifact_directory(checkpoint_path).join(CHECKPOINT_STAGE_DIR)
+}
+
+/// The deterministic path the swapped-out boundary is parked at.
+///
+/// The name is fixed instead of process-tagged, so a commit the operating system
+/// killed between the two renames of a swap leaves the only copy of the committed
+/// boundary at a path a diagnostic can name and an operator can rename back.
+fn boundary_backup(dir: &Path) -> PathBuf {
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    artifact_directory(dir).join(format!(".{name}{PARKED_BOUNDARY_SUFFIX}"))
+}
+
+/// Whether `path` exists, reporting a path that cannot be inspected.
+fn path_exists(path: &Path) -> Result<bool, CliError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CliError(format!(
+            "failed to inspect `{}`: {error}",
+            path.display()
+        ))),
+    }
 }
 
 /// Writes the verbatim DDL of the committed `stage` next to the checkpoint.
@@ -325,7 +429,10 @@ fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
 /// Each script lands through the atomic [`write_file`] discipline, so a failure
 /// among them only ever touches the staging directory: the committed boundary is
 /// left exactly as it was.
-pub(super) fn write_staged_boundary(stage: &DeclarativeStage, staged: &Path) -> Result<(), CliError> {
+pub(super) fn write_staged_boundary(
+    stage: &DeclarativeStage,
+    staged: &Path,
+) -> Result<(), CliError> {
     for script in stage.scripts() {
         write_file(&staged.join(script.name()), script.sql())?;
     }
@@ -335,13 +442,22 @@ pub(super) fn write_staged_boundary(stage: &DeclarativeStage, staged: &Path) -> 
 
 /// Installs the staged snapshot of `staged` at `dir`, keeping the previous one whole.
 ///
-/// The previous boundary is renamed aside before the new one takes its place and
-/// is renamed back when that move fails, so a reader never observes a mixture of
-/// two boundaries. The previous snapshot is discarded only once the swap
-/// succeeded: failing the commit there would leave `checkpoint.toml` describing a
-/// boundary the directory no longer holds.
+/// The previous boundary is parked at [`boundary_backup`] before the new one
+/// takes its place and is renamed back when that move fails, so a reader never
+/// observes a mixture of two boundaries. A parked backup found without a live
+/// boundary is a swap the operating system killed between the two renames: the
+/// parked snapshot is then the only copy of the committed boundary and is
+/// restored before the new one is installed. The previous snapshot is discarded
+/// only once the swap succeeded: failing the commit there would leave
+/// `checkpoint.toml` describing a boundary the directory no longer holds.
 pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
-    let backup = temporary_sibling(dir);
+    let backup = boundary_backup(dir);
+
+    if let Err(error) = restore_parked_boundary(dir, &backup) {
+        let _ = std::fs::remove_dir_all(staged);
+        return Err(error);
+    }
+
     let previous = match std::fs::rename(dir, &backup) {
         Ok(()) => Some(backup),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -374,6 +490,31 @@ pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Puts a boundary an interrupted swap parked back in place.
+///
+/// A backup found beside a live boundary is debris of a swap that already
+/// published its replacement, so it is discarded; one found without a live
+/// boundary is restored, because the parked snapshot is then the only copy of
+/// the committed boundary.
+fn restore_parked_boundary(dir: &Path, backup: &Path) -> Result<(), CliError> {
+    if !path_exists(backup)? {
+        return Ok(());
+    }
+
+    if path_exists(dir)? {
+        discard_previous_snapshot(backup);
+        return Ok(());
+    }
+
+    std::fs::rename(backup, dir).map_err(|error| {
+        CliError(format!(
+            "failed to restore the boundary snapshot `{}` parked at `{}`: {error}",
+            dir.display(),
+            backup.display()
+        ))
+    })
+}
+
 /// Discards the previous boundary once the new snapshot is in place.
 ///
 /// The swap already succeeded, so a backup that cannot be removed is debris only:
@@ -396,7 +537,7 @@ fn discard_previous_snapshot(previous: &Path) {
 /// weakens the durability of a commit that is otherwise done, so reporting it
 /// would reject a swap that did happen.
 fn flush_boundary_parent(dir: &Path) {
-    let parent = parent_directory(dir);
+    let parent = artifact_directory(dir);
     if let Err(error) = sync_directory(parent) {
         tracing::warn!(
             directory = %parent.display(),
@@ -404,13 +545,6 @@ fn flush_boundary_parent(dir: &Path) {
             "failed to flush the directory holding the installed boundary snapshot"
         );
     }
-}
-
-/// The directory whose entries a rename of `dir` updates.
-fn parent_directory(dir: &Path) -> &Path {
-    dir.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
 }
 
 /// Flushes the entries of `dir` to the device.

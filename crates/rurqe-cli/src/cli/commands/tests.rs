@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::runner::MigrationBackend;
@@ -10,8 +11,11 @@ use rurqe_migrate::{
 use crate::driver::SqliteMigrationBackend;
 use crate::stage::materialise_stage;
 
-use super::stage::{swap_snapshot, write_staged_boundary};
-use super::{commit_stage, initialise_stage, prune_migrations, write_file};
+use super::stage::{swap_snapshot, verify_stage, write_staged_boundary};
+use super::{
+    commit_stage, initialise_stage, prune_migrations, sweep_stale_temporaries, write_file,
+    STALE_TEMPORARY_AGE,
+};
 
 fn workspace(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("rurqe-commands-{}-{name}", std::process::id()));
@@ -41,6 +45,39 @@ fn checkpoint_file(path: &Path, version: &str) {
         .render(),
     )
     .expect("write the checkpoint");
+}
+
+/// The entry names of `dir`, sorted alphabetically.
+fn directory_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read the directory")
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Backdates `path`, so a sweep of staged artifacts sees it as abandoned.
+fn backdate(path: &Path, age: Duration) {
+    let modified = std::time::SystemTime::now()
+        .checked_sub(age)
+        .expect("a representable modification time");
+    // A directory rejects a write handle but accepts the timestamp update.
+    let handle = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .or_else(|_| std::fs::File::open(path))
+        .expect("open the planted artifact");
+
+    handle
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .expect("backdate the planted artifact");
 }
 
 #[test]
@@ -381,4 +418,206 @@ fn an_interrupted_snapshot_swap_restores_the_committed_boundary() {
     entries.sort();
 
     assert_eq!(entries, vec!["checkpoint-stage".to_owned()]);
+}
+
+#[test]
+fn a_sweep_discards_the_staged_artifacts_a_killed_process_left_behind() {
+    let dir = workspace("sweep");
+    let lock_path = dir.join("schema.lock");
+    let boundary = dir.join("checkpoint-stage");
+
+    // A kill between the write and the rename strands the hidden sibling, and
+    // the next run derives a fresh sequence instead of touching it again.
+    let stale_lock = dir.join(".schema.lock.4242.7.tmp");
+    std::fs::write(&stale_lock, "snapshot").expect("plant a staged lock");
+    let stale_boundary = dir.join(".checkpoint-stage.4242.9.tmp");
+    std::fs::create_dir_all(stale_boundary.join("users.sql")).expect("plant a staged boundary");
+    let owned_lock = dir.join(format!(".schema.lock.{}.3.tmp", std::process::id()));
+    std::fs::write(&owned_lock, "in flight").expect("plant a staged lock of this process");
+
+    let removed = sweep_stale_temporaries(&lock_path, Duration::ZERO)
+        .expect("the sweep scans the artifact directory");
+
+    assert_eq!(removed, vec![stale_lock.clone()]);
+    assert!(!stale_lock.exists(), "the abandoned staged lock is gone");
+    assert!(owned_lock.exists(), "a staged path this process owns is kept");
+
+    let removed = sweep_stale_temporaries(&boundary, Duration::ZERO)
+        .expect("the sweep scans the boundary directory");
+
+    assert_eq!(removed, vec![stale_boundary.clone()]);
+    assert!(
+        !stale_boundary.exists(),
+        "the abandoned staged boundary is gone"
+    );
+}
+
+#[test]
+fn a_sweep_keeps_a_staged_artifact_younger_than_the_threshold() {
+    let dir = workspace("sweep-age");
+    let lock_path = dir.join("schema.lock");
+    let young = dir.join(".schema.lock.4242.1.tmp");
+    std::fs::write(&young, "snapshot").expect("plant a staged lock");
+
+    let removed = sweep_stale_temporaries(&lock_path, STALE_TEMPORARY_AGE)
+        .expect("the sweep scans the artifact directory");
+
+    assert!(removed.is_empty());
+    assert!(young.exists(), "a young staged lock may still be in flight");
+}
+
+#[test]
+fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
+    let dir = workspace("commit-sweep");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    let abandoned = Duration::from_secs(48 * 60 * 60);
+    let stale_lock = dir.join(".schema.lock.4242.1.tmp");
+    std::fs::write(&stale_lock, "snapshot").expect("plant a staged lock");
+    backdate(&stale_lock, abandoned);
+
+    let stale_marker = dir.join(".checkpoint.toml.4242.2.tmp");
+    std::fs::write(&stale_marker, "marker").expect("plant a staged marker");
+    backdate(&stale_marker, abandoned);
+
+    let stale_boundary = dir.join(".checkpoint-stage.4242.3.tmp");
+    std::fs::create_dir_all(stale_boundary.join("users.sql")).expect("plant a staged boundary");
+    backdate(&stale_boundary, abandoned);
+
+    commit_stage(
+        version("3.2"),
+        ":memory:",
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the commit succeeds");
+
+    assert!(
+        !stale_lock.exists(),
+        "the staged lock of the killed commit is swept"
+    );
+    assert!(
+        !stale_marker.exists(),
+        "the staged marker of the killed commit is swept"
+    );
+    assert!(
+        !stale_boundary.exists(),
+        "the staged boundary of the killed commit is swept"
+    );
+    assert!(
+        dir.join("checkpoint-stage").exists(),
+        "the committed boundary is in place"
+    );
+
+    let leftovers: Vec<String> = directory_names(&dir)
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
+fn a_boundary_parked_by_a_killed_swap_is_restored_by_the_next_one() {
+    let dir = workspace("snapshot-parked");
+    let boundary = dir.join("checkpoint-stage");
+
+    // The swap parked the committed boundary and was killed before the staged
+    // replacement reached its place.
+    let backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&backup).expect("park the committed boundary");
+    std::fs::write(
+        backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    let staged = dir.join(".checkpoint-stage.4242.1.tmp");
+    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
+    std::fs::write(
+        staged.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the staged snapshot");
+
+    swap_snapshot(&boundary, &staged).expect("the replacement boundary is installed");
+
+    assert_eq!(directory_names(&boundary), vec!["orders.sql".to_owned()]);
+    assert!(!backup.exists(), "the superseded parked snapshot is discarded");
+    assert!(!staged.exists(), "the staged snapshot was renamed into place");
+}
+
+#[test]
+fn a_parked_backup_beside_a_live_boundary_is_discarded_by_the_next_swap() {
+    let dir = workspace("snapshot-superseded");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
+    std::fs::write(
+        boundary.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the committed snapshot");
+
+    // The swap that parked this backup already published its replacement, so
+    // the parked copy is debris rather than the only copy of the boundary.
+    let backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&backup).expect("park the superseded boundary");
+    std::fs::write(
+        backup.join("legacy.sql"),
+        "CREATE TABLE legacy (id INTEGER);",
+    )
+    .expect("write the superseded snapshot");
+
+    let staged = dir.join(".checkpoint-stage.4242.2.tmp");
+    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
+    std::fs::write(
+        staged.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the staged snapshot");
+
+    swap_snapshot(&boundary, &staged).expect("the replacement boundary is installed");
+
+    assert_eq!(directory_names(&boundary), vec!["orders.sql".to_owned()]);
+    assert!(!backup.exists(), "the superseded parked snapshot is discarded");
+}
+
+#[test]
+fn verifying_a_missing_boundary_names_the_parked_snapshot_that_restores_it() {
+    let dir = workspace("verify-parked");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    std::fs::write(stage_dir.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+        .expect("write the stage script");
+    let migrations_dir = dir.join("migrations");
+    std::fs::create_dir_all(&migrations_dir).expect("create the migrations directory");
+
+    // The marker anchors a non-empty boundary whose snapshot a killed swap
+    // parked, so the committed boundary is no longer where a verification
+    // looks for it.
+    let checkpoint_path = dir.join("checkpoint.toml");
+    checkpoint_file(&checkpoint_path, "1");
+    let backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&backup).expect("park the committed boundary");
+    std::fs::write(
+        backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    let error = verify_stage(&stage_dir, None, &migrations_dir, &checkpoint_path, ":memory:")
+        .expect_err("the boundary snapshot is missing");
+
+    let message = error.to_string();
+    assert!(
+        message.contains(".checkpoint-stage.previous"),
+        "the diagnostic names the parked snapshot, got {message}"
+    );
+    assert!(
+        message.contains("mv "),
+        "the diagnostic names the rename that restores it, got {message}"
+    );
 }

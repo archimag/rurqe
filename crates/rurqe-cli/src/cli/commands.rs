@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::codegen::CodegenOptions;
 use crate::config::{CodegenConfig, DEFAULT_CONFIG_PATH};
@@ -106,6 +107,44 @@ pub(super) fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
     })
 }
 
+/// The suffix every artifact is staged under before it is renamed into place.
+const TEMPORARY_SUFFIX: &str = ".tmp";
+
+/// The age above which a staged artifact counts as abandoned.
+///
+/// A staged artifact only lives for the duration of one file write or one
+/// directory swap, so anything this old belongs to a process that was killed
+/// before it could rename or remove it.
+pub(super) const STALE_TEMPORARY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The directory an artifact and the staged siblings it is written through live in.
+pub(super) fn artifact_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// The prefix every staged sibling of `artifact` starts with.
+fn temporary_prefix(artifact: &Path) -> String {
+    let name = artifact
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    format!(".{name}.")
+}
+
+/// The process id embedded in the name of a staged sibling of `prefix`.
+///
+/// A staged sibling is named `.<basename>.<pid>.<sequence>.tmp`, so its owner is
+/// the segment right after the prefix once the suffix is stripped.
+fn staged_owner(name: &str, prefix: &str) -> Option<u32> {
+    let rest = name.strip_prefix(prefix)?.strip_suffix(TEMPORARY_SUFFIX)?;
+    let (owner, _) = rest.rsplit_once('.')?;
+
+    owner.parse().ok()
+}
+
 /// The temporary file an artifact is staged in before it is renamed.
 ///
 /// The name stays a hidden sibling of the artifact, and the process id together
@@ -114,15 +153,103 @@ fn temporary_sibling(path: &Path) -> PathBuf {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let temporary = format!(".{name}.{}.{sequence}.tmp", std::process::id());
 
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.join(temporary),
-        _ => PathBuf::from(temporary),
+    artifact_directory(path).join(format!(
+        "{}{}.{sequence}{TEMPORARY_SUFFIX}",
+        temporary_prefix(path),
+        std::process::id()
+    ))
+}
+
+/// Removes the staged siblings an earlier process abandoned next to `artifact`.
+///
+/// Every artifact is written through a hidden sibling named
+/// `.<basename>.<pid>.<sequence>.tmp` and renamed into place, so a process killed
+/// in between strands that sibling for good: the next run derives a fresh
+/// sequence and never touches the old one again. The debris is swept here —
+/// every sibling last touched longer than `older_than` ago is discarded, while a
+/// name this process could still own is kept, so a sweep never deletes a staging
+/// path another call of this process is using right now.
+///
+/// A directory that cannot be scanned is reported, while a single sibling that
+/// cannot be removed only leaves the artifact it was staged for untouched: the
+/// caller works on the real artifact either way.
+pub(super) fn sweep_stale_temporaries(
+    artifact: &Path,
+    older_than: Duration,
+) -> Result<Vec<PathBuf>, CliError> {
+    let directory = artifact_directory(artifact);
+    let prefix = temporary_prefix(artifact);
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(CliError(format!(
+                "failed to scan `{}` for staged artifacts: {error}",
+                directory.display()
+            )))
+        }
+    };
+
+    let mut removed = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            CliError(format!(
+                "failed to scan `{}` for staged artifacts: {error}",
+                directory.display()
+            ))
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // A sibling this process could still own is kept: its writer is alive and
+        // may rename it into place at any moment.
+        if !matches!(
+            staged_owner(&name, &prefix),
+            Some(owner) if owner != std::process::id()
+        ) {
+            continue;
+        }
+
+        if let Some(path) = discard_if_abandoned(&entry, older_than) {
+            removed.push(path);
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Discards `entry` when an interrupted write abandoned it, returning its path.
+///
+/// A sibling that cannot be dated is kept, because a sweep that guessed would
+/// delete a staging path a live writer is still filling.
+fn discard_if_abandoned(entry: &std::fs::DirEntry, older_than: Duration) -> Option<PathBuf> {
+    let metadata = entry.metadata().ok()?;
+    let modified = metadata.modified().ok()?;
+    let elapsed = std::time::SystemTime::now().duration_since(modified).ok()?;
+
+    if elapsed < older_than {
+        return None;
+    }
+
+    let path = entry.path();
+    let removal = if metadata.is_dir() {
+        std::fs::remove_dir_all(&path)
+    } else {
+        std::fs::remove_file(&path)
+    };
+
+    match removal {
+        Ok(()) => Some(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(path),
+        Err(error) => {
+            tracing::warn!(
+                artifact = %path.display(),
+                error = %error,
+                "failed to discard a staged artifact an interrupted write left behind"
+            );
+            None
+        }
     }
 }
 
