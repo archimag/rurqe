@@ -84,9 +84,21 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
         }
     }
 
-    /// Renders the query statement and parameters into the target buffers.
-    pub fn render_into(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        self.statement().render::<D>(sql, params);
+    /// Validates pre-flight SQL semantics and renders the query into the target buffers.
+    ///
+    /// The statement is validated before a single byte reaches `sql` or `params`,
+    /// exactly like [`SelectQuery::build`], so a query that violates a semantic
+    /// rule is reported as a [`BuildError`](crate::query::BuildError) instead of
+    /// being rendered and dispatched to the engine.
+    pub fn render_into(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), crate::query::BuildError> {
+        let statement = self.statement();
+        statement.validate()?;
+        statement.render::<D>(sql, params);
+        Ok(())
     }
 
     /// Validates pre-flight SQL semantics and renders the query into SQL text and its ordered parameter list.
