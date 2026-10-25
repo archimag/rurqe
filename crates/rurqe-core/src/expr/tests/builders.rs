@@ -788,3 +788,67 @@ fn a_case_over_aggregates_stays_an_aggregate() {
 
     assert!(matches!(per_row.kind(), ExprKind::Case { .. }));
 }
+
+#[test]
+fn a_bare_direct_aggregate_renders_without_modifiers() {
+    let (sql, params) = render(sum(OrderTotal).kind());
+
+    assert_eq!(sql, "SUM(\"total\")");
+    assert!(params.is_empty());
+}
+
+#[test]
+fn distinct_and_filter_stay_on_the_call_that_recorded_them() {
+    // Both modifiers belong to the aggregate call itself, so the rendered
+    // function carries them instead of losing them on the way into the
+    // statement the call is projected from.
+    let counted = count_distinct(OrderQty).filter_where(OrderQty.gt(0i64));
+    let (sql, params) = render(counted.kind());
+    assert_eq!(sql, "COUNT(DISTINCT \"qty\") FILTER (WHERE (\"qty\" > ?))");
+    assert_eq!(params, vec![SqlVal::I64(0)]);
+
+    let summed = sum_distinct(OrderTotal).filter_where(OrderTax.gt(0.0f64));
+    let (sql, params) = render(summed.kind());
+    assert_eq!(sql, "SUM(DISTINCT \"total\") FILTER (WHERE (\"tax\" > ?))");
+    assert_eq!(params, vec![SqlVal::F64(0.0)]);
+}
+
+#[test]
+fn arithmetic_preserves_the_filter_of_a_direct_aggregate() {
+    // The filter is recorded in the aggregate node itself, so combining the call
+    // with a constant keeps the clause in the rendered statement instead of
+    // dropping it silently.
+    let scaled = sum(OrderTotal).filter_where(OrderQty.gt(0i64)) * 2.0f64;
+
+    let (sql, params) = render(scaled.kind());
+
+    assert_eq!(sql, "(SUM(\"total\") FILTER (WHERE (\"qty\" > ?)) * ?)");
+    assert_eq!(params, vec![SqlVal::I64(0), SqlVal::F64(2.0)]);
+}
+
+#[test]
+fn the_modifier_markers_separate_the_call_from_a_composite_expression() {
+    // The call carries the marker that gates `distinct` and `filter_where` ...
+    let call: Expr<f64, Order, DirectAggregate> = sum(OrderTotal);
+    // ... a filtered call keeps a marker of its own, which a constant preserves ...
+    let filtered: Expr<f64, _, FilteredAggregate> = call.filter_where(OrderQty.gt(0i64));
+    // ... while combining a plain call degrades the expression to the general
+    // grouping marker: it still collapses its group, but offers no modifier.
+    let scaled_filtered: Expr<f64, _, FilteredAggregate> = filtered * 2.0f64;
+    let scaled_call: Expr<f64, _, Aggregate> = sum(OrderTotal) * 2.0f64;
+
+    assert!(matches!(
+        scaled_filtered.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Mul,
+            ..
+        }
+    ));
+    assert!(matches!(
+        scaled_call.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Mul,
+            ..
+        }
+    ));
+}

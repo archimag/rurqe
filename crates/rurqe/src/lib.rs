@@ -493,6 +493,71 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// projects its rows and requests no lock, [`LockedQuery`] is one that claims its
 /// rows until the transaction ends, and [`ExecutableUpdate`] and
 /// [`ExecutableDelete`] are mutations whose filter is already settled.
+///
+/// The typestates of the builders keep a clause order the engine refuses out of
+/// reach, so the rejected arrangements are compile errors rather than
+/// diagnostics from a running database. PostgreSQL accepts neither a statement
+/// that deduplicates its rows and locks them at the same time, which is why
+/// `distinct_on` and `for_update` exclude each other in both orders:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: a statement that deduplicated its rows cannot lock
+///     // them afterwards.
+///     let _ = select_from::<Postgres, User>()
+///         .select((UserId,))
+///         .distinct_on(UserId)
+///         .for_update();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: a statement that already locked its rows cannot
+///     // start deduplicating them.
+///     let _ = select_from::<Postgres, User>()
+///         .select((UserId,))
+///         .for_update()
+///         .distinct_on(UserId);
+/// }
+/// ```
+///
+/// The `DISTINCT` and `FILTER (WHERE ...)` clauses belong to the aggregate call
+/// itself, so the aggregate helpers accept them while a value combined from the
+/// call does not:
+///
+/// ```compile_fail
+/// use rurqe::prelude::*;
+///
+/// table! {
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the sum is combined with a constant, so the
+///     // expression no longer ends with the aggregate call and takes no
+///     // `FILTER` clause.
+///     let _ = (sum(OrderTotal) + 1.0f64).filter_where(OrderTotal.gt(0.0f64));
+/// }
+/// ```
 pub mod prelude {
     pub use crate::{delete_from, insert_into, select_from, update};
 
