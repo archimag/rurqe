@@ -26,6 +26,7 @@ use crate::expr::{render_expr, DialectInScope, Expr, ExprKind, NonAggregate, Sql
 use crate::query::{validate_expr, BuildError};
 use crate::schema::Table;
 
+use super::insert::merge_assignments;
 use super::{AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery};
 
 /// The action executed when an inserted row violates the conflict target.
@@ -393,20 +394,11 @@ where
         <A as AssignmentScope>::Scope: ConflictUpdateScope<T>,
         <A as AssignmentScope>::Dialect: DialectInScope<D>,
     {
-        let mut columns = Vec::new();
-        assignments.extend_assignments(&mut columns);
+        let mut incoming = Vec::new();
+        assignments.into_assignments(&mut incoming);
 
         let mut deduped_assignments: Vec<(&'static str, AssignValue)> = Vec::new();
-        for item in columns {
-            if let Some(existing) = deduped_assignments
-                .iter_mut()
-                .find(|(col, _)| *col == item.column)
-            {
-                existing.1 = item.value.clone();
-            } else {
-                deduped_assignments.push((item.column, item.value.clone()));
-            }
-        }
+        merge_assignments(&mut deduped_assignments, incoming);
 
         let action = if deduped_assignments.is_empty() {
             ConflictAction::DoNothing

@@ -68,6 +68,22 @@ pub enum BuildError {
         /// The alias the relation is addressed by.
         name: &'static str,
     },
+    /// An `INSERT` row carries a different number of values than the statement columns.
+    ///
+    /// Every row of one `INSERT` statement assigns the same columns in the same
+    /// order, because the column list is rendered once and each row contributes
+    /// only its values. A row source whose duplicate collapsing depends on the
+    /// row's contents can still record a different shape per row, which would
+    /// render a `VALUES` tuple of the wrong arity — a statement every engine
+    /// rejects — so the mismatch is reported before any SQL is dispatched.
+    InconsistentRows {
+        /// The 0-based position of the offending row among the recorded rows.
+        row: usize,
+        /// The number of columns the statement inserts into.
+        expected: usize,
+        /// The number of values the offending row carries.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -122,6 +138,18 @@ impl fmt::Display for BuildError {
                     "derived relation is addressed as `{name}` but its subquery is registered under another name; \
                      rendering the statement would read the stored table the relation names instead of the rows of the subquery, \
                      so a derived table has to be registered under the alias it is referenced by"
+                )
+            }
+            BuildError::InconsistentRows {
+                row,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "row {row} of this INSERT carries {actual} value(s) but the statement inserts into {expected} column(s); \
+                     every row of one statement has to assign the same columns in the same order, \
+                     so a row source whose assignments collapse differently per row cannot be rendered"
                 )
             }
         }

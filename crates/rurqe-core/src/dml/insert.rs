@@ -11,6 +11,8 @@
 
 use core::fmt;
 use core::marker::PhantomData;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
@@ -238,7 +240,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         // statement has to provide like any other expression it renders.
         <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
-        self.push_row(&set);
+        self.push_row(set);
         self.retype()
     }
 
@@ -258,7 +260,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         for set in rows {
-            self.push_row(&set);
+            self.push_row(set);
         }
 
         if self.rows.is_empty() {
@@ -399,7 +401,18 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         if let Some(select) = &self.select {
             select.validate()?;
         }
-        for row in &self.rows {
+        for (row_index, row) in self.rows.iter().enumerate() {
+            // The column list is rendered once, from the first row, while every
+            // row contributes only its values: a row carrying a different number
+            // of values would render a `VALUES` tuple of the wrong arity, which no
+            // engine accepts.
+            if row.len() != self.columns.len() {
+                return Err(BuildError::InconsistentRows {
+                    row: row_index,
+                    expected: self.columns.len(),
+                    actual: row.len(),
+                });
+            }
             for value in row {
                 value.validate()?;
             }
@@ -464,23 +477,19 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
 }
 
 impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
-    fn push_row<S: AssignmentSet<T>>(&mut self, set: &S) {
+    fn push_row<S: AssignmentSet<T>>(&mut self, set: S) {
         let mut raw_assignments = Vec::new();
-        set.extend_assignments(&mut raw_assignments);
+        set.into_assignments(&mut raw_assignments);
 
         let mut assignments: Vec<(&'static str, AssignValue)> = Vec::new();
-        for item in raw_assignments {
-            if let Some(existing) = assignments.iter_mut().find(|(col, _)| *col == item.column) {
-                existing.1 = item.value.clone();
-            } else {
-                assignments.push((item.column, item.value.clone()));
-            }
-        }
+        merge_assignments(&mut assignments, raw_assignments);
 
-        // Every row of one statement is typed by the same `AssignmentSet`, and a
-        // `VALUES` source is only recordable in the state that carries no source
-        // yet, so all rows assign the same columns in the same order and the
-        // column list only has to be recorded for the first row.
+        // Every row of one statement is typed by the same `AssignmentSet`, so the
+        // rows normally assign the same columns in the same order and the column
+        // list is recorded once, from the first row. A set whose duplicate
+        // collapsing depends on the row's contents can still record a different
+        // shape per row, so `build` checks every row against that list rather than
+        // assuming the shapes agree.
         if self.rows.is_empty() {
             self.columns = assignments.iter().map(|(col, _)| *col).collect();
         }
@@ -503,10 +512,46 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
     }
 }
 
+/// Merges `incoming` column assignments into `existing`, keeping the recorded order.
+///
+/// A column that is already recorded keeps its position and takes the newly
+/// assigned value, so assigning the same column twice renders a single assignment
+/// carrying the last value — within one assignment set and across repeated
+/// `set(...)` calls alike. A column recorded for the first time is appended.
+///
+/// The recorded positions are held in a map while the assignments are merged, so a
+/// set of `n` assignments costs one lookup per assignment instead of a scan over
+/// the assignments recorded so far.
+pub(crate) fn merge_assignments(
+    existing: &mut Vec<(&'static str, AssignValue)>,
+    incoming: Vec<(&'static str, AssignValue)>,
+) {
+    let mut positions = HashMap::with_capacity(existing.len() + incoming.len());
+    for (index, (column, _)) in existing.iter().enumerate() {
+        positions.entry(*column).or_insert(index);
+    }
+
+    for (column, value) in incoming {
+        match positions.entry(column) {
+            Entry::Occupied(occupied) => {
+                let index = *occupied.get();
+                if let Some(slot) = existing.get_mut(index) {
+                    slot.1 = value;
+                }
+            }
+            Entry::Vacant(vacant) => {
+                let index = existing.len();
+                vacant.insert(index);
+                existing.push((column, value));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dml::{Assignment, ColumnAssign};
+    use crate::dml::{AssignColumn, Assignment, ColumnAssign};
     use crate::expr::SqlVal;
     use core::fmt::Write;
 
@@ -644,6 +689,111 @@ mod tests {
 
         assert_eq!(error, EmptyRows);
         assert!(error.to_string().contains("empty"));
+    }
+
+    /// A row source whose duplicate collapsing depends on the row's contents,
+    /// which the assignment set type alone cannot express.
+    struct RaggedRow(Vec<(&'static str, AssignValue)>);
+
+    impl AssignmentSet<User> for RaggedRow {
+        fn extend_assignments<'a>(&'a self, out: &mut Vec<AssignColumn<'a>>) {
+            for (column, value) in &self.0 {
+                out.push(AssignColumn { column, value });
+            }
+        }
+
+        fn into_assignments(self, out: &mut Vec<(&'static str, AssignValue)>) {
+            out.extend(self.0);
+        }
+    }
+
+    impl AssignmentScope for RaggedRow {
+        type Scope = ();
+        type Dialect = ();
+    }
+
+    // A recorded row source is what `build` requires, regardless of how the
+    // values were produced, so the ragged set declares itself as one like the
+    // single assignment and the tuples do.
+    impl InsertSource<User> for RaggedRow {}
+
+    #[test]
+    fn rows_that_collapse_to_different_shapes_are_rejected() {
+        // The first row assigns both columns while the second collapses its
+        // duplicate assignment to a single value, so the `VALUES` list would carry
+        // two tuples of different arity.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values_many([
+                RaggedRow(vec![
+                    ("id", AssignValue::Value(SqlVal::I64(1))),
+                    ("name", AssignValue::Value(SqlVal::Text("a".to_owned()))),
+                ]),
+                RaggedRow(vec![("id", AssignValue::Value(SqlVal::I64(2)))]),
+            ])
+            .expect("the row source is not empty")
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::InconsistentRows {
+                row: 1,
+                expected: 2,
+                actual: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn ragged_rows_of_one_shape_render_one_tuple_per_row() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values_many([
+                RaggedRow(vec![
+                    ("id", AssignValue::Value(SqlVal::I64(1))),
+                    ("name", AssignValue::Value(SqlVal::Text("a".to_owned()))),
+                ]),
+                RaggedRow(vec![
+                    ("id", AssignValue::Value(SqlVal::I64(2))),
+                    ("name", AssignValue::Value(SqlVal::Text("b".to_owned()))),
+                ]),
+            ])
+            .expect("the row source is not empty")
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2), ($3, $4)"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("a".to_owned()),
+                SqlVal::I64(2),
+                SqlVal::Text("b".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_assignments_keeps_the_first_position_and_the_last_value() {
+        let mut existing = vec![("id", AssignValue::Value(SqlVal::I64(1)))];
+        merge_assignments(
+            &mut existing,
+            vec![
+                ("name", AssignValue::Value(SqlVal::Text("a".to_owned()))),
+                ("id", AssignValue::Value(SqlVal::I64(2))),
+                ("name", AssignValue::Value(SqlVal::Text("b".to_owned()))),
+            ],
+        );
+
+        assert_eq!(
+            existing,
+            vec![
+                ("id", AssignValue::Value(SqlVal::I64(2))),
+                ("name", AssignValue::Value(SqlVal::Text("b".to_owned()))),
+            ]
+        );
     }
 
     #[test]

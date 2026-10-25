@@ -18,6 +18,7 @@ use super::{
     HasAssignments, NoAssignments, Unfiltered,
 };
 use crate::dialect::{Dialect, SupportsReturning, SupportsUpdateFrom};
+use crate::dml::insert::merge_assignments;
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{
@@ -169,19 +170,9 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         <S as AssignmentScope>::Scope: ExprInScope<Scope, P> + ScopePositions<P>,
         <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
-        let mut columns = Vec::new();
-        set.extend_assignments(&mut columns);
-        for item in columns {
-            if let Some(existing) = self
-                .assignments
-                .iter_mut()
-                .find(|(col, _)| *col == item.column)
-            {
-                existing.1 = item.value.clone();
-            } else {
-                self.assignments.push((item.column, item.value.clone()));
-            }
-        }
+        let mut assignments = Vec::new();
+        set.into_assignments(&mut assignments);
+        merge_assignments(&mut self.assignments, assignments);
         self.retype()
     }
 
