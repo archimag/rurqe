@@ -28,7 +28,7 @@ use super::ops::IntoExpr;
 use super::qualify::qualify_references;
 use super::render::{parse_raw_sql, RawSqlError};
 use super::scope::{MergeScope, Merged, Unscoped};
-use super::val::SqlVal;
+use super::val::{BinaryOp, SqlVal};
 use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::schema::{Column, Table};
@@ -214,6 +214,70 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         col: C,
     ) -> crate::query::LagLeadFn<Option<T>, C::Table, crate::query::WindowColumnSet<C>> {
         crate::query::lead(col)
+    }
+
+    /// Builds a dialect-specific binary operator node from this expression.
+    ///
+    /// Dialect extensions describe the operators their engine does not share
+    /// with the others as symbolic nodes whose operands stay expressions until
+    /// the enclosing statement is rendered. The node is built by inheriting the
+    /// operands it is built from: the scope is merged from both sides, so a
+    /// foreign column on the right extends the scope with its table, the
+    /// aggregation marker is inherited from the left operand, and the dialect
+    /// requirements merge, so an operand pinned to a dialect keeps requiring it.
+    ///
+    /// The result type `Out` and the operand type `RhsT` are named explicitly,
+    /// because nothing in this crate fixes the type an extension operator
+    /// produces.
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn dialect_op<RhsT, Out, V>(
+        self,
+        op: &'static str,
+        rhs: V,
+    ) -> Expr<Out, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    where
+        Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
+        V: IntoExpr<RhsT>,
+    {
+        Expr::new(ExprKind::DialectOp {
+            op,
+            lhs: Box::new(self.into_kind()),
+            rhs: Box::new(rhs.into_expr_kind()),
+        })
+    }
+
+    /// Builds a quantified comparison of `value` against this expression.
+    ///
+    /// The node renders as `value <op> ANY/ALL(<self>)`: the `fn_name` names the
+    /// quantifier and takes the whole expression of this side as its only
+    /// argument, so the value compared against it sits on the left. The method is
+    /// therefore called on the quantified side, so
+    /// `array_column.dialect_quantified::<i64, _>("ANY", 7i64)` renders
+    /// `$1 = ANY("array_column")`. The scope, the aggregation marker, and the
+    /// dialect requirements are inherited from the two operands, so a quantified
+    /// comparison over a foreign column extends the scope with its table.
+    #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
+    pub fn dialect_quantified<E, V>(
+        self,
+        fn_name: &'static str,
+        value: V,
+    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    where
+        Scope: MergeScope<V::Scope>,
+        D: MergeDialect<V::Dialect>,
+        V: IntoExpr<E>,
+    {
+        Expr::new(ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(value.into_expr_kind()),
+            rhs: Box::new(ExprKind::Function {
+                name: fn_name,
+                args: vec![self.into_kind()],
+            }),
+        })
     }
 }
 
