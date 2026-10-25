@@ -6,6 +6,7 @@ use crate::error::Error;
 use super::lock;
 use super::types::{EnumDef, TableDef, TriggerDef, ViewDef};
 
+mod lock_toml;
 mod parser;
 
 /// The complete schema of a database as an engine-neutral catalog.
@@ -73,18 +74,32 @@ impl SchemaCatalog {
         format!("pub const SCHEMA_HASH: &str = \"{}\";", self.schema_hash())
     }
 
-    /// Parses a canonical `schema.lock` snapshot back into a catalog.
+    /// Parses a `schema.lock` snapshot back into a catalog.
     ///
-    /// The parser accepts exactly the representation produced by
-    /// [`SchemaCatalog::to_lock`] and returns the catalog sorted by enum name,
-    /// table name, column name, foreign-key name, and index name, so the result
-    /// equals the catalog that generated the snapshot. The labels of an enum keep
-    /// the order they were rendered in.
+    /// Two snapshot formats are dispatched on the first line:
     ///
-    /// A snapshot that still carries the v1 header is read as well: it differs
-    /// only in writing the SQL text of a column default verbatim, without the
-    /// quotes and escapes the current format applies.
+    /// * a legacy snapshot carrying a `schema lock v1`, `v2`, or `v3` header is
+    ///   read by the bespoke legacy parser, which accepts exactly the
+    ///   representation [`SchemaCatalog::to_lock`] produces;
+    /// * anything else is read as a versioned TOML v4 snapshot through the
+    ///   strongly typed DTOs of the `lock_toml` module, whose
+    ///   `#[serde(deny_unknown_fields)]` structs reject unknown keys instead of
+    ///   silently ignoring them.
+    ///
+    /// Both readers return the catalog sorted by enum name, table name, column
+    /// name, foreign-key name, and index name, so the result equals the catalog
+    /// that generated the snapshot. The labels of an enum keep the order they
+    /// were rendered in.
+    ///
+    /// A legacy v1 snapshot differs only in writing the SQL text of a column
+    /// default verbatim, without the quotes and escapes the current format
+    /// applies.
     pub fn from_lock(lock: &str) -> Result<SchemaCatalog, Error> {
-        parser::parse_lock(lock)
+        match lock.lines().next().unwrap_or_default() {
+            lock::LOCK_HEADER | lock::V2_LOCK_HEADER | lock::LEGACY_LOCK_HEADER => {
+                parser::parse_lock(lock)
+            }
+            _ => lock_toml::parse_lock_toml(lock),
+        }
     }
 }

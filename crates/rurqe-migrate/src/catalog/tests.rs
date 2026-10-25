@@ -546,3 +546,57 @@ fn schema_lock_v2_and_v1_legacy_snapshots_are_parsed_with_defaults() {
         ForeignKeyAction::NoAction
     );
 }
+
+#[test]
+fn from_lock_accepts_a_v4_toml_snapshot() {
+    let snapshot = concat!(
+        "version = 4\n",
+        "\n",
+        "enums = []\n",
+        "views = []\n",
+        "triggers = []\n",
+        "[[tables]]\n",
+        "name = \"users\"\n",
+        "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+        "primary_key = [\"id\"]\n",
+        "checks = []\n",
+        "foreign_keys = []\n",
+        "indexes = []\n",
+    );
+
+    let catalog = SchemaCatalog::from_lock(snapshot).expect("a v4 snapshot parses");
+
+    assert_eq!(
+        catalog,
+        SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            vec!["id".to_owned()],
+        )])
+    );
+}
+
+#[test]
+fn from_lock_routes_legacy_headers_to_the_legacy_reader() {
+    let lock = concat!(
+        "schema lock v1\n",
+        "\n",
+        "table \"events\" {\n",
+        "  column \"payload\": text null default line one\n",
+        "}\n",
+    );
+
+    let catalog = SchemaCatalog::from_lock(lock).expect("the v1 header reaches the legacy reader");
+
+    assert_eq!(
+        catalog.tables[0].columns[0].default.as_deref(),
+        Some("line one")
+    );
+}
+
+#[test]
+fn from_lock_rejects_an_empty_snapshot_through_the_toml_reader() {
+    let error = SchemaCatalog::from_lock("").expect_err("an empty snapshot declares no version");
+
+    assert!(error.to_string().contains("version"));
+}
