@@ -1,7 +1,8 @@
 //! PostgreSQL-specific expression extensions and text search functions.
 
 use rurqe_core::expr::{
-    BinaryOp, Expr, ExprKind, IntoExpr, MergeScope, Merged, SqlArrayElement, SqlVal, ToSqlVal,
+    BinaryOp, Expr, ExprKind, IntoExpr, MergeScope, Merged, NonAggregate, SqlArrayElement, SqlVal,
+    ToSqlVal,
 };
 use rurqe_core::query::MakeNullable;
 use rurqe_core::schema::Column;
@@ -404,40 +405,100 @@ impl<T: SqlArrayElement> PgArrayElements<T> for Option<Vec<T>> {}
 /// The element type is inferred from the column, so the operators apply both to
 /// a column declared as `Vec<T>` and to a nullable one declared as
 /// `Option<Vec<T>>` without an extra annotation.
+///
+/// The operators keep the dialect marker of their right-hand operand, so an
+/// expression or a subquery built for another engine is refused by the statement
+/// the predicate belongs to:
+///
+/// ```compile_fail
+/// use rurqe_postgres::PgArrayExpressions;
+/// use rurqe_postgres::rurqe_core::dialect::Dialect;
+/// use rurqe_postgres::rurqe_core::expr::{Expr, ExprKind, NonAggregate, SqlVal};
+/// use rurqe_postgres::rurqe_core::query::SelectQuery;
+///
+/// struct OtherDialect;
+///
+/// impl Dialect for OtherDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = (out, index);
+///     }
+/// }
+///
+/// rurqe_postgres::rurqe_core::table! {
+///     Post => "posts" {
+///         PostTags => "tags": Vec<String>,
+///     }
+/// }
+///
+/// let operand = Expr::<String, (), NonAggregate, OtherDialect>::from_kind(
+///     ExprKind::Value(SqlVal::Text("rust".to_owned())),
+/// );
+///
+/// // Fails to compile: the operand was built for another engine, so the dialect
+/// // marker it carries is refused by the PostgreSQL statement.
+/// let _ = SelectQuery::<rurqe_postgres::Postgres>::new()
+///     .from::<Post>()
+///     .select((PostTags,))
+///     .where_(PostTags.any(operand));
+/// ```
 pub trait PgArrayExpressions<T> {
     /// The scope of the table the array column belongs to.
     type Scope;
 
     /// Matches arrays containing every element of `other` (`@>`).
-    fn array_contains<V>(self, other: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn array_contains<V>(
+        self,
+        other: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<Vec<T>>;
 
     /// Matches arrays whose every element is contained in `other` (`<@`).
-    fn array_contained_by<V>(self, other: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn array_contained_by<V>(
+        self,
+        other: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<Vec<T>>;
 
     /// Matches arrays sharing at least one element with `other` (`&&`).
-    fn array_overlaps<V>(self, other: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn array_overlaps<V>(
+        self,
+        other: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<Vec<T>>;
 
     /// Matches arrays holding an element equal to `value` (`<value> = ANY(...)`).
-    fn any<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn any<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         V: IntoExpr<T>;
 
     /// Matches arrays whose every element equals `value` (`<value> = ALL(...)`).
-    fn all<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn all<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -451,7 +512,11 @@ where
 {
     type Scope = S::Table;
 
-    fn array_contains<V>(self, other: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn array_contains<V>(
+        self,
+        other: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -460,7 +525,11 @@ where
         Expr::from_kind(array_operator("@>", S::expr_kind(), other.into_expr_kind()))
     }
 
-    fn array_contained_by<V>(self, other: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn array_contained_by<V>(
+        self,
+        other: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -469,7 +538,11 @@ where
         Expr::from_kind(array_operator("<@", S::expr_kind(), other.into_expr_kind()))
     }
 
-    fn array_overlaps<V>(self, other: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn array_overlaps<V>(
+        self,
+        other: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -478,7 +551,11 @@ where
         Expr::from_kind(array_operator("&&", S::expr_kind(), other.into_expr_kind()))
     }
 
-    fn any<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn any<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -491,7 +568,11 @@ where
         ))
     }
 
-    fn all<V>(self, value: V) -> Expr<bool, Merged<Self::Scope, V::Scope>>
+    #[allow(clippy::type_complexity)]
+    fn all<V>(
+        self,
+        value: V,
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -538,7 +619,7 @@ mod tests {
         PgTextSearchValue, PgTextValue,
     };
     use crate::dialect::Postgres;
-    use rurqe_core::expr::{render_expr, Expr, ExprKind, SqlVal, ToSqlVal};
+    use rurqe_core::expr::{render_expr, Expr, ExprKind, NonAggregate, SqlVal, ToSqlVal};
     use rurqe_core::query::MakeNullable;
     use rurqe_core::schema::{AliasedCol, Column, TableRef};
     use rurqe_core::table;
@@ -736,6 +817,22 @@ mod tests {
         let (sql, params) = render(all.kind(), &[TableRef::plain("posts")]);
         assert_eq!(sql, "($1 = ALL(\"scores\"))");
         assert_eq!(params, vec![SqlVal::I64(0)]);
+    }
+
+    #[test]
+    fn array_operators_keep_the_dialect_marker_of_their_operand() {
+        // The operand carries the dialect it was built for, so the marker
+        // survives the operator and reaches the predicate the statement checks.
+        let tag = Expr::<String, (), NonAggregate, Postgres>::from_kind(ExprKind::Value(
+            SqlVal::Text("rust".to_owned()),
+        ));
+        let score = Expr::<i64, (), NonAggregate, Postgres>::from_kind(ExprKind::Value(
+            SqlVal::I64(0),
+        ));
+
+        let any: Expr<bool, Post, NonAggregate, Postgres> = PostTags.any(tag);
+        let all: Expr<bool, Post, NonAggregate, Postgres> = PostScores.all(score);
+        let _ = (any, all);
     }
 
     #[test]
