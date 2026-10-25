@@ -1,8 +1,8 @@
 //! PostgreSQL-specific expression extensions and text search functions.
 
 use rurqe_core::expr::{
-    BinaryOp, Expr, ExprKind, IntoExpr, MergeScope, Merged, NonAggregate, SqlArrayElement, SqlVal,
-    ToSqlVal,
+    Expr, ExprKind, IntoExpr, MergeDialect, MergeScope, Merged, MergedDialect, NonAggregate,
+    SqlArrayElement, SqlVal, ToSqlVal,
 };
 use rurqe_core::query::MakeNullable;
 use rurqe_core::schema::Column;
@@ -219,16 +219,16 @@ where
         // `jsonb ?| text[]` reads an array operand, so every key binds as one
         // element of a single array parameter. A text literal would have the
         // driver describe the parameter as `text`, which PostgreSQL rejects for
-        // the `text[]` operand of the operator.
-        Expr::from_kind(ExprKind::DialectOp {
-            op: "?|",
-            lhs: Box::new(C::expr_kind()),
-            rhs: Box::new(ExprKind::Value(SqlVal::Array(
-                keys.iter()
-                    .map(|key| SqlVal::Text((*key).to_owned()))
-                    .collect(),
-            ))),
-        })
+        // the `text[]` operand of the operator. The array references no
+        // relation, so the literal carries the empty scope and the operator
+        // inherits the scope of the column alone.
+        let array: Expr<Vec<SqlVal>> = Expr::from_kind(ExprKind::Value(SqlVal::Array(
+            keys.iter()
+                .map(|key| SqlVal::Text((*key).to_owned()))
+                .collect(),
+        )));
+
+        Expr::column::<C>().dialect_op::<Vec<SqlVal>, bool, _>("?|", array)
     }
 
     fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
@@ -273,11 +273,9 @@ where
     type Scope = C::Table;
 
     fn matches_tsquery(self, query: &str) -> Expr<bool, C::Table> {
-        Expr::from_kind(ExprKind::DialectOp {
-            op: "@@",
-            lhs: Box::new(C::expr_kind()),
-            rhs: Box::new(to_tsquery(query).into_kind()),
-        })
+        // The operator inherits the scope of the searched column, so the
+        // predicate references the table of that column and nothing else.
+        Expr::column::<C>().dialect_op::<String, bool, _>("@@", to_tsquery(query))
     }
 }
 
@@ -313,58 +311,52 @@ impl From<i32> for JsonKey {
     }
 }
 
-impl JsonKey {
-    /// The operand the extraction operator reads the path component from.
-    fn to_operand(&self) -> ExprKind {
-        match self {
-            // An object key binds as a parameter, which the server types as the
-            // `text` operand of the operator.
-            JsonKey::Key(key) => ExprKind::Value(SqlVal::Text(key.clone())),
-            // An array index is written into the statement as an integer literal.
-            // The statement is sent without parameter type hints, so an untyped
-            // parameter of `->` / `->>` is resolved against both the `text` and
-            // the `integer` overload of the operator, and the server types the
-            // unknown argument as `text`. The adapter then refuses to encode the
-            // `i32` index for a text column, so the extraction aborts at bind
-            // time. A literal carries its `integer` type to the server, which
-            // selects the `integer` overload before any parameter is encoded.
-            // The literal is built from an `i32`, so it holds nothing but digits
-            // and a sign.
-            JsonKey::Index(index) => ExprKind::Raw {
-                fragments: vec![index.to_string()],
-                params: Vec::new(),
-            },
-        }
-    }
-}
-
 /// Builds a `(<column> -> <path>)` extraction over the JSONB column `C`.
 ///
 /// The column stays symbolic, so its reference is qualified against the relations
 /// of the statement the extraction belongs to and quoted by the dialect. An object
 /// key is read from a bound parameter, while an array index is carried as an
 /// integer literal of the statement, so the server picks the `integer` overload of
-/// the operator instead of typing a parameter as `text`.
+/// the operator instead of typing a parameter as `text`. The path component
+/// references no relation, so it carries the empty scope, and the extraction
+/// inherits the scope of the column alone.
 fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Table> {
-    Expr::from_kind(ExprKind::DialectOp {
-        op,
-        lhs: Box::new(C::expr_kind()),
-        rhs: Box::new(key.to_operand()),
-    })
+    let column = Expr::column::<C>();
+
+    match key {
+        // An object key binds as a parameter, which the server types as the
+        // `text` operand of the operator.
+        JsonKey::Key(key) => {
+            let path: Expr<String> = Expr::literal(key);
+            column.dialect_op::<String, String, _>(op, path)
+        }
+        // An array index is written into the statement as an integer literal.
+        // The statement is sent without parameter type hints, so an untyped
+        // parameter of `->` / `->>` is resolved against both the `text` and the
+        // `integer` overload of the operator, and the server types the unknown
+        // argument as `text`. The adapter then refuses to encode the `i32` index
+        // for a text column, so the extraction aborts at bind time. A literal
+        // carries its `integer` type to the server, which selects the `integer`
+        // overload before any parameter is encoded. The literal is built from an
+        // `i32`, so it holds nothing but digits and a sign.
+        JsonKey::Index(index) => {
+            let path: Expr<i32> = Expr::raw_fragments(vec![index.to_string()], Vec::new());
+            column.dialect_op::<i32, String, _>(op, path)
+        }
+    }
 }
 
 /// Builds a `(<column> <op> <value>)` predicate over the column `C`.
 ///
-/// Both the operator and the operands are recorded as an [`ExprKind::DialectOp`]
-/// node, so the column reference is rendered together with the statement that
-/// contains the predicate: it is qualified in a multi-table query, and an
-/// aliased column keeps its `"alias"."column"` prefix.
+/// The operator is recorded as an [`ExprKind::DialectOp`] node whose left
+/// operand is the column itself, so the column reference is rendered together
+/// with the statement that contains the predicate: it is qualified in a
+/// multi-table query, and an aliased column keeps its `"alias"."column"`
+/// prefix. The node inherits the scope of the column, so the predicate
+/// references exactly the table of `C`, while the bound value it is compared
+/// with references no relation.
 fn column_binary_op<C: Column>(op: &'static str, val: &str) -> Expr<bool, C::Table> {
-    Expr::from_kind(ExprKind::DialectOp {
-        op,
-        lhs: Box::new(C::expr_kind()),
-        rhs: Box::new(ExprKind::Value(SqlVal::Text(val.to_owned()))),
-    })
+    Expr::column::<C>().dialect_op::<String, bool, _>(op, val.to_owned())
 }
 
 /// Builds a `to_tsvector(?)` expression.
@@ -424,9 +416,15 @@ impl<T: SqlArrayElement> PgArrayElements<T> for Option<Vec<T>> {}
 /// a column declared as `Vec<T>` and to a nullable one declared as
 /// `Option<Vec<T>>` without an extra annotation.
 ///
-/// The operators keep the dialect marker of their right-hand operand, so an
-/// expression or a subquery built for another engine is refused by the statement
-/// the predicate belongs to:
+/// The operators inherit the scope of the array column and merge it with the
+/// scope of their operand, so a predicate comparing the array of one relation
+/// with a value of another references both. The dialect marker names that same
+/// merge of the dialect-neutral column with the operand's dialect, which reduces
+/// to the operand's dialect for every operand.
+///
+/// An expression or a subquery built for another engine carries a dialect the
+/// statement cannot render, so it is refused by the statement the predicate
+/// belongs to:
 ///
 /// ```compile_fail
 /// use rurqe_postgres::PgArrayExpressions;
@@ -472,10 +470,16 @@ pub trait PgArrayExpressions<T> {
     fn array_contains<V>(
         self,
         other: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<Vec<T>>;
 
     /// Matches arrays whose every element is contained in `other` (`<@`).
@@ -483,10 +487,16 @@ pub trait PgArrayExpressions<T> {
     fn array_contained_by<V>(
         self,
         other: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<Vec<T>>;
 
     /// Matches arrays sharing at least one element with `other` (`&&`).
@@ -494,10 +504,16 @@ pub trait PgArrayExpressions<T> {
     fn array_overlaps<V>(
         self,
         other: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<Vec<T>>;
 
     /// Matches arrays holding an element equal to `value` (`<value> = ANY(...)`).
@@ -505,10 +521,16 @@ pub trait PgArrayExpressions<T> {
     fn any<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<T>;
 
     /// Matches arrays whose every element equals `value` (`<value> = ALL(...)`).
@@ -516,10 +538,16 @@ pub trait PgArrayExpressions<T> {
     fn all<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<T>;
 }
 
@@ -534,98 +562,95 @@ where
     fn array_contains<V>(
         self,
         other: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<Vec<T>>,
     {
-        Expr::from_kind(array_operator("@>", S::expr_kind(), other.into_expr_kind()))
+        Expr::column::<S>().dialect_op::<Vec<T>, bool, V>("@>", other)
     }
 
     #[allow(clippy::type_complexity)]
     fn array_contained_by<V>(
         self,
         other: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<Vec<T>>,
     {
-        Expr::from_kind(array_operator("<@", S::expr_kind(), other.into_expr_kind()))
+        Expr::column::<S>().dialect_op::<Vec<T>, bool, V>("<@", other)
     }
 
     #[allow(clippy::type_complexity)]
     fn array_overlaps<V>(
         self,
         other: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<Vec<T>>,
     {
-        Expr::from_kind(array_operator("&&", S::expr_kind(), other.into_expr_kind()))
+        Expr::column::<S>().dialect_op::<Vec<T>, bool, V>("&&", other)
     }
 
     #[allow(clippy::type_complexity)]
     fn any<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
-        Expr::from_kind(array_quantifier(
-            "ANY",
-            S::expr_kind(),
-            value.into_expr_kind(),
-        ))
+        Expr::column::<S>().dialect_quantified::<T, V>("ANY", value)
     }
 
     #[allow(clippy::type_complexity)]
     fn all<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, V::Dialect>
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<(), V::Dialect>,
+    >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
+        (): MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
-        Expr::from_kind(array_quantifier(
-            "ALL",
-            S::expr_kind(),
-            value.into_expr_kind(),
-        ))
-    }
-}
-
-/// Builds a `(<array> <op> <other>)` predicate over the array expression `array`.
-fn array_operator(op: &'static str, array: ExprKind, other: ExprKind) -> ExprKind {
-    ExprKind::DialectOp {
-        op,
-        lhs: Box::new(array),
-        rhs: Box::new(other),
-    }
-}
-
-/// Builds a `(<value> = ANY|ALL (<array>))` predicate over the array `array`.
-///
-/// `ANY` and `ALL` are written as the function call PostgreSQL spells them, so
-/// the array still renders its column reference through the dialect instead of
-/// reaching the buffer as pre-rendered text.
-fn array_quantifier(quantifier: &'static str, array: ExprKind, value: ExprKind) -> ExprKind {
-    ExprKind::Binary {
-        op: BinaryOp::Eq,
-        lhs: Box::new(value),
-        rhs: Box::new(ExprKind::Function {
-            name: quantifier,
-            args: vec![array],
-        }),
+        Expr::column::<S>().dialect_quantified::<T, V>("ALL", value)
     }
 }
 
