@@ -1,18 +1,21 @@
 //! Proleptic Gregorian calendar conversion shared across the workspace.
 //!
 //! [`civil_from_days`] turns a day count since the Unix epoch into its civil
-//! date without a calendar dependency, so crates that must stay dependency-free
-//! share one implementation instead of growing private copies. `rurqe-migrate`
-//! keeps a deliberate duplicate of the algorithm in its migration runner
-//! because that crate does not depend on `rurqe-core` at build time. That
-//! duplicate is not held in place by prose: `rurqe-migrate` carries `rurqe-core`
-//! as a dev-dependency, and the migration runner's
-//! `the_calendar_conversion_matches_the_shared_core_implementation` test asserts
-//! that both copies agree for every day within ±500 years of the epoch, so a
-//! change to the calendar rules breaks that test instead of silently skewing the
-//! timestamps recorded in migration history.
+//! date without a calendar dependency, so every crate that renders calendar
+//! dates reaches the same implementation instead of growing private copies.
+//! `rurqe-migrate` depends on `rurqe-core` directly — through its default
+//! feature set, which brings no external crate — and renders the timestamps it
+//! records in migration history through this function; `rurqe-postgres` uses it
+//! to render the temporal columns a generated schema maps onto `String`. One
+//! implementation means the crates cannot drift apart, so no cross-crate
+//! equivalence test is needed to hold them together.
 
 /// Converts days since the UNIX epoch into a proleptic Gregorian civil date.
+///
+/// The algorithm keeps the day within `1..=31` and the month within `1..=12`, so
+/// the conversions below never truncate and their fallbacks are unreachable: they
+/// exist so the function stays panic-free and truncation-free by construction,
+/// rather than relying on an unchecked cast whose overflow a caller cannot see.
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);
@@ -22,12 +25,13 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_pivot = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_pivot + 2) / 5 + 1) as u32;
-    let month = if month_pivot < 10 {
+    let day = u32::try_from(day_of_year - (153 * month_pivot + 2) / 5 + 1).unwrap_or(1);
+    let month = u32::try_from(if month_pivot < 10 {
         month_pivot + 3
     } else {
         month_pivot - 9
-    } as u32;
+    })
+    .unwrap_or(1);
     let year = if month <= 2 { year + 1 } else { year };
 
     (year, month, day)
