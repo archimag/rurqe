@@ -18,7 +18,7 @@ mod aggregates;
 mod arithmetic;
 mod predicates;
 
-pub use aggregates::{AggregateMarker, FilteredAggregate};
+pub use aggregates::{AcceptsAggregateClause, AggregateMarker, DirectAggregate, FilteredAggregate};
 
 use core::marker::PhantomData;
 
@@ -41,11 +41,17 @@ use crate::schema::{Column, Table};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NonAggregate;
 
-/// Marker of an expression produced by an aggregate function such as `SUM` or `COUNT`.
+/// Marker of an expression that collapses the rows of its group without keeping
+/// the aggregate call at its root.
 ///
-/// Aggregates collapse the rows of a group into a single value, so a grouped
-/// query accepts them even when they reference a column the query does not group
-/// by.
+/// A direct aggregate call carries [`DirectAggregate`] and switches to
+/// [`FilteredAggregate`] once a `FILTER (WHERE ...)` clause is attached; an
+/// expression built from an aggregate — `SUM("total") + $1`,
+/// `COALESCE(SUM("total"), $1)`, a `CASE` over aggregates — degrades to this
+/// marker. All three collapse the rows of a group into a single value, so a
+/// grouped query accepts them even when they reference a column the query does not
+/// group by, while `DISTINCT` and `FILTER (WHERE ...)` stay reachable on the
+/// aggregate call alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Aggregate;
 
@@ -62,9 +68,11 @@ type ExprMarker<T, Scope, Aggr, D> = PhantomData<fn() -> (T, Scope, Aggr, D)>;
 /// Column references carry the table of their column, so a projection built from
 /// a column of another table is rejected at the call site. Constructed values
 /// (literals, raw SQL, `CASE` branches) reference no table and keep the default
-/// scope `()`. Aggregate functions produce [`Aggregate`] expressions instead of
-/// the default [`NonAggregate`] ones, which is what admits them into the
-/// projection of a grouped query.
+/// scope `()`. Aggregate functions produce [`DirectAggregate`] expressions
+/// instead of the default [`NonAggregate`] ones, and an expression combining them
+/// carries [`Aggregate`]; either marker is what admits the projection into a
+/// grouped query, while the `DISTINCT` and `FILTER (WHERE ...)` clauses of the
+/// call stay reachable on the direct call alone.
 ///
 /// ```
 /// use rurqe_core::expr::{BinaryOp, Expr, ExprKind, SqlVal};

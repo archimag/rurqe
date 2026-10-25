@@ -3,7 +3,9 @@
 use core::marker::PhantomData;
 
 use crate::dialect::SupportsAggregateFilter;
-use crate::expr::{Aggregate, DialectInScope, Expr, ExprKind, FilteredAggregate, NonAggregate};
+use crate::expr::{
+    Aggregate, DialectInScope, DirectAggregate, Expr, ExprKind, FilteredAggregate, NonAggregate,
+};
 use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
 
 use super::scope::{NonNullableRel, NullableRel, ScopePositions, TableNullabilityInScope};
@@ -75,6 +77,10 @@ pub trait AggregateInDialect<D> {}
 impl<D> AggregateInDialect<D> for NonAggregate {}
 
 impl<D> AggregateInDialect<D> for Aggregate {}
+
+// A direct aggregate call renders without a `FILTER` clause, so every dialect
+// renders it.
+impl<D> AggregateInDialect<D> for DirectAggregate {}
 
 impl<D: SupportsAggregateFilter> AggregateInDialect<D> for FilteredAggregate {}
 

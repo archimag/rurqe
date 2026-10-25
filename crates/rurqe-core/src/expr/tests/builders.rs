@@ -408,28 +408,30 @@ fn column_aggregates_carry_the_table_of_their_column() {
     // An aggregate reading a column references the table of that column, so a
     // statement whose scope lacks the table rejects it instead of projecting a
     // value the database cannot compute.
-    let _: Expr<i64, User, Aggregate> = count_distinct(UserId);
-    let _: Expr<i64, User, Aggregate> = sum(UserId);
-    let _: Expr<i64, User, Aggregate> = sum_distinct(UserId);
-    let _: Expr<f64, User, Aggregate> = avg(UserId);
-    let _: Expr<f64, User, Aggregate> = avg_distinct(UserId);
-    let _: Expr<i64, User, Aggregate> = min(UserId);
-    let _: Expr<String, User, Aggregate> = max(UserName);
+    let _: Expr<i64, User, DirectAggregate> = count_distinct(UserId);
+    let _: Expr<i64, User, DirectAggregate> = sum(UserId);
+    let _: Expr<i64, User, DirectAggregate> = sum_distinct(UserId);
+    let _: Expr<f64, User, DirectAggregate> = avg(UserId);
+    let _: Expr<f64, User, DirectAggregate> = avg_distinct(UserId);
+    let _: Expr<i64, User, DirectAggregate> = min(UserId);
+    let _: Expr<String, User, DirectAggregate> = max(UserName);
 
-    // The constructors of `Expr` keep the same scope as the free functions.
-    let _: Expr<i64, User, Aggregate> = Expr::<i64>::count::<UserId>();
-    let _: Expr<i64, User, Aggregate> = Expr::<i64>::count_distinct::<UserId>();
-    let _: Expr<i64, User, Aggregate> = Expr::<i64>::sum::<UserId>();
-    let _: Expr<i64, User, Aggregate> = Expr::<i64>::sum_distinct::<UserId>();
-    let _: Expr<f64, User, Aggregate> = Expr::<f64>::avg::<UserId>();
-    let _: Expr<f64, User, Aggregate> = Expr::<f64>::avg_distinct::<UserId>();
-    let _: Expr<i64, User, Aggregate> = Expr::<i64>::min::<UserId>();
-    let _: Expr<String, User, Aggregate> = Expr::<String>::max::<UserName>();
+    // The constructors of `Expr` keep the same scope and the same marker as the
+    // free functions: a call keeps the aggregate at its root, so the optional
+    // clauses of the call apply to it directly.
+    let _: Expr<i64, User, DirectAggregate> = Expr::<i64>::count::<UserId>();
+    let _: Expr<i64, User, DirectAggregate> = Expr::<i64>::count_distinct::<UserId>();
+    let _: Expr<i64, User, DirectAggregate> = Expr::<i64>::sum::<UserId>();
+    let _: Expr<i64, User, DirectAggregate> = Expr::<i64>::sum_distinct::<UserId>();
+    let _: Expr<f64, User, DirectAggregate> = Expr::<f64>::avg::<UserId>();
+    let _: Expr<f64, User, DirectAggregate> = Expr::<f64>::avg_distinct::<UserId>();
+    let _: Expr<i64, User, DirectAggregate> = Expr::<i64>::min::<UserId>();
+    let _: Expr<String, User, DirectAggregate> = Expr::<String>::max::<UserName>();
 
     // `COUNT(*)` reads no column, so it references no table and stays constant
     // within every group.
-    let _: Expr<i64, (), Aggregate> = count_all();
-    let _: Expr<i64, (), Aggregate> = count();
+    let _: Expr<i64, (), DirectAggregate> = count_all();
+    let _: Expr<i64, (), DirectAggregate> = count();
 }
 
 #[test]
@@ -673,7 +675,9 @@ fn arithmetic_merges_the_scopes_of_its_operands() {
 
 #[test]
 fn arithmetic_preserves_the_aggregation_marker() {
-    // The aggregate references `orders`, and the bound operand adds no table.
+    // The aggregate references `orders`, and the bound operand adds no table, so
+    // the arithmetic still collapses the group; combining the call with an
+    // operand makes the expression an `Aggregate` instead of the call itself.
     let adjusted: Expr<f64, Order, Aggregate> = sum(OrderTotal) + 1.0f64;
 
     assert!(matches!(
@@ -783,4 +787,4 @@ fn a_case_over_aggregates_stays_an_aggregate() {
         .end();
 
     assert!(matches!(per_row.kind(), ExprKind::Case { .. }));
-} 
+}

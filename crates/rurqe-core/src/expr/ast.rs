@@ -3,7 +3,7 @@
 
 use core::marker::PhantomData;
 
-use super::builder::{Aggregate, Expr, NonAggregate};
+use super::builder::{Aggregate, DirectAggregate, Expr, NonAggregate};
 use super::operand::FunctionOperand;
 use super::ops::{AnySubquery, CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
@@ -440,9 +440,10 @@ impl Expr<i64> {
 
     /// Builds a `COUNT(*)` expression.
     ///
-    /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query.
-    pub fn count_all() -> Expr<i64, (), Aggregate> {
+    /// The produced expression carries the [`DirectAggregate`] marker, so it
+    /// stays projectable from a grouped query and accepts the `DISTINCT` and
+    /// `FILTER (WHERE ...)` clauses of the call.
+    pub fn count_all() -> Expr<i64, (), DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             distinct: false,
@@ -453,11 +454,12 @@ impl Expr<i64> {
 
     /// Builds a `COUNT(C)` expression for column `C`.
     ///
-    /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped. It also
-    /// references the table of `C`, so a statement whose scope lacks that table
-    /// rejects it like any other column reference.
-    pub fn count<C: Column>() -> Expr<i64, C::Table, Aggregate> {
+    /// The produced expression carries the [`DirectAggregate`] marker, so it
+    /// stays projectable from a grouped query even when `C` is not grouped, and
+    /// it accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call.
+    /// It also references the table of `C`, so a statement whose scope lacks that
+    /// table rejects it like any other column reference.
+    pub fn count<C: Column>() -> Expr<i64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             distinct: false,
@@ -469,8 +471,10 @@ impl Expr<i64> {
     /// Builds a `COUNT(DISTINCT C)` expression for column `C`.
     ///
     /// The scope is the table of `C` in both the distinct and the plain form, so
-    /// the aggregate is checked against the statement it is projected into.
-    pub fn count_distinct<C: Column>() -> Expr<i64, C::Table, Aggregate> {
+    /// the aggregate is checked against the statement it is projected into, and
+    /// the marker states that the expression still is the aggregate call itself,
+    /// so the `FILTER (WHERE ...)` clause applies to it.
+    pub fn count_distinct<C: Column>() -> Expr<i64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
             distinct: true,
@@ -483,11 +487,12 @@ impl Expr<i64> {
 impl Expr<f64> {
     /// Builds an `AVG(C)` expression for column `C`.
     ///
-    /// The produced expression carries the [`Aggregate`] marker, so it stays
-    /// projectable from a grouped query even when `C` is not grouped. It also
-    /// references the table of `C`, so a statement whose scope lacks that table
-    /// rejects it like any other column reference.
-    pub fn avg<C: Column>() -> Expr<f64, C::Table, Aggregate> {
+    /// The produced expression carries the [`DirectAggregate`] marker, so it
+    /// stays projectable from a grouped query even when `C` is not grouped, and
+    /// it accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call.
+    /// It also references the table of `C`, so a statement whose scope lacks that
+    /// table rejects it like any other column reference.
+    pub fn avg<C: Column>() -> Expr<f64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
             distinct: false,
@@ -499,8 +504,10 @@ impl Expr<f64> {
     /// Builds an `AVG(DISTINCT C)` expression for column `C`.
     ///
     /// The scope is the table of `C` in both the distinct and the plain form, so
-    /// the aggregate is checked against the statement it is projected into.
-    pub fn avg_distinct<C: Column>() -> Expr<f64, C::Table, Aggregate> {
+    /// the aggregate is checked against the statement it is projected into, and
+    /// the marker states that the expression still is the aggregate call itself,
+    /// so the `FILTER (WHERE ...)` clause applies to it.
+    pub fn avg_distinct<C: Column>() -> Expr<f64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
             distinct: true,

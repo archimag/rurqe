@@ -36,7 +36,10 @@ pub use ast::{
     RequiresGreatest, RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind, Subquery, SubqueryOp,
     WindowExprKind, WindowFrame, WindowFrameBound, WindowFrameKind,
 };
-pub use builder::{Aggregate, AggregateMarker, Expr, FilteredAggregate, NonAggregate};
+pub use builder::{
+    AcceptsAggregateClause, Aggregate, AggregateMarker, DirectAggregate, Expr, FilteredAggregate,
+    NonAggregate,
+};
 pub use functions::{
     avg, avg_distinct, coalesce, count, count_all, count_distinct, greatest, is_distinct_from,
     is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, SqlCastTarget,

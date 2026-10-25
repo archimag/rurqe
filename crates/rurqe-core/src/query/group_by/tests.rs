@@ -6,7 +6,7 @@
 //! expressions read instead of degrading into that empty scope.
 
 use crate::dialect::Dialect;
-use crate::expr::{coalesce, Aggregate, Expr, SqlVal, Unscoped};
+use crate::expr::{coalesce, Aggregate, DirectAggregate, Expr, SqlVal, Unscoped};
 use crate::{row_number, SelectQuery, Window};
 
 struct MockDialect;
@@ -154,8 +154,8 @@ fn aggregate_comparisons_keep_the_aggregation_marker() {
     // An aggregate collapses the rows of a group into one value, so a comparison
     // written over it stays a valid HAVING predicate instead of degrading into a
     // comparison evaluated per row.
-    let _: Expr<bool, (), Aggregate> = Expr::count_all().gt(5i64);
-    let _: Expr<bool, Order, Aggregate> = Expr::sum::<OrderTotal>().lt(100.0);
+    let _: Expr<bool, (), DirectAggregate> = Expr::count_all().gt(5i64);
+    let _: Expr<bool, Order, DirectAggregate> = Expr::sum::<OrderTotal>().lt(100.0);
 
     // A bare column comparison is evaluated per row, so it keeps the table of its
     // column and carries no aggregation marker.

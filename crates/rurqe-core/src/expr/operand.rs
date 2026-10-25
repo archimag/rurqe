@@ -216,7 +216,9 @@ impl<T: serde::Serialize> FunctionOperand<Json<T>> for &Json<T> {
 #[cfg(test)]
 mod tests {
     use super::FunctionOperand;
-    use crate::expr::{Aggregate, AggregateFunc, Expr, ExprKind, FilteredAggregate, NonAggregate};
+    use crate::expr::{
+        AggregateFunc, DirectAggregate, Expr, ExprKind, FilteredAggregate, NonAggregate,
+    };
     use crate::expr::SqlVal;
 
     crate::table! {
@@ -260,7 +262,7 @@ mod tests {
 
     #[test]
     fn an_aggregate_operand_keeps_its_marker() {
-        assert_markers::<i64, _, User, Aggregate, ()>(Expr::<i64>::sum::<UserId>());
+        assert_markers::<i64, _, User, DirectAggregate, ()>(Expr::<i64>::sum::<UserId>());
 
         assert!(matches!(
             Expr::<i64>::sum::<UserId>().into_operand_kind(),

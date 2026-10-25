@@ -1,7 +1,7 @@
 //! SQL arithmetic operand contracts and aggregation marker combination.
 
 use crate::expr::ast::ExprKind;
-use crate::expr::builder::{Aggregate, Expr, FilteredAggregate, NonAggregate};
+use crate::expr::builder::{Aggregate, DirectAggregate, Expr, FilteredAggregate, NonAggregate};
 use crate::expr::scope::Unscoped;
 use crate::expr::val::ToSqlVal;
 use crate::schema::{Column, Table};
@@ -199,6 +199,37 @@ impl<RhsScope> CombineAggr<Aggregate, RhsScope> for Aggregate {
     type Output = Aggregate;
 }
 
+// A direct aggregate call combined with another aggregate still collapses the
+// group, while the combination is no longer the call itself, so the result
+// degrades to the general marker.
+impl<RhsScope> CombineAggr<Aggregate, RhsScope> for DirectAggregate {
+    type Output = Aggregate;
+}
+
+impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for DirectAggregate {
+    type Output = Aggregate;
+}
+
+// A filtered aggregate keeps its filter recorded, so it stays the most specific
+// marker of the combination whichever side of the operator it sits on.
+impl<RhsScope> CombineAggr<FilteredAggregate, RhsScope> for DirectAggregate {
+    type Output = FilteredAggregate;
+}
+
+impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for Aggregate {
+    type Output = Aggregate;
+}
+
+impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for FilteredAggregate {
+    type Output = FilteredAggregate;
+}
+
+// A per-row operand on the left reads a column of the group, so a direct call on
+// the right stops collapsing it.
+impl<RhsScope> CombineAggr<DirectAggregate, RhsScope> for NonAggregate {
+    type Output = NonAggregate;
+}
+
 // A filtered aggregate collapses its group like a plain one, so combining it
 // with another aggregate stays an aggregate while keeping the filter recorded.
 impl<RhsScope> CombineAggr<Aggregate, RhsScope> for FilteredAggregate {
@@ -225,6 +256,13 @@ impl CombineAggr<NonAggregate, ()> for Aggregate {
     type Output = Aggregate;
 }
 
+// A direct call scaled by a value still collapses its group, and the arithmetic
+// expression is no longer the call itself, so it degrades to the general marker
+// without losing its place in the projection of a grouped query.
+impl CombineAggr<NonAggregate, ()> for DirectAggregate {
+    type Output = Aggregate;
+}
+
 // The same constant keeps a filtered aggregate standing, so a filtered aggregate
 // scaled by a value stays projectable from a grouped query.
 impl CombineAggr<NonAggregate, ()> for FilteredAggregate {
@@ -237,6 +275,10 @@ impl CombineAggr<NonAggregate, Unscoped> for Aggregate {
     type Output = NonAggregate;
 }
 
+impl CombineAggr<NonAggregate, Unscoped> for DirectAggregate {
+    type Output = NonAggregate;
+}
+
 impl CombineAggr<NonAggregate, Unscoped> for FilteredAggregate {
     type Output = NonAggregate;
 }
@@ -244,6 +286,10 @@ impl CombineAggr<NonAggregate, Unscoped> for FilteredAggregate {
 // A table scope is the scope of a column reference, which computes one value per
 // row.
 impl<T: Table> CombineAggr<NonAggregate, T> for Aggregate {
+    type Output = NonAggregate;
+}
+
+impl<T: Table> CombineAggr<NonAggregate, T> for DirectAggregate {
     type Output = NonAggregate;
 }
 
@@ -259,6 +305,10 @@ macro_rules! impl_tuple_combine_aggr {
         }
 
         impl<$($table: Table),+> CombineAggr<NonAggregate, ($($table,)+)> for FilteredAggregate {
+            type Output = NonAggregate;
+        }
+
+        impl<$($table: Table),+> CombineAggr<NonAggregate, ($($table,)+)> for DirectAggregate {
             type Output = NonAggregate;
         }
     };
