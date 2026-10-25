@@ -1,6 +1,5 @@
 //! [`MigrationBackend`] over a `postgres` client.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rurqe_migrate::catalog::SchemaCatalog;
@@ -70,6 +69,70 @@ where
     }
 }
 
+/// Applies the answer of one `pg_advisory_unlock` attempt to `lock_held`.
+///
+/// The advisory lock belongs to the PostgreSQL *session* that took it, so a
+/// release has to be confirmed before the runner forgets the lock. `answer`
+/// carries what the statement produced:
+///
+/// * `Ok(true)` — the server confirms the session held the lock and freed it;
+/// * `Ok(false)` — the session held no such lock, so nothing was freed. The run
+///   reports the inconsistency instead of recording a release that never
+///   happened, and stops treating the lock as its own, because the session
+///   provably holds none;
+/// * `Err(_)` — the statement never reached an answer, so whether the session
+///   still holds the lock is unknown here. The flag survives, and the [`Drop`]
+///   implementation of [`PostgresMigrationBackend`] retries the release, so one
+///   failed round cannot leak the lock for the rest of the session.
+///
+/// The decision stays pure so all three branches are verified without a
+/// PostgreSQL daemon, the way [`poll_advisory_lock`] is.
+pub(super) fn apply_unlock_answer(
+    lock_id: i64,
+    lock_held: &mut bool,
+    answer: Result<bool, Error>,
+) -> Result<(), Error> {
+    match answer {
+        Ok(true) => {
+            *lock_held = false;
+            tracing::debug!(lock_id, "released the PostgreSQL advisory lock");
+            Ok(())
+        }
+        Ok(false) => {
+            *lock_held = false;
+            let error = advisory_lock_not_held(lock_id);
+            tracing::warn!(
+                lock_id,
+                error = %error,
+                "the PostgreSQL session answered that it held no migration advisory lock"
+            );
+            Err(error)
+        }
+        Err(error) => {
+            tracing::warn!(
+                lock_id,
+                error = %error,
+                "failed to release the PostgreSQL advisory lock"
+            );
+            Err(error)
+        }
+    }
+}
+
+/// The diagnostic of a session that answered it held no lock to release.
+///
+/// `pg_advisory_unlock` answers `false` when this session holds no such lock —
+/// either it never took it or somebody already freed it. The message names the
+/// lock and its session scope without guessing which of the two happened, so the
+/// operator knows the release never took effect instead of assuming it did.
+fn advisory_lock_not_held(lock_id: i64) -> Error {
+    Error::Backend(format!(
+        "the PostgreSQL session reported advisory lock {lock_id} (0x{lock_id:016x}) as not held \
+         while releasing it; the lock belongs to the session that took it, so nothing was freed \
+         and the run stops treating the lock as its own"
+    ))
+}
+
 /// [`MigrationBackend`] over a `postgres` client.
 ///
 /// The adapter is synchronous and blocking: it owns a `postgres::Client` whose
@@ -77,26 +140,36 @@ where
 /// [`acquire_lock`](MigrationBackend::acquire_lock) polls the advisory lock by
 /// pausing between attempts. Invoke it from a blocking context —
 /// `tokio::task::spawn_blocking`, a dedicated thread, or plain synchronous code —
-/// never directly on an asynchronous worker thread. [`Self::with_sleeper`]
-/// replaces the default [`ThreadSleeper`] when a caller supplies its own pause
-/// strategy.
+/// never directly on an asynchronous worker thread.
+///
+/// The advisory lock is *session*-scoped: `pg_try_advisory_lock` binds it to the
+/// connection that took it, and the server keeps it until that session releases
+/// it or ends. The adapter therefore owns a dedicated, non-pooled connection for
+/// the whole run — a client handed back into a pool would keep the lock held for
+/// the lifetime of the pooled session and block every other runner until its
+/// timeout. Closing the client ends the session, so a lock whose release the
+/// server never confirmed is freed by the server itself once the adapter is
+/// dropped.
 pub struct PostgresMigrationBackend {
     client: postgres::Client,
     schema: String,
     lock_held: bool,
     lock_timeout: Duration,
-    sleeper: Arc<dyn Sleeper>,
 }
 
 impl PostgresMigrationBackend {
     /// Wraps an open PostgreSQL client.
+    ///
+    /// The client must be a dedicated connection, never one borrowed from a
+    /// pool: the advisory lock taken by a run is bound to the session, so a
+    /// pooled connection returned to its pool would hold the lock until the
+    /// pooled session ends.
     pub fn new(client: postgres::Client) -> Self {
         Self {
             client,
             schema: DEFAULT_SCHEMA.to_owned(),
             lock_held: false,
             lock_timeout: DEFAULT_ADVISORY_LOCK_TIMEOUT,
-            sleeper: Arc::new(ThreadSleeper),
         }
     }
 
@@ -123,17 +196,6 @@ impl PostgresMigrationBackend {
     /// fast instead of hanging forever.
     pub fn with_lock_timeout(mut self, timeout: Duration) -> Self {
         self.lock_timeout = timeout;
-        self
-    }
-
-    /// Replaces the strategy pausing execution between two advisory lock rounds.
-    ///
-    /// The default [`ThreadSleeper`] blocks the calling thread, which suits a
-    /// synchronous runner. A caller that already drives its own scheduler — or a
-    /// test asserting how often the wait happened — supplies its own
-    /// implementation instead.
-    pub fn with_sleeper(mut self, sleeper: impl Sleeper + 'static) -> Self {
-        self.sleeper = Arc::new(sleeper);
         self
     }
 
@@ -207,13 +269,12 @@ impl MigrationBackend for PostgresMigrationBackend {
             "acquiring the PostgreSQL advisory lock"
         );
 
-        let sleeper = Arc::clone(&self.sleeper);
         let client = &mut self.client;
         let outcome = poll_advisory_lock(
             lock_id,
             timeout,
             ADVISORY_LOCK_RETRY_INTERVAL,
-            sleeper.as_ref(),
+            &ThreadSleeper,
             || {
                 let row = client
                     .query_one("SELECT pg_try_advisory_lock($1)", &[&lock_id])
@@ -244,32 +305,37 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn release_lock(&mut self) -> Result<(), Error> {
-        // The flag is cleared before the query runs: a connection that already
-        // dropped releases the lock on the server side by itself, and retrying
-        // the unlock on the same closed connection from `Drop` cannot succeed.
-        self.lock_held = false;
+        // A session that took no lock — or already released it — has nothing to
+        // unlock, and asking the server anyway would answer `false` for a run
+        // that never held the lock.
+        if !self.lock_held {
+            return Ok(());
+        }
 
         tracing::debug!(
             lock_id = MIGRATION_LOCK_ID,
             "releasing the PostgreSQL advisory lock"
         );
 
-        self.client
-            .query("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
-            .map(|_| ())
-            .map_err(|err| {
-                tracing::warn!(
-                    lock_id = MIGRATION_LOCK_ID,
-                    error = %err,
-                    "failed to release the PostgreSQL advisory lock"
-                );
-                backend_error(err)
-            })
+        // The answer of the statement and the diagnostic of a statement that
+        // never produced one are kept apart: a confirmed answer proves the
+        // session holds no lock any more, while a driver failure leaves that
+        // question open for `Drop` to retry.
+        let answer = self
+            .client
+            .query_one("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
+            .map_err(backend_error)
+            .and_then(|row| row.try_get(0).map_err(backend_error));
+
+        apply_unlock_answer(MIGRATION_LOCK_ID, &mut self.lock_held, answer)
     }
 }
 
 impl Drop for PostgresMigrationBackend {
     fn drop(&mut self) {
+        // The flag survives a release the server never answered, so a session
+        // whose unlock failed is retried here instead of leaving the
+        // session-scoped lock held for as long as the connection lives.
         if !self.lock_held {
             return;
         }

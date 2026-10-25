@@ -9,7 +9,7 @@ use rurqe_migrate::migration::{Migration, MigrationKind};
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction, Migrator};
 use rurqe_migrate::sleeper::{NoopSleeper, Sleeper};
 
-use super::postgres::{poll_advisory_lock, MIGRATION_LOCK_ID};
+use super::postgres::{apply_unlock_answer, poll_advisory_lock, MIGRATION_LOCK_ID};
 use super::sqlite::SqliteMigrationBackend;
 
 /// A [`Sleeper`] recording the pause of every waiting round.
@@ -362,4 +362,57 @@ fn a_backend_failure_stops_the_polling() {
     .expect_err("a failing backend is reported unchanged");
 
     assert_eq!(error, Error::Backend("connection lost".to_owned()));
+}
+
+#[test]
+fn a_confirmed_unlock_forgets_the_lock() {
+    let mut held = true;
+
+    apply_unlock_answer(MIGRATION_LOCK_ID, &mut held, Ok(true))
+        .expect("the confirmed release succeeds");
+
+    assert!(!held, "a freed lock is not retried");
+}
+
+#[test]
+fn an_unlock_the_session_never_held_is_reported() {
+    let mut held = true;
+
+    let error = apply_unlock_answer(MIGRATION_LOCK_ID, &mut held, Ok(false))
+        .expect_err("a lock the session never held is reported, not treated as released");
+
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(
+        message.contains(&MIGRATION_LOCK_ID.to_string()),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("0x{MIGRATION_LOCK_ID:016x}")),
+        "{message}"
+    );
+    assert!(
+        !held,
+        "the session answered, so no lock is left for `Drop` to retry"
+    );
+}
+
+#[test]
+fn an_unanswered_unlock_keeps_the_lock_for_the_drop_retry() {
+    let mut held = true;
+
+    let error = apply_unlock_answer(
+        MIGRATION_LOCK_ID,
+        &mut held,
+        Err(Error::Backend("connection lost".to_owned())),
+    )
+    .expect_err("an unanswered statement is reported");
+
+    assert_eq!(error, Error::Backend("connection lost".to_owned()));
+    assert!(
+        held,
+        "a statement without an answer leaves the lock held so `Drop` retries it"
+    );
 }
