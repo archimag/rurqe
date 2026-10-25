@@ -113,7 +113,7 @@ fn render_postgres(config: &postgres::Config) -> String {
 /// specification — the Unix-socket path of a libpq `host=/var/run/…` value, or a
 /// variant a later driver release adds — renders as a fixed marker, so the
 /// answer never reproduces text the input carried.
-fn host_name(host: &postgres::config::Host) -> String {
+pub(super) fn host_name(host: &postgres::config::Host) -> String {
     match host {
         postgres::config::Host::Tcp(name) => name.clone(),
         _ => "unix-socket".to_owned(),
