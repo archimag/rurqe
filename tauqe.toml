@@ -7,8 +7,9 @@ models = [
   { model = "~anthropic/claude-opus-latest", alias = "Claude Opus" },
   { model = "~anthropic/claude-sonnet-latest", alias = "Claude Sonnet" },
   { model = "~anthropic/claude-haiku-latest", alias = "Claude Haiku" },
-  { model = "~deepseek/deepseek-flash-latest", alias = "DeepSeek" },
-  { model = "qwen/qwen3-coder-next", alias = "Qwen Coder" }
+  { model = "~deepseek/deepseek-flash-latest", alias = "DeepSeek Flash" },
+  { model = "~z-ai/glm-latest", alias = "GLM"  },
+  { model = "~z-ai/glm-flash-latest", alias = "GLM Flash" }
 ]
 
 [models]
@@ -16,27 +17,26 @@ models = [
 # `primary` is mandatory and must list at least one model; its first entry is the
 # active model in the idle state and the deterministic default for the other roles.
 primary = [
+  { model = "GLM", effort = "high" },
   "Gemini Flash",
-  "DeepSeek"
 ]
 scribe = "Claude Haiku"    # history compaction, git squash commit messages, diff summarization
 
 # The coder list is the natural escalation ladder (level up): on verification
 # healing stalls or exhausted retries the turn advances to the next coder entry.
 coder = [
-  "DeepSeek",
-  { model = "Gemini Flash", effort = "medium" }
+  "DeepSeek Flash",
+  { model = "GLM", effort = "high" }
 ]
 
 # Conceptual design, plan refinement, blocked-step replanning.
 architect = [
-  { model = "Gemini Flash", effort = "high" },
-  "Gemini Argon"
+  "GLM"
 ]
 
 # Automated code review of active context files.
 reviewer = [
-  { model = "Gemini Flash", effort = "high" },
+  "GLM",
   "Gemini Argon",
   "Claude Sonnet",
   "Claude Opus"

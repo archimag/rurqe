@@ -18,11 +18,6 @@
 //! schema_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 //! ```
 //!
-//! Only that single table is interpreted. The reader is a deliberately small
-//! line-oriented parser instead of a full TOML implementation, so the toolchain
-//! keeps its dependency footprint; unrelated sections are ignored and malformed
-//! entries are reported with their line number.
-//!
 //! ```
 //! use rurqe_migrate::Checkpoint;
 //!
@@ -38,10 +33,11 @@
 
 use std::path::Path;
 
+use serde::Deserialize;
+
 use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
-use crate::mini_toml::{section_name, split_entry, strip_comment, TomlError};
 use crate::stage::STAGE_SCRIPT;
 use crate::version::MigrationVersion;
 
@@ -56,6 +52,19 @@ const VERSION_KEY: &str = "pruned_up_to_version";
 
 /// The key declaring the stage hash of the pruned history.
 const HASH_KEY: &str = "schema_hash";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointFile {
+    checkpoint: CheckpointSection,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckpointSection {
+    pruned_up_to_version: String,
+    schema_hash: String,
+}
 
 /// A marker anchoring the active migration tail to a pruned base stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,63 +109,25 @@ impl Checkpoint {
 
     /// Parses the `[checkpoint]` table out of `contents`.
     pub fn parse(contents: &str) -> Result<Self, Error> {
-        let mut section: Option<&str> = None;
-        let mut pruned_up_to_version: Option<MigrationVersion> = None;
-        let mut schema_hash: Option<Checksum> = None;
+        let file: CheckpointFile = toml::from_str(contents).map_err(|err| invalid(err.to_string()))?;
 
-        for (index, raw) in contents.lines().enumerate() {
-            let number = index + 1;
-            let line = strip_comment(raw).trim();
+        let pruned_up_to_version = file
+            .checkpoint
+            .pruned_up_to_version
+            .parse::<MigrationVersion>()
+            .map_err(|_| {
+                invalid(format!(
+                    "invalid version `{}`",
+                    file.checkpoint.pruned_up_to_version
+                ))
+            })?;
 
-            if line.is_empty() {
-                continue;
-            }
-
-            if line.starts_with('[') {
-                section = Some(section_name(line, number).map_err(from_toml)?);
-                continue;
-            }
-
-            if section != Some(CHECKPOINT_SECTION) {
-                continue;
-            }
-
-            let (key, value) = split_entry(line, number).map_err(from_toml)?;
-            match key.as_str() {
-                VERSION_KEY => {
-                    if pruned_up_to_version.is_some() {
-                        return Err(syntax(
-                            number,
-                            format!("`{VERSION_KEY}` is given more than once"),
-                        ));
-                    }
-                    let version = value
-                        .parse::<MigrationVersion>()
-                        .map_err(|_| syntax(number, format!("invalid version `{value}`")))?;
-                    pruned_up_to_version = Some(version);
-                }
-                HASH_KEY => {
-                    if schema_hash.is_some() {
-                        return Err(syntax(
-                            number,
-                            format!("`{HASH_KEY}` is given more than once"),
-                        ));
-                    }
-                    let hash = Checksum::from_hex(&value)
-                        .map_err(|_| syntax(number, format!("invalid SHA-256 hash `{value}`")))?;
-                    schema_hash = Some(hash);
-                }
-                other => return Err(syntax(number, format!("unknown checkpoint key `{other}`"))),
-            }
-        }
-
-        let pruned_up_to_version = pruned_up_to_version.ok_or_else(|| {
+        let schema_hash = Checksum::from_hex(&file.checkpoint.schema_hash).map_err(|_| {
             invalid(format!(
-                "missing `{VERSION_KEY}` in `[{CHECKPOINT_SECTION}]`"
+                "invalid SHA-256 hash `{}`",
+                file.checkpoint.schema_hash
             ))
         })?;
-        let schema_hash = schema_hash
-            .ok_or_else(|| invalid(format!("missing `{HASH_KEY}` in `[{CHECKPOINT_SECTION}]`")))?;
 
         Ok(Self::new(pruned_up_to_version, schema_hash))
     }
@@ -256,17 +227,6 @@ fn invalid(message: impl Into<String>) -> Error {
     }
 }
 
-/// Builds an [`Error::InvalidCheckpoint`] anchored at the `number`-th line.
-fn syntax(number: usize, message: impl Into<String>) -> Error {
-    let message = message.into();
-    invalid(format!("line {number}: {message}"))
-}
-
-/// Lifts a shared [`TomlError`] into the migration error type.
-fn from_toml(error: TomlError) -> Error {
-    syntax(error.line, error.message)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,19 +255,27 @@ mod tests {
     }
 
     #[test]
-    fn bare_values_and_nested_sections_are_handled() {
-        let checkpoint = Checkpoint::parse(&format!(
+    fn unknown_sections_and_fields_are_rejected() {
+        let err = Checkpoint::parse(&format!(
             "# pruning boundary\n\
-             [codegen.type_overrides]\n\
-             \"users.id\" = \"uuid::Uuid\"\n\
+             [unknown_section]\n\
+             key = \"val\"\n\
              \n\
              [checkpoint]\n\
-             pruned_up_to_version = \"3.2\" # the tail starts here\n\
-             schema_hash = {HASH}\n"
+             pruned_up_to_version = \"3.2\"\n\
+             schema_hash = \"{HASH}\"\n"
         ))
-        .expect("unrelated tables are ignored");
+        .expect_err("unknown sections are rejected");
+        assert!(err.to_string().contains("unknown field") || err.to_string().contains("unknown_section"));
 
-        assert_eq!(checkpoint, marker("3.2"));
+        let err = Checkpoint::parse(&format!(
+            "[checkpoint]\n\
+             pruned_up_to_version = \"3.2\"\n\
+             schema_hash = \"{HASH}\"\n\
+             extra_field = true\n"
+        ))
+        .expect_err("unknown fields are rejected");
+        assert!(err.to_string().contains("extra_field"));
     }
 
     #[test]
@@ -325,26 +293,26 @@ mod tests {
             "[checkpoint]\npruned_up = \"3.2\"\nschema_hash = \"{HASH}\"\n"
         ))
         .expect_err("unknown keys are rejected");
-        assert!(unknown_key.to_string().contains("line 2"));
+        assert!(unknown_key.to_string().contains("pruned_up"));
 
         let bad_hash = Checkpoint::parse(
             "[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"abc\"\n",
         )
         .expect_err("a truncated hash is rejected");
-        assert!(bad_hash.to_string().contains("line 3"));
+        assert!(bad_hash.to_string().contains("SHA-256 hash"));
 
         let bad_version = Checkpoint::parse(&format!(
             "[checkpoint]\npruned_up_to_version = \"v3\"\nschema_hash = \"{HASH}\"\n"
         ))
         .expect_err("a malformed version is rejected");
-        assert!(bad_version.to_string().contains("line 2"));
+        assert!(bad_version.to_string().contains("version"));
 
         let duplicate = Checkpoint::parse(&format!(
             "[checkpoint]\npruned_up_to_version = \"3\"\npruned_up_to_version = \"4\"\n\
              schema_hash = \"{HASH}\"\n"
         ))
         .expect_err("repeated keys are rejected");
-        assert!(duplicate.to_string().contains("more than once"));
+        assert!(duplicate.to_string().contains("duplicate"));
     }
 
     #[test]
