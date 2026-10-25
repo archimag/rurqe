@@ -56,20 +56,30 @@ impl fmt::Display for RawSqlError {
 impl std::error::Error for RawSqlError {}
 
 /// Counts unescaped `?` placeholders and `{}` placeholders in a raw SQL template.
+///
+/// Escaped sequences are not placeholders: `??` is a literal question mark,
+/// `{{` a literal opening brace, and `}}` a literal closing brace.
 fn count_raw_placeholders(template: &str) -> (usize, usize) {
     let mut question_marks = 0;
     let mut braces = 0;
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '?' {
-            if chars.peek() == Some(&'?') {
+        match c {
+            // `??` escapes a literal question mark, so it binds no parameter.
+            '?' if chars.peek() == Some(&'?') => {
                 chars.next();
-            } else {
-                question_marks += 1;
             }
-        } else if c == '{' && chars.peek() == Some(&'}') {
-            chars.next();
-            braces += 1;
+            '?' => question_marks += 1,
+            // `{{` and `}}` escape a literal brace, so neither opens a placeholder.
+            '{' | '}' if chars.peek() == Some(&c) => {
+                chars.next();
+            }
+            // An adjacent `{}` pair declares one bound parameter.
+            '{' if chars.peek() == Some(&'}') => {
+                chars.next();
+                braces += 1;
+            }
+            _ => {}
         }
     }
     (question_marks, braces)
@@ -77,10 +87,13 @@ fn count_raw_placeholders(template: &str) -> (usize, usize) {
 
 /// Splits a raw SQL template into text fragments around parameter placeholders (`?` or `{}`).
 ///
-/// Literal question marks can be escaped as `??`. Both placeholder styles may not
-/// be mixed within a single template, and the template must declare exactly
-/// `param_count` placeholders — one per bound parameter — otherwise the mismatch
-/// is reported as a [`RawSqlError`] instead of producing a broken statement.
+/// Escaped sequences produce literal text instead of syntax: `??` is a single
+/// `?`, `{{` a single `{`, and `}}` a single `}`. The escapes let a template carry
+/// a JSON literal or an object-like SQL fragment without it being read as a
+/// placeholder. Both placeholder styles may not be mixed within a single template,
+/// and the template must declare exactly `param_count` placeholders — one per bound
+/// parameter — otherwise the mismatch is reported as a [`RawSqlError`] instead of
+/// producing a broken statement.
 ///
 /// ```
 /// use rurqe_core::expr::parse_raw_sql;
@@ -88,6 +101,10 @@ fn count_raw_placeholders(template: &str) -> (usize, usize) {
 /// assert_eq!(
 ///     parse_raw_sql("age > ?", 1),
 ///     Ok(vec!["age > ".to_owned(), String::new()])
+/// );
+/// assert_eq!(
+///     parse_raw_sql("payload = '{{}}'::jsonb", 0),
+///     Ok(vec!["payload = '{}'::jsonb".to_owned()])
 /// );
 /// assert!(parse_raw_sql("age > ?", 0).is_err());
 /// ```
@@ -109,26 +126,52 @@ pub fn parse_raw_sql(template: &str, param_count: usize) -> Result<Vec<String>, 
     Ok(split_fragments(template, question_marks > 0))
 }
 
-/// Splits `template` at every placeholder of the chosen style, unescaping `??`.
+/// Splits `template` at every placeholder of the chosen style, unescaping `??`,
+/// `{{`, and `}}` into their literal counterparts.
 fn split_fragments(template: &str, use_question_mark: bool) -> Vec<String> {
     let mut fragments = vec![String::new()];
 
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '?' {
-            if chars.peek() == Some(&'?') {
-                chars.next();
-                push_char(&mut fragments, '?');
-            } else if use_question_mark {
-                fragments.push(String::new());
-            } else {
-                push_char(&mut fragments, '?');
+        match c {
+            '?' => {
+                if chars.peek() == Some(&'?') {
+                    chars.next();
+                    push_char(&mut fragments, '?');
+                } else if use_question_mark {
+                    fragments.push(String::new());
+                } else {
+                    push_char(&mut fragments, '?');
+                }
             }
-        } else if c == '{' && chars.peek() == Some(&'}') && !use_question_mark {
-            chars.next();
-            fragments.push(String::new());
-        } else {
-            push_char(&mut fragments, c);
+            '{' => match chars.peek() {
+                // `{{` is an escaped literal opening brace.
+                Some(&'{') => {
+                    chars.next();
+                    push_char(&mut fragments, '{');
+                }
+                Some(&'}') => {
+                    chars.next();
+                    if use_question_mark {
+                        // Unreachable through `parse_raw_sql` (mixing styles is
+                        // rejected first), but a brace pair in question-mark
+                        // style stays literal text.
+                        push_char(&mut fragments, '{');
+                        push_char(&mut fragments, '}');
+                    } else {
+                        fragments.push(String::new());
+                    }
+                }
+                _ => push_char(&mut fragments, '{'),
+            },
+            '}' => {
+                // `}}` is an escaped literal closing brace; a lone `}` is already literal.
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                }
+                push_char(&mut fragments, '}');
+            }
+            _ => push_char(&mut fragments, c),
         }
     }
 
@@ -538,5 +581,67 @@ fn render_ordered_expressions<D: Dialect>(
             sql.push(' ');
             sql.push_str(nulls.as_str());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_raw_sql;
+
+    #[test]
+    fn escaped_braces_render_literal_braces() {
+        assert_eq!(
+            parse_raw_sql("payload = '{{}}'::jsonb", 0),
+            Ok(vec!["payload = '{}'::jsonb".to_owned()])
+        );
+    }
+
+    #[test]
+    fn lone_braces_stay_literal() {
+        assert_eq!(
+            parse_raw_sql("a = '{' AND b = '}'", 0),
+            Ok(vec!["a = '{' AND b = '}'".to_owned()])
+        );
+    }
+
+    #[test]
+    fn escaped_braces_do_not_count_as_a_placeholder() {
+        // `{{}}` is a literal `{}`; the single `?` is the only bound parameter.
+        assert_eq!(
+            parse_raw_sql("payload @> '{{}}'::jsonb AND age >= ?", 1),
+            Ok(vec![
+                "payload @> '{}'::jsonb AND age >= ".to_owned(),
+                String::new(),
+            ])
+        );
+    }
+
+    #[test]
+    fn escaped_braces_are_not_counted_toward_the_parameter_arity() {
+        assert!(parse_raw_sql("payload = '{{}}'::jsonb", 1).is_err());
+    }
+
+    #[test]
+    fn escaped_braces_bind_around_a_brace_style_parameter() {
+        assert_eq!(
+            parse_raw_sql("payload @> '{{\"role\": {}}}'", 1),
+            Ok(vec![
+                "payload @> '{\"role\": ".to_owned(),
+                "}'".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_lone_brace_pair_is_still_a_placeholder() {
+        assert_eq!(
+            parse_raw_sql("value = {}", 1),
+            Ok(vec!["value = ".to_owned(), String::new()])
+        );
+    }
+
+    #[test]
+    fn mixed_placeholder_styles_are_still_rejected() {
+        assert!(parse_raw_sql("value = ? AND other = {}", 2).is_err());
     }
 }

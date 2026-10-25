@@ -60,9 +60,12 @@ impl Parse for RawSqlInput {
 ///
 /// The placeholder census and the split into literal text fragments are delegated
 /// to `rurqe_core::expr::parse_raw_sql`, the same routine the runtime uses, so the
-/// macro and the query engine can never disagree about what a template means. The
-/// split happens once, at compile time; the generated code only binds the
-/// parameters and hands the ready-made fragments to `Expr::raw_fragments`.
+/// macro and the query engine can never disagree about what a template means. That
+/// routine also owns the escape grammar, so `??`, `{{`, and `}}` reach the generated
+/// fragments as literal `?`, `{`, and `}` — a JSON object written as
+/// `'{{"role": ?}}'` therefore binds the parameter without its braces being read as
+/// placeholders. The split happens once, at compile time; the generated code only
+/// binds the parameters and hands the ready-made fragments to `Expr::raw_fragments`.
 ///
 /// Every argument is bound through [`ToSqlVal::to_sql_val`], the same conversion
 /// contract the rest of the query builder encodes parameters with, so the macro

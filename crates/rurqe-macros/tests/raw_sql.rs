@@ -134,3 +134,30 @@ fn sql_macro_binds_borrowed_values_without_moving_them() {
     );
     assert_eq!(name, "root");
 }
+
+#[test]
+fn sql_macro_unescapes_braces_in_json_literals() {
+    let expr: Expr<bool> = sql!("payload @> '{{\"role\": \"admin\"}}'::jsonb");
+    assert_eq!(
+        expr.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["payload @> '{\"role\": \"admin\"}'::jsonb".into()],
+            params: vec![],
+        }
+    );
+}
+
+#[test]
+fn sql_macro_unescapes_braces_around_parameters() {
+    let expr = sql!(bool, "payload @> '{{\"role\": ?}}'::jsonb", "admin");
+    assert_eq!(
+        expr.kind(),
+        &ExprKind::Raw {
+            fragments: vec![
+                "payload @> '{\"role\": ".into(),
+                "}'::jsonb".into(),
+            ],
+            params: vec![SqlVal::Text("admin".into())],
+        }
+    );
+}
