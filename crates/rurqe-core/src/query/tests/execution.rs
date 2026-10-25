@@ -379,3 +379,329 @@ fn a_mutation_predicate_renders_against_the_mutated_table() {
         vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
     );
 }
+
+/// A backend recording the read limit every fetch asks for.
+///
+/// `honour_limit` models an adapter that stops reading the cursor once the
+/// limit is reached. With `honour_limit: false` the backend instead behaves like
+/// a third-party implementation that only overrides `fetch_raw`: it receives a
+/// limit yet hands back the whole result set, which the execution helpers must
+/// still classify correctly.
+#[derive(Default)]
+struct RecordingBackend {
+    rows: Vec<Vec<SqlVal>>,
+    honour_limit: bool,
+    limits: Vec<Option<usize>>,
+}
+
+impl RecordingBackend {
+    /// Logs `limit` and hands back the canned rows, truncated when the backend
+    /// honours the bound.
+    fn record(&mut self, limit: Option<usize>) -> Vec<Vec<SqlVal>> {
+        self.limits.push(limit);
+        let mut rows = self.rows.clone();
+        if let (true, Some(limit)) = (self.honour_limit, limit) {
+            rows.truncate(limit);
+        }
+        rows
+    }
+}
+
+impl QueryBackend for RecordingBackend {
+    type Error = &'static str;
+
+    fn fetch_raw(&mut self, _query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        Ok(self.record(None))
+    }
+
+    fn fetch_raw_limited(
+        &mut self,
+        _query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        Ok(self.record(limit))
+    }
+
+    fn execute_raw(&mut self, _query: &BuiltQuery) -> Result<u64, Self::Error> {
+        Ok(0)
+    }
+}
+
+/// The asynchronous counterpart of [`RecordingBackend`].
+#[derive(Default)]
+struct AsyncRecordingBackend {
+    rows: Vec<Vec<SqlVal>>,
+    limits: std::sync::Mutex<Vec<Option<usize>>>,
+}
+
+impl AsyncRecordingBackend {
+    /// Logs `limit` and hands back the canned rows truncated to the bound.
+    fn record(&self, limit: Option<usize>) -> Vec<Vec<SqlVal>> {
+        self.limits
+            .lock()
+            .expect("the limit log is not poisoned")
+            .push(limit);
+        let mut rows = self.rows.clone();
+        if let Some(limit) = limit {
+            rows.truncate(limit);
+        }
+        rows
+    }
+
+    /// The limits observed so far, in call order.
+    fn limits(&self) -> Vec<Option<usize>> {
+        self.limits
+            .lock()
+            .expect("the limit log is not poisoned")
+            .clone()
+    }
+}
+
+impl AsyncQueryBackend for AsyncRecordingBackend {
+    type Error = &'static str;
+
+    fn fetch_raw(
+        &self,
+        _query: &BuiltQuery,
+    ) -> impl core::future::Future<Output = Result<Vec<Vec<SqlVal>>, Self::Error>> + Send {
+        let rows = self.record(None);
+        async move { Ok(rows) }
+    }
+
+    fn fetch_raw_limited(
+        &self,
+        _query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> impl core::future::Future<Output = Result<Vec<Vec<SqlVal>>, Self::Error>> + Send {
+        let rows = self.record(limit);
+        async move { Ok(rows) }
+    }
+
+    async fn execute_raw(&self, _query: &BuiltQuery) -> Result<u64, Self::Error> {
+        Ok(0)
+    }
+}
+
+fn user_id_query() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
+    SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,))
+}
+
+#[test]
+fn fetch_all_reads_the_unbounded_result_set() {
+    let mut backend = RecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+            vec![SqlVal::I64(3)],
+        ],
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    assert_eq!(
+        backend.fetch_all(&user_id_query()),
+        Ok(vec![(1i64,), (2i64,), (3i64,)])
+    );
+    assert_eq!(backend.limits, vec![None]);
+}
+
+#[test]
+fn fetch_optional_asks_for_two_rows_even_when_none_are_returned() {
+    let mut backend = RecordingBackend {
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    assert_eq!(backend.fetch_optional(&user_id_query()), Ok(None));
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn fetch_optional_reads_two_rows_and_decodes_the_confirmed_single_row() {
+    let mut backend = RecordingBackend {
+        rows: vec![vec![SqlVal::I64(7)]],
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    assert_eq!(backend.fetch_optional(&user_id_query()), Ok(Some((7i64,))));
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn fetch_one_reads_two_rows_and_decodes_the_confirmed_single_row() {
+    let mut backend = RecordingBackend {
+        rows: vec![vec![SqlVal::I64(7)]],
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    assert_eq!(backend.fetch_one(&user_id_query()), Ok((7i64,)));
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn fetch_optional_bounds_the_read_of_a_long_result_set() {
+    // The cursor is read for two rows only, so the reported cardinality is the
+    // bounded count rather than the size of the full result set.
+    let mut backend = RecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+            vec![SqlVal::I64(3)],
+        ],
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    assert_eq!(
+        backend.fetch_optional(&user_id_query()),
+        Err(ExecutionError::MultipleRows { count: 2 })
+    );
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn fetch_optional_reports_multiple_rows_without_decoding_them() {
+    // The second row cannot decode into `i64`, yet the cardinality violation is
+    // detected first: the bounded read proves that two rows exist, and the
+    // decoder never runs on either of them.
+    let mut backend = RecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::Text("not-a-number".to_owned())],
+        ],
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    let error = backend
+        .fetch_optional(&user_id_query())
+        .expect_err("two rows violate the single-row contract");
+
+    assert_eq!(error, ExecutionError::MultipleRows { count: 2 });
+    assert!(!error.is_row_decode());
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn fetch_one_reports_multiple_rows_without_decoding_them() {
+    let mut backend = RecordingBackend {
+        rows: vec![
+            vec![SqlVal::Text("not-a-number".to_owned())],
+            vec![SqlVal::I64(2)],
+        ],
+        honour_limit: true,
+        ..RecordingBackend::default()
+    };
+
+    let error = backend
+        .fetch_one(&user_id_query())
+        .expect_err("two rows violate the single-row contract");
+
+    assert_eq!(error, ExecutionError::MultipleRows { count: 2 });
+    assert!(!error.is_row_decode());
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn a_backend_ignoring_the_limit_still_reports_multiple_rows_without_decoding() {
+    // The execution helper validates cardinality on whatever the backend hands
+    // back, so an adapter that never truncates cannot turn the violation into a
+    // decode error either.
+    let mut backend = RecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::Text("not-a-number".to_owned())],
+            vec![SqlVal::I64(3)],
+        ],
+        honour_limit: false,
+        ..RecordingBackend::default()
+    };
+
+    let error = backend
+        .fetch_optional(&user_id_query())
+        .expect_err("three rows violate the single-row contract");
+
+    assert_eq!(error, ExecutionError::MultipleRows { count: 3 });
+    assert!(!error.is_row_decode());
+    assert_eq!(backend.limits, vec![Some(2)]);
+}
+
+#[test]
+fn async_fetch_optional_asks_for_two_rows_even_when_none_are_returned() {
+    let backend = AsyncRecordingBackend::default();
+
+    assert_eq!(block_on(backend.fetch_optional(&user_id_query())), Ok(None));
+    assert_eq!(backend.limits(), vec![Some(2)]);
+}
+
+#[test]
+fn async_fetch_optional_reads_two_rows_and_decodes_the_confirmed_single_row() {
+    let backend = AsyncRecordingBackend {
+        rows: vec![vec![SqlVal::I64(7)]],
+        ..AsyncRecordingBackend::default()
+    };
+
+    assert_eq!(
+        block_on(backend.fetch_optional(&user_id_query())),
+        Ok(Some((7i64,)))
+    );
+    assert_eq!(backend.limits(), vec![Some(2)]);
+}
+
+#[test]
+fn async_fetch_optional_reports_multiple_rows_without_decoding_them() {
+    let backend = AsyncRecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::Text("not-a-number".to_owned())],
+        ],
+        ..AsyncRecordingBackend::default()
+    };
+
+    let error = block_on(backend.fetch_optional(&user_id_query()))
+        .expect_err("two rows violate the single-row contract");
+
+    assert_eq!(error, ExecutionError::MultipleRows { count: 2 });
+    assert!(!error.is_row_decode());
+    assert_eq!(backend.limits(), vec![Some(2)]);
+}
+
+#[test]
+fn async_fetch_one_reads_two_rows_and_reports_the_bound_violation() {
+    let backend = AsyncRecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+            vec![SqlVal::I64(3)],
+        ],
+        ..AsyncRecordingBackend::default()
+    };
+
+    assert_eq!(
+        block_on(backend.fetch_one(&user_id_query())),
+        Err(ExecutionError::MultipleRows { count: 2 })
+    );
+    assert_eq!(backend.limits(), vec![Some(2)]);
+}
+
+#[test]
+fn async_fetch_all_reads_the_unbounded_result_set() {
+    let backend = AsyncRecordingBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+            vec![SqlVal::I64(3)],
+        ],
+        ..AsyncRecordingBackend::default()
+    };
+
+    assert_eq!(
+        block_on(backend.fetch_all(&user_id_query())),
+        Ok(vec![(1i64,), (2i64,), (3i64,)])
+    );
+    assert_eq!(backend.limits(), vec![None]);
+}
