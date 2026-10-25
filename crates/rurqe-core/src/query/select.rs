@@ -343,12 +343,139 @@ impl<D: Dialect> Default for SelectQuery<D, (), (), NoProjection> {
 
 impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// Introduces `T` as the table rows are selected from.
+    ///
+    /// A statement introduces its relation once: the method is defined on the query
+    /// that carries no relation yet, so introducing a second one replaces neither
+    /// the relation already recorded nor the joins that qualify against it.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: the query already introduces `User`, so a second
+    ///     // relation cannot replace it.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .from::<Order>();
+    /// }
+    /// ```
     pub fn from<T: Table>(mut self) -> SelectQuery<D, T, Output, Projected> {
         self.from = Some(T::table_ref());
         self.retype()
     }
 
     /// Introduces `table` as the table rows are selected from.
+    ///
+    /// The value-based form of [`from`](Self::from) is restricted in the same way:
+    /// it is defined on the query that carries no relation yet, so the relation a
+    /// statement selects from cannot be replaced once it exists — neither by a
+    /// second table nor after a join recorded against the relation already there.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: the second call would discard `User` from the
+    ///     // statement while the query type still names it.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from_table(User)
+    ///         .from_table(Order);
+    /// }
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderId => "id": i64,
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: the join already introduced `orders` against
+    ///     // `users`, so replacing the relation afterwards would leave the `ON`
+    ///     // predicate qualifying a table the statement no longer declares.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from_table(User)
+    ///         .inner_join_table(
+    ///             Order,
+    ///             Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
+    ///         )
+    ///         .from_table(Order);
+    /// }
+    /// ```
     pub fn from_table<T: Table>(mut self, _table: T) -> SelectQuery<D, T, Output, Projected> {
         self.from = Some(T::table_ref());
         self.retype()
