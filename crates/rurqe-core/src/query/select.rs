@@ -483,7 +483,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     }
 }
 
-impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
+impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Projected, NoLock> {
     /// Appends a column to the `DISTINCT ON (...)` clause.
     ///
     /// `DISTINCT ON` is a dialect-specific feature supported by PostgreSQL and
@@ -494,8 +494,53 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// rather than their types, so it is checked during `.build()` and surfaces
     /// as [`BuildError::DistinctOnOrderMismatch`](crate::query::BuildError::DistinctOnOrderMismatch).
     ///
-    /// A deduplicated statement cannot request a row-level lock, so the query
-    /// moves out of [`NoLock`] and the locking builders stop applying to it.
+    /// A deduplicated statement cannot request a row-level lock: PostgreSQL
+    /// refuses `FOR UPDATE` and `FOR SHARE` on a statement that keeps one row per
+    /// group, because the lock claims the rows the statement read while the
+    /// deduplication leaves one of them. The method is therefore reachable only
+    /// from [`NoLock`], and it moves the query into [`LockUnavailable`], where
+    /// [`SelectQuery::for_update`] and [`SelectQuery::for_share`] stop applying to
+    /// it — a query that already locked its rows cannot start deduplicating them
+    /// either. The pair is additionally rejected by `.build()` as
+    /// [`BuildError::DistinctOnWithLock`](crate::query::BuildError::DistinctOnWithLock),
+    /// so a statement assembled from AST data cannot reach the engine as well.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::{Dialect, SupportsDistinctOn, SupportsRowLocking};
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsDistinctOn for MockDialect {}
+    ///
+    /// impl SupportsRowLocking for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: a statement that already locked its rows cannot
+    ///     // start deduplicating them, because PostgreSQL refuses the pair.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .select((UserId,))
+    ///         .for_update()
+    ///         .distinct_on(UserId);
+    /// }
+    /// ```
     pub fn distinct_on<C: Column, P>(
         mut self,
         _col: C,
@@ -506,6 +551,70 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     {
         self.distinct_on.push(C::expr_kind());
         self.retype()
+    }
+}
+
+impl<D: Dialect + SupportsDistinctOn, Tables, Output, Projected>
+    SelectQuery<D, Tables, Output, Projected, LockUnavailable>
+{
+    /// Appends another expression to the `DISTINCT ON (...)` clause.
+    ///
+    /// A statement deduplicates its rows on every expression of the clause — one
+    /// row per `(user_id, tenant_id)` pair, for instance — so the criteria
+    /// accumulate. The first criterion moves the query into [`LockUnavailable`],
+    /// and recording a further one keeps it there: the statement stays
+    /// deduplicated, which is exactly what keeps [`SelectQuery::for_update`] and
+    /// [`SelectQuery::for_share`] out of reach. PostgreSQL refuses
+    /// `SELECT DISTINCT ON (...) ... FOR UPDATE`, because the lock claims the rows
+    /// the statement read while the deduplication keeps one row per group, and a
+    /// statement assembled from AST data is rejected during `.build()` as
+    /// [`BuildError::DistinctOnWithLock`](crate::query::BuildError::DistinctOnWithLock)
+    /// as well.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::{Dialect, SupportsDistinctOn, SupportsRowLocking};
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsDistinctOn for MockDialect {}
+    ///
+    /// impl SupportsRowLocking for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///         UserTenant => "tenant_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: extending the DISTINCT ON clause keeps the
+    ///     // statement deduplicated, so it cannot start locking its rows.
+    ///     let _ = SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .select((UserId,))
+    ///         .distinct_on(UserId)
+    ///         .distinct_on(UserTenant)
+    ///         .for_update();
+    /// }
+    /// ```
+    pub fn distinct_on<C: Column, P>(mut self, _col: C) -> Self
+    where
+        Tables: TableInScope<C::Table, P>,
+    {
+        self.distinct_on.push(C::expr_kind());
+        self
     }
 }
 

@@ -1,6 +1,7 @@
 //! Pre-flight validation of the assembled statement.
 
 use super::{MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId};
+use crate::expr::{LockClause, LockStrength};
 use crate::query::*;
 use crate::schema::AliasedCol;
 
@@ -90,5 +91,37 @@ fn distinct_on_without_order_by_stays_valid() {
     assert_eq!(
         built.sql,
         "SELECT DISTINCT ON (\"user_id\") \"id\" FROM \"orders\""
+    );
+}
+
+#[test]
+fn a_distinct_on_statement_requesting_a_row_lock_is_rejected_before_rendering() {
+    // The builder cannot reach this statement — `distinct_on` moves the query out
+    // of `NoLock` — so the clause pair is assembled on the statement data, which
+    // is what a statement embedded as plain AST still describes.
+    let mut ast = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .to_ast();
+    let projections = ast.projections.clone();
+    ast.distinct_on = projections;
+    ast.lock = Some(LockClause::new(LockStrength::Update));
+
+    assert_eq!(ast.validate(), Err(BuildError::DistinctOnWithLock));
+}
+
+#[test]
+fn a_locked_statement_without_distinct_on_stays_valid() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .for_update()
+        .skip_locked()
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"orders\" FOR UPDATE SKIP LOCKED"
     );
 }

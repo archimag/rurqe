@@ -30,6 +30,16 @@ pub enum BuildError {
         /// The 0-based position of the first mismatched ordering criterion.
         position: usize,
     },
+    /// A `DISTINCT ON (...)` statement also requests a row-level lock.
+    ///
+    /// PostgreSQL refuses `SELECT DISTINCT ON (...) ... FOR UPDATE` and its
+    /// `FOR SHARE` variant: the lock claims the rows the statement read, while
+    /// the deduplication keeps a single row per group, so the two clauses
+    /// contradict each other. The builder typestate cannot reach such a statement
+    /// — [`SelectQuery::distinct_on`](crate::query::SelectQuery::distinct_on)
+    /// moves the query out of `NoLock` — but a statement assembled from AST data
+    /// still can, so the clause pair is rejected here instead of by the engine.
+    DistinctOnWithLock,
     /// An `ORDER BY` expression of a `DISTINCT` statement is not projected.
     ///
     /// The engine sorts the rows the statement produced rather than the rows it
@@ -101,6 +111,14 @@ impl fmt::Display for BuildError {
                     f,
                     "ORDER BY criterion at position {position} does not match the corresponding DISTINCT ON expression; \
                      PostgreSQL requires ORDER BY expressions to begin with the exact expressions listed in DISTINCT ON"
+                )
+            }
+            BuildError::DistinctOnWithLock => {
+                write!(
+                    f,
+                    "a DISTINCT ON statement cannot request a row-level lock; \
+                     PostgreSQL rejects `SELECT DISTINCT ON (...) ... FOR UPDATE` and `... FOR SHARE`, \
+                     so drop the locking clause or the DISTINCT ON clause"
                 )
             }
             BuildError::DistinctOrderNotProjected { position } => {
@@ -207,6 +225,7 @@ impl<'a> StatementRef<'a> {
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
         self.validate_distinct_on_prefix()?;
+        self.validate_distinct_on_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
 
@@ -308,6 +327,23 @@ impl<'a> StatementRef<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Rejects a `DISTINCT ON (...)` statement that also requests a row-level lock.
+    ///
+    /// PostgreSQL accepts neither `SELECT DISTINCT ON (...) ... FOR UPDATE` nor
+    /// its `FOR SHARE` variant, because a row-level lock claims the rows the
+    /// statement read while the deduplication keeps one row per group. The
+    /// builder keeps the pair apart through its typestate — a deduplicated query
+    /// carries `LockUnavailable` — but a statement assembled from AST data can
+    /// still describe it, so the rule is checked on the statement data during
+    /// [`StatementRef::validate`] and surfaces as
+    /// [`BuildError::DistinctOnWithLock`] before any SQL is rendered.
+    fn validate_distinct_on_lock(&self) -> Result<(), BuildError> {
+        if self.distinct_on.is_empty() || self.lock.is_none() {
+            return Ok(());
+        }
+        Err(BuildError::DistinctOnWithLock)
     }
 
     /// Rejects a `DISTINCT` statement whose `ORDER BY` names no projected expression.

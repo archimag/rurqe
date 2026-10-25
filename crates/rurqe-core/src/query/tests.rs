@@ -42,6 +42,7 @@ impl crate::dialect::SupportsDistinctOn for MockDialect {}
 impl crate::dialect::SupportsFullOuterJoin for MockDialect {}
 impl crate::dialect::SupportsGreatest for MockDialect {}
 impl crate::dialect::SupportsNullsOrdering for MockDialect {}
+impl crate::dialect::SupportsRowLocking for MockDialect {}
 impl crate::dialect::SupportsWindowFunctions for MockDialect {}
 
 #[derive(Default)]
