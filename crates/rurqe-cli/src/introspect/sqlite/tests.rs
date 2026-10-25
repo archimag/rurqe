@@ -313,6 +313,32 @@ fn a_partial_and_an_expression_index_keep_their_attributes() {
 }
 
 #[test]
+fn a_mixed_index_keeps_only_its_functional_expression() {
+    let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+    conn.execute_batch(
+        "CREATE TABLE users (
+             id INTEGER PRIMARY KEY,
+             email TEXT NOT NULL,
+             name TEXT NOT NULL
+         );
+         CREATE INDEX users_mixed_idx ON users (email, lower(name));",
+    )
+    .expect("create the schema");
+
+    let catalog = introspect_sqlite(&conn).expect("the catalog is introspected");
+    let index = catalog.tables[0]
+        .indexes
+        .iter()
+        .find(|index| index.name == "users_mixed_idx")
+        .expect("the index is introspected");
+
+    // The named column stays a column of the index, and the expression it is
+    // combined with is the only thing the expression field records.
+    assert_eq!(index.columns, vec!["email"]);
+    assert_eq!(index.expression.as_deref(), Some("lower(name)"));
+}
+
+#[test]
 fn views_and_triggers_are_introspected() {
     let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
     conn.execute_batch(

@@ -549,6 +549,53 @@ fn index_rows_fold_into_composite_indexes() {
 }
 
 #[test]
+fn an_index_expression_keeps_only_the_functional_terms() {
+    let tables = vec![RawTableMetadata {
+        name: "users".to_owned(),
+    }];
+    let indexes = vec![
+        // PostgreSQL renders the expression list of a mixed index with `NULL`
+        // standing in for the key attribute that is a plain column.
+        RawIndexMetadata {
+            table_name: "users".to_owned(),
+            index_name: "users_email_lower_name_idx".to_owned(),
+            column_name: Some("email".to_owned()),
+            unique: false,
+            method: Some("btree".to_owned()),
+            predicate: None,
+            expression: Some("NULL, lower(name)".to_owned()),
+        },
+        // An index computing no expression keeps none, even when the rendering it
+        // reports carries nothing but placeholders.
+        RawIndexMetadata {
+            table_name: "users".to_owned(),
+            index_name: "users_email_idx".to_owned(),
+            column_name: Some("email".to_owned()),
+            unique: true,
+            method: None,
+            predicate: None,
+            expression: Some("NULL".to_owned()),
+        },
+    ];
+
+    let catalog = catalog_from_metadata(&tables, &[], &[], &[], &indexes, &[]);
+    let index = |name: &str| {
+        catalog.tables[0]
+            .indexes
+            .iter()
+            .find(|index| index.name == name)
+            .expect("the index is folded")
+    };
+
+    assert_eq!(index("users_email_lower_name_idx").columns, vec!["email"]);
+    assert_eq!(
+        index("users_email_lower_name_idx").expression.as_deref(),
+        Some("lower(name)")
+    );
+    assert!(index("users_email_idx").expression.is_none());
+}
+
+#[test]
 fn sqlite_indexes_are_introspected_without_the_primary_key_index() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(

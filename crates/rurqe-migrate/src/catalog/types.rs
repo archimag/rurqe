@@ -233,6 +233,11 @@ impl CheckDef {
 /// Both plain and `UNIQUE` secondary indexes share this representation, so the
 /// snapshot distinguishes them solely by [`IndexDef::unique`]. Primary keys are
 /// not indexes in this sense and stay in [`TableDef::primary_key`].
+///
+/// An index over expressions records what it computes rather than the text it was
+/// declared with: [`IndexDef::expression`] carries the functional expressions
+/// alone, so the plain columns of a mixed index stay in [`IndexDef::columns`] and
+/// never repeat as expressions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexDef {
     /// The SQL identifier of the index.
@@ -245,7 +250,12 @@ pub struct IndexDef {
     pub method: Option<String>,
     /// The partial index predicate (WHERE clause expression), if specified.
     pub predicate: Option<String>,
-    /// The expression for expression-based indexes, if specified.
+    /// The functional expressions an expression-based index computes.
+    ///
+    /// The plain columns of a mixed index remain in [`IndexDef::columns`] and
+    /// never repeat here, and the placeholder an engine renders for such a column
+    /// is dropped. An index computing several expressions keeps them in key order,
+    /// separated by `, `.
     pub expression: Option<String>,
 }
 
@@ -274,7 +284,7 @@ impl IndexDef {
         self
     }
 
-    /// Sets the expression for an expression-based index.
+    /// Attaches the functional expressions an expression-based index computes.
     pub fn with_expression(mut self, expression: impl Into<String>) -> Self {
         self.expression = Some(expression.into());
         self

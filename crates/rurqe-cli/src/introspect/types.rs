@@ -59,7 +59,9 @@ pub struct RawForeignKeyMetadata {
 /// The index attributes are repeated on every row of an index, and an index
 /// declared over an expression reports no column name at all: `PRAGMA
 /// index_info` and `pg_index` both leave the attribute unnamed for the
-/// positional entry an expression occupies.
+/// positional entry an expression occupies. The `expression` attribute therefore
+/// carries the rendering of the index terms as the engine spells it, which
+/// [`fold_indexes`] reduces to the functional expressions alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawIndexMetadata {
     pub table_name: String,
@@ -276,6 +278,71 @@ fn named_type_kind(name: &str, enums: &BTreeMap<String, Vec<String>>) -> TypeKin
     }
 }
 
+/// Splits a SQL term list at the commas that separate its top-level terms.
+///
+/// Parentheses, single-quoted text, and double-quoted identifiers all nest a
+/// comma inside a larger term, so only a comma written outside them ends one.
+/// PostgreSQL hands the expressions of an index over as the rendering of
+/// `pg_index.indexprs` and SQLite as the source text of its parenthesised column
+/// list, so the same scan reduces either one to the terms it is made of.
+pub(super) fn split_top_level_terms(text: &str) -> Vec<&str> {
+    let mut terms = Vec::new();
+    let mut start = 0usize;
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut characters = text.char_indices().peekable();
+
+    while let Some((index, character)) = characters.next() {
+        match quote {
+            Some(active) => {
+                if character == active {
+                    // A doubled quote is an escaped quote inside the literal, not
+                    // the end of it.
+                    if characters.peek().map(|(_, next)| *next) == Some(active) {
+                        characters.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+            }
+            None => match character {
+                '\'' | '"' => quote = Some(character),
+                '(' => depth = depth.saturating_add(1),
+                ')' => depth = depth.saturating_sub(1),
+                ',' if depth == 0 => {
+                    terms.push(text[start..index].trim());
+                    start = index + character.len_utf8();
+                }
+                _ => {}
+            },
+        }
+    }
+
+    terms.push(text[start..].trim());
+    terms
+}
+
+/// The functional expressions an engine rendered for an index.
+///
+/// PostgreSQL renders the expression list of an index with a `NULL` term standing
+/// in for a key attribute that is a plain column, so those placeholders are
+/// dropped and only the expressions the index really computes are kept. The
+/// comparison ignores case, because the rendering spells the keyword in upper
+/// case.
+fn functional_expressions(text: &str) -> Option<String> {
+    let expressions: Vec<&str> = split_top_level_terms(text)
+        .into_iter()
+        .filter(|term| !term.is_empty())
+        .filter(|term| !term.eq_ignore_ascii_case("null"))
+        .collect();
+
+    if expressions.is_empty() {
+        None
+    } else {
+        Some(expressions.join(", "))
+    }
+}
+
 /// Folds flat index rows into one [`IndexDef`] per index.
 ///
 /// Both `pg_index` and the SQLite `PRAGMA index_list` report one row per indexed
@@ -285,7 +352,9 @@ fn named_type_kind(name: &str, enums: &BTreeMap<String, Vec<String>>) -> TypeKin
 ///
 /// A row without a column name belongs to an expression index; it contributes no
 /// column while the expression it carries still reaches the definition. The
-/// returned map is keyed by owning table.
+/// expression text is reduced to the functional expressions the index computes,
+/// so a placeholder standing in for a plain key column never reaches the
+/// definition. The returned map is keyed by owning table.
 pub(super) fn fold_indexes(indexes: &[RawIndexMetadata]) -> BTreeMap<String, Vec<IndexDef>> {
     let mut by_table: BTreeMap<String, BTreeMap<String, IndexDef>> = BTreeMap::new();
 
@@ -302,7 +371,11 @@ pub(super) fn fold_indexes(indexes: &[RawIndexMetadata]) -> BTreeMap<String, Vec
                 if let Some(predicate) = &row.predicate {
                     index = index.with_predicate(predicate);
                 }
-                if let Some(expression) = &row.expression {
+                if let Some(expression) = row
+                    .expression
+                    .as_deref()
+                    .and_then(functional_expressions)
+                {
                     index = index.with_expression(expression);
                 }
                 index

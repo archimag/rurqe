@@ -1,6 +1,7 @@
 //! Introspection of the secondary indexes, views, and triggers of a schema.
 
 use crate::cli::CliError;
+use crate::introspect::types::split_top_level_terms;
 use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
 use super::lexer::{matching_close, tokenize, SqlKeyword, TokenKind};
@@ -14,8 +15,9 @@ use super::{sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGG
 ///
 /// The pragma reports no method, no partial predicate, and no expression, so the
 /// DDL of the index is read from `sqlite_master` for those. An index over an
-/// expression reports an unnamed column, and the parenthesised column list of its
-/// DDL is then recorded as the expression of the index.
+/// expression reports an unnamed column, and the functional terms of the
+/// parenthesised list of its DDL are then recorded as the expression of the index,
+/// so the named columns it also indexes are never repeated there.
 pub(super) fn sqlite_indexes(
     conn: &rusqlite::Connection,
     table: &str,
@@ -47,7 +49,9 @@ pub(super) fn sqlite_indexes(
         let ddl = sqlite_index_ddl(conn, &index_name)?;
 
         let expression = match ddl.as_deref() {
-            Some(sql) if columns.iter().any(Option::is_none) => column_list_of(sql),
+            Some(sql) if columns.iter().any(Option::is_none) => {
+                sqlite_index_expressions(sql, &columns)
+            }
             _ => None,
         };
         let predicate = match ddl.as_deref() {
@@ -136,6 +140,30 @@ pub(super) fn column_list_of(sql: &str) -> Option<String> {
     let start = tokens[open].span.1;
     let end = tokens[close].span.0;
     Some(sql[start..end].trim().to_owned())
+}
+
+/// The functional expressions of an index, without the columns it also indexes.
+///
+/// The parenthesised list of an index DDL carries every indexed term in key
+/// order, and `PRAGMA index_info` reports the very same terms with a `NULL` name
+/// for each one declared as an expression. Keeping the terms whose reported name
+/// is absent leaves the expressions alone, so a mixed index neither repeats its
+/// named columns in the expression field nor loses the expressions it computes.
+fn sqlite_index_expressions(sql: &str, columns: &[Option<String>]) -> Option<String> {
+    let list = column_list_of(sql)?;
+
+    let expressions: Vec<&str> = split_top_level_terms(&list)
+        .into_iter()
+        .zip(columns.iter())
+        .filter_map(|(term, column)| column.is_none().then_some(term))
+        .filter(|term| !term.is_empty())
+        .collect();
+
+    if expressions.is_empty() {
+        None
+    } else {
+        Some(expressions.join(", "))
+    }
 }
 
 /// The partial index predicate of an index DDL, if it declares one.
