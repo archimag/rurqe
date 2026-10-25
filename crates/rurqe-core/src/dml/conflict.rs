@@ -22,7 +22,9 @@
 use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsOnConflict};
-use crate::expr::{render_expr, DialectInScope, Expr, ExprKind, NonAggregate, SqlVal, Unscoped};
+use crate::expr::{
+    render_expr, DialectInScope, Expr, ExprKind, NonAggregate, RawSqlError, SqlVal, Unscoped,
+};
 use crate::query::{validate_expr, BuildError};
 use crate::schema::Table;
 
@@ -89,7 +91,16 @@ impl Conflict {
     }
 
     /// Appends the clause to `sql`, binding every value to `params`.
-    pub(crate) fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+    ///
+    /// The predicates and the expression assignments of the clause may embed a
+    /// raw expression whose fragments disagree with its parameters, so the
+    /// walk reports the census mismatch as [`RawSqlError`] instead of
+    /// dispatching SQL with a missing or a misplaced placeholder.
+    pub(crate) fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), RawSqlError> {
         sql.push_str(" ON CONFLICT");
         if !self.target.is_empty() {
             sql.push_str(" (");
@@ -108,7 +119,7 @@ impl Conflict {
         // accepts, while the proposed row names its own `EXCLUDED` relation.
         if let Some(predicate) = &self.target_predicate {
             sql.push_str(" WHERE ");
-            render_expr::<D>(sql, params, predicate, &[]);
+            render_expr::<D>(sql, params, predicate, &[])?;
         }
 
         match &self.action {
@@ -130,15 +141,17 @@ impl Conflict {
                         // The clause addresses the inserted row and its proposed
                         // `EXCLUDED` row, both of which are referenced explicitly, so
                         // a column of the target table stays unqualified.
-                        value.render::<D>(sql, params, &[]);
+                        value.render::<D>(sql, params, &[])?;
                     }
                     if let Some(predicate) = predicate {
                         sql.push_str(" WHERE ");
-                        render_expr::<D>(sql, params, predicate, &[]);
+                        render_expr::<D>(sql, params, predicate, &[])?;
                     }
                 }
             }
         }
+
+        Ok(())
     }
 }
 

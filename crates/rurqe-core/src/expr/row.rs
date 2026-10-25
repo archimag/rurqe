@@ -65,7 +65,8 @@ use super::val::BinaryOp;
 ///
 /// let mut sql = String::new();
 /// let mut params = Vec::new();
-/// render_expr::<MockDialect>(&mut sql, &mut params, predicate.kind(), &[]);
+/// render_expr::<MockDialect>(&mut sql, &mut params, predicate.kind(), &[])
+///     .expect("valid expression");
 ///
 /// assert_eq!(sql, "((\"id\", \"name\") > ($1, $2))");
 /// assert_eq!(params.len(), 2);

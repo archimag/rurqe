@@ -261,7 +261,7 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
         let mut params = Vec::new();
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
-            render_expr::<D>(&mut sql, &mut params, filter, &relations);
+            render_expr::<D>(&mut sql, &mut params, filter, &relations)?;
         }
 
         if !self.returning.is_empty() {
@@ -274,7 +274,7 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(&mut sql, &mut params, projection, &relations);
+                render_expr::<D>(&mut sql, &mut params, projection, &relations)?;
             }
         }
 

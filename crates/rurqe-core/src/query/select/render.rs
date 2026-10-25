@@ -97,7 +97,7 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     ) -> Result<(), crate::query::BuildError> {
         let statement = self.statement();
         statement.validate()?;
-        statement.render::<D>(sql, params);
+        statement.render::<D>(sql, params)?;
         Ok(())
     }
 
@@ -111,7 +111,7 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
         statement.validate()?;
         let mut sql = String::new();
         let mut params = Vec::new();
-        statement.render::<D>(&mut sql, &mut params);
+        statement.render::<D>(&mut sql, &mut params)?;
         Ok(BuiltQuery { sql, params })
     }
 

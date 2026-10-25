@@ -10,7 +10,9 @@
 
 use core::fmt;
 
-use crate::expr::{DerivedAst, ExprKind, SelectAst, StatementRef, WindowExprKind};
+use crate::expr::{
+    DerivedAst, ExprKind, RawSqlError, SelectAst, StatementRef, WindowExprKind,
+};
 use crate::schema::TableRef;
 
 /// An error returned when pre-flight query validation detects invalid SQL semantics.
@@ -106,6 +108,16 @@ pub enum BuildError {
         /// The number of values the offending row carries.
         actual: usize,
     },
+    /// A raw SQL expression binds a number of parameters other than its
+    /// fragments declare.
+    ///
+    /// The renderer emits the fragments of a raw expression in order and binds
+    /// one parameter after every fragment except the last, so the fragments
+    /// have to outnumber the parameters by exactly one — the shape
+    /// `parse_raw_sql` splits a template into. A pair violating that census
+    /// would dispatch SQL with a missing or a misplaced placeholder, so the
+    /// mismatch is rejected before any SQL is rendered.
+    RawSql(RawSqlError),
 }
 
 impl fmt::Display for BuildError {
@@ -189,11 +201,20 @@ impl fmt::Display for BuildError {
                      so a row source whose assignments collapse differently per row cannot be rendered"
                 )
             }
+            BuildError::RawSql(error) => {
+                write!(f, "invalid raw SQL expression: {error}")
+            }
         }
     }
 }
 
 impl std::error::Error for BuildError {}
+
+impl From<RawSqlError> for BuildError {
+    fn from(error: RawSqlError) -> Self {
+        BuildError::RawSql(error)
+    }
+}
 
 /// The effective name a relation is referenced under.
 ///
@@ -798,8 +819,24 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
         ExprKind::Column { .. }
         | ExprKind::QualifiedColumn { .. }
         | ExprKind::Excluded { .. }
-        | ExprKind::Value(_)
-        | ExprKind::Raw { .. } => Ok(()),
+        | ExprKind::Value(_) => Ok(()),
+        ExprKind::Raw {
+            fragments,
+            params: raw_params,
+        } => {
+            // The renderer binds a parameter after every fragment except the
+            // last, so an unbalanced pair would dispatch SQL with a missing or
+            // a misplaced placeholder. Checking the census during validation
+            // keeps the buffers of the caller untouched: the statement is
+            // rejected before a single character of it is rendered.
+            if fragments.len() != raw_params.len() + 1 {
+                return Err(BuildError::RawSql(RawSqlError::PlaceholderCount {
+                    expected: fragments.len().saturating_sub(1),
+                    provided: raw_params.len(),
+                }));
+            }
+            Ok(())
+        }
         ExprKind::Row { values } | ExprKind::InList { values, .. } => {
             for v in values {
                 validate_expr(v)?;
@@ -1204,6 +1241,37 @@ mod tests {
         ));
 
         assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn build_error_display_raw_sql() {
+        let err = BuildError::RawSql(RawSqlError::PlaceholderCount {
+            expected: 2,
+            provided: 1,
+        });
+        let msg = err.to_string();
+        assert!(msg.contains("invalid raw SQL expression"));
+        assert!(msg.contains("expects 2 parameter(s), but 1 were provided"));
+    }
+
+    #[test]
+    fn an_unbalanced_raw_expression_is_rejected_before_rendering() {
+        // Two fragments with no parameter would place a bound placeholder after
+        // the first fragment and then continue with literal text, so the
+        // statement is rejected before a single character of it is rendered.
+        let mut ast = empty_ast();
+        ast.projections.push(ExprKind::Raw {
+            fragments: vec!["1".to_owned(), " + 1".to_owned()],
+            params: Vec::new(),
+        });
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::RawSql(RawSqlError::PlaceholderCount {
+                expected: 1,
+                provided: 0,
+            }))
+        );
     }
 
     #[test]

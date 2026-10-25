@@ -381,18 +381,17 @@ impl<T> Expr<T, ()> {
     /// The fragments interleave with the parameters: the renderer emits the
     /// fragments in order and binds one parameter after every fragment except
     /// the last, so a caller has to supply exactly one more fragment than
-    /// parameters — the shape [`parse_raw_sql`] splits a template into. An
-    /// unbalanced pair would dispatch SQL with a missing or a misplaced
-    /// placeholder, so the constructor asserts the invariant; a template that
-    /// still needs splitting goes through [`raw`](Self::raw), which validates the
-    /// census and returns a typed error.
+    /// parameters — the shape [`parse_raw_sql`] splits a template into. The
+    /// constructor binds the values without re-parsing them, so an unbalanced
+    /// pair is not reported here; it is reported where it would dispatch SQL
+    /// with a missing or a misplaced placeholder instead: the renderer checks
+    /// the census while it emits the expression and returns
+    /// [`RawSqlError::PlaceholderCount`], while the pre-flight validation of an
+    /// enclosing statement rejects the expression before a single character
+    /// reaches its buffers. A template that still needs splitting goes through
+    /// [`raw`](Self::raw), which validates the census and returns a typed error.
     #[doc(hidden)]
     pub fn raw_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
-        debug_assert_eq!(
-            fragments.len(),
-            params.len() + 1,
-            "raw SQL fragments must alternate with parameters"
-        );
         Self::new(ExprKind::Raw { fragments, params })
     }
 }

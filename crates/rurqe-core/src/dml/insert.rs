@@ -448,7 +448,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
             // The source statement was validated at the top of `build`, so it is
             // read through the crate-internal view: the validating
             // `SelectAst::render` entry point would run the pass a second time.
-            StatementRef::from(select).render::<D>(&mut sql, &mut params);
+            StatementRef::from(select).render::<D>(&mut sql, &mut params)?;
         } else {
             sql.push_str(" VALUES ");
             for (row_index, row) in self.rows.iter().enumerate() {
@@ -460,14 +460,14 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
                     if value_index > 0 {
                         sql.push_str(", ");
                     }
-                    value.render::<D>(&mut sql, &mut params, &relations);
+                    value.render::<D>(&mut sql, &mut params, &relations)?;
                 }
                 sql.push(')');
             }
         }
 
         if let Some(conflict) = &self.conflict {
-            conflict.render::<D>(&mut sql, &mut params);
+            conflict.render::<D>(&mut sql, &mut params)?;
         }
 
         if !self.returning.is_empty() {
@@ -479,7 +479,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(&mut sql, &mut params, projection, &relations);
+                render_expr::<D>(&mut sql, &mut params, projection, &relations)?;
             }
         }
 

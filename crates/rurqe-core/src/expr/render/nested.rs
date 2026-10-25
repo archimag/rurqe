@@ -1,7 +1,7 @@
 //! Rendering of nested collections as the JSON aggregation of their rows.
 
 use crate::dialect::Dialect;
-use crate::expr::{SqlVal, Subquery};
+use crate::expr::{RawSqlError, SqlVal, Subquery};
 
 use super::statement::StatementRef;
 
@@ -16,13 +16,18 @@ const NESTED_ALIAS: &str = "__rurqe_sub";
 /// aggregation reads the whole row as `jsonb_agg(to_jsonb(...))`; a dialect
 /// without it assembles the object field by field, which keeps the same keys
 /// without depending on how the engine names derived columns.
+///
+/// A raw expression embedded in the nested statement may bind a number of
+/// parameters its fragments disagree with, so the walk reports the mismatch as
+/// [`RawSqlError`] instead of dispatching SQL with a missing or a misplaced
+/// placeholder.
 pub(super) fn render_multiset<D: Dialect>(
     sql: &mut String,
     params: &mut Vec<SqlVal>,
     query: &Subquery,
     fields: &[&'static str],
     single: bool,
-) {
+) -> Result<(), RawSqlError> {
     let mut inner = StatementRef::from(query.ast());
     inner.projection_aliases = Some(fields);
 
@@ -42,7 +47,7 @@ pub(super) fn render_multiset<D: Dialect>(
             sql.push_str("(SELECT to_jsonb(");
             D::push_quoted_identifier(sql, NESTED_ALIAS);
             sql.push_str(") FROM (");
-            inner.render::<D>(sql, params);
+            inner.render::<D>(sql, params)?;
             sql.push_str(") AS ");
             D::push_quoted_identifier(sql, NESTED_ALIAS);
             sql.push(')');
@@ -50,12 +55,12 @@ pub(super) fn render_multiset<D: Dialect>(
             sql.push_str("COALESCE((SELECT jsonb_agg(to_jsonb(");
             D::push_quoted_identifier(sql, NESTED_ALIAS);
             sql.push_str(")) FROM (");
-            inner.render::<D>(sql, params);
+            inner.render::<D>(sql, params)?;
             sql.push_str(") AS ");
             D::push_quoted_identifier(sql, NESTED_ALIAS);
             sql.push_str("), '[]'::jsonb)");
         }
-        return;
+        return Ok(());
     }
 
     if single {
@@ -76,10 +81,12 @@ pub(super) fn render_multiset<D: Dialect>(
     // The object is complete once its fields are written, so the collecting
     // aggregate closes right after it.
     sql.push_str(if single { ") FROM (" } else { ")) FROM (" });
-    inner.render::<D>(sql, params);
+    inner.render::<D>(sql, params)?;
     sql.push_str(") AS ");
     D::push_quoted_identifier(sql, NESTED_ALIAS);
     sql.push_str(if single { ")" } else { "), '[]')" });
+
+    Ok(())
 }
 
 /// Writes `value` as a quoted SQL string literal.

@@ -28,7 +28,8 @@ impl Dialect for MockDialect {
 fn render<T, Scope, Cols>(expression: &WindowExpr<T, Scope, Cols>) -> String {
     let mut sql = String::new();
     let mut params = Vec::new();
-    render_expr::<MockDialect>(&mut sql, &mut params, &expression.to_expr_kind(), &[]);
+    render_expr::<MockDialect>(&mut sql, &mut params, &expression.to_expr_kind(), &[])
+        .expect("valid expression");
     assert!(params.is_empty(), "a window binds no parameters");
     sql
 }

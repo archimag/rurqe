@@ -388,7 +388,7 @@ impl crate::dialect::Dialect for BracketDialect {
 fn render_with<D: crate::dialect::Dialect>(kind: &ExprKind) -> (String, Vec<SqlVal>) {
     let mut sql = String::new();
     let mut params = Vec::new();
-    render_expr::<D>(&mut sql, &mut params, kind, &[]);
+    render_expr::<D>(&mut sql, &mut params, kind, &[]).expect("valid expression");
     (sql, params)
 }
 

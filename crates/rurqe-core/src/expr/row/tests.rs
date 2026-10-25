@@ -37,7 +37,7 @@ impl Dialect for MockDialect {
 fn render_with(kind: &ExprKind, relations: &[TableRef]) -> (String, Vec<SqlVal>) {
     let mut sql = String::new();
     let mut params = Vec::new();
-    render_expr::<MockDialect>(&mut sql, &mut params, kind, relations);
+    render_expr::<MockDialect>(&mut sql, &mut params, kind, relations).expect("valid expression");
     (sql, params)
 }
 
@@ -130,7 +130,8 @@ fn the_row_scope_merges_the_tables_of_its_elements() {
 
 #[test]
 fn row_values_accept_built_expressions() {
-    let predicate = (UserId, UserName).eq((Expr::column::<OrderId>(), Expr::column::<OrderName>()));
+    let predicate =
+        (UserId, UserName).eq((Expr::column::<OrderId>(), Expr::column::<OrderName>()));
 
     let (sql, params) = render_with(
         predicate.kind(),

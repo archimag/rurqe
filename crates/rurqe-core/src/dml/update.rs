@@ -339,7 +339,7 @@ where
             }
             D::push_quoted_identifier(&mut sql, name);
             sql.push_str(" = ");
-            value.render::<D>(&mut sql, &mut params, &relations);
+            value.render::<D>(&mut sql, &mut params, &relations)?;
         }
 
         if !self.from_tables.is_empty() {
@@ -356,7 +356,7 @@ where
 
         if let Some(filter) = &self.filter {
             sql.push_str(" WHERE ");
-            render_expr::<D>(&mut sql, &mut params, filter, &relations);
+            render_expr::<D>(&mut sql, &mut params, filter, &relations)?;
         }
 
         if !self.returning.is_empty() {
@@ -369,7 +369,7 @@ where
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                render_expr::<D>(&mut sql, &mut params, projection, &relations);
+                render_expr::<D>(&mut sql, &mut params, projection, &relations)?;
             }
         }
 

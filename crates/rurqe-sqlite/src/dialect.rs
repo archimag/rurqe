@@ -286,7 +286,8 @@ mod tests {
         let mut sql = String::new();
         let mut params = Vec::new();
 
-        render_expr::<Sqlite<Sqlite3_35>>(&mut sql, &mut params, predicate.kind(), &[]);
+        render_expr::<Sqlite<Sqlite3_35>>(&mut sql, &mut params, predicate.kind(), &[])
+            .expect("valid expression");
 
         // SQLite only knows the case-sensitive `LIKE`, so the predicate keeps its
         // case-insensitive semantics by folding both operands.

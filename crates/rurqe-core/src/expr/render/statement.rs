@@ -9,7 +9,7 @@ use crate::expr::{
 use crate::query::BuildError;
 use crate::schema::TableRef;
 
-use super::{render_expr, render_expressions, render_ordered_expressions};
+use super::{render_expr, render_expressions, render_ordered_expressions, RawSqlError};
 
 /// Renders a relation of the statement, inlining the subquery of a derived table.
 ///
@@ -24,19 +24,21 @@ fn render_relation<D: Dialect>(
     params: &mut Vec<SqlVal>,
     table: &TableRef,
     derived: &[DerivedAst],
-) {
+) -> Result<(), RawSqlError> {
     let name = table.alias.unwrap_or(table.name);
     let subquery = derived.iter().find(|entry| entry.name == name);
 
     match subquery {
         Some(subquery) => {
             sql.push('(');
-            StatementRef::from(&subquery.query).render::<D>(sql, params);
+            StatementRef::from(&subquery.query).render::<D>(sql, params)?;
             sql.push_str(") AS ");
             D::push_quoted_identifier(sql, subquery.name);
         }
         None => table.render::<D>(sql),
     }
+
+    Ok(())
 }
 
 /// A borrowed view of a `SELECT` statement.
@@ -96,20 +98,37 @@ impl<'a> From<&'a SelectAst> for StatementRef<'a> {
 
 impl<'a> StatementRef<'a> {
     /// Renders the statement into `sql`, binding every literal into `params`.
-    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        self.render_statement::<D>(sql, params);
+    ///
+    /// A raw expression binds a number of parameters its fragments have to
+    /// outnumber by exactly one, so a mismatch is reported as [`RawSqlError`]
+    /// instead of dispatching SQL with a missing or a misplaced placeholder. A
+    /// statement reaching this view was validated beforehand, so the check is
+    /// the last line of defence for a raw expression the validation pass did
+    /// not see.
+    pub fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), RawSqlError> {
+        self.render_statement::<D>(sql, params)?;
 
         if let Some(lock) = self.lock {
             lock.render_into(sql);
         }
+
+        Ok(())
     }
 
     /// Renders every clause of the statement up to the locking clause.
-    fn render_statement<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+    fn render_statement<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), RawSqlError> {
         let relations = self.relations();
 
         if self.set_operations.is_empty() {
-            self.render_select::<D>(sql, params, &relations);
+            self.render_select::<D>(sql, params, &relations)?;
             render_order_and_pagination::<D>(
                 sql,
                 params,
@@ -117,15 +136,15 @@ impl<'a> StatementRef<'a> {
                 self.limit,
                 self.offset,
                 &relations,
-            );
-            return;
+            )?;
+            return Ok(());
         }
 
         let wrap_left = !self.ctes.is_empty() || self.has_own_tail();
         if wrap_left {
             sql.push('(');
         }
-        self.render_select::<D>(sql, params, &relations);
+        self.render_select::<D>(sql, params, &relations)?;
         render_order_and_pagination::<D>(
             sql,
             params,
@@ -133,7 +152,7 @@ impl<'a> StatementRef<'a> {
             self.limit,
             self.offset,
             &relations,
-        );
+        )?;
         if wrap_left {
             sql.push(')');
         }
@@ -142,7 +161,7 @@ impl<'a> StatementRef<'a> {
             sql.push(' ');
             sql.push_str(operation.kind.as_str());
             sql.push(' ');
-            StatementRef::from(&operation.query).render_operand::<D>(sql, params);
+            StatementRef::from(&operation.query).render_operand::<D>(sql, params)?;
         }
 
         // The ordering of a compound statement sorts the combined rows rather
@@ -157,7 +176,9 @@ impl<'a> StatementRef<'a> {
             self.compound_limit,
             self.compound_offset,
             &[],
-        );
+        )?;
+
+        Ok(())
     }
 
     /// Whether rendering the statement as a set-operation operand needs parentheses.
@@ -166,14 +187,20 @@ impl<'a> StatementRef<'a> {
     }
 
     /// Renders the statement as one operand of a set operation.
-    fn render_operand<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
+    fn render_operand<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), RawSqlError> {
         if self.requires_operand_parentheses() {
             sql.push('(');
-            self.render::<D>(sql, params);
+            self.render::<D>(sql, params)?;
             sql.push(')');
         } else {
-            self.render::<D>(sql, params);
+            self.render::<D>(sql, params)?;
         }
+
+        Ok(())
     }
 
     /// Whether the statement carries its own `ORDER BY`, `LIMIT`, or `OFFSET`.
@@ -195,7 +222,7 @@ impl<'a> StatementRef<'a> {
         sql: &mut String,
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
-    ) {
+    ) -> Result<(), RawSqlError> {
         if !self.ctes.is_empty() {
             sql.push_str("WITH ");
             for (index, cte) in self.ctes.iter().enumerate() {
@@ -204,18 +231,18 @@ impl<'a> StatementRef<'a> {
                 }
                 D::push_quoted_identifier(sql, cte.name);
                 sql.push_str(" AS (");
-                StatementRef::from(&cte.query).render::<D>(sql, params);
+                StatementRef::from(&cte.query).render::<D>(sql, params)?;
                 sql.push(')');
             }
             sql.push(' ');
         }
 
         sql.push_str("SELECT ");
-        self.render_projections::<D>(sql, params, relations);
+        self.render_projections::<D>(sql, params, relations)?;
 
         if let Some(from) = &self.from {
             sql.push_str(" FROM ");
-            render_relation::<D>(sql, params, from, self.derived);
+            render_relation::<D>(sql, params, from, self.derived)?;
         }
 
         for join in self.joins {
@@ -225,35 +252,37 @@ impl<'a> StatementRef<'a> {
             match &join.lateral {
                 Some(lateral) => {
                     sql.push('(');
-                    StatementRef::from(lateral).render::<D>(sql, params);
+                    StatementRef::from(lateral).render::<D>(sql, params)?;
                     sql.push_str(") AS ");
                     // The lateral subquery is declared under the name the relation
                     // is addressed by, so its columns stay reachable through the
                     // alias an aliased marker references them with.
                     D::push_quoted_identifier(sql, join.table.alias.unwrap_or(join.table.name));
                 }
-                None => render_relation::<D>(sql, params, &join.table, self.derived),
+                None => render_relation::<D>(sql, params, &join.table, self.derived)?,
             }
             if let Some(on) = &join.on {
                 sql.push_str(" ON ");
-                render_expr::<D>(sql, params, on, relations);
+                render_expr::<D>(sql, params, on, relations)?;
             }
         }
 
         if let Some(filter) = self.filter {
             sql.push_str(" WHERE ");
-            render_expr::<D>(sql, params, filter, relations);
+            render_expr::<D>(sql, params, filter, relations)?;
         }
 
         if !self.group_by.is_empty() {
             sql.push_str(" GROUP BY ");
-            render_expressions::<D>(sql, params, self.group_by, relations);
+            render_expressions::<D>(sql, params, self.group_by, relations)?;
         }
 
         if let Some(having) = self.having {
             sql.push_str(" HAVING ");
-            render_expr::<D>(sql, params, having, relations);
+            render_expr::<D>(sql, params, having, relations)?;
         }
+
+        Ok(())
     }
 
     /// Renders the projection list, including the `DISTINCT` flavours.
@@ -262,10 +291,10 @@ impl<'a> StatementRef<'a> {
         sql: &mut String,
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
-    ) {
+    ) -> Result<(), RawSqlError> {
         if !self.distinct_on.is_empty() {
             sql.push_str("DISTINCT ON (");
-            render_expressions::<D>(sql, params, self.distinct_on, relations);
+            render_expressions::<D>(sql, params, self.distinct_on, relations)?;
             sql.push_str(") ");
         } else if self.distinct {
             sql.push_str("DISTINCT ");
@@ -275,7 +304,7 @@ impl<'a> StatementRef<'a> {
             if index > 0 {
                 sql.push_str(", ");
             }
-            render_expr::<D>(sql, params, projection, relations);
+            render_expr::<D>(sql, params, projection, relations)?;
             // A projection carrying its own alias was already named by whoever
             // built it — that is how a nested collection keeps the field names of
             // its rows — so the implied alias would repeat it as
@@ -290,6 +319,8 @@ impl<'a> StatementRef<'a> {
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -446,7 +477,7 @@ impl SelectAst {
     ) -> Result<(), BuildError> {
         let statement = StatementRef::from(self);
         statement.validate()?;
-        statement.render::<D>(sql, params);
+        statement.render::<D>(sql, params)?;
         Ok(())
     }
 }
@@ -459,10 +490,10 @@ fn render_order_and_pagination<D: Dialect>(
     limit: Option<u32>,
     offset: Option<u32>,
     relations: &[TableRef],
-) {
+) -> Result<(), RawSqlError> {
     if !order_by.is_empty() {
         sql.push_str(" ORDER BY ");
-        render_ordered_expressions::<D>(sql, params, order_by, relations);
+        render_ordered_expressions::<D>(sql, params, order_by, relations)?;
     }
 
     if let Some(limit) = limit {
@@ -472,4 +503,6 @@ fn render_order_and_pagination<D: Dialect>(
     if let Some(offset) = offset {
         let _ = write!(sql, " OFFSET {offset}");
     }
+
+    Ok(())
 }

@@ -666,7 +666,7 @@ mod tests {
     fn render(expr: &ExprKind, relations: &[TableRef]) -> (String, Vec<SqlVal>) {
         let mut sql = String::new();
         let mut params = Vec::new();
-        render_expr::<Postgres>(&mut sql, &mut params, expr, relations);
+        render_expr::<Postgres>(&mut sql, &mut params, expr, relations).expect("valid expression");
         (sql, params)
     }
 

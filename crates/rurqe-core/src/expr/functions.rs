@@ -435,7 +435,8 @@ mod tests {
     fn render(expr: &ExprKind) -> (String, Vec<SqlVal>) {
         let mut sql = String::new();
         let mut params = Vec::new();
-        render_expr::<MockDialect>(&mut sql, &mut params, expr, &[TableRef::plain("orders")]);
+        render_expr::<MockDialect>(&mut sql, &mut params, expr, &[TableRef::plain("orders")])
+            .expect("valid expression");
         (sql, params)
     }
 

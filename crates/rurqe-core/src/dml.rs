@@ -30,7 +30,7 @@ pub use update::{ExecutableUpdate, UpdateQuery};
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
-use crate::expr::{Expr, ExprKind, NonAggregate, SqlCompatible, SqlVal};
+use crate::expr::{Expr, ExprKind, NonAggregate, RawSqlError, SqlCompatible, SqlVal};
 use crate::schema::{Column, Table, TableRef};
 
 /// Typestate marker indicating that a DML mutation does not yet have a filter.
@@ -143,20 +143,26 @@ impl AssignValue {
     /// expression assignment references its columns exactly like any other
     /// expression of the same statement: a `SET` clause of an `UPDATE ... FROM`
     /// qualifies a column as soon as the statement addresses several relations.
+    ///
+    /// An expression assignment may embed a raw expression whose fragments
+    /// disagree with its parameters, so the walk reports the census mismatch
+    /// as [`RawSqlError`] instead of dispatching SQL with a missing or a
+    /// misplaced placeholder.
     pub(crate) fn render<D: Dialect>(
         &self,
         sql: &mut String,
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
-    ) {
+    ) -> Result<(), RawSqlError> {
         match self {
             AssignValue::Value(value) => {
                 params.push(value.clone());
                 D::push_placeholder(sql, params.len());
             }
             AssignValue::Default => sql.push_str("DEFAULT"),
-            AssignValue::Expr(expr) => render_expr::<D>(sql, params, expr, relations),
+            AssignValue::Expr(expr) => render_expr::<D>(sql, params, expr, relations)?,
         }
+        Ok(())
     }
 }
 

@@ -885,14 +885,29 @@ fn a_forged_filtered_aggregate_marker_cannot_silently_ignore_distinct() {
 }
 
 #[test]
-#[should_panic(expected = "raw SQL fragments must alternate with parameters")]
 fn unbalanced_raw_fragments_are_rejected() {
     // The renderer binds a parameter after every fragment except the last, so
     // a pair violating the interleaving invariant would dispatch SQL with a
-    // missing or a misplaced placeholder.
-    let _ = Expr::<i64>::raw_fragments(
+    // missing or a misplaced placeholder; the mismatch is reported as a typed
+    // error instead of dispatching broken SQL.
+    let expression = Expr::<i64>::raw_fragments(
         vec!["qty > ".to_owned()],
         vec![SqlVal::I64(1), SqlVal::I64(10)],
+    );
+
+    let mut sql = String::new();
+    let mut params = Vec::new();
+    let error = render_expr::<MockDialect>(&mut sql, &mut params, expression.kind(), &[])
+        .expect_err("unbalanced fragments are rejected");
+
+    // One fragment declares no placeholder at all, so the two supplied
+    // parameters have nothing to bind to.
+    assert_eq!(
+        error,
+        RawSqlError::PlaceholderCount {
+            expected: 0,
+            provided: 2,
+        }
     );
 }
 
