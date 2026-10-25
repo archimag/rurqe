@@ -51,6 +51,13 @@ pub enum BuildError {
         /// The output column name the ordering names.
         column: &'static str,
     },
+    /// The `ORDER BY` of a compound statement names an expression rather than a row.
+    ///
+    /// A compound statement sorts the rows the combination produced, so its
+    /// ordering may only name an output column of the projection list or a 1-based
+    /// position inside it. An aggregate, a function call, a `CASE`, or any other
+    /// computed expression names neither, so the engine would reject the clause.
+    CompoundOrderExpression,
     /// An aliased relation registered its derived subquery under another name.
     ///
     /// The subquery is inlined under the name it was registered with, so a
@@ -99,6 +106,13 @@ impl fmt::Display for BuildError {
                 write!(
                     f,
                     "ORDER BY names column `{column}`, which the compound query does not project; \
+                     a compound statement sorts its combined rows, so the ordering may only reference an output column name or a 1-based position"
+                )
+            }
+            BuildError::CompoundOrderExpression => {
+                write!(
+                    f,
+                    "ORDER BY of a compound query names an expression rather than an output column or a position; \
                      a compound statement sorts its combined rows, so the ordering may only reference an output column name or a 1-based position"
                 )
             }
@@ -314,32 +328,33 @@ impl<'a> StatementRef<'a> {
     /// 1-based positions in that `ORDER BY` clause — an expression, a function, or a
     /// table-qualified reference is rejected with `invalid UNION/INTERSECT/EXCEPT
     /// ORDER BY clause`. The clause is assembled as plain data, so the rule is
-    /// checked here and surfaces as
-    /// [`BuildError::CompoundOrderIndex`] or [`BuildError::CompoundOrderColumn`]
-    /// instead of reaching the engine.
+    /// checked here and surfaces as [`BuildError::CompoundOrderIndex`],
+    /// [`BuildError::CompoundOrderColumn`], or
+    /// [`BuildError::CompoundOrderExpression`] instead of reaching the engine.
     ///
-    /// A position has to fall inside the projection list, and an output column name
-    /// has to be produced by it. The name of a projection is the column it reads or
-    /// the alias it carries, so an expression projected without an alias produces no
-    /// name and is addressed by its position instead.
+    /// A position has to be a single bare number inside the projection list, and an
+    /// output column name has to be produced by it. The name of a projection is the
+    /// column it reads or the alias it carries, so an expression projected without an
+    /// alias produces no name and is addressed by its position instead. Every other
+    /// shape — an aggregate, a function call, a `CASE`, or a raw fragment that is not
+    /// a single bare number — names no output column, so it is rejected as well.
     fn validate_compound_order(&self) -> Result<(), BuildError> {
         let columns = self.projections.len();
         for criterion in self.compound_order_by {
             match &criterion.expr {
-                ExprKind::Raw { .. } => {
-                    if let Some(index) = raw_order_position(&criterion.expr) {
-                        if index == 0 || index as usize > columns {
-                            return Err(BuildError::CompoundOrderIndex { index, columns });
-                        }
-                    }
-                }
+                ExprKind::Raw { .. } => match raw_order_position(&criterion.expr) {
+                    Some(index) if index > 0 && index as usize <= columns => {}
+                    Some(index) => return Err(BuildError::CompoundOrderIndex { index, columns }),
+                    None => return Err(BuildError::CompoundOrderExpression),
+                },
                 ExprKind::Column { name, .. } if !self.projects_output(name) => {
                     return Err(BuildError::CompoundOrderColumn { column: name });
                 }
                 ExprKind::QualifiedColumn { column, .. } if !self.projects_output(column) => {
                     return Err(BuildError::CompoundOrderColumn { column });
                 }
-                _ => {}
+                ExprKind::Column { .. } | ExprKind::QualifiedColumn { .. } => {}
+                _ => return Err(BuildError::CompoundOrderExpression),
             }
         }
         Ok(())
@@ -383,12 +398,15 @@ fn reject_shadowed_derived(
 /// A compound statement and a `DISTINCT` statement both accept an ordering that
 /// addresses one of the projected columns by its position, rendered as a bare
 /// number. The helper recognises exactly that shape: a parameterless raw
-/// expression whose leading fragment parses as a number.
+/// expression consisting of a single fragment that parses as a number. A raw
+/// expression carrying further fragments — `1 + 1` split around a bound value, for
+/// instance — is a computed expression rather than a position, so it is not
+/// recognised here.
 fn raw_order_position(expr: &ExprKind) -> Option<u32> {
     let ExprKind::Raw { fragments, params } = expr else {
         return None;
     };
-    if !params.is_empty() {
+    if !params.is_empty() || fragments.len() != 1 {
         return None;
     }
     fragments
@@ -533,7 +551,7 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::{OrderCriterion, OrderDirection};
+    use crate::expr::{AggregateFunc, OrderCriterion, OrderDirection};
 
     #[test]
     fn build_error_display_duplicate_relation() {
@@ -649,6 +667,73 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("`total`"));
         assert!(msg.contains("output column name or a 1-based position"));
+    }
+
+    #[test]
+    fn build_error_display_compound_order_expression() {
+        let msg = BuildError::CompoundOrderExpression.to_string();
+        assert!(msg.contains("names an expression"));
+        assert!(msg.contains("output column name or a 1-based position"));
+    }
+
+    #[test]
+    fn a_compound_ordering_by_an_aggregate_is_rejected() {
+        // An aggregate collapses the rows of a group, so it names no output column
+        // the combined statement produced.
+        let mut ast = empty_ast();
+        ast.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        });
+        ast.compound_order_by.push(OrderCriterion::new(
+            ExprKind::Aggregate {
+                func: AggregateFunc::Count,
+                distinct: false,
+                arg: None,
+                filter: None,
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(ast.validate(), Err(BuildError::CompoundOrderExpression));
+    }
+
+    #[test]
+    fn a_compound_ordering_by_a_multi_fragment_raw_expression_is_rejected() {
+        // The leading fragment parses as a number, but the expression continues, so
+        // it is a computed value rather than a 1-based position.
+        let mut ast = empty_ast();
+        ast.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        });
+        ast.compound_order_by.push(OrderCriterion::new(
+            ExprKind::Raw {
+                fragments: vec!["1".to_owned(), " + 1".to_owned()],
+                params: Vec::new(),
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(ast.validate(), Err(BuildError::CompoundOrderExpression));
+    }
+
+    #[test]
+    fn a_compound_ordering_by_a_single_fragment_position_is_accepted() {
+        let mut ast = empty_ast();
+        ast.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        });
+        ast.compound_order_by.push(OrderCriterion::new(
+            ExprKind::Raw {
+                fragments: vec!["1".to_owned()],
+                params: Vec::new(),
+            },
+            OrderDirection::Asc,
+        ));
+
+        assert_eq!(ast.validate(), Ok(()));
     }
 
     #[test]

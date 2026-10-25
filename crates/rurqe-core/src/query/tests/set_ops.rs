@@ -4,7 +4,7 @@ use super::{
     compound_user_query, MockBackend, MockDialect, Order, OrderAlias, OrderId, OrderTotal,
     OrderUserId, User, UserId, UserName,
 };
-use crate::expr::{Expr, SqlVal};
+use crate::expr::{Expr, OrderCriterion, SqlVal};
 use crate::query::*;
 use crate::schema::AliasedCol;
 
@@ -174,6 +174,21 @@ fn a_compound_ordering_position_outside_the_projection_is_rejected() {
             columns: 2,
         })
     );
+}
+
+#[test]
+fn a_compound_ordering_by_an_aggregate_expression_is_rejected() {
+    // The compound ordering builders take a column marker or a position, so an
+    // aggregate reaches the clause through the internal ordering recorder. The
+    // engine rejects `ORDER BY COUNT(*)` after `UNION` as an invalid compound
+    // ordering, so the clause is rejected while building as well.
+    let mut query = compound_user_query().union(compound_user_query());
+    query.push_ordering(OrderCriterion::new(
+        Expr::<i64>::count_all().into_kind(),
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(query.build(), Err(BuildError::CompoundOrderExpression));
 }
 
 #[test]
