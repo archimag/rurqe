@@ -48,6 +48,11 @@ mod deadpool_impl {
             }
         }
 
+        /// Reads at most `limit` rows from the checked-out connection.
+        ///
+        /// The limit reaches the row stream of the underlying
+        /// `tokio_postgres` client, so a single-row lookup stops after the
+        /// second row instead of materialising the whole result set.
         fn fetch_raw_limited(
             &self,
             query: &BuiltQuery,
@@ -145,6 +150,11 @@ mod r2d2_impl {
             fetch_raw_sync(&mut *connection, query).map_err(PgPoolError::Query)
         }
 
+        /// Reads at most `limit` rows from the checked-out connection.
+        ///
+        /// The limit reaches the row iterator of the underlying `postgres`
+        /// client, so a single-row lookup stops after the second row instead of
+        /// materialising the whole result set.
         fn fetch_raw_limited(
             &mut self,
             query: &BuiltQuery,
