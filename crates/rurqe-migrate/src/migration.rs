@@ -25,11 +25,12 @@ const NON_TRANSACTIONAL_SUFFIX: &str = "notx.sql";
 /// The header-comment directives disabling the surrounding transaction.
 ///
 /// Every entry is normalized — lowercase, without whitespace or underscores — so
-/// `executeInTransaction = false`, `execute_in_transaction=false`, and
-/// `transactional = false` all match the same declared intent.
-const NON_TRANSACTIONAL_DIRECTIVES: [&str; 3] = [
+/// `executeInTransaction=false`, `execute_in_transaction=false`, and
+/// `transactional=false` all reach the same declared intent, because the comment
+/// text is folded by [`normalize_directive`] before the comparison, so one entry
+/// per intent is enough.
+const NON_TRANSACTIONAL_DIRECTIVES: [&str; 2] = [
     "executeintransaction=false",
-    "execute_intransaction=false",
     "transactional=false",
 ];
 
@@ -161,15 +162,24 @@ pub fn parse_script_attributes(script_name: &str, sql: &str) -> ScriptAttributes
 
 /// Whether `comments` declares the script as non-transactional.
 fn mentions_non_transactional_directive(comments: &str) -> bool {
-    let normalized: String = comments
-        .chars()
-        .filter(|character| !character.is_whitespace() && *character != '_')
-        .flat_map(char::to_lowercase)
-        .collect();
+    let normalized = normalize_directive(comments);
 
     NON_TRANSACTIONAL_DIRECTIVES
         .iter()
         .any(|directive| normalized.contains(directive))
+}
+
+/// Folds `text` into the canonical shape shared by the directive table.
+///
+/// Lowercasing and dropping every whitespace and `_` character makes
+/// `executeInTransaction = false`, `execute_in_transaction=false`, and
+/// `transactional=FALSE` compare equal to their pre-normalized entry, so the
+/// table and the comment scan never disagree about what "normalized" means.
+fn normalize_directive(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace() && *character != '_')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// The state of the scanner reading the SQL text.
@@ -489,6 +499,52 @@ mod tests {
             assert!(
                 !migration.is_transactional(),
                 "`{sql}` must be non-transactional"
+            );
+        }
+    }
+
+    #[test]
+    fn every_declared_directive_matches_a_canonical_sample() {
+        // One representative comment per spelling the engine documents, paired
+        // with the normalized directive it has to fold onto.
+        let spellings = [
+            ("-- executeInTransaction=false\n", "executeintransaction=false"),
+            (
+                "-- executeInTransaction = false\n",
+                "executeintransaction=false",
+            ),
+            (
+                "-- execute_in_transaction=false\n",
+                "executeintransaction=false",
+            ),
+            (
+                "-- execute_in_transaction = false\n",
+                "executeintransaction=false",
+            ),
+            ("-- transactional = false\n", "transactional=false"),
+            ("/* TRANSACTIONAL   =   FALSE */\n", "transactional=false"),
+        ];
+
+        for (comment, directive) in spellings {
+            assert!(
+                NON_TRANSACTIONAL_DIRECTIVES.contains(&directive),
+                "`{directive}` must be declared by the directive table"
+            );
+            assert!(
+                mentions_non_transactional_directive(comment),
+                "`{comment}` must fold onto `{directive}`"
+            );
+        }
+
+        for directive in NON_TRANSACTIONAL_DIRECTIVES {
+            assert_eq!(
+                normalize_directive(directive),
+                directive,
+                "`{directive}` must be stored pre-normalized"
+            );
+            assert!(
+                mentions_non_transactional_directive(directive),
+                "`{directive}` must match at least one canonical comment"
             );
         }
     }
