@@ -94,6 +94,24 @@ pub trait QueryBackend {
     /// Executes `query` and returns every produced row as ordered values.
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error>;
 
+    /// Executes `query` and returns at most `limit` rows as ordered values.
+    ///
+    /// Adapters able to stop reading the cursor early override this method to
+    /// avoid materialising the entire result set. The default implementation
+    /// delegates to [`fetch_raw`](QueryBackend::fetch_raw) and truncates the
+    /// collected rows, so third-party backends stay correct without any change.
+    fn fetch_raw_limited(
+        &mut self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        let mut rows = self.fetch_raw(query)?;
+        if let Some(limit) = limit {
+            rows.truncate(limit);
+        }
+        Ok(rows)
+    }
+
     /// Executes `query` without decoding rows and returns the affected row count.
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error>;
 }
@@ -244,6 +262,11 @@ pub trait QueryBackendExt: QueryBackend {
     }
 
     /// Executes `query` and decodes at most one row.
+    ///
+    /// The cursor is read for at most two rows, so a query producing an
+    /// unbounded result set never materialises it. Exceeding the single-row
+    /// contract fails with [`ExecutionError::MultipleRows`] before the row is
+    /// decoded, and only the confirmed single row reaches [`FromRow`].
     fn fetch_optional<Q>(
         &mut self,
         query: &Q,
@@ -252,10 +275,18 @@ pub trait QueryBackendExt: QueryBackend {
         Q: ExecutableQuery,
         Q::Row: FromRow,
     {
-        let rows = self.fetch_all(query)?;
+        let built = query.build_query().map_err(ExecutionError::Build)?;
+        let rows = self
+            .fetch_raw_limited(&built, Some(2))
+            .map_err(ExecutionError::Backend)?;
         match rows.len() {
             0 => Ok(None),
-            1 => Ok(rows.into_iter().next()),
+            1 => {
+                let values = rows.into_iter().next().ok_or(ExecutionError::NoRows)?;
+                Q::Row::try_from_row(&values)
+                    .map(Some)
+                    .map_err(|source| ExecutionError::RowDecode { row_index: 0, source })
+            }
             count => Err(ExecutionError::MultipleRows { count }),
         }
     }
@@ -311,6 +342,26 @@ pub trait AsyncQueryBackend: Sync {
         query: &BuiltQuery,
     ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, Self::Error>> + Send;
 
+    /// Executes `query` and returns at most `limit` rows as ordered values.
+    ///
+    /// Adapters able to stop reading the cursor early override this method to
+    /// avoid materialising the entire result set. The default implementation
+    /// delegates to [`fetch_raw`](AsyncQueryBackend::fetch_raw) and truncates
+    /// the collected rows, so third-party backends stay correct without change.
+    fn fetch_raw_limited(
+        &self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, Self::Error>> + Send {
+        async move {
+            let mut rows = self.fetch_raw(query).await?;
+            if let Some(limit) = limit {
+                rows.truncate(limit);
+            }
+            Ok(rows)
+        }
+    }
+
     /// Executes `query` without decoding rows and returns the affected row count.
     ///
     /// Like [`fetch_raw`](AsyncQueryBackend::fetch_raw), the future is `Send`, so
@@ -354,6 +405,11 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
     }
 
     /// Executes `query` and decodes at most one row.
+    ///
+    /// The cursor is read for at most two rows, so a query producing an
+    /// unbounded result set never materialises it. Exceeding the single-row
+    /// contract fails with [`ExecutionError::MultipleRows`] before the row is
+    /// decoded, and only the confirmed single row reaches [`FromRow`].
     fn fetch_optional<Q>(
         &self,
         query: &Q,
@@ -363,10 +419,19 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
         Q::Row: FromRow + Send,
     {
         async move {
-            let rows = self.fetch_all(query).await?;
+            let built = query.build_query().map_err(ExecutionError::Build)?;
+            let rows = self
+                .fetch_raw_limited(&built, Some(2))
+                .await
+                .map_err(ExecutionError::Backend)?;
             match rows.len() {
                 0 => Ok(None),
-                1 => Ok(rows.into_iter().next()),
+                1 => {
+                    let values = rows.into_iter().next().ok_or(ExecutionError::NoRows)?;
+                    Q::Row::try_from_row(&values)
+                        .map(Some)
+                        .map_err(|source| ExecutionError::RowDecode { row_index: 0, source })
+                }
                 count => Err(ExecutionError::MultipleRows { count }),
             }
         }
