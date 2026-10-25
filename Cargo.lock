@@ -970,7 +970,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "syn 2.0.119",
- "toml",
+ "toml_edit 0.22.27",
  "tracing",
  "url",
 ]
