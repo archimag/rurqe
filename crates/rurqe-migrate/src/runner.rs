@@ -482,12 +482,18 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<Vec<MigrationStatus>, Error> {
-        let mut guard = LockGuard::acquire(backend)?;
-        guard.ensure_schema_history_table()?;
-        let history = guard.read_history()?;
-        // The lock only guards the metadata write and the read it enables, so it
-        // is released before the statuses are computed from the snapshot.
-        drop(guard);
+        // Creating the metadata table is a schema write, so it happens under the
+        // very run lock the other lifecycle operations take: a concurrent
+        // [`migrate`](Self::migrate) — which on SQLite holds the write lock for
+        // the whole run — can then neither interleave with the creation nor make
+        // the read that follows it fail spuriously. The guard closes its scope as
+        // soon as the history snapshot is taken, so the statuses are computed
+        // without holding the lock.
+        let history = {
+            let mut guard = LockGuard::acquire(backend)?;
+            guard.ensure_schema_history_table()?;
+            guard.read_history()?
+        };
 
         let baseline_version = history
             .iter()
