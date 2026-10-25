@@ -11,7 +11,6 @@ mod scope;
 mod table;
 
 pub use alias::{Aliased, AliasedCol, TableAlias};
-pub use arithmetic::{arithmetic_kind, ColumnArithmetic};
 pub use scope::{At, CombineScope, ExprInScope, ExprScope, ExtendScope, Next, TableInScope};
 pub use table::{Column, ColumnBelongsTo, Table, TableRef};
 
