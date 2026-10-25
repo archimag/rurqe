@@ -86,7 +86,9 @@ impl ProjectionItem {
 
     /// Derives the identifier used as the field name in the synthesized row record.
     ///
-    /// An explicit alias always wins. A column marker is named after its column
+    /// An explicit alias always wins, and the parser has already escaped an alias
+    /// spelled as a Rust keyword into the raw identifier of the same name (`as
+    /// type` names `r#type`). A column marker is named after its column
     /// (`users::EMAIL` and `users.email` both become `email`), converting the
     /// marker name to snake_case and falling back to a raw identifier for Rust
     /// keywords (`users::Type` becomes `r#type`). A column whose name cannot
@@ -143,12 +145,17 @@ impl Parse for ProjectionItem {
 }
 
 /// Splits the leading `alias:` or trailing `as alias` naming from an item body.
+///
+/// The naming is normalised into the field identifier the projection exposes, so
+/// an alias written as a Rust keyword (`Expr::count_all() as type`) reaches the
+/// generated record as the raw identifier of the same name instead of producing a
+/// struct declaration the compiler rejects.
 fn split_naming(tokens: Vec<TokenTree>) -> syn::Result<(Option<Ident>, TokenStream)> {
     if let [TokenTree::Ident(alias), TokenTree::Punct(colon), rest @ ..] = tokens.as_slice() {
         // A single `:` names the projection, while `::` continues a module path.
         if colon.as_char() == ':' && colon.spacing() == Spacing::Alone && !rest.is_empty() {
             let target: TokenStream = rest.iter().cloned().collect();
-            return Ok((Some(alias.clone()), target));
+            return Ok((Some(alias_ident(alias)?), target));
         }
     }
 
@@ -160,13 +167,60 @@ fn split_naming(tokens: Vec<TokenTree>) -> syn::Result<(Option<Ident>, TokenStre
             if keyword == "as" {
                 let target: TokenStream = tokens[..len - 2].iter().cloned().collect();
                 if !target.is_empty() {
-                    return Ok((Some(alias.clone()), target));
+                    return Ok((Some(alias_ident(alias)?), target));
                 }
             }
         }
     }
 
     Ok((None, tokens.into_iter().collect()))
+}
+
+/// Normalises an explicit alias into the field identifier it names.
+///
+/// A plain identifier names its field verbatim, and so does an alias already
+/// written in its raw spelling (`r#type`). An alias written as a Rust keyword
+/// (`as type`, `as match`, `as fn`) cannot be used as a struct field as it
+/// stands, because the record declaration the macros generate would be rejected
+/// by the compiler, so it is re-spelled as the raw identifier of the same name
+/// (`r#type`): that names the very same field while the JSON key of a nested row
+/// keeps the bare keyword (`type`).
+///
+/// A keyword that has no raw-identifier form at all (`self`, `crate`, `super`,
+/// `Self`, `_`) cannot be escaped, so such an alias is reported with the remedy of
+/// choosing another name instead of aborting the compiler run through the
+/// panicking `Ident::new_raw`.
+fn alias_ident(alias: &Ident) -> syn::Result<Ident> {
+    let label = alias.to_string();
+    let bare = label.strip_prefix("r#").unwrap_or(&label);
+
+    // A plain identifier, and an alias already escaped by its author, name their
+    // field verbatim.
+    if bare.len() != label.len() || syn::parse_str::<Ident>(bare).is_ok() {
+        return Ok(alias.clone());
+    }
+
+    if NON_RAW_KEYWORDS.contains(&bare) {
+        return Err(syn::Error::new(
+            alias.span(),
+            format!(
+                "`{bare}` is a Rust keyword with no raw-identifier form, so it cannot name \
+                 a projection field; choose another alias name"
+            ),
+        ));
+    }
+
+    if !is_ascii_identifier(bare) {
+        return Err(syn::Error::new(
+            alias.span(),
+            format!(
+                "`{bare}` is not a Rust identifier, so it cannot name a projection field; \
+                 choose another alias name"
+            ),
+        ));
+    }
+
+    Ok(Ident::new_raw(bare, alias.span()))
 }
 
 /// Derives the field identifier of a schema column marker path.
@@ -492,6 +546,43 @@ mod tests {
         let item: ProjectionItem = parse_str("users::Type").expect("valid projection");
         let ident = item.field_ident().expect("named");
         assert_eq!(ident.to_string(), "r#type");
+    }
+
+    #[test]
+    fn keyword_aliases_are_escaped_into_raw_identifiers() {
+        let item: ProjectionItem = parse_str("users.id as type").expect("valid projection");
+        assert_eq!(item.field_ident().expect("named"), "r#type");
+
+        let item: ProjectionItem = parse_str("match: users.id").expect("valid projection");
+        assert_eq!(item.field_ident().expect("named"), "r#match");
+
+        let item: ProjectionItem =
+            parse_str("Expr::sum::<UserId>() as fn").expect("valid projection");
+        assert_eq!(item.field_ident().expect("named"), "r#fn");
+    }
+
+    #[test]
+    fn raw_keyword_aliases_are_used_verbatim() {
+        let item: ProjectionItem = parse_str("users.id as r#type").expect("valid projection");
+        assert_eq!(item.field_ident().expect("named"), "r#type");
+    }
+
+    #[test]
+    fn keyword_aliases_without_a_raw_form_are_reported() {
+        for source in ["users.id as self", "crate: users.id"] {
+            let error =
+                parse_str::<ProjectionItem>(source).expect_err("the alias cannot name a field");
+            let message = error.to_string();
+
+            assert!(
+                message.contains("no raw-identifier form"),
+                "unexpected message for `{source}`: {message}"
+            );
+            assert!(
+                message.contains("choose another alias name"),
+                "no remedy in `{source}`: {message}"
+            );
+        }
     }
 
     #[test]

@@ -142,6 +142,56 @@ fn aliases_rename_named_fields() {
 }
 
 #[test]
+fn keyword_aliases_are_escaped_into_raw_field_names() {
+    let selection = select!(UserId as type, UserEmail as match);
+
+    let row = decode(
+        &selection,
+        &[SqlVal::I64(3), SqlVal::Text("ops".to_owned())],
+    )
+    .expect("row decodes");
+
+    assert_eq!(row.r#type, 3);
+    assert_eq!(row.r#match, "ops");
+}
+
+#[test]
+fn keyword_aliases_are_escaped_in_the_named_prefix_form() {
+    let selection = select!(type: UserId, match: UserEmail);
+
+    let row = decode(
+        &selection,
+        &[SqlVal::I64(4), SqlVal::Text("root".to_owned())],
+    )
+    .expect("row decodes");
+
+    assert_eq!(row.r#type, 4);
+    assert_eq!(row.r#match, "root");
+}
+
+#[test]
+fn raw_keyword_aliases_name_the_same_field() {
+    let selection = select!(UserId as r#type);
+
+    let row = decode(&selection, &[SqlVal::I64(6)]).expect("row decodes");
+
+    assert_eq!(row.r#type, 6);
+}
+
+#[test]
+fn keyword_aliases_read_and_write_their_bare_keyword_key() {
+    let selection = select!(UserId as type);
+    let row = decode(&selection, &[SqlVal::I64(5)]).expect("row decodes");
+
+    let expected: &[&str] = &["type"];
+    assert_eq!(keys_of(&row), expected);
+    assert_eq!(
+        row.to_sql_val(),
+        SqlVal::Json(serde_json::json!({ "type": 5 }))
+    );
+}
+
+#[test]
 fn named_expressions_project_computed_fields() {
     let selection = select!(
         user_id: UserId,
