@@ -13,9 +13,14 @@
 //! A verification that dies before it drops its database — a killed process, a
 //! hard timeout — leaves the scratch behind, so every name records the second it
 //! was created, and each run first sweeps away the databases abandoned for
-//! longer than [`DEFAULT_SCRATCH_MAX_AGE`].
+//! longer than [`DEFAULT_SCRATCH_MAX_AGE`]. A sweep only reaps databases this
+//! host tagged as its own, so a shared server never loses another host's
+//! in-flight work.
 
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rurqe_migrate::catalog::SchemaCatalog;
@@ -101,35 +106,8 @@ impl PostgresSandbox {
             )
         })?;
 
-        let database = scratch_database_name();
-        let create = format!("CREATE DATABASE \"{database}\"");
         let redacted_url = redact_database_url(url);
-
-        // Database names cannot be bound as parameters, but the generated name only
-        // carries ASCII alphanumerics and underscores, so rendering it is
-        // injection-free.
-        tracing::debug!(
-            url = %redacted_url,
-            database = %database,
-            "creating a postgres scratch database"
-        );
-        if let Err(error) = admin.batch_execute(&create) {
-            return Err(format!(
-                "failed to create the scratch database on `{redacted_url}`: {error}; the \
-                 connected role needs the CREATEDB privilege"
-            ));
-        }
-
-        let owner_tag = current_owner_tag();
-        let comment_sql = format!("COMMENT ON DATABASE \"{database}\" IS '{owner_tag}'");
-        if let Err(error) = admin.batch_execute(&comment_sql) {
-            tracing::warn!(
-                url = %redacted_url,
-                database = %database,
-                %error,
-                "failed to tag the scratch database with its owner marker"
-            );
-        }
+        let database = create_scratch_database(&mut admin, &redacted_url)?;
 
         match attach_scratch_database(config, &database) {
             Ok(client) => Ok(Self {
@@ -245,11 +223,16 @@ pub(super) fn is_matching_owner(comment: Option<&str>, expected_owner: &str) -> 
     comment.map(str::trim) == Some(expected_owner.trim())
 }
 
-/// Hands out a scratch database name no concurrent verification can collide with.
+/// Hands out a scratch database name concurrent verifications practically never collide on.
 ///
-/// The leading second makes an abandoned scratch datable, the process id and the
-/// monotonic counter separate the verifications of one process, and two hosts
-/// that share a process id still never share a server catalog.
+/// The leading second makes an abandoned scratch database datable, the process id
+/// and the monotonic counter separate the verifications of one process, and the
+/// per-process nonce separates processes that happen to share a process id —
+/// including processes of different hosts drawn into the same container pid
+/// range. A name is therefore unique inside one process and practically unique
+/// across hosts, but not guaranteed to be: two independent hosts can still
+/// propose the same name, which `create_scratch_database` answers by regenerating
+/// it.
 fn scratch_database_name() -> String {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -258,24 +241,45 @@ fn scratch_database_name() -> String {
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
     let pid = std::process::id();
+    let nonce = process_nonce();
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
 
-    format!("{SCRATCH_PREFIX}{seconds}_{pid}_{sequence}")
+    format!("{SCRATCH_PREFIX}{seconds}_{pid}_{nonce}_{sequence}")
+}
+
+/// Draws the random per-process component every generated name carries.
+///
+/// The standard library seeds its hasher from the operating system, so hashing the
+/// process id together with the current instant yields a value two hosts do not
+/// share, without pulling an entropy crate into the toolchain.
+fn process_nonce() -> u64 {
+    static NONCE: OnceLock<u64> = OnceLock::new();
+
+    *NONCE.get_or_init(|| {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u32(std::process::id());
+        if let Ok(elapsed) = SystemTime::now().duration_since(UNIX_EPOCH) {
+            hasher.write_u128(elapsed.as_nanos());
+        }
+        hasher.finish()
+    })
 }
 
 /// The instant a scratch database name records, if it records one.
 ///
 /// The name carries the creation second in its leading field, followed by the
-/// process id and the sequence number that separate concurrent verifications. A
-/// name carrying no such fields — a foreign database, or one truncated or
-/// extended by hand — records no instant and is therefore never swept.
+/// process id and the per-process nonce that separate concurrent verifications.
+/// Whatever follows those three fields — the sequence number, or fields a later
+/// naming scheme adds — is not read, so a name keeps recording its instant when
+/// the uniqueness scheme grows. A name carrying no such fields — a foreign
+/// database, or one truncated by hand — records no instant and is therefore never
+/// swept.
 pub(super) fn parse_scratch_database_timestamp(name: &str) -> Option<SystemTime> {
     let mut fields = name.strip_prefix(SCRATCH_PREFIX)?.split('_');
     let seconds = fields.next()?.parse::<u64>().ok()?;
     let _pid = fields.next()?.parse::<u64>().ok()?;
-    let _sequence = fields.next()?.parse::<u64>().ok()?;
 
-    if fields.next().is_some() {
+    if fields.next()?.is_empty() {
         return None;
     }
 
@@ -396,6 +400,83 @@ pub(crate) fn sweep_stale_scratch_databases(
     }
 
     Ok(dropped)
+}
+
+/// The SQLSTATE PostgreSQL reports when a database of the requested name exists.
+const DUPLICATE_DATABASE_SQLSTATE: &str = "42P04";
+
+/// How many names a verification proposes before treating creation as failed.
+const CREATE_ATTEMPTS: usize = 2;
+
+/// Creates the scratch database a verification replays into and tags its owner.
+///
+/// Two hosts sharing one server can generate the same candidate name, so a
+/// creation the server refuses because that database already exists is retried
+/// with a freshly generated name instead of aborting the verification.
+fn create_scratch_database(
+    admin: &mut postgres::Client,
+    redacted_url: &str,
+) -> Result<String, String> {
+    for attempt in 1..=CREATE_ATTEMPTS {
+        let database = scratch_database_name();
+        let create = format!("CREATE DATABASE \"{database}\"");
+
+        // Database names cannot be bound as parameters, but the generated name only
+        // carries ASCII alphanumerics and underscores, so rendering it is
+        // injection-free.
+        tracing::debug!(
+            url = %redacted_url,
+            database = %database,
+            attempt,
+            "creating a postgres scratch database"
+        );
+
+        match admin.batch_execute(&create) {
+            Ok(()) => {
+                tag_scratch_database_owner(admin, &database, redacted_url);
+                return Ok(database);
+            }
+            Err(error) if attempt < CREATE_ATTEMPTS && is_duplicate_database(&error) => {
+                tracing::debug!(
+                    url = %redacted_url,
+                    database = %database,
+                    "the scratch database name is already taken, generating another"
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to create the scratch database on `{redacted_url}`: {error}; the \
+                     connected role needs the CREATEDB privilege"
+                ))
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to create a scratch database on `{redacted_url}`: every generated name was \
+         already taken"
+    ))
+}
+
+/// Records the owner marker the staleness sweep matches on the scratch database.
+fn tag_scratch_database_owner(admin: &mut postgres::Client, database: &str, redacted_url: &str) {
+    let owner_tag = current_owner_tag();
+    let comment_sql = format!("COMMENT ON DATABASE \"{database}\" IS '{owner_tag}'");
+    if let Err(error) = admin.batch_execute(&comment_sql) {
+        tracing::warn!(
+            url = %redacted_url,
+            database = %database,
+            %error,
+            "failed to tag the scratch database with its owner marker"
+        );
+    }
+}
+
+/// Whether the server refused the name because that database already exists.
+fn is_duplicate_database(error: &postgres::Error) -> bool {
+    error
+        .code()
+        .is_some_and(|code| code.code() == DUPLICATE_DATABASE_SQLSTATE)
 }
 
 /// Opens the replay connection to the freshly created scratch database.
@@ -532,13 +613,67 @@ mod tests {
         for name in [
             "app",
             "rurqe_scratch_",
+            "rurqe_scratch_1700000025",
             "rurqe_scratch_1700000025_4321",
-            "rurqe_scratch_1700000025_4321_7_extra",
-            "rurqe_scratch_1700000025_4321_seven",
+            "rurqe_scratch_1700000025_4321_",
+            "rurqe_scratch_seven_4321_7",
             "rurqe_stage_1700000025_4321_7",
         ] {
             assert_eq!(parse_scratch_database_timestamp(name), None, "{name}");
         }
+    }
+
+    #[test]
+    fn a_generated_name_carries_a_process_nonce_before_its_sequence() {
+        let name = scratch_database_name();
+        let fields: Vec<&str> = name
+            .strip_prefix(SCRATCH_PREFIX)
+            .expect("a generated name carries the scratch prefix")
+            .split('_')
+            .collect();
+
+        assert_eq!(fields.len(), 4, "unexpected name: {name}");
+        assert!(
+            fields.iter().all(|field| field.parse::<u64>().is_ok()),
+            "unexpected name: {name}"
+        );
+    }
+
+    #[test]
+    fn two_names_generated_in_one_process_differ_in_their_nonce_or_sequence() {
+        let first = scratch_database_name();
+        let second = scratch_database_name();
+
+        assert_ne!(first, second);
+        assert_eq!(
+            parse_scratch_database_timestamp(&first),
+            parse_scratch_database_timestamp(&second)
+        );
+    }
+
+    #[test]
+    fn a_name_with_trailing_fields_still_records_its_second() {
+        let expected = Some(UNIX_EPOCH + Duration::from_secs(1_700_000_025));
+
+        for name in [
+            "rurqe_scratch_1700000025_4321_7",
+            "rurqe_scratch_1700000025_4321_12345678901234567890_7",
+            "rurqe_scratch_1700000025_4321_7_extra",
+            "rurqe_scratch_1700000025_4321_abc_def",
+        ] {
+            assert_eq!(parse_scratch_database_timestamp(name), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_with_trailing_fields_stays_sweepable() {
+        let max_age = Duration::from_secs(600);
+
+        assert!(is_scratch_database_stale(
+            "rurqe_scratch_1699999000_4321_12345678901234567890_0",
+            max_age,
+            now()
+        ));
     }
 
     #[test]
@@ -586,7 +721,7 @@ mod tests {
     fn owner_tag_matches_expected() {
         let tag = current_owner_tag();
         assert!(tag.starts_with(OWNER_PREFIX));
-        assert!(is_matching_owner(Some(&tag), &tag));
+        assert!(is_matching_owner(Some(tag.as_str()), &tag));
         assert!(!is_matching_owner(Some("rurqe:owner=other-host"), &tag));
         assert!(!is_matching_owner(None, &tag));
     }
