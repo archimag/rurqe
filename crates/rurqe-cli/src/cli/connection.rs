@@ -206,7 +206,17 @@ mod tests {
             .expect("an unknown mode is rejected");
 
         let message = error.to_string();
-        assert!(message.contains("sslmode=maybe"), "got {message}");
+        assert!(
+            message.contains("invalid PostgreSQL connection string"),
+            "got {message}"
+        );
+        // The diagnostic carries the fixed placeholder instead of the parameter
+        // text, so the offending value — and the password beside it — never
+        // reach the log.
+        assert!(
+            message.contains("<unparseable PostgreSQL connection string>"),
+            "got {message}"
+        );
         assert!(!message.contains("s3cret"), "got {message}");
     }
 

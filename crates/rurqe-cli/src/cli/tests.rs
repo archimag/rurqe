@@ -159,16 +159,23 @@ fn parses_cargo_db_baseline_invocation() {
 #[test]
 fn redacts_credentials_from_connection_urls() {
     assert_eq!(
-        redact_database_url("postgres://app:secret@db.internal:5432/app"),
-        "postgres://***@db.internal:5432/app"
+        redact_database_url("postgres://app:secret@db.internal/app"),
+        "postgres://***@db.internal/app"
     );
     assert_eq!(
         redact_database_url("postgresql://app:pa%40ss@db/app?sslmode=require"),
-        "postgresql://***@db/app?sslmode=require"
+        "postgres://***@db/app"
+    );
+    // A port the caller spelled identifies the target and stays visible, while
+    // the default one the driver reports for an unported host identifies nothing
+    // and is left out.
+    assert_eq!(
+        redact_database_url("postgres://app:secret@db.internal:6543/app"),
+        "postgres://***@db.internal:6543/app"
     );
     assert_eq!(
         redact_database_url("postgres://db.internal:5432/app"),
-        "postgres://db.internal:5432/app"
+        "postgres://db.internal/app"
     );
     assert_eq!(
         redact_database_url("sqlite:/tmp/data@host.db"),
@@ -180,43 +187,96 @@ fn redacts_credentials_from_connection_urls() {
 #[test]
 fn redacts_secrets_from_query_parameters() {
     assert_eq!(
-        redact_database_url("postgres://app@db.internal:5432/app?password=s3cret&sslmode=require"),
-        "postgres://***@db.internal:5432/app?password=***&sslmode=require"
-    );
-    assert_eq!(
-        redact_database_url(
-            "postgres://db/app?sslmode=require&sslpassword=s3cret&application_name=ci"
-        ),
-        "postgres://db/app?sslmode=require&sslpassword=***&application_name=ci"
-    );
-    assert_eq!(
-        redact_database_url("postgres://db/app?password=s3cret#frag"),
-        "postgres://db/app?password=***#frag"
+        redact_database_url("postgres://app@db.internal/app?password=s3cret&sslmode=require"),
+        "postgres://***@db.internal/app"
     );
     assert_eq!(
         redact_database_url("sqlite:/tmp/app.db?password=not-a-secret-here"),
-        "sqlite:/tmp/app.db?password=***"
+        "sqlite:/tmp/app.db"
     );
+
+    // `sslpassword` is not a parameter the driver knows, so the string is either
+    // reduced to its typed fields or replaced by the placeholder — never echoed.
+    let ssl = redact_database_url(
+        "postgres://db/app?sslmode=require&sslpassword=s3cret&application_name=ci",
+    );
+    assert!(!ssl.contains("s3cret"), "got {ssl}");
+    assert!(!ssl.contains("sslpassword"), "got {ssl}");
+
+    // A fragment carries no connection parameter, so it never reaches the answer.
+    let fragmented = redact_database_url("postgres://db/app?password=s3cret#frag");
+    assert!(!fragmented.contains("s3cret"), "got {fragmented}");
+    assert!(!fragmented.contains("password"), "got {fragmented}");
 }
 
 #[test]
 fn redacts_secrets_from_libpq_keywords() {
     assert_eq!(
         redact_database_url("host=db.internal user=app password=s3cret dbname=app"),
-        "host=db.internal user=app password=*** dbname=app"
+        "postgres://***@db.internal/app"
     );
-    assert_eq!(
-        redact_database_url("host=db password='two words' sslpassword=s3cret"),
-        "host=db password='***' sslpassword=***"
-    );
-    assert_eq!(
-        redact_database_url("host=db password='it\\'s' user=app"),
-        "host=db password='***' user=app"
-    );
+
+    // A quoted value, a backslash-escaped one, and the `sslpassword`
+    // indirection are all excluded whether or not the driver accepts them.
+    for url in [
+        "host=db password='two words' sslpassword=s3cret",
+        "host=db password='it\\'s' user=app",
+    ] {
+        let redacted = redact_database_url(url);
+
+        for secret in ["s3cret", "password", "two words"] {
+            assert!(
+                !redacted.contains(secret),
+                "`{redacted}` leaks `{secret}` from `{url}`"
+            );
+        }
+    }
+
     // A path segment that merely looks like a parameter is not a credential.
     assert_eq!(
         redact_database_url("sqlite:/tmp/password=looks-like-a-keyword.db"),
         "sqlite:/tmp/password=looks-like-a-keyword.db"
+    );
+}
+
+#[test]
+fn the_postgresql_scheme_is_normalised() {
+    assert_eq!(
+        redact_database_url("postgresql://app:s3cret@db.internal/app"),
+        "postgres://***@db.internal/app"
+    );
+}
+
+#[test]
+fn a_secret_spelled_beyond_a_name_value_pair_never_survives() {
+    for url in [
+        // A `-c` option carrying a `password=` setting of its own.
+        "postgres://host/db?options=-c%20password%3Dx",
+        // A percent-encoded parameter name.
+        "postgres://h/db?pass%77ord=s3cret",
+        // A quoted libpq value holding a backslash-escaped space.
+        "host=db password='a\\ b' dbname=app",
+        // A `service` indirection hiding the parameters in a file.
+        "host=db service=prod password=s3cret",
+        // Several hosts and ports at once.
+        "host=a,b port=1,2 password=s3cret",
+    ] {
+        let redacted = redact_database_url(url);
+
+        for secret in ["s3cret", "password", "pass%77ord", "-c"] {
+            assert!(
+                !redacted.contains(secret),
+                "`{redacted}` leaks `{secret}` from `{url}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unparseable_postgres_string_embeds_no_input_bytes() {
+    assert_eq!(
+        redact_database_url("postgres://app:s3cret@db/app?sslmode=maybe"),
+        "<unparseable PostgreSQL connection string>"
     );
 }
 
