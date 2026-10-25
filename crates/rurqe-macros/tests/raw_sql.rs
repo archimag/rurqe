@@ -1,4 +1,4 @@
-use rurqe_core::expr::{Expr, ExprKind, SqlVal};
+use rurqe_core::expr::{Expr, ExprKind, Json, SqlVal};
 use rurqe_macros::{raw_sql, sql};
 
 #[test]
@@ -59,4 +59,78 @@ fn raw_sql_macro_alias_functions_identically() {
             params: vec![SqlVal::I64(1), SqlVal::Bool(true)],
         }
     );
+}
+
+#[test]
+fn sql_macro_binds_optional_parameters_through_to_sql_val() {
+    let present = sql!(bool, "age = ?", Some(18i64));
+    assert_eq!(
+        present.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["age = ".into(), "".into()],
+            params: vec![SqlVal::I64(18)],
+        }
+    );
+
+    let absent = sql!(bool, "age = ?", None::<i64>);
+    assert_eq!(
+        absent.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["age = ".into(), "".into()],
+            params: vec![SqlVal::Null],
+        }
+    );
+
+    let owned = sql!(bool, "name = ?", Some(String::from("root")));
+    assert_eq!(
+        owned.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["name = ".into(), "".into()],
+            params: vec![SqlVal::Text("root".into())],
+        }
+    );
+}
+
+#[test]
+fn sql_macro_binds_json_parameters_through_to_sql_val() {
+    let owned = sql!(
+        bool,
+        "payload @> ?",
+        Json(serde_json::json!({ "role": "admin" }))
+    );
+    assert_eq!(
+        owned.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["payload @> ".into(), "".into()],
+            params: vec![SqlVal::Json(serde_json::json!({ "role": "admin" }))],
+        }
+    );
+
+    let payload = Json(serde_json::json!([1, 2, 3]));
+    let borrowed = sql!(bool, "payload @> ?", &payload);
+    assert_eq!(
+        borrowed.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["payload @> ".into(), "".into()],
+            params: vec![SqlVal::Json(serde_json::json!([1, 2, 3]))],
+        }
+    );
+    assert_eq!(*payload, serde_json::json!([1, 2, 3]));
+}
+
+#[test]
+fn sql_macro_binds_borrowed_values_without_moving_them() {
+    let name = String::from("root");
+    let expr = sql!(bool, "name = ? AND parent = ?", &name, name.as_str());
+    assert_eq!(
+        expr.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["name = ".into(), " AND parent = ".into(), "".into()],
+            params: vec![
+                SqlVal::Text("root".into()),
+                SqlVal::Text("root".into()),
+            ],
+        }
+    );
+    assert_eq!(name, "root");
 }

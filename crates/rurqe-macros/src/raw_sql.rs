@@ -63,6 +63,16 @@ impl Parse for RawSqlInput {
 /// macro and the query engine can never disagree about what a template means. The
 /// split happens once, at compile time; the generated code only binds the
 /// parameters and hands the ready-made fragments to `Expr::raw_fragments`.
+///
+/// Every argument is bound through [`ToSqlVal::to_sql_val`], the same conversion
+/// contract the rest of the query builder encodes parameters with, so the macro
+/// accepts exactly what a typed expression accepts: primitives, `Option<T>`,
+/// `Json<T>`, and custom domain newtypes. The call is written in universal
+/// function call syntax, which keeps `ToSqlVal` out of the caller's imports, and
+/// it receives the argument expression verbatim, so writing `&value` binds a
+/// borrowed value through the reference implementations instead of moving it.
+///
+/// [`ToSqlVal::to_sql_val`]: rurqe_core::expr::ToSqlVal::to_sql_val
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let parsed: RawSqlInput = syn::parse2(input)?;
     let template = parsed.template.value();
@@ -84,7 +94,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     Ok(quote! {
         {
             let __rurqe_params: ::std::vec::Vec<::rurqe::core::expr::SqlVal> = ::std::vec![
-                #( ::core::convert::Into::<::rurqe::core::expr::SqlVal>::into(#args) ),*
+                #( ::rurqe::core::expr::ToSqlVal::to_sql_val(#args) ),*
             ];
             ::rurqe::core::expr::Expr::<#ty>::raw_fragments(
                 ::std::vec![ #( ::std::string::String::from(#fragments) ),* ],
