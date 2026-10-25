@@ -17,7 +17,8 @@ use std::collections::HashMap;
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
-use crate::expr::{DialectInScope, SelectAst};
+use crate::dml::render_expr;
+use crate::expr::{DialectInScope, ExprKind, SelectAst};
 use crate::query::{
     BuildError, BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
@@ -159,7 +160,7 @@ pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
     rows: Vec<Vec<AssignValue>>,
     select: Option<SelectAst>,
     conflict: Option<Conflict>,
-    returning: Vec<&'static str>,
+    returning: Vec<ExprKind>,
     _marker: InsertMarker<D, T, Values, Returning>,
 }
 
@@ -323,7 +324,11 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
         mut self,
         selection: S,
     ) -> InsertQuery<D, T, Values, <S as Selection>::Row> {
-        selection.push_column_names(&mut self.returning);
+        // The clause is assembled from the projected items themselves, so a
+        // computed projection stays in the rendered statement exactly like a
+        // plain column: the row type of the statement keeps naming every item the
+        // selection declares.
+        selection.push_projections(&mut self.returning);
         self.retype()
     }
 }
@@ -463,12 +468,15 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         }
 
         if !self.returning.is_empty() {
+            // A projected item is rendered like any other expression of the
+            // statement, so a column is resolved against the inserted table and a
+            // computed projection reaches the clause with its SQL intact.
             sql.push_str(" RETURNING ");
-            for (index, name) in self.returning.iter().enumerate() {
+            for (index, projection) in self.returning.iter().enumerate() {
                 if index > 0 {
                     sql.push_str(", ");
                 }
-                D::push_quoted_identifier(&mut sql, name);
+                render_expr::<D>(&mut sql, &mut params, projection, &relations);
             }
         }
 
@@ -844,6 +852,79 @@ mod tests {
             built.params,
             vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
         );
+    }
+
+    /// The computed item projected by the returning-clause tests.
+    fn computed_projection() -> ExprKind {
+        use crate::expr::Expr;
+
+        (Expr::column::<UserId>() + Expr::column::<UserId>()).into_kind()
+    }
+
+    /// A selection mixing a plain column with a computed projection.
+    struct MixedReturning;
+
+    impl Selection for MixedReturning {
+        type Row = (i64, i64);
+
+        fn push_projections(&self, out: &mut Vec<ExprKind>) {
+            out.push(UserId::expr_kind());
+            out.push(computed_projection());
+        }
+    }
+
+    impl TableSelection<User> for MixedReturning {}
+
+    /// A selection made only of computed projections.
+    struct ExpressionOnlyReturning;
+
+    impl Selection for ExpressionOnlyReturning {
+        type Row = (i64,);
+
+        fn push_projections(&self, out: &mut Vec<ExprKind>) {
+            out.push(computed_projection());
+        }
+    }
+
+    impl TableSelection<User> for ExpressionOnlyReturning {}
+
+    #[test]
+    fn returning_renders_a_computed_projection_beside_a_column() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .returning(MixedReturning)
+            .build().expect("valid query");
+
+        // The row type of the statement names two items, so the clause has to
+        // carry both of them: dropping the computed one would make every decoded
+        // row fail on arity.
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) RETURNING \"id\", (\"id\" + \"id\")"
+        );
+        assert_eq!(
+            built.params,
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+        );
+        let _: <MixedReturning as Selection>::Row = (1i64, 2i64);
+    }
+
+    #[test]
+    fn returning_renders_a_clause_for_an_expression_only_selection() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values(UserId::set(1i64))
+            .returning(ExpressionOnlyReturning)
+            .build().expect("valid query");
+
+        // The selection names no plain column, so a name-only record would leave
+        // the statement without a `RETURNING` clause at all while its row type
+        // still promised one row.
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\") VALUES ($1) RETURNING (\"id\" + \"id\")"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+        let _: <ExpressionOnlyReturning as Selection>::Row = (1i64,);
     }
 
     #[test]
