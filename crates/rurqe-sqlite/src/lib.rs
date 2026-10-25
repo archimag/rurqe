@@ -7,6 +7,7 @@
 //! - [`Sqlite3_0`] — baseline dialect without `ON CONFLICT` or `RETURNING`.
 //! - [`Sqlite3_24`] — adds `ON CONFLICT` upsert syntax.
 //! - [`Sqlite3_35`] — adds the `RETURNING` clause and `UPDATE ... FROM`.
+//! - [`Sqlite3_38`] — adds the JSON functions a nested collection renders with.
 //!
 //! ```
 //! use rurqe_core::dialect::Dialect;
@@ -26,7 +27,7 @@ mod dialect;
 pub use rurqe_core;
 
 pub use self::dialect::{
-    Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_25, Sqlite3_30, Sqlite3_35, SqliteVersion,
+    Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_25, Sqlite3_30, Sqlite3_35, Sqlite3_38, SqliteVersion,
     SqliteVersionAtLeast,
 };
 

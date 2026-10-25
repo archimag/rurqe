@@ -317,6 +317,14 @@ crate::pin_dialect_version! {
             /// Query entry points pinned to SQLite 3.35.
             pub mod sqlite3_35 => Sqlite<Sqlite3_35>, rusqlite::Error;
         }
+
+        crate::pin_dialect_version! {
+            /// Query entry points pinned to SQLite 3.38.
+            ///
+            /// The first release that always bundles the JSON functions, so a
+            /// nested collection (`nest_many` / `nest_one`) is reachable from it.
+            pub mod sqlite3_38 => Sqlite<Sqlite3_38>, rusqlite::Error;
+        }
     }
 }
 
@@ -585,8 +593,8 @@ pub mod prelude {
 
     #[cfg(feature = "sqlite")]
     pub use rurqe_sqlite::{
-        Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_25, Sqlite3_30, Sqlite3_35, SqliteConnection,
-        SqliteVersion,
+        Sqlite, Sqlite3_0, Sqlite3_24, Sqlite3_25, Sqlite3_30, Sqlite3_35, Sqlite3_38,
+        SqliteConnection, SqliteVersion,
     };
 
     #[cfg(feature = "r2d2")]

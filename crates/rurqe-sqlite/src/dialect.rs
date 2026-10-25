@@ -56,6 +56,23 @@ impl SqliteVersionAtLeast<3, 25> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 30> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 
+/// SQLite 3.38 marker: the first release that always bundles the JSON functions.
+///
+/// The JSON1 extension (`json_object`, `json_group_array`, and the rest of the
+/// family) was an opt-in compile-time option (`SQLITE_ENABLE_JSON1`) until
+/// 3.38.0, so a default build of an earlier release rejects those functions.
+/// A nested collection renders with them, so the capability that admits it is
+/// gated at this release rather than at the upsert threshold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Sqlite3_38;
+impl SqliteVersion for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 0> for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 24> for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 25> for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 30> for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 35> for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 38> for Sqlite3_38 {}
+
 /// SQLite dialect parameterised by engine version (defaulting to [`Sqlite3_35`]).
 ///
 /// Identifiers are double-quoted and escaped by doubling embedded quotes, while
@@ -117,6 +134,18 @@ impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 /// fn assert_lateral<D: SupportsLateralJoin>() {}
 /// assert_lateral::<Sqlite<Sqlite3_35>>();
 /// ```
+///
+/// The JSON functions a nested collection renders with were an opt-in extension
+/// until 3.38.0, so no version before [`Sqlite3_38`] implements
+/// [`SupportsJsonAggregation`]:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::SupportsJsonAggregation;
+/// use rurqe_sqlite::{Sqlite, Sqlite3_35};
+///
+/// fn assert_json_aggregation<D: SupportsJsonAggregation>() {}
+/// assert_json_aggregation::<Sqlite<Sqlite3_35>>();
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
 
@@ -168,7 +197,12 @@ impl<V: SqliteVersion + SqliteVersionAtLeast<3, 25>> SupportsWindowFunctions for
 
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 30>> SupportsNullsOrdering for Sqlite<V> {}
 
-impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsJsonAggregation for Sqlite<V> {}
+// The JSON1 extension — `json_object`, `json_group_array`, and the rest of the
+// family — was an opt-in compile-time option until 3.38.0 made it part of the
+// default build, so a nested collection is admitted only for a version that
+// guarantees the functions exist. Gating it at the upsert threshold would let a
+// statement compile that a default build rejects with "no such function".
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 38>> SupportsJsonAggregation for Sqlite<V> {}
 
 #[cfg(test)]
 mod tests {
@@ -241,11 +275,9 @@ mod tests {
         assert_nulls_ordering::<Sqlite<Sqlite3_35>>();
         assert_nulls_ordering::<Sqlite>();
 
-        assert_json_aggregation::<Sqlite<Sqlite3_24>>();
-        assert_json_aggregation::<Sqlite<Sqlite3_25>>();
-        assert_json_aggregation::<Sqlite<Sqlite3_30>>();
-        assert_json_aggregation::<Sqlite<Sqlite3_35>>();
-        assert_json_aggregation::<Sqlite>();
+        // The JSON functions only became part of the default build in 3.38.0, so
+        // the capability starts at that marker and no earlier version has it.
+        assert_json_aggregation::<Sqlite<Sqlite3_38>>();
     }
 
     #[test]
@@ -281,6 +313,7 @@ mod tests {
         assert_flags::<Sqlite<Sqlite3_25>>();
         assert_flags::<Sqlite<Sqlite3_30>>();
         assert_flags::<Sqlite<Sqlite3_35>>();
+        assert_flags::<Sqlite<Sqlite3_38>>();
         assert_flags::<Sqlite>();
     }
 }
