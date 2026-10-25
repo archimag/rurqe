@@ -32,18 +32,23 @@ use crate::version::MigrationVersion;
 ///
 /// Every lifecycle method drives a [`MigrationBackend`], and a backend performs
 /// blocking I/O: the call runs on the calling thread until the database answers.
-/// Conventions.md §3 forbids that on an async worker thread, so a caller already
-/// running inside a Tokio runtime uses the `*_async` wrappers (available with the
-/// `tokio` feature), which run the guard-free core of the same lifecycle on a
-/// dedicated blocking thread.
+/// Conventions.md §3 forbids that on an async worker thread, so every blocking
+/// lifecycle method has a Tokio-safe counterpart, available with the `tokio`
+/// feature: [`migrate_async`](Self::migrate_async),
+/// [`status_async`](Self::status_async), [`repair_async`](Self::repair_async), and
+/// [`baseline_async`](Self::baseline_async). Each one delegates to the matching
+/// [`Migrator`] wrapper, so the offload mechanics live in a single place and the
+/// work runs on a dedicated blocking thread.
 ///
 /// The synchronous methods report such a call through `warn_if_in_tokio_runtime`
 /// and keep running, which is the default behaviour. Compiling this crate with the
 /// `strict-async` feature makes the same check refuse the call instead, and a
 /// manual `tokio::task::spawn_blocking` around a synchronous method is refused as
 /// well: a blocking-pool thread and a worker thread cannot be told apart from
-/// inside the thread, so only the `*_async` wrappers can block safely there. Run
-/// the synchronous methods on a plain (non-Tokio) thread otherwise.
+/// inside the thread, so only the `*_async` wrappers can block safely there. The
+/// wrappers themselves are unaffected by the feature, because they run the
+/// guard-free cores on a blocking thread of the pool. Run the synchronous methods
+/// on a plain (non-Tokio) thread otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedMigrations {
     migrations: Vec<Migration>,
@@ -110,6 +115,9 @@ impl EmbeddedMigrations {
 
     /// Runs all pending migrations on a dedicated blocking thread.
     ///
+    /// Delegates to [`Migrator::migrate_async`], which owns the offload mechanics,
+    /// so this wrapper and the runner counterpart cannot drift apart.
+    ///
     /// The backend is moved into the blocking task and handed back together with
     /// the report, so a connection that cannot be shared across threads stays
     /// usable after the run. A panic inside the blocking task — which this crate
@@ -122,21 +130,11 @@ impl EmbeddedMigrations {
     #[cfg(feature = "tokio")]
     pub async fn migrate_async<B: MigrationBackend + Send + 'static>(
         &self,
-        mut backend: B,
+        backend: B,
     ) -> Result<(MigrationReport, B), Error> {
-        let migrations = self.migrations.clone();
-        let joined = tokio::task::spawn_blocking(move || {
-            let report = Migrator::new().migrate_core(&mut backend, &migrations);
-            (report, backend)
-        })
-        .await;
-
-        match joined {
-            Ok((report, backend)) => report.map(|report| (report, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking migration task failed: {error}"
-            ))),
-        }
+        Migrator::new()
+            .migrate_async(backend, &self.migrations)
+            .await
     }
 
     /// Inspects the status of embedded migrations against the database history.
@@ -155,6 +153,9 @@ impl EmbeddedMigrations {
 
     /// Inspects the status of the embedded migrations on a dedicated blocking thread.
     ///
+    /// Delegates to [`Migrator::status_async`], which owns the offload mechanics,
+    /// so this wrapper and the runner counterpart cannot drift apart.
+    ///
     /// The backend is moved into the blocking task and handed back with the
     /// statuses, so the caller keeps the connection it inspected. A panic inside
     /// the blocking task surfaces as [`Error::Backend`] instead of unwinding the
@@ -163,36 +164,56 @@ impl EmbeddedMigrations {
     #[cfg(feature = "tokio")]
     pub async fn status_async<B: MigrationBackend + Send + 'static>(
         &self,
-        mut backend: B,
+        backend: B,
     ) -> Result<(Vec<MigrationStatus>, B), Error> {
-        let migrations = self.migrations.clone();
-        let joined = tokio::task::spawn_blocking(move || {
-            let statuses = Migrator::new().status_core(&mut backend, &migrations);
-            (statuses, backend)
-        })
-        .await;
-
-        match joined {
-            Ok((statuses, backend)) => statuses.map(|statuses| (statuses, backend)),
-            Err(error) => Err(Error::Backend(format!(
-                "blocking status task failed: {error}"
-            ))),
-        }
+        Migrator::new()
+            .status_async(backend, &self.migrations)
+            .await
     }
 
     /// Repairs schema history against updated embedded script checksums and purges failed entries.
     ///
-    /// The backend blocks the calling thread, so an async worker thread must wrap
-    /// this call in `tokio::task::spawn_blocking` (Conventions.md §3).
+    /// The backend blocks the calling thread, so an async worker thread hands the
+    /// run to [`repair_async`](Self::repair_async) instead of calling this method
+    /// directly (Conventions.md §3). Wrapping this call in
+    /// `tokio::task::spawn_blocking` does not help: a blocking-pool thread cannot be
+    /// told apart from a worker thread, so the `strict-async` guard refuses it there
+    /// as well.
     pub fn repair<B: MigrationBackend>(&self, backend: &mut B) -> Result<RepairReport, Error> {
         guard_blocking_entry("EmbeddedMigrations::repair")?;
         Migrator::new().repair_core(backend, &self.migrations)
     }
 
+    /// Repairs the schema history on a dedicated blocking thread.
+    ///
+    /// Delegates to [`Migrator::repair_async`], which owns the offload mechanics
+    /// and runs the guard-free core on a blocking thread, so an async worker thread
+    /// never performs the blocking database I/O Conventions.md §3 forbids.
+    ///
+    /// The backend is moved into the blocking task and handed back together with
+    /// the report, so the caller keeps the connection it repaired. A panic inside
+    /// the blocking task — which this crate never produces — surfaces as
+    /// [`Error::Backend`] instead of unwinding the caller. Under `strict-async` this
+    /// is the sanctioned runtime entry point, because it drives the guard-free core
+    /// rather than the guarded synchronous method.
+    #[cfg(feature = "tokio")]
+    pub async fn repair_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        backend: B,
+    ) -> Result<(RepairReport, B), Error> {
+        Migrator::new()
+            .repair_async(backend, &self.migrations)
+            .await
+    }
+
     /// Establishes a baseline for pre-existing databases or squashes legacy migrations.
     ///
-    /// The backend blocks the calling thread, so an async worker thread must wrap
-    /// this call in `tokio::task::spawn_blocking` (Conventions.md §3).
+    /// The backend blocks the calling thread, so an async worker thread hands the
+    /// run to [`baseline_async`](Self::baseline_async) instead of calling this
+    /// method directly (Conventions.md §3). Wrapping this call in
+    /// `tokio::task::spawn_blocking` does not help: a blocking-pool thread cannot be
+    /// told apart from a worker thread, so the `strict-async` guard refuses it there
+    /// as well.
     pub fn baseline<B: MigrationBackend>(
         &self,
         backend: &mut B,
@@ -201,6 +222,30 @@ impl EmbeddedMigrations {
     ) -> Result<SchemaHistoryEntry, Error> {
         guard_blocking_entry("EmbeddedMigrations::baseline")?;
         Migrator::new().baseline_core(backend, version, description)
+    }
+
+    /// Records a baseline for a pre-existing database on a dedicated blocking thread.
+    ///
+    /// Delegates to [`Migrator::baseline_async`], which owns the offload mechanics
+    /// and runs the guard-free core on a blocking thread, so an async worker thread
+    /// never performs the blocking database I/O Conventions.md §3 forbids.
+    ///
+    /// The backend is moved into the blocking task and handed back together with
+    /// the recorded entry, so the caller keeps the connection it baselined. A panic
+    /// inside the blocking task — which this crate never produces — surfaces as
+    /// [`Error::Backend`] instead of unwinding the caller. Under `strict-async` this
+    /// is the sanctioned runtime entry point, because it drives the guard-free core
+    /// rather than the guarded synchronous method.
+    #[cfg(feature = "tokio")]
+    pub async fn baseline_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        backend: B,
+        version: MigrationVersion,
+        description: &str,
+    ) -> Result<(SchemaHistoryEntry, B), Error> {
+        Migrator::new()
+            .baseline_async(backend, version, description)
+            .await
     }
 }
 
@@ -273,6 +318,10 @@ macro_rules! embed_migrations {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the asynchronous baseline tests name `MigrationKind`, so the import
+    // carries the same feature gate as the tests that read it.
+    #[cfg(feature = "tokio")]
+    use crate::migration::MigrationKind;
     use crate::runner::InMemoryBackend;
 
     fn embedded() -> EmbeddedMigrations {
@@ -358,6 +407,71 @@ mod tests {
         assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
     }
 
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn baseline_async_records_the_baseline_and_hands_the_backend_back() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
+
+        let (entry, backend) = runtime
+            .block_on(embedded().baseline_async(
+                InMemoryBackend::new(),
+                version.clone(),
+                "legacy baseline",
+            ))
+            .expect("the blocking baseline succeeds");
+
+        assert_eq!(entry.kind, MigrationKind::Baseline);
+        assert_eq!(
+            entry.version.as_ref().map(ToString::to_string),
+            Some(version.to_string())
+        );
+        assert_eq!(backend.history.len(), 1);
+        assert_eq!(backend.history[0].kind, MigrationKind::Baseline);
+        assert!(backend.history[0].success);
+    }
+
+    #[test]
+    #[cfg(feature = "tokio")]
+    fn repair_async_purges_the_failed_entry_of_a_broken_script() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        // The failing run is driven on this plain test thread: the `*_async`
+        // wrappers hand the backend back on success only, so the connection that
+        // carries the failed entry has to come from the blocking path.
+        let mut backend = InMemoryBackend::new();
+        backend.failure_script = Some("BOOM".to_owned());
+        let broken =
+            EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")]).expect("valid migrations");
+
+        let error = broken
+            .migrate(&mut backend)
+            .expect_err("the failing script aborts the run");
+        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+        assert_eq!(backend.history.len(), 1);
+        assert!(!backend.history[0].success);
+
+        backend.failure_script = None;
+        let fixed =
+            EmbeddedMigrations::new(&[("V1__broken.sql", "SELECT 1;")]).expect("valid migrations");
+
+        let (report, backend) = runtime
+            .block_on(fixed.repair_async(backend))
+            .expect("the blocking repair succeeds");
+
+        assert_eq!(report.removed_failed_entries, 1);
+        assert!(report.updated_checksums.is_empty());
+        assert!(
+            backend.history.is_empty(),
+            "the purge leaves a clean history behind"
+        );
+    }
+
     /// The `*_async` wrapper runs the guard-free core, so the blocking-pool thread
     /// never trips the enforcement the synchronous entry points raise.
     #[test]
@@ -374,5 +488,29 @@ mod tests {
         assert_eq!(report.applied_count, 2);
         assert_eq!(backend.history.len(), 2);
         assert!(backend.history.iter().all(|entry| entry.success));
+    }
+
+    /// The baseline wrapper drives the same guard-free core, so it stays usable
+    /// from a runtime thread even when the synchronous entry points refuse to run.
+    #[test]
+    #[cfg(feature = "strict-async")]
+    fn baseline_async_runs_the_guard_free_core_inside_a_runtime() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build tokio runtime");
+
+        let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
+
+        let (entry, backend) = runtime
+            .block_on(embedded().baseline_async(
+                InMemoryBackend::new(),
+                version,
+                "legacy baseline",
+            ))
+            .expect("the blocking baseline succeeds under `strict-async`");
+
+        assert_eq!(entry.kind, MigrationKind::Baseline);
+        assert_eq!(backend.history.len(), 1);
+        assert!(backend.history[0].success);
     }
 }
