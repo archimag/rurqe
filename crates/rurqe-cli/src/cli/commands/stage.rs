@@ -12,7 +12,8 @@ use crate::cli::{connect, redact_database_url, CliError, CommandOutput, Connecti
 use crate::introspect::introspect_database;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::postgres::{
-    current_owner_tag, find_stale_scratch_databases, sweep_stale_scratch_databases,
+    current_owner_tag, drop_stale_scratch_databases, find_stale_scratch_databases,
+    ScratchAdminSession,
 };
 use crate::stage::GoldenEquation;
 use crate::target::{DatabaseDialect, DatabaseTarget};
@@ -25,8 +26,10 @@ use super::{
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
 ///
 /// Requires explicit confirmation via `force` (`--yes` / `--force`) before dropping.
-/// Without confirmation, the candidates are named in the reported failure so the
-/// operator sees exactly what the confirmation would drop.
+/// The candidates are read from the catalog exactly once, so the list the
+/// confirmation names is the very list `--yes` drops. Without confirmation, the
+/// candidates are named in the reported failure so the operator sees exactly
+/// what the confirmation would drop.
 pub(crate) fn cleanup_stage(
     scratch_url: &str,
     older_than: Duration,
@@ -50,9 +53,24 @@ pub(crate) fn cleanup_stage(
         }
     };
 
+    cleanup_scratch_catalog(&mut admin, older_than, force, scratch_url)
+}
+
+/// Sweeps the stale scratch databases of the catalog `session` administers.
+///
+/// The catalog is scanned exactly once: the candidate list the confirmation
+/// names is the very list `--yes` drops, so a catalog that changed between two
+/// reads can no longer make the sweep drop something the operator never
+/// confirmed.
+pub(super) fn cleanup_scratch_catalog<S: ScratchAdminSession + ?Sized>(
+    session: &mut S,
+    older_than: Duration,
+    force: bool,
+    scratch_url: &str,
+) -> Result<CommandOutput, CliError> {
     let owner_tag = current_owner_tag();
     let candidates =
-        find_stale_scratch_databases(&mut admin, older_than, &owner_tag).map_err(cli_error)?;
+        find_stale_scratch_databases(session, older_than, &owner_tag).map_err(cli_error)?;
 
     if candidates.is_empty() {
         return Ok(CommandOutput::single(format!(
@@ -76,8 +94,7 @@ pub(crate) fn cleanup_stage(
         return Err(CliError(message));
     }
 
-    let dropped =
-        sweep_stale_scratch_databases(&mut admin, older_than, scratch_url).map_err(cli_error)?;
+    let dropped = drop_stale_scratch_databases(session, &candidates, scratch_url);
 
     if dropped.is_empty() {
         return Ok(CommandOutput::single(format!(

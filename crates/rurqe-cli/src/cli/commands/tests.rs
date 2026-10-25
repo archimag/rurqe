@@ -10,8 +10,9 @@ use rurqe_migrate::{
 
 use crate::driver::SqliteMigrationBackend;
 use crate::stage::materialise_stage;
+use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
-use super::stage::{swap_snapshot, verify_stage, write_staged_boundary};
+use super::stage::{cleanup_scratch_catalog, swap_snapshot, verify_stage, write_staged_boundary};
 use super::{
     commit_stage, initialise_stage, prune_migrations, sweep_stale_temporaries, write_file,
     STALE_TEMPORARY_AGE,
@@ -619,5 +620,110 @@ fn verifying_a_missing_boundary_names_the_parked_snapshot_that_restores_it() {
     assert!(
         message.contains("mv "),
         "the diagnostic names the rename that restores it, got {message}"
+    );
+}
+
+/// A scratch admin session recording the catalog scans and drops it performs.
+struct CountingSession {
+    /// The scratch catalog the simulated server reports.
+    catalog: Vec<ScratchCatalogEntry>,
+    /// The number of catalog scans performed.
+    scans: usize,
+    /// The names the session was asked to drop, in order.
+    drops: Vec<String>,
+}
+
+impl ScratchAdminSession for CountingSession {
+    fn scratch_catalog(&mut self) -> Result<Vec<ScratchCatalogEntry>, String> {
+        self.scans += 1;
+        Ok(self.catalog.clone())
+    }
+
+    fn drop_scratch(&mut self, name: &str) -> bool {
+        self.drops.push(name.to_owned());
+        true
+    }
+}
+
+/// A scratch catalog holding one stale database tagged for this host and one
+/// foreign database.
+fn scratch_catalog() -> Vec<ScratchCatalogEntry> {
+    vec![
+        ScratchCatalogEntry {
+            name: "rurqe_scratch_1699999000_4321_0".to_owned(),
+            description: Some(current_owner_tag()),
+        },
+        ScratchCatalogEntry {
+            name: "app".to_owned(),
+            description: None,
+        },
+    ]
+}
+
+#[test]
+fn a_confirmed_cleanup_scans_the_catalog_once() {
+    let mut session = CountingSession {
+        catalog: scratch_catalog(),
+        scans: 0,
+        drops: Vec::new(),
+    };
+
+    let output = cleanup_scratch_catalog(
+        &mut session,
+        Duration::from_secs(600),
+        true,
+        "postgres://db.internal/scratch",
+    )
+    .expect("the confirmed cleanup drops the stale scratch databases");
+
+    assert_eq!(
+        session.scans, 1,
+        "the cleanup reads the catalog exactly once"
+    );
+    assert_eq!(
+        session.drops,
+        vec!["rurqe_scratch_1699999000_4321_0".to_owned()],
+        "the sweep drops exactly the candidates the confirmation listed"
+    );
+    assert!(
+        output
+            .lines()
+            .iter()
+            .any(|line| line.contains("Dropped 1")),
+        "unexpected report: {:?}",
+        output.lines()
+    );
+}
+
+#[test]
+fn an_unconfirmed_cleanup_names_the_candidates_without_dropping() {
+    let mut session = CountingSession {
+        catalog: scratch_catalog(),
+        scans: 0,
+        drops: Vec::new(),
+    };
+
+    let error = cleanup_scratch_catalog(
+        &mut session,
+        Duration::from_secs(600),
+        false,
+        "postgres://db.internal/scratch",
+    )
+    .expect_err("the cleanup demands confirmation");
+
+    assert_eq!(
+        session.scans, 1,
+        "the confirmation names the candidates of a single scan"
+    );
+    assert!(
+        session.drops.is_empty(),
+        "nothing is dropped without confirmation"
+    );
+
+    let message = error.to_string();
+    assert!(message.contains("--yes"), "got {message}");
+    assert!(
+        message.contains("rurqe_scratch_1699999000_4321_0"),
+        "got {message}"
     );
 }

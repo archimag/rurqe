@@ -12,10 +12,10 @@
 //!
 //! A verification that dies before it drops its database — a killed process, a
 //! hard timeout — leaves the scratch behind, so every name records the second it
-//! was created, and each run first sweeps away the databases abandoned for
-//! longer than [`DEFAULT_SCRATCH_MAX_AGE`]. A sweep only reaps databases this
-//! host tagged as its own, so a shared server never loses another host's
-//! in-flight work.
+//! was created, and the first sandbox connection of an interval sweeps away the
+//! databases abandoned for longer than [`DEFAULT_SCRATCH_MAX_AGE`]. A sweep
+//! only reaps databases this host tagged as its own, so a shared server never
+//! loses another host's in-flight work.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -83,21 +83,12 @@ impl PostgresSandbox {
         };
 
         // An abandoned scratch database belongs to a verification that never
-        // finished, so it is cleared before a fresh one is created. The sweep is
-        // opportunistic: a server that hides its catalog or refuses a drop must
-        // never block a verification that is otherwise sound.
-        match sweep_stale_scratch_databases(&mut admin, DEFAULT_SCRATCH_MAX_AGE, url) {
-            Ok(dropped) if dropped.is_empty() => {}
-            Ok(dropped) => {
-                tracing::debug!(
-                    count = dropped.len(),
-                    "swept stale postgres scratch databases"
-                );
-            }
-            Err(error) => {
-                tracing::warn!(%error, "failed to sweep stale postgres scratch databases");
-            }
-        }
+        // finished, so it is cleared ahead of the fresh creation — once per
+        // [`OPPORTUNISTIC_SWEEP_INTERVAL`], because one verification opens one
+        // connection per materialised side. The sweep is opportunistic: a
+        // server that hides its catalog or refuses a drop must never block a
+        // verification that is otherwise sound.
+        sweep_opportunistically(&mut admin, url);
 
         let config: postgres::Config = url.parse().map_err(|error| {
             format!(
@@ -162,6 +153,74 @@ impl PostgresSandbox {
             .as_mut()
             .ok_or_else(|| format!("the scratch database `{}` is already closed", self.database))
     }
+}
+
+/// The minimum spacing between the opportunistic sweeps ahead of a connect.
+///
+/// A verification opens one sandbox connection per materialised side, so
+/// sweeping on every connect would repeat the catalog scan three times for one
+/// `stage verify`; the interval lets the first connect of a run sweep and the
+/// rest go straight to their scratch database.
+const OPPORTUNISTIC_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The second of the epoch at which the last opportunistic sweep was attempted.
+static LAST_OPPORTUNISTIC_SWEEP: AtomicU64 = AtomicU64::new(0);
+
+/// Sweeps abandoned scratch databases ahead of a connect, at most once per
+/// [`OPPORTUNISTIC_SWEEP_INTERVAL`].
+///
+/// The attempt is recorded before the sweep runs, so a sweep that failed waits
+/// out the interval instead of being retried by the very next connect; the
+/// connect itself is never blocked, because a refused sweep is only reported
+/// through the `tracing` facade.
+fn sweep_opportunistically(admin: &mut postgres::Client, url: &str) {
+    let seconds = epoch_seconds();
+    let last = LAST_OPPORTUNISTIC_SWEEP.load(Ordering::Relaxed);
+
+    if !opportunistic_sweep_due(last, seconds) {
+        return;
+    }
+
+    if LAST_OPPORTUNISTIC_SWEEP
+        .compare_exchange(last, seconds, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        // Another connection claimed the sweep of this instant, so this one
+        // connects without repeating the catalog scan behind it.
+        return;
+    }
+
+    match sweep_stale_scratch_databases(admin, DEFAULT_SCRATCH_MAX_AGE, url) {
+        Ok(dropped) if dropped.is_empty() => {}
+        Ok(dropped) => {
+            tracing::debug!(
+                count = dropped.len(),
+                "swept stale postgres scratch databases ahead of a scratch connect"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "failed to sweep stale postgres scratch databases ahead of a scratch connect"
+            );
+        }
+    }
+}
+
+/// Whether an opportunistic sweep is due at `now` after the last attempt at `last`.
+///
+/// A clock that ran backwards never makes a sweep due, so a broken clock cannot
+/// turn the throttle into a scan on every connect.
+fn opportunistic_sweep_due(last: u64, now: u64) -> bool {
+    now.saturating_sub(last) >= OPPORTUNISTIC_SWEEP_INTERVAL.as_secs()
+}
+
+/// The seconds elapsed since the epoch, or `0` when the clock predates it.
+fn epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// Formats the owner tag embedded into the scratch database comment.
@@ -236,10 +295,7 @@ pub(super) fn is_matching_owner(comment: Option<&str>, expected_owner: &str) -> 
 fn scratch_database_name() -> String {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
+    let seconds = epoch_seconds();
     let pid = std::process::id();
     let nonce = process_nonce();
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -316,30 +372,69 @@ pub(super) fn is_scratch_database_candidate(
     is_scratch_database_stale(name, max_age, now)
 }
 
+/// One scratch database the server catalog reports, with its owner comment.
+#[derive(Clone)]
+pub(crate) struct ScratchCatalogEntry {
+    /// The name of the scratch database.
+    pub(crate) name: String,
+    /// The owner marker its database comment carries, if it carries one.
+    pub(crate) description: Option<String>,
+}
+
+/// The admin session a scratch database sweep runs through.
+///
+/// Keeping the session behind a small trait lets `stage cleanup` drop exactly
+/// the candidate list it read for its confirmation — one catalog scan per
+/// command — and lets tests count the scans and drops a cleanup performs.
+pub(crate) trait ScratchAdminSession {
+    /// Lists the scratch databases of the connected role with their comments.
+    fn scratch_catalog(&mut self) -> Result<Vec<ScratchCatalogEntry>, String>;
+
+    /// Drops the stale scratch database `name`, reporting whether it is gone.
+    fn drop_scratch(&mut self, name: &str) -> bool;
+}
+
+impl ScratchAdminSession for postgres::Client {
+    fn scratch_catalog(&mut self) -> Result<Vec<ScratchCatalogEntry>, String> {
+        let rows = self
+            .query(SCRATCH_DATABASES_SQL, &[])
+            .map_err(|error| format!("failed to list the scratch databases: {error}"))?;
+
+        rows.into_iter()
+            .map(|row| {
+                let name: String = row
+                    .try_get(0)
+                    .map_err(|error| format!("failed to read a scratch database name: {error}"))?;
+                let description: Option<String> = row.try_get(1).map_err(|error| {
+                    format!("failed to read a scratch database description: {error}")
+                })?;
+
+                Ok(ScratchCatalogEntry { name, description })
+            })
+            .collect()
+    }
+
+    fn drop_scratch(&mut self, name: &str) -> bool {
+        // The sweep never forces a drop: a scratch database the server refuses
+        // to release is simply retried on a later run, so a verification can
+        // never terminate sessions on a database it did not abandon itself.
+        drop_scratch_database(self, name, false)
+    }
+}
+
 /// Lists the scratch databases matching the owner marker and abandoned for longer than `max_age`.
-pub(crate) fn find_stale_scratch_databases(
-    admin: &mut postgres::Client,
+pub(crate) fn find_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
+    session: &mut S,
     max_age: Duration,
     expected_owner: &str,
 ) -> Result<Vec<String>, String> {
-    let rows = admin
-        .query(SCRATCH_DATABASES_SQL, &[])
-        .map_err(|error| format!("failed to list the scratch databases: {error}"))?;
-
     let now = SystemTime::now();
     let mut candidates = Vec::new();
 
-    for row in rows {
-        let name: String = row
-            .try_get(0)
-            .map_err(|error| format!("failed to read a scratch database name: {error}"))?;
-        let description: Option<String> = row
-            .try_get(1)
-            .map_err(|error| format!("failed to read a scratch database description: {error}"))?;
-
+    for entry in session.scratch_catalog()? {
         if !is_scratch_database_candidate(
-            &name,
-            description.as_deref(),
+            &entry.name,
+            entry.description.as_deref(),
             expected_owner,
             max_age,
             now,
@@ -347,49 +442,33 @@ pub(crate) fn find_stale_scratch_databases(
             continue;
         }
 
-        candidates.push(name);
+        candidates.push(entry.name);
     }
 
     Ok(candidates)
 }
 
-/// Drops the scratch databases abandoned for longer than `max_age`.
+/// Drops the stale scratch databases the candidate list names, once each.
 ///
 /// Returns the names of the databases that are gone afterwards. A database the
-/// server refuses to drop is reported and skipped, because a sweep running ahead
-/// of a verification must never block it.
-pub(crate) fn sweep_stale_scratch_databases(
-    admin: &mut postgres::Client,
-    max_age: Duration,
+/// server refuses to drop is reported and skipped, because a sweep running
+/// ahead of a verification must never block it.
+pub(crate) fn drop_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
+    session: &mut S,
+    candidates: &[String],
     source: &str,
-) -> Result<Vec<String>, String> {
-    let owner_tag = current_owner_tag();
-    let candidates = find_stale_scratch_databases(admin, max_age, &owner_tag)?;
-
+) -> Vec<String> {
     let redacted_source = redact_database_url(source);
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    tracing::debug!(
-        url = %redacted_source,
-        count = candidates.len(),
-        databases = ?candidates,
-        "sweeping stale postgres scratch databases"
-    );
-
     let mut dropped = Vec::new();
+
     for name in candidates {
-        // The sweep never forces a drop: a scratch database the server refuses to
-        // release is simply retried on a later run, so a verification can never
-        // terminate sessions on a database it did not abandon itself.
-        if drop_scratch_database(admin, &name, false) {
+        if session.drop_scratch(name) {
             tracing::debug!(
                 url = %redacted_source,
                 database = %name,
                 "dropped a stale postgres scratch database"
             );
-            dropped.push(name);
+            dropped.push(name.clone());
         } else {
             tracing::warn!(
                 url = %redacted_source,
@@ -399,7 +478,34 @@ pub(crate) fn sweep_stale_scratch_databases(
         }
     }
 
-    Ok(dropped)
+    dropped
+}
+
+/// Drops the scratch databases abandoned for longer than `max_age`.
+///
+/// Returns the names of the databases that are gone afterwards. A database the
+/// server refuses to drop is reported and skipped, because a sweep running
+/// ahead of a verification must never block it.
+fn sweep_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
+    session: &mut S,
+    max_age: Duration,
+    source: &str,
+) -> Result<Vec<String>, String> {
+    let owner_tag = current_owner_tag();
+    let candidates = find_stale_scratch_databases(session, max_age, &owner_tag)?;
+
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    tracing::debug!(
+        url = %redact_database_url(source),
+        count = candidates.len(),
+        databases = ?candidates,
+        "sweeping stale postgres scratch databases"
+    );
+
+    Ok(drop_stale_scratch_databases(session, &candidates, source))
 }
 
 /// The SQLSTATE PostgreSQL reports when a database of the requested name exists.
@@ -768,5 +874,24 @@ mod tests {
             max_age,
             now()
         ));
+    }
+
+    #[test]
+    fn the_first_sweep_of_a_process_is_due() {
+        assert!(opportunistic_sweep_due(0, 1_700_000_000));
+    }
+
+    #[test]
+    fn a_sweep_waits_out_its_interval() {
+        let interval = OPPORTUNISTIC_SWEEP_INTERVAL.as_secs();
+        let now = 1_700_000_000;
+
+        assert!(opportunistic_sweep_due(now - interval, now));
+        assert!(!opportunistic_sweep_due(now - interval + 1, now));
+    }
+
+    #[test]
+    fn a_clock_running_backwards_never_makes_a_sweep_due() {
+        assert!(!opportunistic_sweep_due(1_700_000_000, 1_699_999_999));
     }
 }
