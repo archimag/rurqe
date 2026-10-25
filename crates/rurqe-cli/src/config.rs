@@ -13,21 +13,21 @@
 //! users.created_at = "chrono::NaiveDateTime"
 //! ```
 //!
-//! The document is read through its parsed representation rather than through a
-//! derived shape, because every rejected entry has to be reported on the line it
-//! occupies. `toml_edit` locates a malformed document through the span its parser
-//! records, but it does not expose a comparable span for a value it has already
-//! accepted, so the entries themselves are located through a declaration index
-//! built once from the source text: the index maps the key path each line declares
-//! onto that line, which finds the flat (`"users.id" = "..."`), dotted
-//! (`users.id = ...`) and table (`[codegen.type_overrides.users]`) spellings of an
-//! entry without ever matching its text against unrelated lines.
+//! The document is read through [`toml_edit::ImDocument`], the immutable
+//! representation that keeps the byte span of every key and value recorded while
+//! parsing. Every rejected entry is therefore reported at the line and column of
+//! its own declaration: the positions come from the parsed tree rather than from a
+//! scan of the source text, so a declaration spelled inside a multi-line string
+//! literal, inside a comment, or in the flat (`"users.id" = "..."`), dotted
+//! (`users.id = ...`) and table (`[codegen.type_overrides.users]`) form is located
+//! exactly where it is written, independently of how the file is formatted.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::ops::Range;
 use std::path::Path;
 
-use toml_edit::{DocumentMut, TableLike};
+use toml_edit::{ImDocument, TableLike};
 
 /// The configuration file read by default.
 pub const DEFAULT_CONFIG_PATH: &str = "rurqe.toml";
@@ -40,9 +40,6 @@ const DOMAIN_TYPES_KEY: &str = "domain_types";
 
 /// The key declaring the per-column Rust type overrides.
 const TYPE_OVERRIDES_KEY: &str = "type_overrides";
-
-/// The components of an entry path, the section headers included.
-type EntryPath = Vec<String>;
 
 /// The codegen configuration of a project.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -74,41 +71,40 @@ impl CodegenConfig {
     /// Both spellings of an override are read: the quoted `"users.id" = "..."` form
     /// declares one path directly, and the `users.id = "..."` (or
     /// `[codegen.type_overrides.users]`) form nests the column one level deeper.
-    /// Every rejected entry is reported at its own line, and the two spellings of
-    /// one path collide while flattening instead of silently overwriting each
-    /// other.
+    /// Every rejected entry is reported where its own key is declared, and the two
+    /// spellings of one path collide while flattening instead of silently
+    /// overwriting each other.
     pub fn parse(contents: &str) -> Result<Self, ConfigError> {
-        let document = contents
-            .parse::<DocumentMut>()
-            .map_err(|error| ConfigError::Syntax {
-                line: error
-                    .span()
-                    .map_or(1, |span| line_of(contents, span.start)),
-                message: format!("malformed TOML section or entry: {}", error.message()),
-            })?;
+        let document = ImDocument::parse(contents).map_err(|error| {
+            syntax_error(
+                contents,
+                error.span(),
+                format!("malformed TOML section or entry: {}", error.message()),
+            )
+        })?;
 
-        let index = DeclarationIndex::of(contents);
+        let root = document.as_table();
         let mut config = Self::default();
 
-        for (section, item) in document.iter() {
-            let path = vec![section.to_owned()];
+        for (section, item) in root.iter() {
+            let span = key_span(root, section);
 
             if section != CODEGEN_SECTION {
-                return Err(declaration_error(
-                    &index,
-                    &path,
+                return Err(syntax_error(
+                    contents,
+                    span,
                     format!("unknown configuration section `{section}`"),
                 ));
             }
 
             let table = item.as_table_like().ok_or_else(|| {
-                declaration_error(
-                    &index,
-                    &path,
+                syntax_error(
+                    contents,
+                    span.clone(),
                     format!("`{CODEGEN_SECTION}` must be a table"),
                 )
             })?;
-            config.read_section(&index, table, &path)?;
+            config.read_section(contents, table, span)?;
         }
 
         Ok(config)
@@ -117,38 +113,38 @@ impl CodegenConfig {
     /// Reads the keys of the `[codegen]` table.
     fn read_section(
         &mut self,
-        index: &DeclarationIndex,
+        contents: &str,
         table: &dyn TableLike,
-        section: &[String],
+        section_span: Option<Range<usize>>,
     ) -> Result<(), ConfigError> {
         for (key, item) in table.iter() {
-            let mut path = section.to_vec();
-            path.push(key.to_owned());
+            let span = key_span(table, key).or_else(|| section_span.clone());
 
             match key {
                 DOMAIN_TYPES_KEY => {
                     self.domain_types = item.as_bool().ok_or_else(|| {
-                        declaration_error(
-                            index,
-                            &path,
+                        syntax_error(
+                            contents,
+                            span,
                             format!("`{CODEGEN_SECTION}.{DOMAIN_TYPES_KEY}` must be a boolean"),
                         )
                     })?;
                 }
                 TYPE_OVERRIDES_KEY => {
                     let overrides = item.as_table_like().ok_or_else(|| {
-                        declaration_error(
-                            index,
-                            &path,
+                        syntax_error(
+                            contents,
+                            span.clone(),
                             format!("`{CODEGEN_SECTION}.{TYPE_OVERRIDES_KEY}` must be a table"),
                         )
                     })?;
-                    self.read_overrides(index, overrides, &path)?;
+                    let section = format!("{CODEGEN_SECTION}.{TYPE_OVERRIDES_KEY}");
+                    self.read_overrides(contents, overrides, &section)?;
                 }
                 other => {
-                    return Err(declaration_error(
-                        index,
-                        &path,
+                    return Err(syntax_error(
+                        contents,
+                        span,
                         format!("unknown key `{other}` in the `{CODEGEN_SECTION}` section"),
                     ));
                 }
@@ -161,39 +157,40 @@ impl CodegenConfig {
     /// Flattens the `[codegen.type_overrides]` table onto `table.column` paths.
     fn read_overrides(
         &mut self,
-        index: &DeclarationIndex,
+        contents: &str,
         table: &dyn TableLike,
-        section: &[String],
+        section: &str,
     ) -> Result<(), ConfigError> {
         for (key, item) in table.iter() {
-            let mut path = section.to_vec();
-            path.push(key.to_owned());
+            let span = key_span(table, key);
 
             if let Some(rust_type) = item.as_str() {
-                require_schema_path(index, &path, key)?;
-                self.insert_override(index, &path, key.to_owned(), rust_type)?;
+                require_schema_path(contents, span.clone(), key)?;
+                self.insert_override(contents, span, key.to_owned(), rust_type)?;
             } else if let Some(columns) = item.as_table_like() {
                 for (column, value) in columns.iter() {
-                    let mut entry = path.clone();
-                    entry.push(column.to_owned());
+                    let entry_span = key_span(columns, column).or_else(|| span.clone());
 
                     let rust_type = value.as_str().ok_or_else(|| {
-                        declaration_error(
-                            index,
-                            &entry,
-                            format!("`{}` must be a Rust type string", display_path(&entry)),
+                        syntax_error(
+                            contents,
+                            entry_span.clone(),
+                            format!("`{section}.{key}.{column}` must be a Rust type string"),
                         )
                     })?;
-                    let schema_path = format!("{key}.{column}");
-                    self.insert_override(index, &entry, schema_path, rust_type)?;
+                    self.insert_override(
+                        contents,
+                        entry_span,
+                        format!("{key}.{column}"),
+                        rust_type,
+                    )?;
                 }
             } else {
-                return Err(declaration_error(
-                    index,
-                    &path,
+                return Err(syntax_error(
+                    contents,
+                    span,
                     format!(
-                        "`{}` must be a Rust type string or a table of column overrides",
-                        display_path(&path)
+                        "`{section}.{key}` must be a Rust type string or a table of column overrides"
                     ),
                 ));
             }
@@ -205,15 +202,15 @@ impl CodegenConfig {
     /// Records one override, rejecting an empty type or a repeated path.
     fn insert_override(
         &mut self,
-        index: &DeclarationIndex,
-        path: &[String],
+        contents: &str,
+        span: Option<Range<usize>>,
         schema_path: String,
         rust_type: &str,
     ) -> Result<(), ConfigError> {
         if rust_type.trim().is_empty() {
-            return Err(declaration_error(
-                index,
-                path,
+            return Err(syntax_error(
+                contents,
+                span,
                 "the Rust type cannot be empty".to_owned(),
             ));
         }
@@ -227,9 +224,9 @@ impl CodegenConfig {
             .insert(schema_path.clone(), rust_type.to_owned())
             .is_some()
         {
-            return Err(declaration_error(
-                index,
-                path,
+            return Err(syntax_error(
+                contents,
+                span,
                 format!("duplicate type override `{schema_path}`"),
             ));
         }
@@ -272,9 +269,11 @@ pub enum ConfigError {
     },
     /// A line of the configuration is malformed.
     Syntax {
-        /// The one-based line number of the offending line.
+        /// The one-based line number of the offending declaration.
         line: usize,
-        /// What is wrong with the line.
+        /// The one-based column number within that line.
+        column: usize,
+        /// What is wrong with the declaration.
         message: String,
     },
 }
@@ -285,203 +284,75 @@ impl fmt::Display for ConfigError {
             ConfigError::Io { path, message } => {
                 write!(f, "failed to read configuration `{path}`: {message}")
             }
-            ConfigError::Syntax { line, message } => {
-                write!(f, "invalid configuration at line {line}: {message}")
-            }
+            ConfigError::Syntax {
+                line,
+                column,
+                message,
+            } => write!(
+                f,
+                "invalid configuration at line {line}, column {column}: {message}"
+            ),
         }
     }
 }
 
 impl std::error::Error for ConfigError {}
 
-/// Maps the entry paths a configuration document declares onto their lines.
+/// The span covering the declaration of `key` inside `table`.
 ///
-/// The index is filled from the source text only after `toml_edit` accepted it, so
-/// it never judges whether a line is valid TOML: it records the key path each line
-/// declares, one entry per path with the first declaration winning. Paths are
-/// compared component by component, so the quoted `"users.id"` (one component) and
-/// the dotted `users.id` (two components) remain distinct declarations even though
-/// both name the same column.
-#[derive(Debug, Default)]
-struct DeclarationIndex {
-    lines: BTreeMap<EntryPath, usize>,
+/// The key carries the span of its own spelling, while a table declared by a
+/// header carries the span of that header, so the item is consulted whenever the
+/// key itself has no span of its own. Both are recorded only by
+/// [`toml_edit::ImDocument`]; the mutable document drops them.
+fn key_span(table: &dyn TableLike, key: &str) -> Option<Range<usize>> {
+    let (entry, item) = table.get_key_value(key)?;
+    entry.span().or_else(|| item.span())
 }
 
-impl DeclarationIndex {
-    /// Indexes the declarations of `contents`.
-    fn of(contents: &str) -> Self {
-        let mut index = Self::default();
-        let mut section: EntryPath = Vec::new();
-
-        for (offset, line) in contents.lines().enumerate() {
-            let text = strip_comment(line).trim();
-            if text.is_empty() {
-                continue;
-            }
-
-            if let Some(header) = text.strip_prefix('[') {
-                let inner = header
-                    .trim_start_matches('[')
-                    .trim_end_matches(']')
-                    .trim();
-                section = split_key_path(inner).unwrap_or_default();
-                index.lines.entry(section.clone()).or_insert(offset + 1);
-                continue;
-            }
-
-            let Some(key) = key_expression(text) else {
-                continue;
-            };
-            let Some(components) = split_key_path(key) else {
-                continue;
-            };
-
-            let mut path = section.clone();
-            path.extend(components);
-            index.lines.entry(path).or_insert(offset + 1);
-        }
-
-        index
-    }
-
-    /// Returns the one-based line declaring `path`, when the document declares it.
-    fn line_of(&self, path: &[String]) -> Option<usize> {
-        self.lines.get(path).copied()
-    }
-}
-
-/// Builds a [`ConfigError::Syntax`] located at the line declaring `path`.
-fn declaration_error(index: &DeclarationIndex, path: &[String], message: String) -> ConfigError {
+/// Builds a [`ConfigError::Syntax`] located at the start of `span`.
+///
+/// A declaration without a span — one the parser assembled rather than read — is
+/// reported at the start of the file instead of at a guessed offset.
+fn syntax_error(contents: &str, span: Option<Range<usize>>, message: String) -> ConfigError {
+    let (line, column) = span.map_or((1, 1), |span| line_and_column(contents, span.start));
     ConfigError::Syntax {
-        line: index.line_of(path).unwrap_or(1),
+        line,
+        column,
         message,
     }
 }
 
-/// Renders an entry path the way the configuration spells it.
-fn display_path(path: &[String]) -> String {
-    path.join(".")
+/// The one-based line and column of the byte at `offset`.
+///
+/// The prefix is sliced through [`str::get`] so an offset that is not a character
+/// boundary — or one past the end of the file — falls back to the first line
+/// instead of panicking. The column counts the characters preceding the offset on
+/// its line, so a diagnostic lands on the declaration even when it is indented.
+fn line_and_column(contents: &str, offset: usize) -> (usize, usize) {
+    let prefix = contents.get(..offset).unwrap_or_default();
+    let line = prefix.matches('\n').count() + 1;
+    let column = prefix
+        .rsplit('\n')
+        .next()
+        .map_or(1, |tail| tail.chars().count() + 1);
+    (line, column)
 }
 
 /// Accepts only an explicit `table.column` path on the flat spelling of an entry.
 fn require_schema_path(
-    index: &DeclarationIndex,
-    path: &[String],
+    contents: &str,
+    span: Option<Range<usize>>,
     key: &str,
 ) -> Result<(), ConfigError> {
     if !key.contains('.') || key.starts_with('.') || key.ends_with('.') {
-        return Err(declaration_error(
-            index,
-            path,
+        return Err(syntax_error(
+            contents,
+            span,
             format!("expected a `table.column` schema path, got `{key}`"),
         ));
     }
 
     Ok(())
-}
-
-/// The one-based line containing the byte at `offset`, defaulting to the first.
-///
-/// The prefix is sliced through [`str::get`] so an offset that is not a character
-/// boundary — or one past the end of the file — falls back to line one instead of
-/// panicking, and the line counts the newlines the prefix contains.
-fn line_of(contents: &str, offset: usize) -> usize {
-    contents
-        .get(..offset)
-        .map_or(1, |prefix| prefix.matches('\n').count() + 1)
-}
-
-/// Strips the trailing comment of `line`, ignoring a `#` inside a quoted value.
-fn strip_comment(line: &str) -> &str {
-    match find_unquoted(line, |character| character == '#') {
-        Some(index) => line.get(..index).unwrap_or(line),
-        None => line,
-    }
-}
-
-/// The key expression preceding the first unquoted `=` of `text`.
-fn key_expression(text: &str) -> Option<&str> {
-    let index = find_unquoted(text, |character| character == '=')?;
-    text.get(..index)
-}
-
-/// Splits a key expression into the components it names.
-///
-/// Each unquoted dot separates two components and the quotes around a component are
-/// removed, so `"users.id"` stays one component while `users.id` names two.
-fn split_key_path(expression: &str) -> Option<EntryPath> {
-    let mut components = Vec::new();
-    let mut rest = expression;
-
-    loop {
-        let (segment, remainder) = match find_unquoted(rest, |character| character == '.') {
-            // A dot is a single ASCII byte, so the remainder starts right behind it.
-            Some(index) => (rest.get(..index)?, Some(rest.get(index + 1..)?)),
-            None => (rest, None),
-        };
-
-        components.push(unquote_key(segment.trim())?);
-
-        match remainder {
-            Some(remainder) => rest = remainder,
-            None => return Some(components),
-        }
-    }
-}
-
-/// Removes the quotes around one key component.
-///
-/// Escape sequences are not decoded, because a configuration path never needs one;
-/// a component whose quotes do not pair up is rejected so that an unreadable entry
-/// stays unindexed instead of being matched against the wrong text.
-fn unquote_key(component: &str) -> Option<String> {
-    for quote in ['"', '\''] {
-        if let Some(inner) = component
-            .strip_prefix(quote)
-            .and_then(|rest| rest.strip_suffix(quote))
-        {
-            return Some(inner.to_owned());
-        }
-    }
-
-    if component.contains('"') || component.contains('\'') {
-        return None;
-    }
-
-    Some(component.to_owned())
-}
-
-/// The byte index of the first `predicate` character outside quotes.
-///
-/// A basic string (`"..."`) honours backslash escapes while a literal string
-/// (`'...'`) does not, matching the quoting rules of the TOML the parser accepted.
-fn find_unquoted(text: &str, predicate: impl Fn(char) -> bool) -> Option<usize> {
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-
-    for (index, character) in text.char_indices() {
-        match quote {
-            Some(active) => {
-                if escaped {
-                    escaped = false;
-                } else if character == '\\' && active == '"' {
-                    escaped = true;
-                } else if character == active {
-                    quote = None;
-                }
-            }
-            None => {
-                if predicate(character) {
-                    return Some(index);
-                }
-                if character == '"' || character == '\'' {
-                    quote = Some(character);
-                }
-            }
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]
@@ -701,5 +572,41 @@ mod tests {
 
         assert!(matches!(&err, ConfigError::Syntax { line: 3, .. }), "{err}");
         assert!(err.to_string().contains("duplicate type override `users.id`"));
+    }
+
+    #[test]
+    fn diagnostics_carry_the_column_of_the_entry() {
+        let err = CodegenConfig::parse(
+            "[codegen.type_overrides]\n\
+             \"users.id\" = \"\"\n",
+        )
+        .expect_err("an empty type is rejected");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("line 2, column 1"), "{err}");
+    }
+
+    #[test]
+    fn declarations_inside_a_string_literal_do_not_displace_the_diagnostic() {
+        // The literal on lines 2-4 spells a complete override, which a scan of the
+        // source text cannot tell apart from a real declaration; the span of the
+        // parsed key can.
+        let err = CodegenConfig::parse(
+            "[codegen.type_overrides]\n\
+             \"users.note\" = '''\n\
+             \"users.id\" = \"uuid::Uuid\"\n\
+             '''\n\
+             \"users.id\" = \"\"\n",
+        )
+        .expect_err("an empty type is rejected");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: 5, column: 1, .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("cannot be empty"));
     }
 }
