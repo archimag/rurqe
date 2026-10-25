@@ -180,3 +180,54 @@
 //! // Fails to compile: the statement is still unfiltered.
 //! let _ = delete_from::<Postgres, User>().build();
 //! ```
+//!
+//! A projection built with `select!` reaches a mutation as a selection of the
+//! mutated table only: every projection has to be a column of that table, which
+//! the selection asserts through `ColumnBelongsTo` for each of them. A column of
+//! another table names a relation the clause cannot address, so the selection is
+//! not one and the clause rejects it at the call site:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!     }
+//! }
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: `OrderTotal` is not a column of `User`, so the selection
+//! // is no `TableSelection<User>`.
+//! let _ = update::<Postgres, User>()
+//!     .set(UserId::set(1i64))
+//!     .allow_all()
+//!     .returning(select!(UserId, OrderTotal));
+//! ```
+//!
+//! A computed projection renders a value the clause cannot write into the mutated
+//! row, so a projection list carrying one is not a `TableSelection` either:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!     }
+//! }
+//!
+//! // Fails to compile: a computed projection is not a column of `User`.
+//! let _ = update::<Postgres, User>()
+//!     .set(UserId::set(1i64))
+//!     .allow_all()
+//!     .returning(select!(UserId, doubled: Expr::count_all()));
+//! ```

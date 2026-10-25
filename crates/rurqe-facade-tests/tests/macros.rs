@@ -33,6 +33,10 @@ impl Dialect for MockDialect {
     }
 }
 
+// The mock renders a `RETURNING` clause, so a mutation can project its rows back
+// and the table selection the macro emits is exercised end to end.
+impl SupportsReturning for MockDialect {}
+
 dto! {
     /// A user row crossing a function boundary.
     pub struct UserRow {
@@ -157,5 +161,27 @@ fn declarative_newtype_macro_expands_through_the_facade() {
     assert_eq!(
         Nonce::from_sql_value(&SqlVal::Text("nonce123".to_owned())),
         Ok(Nonce("nonce123".to_owned()))
+    );
+}
+
+#[test]
+fn returning_accepts_a_projection_of_the_mutated_table() {
+    // Every projection is a column of `User`, so the selection the macro emits is
+    // a `TableSelection<User>` and reaches the `RETURNING` clause, which keeps the
+    // field names the record decodes.
+    let built = insert_into::<MockDialect, User>()
+        .values((UserId::set(1i64), UserEmail::set("root@example.com")))
+        .returning(select!(UserId, UserEmail as contact_email))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO users (id, email) VALUES ($1, $2) \
+         RETURNING id AS user_id, email AS contact_email"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root@example.com".to_owned())]
     );
 }

@@ -29,6 +29,15 @@
 //! every projected column must be part of the `GROUP BY` clause or be an
 //! aggregate.
 //!
+//! The synthesized selection is a
+//! [`TableSelection`](rurqe_core::query::TableSelection) of the mutated table only
+//! while every projection is a column of that table: each element asserts
+//! [`ColumnBelongsTo`](rurqe_core::schema::ColumnBelongsTo) against the mutated
+//! table, and a projection list carrying a computed item emits no implementation
+//! at all. A value the `RETURNING` clause cannot write into the mutated row, and a
+//! column of a table the clause cannot address, are therefore rejected at the call
+//! site that embeds the projection.
+//!
 //! Every path the expansion emits is anchored at `::rurqe::core`, the re-export
 //! of `rurqe-core` the facade publishes for its macros: a procedural macro cannot
 //! name its own facade the way a declarative macro does with `$crate`, so the
@@ -61,6 +70,10 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut from_bounds = TokenStream::new();
     let mut belongs_bounds = TokenStream::new();
     let mut from_positions = TokenStream::new();
+    // A projection list selects the mutated table only while every item is a
+    // column of it, so the flag is cleared as soon as a computed projection is
+    // recorded.
+    let mut all_columns = true;
     let mut record_params = Vec::new();
     let mut record_args = Vec::new();
     let mut scoped_args = Vec::new();
@@ -157,6 +170,10 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                         + ::core::marker::Sync
                         + 'static,
                 });
+                // A computed projection renders a value instead of naming a
+                // column of the mutated table, so the selection stops being a
+                // `TableSelection` for every table at once.
+                all_columns = false;
             }
         }
 
@@ -176,6 +193,27 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             });
         });
     }
+
+    // A projection list is a selection of the mutated table only when every item
+    // is a column of that table: a computed projection renders a value a
+    // `RETURNING` clause cannot write into the inserted or updated row, and a
+    // column of another table names a relation the clause cannot address at all.
+    // The implementation is therefore emitted for such a list only, so any other
+    // projection is rejected at the call site that embeds it into the clause
+    // rather than by the engine once the statement left the builder.
+    let table_selection_impl = if all_columns {
+        quote! {
+            impl<__T: ::rurqe::core::schema::Table, #(#element_params,)*>
+                ::rurqe::core::query::TableSelection<__T>
+                for __RurqeSelection<#(#element_params),*>
+            where
+                #selection_bounds
+                #belongs_bounds
+            {}
+        }
+    } else {
+        TokenStream::new()
+    };
 
     Ok(quote! {
         {
@@ -298,14 +336,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             {
             }
 
-            impl<__T: ::rurqe::core::schema::Table, #(#element_params,)*>
-                ::rurqe::core::query::TableSelection<__T>
-                for __RurqeSelection<#(#element_params),*>
-            where
-                #selection_bounds
-                #belongs_bounds
-            {
-            }
+            #table_selection_impl
 
             #[allow(dead_code)]
             impl<#(#element_params),*> __RurqeSelection<#(#element_params),*>
@@ -421,5 +452,29 @@ mod tests {
 
         assert!(rendered.contains(":: rurqe :: core"));
         assert!(!rendered.contains(":: rurqe_core"));
+    }
+
+    #[test]
+    fn a_projection_of_columns_is_a_selection_of_the_mutated_table() {
+        let projections = projection_list("UserId, UserEmail as contact_email");
+        let expanded = expand_projections(&projections).expect("projections expand");
+        let rendered = expanded.to_string();
+
+        // Every element asserts the column of the mutated table, so the emitted
+        // selection reaches a `RETURNING` clause.
+        assert!(rendered.contains("TableSelection"));
+        assert!(rendered.contains("ColumnBelongsTo"));
+    }
+
+    #[test]
+    fn a_projection_with_a_computed_item_is_not_a_table_selection() {
+        let projections = projection_list("UserId, total: Expr::count_all()");
+        let expanded = expand_projections(&projections).expect("projections expand");
+        let rendered = expanded.to_string();
+
+        // A computed projection renders a value the clause cannot write into the
+        // mutated row, so no implementation is emitted for any table.
+        assert!(!rendered.contains("TableSelection"));
+        assert!(!rendered.contains("ColumnBelongsTo"));
     }
 }
