@@ -20,3 +20,7 @@ tracing = "0.1"
 [features]
 default = []
 tokio = ["dep:tokio"]
+# `strict-async` turns the advisory runtime check into enforcement at the blocking
+# lifecycle entry points: a synchronous call that would block a Tokio-managed
+# thread is refused instead of merely reported (Conventions.md §3).
+strict-async = ["tokio"]

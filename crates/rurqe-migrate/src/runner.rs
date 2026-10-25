@@ -21,7 +21,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::{create_schema_history_table_sql, SchemaHistoryEntry};
 use crate::migration::{Migration, MigrationKind};
-use crate::sleeper::warn_if_in_tokio_runtime;
+use crate::sleeper::guard_blocking_entry;
 use crate::version::MigrationVersion;
 
 /// Abstract database connection capable of opening transactional scopes.
@@ -212,6 +212,13 @@ pub struct MigrationStatus {
 /// A runner created with [`Migrator::new`] executes the classic sequential
 /// lifecycle. Attaching a marker with [`Migrator::with_checkpoint`] additionally
 /// rejects targets whose recorded history stops below the pruned boundary.
+///
+/// Every lifecycle method blocks the calling thread until the database answers,
+/// which Conventions.md §3 forbids on an async worker thread. A synchronous entry
+/// point therefore reports an active runtime through `warn_if_in_tokio_runtime`
+/// and, when this crate is compiled with the `strict-async` feature, refuses to run
+/// on a Tokio-managed thread at all. Run the lifecycle on a plain (non-Tokio)
+/// thread, or use an `*_async` entry point where one is available.
 #[derive(Debug, Default, Clone)]
 pub struct Migrator {
     checkpoint: Option<Checkpoint>,
@@ -265,7 +272,20 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<MigrationReport, Error> {
-        warn_if_in_tokio_runtime("Migrator::migrate");
+        guard_blocking_entry("Migrator::migrate")?;
+        self.migrate_core(backend, migrations)
+    }
+
+    /// Guard-free core of [`migrate`](Self::migrate).
+    ///
+    /// The `*_async` wrappers of this crate run it on a `spawn_blocking` thread,
+    /// where the blocking-entry guard cannot tell a blocking-pool thread from a
+    /// worker thread and would refuse work that is exactly where it belongs.
+    pub(crate) fn migrate_core<B: MigrationBackend>(
+        &self,
+        backend: &mut B,
+        migrations: &[Migration],
+    ) -> Result<MigrationReport, Error> {
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         self.validate_version_uniqueness(migrations)?;
@@ -344,7 +364,17 @@ impl Migrator {
         version: MigrationVersion,
         description: &str,
     ) -> Result<SchemaHistoryEntry, Error> {
-        warn_if_in_tokio_runtime("Migrator::baseline");
+        guard_blocking_entry("Migrator::baseline")?;
+        self.baseline_core(backend, version, description)
+    }
+
+    /// Guard-free core of [`baseline`](Self::baseline).
+    pub(crate) fn baseline_core<B: MigrationBackend>(
+        &self,
+        backend: &mut B,
+        version: MigrationVersion,
+        description: &str,
+    ) -> Result<SchemaHistoryEntry, Error> {
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -380,7 +410,16 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<RepairReport, Error> {
-        warn_if_in_tokio_runtime("Migrator::repair");
+        guard_blocking_entry("Migrator::repair")?;
+        self.repair_core(backend, migrations)
+    }
+
+    /// Guard-free core of [`repair`](Self::repair).
+    pub(crate) fn repair_core<B: MigrationBackend>(
+        &self,
+        backend: &mut B,
+        migrations: &[Migration],
+    ) -> Result<RepairReport, Error> {
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -415,7 +454,16 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<Vec<MigrationStatus>, Error> {
-        warn_if_in_tokio_runtime("Migrator::status");
+        guard_blocking_entry("Migrator::status")?;
+        self.status_core(backend, migrations)
+    }
+
+    /// Guard-free core of [`status`](Self::status).
+    pub(crate) fn status_core<B: MigrationBackend>(
+        &self,
+        backend: &mut B,
+        migrations: &[Migration],
+    ) -> Result<Vec<MigrationStatus>, Error> {
         backend.ensure_schema_history_table()?;
         let history = backend.read_history()?;
 
