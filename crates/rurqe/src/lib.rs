@@ -531,7 +531,7 @@ pub mod prelude {
     pub use rurqe_core::dialect::{
         SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctFrom, SupportsFullOuterJoin,
         SupportsGreatest, SupportsJsonAggregation, SupportsLateralJoin, SupportsNullsOrdering,
-        SupportsRowLocking, SupportsUpdateFrom,
+        SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
     };
 
     pub use rurqe_core::expr::{

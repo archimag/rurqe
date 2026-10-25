@@ -71,6 +71,28 @@ impl core::str::FromStr for Nonce {
 impl_sql_text_newtype!(Nonce);
 
 #[test]
+fn capability_traits_are_in_scope_via_prelude() {
+    #[allow(dead_code)]
+    trait InScope:
+        SupportsWindowFunctions
+        + SupportsReturning
+        + SupportsOnConflict
+        + SupportsLateralJoin
+        + SupportsDeleteUsing
+        + SupportsUpdateFrom
+        + SupportsFullOuterJoin
+        + SupportsRowLocking
+        + SupportsAggregateFilter
+        + SupportsNullsOrdering
+        + SupportsGreatest
+        + SupportsJsonAggregation
+        + SupportsDistinctFrom
+        + SupportsDistinctOn
+    {
+    }
+}
+
+#[test]
 fn select_expands_through_the_facade() {
     let built = select!(UserId, UserEmail as contact_email)
         .from_table::<MockDialect, _>(User)

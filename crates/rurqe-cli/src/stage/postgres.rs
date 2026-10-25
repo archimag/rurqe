@@ -84,7 +84,7 @@ impl PostgresSandbox {
         match sweep_stale_scratch_databases(&mut admin, DEFAULT_SCRATCH_MAX_AGE, url) {
             Ok(dropped) if dropped.is_empty() => {}
             Ok(dropped) => {
-                tracing::info!(
+                tracing::debug!(
                     count = dropped.len(),
                     "swept stale postgres scratch databases"
                 );
@@ -108,7 +108,7 @@ impl PostgresSandbox {
         // Database names cannot be bound as parameters, but the generated name only
         // carries ASCII alphanumerics and underscores, so rendering it is
         // injection-free.
-        tracing::warn!(
+        tracing::debug!(
             url = %redacted_url,
             database = %database,
             "creating a postgres scratch database"
@@ -367,7 +367,7 @@ pub(crate) fn sweep_stale_scratch_databases(
         return Ok(Vec::new());
     }
 
-    tracing::info!(
+    tracing::debug!(
         url = %redacted_source,
         count = candidates.len(),
         databases = ?candidates,
@@ -380,7 +380,7 @@ pub(crate) fn sweep_stale_scratch_databases(
         // release is simply retried on a later run, so a verification can never
         // terminate sessions on a database it did not abandon itself.
         if drop_scratch_database(admin, &name, false) {
-            tracing::warn!(
+            tracing::debug!(
                 url = %redacted_source,
                 database = %name,
                 "dropped a stale postgres scratch database"
@@ -461,13 +461,13 @@ impl Drop for PostgresSandbox {
             let _ = client.close();
         }
 
-        tracing::warn!(
+        tracing::debug!(
             url = %self.redacted_url,
             database = %self.database,
             "dropping the postgres scratch database"
         );
         if drop_scratch_database(&mut self.admin, &self.database, true) {
-            tracing::warn!(
+            tracing::debug!(
                 url = %self.redacted_url,
                 database = %self.database,
                 "dropped the postgres scratch database"
