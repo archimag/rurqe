@@ -7,7 +7,7 @@ mod deadpool_impl {
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 
-    use crate::backend::async_conn::{execute_raw_async, fetch_raw_async};
+    use crate::backend::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
     use crate::backend::types::PgError;
 
     /// A `deadpool-postgres` pool executing RURQE queries asynchronously.
@@ -48,6 +48,17 @@ mod deadpool_impl {
             }
         }
 
+        fn fetch_raw_limited(
+            &self,
+            query: &BuiltQuery,
+            limit: Option<usize>,
+        ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
+            async move {
+                let client = self.pool.get().await?;
+                fetch_raw_limited_async(&*client, query, limit).await
+            }
+        }
+
         fn execute_raw(
             &self,
             query: &BuiltQuery,
@@ -72,7 +83,7 @@ mod r2d2_impl {
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{BuiltQuery, QueryBackend};
 
-    use crate::backend::sync_conn::{execute_raw_sync, fetch_raw_sync};
+    use crate::backend::sync_conn::{execute_raw_sync, fetch_raw_limited_sync, fetch_raw_sync};
     use crate::backend::types::PgError;
 
     /// An `r2d2` pool of synchronous PostgreSQL connections.
@@ -132,6 +143,15 @@ mod r2d2_impl {
         fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
             let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
             fetch_raw_sync(&mut *connection, query).map_err(PgPoolError::Query)
+        }
+
+        fn fetch_raw_limited(
+            &mut self,
+            query: &BuiltQuery,
+            limit: Option<usize>,
+        ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+            let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
+            fetch_raw_limited_sync(&mut *connection, query, limit).map_err(PgPoolError::Query)
         }
 
         fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {

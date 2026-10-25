@@ -7,7 +7,7 @@ use r2d2::ManageConnection;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{BuiltQuery, QueryBackend};
 
-use super::rusqlite::{execute_raw_with, fetch_raw_with};
+use super::rusqlite::{execute_raw_with, fetch_raw_limited_with, fetch_raw_with};
 
 /// An `r2d2` pool of SQLite connections.
 ///
@@ -81,6 +81,15 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for 
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
         let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
         fetch_raw_with(&mut *connection, query).map_err(SqlitePoolError::Query)
+    }
+
+    fn fetch_raw_limited(
+        &mut self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        fetch_raw_limited_with(&mut *connection, query, limit).map_err(SqlitePoolError::Query)
     }
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
