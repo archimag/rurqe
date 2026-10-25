@@ -14,6 +14,13 @@
 //! treats every versioned migration at or below the marked version as already
 //! applied while the active tail above it still runs.
 //!
+//! A script marked non-transactional runs outside any transaction, so a stage
+//! holding one cannot be applied atomically: the cold start then commits an
+//! in-progress marker before the first such script and replaces it with the
+//! applied one once every script has run. An interrupted cold start therefore
+//! leaves a database whose partial initialisation is reported by the next
+//! attempt instead of a schema the history knows nothing about.
+//!
 //! # Blocking entry points
 //!
 //! [`cold_start`] is a blocking lifecycle entry point, exactly like
@@ -229,11 +236,15 @@ impl StageMarker {
     }
 
     /// Builds the history row a cold start records over `checksum`.
-    fn entry_with_checksum(
+    ///
+    /// `success` tells the applied marker apart from the in-progress one a cold
+    /// start commits before it runs a stage holding a non-transactional script.
+    fn entry(
         &self,
         installed_rank: i64,
         installed_on: impl Into<String>,
         checksum: Checksum,
+        success: bool,
     ) -> SchemaHistoryEntry {
         SchemaHistoryEntry {
             installed_rank,
@@ -244,7 +255,7 @@ impl StageMarker {
             checksum: Some(checksum),
             installed_on: installed_on.into(),
             execution_time_ms: 0,
-            success: true,
+            success,
         }
     }
 }
@@ -280,6 +291,13 @@ pub struct ColdStartReport {
 /// same catalog digest is left untouched and reported as a no-op; any other
 /// history is rejected, because a cold start never overwrites an initialised
 /// database.
+///
+/// A stage holding a script marked non-transactional cannot be applied
+/// atomically, so the cold start commits an in-progress marker before the first
+/// of those scripts and replaces it with the applied marker once every script has
+/// run. A run interrupted in between leaves the in-progress marker behind, and
+/// the next attempt reports the database as partially initialised instead of
+/// treating it as an unknown schema or as one that already carries history.
 ///
 /// The call blocks the calling thread for as long as the DDL takes, so it
 /// reports the runtime advisory described in the module documentation before
@@ -330,6 +348,17 @@ pub fn cold_start<B: MigrationBackend>(
         )));
     }
 
+    // A cold start that died while running a non-transactional script left the
+    // in-progress marker it committed before the script ran, so the database is
+    // reported as partially initialised instead of as one already carrying history.
+    if let Some(interrupted) = history
+        .iter()
+        .filter(|entry| !entry.success && entry.script == STAGE_SCRIPT)
+        .max_by_key(|entry| entry.installed_rank)
+    {
+        return Err(partial_initialisation(interrupted));
+    }
+
     if let Some(existing) = history.iter().max_by_key(|entry| entry.installed_rank) {
         return Err(Error::BaselineAlreadyExists {
             version: existing
@@ -341,6 +370,23 @@ pub fn cold_start<B: MigrationBackend>(
     }
 
     let start_time = std::time::Instant::now();
+
+    // A stage holding a non-transactional script is applied outside any
+    // transaction, so nothing would record the attempt if the process died
+    // midway. The in-progress marker is committed first and replaced by the
+    // applied one at the end, so an interrupted cold start stays visible in the
+    // history instead of leaving a schema nobody can name.
+    let in_progress = stage
+        .scripts()
+        .iter()
+        .any(|script| !script.is_transactional());
+    if in_progress {
+        record_marker(
+            &mut guard,
+            &marker.entry(1, current_timestamp(), marker.checksum(), false),
+            None,
+        )?;
+    }
 
     apply_stage(&mut guard, stage)?;
 
@@ -356,11 +402,9 @@ pub fn cold_start<B: MigrationBackend>(
         Err(error) => return Err(error),
     };
 
-    let entry = marker.entry_with_checksum(1, current_timestamp(), checksum);
+    let entry = marker.entry(1, current_timestamp(), checksum, true);
 
-    let mut tx = guard.begin()?;
-    tx.record_entry(&entry)?;
-    tx.commit()?;
+    record_marker(&mut guard, &entry, in_progress.then_some(1))?;
 
     tracing::info!(
         version = %marker.version,
@@ -378,6 +422,51 @@ pub fn cold_start<B: MigrationBackend>(
         installed_rank: Some(entry.installed_rank),
         total_time_ms: elapsed_ms,
     })
+}
+
+/// Writes `entry` in a transaction of its own.
+///
+/// `replaces` names the rank of the in-progress marker the write supersedes: both
+/// rows describe the same initialisation, so the superseded one is dropped inside
+/// the same transaction instead of leaving a failed entry next to the applied one.
+fn record_marker<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    entry: &SchemaHistoryEntry,
+    replaces: Option<i64>,
+) -> Result<(), Error> {
+    let mut tx = guard.begin()?;
+
+    if let Some(installed_rank) = replaces {
+        if let Err(error) = tx.delete_entry(installed_rank) {
+            let _ = tx.rollback();
+            return Err(error);
+        }
+    }
+
+    if let Err(error) = tx.record_entry(entry) {
+        let _ = tx.rollback();
+        return Err(error);
+    }
+
+    tx.commit()
+}
+
+/// Builds the diagnostic of a cold start interrupted while applying the stage.
+fn partial_initialisation(entry: &SchemaHistoryEntry) -> Error {
+    let version = entry
+        .version
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+
+    tracing::error!(version = %version, "found an interrupted cold start");
+
+    stage_error(format!(
+        "an earlier cold start was interrupted while applying stage `{version}`: the database \
+         carries the in-progress marker recorded before its non-transactional scripts ran, so it \
+         may hold a partially initialised schema; `repair` clears the marker, and the database \
+         itself is re-initialised from scratch before the cold start runs again"
+    ))
 }
 
 /// Applies the DDL of `stage`, honouring each script's transactional attribute.
@@ -723,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_non_transactional_stage_script_aborts_the_cold_start() {
+    fn a_failing_non_transactional_stage_script_leaves_the_interrupted_marker() {
         let mut backend = InMemoryBackend::new();
         backend.failure_script = Some("BOOM".to_owned());
         let stage = DeclarativeStage::new(vec![StageScript::new("users.notx.sql", "BOOM;")]);
@@ -732,7 +821,65 @@ mod tests {
             .expect_err("the failing script aborts the cold start");
 
         assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
-        assert!(backend.history.is_empty());
+        assert_eq!(backend.history.len(), 1);
+        assert_eq!(backend.history[0].script, STAGE_SCRIPT);
+        assert!(
+            !backend.history[0].success,
+            "the in-progress marker records the interrupted initialisation"
+        );
         assert!(!backend.locked);
+
+        backend.failure_script = None;
+        let retry = cold_start(&mut backend, &stage, &marker())
+            .expect_err("the interrupted marker stops a second cold start");
+
+        assert!(matches!(retry, Error::InvalidStage { .. }), "got {retry:?}");
+        assert!(retry.to_string().contains("interrupted"), "got {retry}");
+        assert_eq!(backend.history.len(), 1);
+    }
+
+    #[test]
+    fn the_in_progress_marker_of_a_non_transactional_stage_precedes_the_scripts() {
+        let mut backend = InMemoryBackend::new();
+        let stage = DeclarativeStage::new(vec![
+            StageScript::new("orders.sql", ORDERS),
+            StageScript::new("users.notx.sql", USERS),
+        ]);
+
+        let report = cold_start(&mut backend, &stage, &marker()).expect("the stage applies");
+
+        assert_eq!(report.installed_rank, Some(1));
+        assert_eq!(
+            backend.history_len_at_execution,
+            vec![1],
+            "the in-progress marker exists before the non-transactional script runs"
+        );
+        assert_eq!(backend.history.len(), 1);
+        assert!(backend.history[0].success);
+        assert_eq!(backend.history[0].script, STAGE_SCRIPT);
+    }
+
+    #[test]
+    fn a_cold_start_that_cannot_record_the_applied_marker_stays_visible() {
+        let mut backend = InMemoryBackend::new();
+        backend.fail_success_commit = true;
+        let stage = DeclarativeStage::new(vec![StageScript::new("users.notx.sql", USERS)]);
+
+        let error = cold_start(&mut backend, &stage, &marker())
+            .expect_err("the applied marker cannot be committed");
+
+        assert!(matches!(error, Error::Backend(_)), "got {error:?}");
+        assert_eq!(backend.history.len(), 1);
+        assert!(
+            !backend.history[0].success,
+            "the in-progress marker survives the failed commit"
+        );
+        assert!(!backend.locked);
+
+        backend.fail_success_commit = false;
+        let retry = cold_start(&mut backend, &stage, &marker())
+            .expect_err("the interrupted marker stops a second cold start");
+
+        assert!(matches!(retry, Error::InvalidStage { .. }), "got {retry:?}");
     }
 }

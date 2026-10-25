@@ -67,6 +67,19 @@ pub enum Error {
         /// The refused script, when the reporter knows its name.
         script: Option<String>,
     },
+    /// A non-transactional script changed the schema, but its history row could
+    /// not be written.
+    ///
+    /// The script runs outside any transaction, so the engine has already
+    /// committed its statements by the time the applied row is written. Losing
+    /// that row leaves the database ahead of the recorded history, which the
+    /// operator reconciles with `repair` or a `baseline` instead of the runner.
+    HistoryNotRecorded {
+        /// The script whose applied history row is missing.
+        script: String,
+        /// The underlying error message.
+        source: String,
+    },
     /// A `schema.lock` snapshot could not be parsed back into a catalog.
     InvalidLockFormat {
         /// The reason the snapshot could not be parsed.
@@ -170,6 +183,13 @@ impl fmt::Display for Error {
                      non-transactional execution"
                 ),
             },
+            Error::HistoryNotRecorded { script, source } => write!(
+                f,
+                "migration `{script}` ran outside a transaction and changed the schema, but its \
+                 history row could not be written: {source}; the recorded history now lags the \
+                 database, so inspect the schema and run `repair` (or record a `baseline`) \
+                 before the next run"
+            ),
             Error::InvalidLockFormat { message } => write!(f, "invalid schema lock: {message}"),
             Error::InvalidCheckpoint { message } => write!(f, "invalid checkpoint: {message}"),
             Error::InvalidStage { message } => write!(f, "invalid stage: {message}"),

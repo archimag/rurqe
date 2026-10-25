@@ -582,9 +582,11 @@ impl Migrator {
 ///
 /// A transactional script runs inside the transaction the runner opens, so the
 /// script and its history row commit together. A script marked non-transactional
-/// is applied outside any transaction, and its history row is written afterwards
-/// by a separate transaction: the engine may already have committed the
-/// statement, so losing the row would report the work as pending forever.
+/// is applied outside any transaction, so its history row cannot share the
+/// script's commit: an in-progress row is committed before the script runs, and
+/// the applied row replaces it afterwards. An interruption between the two leaves
+/// the schema changed and the in-progress row behind, which the next run reports
+/// as a failed migration and `repair` clears — instead of the work being invisible.
 fn apply_migration<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     migration: &Migration,
@@ -629,33 +631,56 @@ fn apply_migration<B: MigrationBackend>(
         return Ok(elapsed_ms);
     }
 
+    // The script commits on its own, so nothing would record the attempt if the
+    // process died right after it: the in-progress row is committed first, and
+    // only its presence makes an interruption visible to the next run, which
+    // reports the script as failed and lets `repair` clear it.
+    let in_progress = SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), 0);
+    record_in_progress(guard, &in_progress)?;
+
+    let execution_started = std::time::Instant::now();
+
     let elapsed_ms = match guard.execute_non_transactional(&migration.sql) {
-        Ok(()) => start_time.elapsed().as_millis() as i64,
-        // The backend refused the script before it touched the database, so there
-        // is no work to undo and no failure to record: a failed history entry
-        // would demand a repair for a migration that never ran.
+        Ok(()) => execution_started.elapsed().as_millis() as i64,
+        // The backend refused the script before it touched the database, so the
+        // in-progress row is withdrawn again: a failed entry would demand a repair
+        // for a migration that never ran.
         Err(Error::NonTransactionalUnsupported { script }) => {
+            discard_in_progress(guard, installed_rank);
             return Err(Error::NonTransactionalUnsupported {
                 script: Some(script.unwrap_or_else(|| migration.script.clone())),
             });
         }
+        // The in-progress row already records the failed attempt at this rank, so
+        // it is left untouched: rewriting it could fail for the very reason the
+        // script did, and would drop the only marker of the attempt.
         Err(error) => {
-            let elapsed_ms = start_time.elapsed().as_millis() as i64;
             tracing::error!(
                 script = %migration.script,
                 error = %error,
                 "migration failed"
             );
-            record_failure(guard, migration, installed_rank, elapsed_ms);
             return Err(execution_failed(migration, &error));
         }
     };
 
     let entry =
         SchemaHistoryEntry::applied(installed_rank, migration, current_timestamp(), elapsed_ms);
-    let mut tx = guard.begin()?;
-    tx.record_entry(&entry)?;
-    tx.commit()?;
+    // The applied row replaces the in-progress one at the same rank inside the
+    // very transaction that writes it, so the two never coexist.
+    let mut tx = guard
+        .begin()
+        .map_err(|error| history_not_recorded(migration, &error))?;
+    if let Err(error) = tx.delete_entry(installed_rank) {
+        let _ = tx.rollback();
+        return Err(history_not_recorded(migration, &error));
+    }
+    if let Err(error) = tx.record_entry(&entry) {
+        let _ = tx.rollback();
+        return Err(history_not_recorded(migration, &error));
+    }
+    tx.commit()
+        .map_err(|error| history_not_recorded(migration, &error))?;
     tracing::info!(
         script = %migration.script,
         elapsed_ms = elapsed_ms,
@@ -664,6 +689,71 @@ fn apply_migration<B: MigrationBackend>(
     );
 
     Ok(elapsed_ms)
+}
+
+/// Commits the in-progress row of a non-transactional script before it runs.
+///
+/// The row has to be durable before the script touches the database, so it closes
+/// its own transaction instead of sharing the one the applied row is written in.
+/// A backend that cannot write the row stops the run before anything is executed.
+fn record_in_progress<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    entry: &SchemaHistoryEntry,
+) -> Result<(), Error> {
+    let mut tx = guard.begin()?;
+
+    if let Err(error) = tx.record_entry(entry) {
+        let _ = tx.rollback();
+        return Err(error);
+    }
+
+    tx.commit()
+}
+
+/// Withdraws the in-progress row of a script the backend refused to run.
+///
+/// The refusal proves nothing reached the database, so the marker of an attempt
+/// that never happened is removed again. The removal is best effort: the caller
+/// already holds the authoritative diagnostic, which must not be replaced by a
+/// second error about the marker.
+fn discard_in_progress<B: MigrationBackend>(guard: &mut LockGuard<'_, B>, installed_rank: i64) {
+    match guard.begin() {
+        Ok(mut tx) => {
+            if let Err(error) = tx.delete_entry(installed_rank) {
+                tracing::warn!(
+                    installed_rank = installed_rank,
+                    error = %error,
+                    "failed to withdraw the in-progress migration entry"
+                );
+                let _ = tx.rollback();
+            } else if let Err(error) = tx.commit() {
+                tracing::warn!(
+                    installed_rank = installed_rank,
+                    error = %error,
+                    "failed to commit the withdrawal of the in-progress migration entry"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(
+            installed_rank = installed_rank,
+            error = %error,
+            "failed to open the transaction withdrawing the in-progress migration entry"
+        ),
+    }
+}
+
+/// Builds the diagnostic of a non-transactional script whose applied row was lost.
+fn history_not_recorded(migration: &Migration, error: &Error) -> Error {
+    tracing::error!(
+        script = %migration.script,
+        error = %error,
+        "failed to record the applied history entry of a non-transactional migration"
+    );
+
+    Error::HistoryNotRecorded {
+        script: migration.script.clone(),
+        source: error.to_string(),
+    }
 }
 
 /// Records a failed migration attempt, best effort.
@@ -676,8 +766,7 @@ fn record_failure<B: MigrationBackend>(
     installed_rank: i64,
     elapsed_ms: i64,
 ) {
-    let entry =
-        SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), elapsed_ms);
+    let entry = SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), elapsed_ms);
 
     match guard.begin() {
         Ok(mut tx) => {
@@ -784,6 +873,12 @@ pub struct InMemoryBackend {
     pub locked: bool,
     /// Digest the backend reports for the catalog it currently holds.
     pub catalog_checksum: Option<Checksum>,
+    /// Fails the transaction that records a successful history entry.
+    pub fail_success_entry: bool,
+    /// Fails the commit of a transaction that staged a successful history entry.
+    pub fail_success_commit: bool,
+    /// Number of history entries visible each time a script ran outside a transaction.
+    pub history_len_at_execution: Vec<usize>,
 }
 
 impl InMemoryBackend {
@@ -826,6 +921,7 @@ impl MigrationBackend for InMemoryBackend {
                 return Err(Error::Backend(format!("simulated failure on `{sql}`")));
             }
         }
+        self.history_len_at_execution.push(self.history.len());
         self.non_transactional_sql.push(sql.to_owned());
         Ok(())
     }
@@ -863,6 +959,12 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
     }
 
     fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
+        if entry.success && self.backend.fail_success_entry {
+            return Err(Error::Backend(format!(
+                "simulated failure recording the applied entry of `{}`",
+                entry.script
+            )));
+        }
         self.staged_history.push(entry.clone());
         Ok(())
     }
@@ -883,6 +985,13 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
     }
 
     fn commit(self) -> Result<(), Error> {
+        if self.backend.fail_success_commit
+            && self.staged_history.iter().any(|entry| entry.success)
+        {
+            return Err(Error::Backend(
+                "simulated failure committing an applied history entry".to_owned(),
+            ));
+        }
         self.backend.history = self.staged_history;
         self.backend.executed_sql.extend(self.staged_sql);
         Ok(())
@@ -1205,5 +1314,102 @@ mod tests {
             "the refused script never reached the backend"
         );
         assert!(!backend.0.locked, "the lock is released on the way out");
+    }
+
+    #[test]
+    fn the_in_progress_row_of_a_non_transactional_script_precedes_it() {
+        let mut backend = InMemoryBackend::new();
+        let migration =
+            Migration::parse("V1__index.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users;")
+                .expect("a valid script name");
+
+        Migrator::new()
+            .migrate(&mut backend, std::slice::from_ref(&migration))
+            .expect("the non-transactional script applies");
+
+        assert_eq!(
+            backend.history_len_at_execution,
+            vec![1],
+            "the in-progress row is committed before the script runs"
+        );
+        assert_eq!(backend.history.len(), 1);
+        assert!(backend.history[0].success);
+        assert_eq!(backend.history[0].installed_rank, 1);
+    }
+
+    #[test]
+    fn a_non_transactional_script_whose_applied_row_is_lost_names_the_script() {
+        let mut backend = InMemoryBackend::new();
+        backend.fail_success_entry = true;
+        let migration =
+            Migration::parse("V1__index.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users;")
+                .expect("a valid script name");
+
+        let error = Migrator::new()
+            .migrate(&mut backend, std::slice::from_ref(&migration))
+            .expect_err("the lost history row is reported instead of a backend error");
+
+        match &error {
+            Error::HistoryNotRecorded { script, .. } => assert_eq!(script, "V1__index.notx.sql"),
+            other => panic!("expected HistoryNotRecorded, got {other:?}"),
+        }
+        assert!(error.to_string().contains("repair"), "got {error}");
+        assert_eq!(
+            backend.non_transactional_sql.len(),
+            1,
+            "the script really ran before its applied row was written"
+        );
+        assert_eq!(backend.history.len(), 1);
+        assert!(!backend.history[0].success);
+        assert_eq!(backend.history[0].script, "V1__index.notx.sql");
+        assert!(!backend.locked);
+
+        // The in-progress row blocks the next run until `repair` clears it.
+        let blocked = Migrator::new()
+            .migrate(&mut backend, std::slice::from_ref(&migration))
+            .expect_err("the in-progress entry blocks the next run");
+        assert!(matches!(
+            blocked,
+            Error::FailedMigrationAlreadyApplied { .. }
+        ));
+
+        let repaired = Migrator::new()
+            .repair(&mut backend, std::slice::from_ref(&migration))
+            .expect("repair clears the in-progress entry");
+        assert_eq!(repaired.removed_failed_entries, 1);
+
+        backend.fail_success_entry = false;
+        let report = Migrator::new()
+            .migrate(&mut backend, &[migration])
+            .expect("the repaired run applies the script");
+        assert_eq!(report.applied_count, 1);
+        assert!(backend.history.iter().all(|entry| entry.success));
+    }
+
+    #[test]
+    fn a_non_transactional_script_whose_applied_row_cannot_commit_is_reported() {
+        let mut backend = InMemoryBackend::new();
+        backend.fail_success_commit = true;
+        let migration =
+            Migration::parse("V1__index.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users;")
+                .expect("a valid script name");
+
+        let error = Migrator::new()
+            .migrate(&mut backend, std::slice::from_ref(&migration))
+            .expect_err("the failing commit is reported");
+
+        assert!(
+            matches!(
+                &error,
+                Error::HistoryNotRecorded { script, .. } if script == "V1__index.notx.sql"
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(backend.history.len(), 1);
+        assert!(
+            !backend.history[0].success,
+            "the in-progress row survives the failed commit"
+        );
+        assert!(!backend.locked);
     }
 }
