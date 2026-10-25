@@ -24,6 +24,9 @@ use crate::migration::{Migration, MigrationKind};
 use crate::sleeper::guard_blocking_entry;
 use crate::version::MigrationVersion;
 
+#[cfg(feature = "tokio")]
+mod offload;
+
 /// Abstract database connection capable of opening transactional scopes.
 pub trait MigrationBackend {
     /// Active transaction type.
