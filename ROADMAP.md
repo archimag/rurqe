@@ -985,4 +985,6 @@ The following constructs contradict RURQE's foundational principles (**Native-or
    - Bloating `rurqe-core` with niche functions (`LPAD`, `INITCAP`, `COT`, `DEGREES`) violates the 800-line module limit and core cleanliness. Engine-specific extensions belong in adapter crates (`rurqe-postgres`), while one-off functions are cleanly accessed via `sql!(\"custom_func({})\", col)`.
 6. **`GROUPS` Window Frame Specification:**
    - Unsupported by SQLite and rarely utilized in production PostgreSQL. `ROWS` and `RANGE` cover ANSI SQL:2003 specifications and 100% of practical production windowing needs.
+7. **External Lockfiles or Daemon Locks for SQLite Non-Transactional Migrations:**
+   - Attempting to hold run-wide exclusive locks across autocommit statements (`VACUUM`, `PRAGMA`) in SQLite using external OS lockfiles (`.db.lock`), daemon coordination, or auxiliary table locks is strictly rejected as YAGNI. SQLite is an embedded single-writer database, not a high-concurrency client-server cluster; committing the `BEGIN IMMEDIATE` transaction to execute non-transactional maintenance and acquiring it again immediately afterwards is the correct, native SQLite design.
 

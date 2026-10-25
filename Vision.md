@@ -40,6 +40,7 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 - **Checkpoint Markers & Zero-Pain Pruning:** Cryptographic checkpoint markers (`checkpoint.toml`) anchor active migrations to a base stage hash. Historical migration files older than the checkpoint can be pruned freely (`rm V001..V050`) without squashing or baseline invalidation.
 - **The Golden Equation Verification:** Continuous verification ensures mathematical parity: $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$. Divergence is caught in CI before merging.
 - **Fail-Safe Outdated Target Protection:** The migration runner aborts with an actionable diagnostic if an existing target database is at a version older than the pruned checkpoint boundary.
+- **Pragmatic SQLite Migration Concurrency:** SQLite serialises writers through database-file transactions (`BEGIN IMMEDIATE`). Because non-transactional operations (`VACUUM`, `PRAGMA`) are rejected inside transactions, the lock is committed during autocommit execution. Synthetic external lockfiles across autocommit statements are explicitly rejected as YAGNI for embedded/low-concurrency SQLite deployments.
 
 ### 1.4 Rust Strict Type Safety & Zero-Cost Guarantees
 - **Zero-Cost Abstractions:** Monomorphized query builders and phantom markers compile down to static SQL buffers and direct deserializers with zero virtual calls or reflection overhead.
