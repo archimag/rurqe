@@ -22,17 +22,16 @@ const DESCRIPTION_SEPARATOR: &str = "__";
 /// The script-name suffix marking a migration as non-transactional.
 const NON_TRANSACTIONAL_SUFFIX: &str = "notx.sql";
 
-/// The header-comment directives disabling the surrounding transaction.
+/// The keys of the header-comment directives disabling the transaction.
 ///
-/// Every entry is normalized — lowercase, without whitespace or underscores — so
-/// `executeInTransaction=false`, `execute_in_transaction=false`, and
-/// `transactional=false` all reach the same declared intent, because the comment
-/// text is folded by [`normalize_directive`] before the comparison, so one entry
-/// per intent is enough.
-const NON_TRANSACTIONAL_DIRECTIVES: [&str; 2] = [
-    "executeintransaction=false",
-    "transactional=false",
-];
+/// A directive is written as `<key> = false` on a comment line of its own. Both
+/// keys are stored folded by [`directive_token`], so `executeInTransaction`,
+/// `execute_in_transaction`, and `EXECUTE_IN_TRANSACTION` reach the same declared
+/// intent.
+const TRANSACTION_DIRECTIVE_KEYS: [&str; 2] = ["executeintransaction", "transactional"];
+
+/// The value of a directive that disables the surrounding transaction.
+const NON_TRANSACTIONAL_VALUE: &str = "false";
 
 /// The execution attributes declared by a migration script.
 ///
@@ -146,9 +145,9 @@ impl Migration {
 /// Reads the execution attributes declared by `script_name` and its SQL text.
 ///
 /// A script is transactional unless its name carries the non-transactional
-/// suffix (`.notx.sql` or `__notx.sql`) or one of its comments declares
-/// `executeInTransaction=false`, `execute_in_transaction=false`, or
-/// `transactional=false`.
+/// suffix (`.notx.sql` or `__notx.sql`) or one of its comment lines is exactly
+/// `executeInTransaction = false`, `execute_in_transaction = false`, or
+/// `transactional = false`.
 pub fn parse_script_attributes(script_name: &str, sql: &str) -> ScriptAttributes {
     let named_non_transactional = script_name
         .to_lowercase()
@@ -160,24 +159,42 @@ pub fn parse_script_attributes(script_name: &str, sql: &str) -> ScriptAttributes
     }
 }
 
-/// Whether `comments` declares the script as non-transactional.
+/// Whether `comments` holds a line declaring the script as non-transactional.
+///
+/// The scan is line-scoped on purpose: a narrative comment that only mentions the
+/// switch must not disable the surrounding transaction, so one whole comment line
+/// has to be the directive and nothing else.
 fn mentions_non_transactional_directive(comments: &str) -> bool {
-    let normalized = normalize_directive(comments);
-
-    NON_TRANSACTIONAL_DIRECTIVES
-        .iter()
-        .any(|directive| normalized.contains(directive))
+    comments.lines().any(is_non_transactional_directive)
 }
 
-/// Folds `text` into the canonical shape shared by the directive table.
+/// Whether `line` is exactly one `<key> = false` directive line.
 ///
-/// Lowercasing and dropping every whitespace and `_` character makes
-/// `executeInTransaction = false`, `execute_in_transaction=false`, and
-/// `transactional=FALSE` compare equal to their pre-normalized entry, so the
-/// table and the comment scan never disagree about what "normalized" means.
-fn normalize_directive(text: &str) -> String {
+/// The key is everything written before the first `=`, the value everything
+/// written after it, and both are folded by [`directive_token`]. A line carrying
+/// any extra word — which is exactly what a prose mention adds — therefore stops
+/// matching, while comment decoration and trailing punctuation never do.
+fn is_non_transactional_directive(line: &str) -> bool {
+    let Some((key, value)) = line.split_once('=') else {
+        return false;
+    };
+
+    let key = directive_token(key);
+    let value = directive_token(value);
+
+    TRANSACTION_DIRECTIVE_KEYS.contains(&key.as_str()) && value == NON_TRANSACTIONAL_VALUE
+}
+
+/// Folds `text` into the token shape directives are compared in.
+///
+/// Only alphanumeric characters survive, and they are lowercased, so whitespace,
+/// underscores, and the decoration a comment line may carry (`*`, `--`, `#`) never
+/// change the comparison: `execute_in_transaction = FALSE`,
+/// `executeInTransaction=false`, and `* transactional = false;` all reduce to the
+/// same key and value pair.
+fn directive_token(text: &str) -> String {
     text.chars()
-        .filter(|character| !character.is_whitespace() && *character != '_')
+        .filter(|character| character.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
 }
@@ -201,6 +218,12 @@ enum CommentScan {
 
 /// Collects the text of every comment in `sql`, skipping literals.
 ///
+/// Every comment line reaches the buffer on a line of its own: a line comment is
+/// terminated by a newline, and the closing boundary of a block comment — as well
+/// as both boundaries of a nested one — push a separator too. The directive scan
+/// therefore compares one whole comment line at a time and never glues a
+/// directive to the remark written above it or around a nested comment.
+///
 /// String literals, quoted identifiers, and dollar-quoted bodies are tracked so a
 /// directive written inside data never disables the surrounding transaction. The
 /// dollar-quote form is the standard way to embed `plpgsql` function bodies in a
@@ -210,10 +233,11 @@ enum CommentScan {
 /// Block comments nest the way PostgreSQL nests them, so `/* a /* b */ c */` is a
 /// single comment. Only the outermost level contributes directive text: the body
 /// of a nested comment is skipped, while text written between nested comments is
-/// collected.
+/// collected on a line of its own, because entering and leaving a nested comment
+/// both break the surrounding text.
 ///
-/// The scanner walks the text character by character to stay panic-free on
-/// malformed SQL.
+/// The scanner walks the text character by character and never indexes outside
+/// the collected characters, so malformed SQL cannot make it panic.
 fn comment_text(sql: &str) -> String {
     let characters: Vec<char> = sql.chars().collect();
     let mut comments = String::new();
@@ -247,6 +271,10 @@ fn comment_text(sql: &str) -> String {
             },
             CommentScan::LineComment => {
                 if current == '\n' {
+                    // The end of the remark is kept as a separator, so two
+                    // consecutive comment lines never merge into one scanned
+                    // line and a directive stays isolated.
+                    comments.push('\n');
                     state = CommentScan::Sql;
                 } else {
                     comments.push(current);
@@ -255,10 +283,17 @@ fn comment_text(sql: &str) -> String {
             CommentScan::BlockComment => {
                 if current == '/' && characters.get(index + 1) == Some(&'*') {
                     index += 1;
-                    block_depth += 1;
+                    block_depth = block_depth.saturating_add(1);
+                    // Entering a nested comment breaks the surrounding text into
+                    // two lines, so a directive written around it still occupies
+                    // a line of its own.
+                    comments.push('\n');
                 } else if current == '*' && characters.get(index + 1) == Some(&'/') {
                     index += 1;
-                    block_depth -= 1;
+                    block_depth = block_depth.saturating_sub(1);
+                    // Closing the comment — nested or outermost — separates the
+                    // collected text from whatever is written after it.
+                    comments.push('\n');
                     if block_depth == 0 {
                         state = CommentScan::Sql;
                     }
@@ -506,45 +541,106 @@ mod tests {
     #[test]
     fn every_declared_directive_matches_a_canonical_sample() {
         // One representative comment per spelling the engine documents, paired
-        // with the normalized directive it has to fold onto.
+        // with the key it has to fold onto.
         let spellings = [
-            ("-- executeInTransaction=false\n", "executeintransaction=false"),
-            (
-                "-- executeInTransaction = false\n",
-                "executeintransaction=false",
-            ),
-            (
-                "-- execute_in_transaction=false\n",
-                "executeintransaction=false",
-            ),
+            ("-- executeInTransaction=false\n", "executeintransaction"),
+            ("-- executeInTransaction = false\n", "executeintransaction"),
+            ("-- execute_in_transaction=false\n", "executeintransaction"),
             (
                 "-- execute_in_transaction = false\n",
-                "executeintransaction=false",
+                "executeintransaction",
             ),
-            ("-- transactional = false\n", "transactional=false"),
-            ("/* TRANSACTIONAL   =   FALSE */\n", "transactional=false"),
+            (
+                "-- EXECUTE_IN_TRANSACTION = FALSE\n",
+                "executeintransaction",
+            ),
+            ("-- transactional = false\n", "transactional"),
+            ("/* TRANSACTIONAL   =   FALSE */\n", "transactional"),
         ];
 
-        for (comment, directive) in spellings {
+        for (comment, key) in spellings {
             assert!(
-                NON_TRANSACTIONAL_DIRECTIVES.contains(&directive),
-                "`{directive}` must be declared by the directive table"
+                TRANSACTION_DIRECTIVE_KEYS.contains(&key),
+                "`{key}` must be declared by the directive table"
             );
             assert!(
                 mentions_non_transactional_directive(comment),
-                "`{comment}` must fold onto `{directive}`"
+                "`{comment}` must declare `{key} = false`"
             );
         }
 
-        for directive in NON_TRANSACTIONAL_DIRECTIVES {
-            assert_eq!(
-                normalize_directive(directive),
-                directive,
-                "`{directive}` must be stored pre-normalized"
-            );
+        for key in TRANSACTION_DIRECTIVE_KEYS {
+            assert_eq!(directive_token(key), key, "`{key}` must be stored folded");
             assert!(
-                mentions_non_transactional_directive(directive),
-                "`{directive}` must match at least one canonical comment"
+                mentions_non_transactional_directive(&format!("-- {key} = false")),
+                "`{key}` must match at least one canonical comment"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directive_mentioned_in_prose_keeps_the_transaction() {
+        // A narrative remark mentioning the switch is not a directive: the line
+        // has to carry the key and the value and nothing else.
+        for sql in [
+            "-- the executeInTransaction=false switch is required for concurrent indexes\nCREATE TABLE users ();",
+            "-- see execute_in_transaction = false in the runbook\nCREATE TABLE users ();",
+            "-- set transactional = false here when the index needs it\nCREATE TABLE users ();",
+            "-- `transactional = false` disables the surrounding transaction\nCREATE TABLE users ();",
+            "-- transactional = false unless the table is large\nCREATE TABLE users ();",
+            "/*\n * Normally this script declares transactional = false,\n * but it does not need to.\n */\nCREATE TABLE users ();",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                migration.is_transactional(),
+                "`{sql}` must stay transactional"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directive_stays_isolated_from_the_remark_above_it() {
+        // Line-scoped scanning: a remark directly above the directive must not
+        // merge with it, and the directive itself still has to win.
+        for sql in [
+            "-- concurrent index build\n-- transactional = false\nCREATE INDEX CONCURRENTLY users_email_idx ON users (email);",
+            "/* first remark */\n/* transactional = false */\nCREATE TABLE users ();",
+            "-- note\n  --   execute_in_transaction   =   false\nCREATE TABLE users ();",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                !migration.is_transactional(),
+                "`{sql}` must be non-transactional"
+            );
+        }
+
+        // Two remarks whose folded concatenation would spell the directive stay
+        // harmless because they are separate lines.
+        for sql in [
+            "-- transactional\n-- = false\nCREATE TABLE users ();",
+            "-- execute_in_transaction =\n-- false\nCREATE TABLE users ();",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                migration.is_transactional(),
+                "`{sql}` must stay transactional"
+            );
+        }
+    }
+
+    #[test]
+    fn a_directive_survives_comment_decoration() {
+        // Decoration and trailing punctuation are not words, so an otherwise
+        // isolated directive keeps matching.
+        for sql in [
+            "--- transactional = false;\nCREATE TABLE users ();",
+            "/*\n * executeInTransaction = false\n */\nCREATE TABLE users ();",
+            "/* ** transactional = false ** */\nCREATE TABLE users ();",
+        ] {
+            let migration = Migration::parse("V1__init.sql", sql).unwrap();
+            assert!(
+                !migration.is_transactional(),
+                "`{sql}` must be non-transactional"
             );
         }
     }
@@ -662,6 +758,24 @@ mod tests {
                 !migration.is_transactional(),
                 "`{sql}` must be non-transactional"
             );
+        }
+    }
+
+    #[test]
+    fn malformed_sql_never_panics_the_scanner() {
+        // Unterminated constructs must leave the scanner in a stable state and
+        // still honour a directive declared before them.
+        for sql in [
+            "/* transactional = false",
+            "-- transactional = false",
+            "CREATE FUNCTION f() AS $$ -- transactional = false",
+            "SELECT 'unterminated -- transactional = false",
+            "SELECT \"unterminated -- transactional = false",
+            "",
+            "/*/",
+            "$",
+        ] {
+            let _ = Migration::parse("V1__init.sql", sql).unwrap();
         }
     }
 }
