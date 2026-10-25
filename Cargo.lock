@@ -968,7 +968,6 @@ dependencies = [
  "postgres",
  "rurqe-migrate",
  "rusqlite",
- "serde",
  "syn 2.0.119",
  "toml_edit 0.22.27",
  "tracing",
