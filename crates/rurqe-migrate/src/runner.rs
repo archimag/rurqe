@@ -7,7 +7,9 @@
 //!   without re-running prior migrations.
 //! - [`repair`](Migrator::repair): fixes recorded checksums against updated scripts
 //!   and purges failed attempts.
-//! - [`status`](Migrator::status): inspects schema state without mutations.
+//! - [`status`](Migrator::status): inspects schema state without running a
+//!   migration; it takes the run lock while it ensures the metadata table exists,
+//!   exactly like the other lifecycle operations.
 //! - [`with_checkpoint`](Migrator::with_checkpoint): attaches a pruning boundary
 //!   that rejects targets older than the pruned history and verifies the live
 //!   catalog against the anchored stage hash.
@@ -452,6 +454,13 @@ impl Migrator {
     }
 
     /// Inspects the status of migrations against the database history.
+    ///
+    /// The call applies no migration of its own, but reading the history of a
+    /// database that was never initialised needs the metadata table, and creating
+    /// it is a schema write. The table check and the history read therefore run
+    /// under the same run lock the other lifecycle operations take, so the write
+    /// cannot interleave with a concurrent [`migrate`](Self::migrate) — which on
+    /// SQLite holds the write lock for the whole run — and fail spuriously.
     pub fn status<B: MigrationBackend>(
         &self,
         backend: &mut B,
@@ -462,13 +471,23 @@ impl Migrator {
     }
 
     /// Guard-free core of [`status`](Self::status).
+    ///
+    /// Ensuring the metadata table is a schema write, so the check and the
+    /// history read run under the very run lock the other cores take. A `status`
+    /// on a database that was never initialised therefore cannot interleave with
+    /// a concurrent run — which on SQLite holds the write lock for the whole run
+    /// — and fail spuriously.
     pub(crate) fn status_core<B: MigrationBackend>(
         &self,
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<Vec<MigrationStatus>, Error> {
-        backend.ensure_schema_history_table()?;
-        let history = backend.read_history()?;
+        let mut guard = LockGuard::acquire(backend)?;
+        guard.ensure_schema_history_table()?;
+        let history = guard.read_history()?;
+        // The lock only guards the metadata write and the read it enables, so it
+        // is released before the statuses are computed from the snapshot.
+        drop(guard);
 
         let baseline_version = history
             .iter()
@@ -1038,7 +1057,7 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 mod tests {
     use super::{
         format_timestamp, InMemoryBackend, InMemoryTransaction, LockGuard, MigrationBackend,
-        Migrator,
+        MigrationStatusKind, Migrator,
     };
     use crate::checkpoint::Checkpoint;
     use crate::checksum::Checksum;
@@ -1416,5 +1435,67 @@ mod tests {
             "the in-progress row survives the failed commit"
         );
         assert!(!backend.locked);
+    }
+
+    /// A backend recording whether the run lock was held while the history table
+    /// was ensured.
+    #[derive(Default)]
+    struct LockObservingBackend {
+        inner: InMemoryBackend,
+        lock_states_at_ddl: Vec<bool>,
+    }
+
+    impl MigrationBackend for LockObservingBackend {
+        type Transaction<'a>
+            = InMemoryTransaction<'a>
+        where
+            Self: 'a;
+
+        fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+            self.lock_states_at_ddl.push(self.inner.locked);
+            self.inner.ensure_schema_history_table()
+        }
+
+        fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+            self.inner.read_history()
+        }
+
+        fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+            self.inner.begin()
+        }
+
+        fn acquire_lock(&mut self) -> Result<(), Error> {
+            self.inner.acquire_lock()
+        }
+
+        fn release_lock(&mut self) -> Result<(), Error> {
+            self.inner.release_lock()
+        }
+    }
+
+    #[test]
+    fn status_ensures_the_history_table_under_the_run_lock() {
+        let mut backend = LockObservingBackend::default();
+        let migrations = [Migration::parse(
+            "V1__users.sql",
+            "CREATE TABLE users (id INTEGER);",
+        )
+        .expect("a valid script name")];
+
+        let statuses = Migrator::new()
+            .status(&mut backend, &migrations)
+            .expect("the status read succeeds on an uninitialized database");
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].status, MigrationStatusKind::Pending);
+        assert_eq!(
+            backend.lock_states_at_ddl,
+            vec![true],
+            "the metadata write runs under the same run lock as the other cores"
+        );
+        assert!(
+            !backend.inner.locked,
+            "the lock is released once the history is read"
+        );
     }
 }
