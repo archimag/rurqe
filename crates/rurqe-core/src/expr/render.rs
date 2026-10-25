@@ -291,10 +291,16 @@ pub fn render_expr<D: Dialect>(
             negated,
         } => {
             sql.push('(');
+            // The enclosing statement was validated before rendering started, and
+            // that pass recursed into every statement embedded in its expressions,
+            // so the nested statement is read through the crate-internal view: the
+            // validating `Subquery::render` entry point would run the pass again on
+            // an already accepted statement.
+            let nested = StatementRef::from(query.ast());
             match op {
                 SubqueryOp::Scalar => {
                     // A scalar subquery is the parenthesised statement itself.
-                    query.render::<D>(sql, params);
+                    nested.render::<D>(sql, params);
                 }
                 SubqueryOp::Exists | SubqueryOp::In => {
                     if let Some(operand) = operand {
@@ -309,7 +315,7 @@ pub fn render_expr<D: Dialect>(
                     } else {
                         sql.push_str("IN (");
                     }
-                    query.render::<D>(sql, params);
+                    nested.render::<D>(sql, params);
                     sql.push(')');
                 }
             }

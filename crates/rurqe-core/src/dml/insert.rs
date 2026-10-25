@@ -18,7 +18,7 @@ use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::dml::render_expr;
-use crate::expr::{DialectInScope, ExprKind, SelectAst};
+use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
 use crate::query::{
     BuildError, BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
@@ -445,7 +445,10 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         let relations = [TableRef::plain(T::NAME)];
         if let Some(select) = &self.select {
             sql.push(' ');
-            select.render::<D>(&mut sql, &mut params);
+            // The source statement was validated at the top of `build`, so it is
+            // read through the crate-internal view: the validating
+            // `SelectAst::render` entry point would run the pass a second time.
+            StatementRef::from(select).render::<D>(&mut sql, &mut params);
         } else {
             sql.push_str(" VALUES ");
             for (row_index, row) in self.rows.iter().enumerate() {

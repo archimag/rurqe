@@ -6,6 +6,7 @@ use crate::dialect::Dialect;
 use crate::expr::{
     CteAst, DerivedAst, ExprKind, JoinAst, LockClause, OrderCriterion, SelectAst, SetOpAst, SqlVal,
 };
+use crate::query::BuildError;
 use crate::schema::TableRef;
 
 use super::{render_expr, render_expressions, render_ordered_expressions};
@@ -301,16 +302,23 @@ impl SelectAst {
     /// pagination, or nested set operations is parenthesised, so its clauses stay
     /// attached to it instead of binding to the compound statement. A statement
     /// requesting a row-level lock renders it after every other clause.
-    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        StatementRef::from(self).render::<D>(sql, params);
-    }
-
-    /// Whether rendering the statement as a set-operation operand needs parentheses.
     ///
-    /// An operand carrying its own `WITH` clause, ordering, pagination, or nested
-    /// set operations keeps those clauses only inside parentheses.
-    pub fn requires_operand_parentheses(&self) -> bool {
-        StatementRef::from(self).requires_operand_parentheses()
+    /// The statement is validated by the pre-flight pass before a single character
+    /// reaches `sql`, so a statement assembled by hand is rejected exactly like one
+    /// the fluent builders refuse to build: the returned [`BuildError`] names the
+    /// violated SQL rule and the buffers stay untouched. Rendering a statement the
+    /// pre-flight pass already accepted — as the fluent builders do — goes through
+    /// the crate-internal [`StatementRef`] view instead, so the clauses are not
+    /// validated twice.
+    pub fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), BuildError> {
+        let statement = StatementRef::from(self);
+        statement.validate()?;
+        statement.render::<D>(sql, params);
+        Ok(())
     }
 }
 

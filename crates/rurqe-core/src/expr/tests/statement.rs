@@ -40,7 +40,8 @@ fn select(projections: Vec<ExprKind>) -> SelectAst {
 fn render_statement(ast: &SelectAst) -> (String, Vec<SqlVal>) {
     let mut sql = String::new();
     let mut params = Vec::new();
-    ast.render::<MockDialect>(&mut sql, &mut params);
+    ast.render::<MockDialect>(&mut sql, &mut params)
+        .expect("valid statement");
     (sql, params)
 }
 

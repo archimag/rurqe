@@ -9,6 +9,7 @@ use super::ops::{AnySubquery, CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
 use crate::dialect::Dialect;
+use crate::query::BuildError;
 use crate::schema::Column;
 
 mod statement;
@@ -274,8 +275,20 @@ impl Subquery {
     }
 
     /// Renders the nested query into the buffers of the enclosing statement.
-    pub fn render<D: Dialect>(&self, sql: &mut String, params: &mut Vec<SqlVal>) {
-        self.query.render::<D>(sql, params);
+    ///
+    /// The statement is validated by the pre-flight pass before any of its SQL is
+    /// written, so a nested statement assembled by hand is rejected exactly like a
+    /// top-level one and nothing reaches the buffers when the pass fails. A
+    /// statement the pass already accepted — as the enclosing statement of a
+    /// rendered expression does — is rendered through the crate-internal
+    /// [`StatementRef`](crate::expr::StatementRef) view instead, so its clauses are
+    /// not validated twice.
+    pub fn render<D: Dialect>(
+        &self,
+        sql: &mut String,
+        params: &mut Vec<SqlVal>,
+    ) -> Result<(), BuildError> {
+        self.query.render::<D>(sql, params)
     }
 }
 
