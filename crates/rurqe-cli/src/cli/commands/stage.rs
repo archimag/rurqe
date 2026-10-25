@@ -17,7 +17,7 @@ use crate::stage::postgres::{
 use crate::stage::GoldenEquation;
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
-use super::{cli_error, write_file};
+use super::{cli_error, temporary_sibling, write_file};
 
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
 ///
@@ -263,31 +263,117 @@ fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
 
 /// Writes the verbatim DDL of the committed `stage` next to the checkpoint.
 ///
-/// The previous snapshot is removed first, so scripts the new boundary dropped
-/// never linger. A commit interrupted between that removal and the new marker
-/// leaves the previous checkpoint pointing at a missing or partial snapshot,
-/// which the verification rejects loudly instead of replaying a mixture of two
-/// boundaries.
+/// The scripts are gathered in a staging directory first and installed with a
+/// single rename, so `checkpoint-stage/` always holds one whole boundary: an
+/// interrupted commit leaves either the previous snapshot or the new one, never a
+/// mixture of the two.
 fn snapshot_boundary_stage(
     stage: &DeclarativeStage,
     checkpoint_path: &Path,
 ) -> Result<(), CliError> {
     let dir = boundary_dir(checkpoint_path);
+    let staged = create_staging_dir(&dir)?;
 
-    match std::fs::remove_dir_all(&dir) {
+    if let Err(error) = write_staged_boundary(stage, &staged) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
+    }
+
+    swap_snapshot(&dir, &staged)
+}
+
+/// Creates the empty staging directory the new snapshot is assembled in.
+///
+/// A directory left behind by an interrupted attempt of a recycled process is
+/// discarded instead of merged into, so two commits can never end up in one
+/// snapshot.
+fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
+    let staged = temporary_sibling(dir);
+
+    match std::fs::remove_dir_all(&staged) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(CliError(format!(
-                "failed to replace the boundary snapshot `{}`: {error}",
-                dir.display()
+                "failed to replace the staging directory `{}`: {error}",
+                staged.display()
             )))
         }
     }
 
+    std::fs::create_dir_all(&staged).map_err(|error| {
+        CliError(format!(
+            "failed to prepare the staging directory `{}`: {error}",
+            staged.display()
+        ))
+    })?;
+
+    Ok(staged)
+}
+
+/// Writes every script of `stage` into the staging directory `staged`.
+///
+/// Each script lands through the atomic [`write_file`] discipline, so a failure
+/// among them only ever touches the staging directory: the committed boundary is
+/// left exactly as it was.
+pub(super) fn write_staged_boundary(stage: &DeclarativeStage, staged: &Path) -> Result<(), CliError> {
     for script in stage.scripts() {
-        write_file(&dir.join(script.name()), script.sql())?;
+        write_file(&staged.join(script.name()), script.sql())?;
     }
 
     Ok(())
+}
+
+/// Installs the staged snapshot of `staged` at `dir`, keeping the previous one whole.
+///
+/// The previous boundary is renamed aside before the new one takes its place and
+/// is renamed back when that move fails, so a reader never observes a mixture of
+/// two boundaries. The previous snapshot is discarded only once the swap
+/// succeeded: failing the commit there would leave `checkpoint.toml` describing a
+/// boundary the directory no longer holds.
+pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
+    let backup = temporary_sibling(dir);
+    let previous = match std::fs::rename(dir, &backup) {
+        Ok(()) => Some(backup),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(staged);
+            return Err(CliError(format!(
+                "failed to move the previous boundary snapshot `{}` aside: {error}",
+                dir.display()
+            )));
+        }
+    };
+
+    if let Err(error) = std::fs::rename(staged, dir) {
+        if let Some(previous) = &previous {
+            let _ = std::fs::rename(previous, dir);
+        }
+        let _ = std::fs::remove_dir_all(staged);
+        return Err(CliError(format!(
+            "failed to move the staged boundary snapshot into `{}`: {error}",
+            dir.display()
+        )));
+    }
+
+    if let Some(previous) = previous {
+        discard_previous_snapshot(&previous);
+    }
+
+    Ok(())
+}
+
+/// Discards the previous boundary once the new snapshot is in place.
+///
+/// The swap already succeeded, so a backup that cannot be removed is debris only:
+/// reporting it would abort a commit whose snapshot is already the one the marker
+/// is about to describe.
+fn discard_previous_snapshot(previous: &Path) {
+    if let Err(error) = std::fs::remove_dir_all(previous) {
+        tracing::warn!(
+            backup = %previous.display(),
+            error = %error,
+            "failed to discard the previous boundary snapshot"
+        );
+    }
 }

@@ -3,11 +3,14 @@ use std::path::{Path, PathBuf};
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::runner::MigrationBackend;
 use rurqe_migrate::version::MigrationVersion;
-use rurqe_migrate::{Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, STAGE_SCRIPT};
+use rurqe_migrate::{
+    Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, StageScript, STAGE_SCRIPT,
+};
 
 use crate::driver::SqliteMigrationBackend;
 use crate::stage::materialise_stage;
 
+use super::stage::{swap_snapshot, write_staged_boundary};
 use super::{commit_stage, initialise_stage, prune_migrations, write_file};
 
 fn workspace(name: &str) -> PathBuf {
@@ -155,6 +158,22 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     names.sort();
 
     assert_eq!(names, vec!["orders.sql".to_owned()]);
+
+    // The staging directory and the backup of the replaced boundary are gone
+    // again, so the swap leaves nothing but the committed snapshot behind.
+    let leftovers: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the workspace")
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.starts_with('.'))
+        .collect();
+
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
 }
 
 #[test]
@@ -294,4 +313,72 @@ fn a_dry_run_keeps_every_script_in_place() {
         .expect("the dry run succeeds");
 
     assert!(migrations_dir.join("V1__init.sql").exists());
+}
+
+#[test]
+fn a_failed_staged_write_keeps_the_committed_boundary() {
+    let dir = workspace("snapshot-staged-write");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
+    std::fs::write(boundary.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+        .expect("write the committed snapshot");
+
+    // `orders.sql` lands, and `users.sql` collides with a directory, so the
+    // staging fails after one script has already been written.
+    let staged = dir.join(".checkpoint-stage.staged.tmp");
+    std::fs::create_dir_all(staged.join("users.sql")).expect("block the second script");
+
+    let stage = DeclarativeStage::new(vec![
+        StageScript::new("orders.sql", "CREATE TABLE orders (id INTEGER);"),
+        StageScript::new("users.sql", "CREATE TABLE users (id BIGINT);"),
+    ]);
+
+    let error =
+        write_staged_boundary(&stage, &staged).expect_err("the blocked script cannot be staged");
+
+    assert!(error.to_string().contains("users.sql"), "{error}");
+    assert!(
+        staged.join("orders.sql").exists(),
+        "the first script landed in the staging directory"
+    );
+    assert_eq!(
+        std::fs::read_to_string(boundary.join("users.sql")).expect("read the committed snapshot"),
+        "CREATE TABLE users (id INTEGER);"
+    );
+}
+
+#[test]
+fn an_interrupted_snapshot_swap_restores_the_committed_boundary() {
+    let dir = workspace("snapshot-swap");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
+    std::fs::write(boundary.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+        .expect("write the committed snapshot");
+
+    // The staging directory is gone, so installing the new snapshot fails right
+    // after the previous boundary has been moved aside.
+    let staged = dir.join(".checkpoint-stage.staged.tmp");
+
+    let error = swap_snapshot(&boundary, &staged)
+        .expect_err("a missing staging directory cannot be installed");
+
+    assert!(error.to_string().contains("checkpoint-stage"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(boundary.join("users.sql")).expect("read the restored snapshot"),
+        "CREATE TABLE users (id INTEGER);"
+    );
+
+    let mut entries: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read the workspace")
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+
+    assert_eq!(entries, vec!["checkpoint-stage".to_owned()]);
 }
