@@ -61,7 +61,8 @@ fn select_macro_renders_sql_and_decodes_named_fields() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\", \"active\" FROM \"users\""
+        "SELECT \"id\" AS \"user_id\", \"name\" AS \"contact_email\", \
+         \"active\" AS \"user_active\" FROM \"users\""
     );
 
     let record = decode(
@@ -92,7 +93,7 @@ fn named_projection_composes_with_filters_and_pagination() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\" FROM \"users\" \
+        "SELECT \"id\" AS \"user_id\", \"name\" AS \"user_name\" FROM \"users\" \
          WHERE (\"id\" > $1) ORDER BY \"id\" ASC LIMIT 5"
     );
     assert_eq!(built.params, vec![SqlVal::I64(10)]);
@@ -141,7 +142,8 @@ fn postgres_select_macro_starts_query_from_table_without_turbofish() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1)"
+        "SELECT \"id\" AS \"user_id\", \"name\" AS \"contact_email\" FROM \"users\" \
+         WHERE (\"id\" > $1)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
@@ -158,7 +160,8 @@ fn sqlite_select_macro_starts_query_from_table_without_turbofish() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > ?)"
+        "SELECT \"id\" AS \"user_id\", \"name\" AS \"contact_email\" FROM \"users\" \
+         WHERE (\"id\" > ?)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
@@ -177,7 +180,8 @@ fn postgres_versioned_prelude_pins_the_dialect_without_turbofish() {
 
     assert_eq!(
         selected.sql,
-        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" > $1)"
+        "SELECT \"id\" AS \"user_id\", \"name\" AS \"contact_email\" FROM \"users\" \
+         WHERE (\"id\" > $1)"
     );
     assert_eq!(selected.params, vec![SqlVal::I64(1)]);
 
@@ -218,7 +222,8 @@ fn sqlite_3_35_prelude_gates_returning_on_the_pinned_version() {
 
     assert_eq!(
         selected.sql,
-        "SELECT \"id\", \"name\" FROM \"users\" WHERE (\"id\" = ?)"
+        "SELECT \"id\" AS \"user_id\", \"name\" AS \"contact_email\" FROM \"users\" \
+         WHERE (\"id\" = ?)"
     );
 
     // `RETURNING` is only reachable because the pinned version implements the
@@ -230,7 +235,8 @@ fn sqlite_3_35_prelude_gates_returning_on_the_pinned_version() {
 
     assert_eq!(
         inserted.sql,
-        "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) RETURNING \"id\", \"name\""
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES (?, ?) \
+         RETURNING \"id\" AS \"user_id\", \"name\" AS \"contact_email\""
     );
     assert_eq!(
         inserted.params,
@@ -369,8 +375,8 @@ fn postgres_renders_every_capability_gated_clause() {
 
     assert_eq!(
         lateral.sql,
-        "SELECT \"users\".\"id\", \"latest_audit\".\"note\" FROM \"users\" \
-         CROSS JOIN LATERAL (SELECT \"note\" FROM \"audit_log\" \
+        "SELECT \"users\".\"id\" AS \"user_id\", \"latest_audit\".\"note\" AS \"latest_audit_note\" \
+         FROM \"users\" CROSS JOIN LATERAL (SELECT \"note\" FROM \"audit_log\" \
          WHERE (\"user_id\" = \"users\".\"id\") ORDER BY \"user_id\" DESC LIMIT 1) \
          AS \"latest_audit\""
     );

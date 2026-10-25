@@ -100,7 +100,10 @@ fn select_expands_through_the_facade() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
+    assert_eq!(
+        built.sql,
+        "SELECT id AS user_id, email AS contact_email FROM users WHERE (id > $1)"
+    );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 

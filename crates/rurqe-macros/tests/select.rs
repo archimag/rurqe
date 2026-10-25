@@ -7,7 +7,7 @@
 //! only, never through tuple indices.
 
 use rurqe_core::dialect::Dialect;
-use rurqe_core::expr::{Expr, SqlArrayElement, SqlVal, ToSqlVal};
+use rurqe_core::expr::{Expr, ExprKind, SqlArrayElement, SqlVal, ToSqlVal};
 use rurqe_core::nested::MultisetRow;
 use rurqe_core::query::{HasProjection, LeftJoined, SelectQuery, Selection, SelectionFor};
 use rurqe_core::row::{FromRow, FromSqlValue, RowDecodeError};
@@ -25,6 +25,13 @@ rurqe_core::table! {
     Order => "orders" {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
+    }
+}
+
+rurqe_core::table! {
+    Contact => "contacts" {
+        ContactUserId => "user_id": i64,
+        ContactEmail => "contact_email": String,
     }
 }
 
@@ -212,7 +219,10 @@ fn expressions_render_through_the_select_target_trait() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT id, SUM(id) FROM users");
+    assert_eq!(
+        built.sql,
+        "SELECT id AS user_id, SUM(id) AS total FROM users"
+    );
     assert!(built.params.is_empty());
 }
 
@@ -224,7 +234,10 @@ fn selection_starts_a_query_directly_from_a_table() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
+    assert_eq!(
+        built.sql,
+        "SELECT id AS user_id, email AS contact_email FROM users WHERE (id > $1)"
+    );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
@@ -236,7 +249,10 @@ fn selection_starts_a_query_from_a_table_value() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT id, email FROM users WHERE (id > $1)");
+    assert_eq!(
+        built.sql,
+        "SELECT id AS user_id, email AS contact_email FROM users WHERE (id > $1)"
+    );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
 
@@ -271,7 +287,10 @@ fn selection_feeds_the_query_builder() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT id, email FROM users");
+    assert_eq!(
+        built.sql,
+        "SELECT id AS user_id, email AS contact_email FROM users"
+    );
 }
 
 #[test]
@@ -283,7 +302,10 @@ fn selections_project_from_a_grouped_query() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT id, COUNT(*) FROM orders GROUP BY id");
+    assert_eq!(
+        built.sql,
+        "SELECT id AS order_id, COUNT(*) AS order_count FROM orders GROUP BY id"
+    );
     assert!(built.params.is_empty());
 }
 
@@ -367,6 +389,56 @@ fn a_projected_record_is_an_array_element() {
     assert_element(&row);
 }
 
+#[test]
+fn every_projection_is_exposed_under_its_field_name() {
+    let selection = select!(UserId, UserEmail as contact_email);
+
+    let mut projections = Vec::new();
+    selection.push_projections(&mut projections);
+
+    assert_eq!(
+        projections,
+        vec![
+            ExprKind::Aliased {
+                expr: Box::new(ExprKind::Column {
+                    table: "users",
+                    name: "id",
+                }),
+                alias: "user_id",
+            },
+            ExprKind::Aliased {
+                expr: Box::new(ExprKind::Column {
+                    table: "users",
+                    name: "email",
+                }),
+                alias: "contact_email",
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_projected_query_publishes_its_field_names_to_an_enclosing_statement() {
+    // The derived relation is addressed through the marker, whose column names
+    // are the field names of the record: the alias the macro emits is what makes
+    // the subquery expose exactly those columns.
+    let contacts = select!(UserId as user_id, UserEmail as contact_email)
+        .from(User)
+        .as_table::<Contact>();
+
+    let built = SelectQuery::<TestDialect>::new()
+        .from_subquery(contacts)
+        .select((ContactUserId, ContactEmail))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT user_id, contact_email FROM \
+         (SELECT id AS user_id, email AS contact_email FROM users) AS contacts"
+    );
+}
+
 /// A second dialect scope proving that the dialect is fixed by the imported
 /// `from(table)` trait, so the same `select!` expression binds to another
 /// dialect without any turbofish.
@@ -428,7 +500,8 @@ mod question_mark_dialect_scope {
 
         assert_eq!(
             built.sql,
-            "SELECT \"id\", \"email\" FROM \"users\" WHERE (\"id\" > ?)"
+            "SELECT \"id\" AS \"user_id\", \"email\" AS \"contact_email\" FROM \"users\" \
+             WHERE (\"id\" > ?)"
         );
         assert_eq!(built.params, vec![SqlVal::I64(1)]);
     }

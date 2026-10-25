@@ -139,7 +139,8 @@ fn insert_returning_projects_named_fields() {
     assert_eq!(
         built.sql,
         "INSERT INTO \"users\" (\"id\", \"name\", \"active\") VALUES ($1, $2, $3) \
-         RETURNING \"id\", \"name\", \"active\""
+         RETURNING \"id\" AS \"user_id\", \"name\" AS \"contact_email\", \
+         \"active\" AS \"user_active\""
     );
     assert_eq!(
         built.params,
@@ -225,7 +226,8 @@ fn update_returning_decodes_into_a_named_dto() {
     assert_eq!(
         built.sql,
         "UPDATE \"users\" SET \"name\" = $1, \"active\" = $2 WHERE (\"id\" > $3) \
-         RETURNING \"id\", \"name\", \"active\""
+         RETURNING \"id\" AS \"user_id\", \"name\" AS \"contact_email\", \
+         \"active\" AS \"user_active\""
     );
     assert_eq!(
         built.params,

@@ -345,9 +345,11 @@ crate::pin_dialect_version! {
 ///     .build()
 ///     .expect("valid query");
 ///
-/// // A single-relation statement keeps the bare column name; the reference is
+/// // The named selection exposes the field it declares as the output column of
+/// // the projection, while the column reference inside the expression keeps the
+/// // bare name as long as the statement addresses a single relation; it is
 /// // qualified only once the statement spans several relations.
-/// assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
+/// assert_eq!(built.sql, "SELECT \"id\" AS \"user_id\" FROM \"users\"");
 /// ```
 ///
 /// The query records no projection until `select` is called, and only a

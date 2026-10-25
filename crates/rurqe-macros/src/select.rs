@@ -11,6 +11,11 @@
 //!   [`SelectTarget`](rurqe_core::query::SelectTarget) and keeps its own type;
 //! - a schema field access (`users.id`) derives its field from the column name.
 //!
+//! Every projection is exposed in the statement under the field it names, so the
+//! output columns of a projected query are the keys its record decodes. Embedding
+//! the query as a derived table or a common table expression therefore keeps
+//! those names reachable from the enclosing statement.
+//!
 //! The synthesized record is generic over its field types, so
 //! [`SelectionFor`](rurqe_core::query::SelectionFor) can lift the fields of a
 //! `LEFT JOIN`ed table into `Option<T>` at the call site while the scope-agnostic
@@ -137,6 +142,9 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 belongs_bounds.extend(quote! {
                     #element: ::rurqe::core::schema::ColumnBelongsTo<__T>,
                 });
+                // `push_column_names` names the columns themselves — an `INSERT`
+                // column list or an `ON CONFLICT` target takes no alias — while
+                // the projection below carries the field name of the record.
                 name_pushes.extend(quote! {
                     out.push(<#element as ::rurqe::core::schema::Column>::NAME);
                 });
@@ -154,9 +162,18 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
 
         // Every projection renders through `SelectTarget`, so a column and a
         // computed expression follow the same qualification rule as a tuple
-        // selection instead of the macro spelling its own column reference.
+        // selection instead of the macro spelling its own column reference. The
+        // rendered node is exposed under the field name of the record, so the
+        // statement keeps the output name of the projection: a query embedded as
+        // a derived table or a common table expression publishes exactly the
+        // fields the record decodes instead of the column names of its relations.
         projection_pushes.extend(quote! {
-            out.push(::rurqe::core::query::SelectTarget::to_expr_kind(&self.#field_index));
+            out.push(::rurqe::core::expr::ExprKind::Aliased {
+                expr: ::std::boxed::Box::new(
+                    ::rurqe::core::query::SelectTarget::to_expr_kind(&self.#field_index),
+                ),
+                alias: #key,
+            });
         });
     }
 

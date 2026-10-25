@@ -103,7 +103,8 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
 
     assert_eq!(
         built.sql,
-        "SELECT \"users\".\"id\", \"orders\".\"id\", \"orders\".\"total\" FROM \"users\" \
+        "SELECT \"users\".\"id\" AS \"user_id\", \"orders\".\"id\" AS \"order_id\", \
+         \"orders\".\"total\" AS \"order_total\" FROM \"users\" \
          INNER JOIN \"orders\" ON (\"orders\".\"user_id\" = $1) WHERE (\"users\".\"active\" = $2)"
     );
     assert_eq!(built.params, vec![SqlVal::I64(7), SqlVal::Bool(true)]);
@@ -995,7 +996,8 @@ mod value_based_dsl {
 
         assert_eq!(
             built.sql,
-            "SELECT \"users\".\"id\", \"users\".\"name\", \"orders\".\"total\" FROM \"users\" \
+            "SELECT \"users\".\"id\" AS \"user_id\", \"users\".\"name\" AS \"user_name\", \
+             \"orders\".\"total\" AS \"order_total\" FROM \"users\" \
              INNER JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\") \
              WHERE (\"users\".\"id\" > $1) ORDER BY \"users\".\"id\" ASC LIMIT 20"
         );
@@ -1012,8 +1014,8 @@ mod value_based_dsl {
 
         assert_eq!(
             built.sql,
-            "SELECT \"users\".\"id\", \"orders\".\"total\" FROM \"users\" \
-             LEFT JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\")"
+            "SELECT \"users\".\"id\" AS \"user_id\", \"orders\".\"total\" AS \"order_total\" \
+             FROM \"users\" LEFT JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\")"
         );
         assert!(built.params.is_empty());
 

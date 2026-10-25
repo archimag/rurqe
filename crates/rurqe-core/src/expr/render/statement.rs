@@ -275,6 +275,13 @@ impl<'a> StatementRef<'a> {
                 sql.push_str(", ");
             }
             render_expr::<D>(sql, params, projection, relations);
+            // A projection carrying its own alias was already named by whoever
+            // built it — that is how a nested collection keeps the field names of
+            // its rows — so the implied alias would repeat it as
+            // `"body" AS "body" AS "body"`.
+            if matches!(projection, ExprKind::Aliased { .. }) {
+                continue;
+            }
             if let Some(aliases) = self.projection_aliases {
                 if let Some(&alias) = aliases.get(index) {
                     sql.push_str(" AS ");
