@@ -8,18 +8,14 @@ repository.workspace = true
 description = "Flyway-compatible migration model, checksums, and schema history tracking for RURQE"
 
 [dependencies]
+# `rurqe_core::calendar` is the single source of the epoch-to-civil conversion,
+# and the default feature set of `rurqe-core` brings no external dependency.
+rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 tokio = { version = "1", optional = true, default-features = false, features = ["rt"] }
 toml = "0.8"
 tracing = "0.1"
-
-[dev-dependencies]
-# The migration runner keeps a private copy of the shared proleptic Gregorian
-# conversion so this crate stays dependency-free at build time. The test-only
-# dependency lets the equivalence test prove the copy still matches
-# `rurqe_core::calendar::civil_from_days`.
-rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
 
 [features]
 default = []

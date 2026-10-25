@@ -14,6 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use rurqe_core::calendar::civil_from_days;
+
 use crate::checkpoint::Checkpoint;
 use crate::checksum::Checksum;
 use crate::error::Error;
@@ -807,12 +809,18 @@ fn execution_failed(migration: &Migration, error: &Error) -> Error {
 ///
 /// The history table stores `installed_on` as a plain string, so the runner has to
 /// produce a concrete timestamp instead of delegating to `CURRENT_TIMESTAMP`.
-/// The crate stays dependency-free, hence the epoch-to-civil conversion below.
+/// The epoch-to-civil conversion comes from the shared `rurqe_core::calendar`
+/// implementation, so every crate of the workspace renders calendar dates the
+/// same way.
+///
+/// A clock reading beyond `i64::MAX` seconds saturates instead of truncating,
+/// while a reading before the epoch falls back to zero.
 pub(crate) fn current_timestamp() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
+        .map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0);
+
     format_timestamp(seconds)
 }
 
@@ -827,33 +835,6 @@ fn format_timestamp(unix_seconds: i64) -> String {
     let second = seconds_of_day % 60;
 
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
-}
-
-/// Converts days since the UNIX epoch into a proleptic Gregorian civil date.
-///
-/// The crate keeps this private copy because it does not depend on `rurqe-core`
-/// at build time. The dev-dependency on `rurqe-core` lets
-/// `the_calendar_conversion_matches_the_shared_core_implementation` prove the
-/// copy still agrees with `rurqe_core::calendar::civil_from_days` day by day, so
-/// the two implementations cannot drift apart unnoticed.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_pivot = (5 * day_of_year + 2) / 153;
-    let day = (day_of_year - (153 * month_pivot + 2) / 5 + 1) as u32;
-    let month = if month_pivot < 10 {
-        month_pivot + 3
-    } else {
-        month_pivot - 9
-    } as u32;
-    let year = if month <= 2 { year + 1 } else { year };
-
-    (year, month, day)
 }
 
 /// An in-memory [`MigrationBackend`] for deterministic execution and testing.
@@ -1005,8 +986,8 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        civil_from_days, format_timestamp, InMemoryBackend, InMemoryTransaction, LockGuard,
-        MigrationBackend, Migrator,
+        format_timestamp, InMemoryBackend, InMemoryTransaction, LockGuard, MigrationBackend,
+        Migrator,
     };
     use crate::checkpoint::Checkpoint;
     use crate::checksum::Checksum;
@@ -1037,34 +1018,7 @@ mod tests {
 
     #[test]
     fn leap_days_are_accounted_for() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(59), (1970, 3, 1));
         assert_eq!(format_timestamp(951_782_400), "2000-02-29 00:00:00");
-    }
-
-    #[test]
-    fn civil_dates_match_the_shared_reference_vectors() {
-        assert_eq!(civil_from_days(-1), (1969, 12, 31));
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(58), (1970, 2, 28));
-        assert_eq!(civil_from_days(59), (1970, 3, 1));
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-        assert_eq!(civil_from_days(-25_508), (1900, 3, 1));
-        assert_eq!(civil_from_days(47_541), (2100, 3, 1));
-    }
-
-    #[test]
-    fn the_calendar_conversion_matches_the_shared_core_implementation() {
-        // ±500 years of days around the epoch sweep every leap-century boundary
-        // the calendar rules care about: 1500, 1600, 1700, 1800, 1900, 2000,
-        // 2100, 2200, 2300 and 2400 all fall inside this range.
-        for days in -182_621..=182_621_i64 {
-            assert_eq!(
-                civil_from_days(days),
-                rurqe_core::calendar::civil_from_days(days),
-                "the migration calendar diverged from the shared core one on day {days}"
-            );
-        }
     }
 
     fn boundary(version: &str) -> Checkpoint {
