@@ -1022,11 +1022,15 @@ fn dialect_operators_inherit_the_scope_of_their_operands() {
 
 #[test]
 fn dialect_operators_keep_the_dialect_marker_of_their_operands() {
-    let pinned: Expr<i64, User, NonAggregate, MockDialect> = Expr::from_kind(ExprKind::Column {
+    // The dialect-pinned operands are assembled with the crate-internal
+    // constructor: the escape hatch builds scope-free constants only, while the
+    // scope of a column reference comes from its column marker. The test
+    // exercises how the dialect marker survives the operators below.
+    let pinned: Expr<i64, User, NonAggregate, MockDialect> = Expr::new(ExprKind::Column {
         table: "users",
         name: "id",
     });
-    let pinned_rhs: Expr<i64, User, NonAggregate, MockDialect> = Expr::from_kind(ExprKind::Column {
+    let pinned_rhs: Expr<i64, User, NonAggregate, MockDialect> = Expr::new(ExprKind::Column {
         table: "users",
         name: "id",
     });

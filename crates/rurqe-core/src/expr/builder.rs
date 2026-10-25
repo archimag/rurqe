@@ -281,13 +281,39 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 }
 
-impl<T, Scope, D> Expr<T, Scope, NonAggregate, D> {
-    /// Builds an expression from an already assembled tree carrying the scope `Scope`.
+impl<T, D> Expr<T, (), NonAggregate, D> {
+    /// Builds a constant expression from an already assembled tree.
     ///
     /// Dialect extensions describe their operands as AST nodes instead of
-    /// pre-rendered text, so a column reference keeps following the statement it
-    /// is rendered into: it is qualified in a multi-table query and keeps its
-    /// alias prefix.
+    /// pre-rendered text, so the assembled tree carries its dialect marker `D`
+    /// through the constructor. The built expression reads no table: the scope is
+    /// fixed to `()`, and the caller cannot name another one.
+    ///
+    /// The scope of an expression reading a column is derived from the column
+    /// marker itself, so such an expression is built with `Expr::column::<C>()` or
+    /// [`Expr::qualified_column`], while a dialect extension inherits the scope of
+    /// the operand it extends through [`dialect_op`](Expr::dialect_op) and
+    /// [`dialect_quantified`](Expr::dialect_quantified) instead of declaring one.
+    /// Forging a scope onto a tree does not compile:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::expr::{Expr, ExprKind};
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// // Fails to compile: `from_kind` builds an expression that references no
+    /// // table, so its scope stays `()`. A column reference carries the table of
+    /// // its column marker and is built through `Expr::column::<OrderTotal>()`.
+    /// let _: Expr<f64, Order, NonAggregate, ()> = Expr::from_kind(ExprKind::Column {
+    ///     table: "orders",
+    ///     name: "total",
+    /// });
+    /// ```
     ///
     /// The constructor builds per-row expressions only. The aggregate markers
     /// [`DirectAggregate`] and [`FilteredAggregate`] state that the root of the
@@ -316,30 +342,14 @@ impl<T, Scope, D> Expr<T, Scope, NonAggregate, D> {
     /// });
     /// ```
     ///
-    /// A tree that computes one value per row keeps the constructor reachable:
+    /// A tree that references no table keeps the constructor reachable:
     ///
     /// ```
-    /// use rurqe_core::expr::{Expr, ExprKind};
+    /// use rurqe_core::expr::{Expr, ExprKind, SqlVal};
     ///
-    /// rurqe_core::table! {
-    ///     /// The `orders` table.
-    ///     Order => "orders" {
-    ///         OrderTotal => "total": f64,
-    ///     }
-    /// }
+    /// let expr: Expr<f64> = Expr::from_kind(ExprKind::Value(SqlVal::F64(1.0)));
     ///
-    /// let expr: Expr<f64, Order> = Expr::from_kind(ExprKind::Column {
-    ///     table: "orders",
-    ///     name: "total",
-    /// });
-    ///
-    /// assert_eq!(
-    ///     expr.kind(),
-    ///     &ExprKind::Column {
-    ///         table: "orders",
-    ///         name: "total",
-    ///     }
-    /// );
+    /// assert_eq!(expr.kind(), &ExprKind::Value(SqlVal::F64(1.0)));
     /// ```
     #[doc(hidden)]
     pub fn from_kind(kind: ExprKind) -> Self {

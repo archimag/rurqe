@@ -46,7 +46,10 @@ pub struct Excluded<T>(PhantomData<fn() -> T>);
 /// assert_eq!(value.kind(), &ExprKind::Excluded { column: "name" });
 /// ```
 pub fn excluded<C: Column>(_column: C) -> Expr<C::RustType, Excluded<C::Table>> {
-    Expr::from_kind(ExprKind::Excluded { column: C::NAME })
+    // The scope of the proposed row is derived from the column contract, so the
+    // expression is assembled with the crate-internal constructor instead of the
+    // escape hatch, which builds scope-free constants only.
+    Expr::new(ExprKind::Excluded { column: C::NAME })
 }
 
 // The proposed row is not a relation of a query scope: it only exists inside the
