@@ -1,0 +1,342 @@
+//! Conversion of bound values and statements into operand expression nodes.
+
+use crate::dialect::Dialect;
+use crate::query::{HasProjection, SelectQuery, TableScope};
+
+use crate::expr::ast::{ExprKind, SubqueryOp};
+use crate::expr::builder::Expr;
+use crate::expr::val::ToSqlVal;
+
+use super::compat::SqlCompatible;
+
+/// A value or expression that can be compared with an expression of type `T`.
+///
+/// Operand values are encoded through [`ToSqlVal`], so the parameter
+/// representation of a comparison is produced by the same contract that binds
+/// standalone query parameters: every literal takes the exact route
+/// [`SqlVal`](crate::expr::SqlVal) construction takes, and an existing [`Expr`]
+/// keeps its own tree instead.
+#[diagnostic::on_unimplemented(
+    message = "value of type `{Self}` cannot be compared with a column of type `{T}`",
+    label = "incompatible operand types",
+    note = "convert the value to the column's `Column::RustType` before comparing"
+)]
+pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
+    /// The scope of the tables the operand references.
+    ///
+    /// Bound values reference no table and keep the empty scope `()`, while a
+    /// built expression keeps the scope of its columns.
+    type Scope;
+
+    /// The dialect marker of the operand.
+    type Dialect;
+
+    /// Converts `self` into an expression AST node.
+    fn into_expr_kind(self) -> ExprKind;
+}
+
+impl IntoExpr<i32> for i32 {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<i64> for i64 {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<f64> for f64 {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl IntoExpr<rust_decimal::Decimal> for rust_decimal::Decimal {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "decimal")]
+impl IntoExpr<rust_decimal::Decimal> for &rust_decimal::Decimal {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<bool> for bool {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<String> for String {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<String> for &str {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<Vec<u8>> for Vec<u8> {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl IntoExpr<Vec<u8>> for &[u8] {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+impl<T, Scope, Aggr, D> IntoExpr<T> for Expr<T, Scope, Aggr, D> {
+    type Scope = Scope;
+    type Dialect = D;
+
+    fn into_expr_kind(self) -> ExprKind {
+        self.into_kind()
+    }
+}
+
+impl<D, Tables, T> IntoExpr<T> for SelectQuery<D, Tables, (T,), HasProjection>
+where
+    D: Dialect,
+    Tables: TableScope,
+{
+    type Scope = ();
+    type Dialect = D;
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Subquery {
+            op: SubqueryOp::Scalar,
+            operand: None,
+            query: self.into_subquery(),
+            negated: false,
+        }
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl IntoExpr<uuid::Uuid> for uuid::Uuid {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl IntoExpr<uuid::Uuid> for &uuid::Uuid {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "uuid")]
+impl IntoExpr<uuid::Uuid> for &str {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDateTime> for &chrono::NaiveDateTime {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::DateTime<chrono::Utc>> for &chrono::DateTime<chrono::Utc> {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "chrono")]
+impl IntoExpr<chrono::NaiveDate> for &chrono::NaiveDate {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl IntoExpr<serde_json::Value> for serde_json::Value {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl IntoExpr<serde_json::Value> for &serde_json::Value {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for crate::expr::Json<T> {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+#[cfg(feature = "serde_json")]
+impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<T> {
+    type Scope = ();
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        ExprKind::Value(self.to_sql_val())
+    }
+}
+
+/// A collection of candidate values of a membership predicate.
+///
+/// A list is any iterator of values compatible with the tested expression type,
+/// and its candidates carry the tables they reference, so a membership predicate
+/// joins their scope with its own. A list of bound values references no table,
+/// which leaves the scope of the predicate exactly the scope of the tested
+/// expression:
+///
+/// ```
+/// use rurqe_core::expr::{ExprKind, Expression};
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// let predicate = UserId.in_list(vec![1i64, 2i64]);
+///
+/// assert!(matches!(
+///     predicate.kind(),
+///     ExprKind::InList { negated: false, .. }
+/// ));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a list of values comparable with a column of type `{T}`",
+    label = "incompatible membership candidates",
+    note = "pass an iterator of values of the tested column's `Column::RustType`, or of expressions of that type"
+)]
+pub trait IntoExprList<T> {
+    /// The scope of the tables the candidates reference.
+    type Scope;
+
+    /// The dialect marker of the candidates.
+    type Dialect;
+
+    /// Appends the candidate expressions to `values`.
+    #[doc(hidden)]
+    fn push_expr_kinds(self, values: &mut Vec<ExprKind>);
+}
+
+impl<I, V, T> IntoExprList<T> for I
+where
+    I: IntoIterator<Item = V>,
+    V: IntoExpr<T>,
+{
+    type Scope = V::Scope;
+    type Dialect = V::Dialect;
+
+    fn push_expr_kinds(self, values: &mut Vec<ExprKind>) {
+        for value in self {
+            values.push(value.into_expr_kind());
+        }
+    }
+}

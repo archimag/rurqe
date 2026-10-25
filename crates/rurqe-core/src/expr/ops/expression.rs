@@ -1,0 +1,326 @@
+//! Call-site expression traits for column markers and built expressions.
+
+use crate::expr::ast::{MergeDialect, MergedDialect};
+use crate::expr::builder::{Expr, NonAggregate};
+use crate::expr::scope::{MergeScope, Merged, Merged3, Unscoped};
+use crate::schema::Column;
+
+use super::conversion::{IntoExpr, IntoExprList};
+
+/// A SQL expression of type `T` that can be compared with bound values.
+///
+/// The trait lets the expression be written directly at the call site — a column
+/// marker, an alias-qualified column, or an already built [`Expr`] — without
+/// spelling `Expr::column::<C>()` first:
+///
+/// ```
+/// use rurqe_core::expr::{Expr, Expression};
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// let predicate = UserId.gt(10i64);
+///
+/// assert_eq!(predicate, Expr::column::<UserId>().gt(10i64));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an expression of type `{T}`",
+    label = "neither a column marker nor a built expression",
+    note = "compare a column marker or an `Expr<T>` produced by the expression builders"
+)]
+#[allow(clippy::wrong_self_convention)]
+pub trait Expression<T> {
+    /// The scope of the tables the expression references.
+    type Scope;
+
+    /// The dialect marker of the expression.
+    type Dialect;
+
+    /// Converts `self` into the expression it stands for.
+    fn into_expression(self) -> Expr<T, Self::Scope, NonAggregate, Self::Dialect>;
+
+    /// Drops the relation scope from this expression, enabling use in correlated subqueries.
+    ///
+    /// The dropped tables are replaced with the [`Unscoped`] marker, so the
+    /// expression is accepted in every query scope without becoming
+    /// indistinguishable from a constant.
+    fn without_scope(self) -> Expr<T, Unscoped, NonAggregate, Self::Dialect>
+    where
+        Self: Sized,
+    {
+        self.into_expression().without_scope()
+    }
+
+    /// Compares the expression with `value` using the SQL `=` operator.
+    #[allow(clippy::type_complexity)]
+    fn eq<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().eq(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `<>` operator.
+    #[allow(clippy::type_complexity)]
+    fn ne<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().ne(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `>` operator.
+    #[allow(clippy::type_complexity)]
+    fn gt<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().gt(value)
+    }
+
+    /// Compares the expression with `value` using the SQL `<` operator.
+    #[allow(clippy::type_complexity)]
+    fn lt<V>(
+        self,
+        value: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        V: IntoExpr<T>,
+    {
+        self.into_expression().lt(value)
+    }
+
+    /// Builds an `IS NULL` predicate over the expression.
+    fn is_null(self) -> Expr<bool, Self::Scope, NonAggregate, Self::Dialect>
+    where
+        Self: Sized,
+    {
+        // Call the inherent `Expr` method explicitly: `Expr<T>::is_null` takes
+        // `&self`, so a plain method call would resolve back to this by-value
+        // trait method and recurse.
+        Expr::is_null(&self.into_expression())
+    }
+
+    /// Builds an `IS NOT NULL` predicate over the expression.
+    fn is_not_null(self) -> Expr<bool, Self::Scope, NonAggregate, Self::Dialect>
+    where
+        Self: Sized,
+    {
+        // See `Expression::is_null` for why the inherent method is called explicitly.
+        Expr::is_not_null(&self.into_expression())
+    }
+
+    /// Builds a `BETWEEN low AND high` range predicate over the expression.
+    ///
+    /// Both bounds are inclusive and must be compatible with the expression type.
+    #[allow(clippy::type_complexity)]
+    fn between<L, H>(
+        self,
+        low: L,
+        high: H,
+    ) -> Expr<
+        bool,
+        Merged3<Self::Scope, L::Scope, H::Scope>,
+        NonAggregate,
+        MergedDialect<MergedDialect<Self::Dialect, L::Dialect>, H::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<L::Scope>,
+        Merged<Self::Scope, L::Scope>: MergeScope<H::Scope>,
+        Self::Dialect: MergeDialect<L::Dialect>,
+        MergedDialect<Self::Dialect, L::Dialect>: MergeDialect<H::Dialect>,
+        L: IntoExpr<T>,
+        H: IntoExpr<T>,
+    {
+        self.into_expression().between(low, high)
+    }
+
+    /// Builds an `IN (value, ...)` membership predicate over the expression.
+    ///
+    /// The tables the candidates reference join the scope of the predicate, so a
+    /// candidate reading a column of a table the query does not select from is
+    /// rejected at the call site.
+    #[allow(clippy::type_complexity)]
+    fn in_list<I>(
+        self,
+        values: I,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, I::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, I::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<I::Scope>,
+        Self::Dialect: MergeDialect<I::Dialect>,
+        I: IntoExprList<T>,
+    {
+        self.into_expression().in_list(values)
+    }
+
+    /// Builds a `NOT IN (value, ...)` negated membership predicate.
+    ///
+    /// The negation keeps the scope of the positive form: every candidate value
+    /// still has to be comparable with the expression.
+    #[allow(clippy::type_complexity)]
+    fn not_in_list<I>(
+        self,
+        values: I,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, I::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, I::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<I::Scope>,
+        Self::Dialect: MergeDialect<I::Dialect>,
+        I: IntoExprList<T>,
+    {
+        self.into_expression().not_in_list(values)
+    }
+}
+
+impl<T, Scope, D> Expression<T> for Expr<T, Scope, NonAggregate, D> {
+    type Scope = Scope;
+    type Dialect = D;
+
+    fn into_expression(self) -> Expr<T, Scope, NonAggregate, D> {
+        self
+    }
+}
+
+impl<C: Column> Expression<C::RustType> for C {
+    type Scope = C::Table;
+    type Dialect = ();
+
+    fn into_expression(self) -> Expr<C::RustType, C::Table, NonAggregate, ()> {
+        Expr::<C::RustType, C::Table, NonAggregate, ()>::new(C::expr_kind())
+    }
+}
+
+/// A string expression that can be matched against `LIKE` patterns.
+///
+/// Both a string column marker and an already built [`Expr<String>`] implement
+/// the trait, so pattern predicates can be written directly at the call site.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a string expression",
+    label = "only string columns and `Expr<String>` values accept LIKE patterns",
+    note = "match a column declared as `String` or an `Expr<String>` built from one"
+)]
+pub trait StringExpression {
+    /// The scope of the tables the expression references.
+    type Scope;
+
+    /// The dialect marker of the expression.
+    type Dialect;
+
+    /// Converts `self` into the string expression it stands for.
+    fn into_string_expression(self) -> Expr<String, Self::Scope, NonAggregate, Self::Dialect>;
+
+    /// Builds a case-sensitive `LIKE` pattern-matching predicate.
+    #[allow(clippy::type_complexity)]
+    fn like<V>(
+        self,
+        pattern: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        V: IntoExpr<String>,
+    {
+        self.into_string_expression().like(pattern)
+    }
+
+    /// Builds a case-insensitive `ILIKE` pattern-matching predicate.
+    #[allow(clippy::type_complexity)]
+    fn ilike<V>(
+        self,
+        pattern: V,
+    ) -> Expr<
+        bool,
+        Merged<Self::Scope, V::Scope>,
+        NonAggregate,
+        MergedDialect<Self::Dialect, V::Dialect>,
+    >
+    where
+        Self: Sized,
+        Self::Scope: MergeScope<V::Scope>,
+        Self::Dialect: MergeDialect<V::Dialect>,
+        V: IntoExpr<String>,
+    {
+        self.into_string_expression().ilike(pattern)
+    }
+}
+
+impl<Scope, D> StringExpression for Expr<String, Scope, NonAggregate, D> {
+    type Scope = Scope;
+    type Dialect = D;
+
+    fn into_string_expression(self) -> Expr<String, Scope, NonAggregate, D> {
+        self
+    }
+}
+
+impl<C: Column<RustType = String>> StringExpression for C {
+    type Scope = C::Table;
+    type Dialect = ();
+
+    fn into_string_expression(self) -> Expr<String, C::Table, NonAggregate, ()> {
+        Expr::<String, C::Table, NonAggregate, ()>::new(C::expr_kind())
+    }
+}

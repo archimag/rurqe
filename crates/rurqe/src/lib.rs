@@ -46,6 +46,16 @@ pub use rurqe_core::{
 pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 pub use rurqe_core::{GroupByInScope, SelectionInScope};
 
+/// The doc-test catalogue of the facade entry points.
+///
+/// The positive and `compile_fail` examples verifying the compile-time
+/// guarantees of the entry points live in this module, so the facade stays a
+/// readable module of re-exports and entry points. The module exists only while
+/// rustdoc compiles the doc-tests, so the whole catalogue still runs with
+/// `cargo test --doc` and nothing of it reaches a normal build.
+#[cfg(doctest)]
+mod docs;
+
 /// Generates a module pinning every query entry point to one dialect version.
 ///
 /// The `postgres` and `sqlite` modules use the macro to expose their
@@ -324,390 +334,12 @@ crate::pin_dialect_version! {
 /// assert_eq!(built.sql, "SELECT \"id\" FROM \"users\"");
 /// ```
 ///
-/// Projecting a column of a table the query does not select from is rejected at
-/// compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>().select((UserId, OrderTotal));
-/// ```
-///
-/// Grouping and ordering follow the same rule:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` is not a column of a table in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .group_by(OrderTotal)
-///     .select((UserId,));
-/// ```
-///
-/// Calling `group_by` on an already projected query is rejected at compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: `group_by` must be established before `select`.
-/// let _ = select_from::<Postgres, User>()
-///     .select((UserId,))
-///     .group_by(UserId);
-/// ```
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` is not a column of a table in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .select((UserId,))
-///     .order_by_desc(OrderTotal);
-/// ```
-///
-/// Referencing a column of an unjoined table in a filter predicate is rejected at
-/// compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .select((UserId,))
-///     .where_(OrderTotal.gt(1.0));
-/// ```
-///
-/// Comparing columns across unjoined tables in a filter predicate is rejected:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Order => "orders" {
-///         OrderId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderId` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .select((UserId,))
-///     .where_(Expr::column::<UserId>().eq(Expr::column::<OrderId>()));
-/// ```
-///
-/// Attempting to bypass `GROUP BY` column validation via `Expr::column` is rejected:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     Order => "orders" {
-///         OrderId => "id": i64,
-///         OrderUserId => "user_id": i64,
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
-/// let _ = select_from::<Postgres, Order>()
-///     .group_by(OrderUserId)
-///     .select((OrderUserId, Expr::column::<OrderTotal>()));
-/// ```
-///
-/// Window specifications partitioned by an unjoined table are rejected:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Order => "orders" {
-///         OrderUserId => "user_id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .select((UserId, row_number().over(Window::partition_by(OrderUserId))));
-/// ```
-///
-/// Window functions reading a column of an unjoined table are rejected:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .select((UserId, lag(OrderTotal).over(Window::empty())));
-/// ```
-///
-/// Restricting a join with an `ON` condition that references a table outside the
-/// joined scope is rejected at compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Profile => "profiles" {
-///         ProfileUserId => "user_id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Order => "orders" {
-///         OrderUserId => "user_id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .inner_join::<Profile, _, _>(
-///         Expr::column::<ProfileUserId>().eq(Expr::column::<OrderUserId>()),
-///     );
-/// ```
-///
-/// Restricting the result with a `HAVING` predicate that references a column of
-/// an unjoined table is rejected at compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
-/// let _ = select_from::<Postgres, User>()
-///     .group_by(UserId)
-///     .select((UserId,))
-///     .having(Expr::column::<OrderTotal>().gt(1.0));
-/// ```
-///
 /// The query records no projection until `select` is called, and only a
 /// projected query is renderable, so building it right after the table is
-/// introduced is rejected at compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: the query records no projection yet.
-/// let _ = select_from::<Postgres, User>().build();
-/// ```
-///
-/// A query may lock the rows it selects, keeping them from concurrent writers
-/// until the transaction ends:
-///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `jobs` table.
-///     Job => "jobs" {
-///         JobId => "id": i64,
-///     }
-/// }
-///
-/// let built = select_from::<Postgres, Job>()
-///     .select((JobId,))
-///     .for_update()
-///     .skip_locked()
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(built.sql, "SELECT \"id\" FROM \"jobs\" FOR UPDATE SKIP LOCKED");
-/// ```
-///
-/// Row-level locking is a dialect capability, so a query pinned to SQLite —
-/// which locks the whole database instead — cannot request it:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `jobs` table.
-///     Job => "jobs" {
-///         JobId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: SQLite has no `FOR UPDATE` clause.
-/// let _ = select_from::<Sqlite, Job>()
-///     .select((JobId,))
-///     .for_update();
-/// ```
-///
-/// A single-column query is a scalar operand, so it compares with a column of
-/// its type without any explicit conversion:
-///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderId => "id": i64,
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// let average = select_from::<Postgres<Pg16>, Order>()
-///     .select((Expr::avg::<OrderTotal>(),));
-///
-/// let built = select_from::<Postgres<Pg16>, Order>()
-///     .select((OrderId,))
-///     .where_(Expr::column::<OrderTotal>().gt(average))
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(
-///     built.sql,
-///     "SELECT \"id\" FROM \"orders\" WHERE (\"total\" > (SELECT AVG(\"total\") FROM \"orders\"))"
-/// );
-/// ```
-///
-/// A query projecting several columns produces a row rather than a single
-/// value, so it is not comparable with a column:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderId => "id": i64,
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: the nested query projects two columns, not a single value.
-/// let _ = select_from::<Postgres<Pg16>, Order>()
-///     .select((OrderId,))
-///     .where_(Expr::column::<OrderTotal>().gt(
-///         select_from::<Postgres<Pg16>, Order>().select((OrderTotal, OrderId)),
-///     ));
-/// ```
-///
-/// A locking clause closes the statement, so its wait mode cannot be requested
-/// before the lock itself:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `jobs` table.
-///     Job => "jobs" {
-///         JobId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: the query does not request a lock yet.
-/// let _ = select_from::<Postgres<Pg16>, Job>()
-///     .select((JobId,))
-///     .nowait();
-/// ```
+/// introduced is rejected at compile time. Every invariant a projection, a
+/// filter, a grouping, a window specification, a row lock, or a nested
+/// statement has to satisfy is catalogued as a doc-test in the private `docs`
+/// module, which runs with `cargo test --doc`.
 pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection> {
     SelectQuery::new().from::<T>()
 }
@@ -739,96 +371,11 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 /// );
 /// ```
 ///
-/// The statement becomes renderable only once it records a row source, so
-/// building it without values or a source `SELECT` is rejected at compile time:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// }
-///
-/// // Fails to compile: the statement records no row source.
-/// let _ = insert_into::<Postgres, User>().build();
-/// ```
-///
-/// A row source known to be empty cannot reach the builder either:
-/// `values_many` yields `Result<InsertQuery, EmptyRows>` instead of the query,
-/// so the error has to be handled before the statement can be rendered:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: `values_many` yields a `Result`, which has no `build`.
-/// let _ = insert_into::<Postgres, User>()
-///     .values_many(std::iter::empty::<(Assignment<UserId, i64>,)>())
-///     .build();
-/// ```
-/// An upsert may read the row the statement tried to insert through the
-/// `EXCLUDED` pseudo-relation, so the update copies the proposed value instead of
-/// binding it a second time:
-///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// }
-///
-/// let built = insert_into::<Postgres<Pg16>, User>()
-///     .values((UserId::set(1i64), UserName::set("root")))
-///     .on_conflict((UserId,))
-///     .do_update((UserName::set_expr(excluded(UserName)),))
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(
-///     built.sql,
-///     "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) \
-///      ON CONFLICT (\"id\") DO UPDATE SET \"name\" = EXCLUDED.\"name\""
-/// );
-/// assert_eq!(
-///     built.params,
-///     vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
-/// );
-/// ```
-///
-/// The proposed value carries the Rust type of its column, so it only assigns to
-/// a column of that type:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// }
-///
-/// // Fails to compile: `EXCLUDED."name"` reads a string, not an `i64`.
-/// let _ = insert_into::<Postgres<Pg16>, User>()
-///     .values((UserId::set(1i64),))
-///     .on_conflict((UserId,))
-///     .do_update((UserId::set_expr(excluded(UserName)),));
-/// ```
+/// The statement becomes renderable only once it records a row source, a row
+/// source known to be empty yields a `Result` instead of the query, and an
+/// upsert reads the row the statement tried to insert through the `EXCLUDED`
+/// pseudo-relation. The compile-fail catalogue of these rules lives in the
+/// private `docs` module and runs with `cargo test --doc`.
 pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
     InsertQuery::new()
 }
@@ -862,76 +409,9 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 /// );
 /// ```
 ///
-/// Assignments are statically tied to the mutated table, so a column of another
-/// table cannot be set on `User`:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` belongs to `Order`, not to `User`.
-/// let _ = update::<Postgres, User>().set(OrderTotal::set(1.0));
-/// ```
-///
-/// `RETURNING` projections are tied to the mutated table as well:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderTotal => "total": f64,
-///     }
-/// }
-///
-/// // Fails to compile: `OrderTotal` is not a column of `User`.
-/// let _ = update::<Postgres, User>()
-///     .set(UserId::set(1i64))
-///     .allow_all()
-///     .returning((OrderTotal,));
-/// ```
-///
-/// The builder starts in the unfiltered typestate, so an accidental full-table
-/// mutation cannot be rendered before the affected rows are restricted with
-/// `where_` or confirmed with `allow_all`:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///         UserName => "name": String,
-///     }
-/// }
-///
-/// // Fails to compile: the statement is still unfiltered.
-/// let _ = update::<Postgres, User>()
-///     .set(UserName::set("root"))
-///     .build();
-/// ```
+/// Assignments and `RETURNING` projections are statically tied to the mutated
+/// table; the compile-fail catalogue of these typestate rules lives in the
+/// private `docs` module and runs with `cargo test --doc`.
 pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
     UpdateQuery::new()
 }
@@ -958,24 +438,6 @@ pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
 ///     .expect("valid query");
 ///
 /// assert_eq!(built.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
-/// ```
-///
-/// The builder starts in the unfiltered typestate, so an accidental full-table
-/// deletion cannot be rendered before the affected rows are restricted with
-/// `where_` or confirmed with `allow_all`:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `users` table.
-///     User => "users" {
-///         UserId => "id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: the statement is still unfiltered.
-/// let _ = delete_from::<Postgres, User>().build();
 /// ```
 pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> {
     DeleteQuery::new()
@@ -1008,55 +470,8 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 ///
 /// The prelude also brings the row value traits into scope, so a tuple of
 /// columns compares as one composite value — the shape a keyset cursor is
-/// walked with:
-///
-/// ```
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderId => "id": i64,
-///         OrderUserId => "user_id": i64,
-///     }
-/// }
-///
-/// let built = select_from::<Postgres<Pg16>, Order>()
-///     .select((OrderId,))
-///     .where_((OrderUserId, OrderId).lt((2i64, 40i64)))
-///     .order_by_desc(OrderUserId)
-///     .order_by_desc(OrderId)
-///     .limit(10)
-///     .build()
-///     .expect("valid query");
-///
-/// assert_eq!(
-///     built.sql,
-///     "SELECT \"id\" FROM \"orders\" WHERE ((\"user_id\", \"id\") < ($1, $2)) \
-///      ORDER BY \"user_id\" DESC, \"id\" DESC LIMIT 10"
-/// );
-/// assert_eq!(built.params, vec![SqlVal::I64(2), SqlVal::I64(40)]);
-/// ```
-///
-/// Both sides of a row comparison carry the same arity, so a pair of columns
-/// never compares with a triple of values:
-///
-/// ```compile_fail
-/// use rurqe::prelude::*;
-///
-/// table! {
-///     /// The `orders` table.
-///     Order => "orders" {
-///         OrderId => "id": i64,
-///         OrderUserId => "user_id": i64,
-///     }
-/// }
-///
-/// // Fails to compile: a two-column row is not comparable with three values.
-/// let _ = select_from::<Postgres<Pg16>, Order>()
-///     .select((OrderId,))
-///     .where_((OrderUserId, OrderId).eq((1i64, 2i64, 3i64)));
-/// ```
+/// walked with; the catalogue of those comparisons lives in the private
+/// `docs` module and runs with `cargo test --doc`.
 ///
 /// The prelude also names the flat query shapes: [`Query`] is a `SELECT` that
 /// projects its rows and requests no lock, [`LockedQuery`] is one that claims its
