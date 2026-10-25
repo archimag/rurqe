@@ -19,11 +19,11 @@
 //! the facade publishes for its macros, so a crate that depends only on `rurqe`
 //! compiles the declared struct without adding `rurqe-core` to its manifest.
 //!
-//! The declaration is a projection as well: it implements
-//! [`Selection`](rurqe_core::query::Selection), exposing every column under the
-//! field it feeds. A statement therefore renders the same output names a
-//! `select!` projection would, and the row it produces decodes through
-//! [`FromRow`](rurqe_core::row::FromRow) without an intermediate tuple.
+//! A DTO is a decoding and nested-row type, not a projection: a statement
+//! projects its rows with `select!`, and the DTO reads the row the resulting
+//! projection renders. Writing a `select!` projection that names the same
+//! fields keeps its row type aligned with the declaration, so a row decodes
+//! into the DTO without an intermediate tuple.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
@@ -76,8 +76,6 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let mut field_reads = TokenStream::new();
     let mut document_writes = TokenStream::new();
     let mut document_reads = TokenStream::new();
-    let mut name_pushes = TokenStream::new();
-    let mut projection_pushes = TokenStream::new();
     let mut field_keys = Vec::new();
     let arity = Literal::usize_unsuffixed(fields.items.len());
 
@@ -95,22 +93,6 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
         let key = Literal::string(&field_key(&field));
         field_keys.push(key.clone());
-
-        // `push_column_names` names the columns themselves — an `INSERT` column
-        // list or an `ON CONFLICT` target takes no alias — while the projection
-        // below exposes the column under the field it feeds, so the output names
-        // of the statement are exactly the keys the row decodes.
-        name_pushes.extend(quote! {
-            out.push(<#column as ::rurqe::core::schema::Column>::NAME);
-        });
-        projection_pushes.extend(quote! {
-            out.push(::rurqe::core::expr::ExprKind::Aliased {
-                expr: ::std::boxed::Box::new(
-                    <#column as ::rurqe::core::schema::Column>::expr_kind(),
-                ),
-                alias: #key,
-            });
-        });
 
         field_defs.extend(quote! {
             #(#field_attrs)*
@@ -181,27 +163,6 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
 
         impl ::rurqe::core::expr::SqlArrayElement for #ident {}
-
-        // The same declaration projects its columns, so a row of the statement
-        // that produced it is read back through `FromRow` without an
-        // intermediate tuple. Every column is exposed under the field it feeds,
-        // which keeps the output names of the projection reachable from an
-        // enclosing statement — the shape a derived table or a common table
-        // expression republishes to its readers.
-        impl ::rurqe::core::query::Selection for #ident {
-            type Row = Self;
-
-            fn push_column_names(&self, out: &mut ::std::vec::Vec<&'static str>) {
-                #name_pushes
-            }
-
-            fn push_projections(
-                &self,
-                out: &mut ::std::vec::Vec<::rurqe::core::expr::ExprKind>,
-            ) {
-                #projection_pushes
-            }
-        }
     })
 }
 
@@ -290,5 +251,24 @@ mod tests {
 
         assert!(rendered.contains(":: rurqe :: core"));
         assert!(!rendered.contains(":: rurqe_core"));
+    }
+
+    #[test]
+    fn the_declaration_emits_no_projection_surface() {
+        let expanded = expand(quote! {
+            pub struct User {
+                UserId,
+            }
+        })
+        .expect("the declaration expands");
+        let rendered = expanded.to_string();
+
+        // A DTO decodes rows and describes the row of a nested collection; a
+        // statement projects its rows through `select!`. The expansion carries
+        // no `Selection` impl — surface no builder consumes — so the dead
+        // projection arms cannot silently return.
+        assert!(!rendered.contains("Selection"));
+        assert!(!rendered.contains("push_projections"));
+        assert!(!rendered.contains("push_column_names"));
     }
 }
