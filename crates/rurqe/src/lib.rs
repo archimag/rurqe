@@ -29,6 +29,14 @@ use rurqe_core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
 use rurqe_core::query::NoProjection;
 use rurqe_core::{Dialect, SelectQuery, Table};
 
+/// The `rurqe-core` crate, re-exported as the anchor of every proc-macro expansion.
+///
+/// A procedural macro cannot name its own facade the way a declarative macro
+/// names it with `$crate`, so the expansions of [`rurqe_macros`] address the core
+/// crate through this re-export — `::rurqe::core::expr::SqlVal`, for instance.
+/// A crate that depends only on `rurqe` therefore compiles `select!`, `dto!`,
+/// `sql!`/`raw_sql!`, and `#[derive(SqlType)]` without adding `rurqe-core` to its
+/// own manifest, and renaming this re-export breaks them.
 pub use rurqe_core as core;
 
 #[cfg(feature = "macros")]

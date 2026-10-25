@@ -988,11 +988,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rurqe-facade-tests"
+version = "0.1.0"
+dependencies = [
+ "rurqe",
+]
+
+[[package]]
 name = "rurqe-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "rurqe",
  "rurqe-core",
  "serde_json",
  "syn 2.0.119",

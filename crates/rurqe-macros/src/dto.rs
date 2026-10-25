@@ -14,6 +14,10 @@
 //! `Vec<Dto>` from a nested projection and binds back as the JSON document of its
 //! fields. The keys of that document are the declared field names in declaration
 //! order, which is what `MultisetRow::FIELDS` reports.
+//!
+//! Every path the expansion emits is anchored at `::rurqe::core`, the re-export
+//! the facade publishes for its macros, so a crate that depends only on `rurqe`
+//! compiles the declared struct without adding `rurqe-core` to its manifest.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
@@ -86,12 +90,12 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
         field_defs.extend(quote! {
             #(#field_attrs)*
-            #vis #field: <#column as ::rurqe_core::schema::Column>::RustType,
+            #vis #field: <#column as ::rurqe::core::schema::Column>::RustType,
         });
         field_reads.extend(quote! {
-            #field: ::rurqe_core::row::FromSqlValue::from_sql_value(
+            #field: ::rurqe::core::row::FromSqlValue::from_sql_value(
                 values.get(#field_index).ok_or(
-                    ::rurqe_core::row::RowDecodeError::ArityMismatch {
+                    ::rurqe::core::row::RowDecodeError::ArityMismatch {
                         expected: #arity,
                         actual: values.len(),
                     },
@@ -99,10 +103,10 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             )?,
         });
         document_writes.extend(quote! {
-            (#key, ::rurqe_core::expr::ToSqlVal::to_sql_val(self.#field)),
+            (#key, ::rurqe::core::expr::ToSqlVal::to_sql_val(self.#field)),
         });
         document_reads.extend(quote! {
-            #field: ::rurqe_core::nested::nested_field(&document, #key)?,
+            #field: ::rurqe::core::nested::nested_field(&document, #key)?,
         });
     }
 
@@ -113,13 +117,13 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             #field_defs
         }
 
-        impl ::rurqe_core::row::FromRow for #ident {
+        impl ::rurqe::core::row::FromRow for #ident {
             fn try_from_row(
-                values: &[::rurqe_core::expr::SqlVal],
-            ) -> ::core::result::Result<Self, ::rurqe_core::row::RowDecodeError> {
+                values: &[::rurqe::core::expr::SqlVal],
+            ) -> ::core::result::Result<Self, ::rurqe::core::row::RowDecodeError> {
                 if values.len() != #arity {
                     return ::core::result::Result::Err(
-                        ::rurqe_core::row::RowDecodeError::ArityMismatch {
+                        ::rurqe::core::row::RowDecodeError::ArityMismatch {
                             expected: #arity,
                             actual: values.len(),
                         },
@@ -131,28 +135,28 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             }
         }
 
-        impl ::rurqe_core::nested::MultisetRow for #ident {
+        impl ::rurqe::core::nested::MultisetRow for #ident {
             const FIELDS: &'static [&'static str] = &[#(#field_keys),*];
         }
 
-        impl ::rurqe_core::expr::ToSqlVal for #ident {
-            fn to_sql_val(self) -> ::rurqe_core::expr::SqlVal {
-                ::rurqe_core::nested::multiset_object(&[#document_writes])
+        impl ::rurqe::core::expr::ToSqlVal for #ident {
+            fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
+                ::rurqe::core::nested::multiset_object(&[#document_writes])
             }
         }
 
-        impl ::rurqe_core::row::FromSqlValue for #ident {
+        impl ::rurqe::core::row::FromSqlValue for #ident {
             fn from_sql_value(
-                value: &::rurqe_core::expr::SqlVal,
-            ) -> ::core::result::Result<Self, ::rurqe_core::row::RowDecodeError> {
-                let document = ::rurqe_core::nested::json_object(value)?;
+                value: &::rurqe::core::expr::SqlVal,
+            ) -> ::core::result::Result<Self, ::rurqe::core::row::RowDecodeError> {
+                let document = ::rurqe::core::nested::json_object(value)?;
                 ::core::result::Result::Ok(#ident {
                     #document_reads
                 })
             }
         }
 
-        impl ::rurqe_core::expr::SqlArrayElement for #ident {}
+        impl ::rurqe::core::expr::SqlArrayElement for #ident {}
     })
 }
 
@@ -227,5 +231,19 @@ mod tests {
 
         assert!(error.to_string().contains("projection field `id`"));
         assert!(error.to_string().contains("rename one of them"));
+    }
+
+    #[test]
+    fn expansions_are_anchored_at_the_facade() {
+        let expanded = expand(quote! {
+            pub struct User {
+                UserId,
+            }
+        })
+        .expect("the declaration expands");
+        let rendered = expanded.to_string();
+
+        assert!(rendered.contains(":: rurqe :: core"));
+        assert!(!rendered.contains(":: rurqe_core"));
     }
 }

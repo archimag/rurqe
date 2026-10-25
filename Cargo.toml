@@ -2,6 +2,7 @@
 members = [
     "crates/rurqe",
     "crates/rurqe-core",
+    "crates/rurqe-facade-tests",
     "crates/rurqe-macros",
     "crates/rurqe-migrate",
     "crates/rurqe-postgres",

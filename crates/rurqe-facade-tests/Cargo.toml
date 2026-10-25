@@ -1,0 +1,17 @@
+[package]
+name = "rurqe-facade-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Integration tests proving the rurqe facade alone compiles the procedural macros"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+# The point of this package: the facade is the only RURQE dependency, so a path
+# regression inside a macro expansion fails to compile here instead of failing in
+# a downstream crate.
+rurqe = { path = "../rurqe", default-features = false, features = ["macros", "serde_json"] }

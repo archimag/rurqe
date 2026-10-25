@@ -1,4 +1,10 @@
 //! Expansion logic for the `sql!` and `raw_sql!` procedural macros.
+//!
+//! The template is censused and split at expansion time, so the analysis itself
+//! runs inside this crate and keeps addressing `rurqe_core` directly. What the
+//! macro emits is anchored at `::rurqe::core` — the re-export the facade
+//! publishes for its macros — so a crate that depends only on `rurqe` compiles
+//! the generated expression without adding `rurqe-core` to its manifest.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -77,10 +83,10 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         {
-            let __rurqe_params: ::std::vec::Vec<::rurqe_core::expr::SqlVal> = ::std::vec![
-                #( ::core::convert::Into::<::rurqe_core::expr::SqlVal>::into(#args) ),*
+            let __rurqe_params: ::std::vec::Vec<::rurqe::core::expr::SqlVal> = ::std::vec![
+                #( ::core::convert::Into::<::rurqe::core::expr::SqlVal>::into(#args) ),*
             ];
-            ::rurqe_core::expr::Expr::<#ty>::raw_fragments(
+            ::rurqe::core::expr::Expr::<#ty>::raw_fragments(
                 ::std::vec![ #( ::std::string::String::from(#fragments) ),* ],
                 __rurqe_params,
             )
