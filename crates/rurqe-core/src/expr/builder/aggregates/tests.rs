@@ -1,0 +1,121 @@
+//! Rendering tests of the aggregate clauses and of the guards behind them.
+
+use super::{DirectAggregate, Expr};
+use crate::dialect::{Dialect, SupportsAggregateFilter};
+use crate::expr::{count_distinct, render_expr, sum, ExprKind, SqlVal};
+use crate::schema::TableRef;
+
+crate::table! {
+    Order => "orders" {
+        OrderId => "id": i64,
+        OrderTotal => "total": f64,
+    }
+}
+
+struct MockDialect;
+
+impl Dialect for MockDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        use core::fmt::Write;
+        let _ = write!(out, "${index}");
+    }
+}
+
+// The mock dialect stands for a modern engine, so filtered aggregates render.
+impl SupportsAggregateFilter for MockDialect {}
+
+fn render(expr: &ExprKind) -> (String, Vec<SqlVal>) {
+    let mut sql = String::new();
+    let mut params = Vec::new();
+    render_expr::<MockDialect>(&mut sql, &mut params, expr, &[TableRef::plain("orders")])
+        .expect("valid expression");
+    (sql, params)
+}
+
+#[test]
+fn a_distinct_modifier_renders_inside_the_call() {
+    let (sql, params) = render(count_distinct(OrderId).kind());
+    assert_eq!(sql, "COUNT(DISTINCT \"id\")");
+    assert!(params.is_empty());
+
+    let (sql, params) = render(sum(OrderTotal).distinct().kind());
+    assert_eq!(sql, "SUM(DISTINCT \"total\")");
+    assert!(params.is_empty());
+}
+
+#[test]
+fn a_filter_clause_renders_after_the_call_and_binds_its_predicate() {
+    let (sql, params) = render(
+        Expr::<i64>::count::<OrderId>()
+            .filter_where(Expr::column::<OrderId>().gt(10i64))
+            .kind(),
+    );
+
+    assert_eq!(sql, "COUNT(\"id\") FILTER (WHERE (\"id\" > $1))");
+    assert_eq!(params, vec![SqlVal::I64(10)]);
+}
+
+#[test]
+fn repeated_filter_clauses_accumulate_on_the_call() {
+    let (sql, params) = render(
+        Expr::<i64>::count::<OrderId>()
+            .filter_where(Expr::column::<OrderId>().gt(10i64))
+            .filter_where(Expr::column::<OrderId>().lt(50i64))
+            .kind(),
+    );
+
+    assert_eq!(
+        sql,
+        "COUNT(\"id\") FILTER (WHERE ((\"id\" > $1) AND (\"id\" < $2)))"
+    );
+    assert_eq!(params, vec![SqlVal::I64(10), SqlVal::I64(50)]);
+}
+
+#[test]
+fn a_forged_marker_keeps_the_dropped_modifier_visible() {
+    // A hand-assembled tree: the marker names an aggregate call while the
+    // root is a bound value. The public API cannot reach this state, so the
+    // guard is the total defence that keeps the modifier from vanishing
+    // silently should such a tree ever appear.
+    let forged: Expr<i64, (), DirectAggregate> = Expr::new(ExprKind::Value(SqlVal::I64(1)));
+
+    assert_eq!(
+        forged.distinct().kind(),
+        &ExprKind::Raw {
+            fragments: vec![
+                "/* invalid aggregate marker: DISTINCT modifier dropped */".to_owned()
+            ],
+            params: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn a_forged_marker_keeps_the_dropped_filter_visible() {
+    // A hand-assembled tree: the marker names an aggregate call while the
+    // root is a bare column reference. The guard reports the discarded
+    // predicate in the statement instead of hiding it.
+    let forged: Expr<i64, Order, DirectAggregate> =
+        Expr::new(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        });
+
+    assert_eq!(
+        forged
+            .filter_where(Expr::column::<OrderId>().gt(10i64))
+            .kind(),
+        &ExprKind::Raw {
+            fragments: vec![
+                "/* invalid aggregate marker: FILTER predicate dropped */".to_owned()
+            ],
+            params: Vec::new(),
+        }
+    );
+}
