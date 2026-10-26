@@ -399,6 +399,14 @@ impl<D: Dialect> Default for SelectQuery<D, (), (), NoProjection> {
     }
 }
 
+// A statement introduces its relation exactly once, so the builders that record
+// the `FROM` clause are defined on the query whose scope is still empty — the
+// same restriction `group_by` applies to its own typestate, and the reason the
+// three `compile_fail` examples on `from` and `from_table` are backed by the
+// signature instead of by prose alone. Widening this header back to the generic
+// scope would let a second introduction replace the recorded `FROM` while the
+// joins qualified against it survive, producing a statement whose rendered
+// relations no longer match the scope the builder chain claims.
 impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// Introduces `T` as the table rows are selected from.
     ///
