@@ -98,6 +98,7 @@ impl StatementRef<'_> {
     /// walk visits, so it runs at the head of that walk — see
     /// `qualifiers::walk_sections`.
     fn validate_rules(&self) -> Result<(), BuildError> {
+        self.validate_projections()?;
         self.validate_relations()?;
         self.validate_cte_names()?;
         self.validate_distinct_on_prefix()?;
@@ -105,6 +106,28 @@ impl StatementRef<'_> {
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
         self.validate_set_operand_arity()
+    }
+
+    /// Rejects a statement that records no projected column.
+    ///
+    /// The projection list sits between the `SELECT` keyword and the `FROM`
+    /// clause, so a statement recording none renders `SELECT  FROM "orders"` — a
+    /// statement no engine accepts. The builder keeps the shape out of reach by
+    /// moving a query into [`HasProjection`](crate::query::HasProjection) through
+    /// [`select`](crate::query::SelectQuery::select) alone, but the list itself is
+    /// recorded by
+    /// [`Selection::push_projections`](crate::query::Selection::push_projections),
+    /// which an implementation outside the crate states itself, and a statement
+    /// assembled from AST data records exactly what the caller puts into it. The
+    /// list is plain statement data, so the emptiness is checked here and surfaces
+    /// as [`BuildError::EmptyProjection`] before any SQL is rendered — for the
+    /// statement at the top of a build chain and for every statement it embeds
+    /// alike.
+    fn validate_projections(&self) -> Result<(), BuildError> {
+        if self.projections.is_empty() {
+            return Err(BuildError::EmptyProjection);
+        }
+        Ok(())
     }
 
     /// The relations the statement introduces itself, in `FROM` order.

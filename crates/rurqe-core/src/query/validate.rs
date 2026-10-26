@@ -287,6 +287,20 @@ pub enum BuildError {
         /// The 0-based position of the row that records no assignment.
         row: usize,
     },
+    /// A statement records no projected column.
+    ///
+    /// The projection list sits between the `SELECT` keyword and the `FROM`
+    /// clause, so a statement recording none renders `SELECT  FROM "users"` — a
+    /// statement no engine accepts. The builder keeps that shape out of reach
+    /// through the [`ProjectionPresent`](crate::query::ProjectionPresent) typestate,
+    /// which [`select`](crate::query::SelectQuery::select) alone leaves, but the
+    /// list itself is recorded by
+    /// [`Selection::push_projections`](crate::query::Selection::push_projections),
+    /// which an implementation outside the crate states itself, and a statement
+    /// assembled from AST data records exactly what the caller puts into it. The
+    /// list is statement data, so the emptiness is rejected here instead of by the
+    /// engine.
+    EmptyProjection,
     /// A projection reads a bare column beside an aggregate without grouping.
     ///
     /// An aggregate without a `GROUP BY` clause collapses the whole relation into
@@ -504,6 +518,15 @@ impl fmt::Display for BuildError {
                      the statement would render `INSERT INTO \"...\" () VALUES ()`, which no engine accepts, \
                      so every row has to assign at least one column through `.values(...)` or `.values_many(...)`, \
                      or the statement has to take its rows from a source `SELECT` through `.from_select(...)`"
+                )
+            }
+            BuildError::EmptyProjection => {
+                write!(
+                    f,
+                    "statement records no projected column; \
+                     `SELECT` renders its projection list between the keyword and the `FROM` clause, \
+                     so a statement recording none renders `SELECT  FROM \"...\"`, which no engine accepts; \
+                     project at least one column or expression through `.select(...)`"
                 )
             }
             BuildError::UngroupedColumnWithAggregate { table, column } => {

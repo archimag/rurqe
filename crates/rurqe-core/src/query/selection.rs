@@ -21,6 +21,14 @@ pub trait SelectTarget {
     type RustType;
 
     /// Pushes the identifier name of this target if it is a simple column reference.
+    ///
+    /// A target that names no stored column — an expression computed from several
+    /// columns, an aggregate, or a window call — contributes no name and keeps this
+    /// default. The name is what a clause addressing columns alone renders: the
+    /// column list of an `INSERT INTO ... SELECT` and the conflict target of an
+    /// `ON CONFLICT` clause. The projection list of a statement is taken from
+    /// [`to_expr_kind`](SelectTarget::to_expr_kind) instead, so a target without a
+    /// name still projects the value it computes.
     fn push_column_name(&self, out: &mut Vec<&'static str>) {
         let _ = out;
     }
@@ -372,6 +380,14 @@ pub trait Selection {
     type Row;
 
     /// Appends the SQL names of simple selected columns to `out`.
+    ///
+    /// A selection of computed expressions names no column, which is the state
+    /// this default serves: the method is what a clause addressing columns alone
+    /// renders — the column list of an `INSERT INTO ... SELECT` and the conflict
+    /// target of an `ON CONFLICT` clause — while the projection list of a statement
+    /// is taken from [`push_projections`](Selection::push_projections). A selection
+    /// carrying columns delegates the call to [`SelectTarget::push_column_name`] of
+    /// every item, which is what the tuple and macro implementations do.
     fn push_column_names(&self, out: &mut Vec<&'static str>) {
         let _ = out;
     }
@@ -381,9 +397,36 @@ pub trait Selection {
     /// The nodes keep the declaration order of the selection, so a statement
     /// assembled from them projects exactly the selected items in the order the
     /// author wrote them.
-    fn push_projections(&self, out: &mut Vec<ExprKind>) {
-        let _ = out;
-    }
+    ///
+    /// The method has no default body, because the recorded list is what a
+    /// statement renders: [`SelectQuery::select`](crate::query::SelectQuery::select)
+    /// moves a query into
+    /// [`HasProjection`](crate::query::HasProjection) on the strength of it, and a
+    /// selection recording nothing would render `SELECT  FROM "users"` — a
+    /// statement no engine accepts. An implementation therefore states the items
+    /// its row is made of, and one that leaves the method out does not compile:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::query::Selection;
+    ///
+    /// struct Empty;
+    ///
+    /// impl Selection for Empty {
+    ///     type Row = ();
+    ///
+    ///     // Fails to compile: `push_projections` records the items the statement
+    ///     // projects, so every implementation has to state them.
+    ///     fn push_column_names(&self, out: &mut Vec<&'static str>) {
+    ///         let _ = out;
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// A selection that records an empty list from the method itself is rejected by
+    /// the pre-flight pass: `SelectQuery::build` reports the statement as
+    /// [`BuildError::EmptyProjection`](crate::query::BuildError::EmptyProjection)
+    /// before any SQL is rendered.
+    fn push_projections(&self, out: &mut Vec<ExprKind>);
 }
 
 macro_rules! impl_selection {
