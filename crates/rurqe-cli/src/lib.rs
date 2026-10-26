@@ -40,9 +40,16 @@ pub use stage::{GoldenEquation, GoldenReport, StageError};
 /// reaches the operator.
 ///
 /// The sink writes to standard error at `WARN` and above, so the report of a
-/// command on standard output stays machine-readable. It is installed once per
-/// process and never replaces a sink an embedding application installed first,
-/// which keeps [`run_cli`] usable as a plain library call.
+/// command on standard output stays machine-readable. Installation happens once
+/// per process and is idempotent: a repeated call keeps the sink the first call
+/// put in place.
+///
+/// A sink an embedding application installed first is never replaced, which keeps
+/// [`run_cli`] usable as a plain library call. That refusal is not silent, though:
+/// the process then routes its events into a sink whose destination this crate
+/// does not own, so the toolchain sink never taking effect is itself reported as a
+/// `WARN` event through the sink already in place — the only channel left at that
+/// point — instead of being dropped.
 pub fn install_diagnostics() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
 
@@ -55,8 +62,16 @@ pub fn install_diagnostics() {
             .finish();
 
         // An embedding application that installed its own sink keeps it: its
-        // notices are already routed where it wants them.
-        let _ = tracing::subscriber::set_global_default(sink);
+        // notices are already routed where it wants them. The refusal stays
+        // observable, because the sink already in place is the only channel this
+        // crate can still reach — the toolchain sink never taking effect is
+        // reported through it rather than swallowed.
+        if let Err(refusal) = tracing::subscriber::set_global_default(sink) {
+            tracing::warn!(
+                "toolchain diagnostic sink not installed; the process keeps the \
+                 sink already in place: {refusal}"
+            );
+        }
     });
 }
 
