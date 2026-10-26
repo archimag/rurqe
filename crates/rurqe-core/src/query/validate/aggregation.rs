@@ -1,4 +1,4 @@
-//! Aggregation consistency of the assembled statement.
+//! Aggregation consistency and aggregate placement of the assembled statement.
 //!
 //! An aggregate present in a statement collapses rows, which constrains every
 //! expression around it: a bare column projected beside an aggregate without a
@@ -6,11 +6,17 @@
 //! grouped statement reading a column its `GROUP BY` clause dropped, each describe
 //! a statement the engine rejects. The walks in this module answer those questions
 //! on the assembled expressions, before any SQL is rendered.
+//!
+//! The complementary rule lives here as well: a clause the engine evaluates row by
+//! row — the `WHERE` predicate, a `GROUP BY` entry, the `ON` condition of a join, a
+//! column assignment, and a predicate of an `ON CONFLICT` clause — cannot read an
+//! aggregate at all, because the rows such an aggregate would collapse are exactly
+//! the rows that clause decides.
 
-use crate::expr::{ExprKind, StatementRef, WindowExprKind};
+use crate::expr::{AggregateFunc, ExprKind, StatementRef, WindowExprKind};
 
 use super::rules::{column_reference, without_alias};
-use super::BuildError;
+use super::{BuildError, RowClause};
 
 impl StatementRef<'_> {
     /// Rejects an aggregation the engine cannot evaluate.
@@ -33,12 +39,21 @@ impl StatementRef<'_> {
     ///   columns and the aggregates over them — a bare column the clause dropped is
     ///   rejected as [`BuildError::UngroupedColumn`].
     ///
+    /// The per-row positions are checked first, because a statement reading an
+    /// aggregate there is rejected by the engine before the question of grouping
+    /// even arises: the `WHERE` predicate, the `GROUP BY` entries, and the `ON`
+    /// conditions of the joins are evaluated row by row, so an aggregate written
+    /// into one of them is reported as [`BuildError::AggregateInRowClause`] ahead
+    /// of the grouping rules below.
+    ///
     /// Every clause is assembled as plain statement data, so every rule runs here,
     /// before any SQL is rendered. A window call is not an aggregate for the first
     /// rule: the engine evaluates it over the rows the statement produced instead
     /// of collapsing them, which is why `SUM("total") OVER (...)` beside a bare
     /// column stays valid without a grouping.
     pub(super) fn validate_aggregation(&self) -> Result<(), BuildError> {
+        self.reject_row_clause_aggregates()?;
+
         if self.group_by.is_empty() && self.projections.iter().any(has_aggregate) {
             for projection in self.projections {
                 let mut columns = Vec::new();
@@ -80,6 +95,40 @@ impl StatementRef<'_> {
         Ok(())
     }
 
+    /// Rejects an aggregate call written into a clause the engine evaluates row by
+    /// row.
+    ///
+    /// An aggregate collapses the rows a statement produced into one value per
+    /// group, so the engine evaluates it in the projection list, in `HAVING`, and
+    /// in the `ORDER BY` of a grouped statement alone. The clauses visited here
+    /// decide which rows take part — the `WHERE` predicate, the `GROUP BY` entries,
+    /// and the `ON` condition of a join are evaluated before that collapse — so an
+    /// aggregate written into one of them names a value no single row carries,
+    /// which PostgreSQL answers with `aggregate functions are not allowed in ...`.
+    ///
+    /// The assignments of a mutation and the predicates of an `ON CONFLICT` clause
+    /// live in the DML statements, so they are checked through
+    /// [`validate_row_clause`] beside the structural rules of those builders; the
+    /// walk itself is the same one.
+    fn reject_row_clause_aggregates(&self) -> Result<(), BuildError> {
+        if let Some(filter) = self.filter {
+            validate_row_clause(filter, RowClause::Where)?;
+        }
+        // The grouping decides how the rows are collapsed, so an entry it reads
+        // cannot itself name a value that only exists once they are collapsed. The
+        // check runs before the grouped-coverage rules, because a `GROUP BY`
+        // carrying an aggregate describes a clause the engine refuses outright.
+        for grouped in self.group_by {
+            validate_row_clause(grouped, RowClause::GroupBy)?;
+        }
+        for join in self.joins {
+            if let Some(on) = &join.on {
+                validate_row_clause(on, RowClause::JoinOn)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Rejects a clause expression of a grouped statement that reads a column the
     /// `GROUP BY` clause dropped.
     ///
@@ -114,6 +163,99 @@ impl StatementRef<'_> {
     }
 }
 
+/// Rejects an aggregate call written into the per-row clause `clause`.
+///
+/// The clauses an engine evaluates row by row are the ones that decide which rows
+/// take part in the statement — the `WHERE` predicate, a `GROUP BY` entry, the `ON`
+/// condition of a join, the column assignment of an `INSERT` or `UPDATE`, and the
+/// predicates of an `ON CONFLICT` clause. An aggregate written there names a value
+/// no single row carries, so every engine refuses the statement — PostgreSQL
+/// answers `aggregate functions are not allowed in ...`. The rule is stated once,
+/// here, and the DML builders call it beside their own structural checks, so a
+/// mutation is audited exactly like a `SELECT` statement.
+///
+/// The reported aggregate is the SQL name of the function that was placed in the
+/// clause, so the diagnostic names what the engine refused instead of a rendering
+/// detail.
+pub(crate) fn validate_row_clause(expr: &ExprKind, clause: RowClause) -> Result<(), BuildError> {
+    match first_aggregate(expr) {
+        Some(aggregate) => Err(BuildError::AggregateInRowClause {
+            clause,
+            aggregate: aggregate.as_str(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// The first aggregate call the expression evaluates, in walk order.
+///
+/// The walk answers the question `has_aggregate` answers with a boolean, for the
+/// callers that report *which* aggregate was misplaced. Its traversal is the one
+/// `has_aggregate` describes: it stops at an aggregate — the call itself is the
+/// answer — at an embedded statement, whose references resolve through its own
+/// `FROM` scope, and at a nested collection, which embeds a statement of its own.
+fn first_aggregate(expr: &ExprKind) -> Option<AggregateFunc> {
+    match expr {
+        ExprKind::Aggregate { func, .. } => Some(*func),
+        ExprKind::Column { .. }
+        | ExprKind::QualifiedColumn { .. }
+        | ExprKind::Excluded { .. }
+        | ExprKind::Value(_)
+        // A raw fragment reached the template already rendered, so the calls it
+        // spells are not described by the expression tree.
+        | ExprKind::Raw { .. } => None,
+        ExprKind::Row { values } => first_aggregate_in(values),
+        ExprKind::InList { operand, values, .. } => {
+            first_aggregate(operand).or_else(|| first_aggregate_in(values))
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
+            first_aggregate(lhs).or_else(|| first_aggregate(rhs))
+        }
+        ExprKind::DistinctFrom { lhs, rhs, .. } => {
+            first_aggregate(lhs).or_else(|| first_aggregate(rhs))
+        }
+        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => first_aggregate(operand),
+        ExprKind::Like {
+            operand, pattern, ..
+        } => first_aggregate(operand).or_else(|| first_aggregate(pattern)),
+        ExprKind::Between {
+            operand,
+            low,
+            high,
+        } => first_aggregate(operand)
+            .or_else(|| first_aggregate(low))
+            .or_else(|| first_aggregate(high)),
+        ExprKind::Function { args, .. } => first_aggregate_in(args),
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
+            for branch in branches {
+                if let Some(aggregate) =
+                    first_aggregate(&branch.condition).or_else(|| first_aggregate(&branch.result))
+                {
+                    return Some(aggregate);
+                }
+            }
+            else_branch.as_deref().and_then(first_aggregate)
+        }
+        // A window function is evaluated over the rows the statement produced, so
+        // it collapses nothing: the call, the expression it wraps, and the columns
+        // its specification names all stay per-row references.
+        ExprKind::Window { .. } => None,
+        // The omitted `query` field is the embedded statement, which resolves its
+        // own references; only the operand is evaluated by the enclosing statement.
+        ExprKind::Subquery { operand, .. } => operand.as_deref().and_then(first_aggregate),
+        ExprKind::Multiset { .. } => None,
+        ExprKind::Aliased { expr, .. } => first_aggregate(expr),
+    }
+}
+
+/// The first aggregate call among the expressions of a list, in list order.
+fn first_aggregate_in(expressions: &[ExprKind]) -> Option<AggregateFunc> {
+    expressions.iter().find_map(first_aggregate)
+}
+
 /// Whether the expression calls an aggregate function.
 ///
 /// The walk stops at an embedded statement: the aggregates it contains belong to
@@ -126,55 +268,7 @@ impl StatementRef<'_> {
 /// them, so `SUM("total") OVER (...)` beside a bare column stays a valid statement
 /// without any grouping.
 pub(crate) fn has_aggregate(expr: &ExprKind) -> bool {
-    match expr {
-        // The call itself is what the predicate asks about, so neither its
-        // operand nor its `FILTER (WHERE ...)` clause is walked.
-        ExprKind::Aggregate { .. } => true,
-        ExprKind::Column { .. }
-        | ExprKind::QualifiedColumn { .. }
-        | ExprKind::Excluded { .. }
-        | ExprKind::Value(_)
-        // A raw fragment reached the template already rendered, so the calls it
-        // spells are not described by the expression tree.
-        | ExprKind::Raw { .. } => false,
-        ExprKind::Row { values } => values.iter().any(has_aggregate),
-        ExprKind::InList { operand, values, .. } => {
-            has_aggregate(operand) || values.iter().any(has_aggregate)
-        }
-        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
-            has_aggregate(lhs) || has_aggregate(rhs)
-        }
-        ExprKind::DistinctFrom { lhs, rhs, .. } => has_aggregate(lhs) || has_aggregate(rhs),
-        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => has_aggregate(operand),
-        ExprKind::Like {
-            operand, pattern, ..
-        } => has_aggregate(operand) || has_aggregate(pattern),
-        ExprKind::Between {
-            operand,
-            low,
-            high,
-        } => has_aggregate(operand) || has_aggregate(low) || has_aggregate(high),
-        ExprKind::Function { args, .. } => args.iter().any(has_aggregate),
-        ExprKind::Case {
-            branches,
-            else_branch,
-        } => {
-            branches
-                .iter()
-                .any(|branch| has_aggregate(&branch.condition) || has_aggregate(&branch.result))
-                || else_branch.as_deref().is_some_and(has_aggregate)
-        }
-        // A window function is evaluated over the rows the statement produced, so
-        // it collapses nothing: the call, the expression it wraps, and the columns
-        // its specification names all stay per-row references.
-        ExprKind::Window { .. } => false,
-        // The omitted `query` field is the embedded statement, which resolves
-        // its own references; only the operand is evaluated by the enclosing
-        // statement.
-        ExprKind::Subquery { operand, .. } => operand.as_deref().is_some_and(has_aggregate),
-        ExprKind::Multiset { .. } => false,
-        ExprKind::Aliased { expr, .. } => has_aggregate(expr),
-    }
+    first_aggregate(expr).is_some()
 }
 
 /// Collects every column reference the expression reads outside an aggregate.

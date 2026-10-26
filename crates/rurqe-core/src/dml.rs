@@ -134,10 +134,25 @@ impl AssignValue {
     /// render — a filter, a `RETURNING` projection, and the predicates of an
     /// `ON CONFLICT` clause — so an assignment is audited exactly like the
     /// clauses around it.
+    ///
+    /// Assigning a value is a per-row operation: the `SET` clause of an `UPDATE`,
+    /// the `VALUES` list of an `INSERT`, and the `DO UPDATE` assignments of an
+    /// `ON CONFLICT` clause all compute one value per affected row, so an
+    /// aggregate call inside the assigned expression is rejected as
+    /// [`RowClause::Assignment`](crate::query::RowClause::Assignment) before any
+    /// SQL is rendered.
+    ///
+    /// The structural rules run beside that placement rule, because an assigned
+    /// expression is an expression of the statement like any other: the
+    /// statements it embeds are audited by the same pass that audits a filter or
+    /// a `RETURNING` projection.
     pub(crate) fn validate(&self) -> Result<(), crate::query::BuildError> {
         match self {
             AssignValue::Value(_) | AssignValue::Default => Ok(()),
-            AssignValue::Expr(expr) => crate::query::validate_expr(expr),
+            AssignValue::Expr(expr) => {
+                crate::query::validate_expr(expr)?;
+                crate::query::validate_row_clause(expr, crate::query::RowClause::Assignment)
+            }
         }
     }
 

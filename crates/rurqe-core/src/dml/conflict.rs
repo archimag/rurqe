@@ -25,7 +25,9 @@ use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::expr::{
     render_expr, DialectInScope, Expr, ExprKind, NonAggregate, RawSqlError, SqlVal, Unscoped,
 };
-use crate::query::{reject_unresolved_qualifiers, validate_expr, BuildError};
+use crate::query::{
+    reject_unresolved_qualifiers, validate_expr, validate_row_clause, BuildError, RowClause,
+};
 use crate::schema::{Table, TableRef};
 
 use super::insert::merge_assignments;
@@ -75,9 +77,14 @@ impl Conflict {
     /// table does not declare is reported as
     /// [`BuildError::UnresolvedQualifier`] as well. The proposed row of
     /// `EXCLUDED` carries no qualifier of its own, so reading it stays accepted.
+    ///
+    /// Both predicates and the assignments are per-row positions — they decide
+    /// which conflicting row is rewritten and to which value — so an aggregate
+    /// call inside one of them is rejected as
+    /// [`BuildError::AggregateInRowClause`] before any SQL is rendered.
     pub(crate) fn validate(&self, relations: &[TableRef]) -> Result<(), BuildError> {
         if let Some(predicate) = &self.target_predicate {
-            validate_qualifiers(predicate, relations)?;
+            validate_qualifiers(predicate, relations, RowClause::ConflictTarget)?;
         }
         match &self.action {
             ConflictAction::DoNothing => Ok(()),
@@ -90,7 +97,7 @@ impl Conflict {
                     value.validate_qualifiers(relations, &[])?;
                 }
                 if let Some(predicate) = predicate {
-                    validate_qualifiers(predicate, relations)?;
+                    validate_qualifiers(predicate, relations, RowClause::ConflictUpdate)?;
                 }
                 Ok(())
             }
@@ -168,7 +175,22 @@ impl Conflict {
 /// `EXCLUDED` relation exposes, so `relations` — the relations the prepared
 /// statement renders — is the namespace a qualifier resolves against, exactly
 /// like the one the renderer hands to every expression of the clause.
-fn validate_qualifiers(expr: &ExprKind, relations: &[TableRef]) -> Result<(), BuildError> {
+///
+/// The predicate is evaluated once per candidate row — the target predicate
+/// selects the index the statement conflicts on, and the update predicate decides
+/// which conflicting rows are rewritten — so `clause` names the position the
+/// aggregate placement rule reports when the predicate carries an aggregate call.
+///
+/// The statements the predicate embeds are audited structurally as well, exactly
+/// like those of a filter or a `RETURNING` projection: a predicate is an
+/// expression of the statement, so a semantic violation inside a nested statement
+/// it carries is reported before any SQL is rendered.
+fn validate_qualifiers(
+    expr: &ExprKind,
+    relations: &[TableRef],
+    clause: RowClause,
+) -> Result<(), BuildError> {
+    validate_row_clause(expr, clause)?;
     validate_expr(expr)?;
     reject_unresolved_qualifiers(expr, relations, &[])
 }

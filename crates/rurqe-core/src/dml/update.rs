@@ -22,8 +22,8 @@ use crate::dml::insert::merge_assignments;
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{
-    register_relation, reject_unresolved_qualifiers, validate_expr, BuildError, BuiltQuery,
-    ScopePositions, Selection, TableSelection,
+    register_relation, reject_unresolved_qualifiers, validate_expr, validate_row_clause,
+    BuildError, BuiltQuery, RowClause, ScopePositions, Selection, TableSelection,
 };
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
@@ -377,6 +377,9 @@ where
             value.validate_qualifiers(&relations, &[])?;
         }
         if let Some(filter) = &self.filter {
+            // The predicate decides which rows the statement affects, so the
+            // engine evaluates it before any aggregate could collapse them.
+            validate_row_clause(filter, RowClause::Where)?;
             validate_expr(filter)?;
             reject_unresolved_qualifiers(filter, &relations, &[])?;
         }

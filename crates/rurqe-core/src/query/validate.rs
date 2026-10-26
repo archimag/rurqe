@@ -36,10 +36,51 @@ use crate::schema::TableRef;
 
 #[cfg(test)]
 pub(crate) use self::aggregation::{collect_bare_columns, contains_bare_column, has_aggregate};
+pub(crate) use self::aggregation::validate_row_clause;
 pub(crate) use self::qualifiers::{reject_unresolved_qualifiers, validate_expr};
 pub(crate) use self::rules::reject_columns_without_relations;
 #[cfg(test)]
 pub(crate) use self::rules::reject_shadowed_derived;
+
+/// The per-row clause an aggregate call was written into.
+///
+/// An aggregate collapses the rows a statement produced into one value per group,
+/// so the engine evaluates it once those rows are known. A clause that decides
+/// which rows take part — a `WHERE` predicate, a `GROUP BY` entry, the `ON`
+/// condition of a join, a column assignment, or a predicate of an `ON CONFLICT`
+/// clause — is evaluated row by row, before that collapse, so an aggregate written
+/// there names a value no single row carries and every engine rejects the
+/// statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowClause {
+    /// The `WHERE` predicate of a statement.
+    Where,
+    /// An entry of the `GROUP BY` clause.
+    GroupBy,
+    /// The `ON` condition of a join.
+    JoinOn,
+    /// A column assignment: the `SET` clause of an `UPDATE`, the `VALUES` list of
+    /// an `INSERT`, or the `DO UPDATE` assignments of an `ON CONFLICT` clause.
+    Assignment,
+    /// The predicate restricting the conflict target of an `ON CONFLICT` clause.
+    ConflictTarget,
+    /// The predicate restricting the rows an `ON CONFLICT` clause rewrites.
+    ConflictUpdate,
+}
+
+impl RowClause {
+    /// The SQL clause the position belongs to, as the diagnostic names it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RowClause::Where => "the `WHERE` predicate",
+            RowClause::GroupBy => "the `GROUP BY` clause",
+            RowClause::JoinOn => "the `ON` condition of a join",
+            RowClause::Assignment => "a column assignment",
+            RowClause::ConflictTarget => "the conflict target predicate of an `ON CONFLICT` clause",
+            RowClause::ConflictUpdate => "the update predicate of an `ON CONFLICT` clause",
+        }
+    }
+}
 
 /// An error returned when pre-flight query validation detects invalid SQL semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +308,24 @@ pub enum BuildError {
         /// The SQL identifier of the referenced column.
         column: &'static str,
     },
+    /// An aggregate call appears in a clause the engine evaluates row by row.
+    ///
+    /// An aggregate collapses the rows a statement produced into one value per
+    /// group, so the engine evaluates it in the projection list, in `HAVING`, and
+    /// in the `ORDER BY` of a grouped statement alone. A clause that decides which
+    /// rows take part — a `WHERE` predicate, a `GROUP BY` entry, a join's `ON`
+    /// condition, a column assignment of an `INSERT` or `UPDATE`, and a predicate
+    /// of an `ON CONFLICT` clause — is evaluated before that collapse, so an
+    /// aggregate written there names a value no single row carries: PostgreSQL
+    /// answers `aggregate functions are not allowed in ...`, and every other
+    /// engine rejects the statement alike. The placement is therefore reported
+    /// before any SQL is rendered.
+    AggregateInRowClause {
+        /// The per-row clause the call was written into.
+        clause: RowClause,
+        /// The SQL name of the aggregate function that was placed there.
+        aggregate: &'static str,
+    },
     /// A raw SQL expression binds a number of parameters other than its
     /// fragments declare.
     ///
@@ -431,6 +490,16 @@ impl fmt::Display for BuildError {
                      a statement that groups reads its rows through the groups the GROUP BY clause produced, \
                      so every projected, ordered, and deduplicated expression has to name a grouped column \
                      or an aggregate; group the column via `.group_by(...)` or aggregate it"
+                )
+            }
+            BuildError::AggregateInRowClause { clause, aggregate } => {
+                write!(
+                    f,
+                    "aggregate function `{aggregate}` appears in {}, which the engine evaluates row by row; \
+                     an aggregate collapses the rows of a statement, so it may only appear in the projection \
+                     list, in `HAVING`, or in the `ORDER BY` of a grouped statement; \
+                     compute the aggregate in a subquery and compare against its result instead",
+                    clause.as_str()
                 )
             }
             BuildError::RawSql(error) => {

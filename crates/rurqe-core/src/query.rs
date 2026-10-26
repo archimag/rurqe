@@ -68,9 +68,9 @@ pub use self::set_ops::{SetOpAst, SetOpKind};
 pub use self::transaction::{TransactionGuard, TransactionStatus, TransactionalConnection};
 pub(crate) use self::validate::{
     register_relation, reject_columns_without_relations, reject_unresolved_qualifiers,
-    validate_expr,
+    validate_expr, validate_row_clause,
 };
-pub use self::validate::BuildError;
+pub use self::validate::{BuildError, RowClause};
 pub use self::window::{
     dense_rank, lag, lead, rank, row_number, LagLeadFn, PartitionBy, Window, WindowColumnSet,
     WindowExpr, WindowExprKind, WindowFn, WindowSpec,
