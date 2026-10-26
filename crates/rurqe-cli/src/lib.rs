@@ -122,6 +122,41 @@ pub fn install_diagnostics() {
     });
 }
 
+/// Converts the process arguments into the UTF-8 strings [`parse_args`] expects.
+///
+/// The process hands its arguments over as operating-system strings, so the
+/// conversion happens here, at the process boundary, rather than through
+/// [`std::env::args`]: that iterator unwinds the moment an argument is not valid
+/// Unicode, which would let one unrepresentable byte in `argv` — a mistyped path
+/// on Unix, a database URL carrying an unusual password byte — abort the binary
+/// before any command could report it. The bytes are never rewritten either: a
+/// value that fails to decode may still be a path or a connection string, so
+/// substituting replacement characters would silently retarget the command. Such
+/// an argument is rejected with a [`CliError`] naming its position instead, and
+/// [`run`] reports that error through the same failure channel as every other
+/// startup failure.
+fn arguments_to_utf8<I>(argv: I) -> Result<Vec<String>, CliError>
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    let mut arguments = Vec::new();
+
+    for (position, argument) in argv.into_iter().enumerate() {
+        match argument.into_string() {
+            Ok(argument) => arguments.push(argument),
+            Err(_) => {
+                return Err(CliError(format!(
+                    "command-line argument {position} is not valid UTF-8: pass UTF-8 text, since \
+                     a path or a database URL carrying raw bytes is rejected rather than \
+                     rewritten"
+                )));
+            }
+        }
+    }
+
+    Ok(arguments)
+}
+
 /// Main CLI execution entry point for standalone and Cargo subcommand binaries.
 ///
 /// The report of a command and the failure that ends the process are written
@@ -130,13 +165,15 @@ pub fn install_diagnostics() {
 /// library without writing to a stream of their own and the binary keeps no
 /// second write path. The diagnostic sink the notices of the crate travel
 /// through is installed here for the same reason: the binary is the application
-/// the `tracing` facade delegates the sink to.
+/// the `tracing` facade delegates the sink to. The arguments are converted to
+/// UTF-8 on the same boundary — see [`arguments_to_utf8`] — so an argument the
+/// platform can represent but Unicode cannot is reported on that channel instead
+/// of panicking during collection.
 pub fn run() {
     install_diagnostics();
 
-    let args: Vec<String> = std::env::args().collect();
     let mut channel = operator_channel();
-    match run_cli(args) {
+    match arguments_to_utf8(std::env::args_os()).and_then(run_cli) {
         // A stream that is already closed is not a failure the toolchain can
         // report anywhere else: the lines have nowhere left to go.
         Ok(output) => {
@@ -151,7 +188,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{write_message, CommandOutput, MessageClass};
+    use super::{arguments_to_utf8, write_message, CommandOutput, MessageClass};
 
     /// The report of a command reaches an arbitrary writer with the shape the
     /// shared channel declares, so the report is not a write path of its own.
@@ -199,5 +236,56 @@ mod tests {
             .expect("writing to a buffer cannot fail");
 
         assert!(written.is_empty());
+    }
+
+    /// A non-UTF-8 argument becomes a typed error naming its position instead of
+    /// unwinding during collection, so the one production path that used to
+    /// panic on operator input now yields a diagnostic.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_argument_becomes_a_typed_error() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let argv = vec![
+            OsString::from("rurqe"),
+            OsString::from("db-migrate"),
+            OsString::from_vec(vec![b'p', b'a', 0x80, b't', b'h']),
+        ];
+
+        let error = arguments_to_utf8(argv).expect_err("a non-UTF-8 argument is rejected");
+
+        assert!(
+            error.to_string().contains("argument 2"),
+            "the diagnostic names the offending position: {error}"
+        );
+    }
+
+    /// UTF-8 arguments reach the parser unchanged and in order, so the boundary
+    /// conversion rewrites nothing of its own.
+    #[test]
+    fn utf8_arguments_pass_through_unchanged() {
+        use std::ffi::OsString;
+
+        let argv = vec![
+            OsString::from("rurqe"),
+            OsString::from("db-migrate"),
+            OsString::from("--database-url"),
+            OsString::from("postgres://user:p@ss w0rd@localhost/db"),
+            OsString::from(""),
+        ];
+
+        let converted = arguments_to_utf8(argv).expect("UTF-8 arguments convert");
+
+        assert_eq!(
+            converted,
+            vec![
+                String::from("rurqe"),
+                String::from("db-migrate"),
+                String::from("--database-url"),
+                String::from("postgres://user:p@ss w0rd@localhost/db"),
+                String::new(),
+            ]
+        );
     }
 }
