@@ -255,12 +255,13 @@ impl<D: Dialect, T: Table, State: ExecutableMutation, Returning, Scope>
         // The filter and a `RETURNING` projection may qualify their column
         // references through an alias, which only a rendered relation declares:
         // a qualifier naming none of the registered relations is rejected
-        // before any SQL is rendered.
+        // before any SQL is rendered. The statement sits at the top of the build
+        // chain, so it reaches no enclosing relations.
         if let Some(filter) = &self.filter {
-            reject_unresolved_qualifiers(filter, &relations)?;
+            reject_unresolved_qualifiers(filter, &relations, &[])?;
         }
         for projection in &self.returning {
-            reject_unresolved_qualifiers(projection, &relations)?;
+            reject_unresolved_qualifiers(projection, &relations, &[])?;
         }
 
         let mut sql = String::from("DELETE FROM ");

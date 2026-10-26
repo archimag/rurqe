@@ -656,7 +656,7 @@ fn reject_shadowed_derived(
 }
 
 /// Rejects a clause expression that qualifies a column reference by a name no
-/// rendered relation declares.
+/// relation in scope declares.
 ///
 /// A reference built through a table alias renders as `"alias"."column"`,
 /// because the renderer emits the qualifier verbatim and the alias is the
@@ -672,14 +672,21 @@ fn reject_shadowed_derived(
 /// therefore run this walk beside [`validate_expr`] before any SQL is
 /// rendered.
 ///
+/// `relations` are the relations the validated statement renders itself, and
+/// `outer_relations` are the relations of every statement enclosing it. Both
+/// together form the namespace a qualifier resolves against, because a
+/// correlated reference reaches an enclosing statement through exactly that
+/// outer scope. A statement at the top of a build chain passes an empty
+/// `outer_relations`, since nothing encloses it.
+///
 /// The walk mirrors [`validate_expr`] over the composite nodes of the current
-/// statement and stops at embedded statements: their references resolve
-/// through their own `FROM` scope, and a correlated reference reaches an
-/// enclosing statement through that scope, so neither is judged against the
-/// relations validated here.
+/// statement and continues into the embedded statements through
+/// [`reject_unresolved_qualifiers_in_statement`], so a correlated reference
+/// stays accepted while a qualifier nothing declares is still rejected.
 pub(crate) fn reject_unresolved_qualifiers(
     expr: &ExprKind,
     relations: &[TableRef],
+    outer_relations: &[TableRef],
 ) -> Result<(), BuildError> {
     match expr {
         // A plain column reference names its own table, and the renderer
@@ -694,88 +701,101 @@ pub(crate) fn reject_unresolved_qualifiers(
         ExprKind::Raw { .. } => Ok(()),
         ExprKind::QualifiedColumn { table, .. } => {
             // The scrutinee is borrowed, so the pattern binds the qualifier
-            // behind one reference; it is dereferenced for the comparison.
-            if relations
-                .iter()
-                .any(|relation| effective_relation_name(relation) == *table)
-            {
+            // behind one reference; the binding is coerced to the plain
+            // `&'static str` the comparison and the diagnostic expect.
+            let qualifier: &'static str = table;
+            if resolves_qualifier(qualifier, relations, outer_relations) {
                 Ok(())
             } else {
-                Err(BuildError::UnresolvedQualifier { name: table })
+                Err(BuildError::UnresolvedQualifier { name: qualifier })
             }
         }
         ExprKind::Row { values } | ExprKind::InList { values, .. } => {
-            reject_unresolved_qualifiers_each(values, relations)
+            reject_unresolved_qualifiers_each(values, relations, outer_relations)
         }
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
-            reject_unresolved_qualifiers(lhs, relations)?;
-            reject_unresolved_qualifiers(rhs, relations)
+            reject_unresolved_qualifiers(lhs, relations, outer_relations)?;
+            reject_unresolved_qualifiers(rhs, relations, outer_relations)
         }
         ExprKind::Aggregate { arg, filter, .. } => {
             if let Some(arg) = arg {
-                reject_unresolved_qualifiers(arg, relations)?;
+                reject_unresolved_qualifiers(arg, relations, outer_relations)?;
             }
             if let Some(filter) = filter {
-                reject_unresolved_qualifiers(filter, relations)?;
+                reject_unresolved_qualifiers(filter, relations, outer_relations)?;
             }
             Ok(())
         }
-        ExprKind::Subquery { operand, .. } => match operand {
+        ExprKind::Subquery { operand, query, .. } => {
+            if let Some(operand) = operand {
+                reject_unresolved_qualifiers(operand, relations, outer_relations)?;
+            }
             // The embedded statement resolves its own references through its
-            // `FROM` scope, so only the operand — which the current statement
-            // evaluates — is judged against the relations validated here.
-            Some(operand) => reject_unresolved_qualifiers(operand, relations),
-            None => Ok(()),
-        },
+            // `FROM` scope and reaches an enclosing one by correlation, so the
+            // relations in scope here become the outer scope of that statement.
+            reject_unresolved_qualifiers_in_statement(
+                &StatementRef::from(query.ast()),
+                &enclosing_scope(relations, outer_relations),
+            )
+        }
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
-            reject_unresolved_qualifiers(operand, relations)
+            reject_unresolved_qualifiers(operand, relations, outer_relations)
         }
         ExprKind::Like { operand, pattern, .. } => {
-            reject_unresolved_qualifiers(operand, relations)?;
-            reject_unresolved_qualifiers(pattern, relations)
+            reject_unresolved_qualifiers(operand, relations, outer_relations)?;
+            reject_unresolved_qualifiers(pattern, relations, outer_relations)
         }
         ExprKind::Between { operand, low, high } => {
-            reject_unresolved_qualifiers(operand, relations)?;
-            reject_unresolved_qualifiers(low, relations)?;
-            reject_unresolved_qualifiers(high, relations)
+            reject_unresolved_qualifiers(operand, relations, outer_relations)?;
+            reject_unresolved_qualifiers(low, relations, outer_relations)?;
+            reject_unresolved_qualifiers(high, relations, outer_relations)
         }
-        ExprKind::Function { args, .. } => reject_unresolved_qualifiers_each(args, relations),
+        ExprKind::Function { args, .. } => {
+            reject_unresolved_qualifiers_each(args, relations, outer_relations)
+        }
         ExprKind::DistinctFrom { lhs, rhs, .. } => {
-            reject_unresolved_qualifiers(lhs, relations)?;
-            reject_unresolved_qualifiers(rhs, relations)
+            reject_unresolved_qualifiers(lhs, relations, outer_relations)?;
+            reject_unresolved_qualifiers(rhs, relations, outer_relations)
         }
         ExprKind::Case { branches, else_branch } => {
             for branch in branches {
-                reject_unresolved_qualifiers(&branch.condition, relations)?;
-                reject_unresolved_qualifiers(&branch.result, relations)?;
+                reject_unresolved_qualifiers(&branch.condition, relations, outer_relations)?;
+                reject_unresolved_qualifiers(&branch.result, relations, outer_relations)?;
             }
             match else_branch {
-                Some(fallback) => reject_unresolved_qualifiers(fallback, relations),
+                Some(fallback) => {
+                    reject_unresolved_qualifiers(fallback, relations, outer_relations)
+                }
                 None => Ok(()),
             }
         }
         ExprKind::Window { kind, partition_by, order_by, .. } => {
             match kind.as_ref() {
                 WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
-                    reject_unresolved_qualifiers(column, relations)?;
+                    reject_unresolved_qualifiers(column, relations, outer_relations)?;
                 }
                 WindowExprKind::Expr(inner) => {
-                    reject_unresolved_qualifiers(inner, relations)?;
+                    reject_unresolved_qualifiers(inner, relations, outer_relations)?;
                 }
                 WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
             }
-            reject_unresolved_qualifiers_each(partition_by, relations)?;
+            reject_unresolved_qualifiers_each(partition_by, relations, outer_relations)?;
             for criterion in order_by {
-                reject_unresolved_qualifiers(&criterion.expr, relations)?;
+                reject_unresolved_qualifiers(&criterion.expr, relations, outer_relations)?;
             }
             Ok(())
         }
-        // A nested collection embeds a whole statement, which resolves its
-        // own references through its `FROM` scope.
-        ExprKind::Multiset { .. } => Ok(()),
+        // A nested collection embeds a whole statement, which reaches the
+        // enclosing statement by correlating a reference to it.
+        ExprKind::Multiset { query, .. } => reject_unresolved_qualifiers_in_statement(
+            &StatementRef::from(query.ast()),
+            &enclosing_scope(relations, outer_relations),
+        ),
         // An alias names the output column of a projection; the expression it
         // wraps is what the statement computes.
-        ExprKind::Aliased { expr, .. } => reject_unresolved_qualifiers(expr, relations),
+        ExprKind::Aliased { expr, .. } => {
+            reject_unresolved_qualifiers(expr, relations, outer_relations)
+        }
     }
 }
 
@@ -783,10 +803,111 @@ pub(crate) fn reject_unresolved_qualifiers(
 fn reject_unresolved_qualifiers_each(
     expressions: &[ExprKind],
     relations: &[TableRef],
+    outer_relations: &[TableRef],
 ) -> Result<(), BuildError> {
     for expression in expressions {
-        reject_unresolved_qualifiers(expression, relations)?;
+        reject_unresolved_qualifiers(expression, relations, outer_relations)?;
     }
+    Ok(())
+}
+
+/// Collects the relations a statement embedded in `relations` may reach.
+///
+/// The embedded statement resolves a reference through its own `FROM` scope and
+/// reaches an enclosing statement by correlation, so the namespace it is judged
+/// against holds the relations in scope where it is embedded together with the
+/// outer relations those already reach.
+fn enclosing_scope(relations: &[TableRef], outer_relations: &[TableRef]) -> Vec<TableRef> {
+    let mut scope = Vec::with_capacity(relations.len() + outer_relations.len());
+    scope.extend_from_slice(relations);
+    scope.extend_from_slice(outer_relations);
+    scope
+}
+
+/// Whether `qualifier` names one of the relations in scope.
+///
+/// A qualifier resolves against the relations the statement renders itself and
+/// against the relations of every statement enclosing it, which is what keeps a
+/// correlated reference accepted while a qualifier nothing declares stays
+/// rejected.
+fn resolves_qualifier(
+    qualifier: &'static str,
+    relations: &[TableRef],
+    outer_relations: &[TableRef],
+) -> bool {
+    relations
+        .iter()
+        .chain(outer_relations)
+        .any(|relation| effective_relation_name(relation) == qualifier)
+}
+
+/// Rejects a qualifier no relation of an embedded statement or of an enclosing
+/// statement declares.
+///
+/// The statement resolves a reference through its own `FROM` / `JOIN` scope first
+/// and reaches an enclosing statement by correlation afterwards, so the walk
+/// combines both namespaces before it inspects the clauses: the projections, the
+/// `DISTINCT ON` expressions, the filter, the `GROUP BY` entries, the `HAVING`
+/// predicate, the `ORDER BY` criteria, the `ON` conditions of the joins, and the
+/// lateral subqueries they introduce.
+///
+/// The `WITH` clause bodies, the derived tables of the `FROM` clause, and the
+/// operands of a set operation stay closed: the engine correlates none of them to
+/// the statement embedding them, so each is judged against its own relations
+/// alone. A lateral subquery is the exception the clause itself states, so it
+/// keeps reading the relations of the statement introducing it.
+fn reject_unresolved_qualifiers_in_statement(
+    statement: &StatementRef<'_>,
+    outer_relations: &[TableRef],
+) -> Result<(), BuildError> {
+    let mut relations = Vec::with_capacity(statement.joins.len() + outer_relations.len() + 1);
+    relations.extend(statement.from);
+    relations.extend(statement.joins.iter().map(|join| join.table));
+    relations.extend_from_slice(outer_relations);
+
+    for cte in statement.ctes {
+        reject_unresolved_qualifiers_in_statement(&StatementRef::from(&cte.query), &[])?;
+    }
+
+    for derived in statement.derived {
+        reject_unresolved_qualifiers_in_statement(&StatementRef::from(&derived.query), &[])?;
+    }
+
+    for join in statement.joins {
+        if let Some(lateral) = &join.lateral {
+            reject_unresolved_qualifiers_in_statement(&StatementRef::from(lateral), &relations)?;
+        }
+        if let Some(on) = &join.on {
+            reject_unresolved_qualifiers(on, &relations, outer_relations)?;
+        }
+    }
+
+    for projection in statement.projections {
+        reject_unresolved_qualifiers(projection, &relations, outer_relations)?;
+    }
+    for expression in statement.distinct_on {
+        reject_unresolved_qualifiers(expression, &relations, outer_relations)?;
+    }
+    if let Some(filter) = statement.filter {
+        reject_unresolved_qualifiers(filter, &relations, outer_relations)?;
+    }
+    for grouped in statement.group_by {
+        reject_unresolved_qualifiers(grouped, &relations, outer_relations)?;
+    }
+    if let Some(having) = statement.having {
+        reject_unresolved_qualifiers(having, &relations, outer_relations)?;
+    }
+    for criterion in statement.order_by {
+        reject_unresolved_qualifiers(&criterion.expr, &relations, outer_relations)?;
+    }
+    for criterion in statement.compound_order_by {
+        reject_unresolved_qualifiers(&criterion.expr, &relations, outer_relations)?;
+    }
+
+    for operation in statement.set_operations {
+        reject_unresolved_qualifiers_in_statement(&StatementRef::from(&operation.query), &[])?;
+    }
+
     Ok(())
 }
 
@@ -1845,6 +1966,7 @@ mod tests {
                     column: "id",
                 },
                 &relations,
+                &[],
             ),
             Ok(())
         );
@@ -1855,6 +1977,7 @@ mod tests {
                     column: "id",
                 },
                 &relations,
+                &[],
             ),
             Ok(())
         );
@@ -1869,6 +1992,7 @@ mod tests {
                     name: "id",
                 },
                 &relations,
+                &[],
             ),
             Ok(())
         );
@@ -1886,7 +2010,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            reject_unresolved_qualifiers(&filter, &relations),
+            reject_unresolved_qualifiers(&filter, &relations, &[]),
             Err(BuildError::UnresolvedQualifier { name: "ghosts" })
         );
     }
@@ -1905,8 +2029,127 @@ mod tests {
                     column: "id",
                 },
                 &relations,
+                &[],
             ),
             Err(BuildError::UnresolvedQualifier { name: "users" })
+        );
+    }
+
+    /// Builds a scalar subquery around `inner`.
+    fn scalar_subquery(inner: SelectAst) -> ExprKind {
+        ExprKind::Subquery {
+            op: SubqueryOp::Scalar,
+            operand: None,
+            query: Subquery::new(inner),
+            negated: false,
+        }
+    }
+
+    #[test]
+    fn a_correlated_subquery_may_reference_a_relation_of_the_enclosing_statement() {
+        use crate::expr::BinaryOp;
+
+        // The nested statement reads `u.id` without introducing the relation: a
+        // correlated reference reaches the enclosing statement, whose relations
+        // are in scope where the subquery is written.
+        let mut inner = empty_ast();
+        inner.from = Some(TableRef::plain("orders"));
+        inner.projections.push(ExprKind::QualifiedColumn {
+            table: "u",
+            column: "id",
+        });
+        inner.filter = Some(ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::QualifiedColumn {
+                table: "u",
+                column: "id",
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }),
+        });
+
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &scalar_subquery(inner),
+                &[TableRef::aliased("users", "u")],
+                &[],
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_outer_relation_stays_reachable_from_a_nested_statement() {
+        // The relation belongs to a statement enclosing the validated one, so it
+        // is only reachable through the outer scope the walk carries along.
+        let mut inner = empty_ast();
+        inner.projections.push(ExprKind::QualifiedColumn {
+            table: "u",
+            column: "id",
+        });
+
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &scalar_subquery(inner),
+                &[],
+                &[TableRef::aliased("users", "u")],
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_nested_statement_qualified_by_a_name_nothing_declares_is_rejected() {
+        let mut inner = empty_ast();
+        inner.from = Some(TableRef::plain("orders"));
+        inner.projections.push(ExprKind::QualifiedColumn {
+            table: "ghosts",
+            column: "id",
+        });
+
+        assert_eq!(
+            reject_unresolved_qualifiers(
+                &scalar_subquery(inner),
+                &[TableRef::aliased("users", "u")],
+                &[],
+            ),
+            Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+        );
+    }
+
+    #[test]
+    fn a_nested_collection_resolves_a_correlated_reference() {
+        use crate::expr::BinaryOp;
+
+        let mut inner = empty_ast();
+        inner.from = Some(TableRef::plain("orders"));
+        inner.projections.push(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        });
+        inner.filter = Some(ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::QualifiedColumn {
+                table: "u",
+                column: "id",
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }),
+        });
+
+        let collection = ExprKind::Multiset {
+            query: Subquery::new(inner),
+            fields: vec!["id"],
+            single: false,
+        };
+
+        assert_eq!(
+            reject_unresolved_qualifiers(&collection, &[TableRef::aliased("users", "u")], &[]),
+            Ok(())
         );
     }
 

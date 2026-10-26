@@ -446,9 +446,10 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         // A `RETURNING` projection may qualify its references through the
         // alias of an aliased target, which only the rendered target
         // declares, so a qualifier naming no rendered relation is rejected
-        // before any SQL is rendered.
+        // before any SQL is rendered. The statement sits at the top of the
+        // build chain, so it reaches no enclosing relations.
         for projection in &self.returning {
-            reject_unresolved_qualifiers(projection, &relations)?;
+            reject_unresolved_qualifiers(projection, &relations, &[])?;
         }
 
         let mut sql = String::from("INSERT INTO ");
