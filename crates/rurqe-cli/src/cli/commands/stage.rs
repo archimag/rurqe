@@ -347,8 +347,17 @@ pub(crate) fn commit_stage(
     // the declarative stage, so a stage that drifted from the database would seal
     // a triple that contradicts itself and make `stage verify` fail on a
     // checkpoint no later commit could repair.
-    let diff = compare_stage_with_live(&stage, &catalog, parity_scratch_url(database_url))
-        .map_err(cli_error)?;
+    // The live catalog was read over the selected schema, so the stage has to be
+    // materialised and introspected over the very same one: comparing a stage
+    // built in `public` against a catalog read elsewhere would reject a
+    // consistent non-public project for a drift it never had.
+    let diff = compare_stage_with_live(
+        &stage,
+        &catalog,
+        parity_scratch_url(database_url),
+        schema,
+    )
+    .map_err(cli_error)?;
     if !diff.is_empty() {
         return Err(stage_parity_failure(stage_dir, &diff));
     }

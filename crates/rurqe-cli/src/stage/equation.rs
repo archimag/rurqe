@@ -9,6 +9,7 @@ use rurqe_migrate::runner::Migrator;
 use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
+use crate::introspect::DEFAULT_SCHEMA;
 
 use super::error::StageError;
 use super::sandbox::{Script, SandboxKind};
@@ -24,6 +25,8 @@ pub struct GoldenEquation<'a> {
     checkpoint: Option<&'a Checkpoint>,
     stage: &'a DeclarativeStage,
     tail: &'a [Migration],
+    /// The PostgreSQL schema both sides are materialised and introspected over.
+    schema: &'a str,
 }
 
 impl<'a> GoldenEquation<'a> {
@@ -37,6 +40,7 @@ impl<'a> GoldenEquation<'a> {
             checkpoint: None,
             stage,
             tail,
+            schema: DEFAULT_SCHEMA,
         }
     }
 
@@ -62,11 +66,24 @@ impl<'a> GoldenEquation<'a> {
         self
     }
 
+    /// Selects the PostgreSQL schema both sides are materialised and read over.
+    ///
+    /// The CLI threads the selection it resolved — `--schema`, the `schema` key of
+    /// `rurqe.toml`, or [`DEFAULT_SCHEMA`] — so the digests the equation compares
+    /// describe the schema the project declares instead of an assumed `public`. A
+    /// SQLite scratch holds a single unnamed catalog, so it ignores the name.
+    pub fn with_schema(mut self, schema: &'a str) -> Self {
+        self.schema = schema;
+        self
+    }
+
     /// Materialises both sides of the equation and compares their catalogs.
     ///
     /// Both states are built in the scratch database named by `scratch_url` and
-    /// introspected through the same engine adapter the codegen toolchain uses, so
-    /// the comparison is bit-for-bit at the catalog level. A file-backed scratch
+    /// introspected through the same engine adapter the codegen toolchain uses over
+    /// [`schema`](Self::with_schema), so the comparison is bit-for-bit at the
+    /// catalog level and describes the schema the project declares rather than an
+    /// empty `public`. A file-backed scratch
     /// database has to be empty before the verification starts and is deleted again
     /// between the two sides. Any divergence is returned as
     /// [`StageError::Diverged`] carrying the full report.
@@ -90,7 +107,7 @@ impl<'a> GoldenEquation<'a> {
         // before the declarative stage is materialised, exactly as it was when
         // the boundary was replayed in a sandbox of its own.
         let tail_catalog = self.materialise_tail(scratch_url)?;
-        let stage_catalog = materialise_stage(self.stage, scratch_url)?;
+        let stage_catalog = materialise_stage(self.stage, scratch_url, self.schema)?;
 
         let diff = compute_catalog_diff(&tail_catalog, &stage_catalog);
         let report = GoldenReport {
@@ -114,7 +131,7 @@ impl<'a> GoldenEquation<'a> {
     /// tail then continues on the very same sandbox, so an anchored verification
     /// spends one database lifecycle on the tail side instead of two.
     fn materialise_tail(&self, scratch_url: &str) -> Result<SchemaCatalog, StageError> {
-        let mut sandbox = SandboxKind::open(scratch_url)?;
+        let mut sandbox = SandboxKind::open(scratch_url, self.schema)?;
 
         let replay = self.replay_tail(&mut sandbox);
 
@@ -231,11 +248,17 @@ impl GoldenReport {
 
 /// Materialises the declarative `stage` in the disposable scratch database
 /// addressed by `scratch_url` and introspects the resulting catalog.
+///
+/// `schema` names the PostgreSQL schema the scripts are replayed into and the
+/// catalog is read from, so the returned digest describes the relations the stage
+/// actually declares there; a SQLite scratch holds a single unnamed catalog and
+/// ignores the name.
 pub fn materialise_stage(
     stage: &DeclarativeStage,
     scratch_url: &str,
+    schema: &str,
 ) -> Result<SchemaCatalog, StageError> {
-    materialise(scratch_url, &stage_scripts(stage))
+    materialise(scratch_url, &stage_scripts(stage), schema)
 }
 
 /// Compares the declarative `stage` against `live`, the catalog of the database
@@ -250,8 +273,9 @@ pub fn compare_stage_with_live(
     stage: &DeclarativeStage,
     live: &SchemaCatalog,
     scratch_url: &str,
+    schema: &str,
 ) -> Result<SchemaDiff, StageError> {
-    let stage_catalog = materialise_stage(stage, scratch_url)?;
+    let stage_catalog = materialise_stage(stage, scratch_url, schema)?;
 
     Ok(compute_catalog_diff(live, &stage_catalog))
 }
@@ -269,13 +293,17 @@ fn stage_scripts(stage: &DeclarativeStage) -> Vec<Script<'_>> {
         .collect()
 }
 
-/// Materialises `scripts` in the scratch state and introspects the result.
+/// Materialises `scripts` in the scratch state and introspects `schema`.
 ///
 /// A file-backed scratch database is deleted afterwards, so the next side of the
 /// equation starts from a fresh file: no object, `PRAGMA`, or database-header
 /// field the replay left behind can reach it.
-fn materialise(scratch_url: &str, scripts: &[Script<'_>]) -> Result<SchemaCatalog, StageError> {
-    let mut sandbox = SandboxKind::open(scratch_url)?;
+fn materialise(
+    scratch_url: &str,
+    scripts: &[Script<'_>],
+    schema: &str,
+) -> Result<SchemaCatalog, StageError> {
+    let mut sandbox = SandboxKind::open(scratch_url, schema)?;
 
     let replay = apply_scripts(&mut sandbox, scripts).and_then(|()| {
         sandbox

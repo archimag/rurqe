@@ -27,8 +27,12 @@ fn tail(scripts: &[(&str, &str)]) -> Vec<Migration> {
 #[test]
 fn materialise_stage_introspects_catalog() {
     let stage = stage(&[("users.sql", USERS)]);
-    let catalog =
-        materialise_stage(&stage, ":memory:").expect("stage materialises in SQLite scratch");
+    let catalog = materialise_stage(
+        &stage,
+        ":memory:",
+        crate::introspect::DEFAULT_SCHEMA,
+    )
+    .expect("stage materialises in SQLite scratch");
 
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].name, "users");
@@ -134,7 +138,12 @@ fn the_base_stage_anchors_the_replayed_tail() {
 #[test]
 fn checkpoint_filters_outdated_tail_migrations() {
     let base = stage(&[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")]);
-    let base_catalog = materialise_stage(&base, ":memory:").expect("base catalog");
+    let base_catalog = materialise_stage(
+        &base,
+        ":memory:",
+        crate::introspect::DEFAULT_SCHEMA,
+    )
+    .expect("base catalog");
     let cp = Checkpoint::new(
         "1.0".parse().expect("valid version"),
         base_catalog.checksum(),
@@ -221,8 +230,12 @@ fn the_boundary_is_replayed_once_into_the_tail_sandbox() {
         "users.sql",
         "CREATE TABLE users (id INTEGER PRIMARY KEY);",
     )]);
-    let base_catalog =
-        materialise_stage(&base, ":memory:").expect("the base stage materialises");
+    let base_catalog = materialise_stage(
+        &base,
+        ":memory:",
+        crate::introspect::DEFAULT_SCHEMA,
+    )
+    .expect("the base stage materialises");
     let checkpoint = Checkpoint::new(
         "1.0".parse().expect("a valid version"),
         base_catalog.checksum(),
@@ -249,8 +262,12 @@ fn the_boundary_is_replayed_once_into_the_tail_sandbox() {
 #[test]
 fn a_checkpoint_without_a_base_stage_is_rejected() {
     let base = stage(&[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")]);
-    let base_catalog =
-        materialise_stage(&base, ":memory:").expect("the base stage materialises");
+    let base_catalog = materialise_stage(
+        &base,
+        ":memory:",
+        crate::introspect::DEFAULT_SCHEMA,
+    )
+    .expect("the base stage materialises");
     let checkpoint = Checkpoint::new(
         "1".parse().expect("a valid version"),
         base_catalog.checksum(),
@@ -527,8 +544,12 @@ fn a_non_transactional_stage_script_is_materialised() {
         StageScript::new("users.sql", USERS).with_transactional(false)
     ]);
 
-    let catalog =
-        materialise_stage(&stage, ":memory:").expect("the stage materialises in a scratch");
+    let catalog = materialise_stage(
+        &stage,
+        ":memory:",
+        crate::introspect::DEFAULT_SCHEMA,
+    )
+    .expect("the stage materialises in a scratch");
 
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].name, "users");

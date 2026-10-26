@@ -853,8 +853,12 @@ fn stages_verify_filters_the_unpruned_tail_at_the_checkpoint() {
 
     // The checkpoint hash must anchor the base stage catalog.
     let base_stage = DeclarativeStage::new(vec![StageScript::new("users.sql", base_users)]);
-    let base_catalog =
-        materialise_stage(&base_stage, ":memory:").expect("the base stage materialises");
+    let base_catalog = materialise_stage(
+        &base_stage,
+        ":memory:",
+        rurqe_cli::introspect::DEFAULT_SCHEMA,
+    )
+    .expect("the base stage materialises");
     let checkpoint_path = workspace.join("checkpoint.toml");
     write_checkpoint_with_hash(&checkpoint_path, "1", base_catalog.checksum());
 

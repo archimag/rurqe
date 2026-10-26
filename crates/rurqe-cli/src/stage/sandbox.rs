@@ -47,13 +47,17 @@ pub(super) enum SandboxKind {
 }
 
 impl SandboxKind {
-    /// Opens the scratch state addressed by `scratch_url`.
+    /// Opens the scratch state addressed by `scratch_url`, introspecting `schema`.
+    ///
+    /// A SQLite scratch holds a single unnamed catalog, so the schema name is
+    /// ignored there and reaches only the PostgreSQL side, mirroring
+    /// [`introspect_database_schema`](crate::introspect::introspect_database_schema).
     ///
     /// A file-backed SQLite scratch has to be empty, so a misconfigured
     /// `--scratch-url` never replays schema DDL on top of somebody's data.
-    pub(super) fn open(scratch_url: &str) -> Result<Self, StageError> {
+    pub(super) fn open(scratch_url: &str, schema: &str) -> Result<Self, StageError> {
         match DatabaseTarget::parse(scratch_url) {
-            DatabaseTarget::Postgres => PostgresSandbox::connect(scratch_url)
+            DatabaseTarget::Postgres => PostgresSandbox::connect(scratch_url, schema)
                 .map(Box::new)
                 .map(SandboxKind::Postgres)
                 .map_err(|message| StageError::Sandbox { message }),
@@ -256,7 +260,10 @@ mod tests {
 
     #[test]
     fn a_failed_transactional_script_rolls_back_its_statements() {
-        let mut sandbox = SandboxKind::open(":memory:").expect("an in-memory scratch opens");
+        // A SQLite scratch holds one unnamed catalog, so the schema name is
+        // accepted and ignored instead of selecting anything.
+        let mut sandbox =
+            SandboxKind::open(":memory:", "reporting").expect("an in-memory scratch opens");
 
         let error = sandbox
             .apply(HALF_BROKEN, true)
@@ -273,7 +280,8 @@ mod tests {
 
     #[test]
     fn a_failed_non_transactional_script_keeps_what_it_committed() {
-        let mut sandbox = SandboxKind::open(":memory:").expect("an in-memory scratch opens");
+        let mut sandbox =
+            SandboxKind::open(":memory:", "reporting").expect("an in-memory scratch opens");
 
         sandbox
             .apply(HALF_BROKEN, false)

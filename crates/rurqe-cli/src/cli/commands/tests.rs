@@ -133,7 +133,8 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     let stage = DeclarativeStage::load(&stage_dir)
         .expect("the stage is readable")
         .expect("the stage directory exists");
-    let catalog = materialise_stage(&stage, ":memory:").expect("the stage materialises");
+    let catalog = materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA)
+        .expect("the stage materialises");
 
     // The marker anchors the canonical catalog digest the checkpoint compares
     // against, not the raw DDL digest of the stage directory.
@@ -888,7 +889,8 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
     let stage = DeclarativeStage::load(&stage_dir)
         .expect("the stage is readable")
         .expect("the stage directory exists");
-    let catalog = materialise_stage(&stage, ":memory:").expect("the stage materialises");
+    let catalog = materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA)
+        .expect("the stage materialises");
     let checkpoint_path = dir.join("checkpoint.toml");
     std::fs::write(
         &checkpoint_path,

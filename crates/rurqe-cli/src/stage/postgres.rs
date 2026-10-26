@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::{connect, redact_database_url, Connection};
-use crate::introspect::introspect_postgres;
+use crate::introspect::introspect_postgres_schema;
 
 /// The prefix every scratch database name carries.
 const SCRATCH_PREFIX: &str = "rurqe_scratch_";
@@ -73,13 +73,19 @@ pub(super) struct PostgresSandbox {
     client: Option<postgres::Client>,
     /// The generated name of the scratch database.
     database: String,
+    /// The schema the replay connection pins and the catalog is read from.
+    schema: String,
     /// The connection URL, credentials redacted, the sandbox was created through.
     redacted_url: String,
 }
 
 impl PostgresSandbox {
     /// Connects to `url` and creates the scratch database the verification runs in.
-    pub(super) fn connect(url: &str) -> Result<Self, String> {
+    ///
+    /// `schema` is pinned on the replay connection and introspected afterwards, so
+    /// the materialised catalog describes the very schema the project resolved for
+    /// its own digests instead of an assumed `public`.
+    pub(super) fn connect(url: &str, schema: &str) -> Result<Self, String> {
         let mut admin = match connect(url).map_err(|error| error.to_string())? {
             Connection::Postgres(client) => client,
             Connection::Sqlite(_) => {
@@ -108,11 +114,12 @@ impl PostgresSandbox {
         let redacted_url = redact_database_url(url);
         let database = create_scratch_database(&mut admin, &redacted_url)?;
 
-        match attach_scratch_database(config, &database) {
+        match attach_scratch_database(config, &database, schema) {
             Ok(client) => Ok(Self {
                 admin,
                 client: Some(client),
                 database,
+                schema: schema.to_owned(),
                 redacted_url,
             }),
             Err(message) => {
@@ -150,9 +157,27 @@ impl PostgresSandbox {
             .map_err(|error| error.to_string())
     }
 
-    /// Introspects the `public` schema of the scratch database only.
+    /// Introspects the selected schema of the scratch database only.
+    ///
+    /// The catalog is read over the very schema the replay connection pinned and
+    /// the replayed DDL landed in, so a project keeping its relations outside
+    /// `public` is compared on the relations it declares instead of on an empty
+    /// `public` catalog.
     pub(super) fn catalog(&mut self) -> Result<SchemaCatalog, String> {
-        introspect_postgres(self.replay_connection()?).map_err(|error| error.to_string())
+        // The connection is borrowed mutably while the schema is read, so the
+        // fields are destructured once instead of cloning the name per call.
+        let Self {
+            client,
+            database,
+            schema,
+            ..
+        } = self;
+
+        let client = client
+            .as_mut()
+            .ok_or_else(|| format!("the scratch database `{database}` is already closed"))?;
+
+        introspect_postgres_schema(client, schema).map_err(|error| error.to_string())
     }
 
     /// The still-open replay connection.
@@ -743,12 +768,18 @@ fn is_duplicate_database(error: &postgres::Error) -> bool {
 
 /// Opens the replay connection to the freshly created scratch database.
 ///
-/// The replay is introspected through the `public` schema of the scratch
-/// database, so the search path is pinned instead of following a schema named
-/// after the connected role.
+/// The search path pins `schema` alone, rendered as one quoted and escaped
+/// identifier, so the unqualified DDL of a stage lands exactly in the schema the
+/// catalog is read from and never in a schema named after the connected role.
+/// There is no `public` fallback behind the pin: a stage that manages its own
+/// schema keeps working because its `CREATE SCHEMA` precedes every unqualified
+/// reference, while a stage that references the schema before creating it fails
+/// with that script's own diagnostic instead of quietly absorbing misplaced
+/// objects into `public`.
 fn attach_scratch_database(
     mut config: postgres::Config,
     database: &str,
+    schema: &str,
 ) -> Result<postgres::Client, String> {
     config.dbname(database);
 
@@ -756,8 +787,9 @@ fn attach_scratch_database(
         .connect(postgres::NoTls)
         .map_err(|error| format!("failed to connect to the scratch database: {error}"))?;
 
+    let quoted = escape_sql_identifier(schema);
     client
-        .batch_execute("SET search_path TO public")
+        .batch_execute(&format!("SET search_path TO \"{quoted}\""))
         .map_err(|error| format!("failed to prepare the scratch database: {error}"))?;
 
     Ok(client)
