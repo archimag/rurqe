@@ -11,6 +11,8 @@
 //! of the rules ask: whether two assembled expressions name the value the engine
 //! sees, regardless of the node shape a builder happened to produce.
 
+use std::collections::HashSet;
+
 use crate::expr::{DerivedAst, ExprKind, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
 
@@ -132,12 +134,14 @@ impl StatementRef<'_> {
     /// first, so a CTE shadowing a stored table keeps the statement
     /// well-formed — only the declared CTE names are compared with each other.
     fn validate_cte_names(&self) -> Result<(), BuildError> {
-        let mut seen: Vec<&'static str> = Vec::with_capacity(self.ctes.len());
+        // The declaration order is the order the entries are scanned in, so
+        // recording each name in a set reports the first name that repeats while
+        // keeping the lookup of every further entry constant-time.
+        let mut seen: HashSet<&'static str> = HashSet::with_capacity(self.ctes.len());
         for cte in self.ctes {
-            if seen.contains(&cte.name) {
+            if !seen.insert(cte.name) {
                 return Err(BuildError::DuplicateCte { name: cte.name });
             }
-            seen.push(cte.name);
         }
         Ok(())
     }

@@ -120,3 +120,32 @@ fn a_cte_declared_twice_under_one_table_marker_is_rejected() {
         Err(BuildError::DuplicateCte { name: "users" })
     );
 }
+
+#[test]
+fn duplicate_cte_detection_reports_the_first_repetition_in_declaration_order() {
+    let body = || {
+        SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+    };
+
+    // Two names repeat after several distinct ones; the reported name has to be
+    // the first repetition the declaration order reaches, so the detection stays
+    // a scan of the clause rather than a set of unordered hits.
+    let query = SelectQuery::<MockDialect>::new()
+        .with(cte_named("active_users", body()))
+        .with(cte_named("large_orders", body()))
+        .with(cte_named("recent_orders", body()))
+        .with(cte_named("archived_orders", body()))
+        .with(cte_named("active_users", body()))
+        .with(cte_named("recent_orders", body()))
+        .from::<User>()
+        .select((UserId,));
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::DuplicateCte {
+            name: "active_users"
+        })
+    );
+}
