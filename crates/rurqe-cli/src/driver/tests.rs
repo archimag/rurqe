@@ -203,6 +203,73 @@ fn the_run_lock_nests_every_step_in_a_savepoint() {
     assert_eq!(oops, 0);
 }
 
+#[test]
+fn a_failed_non_transactional_script_keeps_its_own_error() {
+    let mut backend = backend();
+    backend.acquire_lock().expect("the write lock is taken");
+
+    // `execute_batch` stops at the failing statement, so the `BEGIN` the script
+    // opened stays active while the error of the malformed DDL is already known.
+    let error = backend
+        .execute_non_transactional("BEGIN; CREATE TABLE oops (;")
+        .expect_err("the malformed statement fails the script");
+
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(
+        message.contains("syntax error"),
+        "the driver's own failure must reach the operator: {message}"
+    );
+    assert!(
+        message.contains("left a transaction open"),
+        "the leftover transaction is still reported as context: {message}"
+    );
+
+    // The rollback runs before the error is reported, so the connection stays
+    // usable for recording the failed attempt.
+    assert!(
+        backend.conn.is_autocommit(),
+        "the leftover transaction is rolled back"
+    );
+    backend
+        .conn
+        .execute_batch("CREATE TABLE users (id INTEGER NOT NULL);")
+        .expect("the connection remains usable");
+}
+
+#[test]
+fn a_script_that_never_commits_is_reported_as_an_imbalance() {
+    let mut backend = backend();
+    backend.acquire_lock().expect("the write lock is taken");
+
+    // Every statement of the script succeeds, so the imbalance is the only
+    // thing wrong with it and no driver error exists to report.
+    let error = backend
+        .execute_non_transactional("BEGIN; CREATE TABLE users (id INTEGER NOT NULL);")
+        .expect_err("the script succeeded but never closed its transaction");
+
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(
+        message.starts_with("non-transactional script left a transaction open"),
+        "the imbalance is reported on its own: {message}"
+    );
+
+    let users: i64 = backend
+        .conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'users'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the rolled back table stays absent");
+    assert_eq!(users, 0);
+}
+
 /// A fresh database file no concurrent test can collide with.
 fn scratch_database(label: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

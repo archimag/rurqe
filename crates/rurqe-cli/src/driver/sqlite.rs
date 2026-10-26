@@ -135,7 +135,10 @@ impl MigrationBackend for SqliteMigrationBackend {
     /// completes is durable on its own. A script that fails midway therefore
     /// leaves its completed statements in the database: that is the documented
     /// contract of a non-transactional script, and the history row records the
-    /// failure for a subsequent `repair`.
+    /// failure for a subsequent `repair`. A script that leaves a transaction
+    /// open is rejected instead: the leftover transaction is rolled back and
+    /// the error the script itself raised, when there is one, is reported with
+    /// the imbalance appended as context.
     ///
     /// Between the `COMMIT` and the re-take below the write lock is free:
     /// SQLite materialises its single-writer lock only as a transaction, so
@@ -154,15 +157,11 @@ impl MigrationBackend for SqliteMigrationBackend {
 
         if !self.conn.is_autocommit() {
             // The script opened a transaction it never closed. The leftover
-            // transaction is rolled back so the connection stays usable for
-            // the failure record, and the diagnostic names the imbalance of
+            // transaction is rolled back first, so the connection stays usable
+            // for the failure record, and the diagnostic names the imbalance of
             // the script instead of the lock error a re-take would report.
             let _ = self.conn.execute_batch("ROLLBACK");
-            return Err(Error::Backend(
-                "non-transactional script left a transaction open; balance the BEGIN \
-                 statements of a script marked non-transactional"
-                    .to_owned(),
-            ));
+            return Err(left_open_error(result));
         }
 
         // Take the write lock again so the history row of the script and the
@@ -225,6 +224,35 @@ impl Drop for SqliteMigrationBackend {
         }
         if let Err(err) = self.release_lock() {
             tracing::warn!(error = %err, "failed to release the SQLite migration lock");
+        }
+    }
+}
+
+/// The diagnostic of a non-transactional script that ended with an open transaction.
+///
+/// A script that failed keeps its own error: the driver's syntax or constraint
+/// diagnostic is the cause an operator acts on, and the leftover transaction is
+/// only context, so the imbalance is appended instead of replacing it. The bare
+/// imbalance message is reserved for a script that completed successfully yet
+/// never closed the transaction it opened — there the imbalance is the only
+/// thing wrong with the script.
+fn left_open_error(script: Result<(), Error>) -> Error {
+    // The remedy appended to both diagnostics.
+    const REMEDY: &str = "balance the BEGIN statements of a script marked non-transactional";
+
+    match script {
+        Ok(()) => Error::Backend(format!(
+            "non-transactional script left a transaction open; {REMEDY}"
+        )),
+        Err(error) => {
+            let cause = match error {
+                Error::Backend(message) => message,
+                other => other.to_string(),
+            };
+            Error::Backend(format!(
+                "{cause}; the script also left a transaction open and its applied statements \
+                 were rolled back; {REMEDY}"
+            ))
         }
     }
 }
