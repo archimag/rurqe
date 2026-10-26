@@ -564,10 +564,34 @@ fn create_scratch_database(
     ))
 }
 
+/// Renders the `COMMENT ON DATABASE` statement recording the owner marker.
+///
+/// Both the identifier and the literal are escaped here, at the site that
+/// renders them, so the statement stays one statement independently of whatever
+/// produced its inputs.
+fn owner_comment_sql(database: &str, owner_tag: &str) -> String {
+    let quoted_database = escape_sql_identifier(database);
+    let quoted_tag = escape_sql_literal(owner_tag);
+    format!("COMMENT ON DATABASE \"{quoted_database}\" IS '{quoted_tag}'")
+}
+
+/// Doubles the double quotes of `value` so it renders as one SQL identifier.
+fn escape_sql_identifier(value: &str) -> String {
+    value.replace('"', "\"\"")
+}
+
+/// Doubles the single quotes of `value` so it renders as one SQL string literal.
+///
+/// The standard-conforming literal form is used instead of a dollar-quoted or
+/// `E''` form, because doubling needs no delimiter choice: the rendered literal
+/// always terminates exactly where the closing quote of the statement puts it.
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
 /// Records the owner marker the staleness sweep matches on the scratch database.
 fn tag_scratch_database_owner(admin: &mut postgres::Client, database: &str, redacted_url: &str) {
-    let owner_tag = current_owner_tag();
-    let comment_sql = format!("COMMENT ON DATABASE \"{database}\" IS '{owner_tag}'");
+    let comment_sql = owner_comment_sql(database, &current_owner_tag());
     if let Err(error) = admin.batch_execute(&comment_sql) {
         tracing::warn!(
             url = %redacted_url,
@@ -893,5 +917,51 @@ mod tests {
     #[test]
     fn a_clock_running_backwards_never_makes_a_sweep_due() {
         assert!(!opportunistic_sweep_due(1_700_000_000, 1_699_999_999));
+    }
+
+    #[test]
+    fn a_sanitized_owner_tag_carries_no_quote() {
+        for hostile in [
+            "x'; DROP DATABASE rurqe_scratch_probe; --",
+            "host\"name",
+            "quo'te",
+            "back\\slash",
+            "",
+        ] {
+            let tag = format!("{OWNER_PREFIX}{}", sanitize_owner_id(hostile));
+            assert!(!tag.contains('\''), "unexpected tag: {tag}");
+            assert!(!tag.contains('"'), "unexpected tag: {tag}");
+        }
+
+        let tag = current_owner_tag();
+        assert!(!tag.contains('\''), "unexpected tag: {tag}");
+        assert!(!tag.contains('"'), "unexpected tag: {tag}");
+    }
+
+    #[test]
+    fn a_quote_bearing_owner_tag_renders_one_statement() {
+        let database = "rurqe_scratch_1700000000_4321_7";
+        let hostile = "x'; DROP DATABASE rurqe_scratch_probe; --";
+        let sql = owner_comment_sql(database, hostile);
+
+        // The literal is the only place an odd quote may terminate the statement,
+        // so the escaped tag keeps the statement a single one.
+        let escaped = escape_sql_literal(hostile);
+        assert_eq!(sql, format!("COMMENT ON DATABASE \"{database}\" IS '{escaped}'"));
+        assert_eq!(sql.matches(';').count(), 2, "unexpected statements: {sql}");
+        assert!(sql.ends_with('\''), "unterminated literal: {sql}");
+
+        // The comment the server would store is the tag itself, which is what the
+        // sweep compares against.
+        assert_eq!(escaped.replace("''", "'"), hostile);
+        assert!(is_matching_owner(Some(hostile), hostile));
+        assert!(!is_matching_owner(Some(hostile), "rurqe:owner=other-host"));
+    }
+
+    #[test]
+    fn a_quote_bearing_database_name_renders_one_identifier() {
+        let sql = owner_comment_sql("probe\"name", "rurqe:owner=host");
+
+        assert_eq!(sql, "COMMENT ON DATABASE \"probe\"\"name\" IS 'rurqe:owner=host'");
     }
 }
