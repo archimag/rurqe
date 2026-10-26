@@ -213,6 +213,40 @@ fn base_stage_hash_mismatch_is_rejected() {
 }
 
 #[test]
+fn the_boundary_is_replayed_once_into_the_tail_sandbox() {
+    // The boundary DDL is guarded by nothing, so applying it a second time to
+    // the same sandbox would fail: the anchored replay has to hand the very
+    // sandbox that holds the boundary straight to the tail.
+    let base = stage(&[(
+        "users.sql",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+    )]);
+    let base_catalog =
+        materialise_stage(&base, ":memory:").expect("the base stage materialises");
+    let checkpoint = Checkpoint::new(
+        "1.0".parse().expect("a valid version"),
+        base_catalog.checksum(),
+    );
+
+    let tail = tail(&[(
+        "V2__email.sql",
+        "ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';",
+    )]);
+    let stage = stage(&[(
+        "users.sql",
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');",
+    )]);
+
+    let report = GoldenEquation::new(&stage, &tail)
+        .with_base(&base)
+        .with_checkpoint(&checkpoint)
+        .verify(":memory:")
+        .expect("the boundary is replayed once and the tail continues in the same sandbox");
+
+    assert!(report.is_equivalent());
+}
+
+#[test]
 fn a_checkpoint_without_a_base_stage_is_rejected() {
     let base = stage(&[("users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")]);
     let base_catalog =

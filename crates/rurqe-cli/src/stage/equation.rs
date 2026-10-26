@@ -86,43 +86,11 @@ impl<'a> GoldenEquation<'a> {
             }
         }
 
-        if let (Some(checkpoint), Some(base)) = (self.checkpoint, self.base) {
-            let base_catalog = materialise_stage(base, scratch_url)?;
-            if base_catalog.checksum() != checkpoint.schema_hash() {
-                return Err(StageError::BaseStageHashMismatch {
-                    expected: checkpoint.schema_hash().to_hex(),
-                    actual: base_catalog.schema_hash(),
-                });
-            }
-        }
-
+        // The anchored side runs first, so the checkpoint hash is still checked
+        // before the declarative stage is materialised, exactly as it was when
+        // the boundary was replayed in a sandbox of its own.
+        let tail_catalog = self.materialise_tail(scratch_url)?;
         let stage_catalog = materialise_stage(self.stage, scratch_url)?;
-
-        let replayed = Migrator::sort_migrations(self.tail);
-        let mut tail_scripts: Vec<Script<'_>> = Vec::new();
-        if let Some(base) = self.base {
-            tail_scripts.extend(base.scripts().iter().map(|script| Script {
-                label: script.name(),
-                sql: script.sql(),
-                transactional: script.is_transactional(),
-            }));
-        }
-        tail_scripts.extend(
-            replayed
-                .iter()
-                .filter(|migration| match (&self.checkpoint, &migration.version) {
-                    (Some(checkpoint), Some(version)) => {
-                        version > checkpoint.pruned_up_to_version()
-                    }
-                    _ => true,
-                })
-                .map(|migration| Script {
-                    label: migration.script.as_str(),
-                    sql: migration.sql.as_str(),
-                    transactional: migration.is_transactional(),
-                }),
-        );
-        let tail_catalog = materialise(scratch_url, &tail_scripts)?;
 
         let diff = compute_catalog_diff(&tail_catalog, &stage_catalog);
         let report = GoldenReport {
@@ -136,6 +104,95 @@ impl<'a> GoldenEquation<'a> {
         } else {
             Err(StageError::Diverged(Box::new(report)))
         }
+    }
+
+    /// Materialises the tail side — the base boundary and the active migration
+    /// tail — in one scratch sandbox.
+    ///
+    /// The boundary DDL is applied once: its catalog is introspected through the
+    /// live sandbox and compared against the checkpoint hash, and the filtered
+    /// tail then continues on the very same sandbox, so an anchored verification
+    /// spends one database lifecycle on the tail side instead of two.
+    fn materialise_tail(&self, scratch_url: &str) -> Result<SchemaCatalog, StageError> {
+        let mut sandbox = SandboxKind::open(scratch_url)?;
+
+        let replay = self.replay_tail(&mut sandbox);
+
+        // The sandbox is discarded whether or not the replay succeeded: a script
+        // that stopped halfway would otherwise leave the part it committed for
+        // the next side to build on.
+        let discard = sandbox.discard();
+
+        match (replay, discard) {
+            (Ok(catalog), Ok(())) => Ok(catalog),
+            // The replay failed, so its diagnostic describes the real problem and
+            // the discard merely happened on the way out.
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
+    }
+
+    /// Replays the base boundary and the active tail into one live sandbox.
+    ///
+    /// A committed checkpoint is verified against the boundary catalog before a
+    /// single tail script runs, so a snapshot that drifted from its marker is
+    /// rejected with [`StageError::BaseStageHashMismatch`] instead of being
+    /// replayed into a divergence report.
+    fn replay_tail(&self, sandbox: &mut SandboxKind) -> Result<SchemaCatalog, StageError> {
+        if let Some(base) = self.base {
+            apply_scripts(sandbox, &stage_scripts(base))?;
+
+            if let Some(checkpoint) = self.checkpoint {
+                let boundary = sandbox
+                    .catalog()
+                    .map_err(|message| StageError::Sandbox { message })?;
+
+                if boundary.checksum() != checkpoint.schema_hash() {
+                    return Err(StageError::BaseStageHashMismatch {
+                        expected: checkpoint.schema_hash().to_hex(),
+                        actual: boundary.schema_hash(),
+                    });
+                }
+            }
+        }
+
+        self.apply_tail(sandbox)?;
+
+        sandbox
+            .catalog()
+            .map_err(|message| StageError::Sandbox { message })
+    }
+
+    /// Applies the active migration scripts above the checkpoint, in replay order.
+    ///
+    /// The runner hands back owned migrations, so the sorted history is built
+    /// and replayed inside one scope: every script borrows the entry it came
+    /// from for exactly as long as the sandbox needs it, while the ordering
+    /// stays the one the production runner replays.
+    fn apply_tail(&self, sandbox: &mut SandboxKind) -> Result<(), StageError> {
+        let replayed = Migrator::sort_migrations(self.tail);
+
+        for migration in &replayed {
+            let outdated = match (&self.checkpoint, &migration.version) {
+                (Some(checkpoint), Some(version)) => {
+                    version <= checkpoint.pruned_up_to_version()
+                }
+                _ => false,
+            };
+
+            if outdated {
+                continue;
+            }
+
+            sandbox
+                .apply(migration.sql.as_str(), migration.is_transactional())
+                .map_err(|message| StageError::Script {
+                    script: migration.script.clone(),
+                    message,
+                })?;
+        }
+
+        Ok(())
     }
 }
 
@@ -178,7 +235,12 @@ pub fn materialise_stage(
     stage: &DeclarativeStage,
     scratch_url: &str,
 ) -> Result<SchemaCatalog, StageError> {
-    let stage_scripts: Vec<Script<'_>> = stage
+    materialise(scratch_url, &stage_scripts(stage))
+}
+
+/// The replayable scripts of a declarative stage, in declaration order.
+fn stage_scripts(stage: &DeclarativeStage) -> Vec<Script<'_>> {
+    stage
         .scripts()
         .iter()
         .map(|script| Script {
@@ -186,8 +248,7 @@ pub fn materialise_stage(
             sql: script.sql(),
             transactional: script.is_transactional(),
         })
-        .collect();
-    materialise(scratch_url, &stage_scripts)
+        .collect()
 }
 
 /// Materialises `scripts` in the scratch state and introspects the result.
