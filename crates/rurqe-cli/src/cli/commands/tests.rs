@@ -588,14 +588,15 @@ fn an_interrupted_commit_restores_the_parked_pair() {
     let checkpoint_path = dir.join("checkpoint.toml");
 
     // The process was killed after parking the previous marker and boundary but
-    // before installing the new boundary: both are parked, nothing is live.
-    let marker_backup = dir.join(".checkpoint.toml.previous");
+    // before installing the new boundary: both are parked under the scope of the
+    // writer that parked them, nothing is live.
+    let marker_backup = dir.join(".checkpoint.toml.4242.7.previous");
     std::fs::write(
         &marker_backup,
         Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
     )
     .expect("park the previous marker");
-    let boundary_backup = dir.join(".checkpoint-stage.previous");
+    let boundary_backup = dir.join(".checkpoint-stage.4242.7.previous");
     std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
     std::fs::write(
         boundary_backup.join("users.sql"),
@@ -792,13 +793,13 @@ fn an_interrupted_commit_discards_the_boundary_it_installed_without_a_marker() {
     std::fs::create_dir_all(&boundary).expect("install the uncommitted boundary");
     std::fs::write(boundary.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
         .expect("write the installed snapshot");
-    let marker_backup = dir.join(".checkpoint.toml.previous");
+    let marker_backup = dir.join(".checkpoint.toml.4242.8.previous");
     std::fs::write(
         &marker_backup,
         Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
     )
     .expect("park the previous marker");
-    let boundary_backup = dir.join(".checkpoint-stage.previous");
+    let boundary_backup = dir.join(".checkpoint-stage.4242.8.previous");
     std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
     std::fs::write(
         boundary_backup.join("users.sql"),
@@ -863,13 +864,13 @@ fn a_parked_pair_beside_a_committed_pair_is_discarded() {
     std::fs::write(boundary.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
         .expect("write the committed snapshot");
 
-    let marker_backup = dir.join(".checkpoint.toml.previous");
+    let marker_backup = dir.join(".checkpoint.toml.4242.9.previous");
     std::fs::write(
         &marker_backup,
         Checkpoint::new(version("1"), Checksum::of(b"old")).render(),
     )
     .expect("park the previous marker");
-    let boundary_backup = dir.join(".checkpoint-stage.previous");
+    let boundary_backup = dir.join(".checkpoint-stage.4242.9.previous");
     std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
     std::fs::write(
         boundary_backup.join("users.sql"),
@@ -915,7 +916,7 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
     )
     .expect("write the checkpoint");
 
-    let backup = dir.join(".checkpoint-stage.previous");
+    let backup = dir.join(".checkpoint-stage.4242.11.previous");
     std::fs::create_dir_all(&backup).expect("park the committed boundary");
     std::fs::write(backup.join("users.sql"), users).expect("write the parked snapshot");
 
@@ -937,6 +938,103 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
         users
     );
     assert!(!backup.exists(), "the parked snapshot was renamed into place");
+}
+
+/// Writes the lock entry naming `pid`/`nonce` with a heartbeat `age` old.
+fn lock_entry(dir: &Path, pid: u32, nonce: u128, age: Duration) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after the epoch")
+        .as_nanos();
+
+    std::fs::write(
+        dir.join("checkpoint.lock"),
+        format!(
+            "pid={pid}\nnonce={nonce}\nheartbeat={}\n",
+            now.saturating_sub(age.as_nanos())
+        ),
+    )
+    .expect("write the lock entry");
+}
+
+#[test]
+fn the_parked_copies_of_a_live_foreign_writer_are_never_repaired() {
+    let dir = workspace("commit-foreign");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    // The writer pid 1 holds the section: the pair it parked is the only
+    // recoverable copy of the state its commit is between two steps of.
+    lock_entry(&dir, 1, 2, Duration::ZERO);
+    let marker_backup = dir.join(".checkpoint.toml.1.2.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.1.2.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    let error = recover_interrupted_commit(&checkpoint_path)
+        .expect_err("a live foreign writer owns the artifacts");
+
+    let message = error.to_string();
+    assert!(message.contains("pid 1"), "got {message}");
+    assert!(message.contains("nonce 2"), "got {message}");
+
+    // Nothing is renamed, restored, or discarded while the writer lives: the pair
+    // it parked is left exactly where it parked it.
+    assert!(marker_backup.exists(), "the foreign marker copy is untouched");
+    assert!(
+        boundary_backup.exists(),
+        "the foreign boundary copy is untouched"
+    );
+    assert!(!checkpoint_path.exists(), "no marker was restored");
+    assert!(
+        !dir.join("checkpoint-stage").exists(),
+        "no boundary was restored"
+    );
+}
+
+#[test]
+fn the_parked_copies_of_a_writer_whose_heartbeat_expired_are_repaired() {
+    let dir = workspace("commit-dead-owner");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    // A heartbeat older than the budget proves the writer dead, so the pair it
+    // parked is debris a later run repairs even though it carries a foreign scope.
+    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+    let marker_backup = dir.join(".checkpoint.toml.1.2.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.1.2.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    let notice = recover_interrupted_commit(&checkpoint_path)
+        .expect("the dead writer's pair is repaired")
+        .expect("the repair is reported");
+
+    assert!(notice.contains("Restored"), "got {notice}");
+    assert!(checkpoint_path.exists(), "the parked marker is restored");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("checkpoint-stage").join("users.sql"))
+            .expect("read the restored snapshot"),
+        "CREATE TABLE users (id INTEGER);"
+    );
+    assert!(!marker_backup.exists(), "the parked marker is gone");
+    assert!(!boundary_backup.exists(), "the parked boundary is gone");
 }
 
 #[test]

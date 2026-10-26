@@ -254,6 +254,51 @@ impl OwnerRecord {
     }
 }
 
+/// The identity of the writer a lock entry names.
+///
+/// The identity is the scope every parked artifact of that writer carries, so a
+/// copy can be attributed to its creator without trusting the copy itself. The
+/// heartbeat stays out of it: freshness answers whether that writer provably
+/// lives, which is a separate question from who it is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct WriterId {
+    /// The process id of the writer.
+    pub(super) pid: u32,
+    /// The value taken when the writer entered the section, keeping a recycled
+    /// process id from being read as the writer of an earlier record.
+    pub(super) nonce: u128,
+}
+
+impl WriterId {
+    /// The identity a writer that holds no recorded section takes up.
+    pub(super) fn current() -> Self {
+        Self {
+            pid: std::process::id(),
+            nonce: now_nanos(),
+        }
+    }
+}
+
+/// The identity a live lock entry names, if one provably lives.
+///
+/// The entry is read without taking the section, so a writer already holding it
+/// can ask who else provably lives right now — the question a recovery of parked
+/// artifacts has to answer before it repairs anything. An absent entry, an entry
+/// whose owner record cannot be read, and an entry whose heartbeat expired all
+/// name no live writer, so a recovery reading them never repairs underneath a
+/// writer that still lives.
+pub(super) fn live_writer(checkpoint_path: &Path) -> Result<Option<WriterId>, CliError> {
+    match read_lock(&lock_path_of(checkpoint_path))? {
+        LockEntry::Held(owner) if !heartbeat_stale_at(owner.heartbeat, now_nanos()) => {
+            Ok(Some(WriterId {
+                pid: owner.pid,
+                nonce: owner.nonce,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// The state a lock entry was read in.
 enum LockEntry {
     /// The entry is absent: its owner released the section.

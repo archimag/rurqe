@@ -221,15 +221,19 @@ use rurqe_migrate::stage::DeclarativeStage;
 use crate::cli::CliError;
 
 use super::super::{artifact_directory, sync_directory, temporary_sibling, write_file};
+use super::lock::{live_writer, WriterId};
 
 /// The directory holding the verbatim DDL of a committed stage boundary.
 const CHECKPOINT_STAGE_DIR: &str = "checkpoint-stage";
 
 /// The suffix a previous artifact is parked under while a commit replaces it.
 ///
-/// The name is fixed instead of process-tagged, so a commit the operating system
-/// killed mid-sequence leaves the previous marker and boundary at a path the next
-/// run can find, name, and restore.
+/// The whole name is `.{basename}.{pid}.{nonce}.previous`: the basename makes the
+/// copy discoverable from the artifact it replaces, and the writer scope keeps it
+/// attributable to the section its creator held, so no writer can rename, restore,
+/// or discard a copy another one parked. A commit the operating system killed
+/// mid-sequence therefore leaves its previous marker and boundary at paths the
+/// next run discovers by prefix instead of guessing.
 const PARKED_SUFFIX: &str = ".previous";
 
 /// The directory the boundary snapshot of the marker at `checkpoint_path` lives in.
@@ -237,17 +241,136 @@ pub(super) fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
     artifact_directory(checkpoint_path).join(CHECKPOINT_STAGE_DIR)
 }
 
-/// The deterministic sibling path `artifact` is parked at during a commit.
-///
-/// It names a sibling of `artifact`, so parking and restoring it stays inside one
-/// directory and cannot cross a filesystem boundary.
-fn parked_sibling(artifact: &Path) -> PathBuf {
+/// The prefix every parked copy of `artifact` starts with.
+fn parked_prefix(artifact: &Path) -> String {
     let name = artifact
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    artifact_directory(artifact).join(format!(".{name}{PARKED_SUFFIX}"))
+    format!(".{name}.")
+}
+
+/// The writer scope a parked copy of an artifact carries in its name.
+///
+/// The name is `.{basename}.{pid}.{nonce}.previous`, so the segment between the
+/// prefix and the suffix is the scope of the writer that parked the copy. A name
+/// that deviates — a staged sibling, a truncated copy, the fixed `.previous` name
+/// an older protocol used — parses to `None` and is left alone.
+fn parked_scope(name: &str, prefix: &str) -> Option<WriterId> {
+    let rest = name.strip_prefix(prefix)?.strip_suffix(PARKED_SUFFIX)?;
+    let (pid, nonce) = rest.split_once('.')?;
+
+    Some(WriterId {
+        pid: pid.parse().ok()?,
+        nonce: nonce.parse().ok()?,
+    })
+}
+
+/// The deterministic sibling path `artifact` is parked at by the writer `scope`.
+///
+/// It names a sibling of `artifact`, so parking and restoring it stays inside one
+/// directory and cannot cross a filesystem boundary, and it carries the scope of
+/// the parking writer, so another writer can never mistake it for its own copy.
+fn parked_sibling(artifact: &Path, scope: WriterId) -> PathBuf {
+    artifact_directory(artifact).join(format!(
+        "{}{}.{}{PARKED_SUFFIX}",
+        parked_prefix(artifact),
+        scope.pid,
+        scope.nonce
+    ))
+}
+
+/// The parked copies of `artifact`, discovered by their writer-scoped names.
+///
+/// Discovery replaces the fixed `.previous` name a commit used to park at: every
+/// copy names the writer that parked it, so the copies of a writer that no longer
+/// provably lives can be told apart from the ones a live writer left, and no
+/// writer has to guess the name an interrupted commit used. The copies are ordered
+/// by their writer scope, so the newest parking comes last and a repair that has to
+/// choose among several of them restores the most recent previous state.
+fn parked_copies(artifact: &Path) -> Result<Vec<(PathBuf, WriterId)>, CliError> {
+    let directory = artifact_directory(artifact);
+    let prefix = parked_prefix(artifact);
+
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(CliError(format!(
+                "failed to scan `{}` for parked artifacts: {error}",
+                directory.display()
+            )))
+        }
+    };
+
+    let mut parked = Vec::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            CliError(format!(
+                "failed to scan `{}` for parked artifacts: {error}",
+                directory.display()
+            ))
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        if let Some(scope) = parked_scope(&name, &prefix) {
+            parked.push((entry.path(), scope));
+        }
+    }
+
+    parked.sort_by(|left, right| {
+        left.1
+            .nonce
+            .cmp(&right.1.nonce)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    Ok(parked)
+}
+
+/// Discards every parked copy, returning the warnings the removals hit.
+fn discard_copies(copies: &[(PathBuf, WriterId)]) -> Vec<String> {
+    copies
+        .iter()
+        .filter_map(|(parked, _)| discard_parked(parked))
+        .collect()
+}
+
+/// Refuses to repair the pair while another provably live writer holds the section.
+///
+/// A parked copy names the writer that created it, and the lock entry is the only
+/// proof that a writer still lives. While the entry names another process with a
+/// heartbeat younger than the budget, that writer is between two steps of its own
+/// commit, so its parked copies are the only recoverable copy of the state it is
+/// replacing: classifying them here would either discard that copy or restore it
+/// underneath the install in progress. The recovery therefore refuses and names the
+/// owner instead of mutating anything.
+fn refuse_live_foreign(checkpoint_path: &Path) -> Result<(), CliError> {
+    match live_writer(checkpoint_path)? {
+        Some(owner) if owner.pid != std::process::id() => Err(CliError(format!(
+            "refusing to repair the checkpoint artifacts beside `{}`: the checkpoint lock names \
+             the live writer pid {} (nonce {}), which is between two steps of its own commit, so \
+             the parked marker and boundary it left are the only recoverable copy of that state; \
+             re-run this command once that writer finishes",
+            checkpoint_path.display(),
+            owner.pid,
+            owner.nonce
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// The writer scope the artifacts of a commit are parked under.
+///
+/// A commit runs inside the exclusive section, so the live lock entry names the
+/// writer performing it and the parked copies carry exactly that identity; a later
+/// recovery can then attribute them to the section their creator held instead of
+/// guessing from a fixed name. A commit that finds no live entry takes a scope of
+/// its own rather than borrowing another writer's identity.
+fn writer_scope(checkpoint_path: &Path) -> Result<WriterId, CliError> {
+    Ok(live_writer(checkpoint_path)?.unwrap_or_else(WriterId::current))
 }
 
 /// Whether `path` exists, reporting a path that cannot be inspected.
@@ -289,17 +412,30 @@ fn names_a_directory(path: &Path) -> bool {
 /// restored and any boundary installed without its marker is dropped, so the
 /// marker never describes a boundary another commit replaced.
 ///
+/// The copies are discovered by their writer-scoped names instead of a fixed
+/// `.previous` path, and nothing is classified while the checkpoint lock names a
+/// different, provably live writer: its parked pair is the only recoverable copy of
+/// the state that writer is between two steps of, so discarding or restoring it here
+/// would be the very damage the scope exists to prevent. A copy whose writer is
+/// provably gone — the lock names this process, names nobody, or names a writer
+/// whose heartbeat expired — is debris this run may repair.
+///
 /// Every removal and rename happens before a command reads the pair, so neither
 /// `stage commit` nor `stage verify` ever observes a self-inconsistent marker and
 /// boundary while a parked copy still holds the previous state.
 pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Option<String>, CliError> {
     let dir = boundary_dir(checkpoint_path);
-    let marker_backup = parked_sibling(checkpoint_path);
-    let boundary_backup = parked_sibling(&dir);
+    let marker_copies = parked_copies(checkpoint_path)?;
+    let boundary_copies = parked_copies(&dir)?;
 
-    if !path_exists(&marker_backup)? && !path_exists(&boundary_backup)? {
+    if marker_copies.is_empty() && boundary_copies.is_empty() {
         return Ok(None);
     }
+
+    // A copy is never classified while another provably live writer holds the
+    // section: the repair below would either discard the only recoverable copy of
+    // its state or restore that copy underneath the install it is performing.
+    refuse_live_foreign(checkpoint_path)?;
 
     let marker_live = path_exists(checkpoint_path)?;
     let boundary_live = path_exists(&dir)?;
@@ -310,13 +446,10 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
         let mut message = String::from(
             "Discarded the checkpoint marker and boundary an earlier commit already replaced",
         );
-        for notice in [
-            discard_parked(&marker_backup),
-            discard_parked(&boundary_backup),
-            flush_boundary_parent(&dir),
-        ]
-        .into_iter()
-        .flatten()
+        for notice in discard_copies(&marker_copies)
+            .into_iter()
+            .chain(discard_copies(&boundary_copies))
+            .chain(flush_boundary_parent(&dir))
         {
             message.push('\n');
             message.push_str(&notice);
@@ -324,10 +457,10 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
         return Ok(Some(message));
     }
 
-    // Otherwise the commit stopped before its commit point: the parked pair is
-    // the state the marker last described, and a boundary installed without its
-    // marker is debris the parked boundary replaces.
-    if path_exists(&boundary_backup)? {
+    // Otherwise the commit stopped before its commit point: the parked pair is the
+    // state the marker last described, and a boundary installed without its marker
+    // is debris the parked boundary replaces.
+    if let Some((parked, _)) = boundary_copies.last() {
         if boundary_live {
             std::fs::remove_dir_all(&dir).map_err(|error| {
                 CliError(format!(
@@ -337,19 +470,19 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
                 ))
             })?;
         }
-        std::fs::rename(&boundary_backup, &dir).map_err(|error| {
+        std::fs::rename(parked, &dir).map_err(|error| {
             CliError(format!(
                 "failed to restore the boundary snapshot `{}` parked at `{}`: {error}; `mv {} {}` \
                  puts it back",
                 dir.display(),
-                boundary_backup.display(),
-                boundary_backup.display(),
+                parked.display(),
+                parked.display(),
                 dir.display()
             ))
         })?;
     }
 
-    if path_exists(&marker_backup)? {
+    if let Some((parked, _)) = marker_copies.last() {
         if marker_live {
             std::fs::remove_file(checkpoint_path).map_err(|error| {
                 CliError(format!(
@@ -359,13 +492,13 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
                 ))
             })?;
         }
-        std::fs::rename(&marker_backup, checkpoint_path).map_err(|error| {
+        std::fs::rename(parked, checkpoint_path).map_err(|error| {
             CliError(format!(
                 "failed to restore the checkpoint marker `{}` parked at `{}`: {error}; `mv {} {}` \
                  puts it back",
                 checkpoint_path.display(),
-                marker_backup.display(),
-                marker_backup.display(),
+                parked.display(),
+                parked.display(),
                 checkpoint_path.display()
             ))
         })?;
@@ -374,10 +507,18 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
     let mut message = String::from(
         "Restored the checkpoint marker and boundary an interrupted commit left parked",
     );
-    if let Some(notice) = flush_boundary_parent(&dir) {
+    // Every remaining copy is superseded by the pair just restored, and its writer
+    // is provably gone because no live foreign section named it, so the repair
+    // leaves none of them behind.
+    for notice in discard_copies(&marker_copies)
+        .into_iter()
+        .chain(discard_copies(&boundary_copies))
+        .chain(flush_boundary_parent(&dir))
+    {
         message.push('\n');
         message.push_str(&notice);
     }
+
     Ok(Some(message))
 }
 
@@ -386,7 +527,8 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
 ///
 /// The new boundary is assembled and flushed first, so a failure up to there
 /// leaves the committed pair exactly as it was. The previous marker and boundary
-/// are then parked, the staged boundary is installed, and the marker is written
+/// are then parked under the scope of the writer performing the commit — see
+/// [`writer_scope`] — the staged boundary is installed, and the marker is written
 /// last as the commit point. Only once the marker is durable are the parked
 /// artifacts discarded. A process killed before the commit point leaves the
 /// previous pair parked for [`recover_interrupted_commit`] to restore; one killed
@@ -398,8 +540,9 @@ pub(super) fn seal_commit(
     marker: &str,
 ) -> Result<Vec<String>, CliError> {
     let dir = boundary_dir(checkpoint_path);
-    let marker_backup = parked_sibling(checkpoint_path);
-    let boundary_backup = parked_sibling(&dir);
+    let scope = writer_scope(checkpoint_path)?;
+    let marker_backup = parked_sibling(checkpoint_path, scope);
+    let boundary_backup = parked_sibling(&dir, scope);
 
     let staged = create_staging_dir(&dir)?;
 
@@ -462,10 +605,12 @@ pub(super) fn seal_commit(
         return Err(failure);
     }
 
-    // The commit point is durable, so the parked pair is debris.
+    // The commit point is durable, so the pair this commit parked is debris. Only
+    // the copies parked above are discarded: a copy another writer parked sits under
+    // its own scope and is left for a recovery that can prove its owner gone.
     let mut notices = Vec::new();
-    notices.extend(discard_parked(&marker_backup));
-    notices.extend(discard_parked(&boundary_backup));
+    notices.extend(parked_marker.as_deref().and_then(discard_parked));
+    notices.extend(parked_boundary.as_deref().and_then(discard_parked));
     notices.extend(flush_boundary_parent(&dir));
     Ok(notices)
 }
@@ -473,9 +618,11 @@ pub(super) fn seal_commit(
 /// Parks `artifact` at `backup`, returning the backup path when one was parked.
 ///
 /// An absent artifact is not an error: the first commit of a project parks
-/// nothing, and its marker is written without a previous state to keep. A backup
-/// still present here is debris an earlier recovery left behind and is discarded
-/// so the rename below never fails over an existing directory.
+/// nothing, and its marker is written without a previous state to keep. The backup
+/// path carries the writer scope of this commit, so it can only ever name a copy of
+/// this writer; an entry still sitting there is debris of an earlier parking under
+/// the same scope and is discarded, so the rename below never fails over an
+/// existing directory.
 fn park(artifact: &Path, backup: &Path) -> Result<Option<PathBuf>, CliError> {
     if let Some(notice) = discard_parked(backup) {
         tracing::warn!(%notice, "discarding a parked artifact before parking a new one");
@@ -643,5 +790,47 @@ pub(crate) fn flush_boundary_parent(dir: &Path) -> Option<String> {
              not be flushed, so a crash may still resurrect the previous boundary: {error}",
             parent.display()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The prefix the marker of one directory is parked under.
+    const MARKER_PREFIX: &str = ".checkpoint.toml.";
+
+    #[test]
+    fn a_parked_name_carries_the_scope_of_the_writer_that_parked_it() {
+        let scope = WriterId {
+            pid: 4242,
+            nonce: 17,
+        };
+        let parked = parked_sibling(Path::new("migrations/checkpoint.toml"), scope);
+        let name = parked
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        assert_eq!(parked_scope(&name, MARKER_PREFIX), Some(scope));
+        assert_eq!(
+            parked,
+            PathBuf::from("migrations/.checkpoint.toml.4242.17.previous")
+        );
+    }
+
+    #[test]
+    fn a_name_that_carries_no_writer_scope_is_left_alone() {
+        for name in [
+            ".checkpoint.toml.previous",
+            ".checkpoint.toml.4242.previous",
+            ".checkpoint.toml.4242.17.tmp",
+            ".checkpoint.toml.4242.17.previous.extra",
+            ".checkpoint.toml..4242.17.previous",
+            ".checkpoint-stage.4242.17.previous",
+            "checkpoint.toml",
+        ] {
+            assert_eq!(parked_scope(name, MARKER_PREFIX), None, "{name}");
+        }
     }
 }
