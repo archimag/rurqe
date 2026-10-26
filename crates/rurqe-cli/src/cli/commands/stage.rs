@@ -19,8 +19,8 @@ use crate::stage::GoldenEquation;
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
 use super::{
-    artifact_directory, cli_error, sweep_stale_temporaries, temporary_sibling, write_file,
-    STALE_TEMPORARY_AGE,
+    artifact_directory, cli_error, sweep_stale_temporaries, sync_directory, temporary_sibling,
+    write_file, STALE_TEMPORARY_AGE,
 };
 
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
@@ -558,7 +558,9 @@ fn discard_previous_snapshot(previous: &Path) {
 /// The rename is durable only once that directory is flushed, but the boundary
 /// has already replaced the previous one: a flush that cannot be completed only
 /// weakens the durability of a commit that is otherwise done, so reporting it
-/// would reject a swap that did happen.
+/// would reject a swap that did happen. The flush itself goes through the same
+/// shared `sync_directory` primitive every artifact write uses, so the
+/// durability discipline cannot drift between call sites.
 fn flush_boundary_parent(dir: &Path) {
     let parent = artifact_directory(dir);
     if let Err(error) = sync_directory(parent) {
@@ -568,34 +570,4 @@ fn flush_boundary_parent(dir: &Path) {
             "failed to flush the directory holding the installed boundary snapshot"
         );
     }
-}
-
-/// Flushes the entries of `dir` to the device.
-///
-/// The swap publishes a new name while keeping the staged contents, so the
-/// scripts are flushed one by one, the staging directory is flushed once all of
-/// their names are in it, and the parent is flushed after the rename. Only Unix
-/// exposes a directory as a file handle; a platform without that capability
-/// leaves the ordering to the filesystem instead of reporting every commit as
-/// a failure it cannot do anything about.
-#[cfg(unix)]
-fn sync_directory(dir: &Path) -> Result<(), CliError> {
-    let handle = std::fs::File::open(dir).map_err(|error| {
-        CliError(format!(
-            "failed to open the directory `{}`: {error}",
-            dir.display()
-        ))
-    })?;
-
-    handle.sync_all().map_err(|error| {
-        CliError(format!(
-            "failed to flush the directory `{}`: {error}",
-            dir.display()
-        ))
-    })
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_dir: &Path) -> Result<(), CliError> {
-    Ok(())
 }

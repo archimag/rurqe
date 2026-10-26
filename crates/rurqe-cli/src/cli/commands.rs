@@ -123,14 +123,34 @@ pub(super) fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
 
     // The bytes are staged next to the artifact and renamed into place, so a
     // failure while they are written leaves the previous file untouched instead
-    // of truncating it. A lock and the checkpoint derived from it therefore never
-    // disagree about the snapshot they describe.
+    // of truncating it. The publication is completed by the flush below, so a
+    // crash can no longer lose the rename and resurrect the previous
+    // `schema.lock` or `checkpoint.toml` while the new bytes sit durable in an
+    // orphaned staging file. A lock and the checkpoint derived from it
+    // therefore never disagree about the snapshot they describe.
     let temporary = temporary_sibling(path);
     write_temporary(&temporary, contents, path)?;
+    rename_durable(&temporary, path)
+}
 
-    std::fs::rename(&temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temporary);
+/// Renames a staged artifact into place and flushes the directory entry.
+///
+/// The rename a staged write publishes its bytes with becomes durable only
+/// once the directory holding the artifact is flushed, so the flush is part
+/// of the write instead of an afterthought: a flush that cannot be completed
+/// fails the write rather than leaving a marker a crash can silently swap
+/// back for the boundary beside it.
+fn rename_durable(temporary: &Path, path: &Path) -> Result<(), CliError> {
+    std::fs::rename(temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(temporary);
         CliError(format!("failed to write `{}`: {error}", path.display()))
+    })?;
+
+    sync_directory(artifact_directory(path)).map_err(|error| {
+        CliError(format!(
+            "failed to flush the directory holding `{}` after writing it: {error}",
+            path.display()
+        ))
     })
 }
 
@@ -298,6 +318,39 @@ fn write_temporary(temporary: &Path, contents: &str, path: &Path) -> Result<(), 
 fn write_failure(temporary: &Path, path: &Path, error: &std::io::Error) -> CliError {
     let _ = std::fs::remove_file(temporary);
     CliError(format!("failed to write `{}`: {error}", path.display()))
+}
+
+/// Flushes the entries of `dir` to the device.
+///
+/// A rename publishes a new name while keeping the staged contents, so an
+/// artifact written or swapped through a staging sibling is durable only once
+/// the directory holding its entry is flushed. `write_file` fails when the
+/// flush cannot be completed, while the boundary swap reports it and keeps the
+/// snapshot it already installed, so both policies share this one primitive
+/// and the discipline cannot drift between call sites. Only Unix exposes a
+/// directory as a file handle; a platform without that capability leaves the
+/// ordering to the filesystem instead of reporting every write as a failure it
+/// cannot do anything about.
+#[cfg(unix)]
+pub(super) fn sync_directory(dir: &Path) -> Result<(), CliError> {
+    let handle = std::fs::File::open(dir).map_err(|error| {
+        CliError(format!(
+            "failed to open the directory `{}`: {error}",
+            dir.display()
+        ))
+    })?;
+
+    handle.sync_all().map_err(|error| {
+        CliError(format!(
+            "failed to flush the directory `{}`: {error}",
+            dir.display()
+        ))
+    })
+}
+
+#[cfg(not(unix))]
+pub(super) fn sync_directory(_dir: &Path) -> Result<(), CliError> {
+    Ok(())
 }
 
 /// The help text of the toolchain.

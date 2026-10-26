@@ -341,6 +341,70 @@ fn a_written_artifact_leaves_no_staged_sibling_behind() {
     assert_eq!(entries, vec!["schema.lock".to_owned()]);
 }
 
+/// Whether the operating system enforces directory permissions for this process.
+///
+/// A superuser bypasses them, so a flush cannot be made to fail by withdrawing
+/// read permission from a directory, and the regression below stands down.
+#[cfg(unix)]
+fn permissions_are_enforced(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let probe = dir.join(".permission-probe");
+    if std::fs::create_dir(&probe).is_err() {
+        return true;
+    }
+
+    let restricted = std::fs::Permissions::from_mode(0o000);
+    let enforced = std::fs::set_permissions(&probe, restricted)
+        .map(|_| std::fs::File::open(&probe).is_err())
+        .unwrap_or(true);
+    let _ = std::fs::remove_dir(&probe);
+
+    enforced
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_flush_after_the_rename_fails_the_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = workspace("atomic-flush");
+    let target = dir.join("checkpoint.toml");
+    write_file(&target, "previous").expect("the first artifact is written");
+
+    if !permissions_are_enforced(&dir) {
+        // A superuser reads through the withdrawn permission, so the flush
+        // cannot be made to fail and the write stays durable either way.
+        return;
+    }
+
+    // Renaming the staged bytes needs write and search permission on the
+    // directory, while flushing the renamed entry needs the directory open
+    // for reading, so the mode lets the rename through and fails the flush
+    // alone.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300))
+        .expect("withdraw the read permission of the directory");
+
+    let result = write_file(&target, "replacement");
+
+    // The permissions are restored before the assertions, so a failure among
+    // them can never mask the artifact directory from the checks below.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .expect("restore the permissions of the directory");
+
+    let message = result.expect_err("the flush cannot be completed").to_string();
+    assert!(message.contains("failed to flush"), "{message}");
+    assert!(message.contains("checkpoint.toml"), "{message}");
+
+    // The bytes are in place and the staging sibling is gone: the failure
+    // reports the durability gap of the rename, not a missing artifact.
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("read the artifact"),
+        "replacement"
+    );
+    assert_eq!(directory_names(&dir), vec!["checkpoint.toml".to_owned()]);
+}
+
 #[test]
 fn a_failed_write_reports_the_directory_it_could_not_prepare() {
     let dir = workspace("atomic-failure");
