@@ -3,8 +3,11 @@
 //! The command implementations of this crate are reachable as a library, so
 //! none of them writes to a stream of its own: a command returns the lines it
 //! produced, and the process entry point of the binary prints them. Diagnostics
-//! about the environment travel through the `tracing` facade instead, so an
-//! application embedding this crate chooses the sink of both.
+//! about the environment travel through the `tracing` facade instead. Both
+//! classes reach the operator through the single channel the crate root declares
+//! in [`operator_channel`](crate::operator_channel), so an application embedding
+//! this crate — or a test — redirects the reports and the diagnostics from one
+//! place.
 
 /// The lines a command of the toolchain produced for the user.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -62,14 +65,32 @@ impl CommandOutput {
         self.lines.is_empty()
     }
 
-    /// Writes every line to standard output.
+    /// Writes every line to `writer` with the shape the crate's channel declares.
     ///
-    /// This is the only place the crate writes its report, and the process
-    /// entry point [`run`](crate::run) reaches it, so a binary embedding the
-    /// toolchain decides when the report becomes visible.
-    pub fn print(&self) {
+    /// The report is assembled here and formatted by
+    /// [`write_message`](crate::write_message), so a report line and a diagnostic
+    /// leave the crate through one code path instead of two independent ones.
+    /// Keeping the writer a parameter is what lets an embedding application — or
+    /// a test — observe the exact bytes of a report without capturing the process
+    /// stream.
+    pub fn write_into(&self, writer: &mut impl std::io::Write) -> std::io::Result<()> {
         for line in &self.lines {
-            println!("{line}");
+            crate::write_message(writer, crate::MessageClass::Report, line)?;
         }
+        Ok(())
+    }
+
+    /// Writes every line of the report to the operator channel of the crate.
+    ///
+    /// The destination is [`operator_channel`](crate::operator_channel) — the
+    /// same stream the `tracing` sink of
+    /// [`install_diagnostics`](crate::install_diagnostics) writes to — so the
+    /// operator-facing output of the process is redirected from a single place.
+    /// This is the only place the crate writes a report, and the process entry
+    /// point [`run`](crate::run) reaches it.
+    pub fn print(&self) {
+        // A closed stream is not a failure the crate can report anywhere else:
+        // the lines have nowhere left to go.
+        let _ = self.write_into(&mut crate::operator_channel());
     }
 }

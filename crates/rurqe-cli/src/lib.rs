@@ -1,6 +1,8 @@
 //! Developer toolchain for live catalog introspection, code generation,
 //! migration execution, and CI schema drift verification (`schema.lock`).
 
+use std::io::{self, Write};
+
 pub mod cli;
 pub mod codegen;
 pub mod drift;
@@ -29,6 +31,47 @@ pub use introspect::{
 pub use loader::{load_migrations_from_dir, read_migration_files};
 pub use stage::{GoldenEquation, GoldenReport, StageError};
 
+/// The class of a line the toolchain writes for the operator.
+///
+/// The class is the only parameter of the crate's single write point: it selects
+/// the shape of the line, while the destination is declared once in
+/// [`operator_channel`], so a `tracing` event and a report line cannot end up in
+/// different streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageClass {
+    /// A line of the report a command produced: what the command did.
+    Report,
+    /// A failure that ended the process without producing a report.
+    Failure,
+}
+
+/// The destination every line the toolchain writes for the operator goes to.
+///
+/// The sink [`install_diagnostics`] installs and the report [`run`] prints both
+/// reach this function, so the process declares the destination of its
+/// operator-facing output in one place: an application that embeds this crate
+/// redirects its reports and its diagnostics together, instead of chasing the
+/// two write paths the crate used to keep apart.
+pub fn operator_channel() -> io::Stderr {
+    io::stderr()
+}
+
+/// Writes one line of operator output with the shape its `class` declares.
+///
+/// This is the only place the crate formats a line for the operator, so a report
+/// line and a failure that ended the process travel the same code path. `writer`
+/// stays a parameter, which is what lets a test observe the exact bytes a line
+/// produces — and an embedding application route the channel somewhere other
+/// than the process stream — without capturing a file descriptor. The lines
+/// carry neither a level nor a target, matching the compact sink
+/// [`install_diagnostics`] installs on the same destination.
+pub fn write_message(writer: &mut impl Write, class: MessageClass, line: &str) -> io::Result<()> {
+    match class {
+        MessageClass::Report => writeln!(writer, "{line}"),
+        MessageClass::Failure => writeln!(writer, "Error: {line}"),
+    }
+}
+
 /// Installs the diagnostic sink the shipped binaries report their notices through.
 ///
 /// Every environment diagnostic of this crate — a schema selection that describes
@@ -39,10 +82,11 @@ pub use stage::{GoldenEquation, GoldenReport, StageError};
 /// dispatcher stays the no-op default and every notice is dropped before it
 /// reaches the operator.
 ///
-/// The sink writes to standard error at `WARN` and above, so the report of a
-/// command on standard output stays machine-readable. Installation happens once
-/// per process and is idempotent: a repeated call keeps the sink the first call
-/// put in place.
+/// The sink writes to standard error at `WARN` and above — the destination
+/// [`operator_channel`] declares for the reports a command returns — so both
+/// classes of operator output share one stream and one format. Installation
+/// happens once per process and is idempotent: a repeated call keeps the sink
+/// the first call put in place.
 ///
 /// A sink an embedding application installed first is never replaced, which keeps
 /// [`run_cli`] usable as a plain library call. That refusal is not silent, though:
@@ -54,10 +98,13 @@ pub fn install_diagnostics() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
 
     INSTALLED.call_once(|| {
+        // The sink and every report share one destination: the channel is
+        // declared once, so a `tracing` event cannot diverge from the operator
+        // output the commands return.
         let sink = tracing_subscriber::fmt::Subscriber::builder()
             .compact()
             .with_max_level(tracing::Level::WARN)
-            .with_writer(std::io::stderr)
+            .with_writer(operator_channel as fn() -> io::Stderr)
             .with_target(false)
             .finish();
 
@@ -77,20 +124,80 @@ pub fn install_diagnostics() {
 
 /// Main CLI execution entry point for standalone and Cargo subcommand binaries.
 ///
-/// The report of a command is printed here, at the process boundary, so the
-/// command implementations stay callable as a library without writing to a
-/// stream of their own. The diagnostic sink the notices of the crate travel
+/// The report of a command and the failure that ends the process are written
+/// here, at the process boundary, through [`write_message`] into the single
+/// [`operator_channel`], so the command implementations stay callable as a
+/// library without writing to a stream of their own and the binary keeps no
+/// second write path. The diagnostic sink the notices of the crate travel
 /// through is installed here for the same reason: the binary is the application
 /// the `tracing` facade delegates the sink to.
 pub fn run() {
     install_diagnostics();
 
     let args: Vec<String> = std::env::args().collect();
+    let mut channel = operator_channel();
     match run_cli(args) {
-        Ok(output) => output.print(),
+        // A stream that is already closed is not a failure the toolchain can
+        // report anywhere else: the lines have nowhere left to go.
+        Ok(output) => {
+            let _ = output.write_into(&mut channel);
+        }
         Err(err) => {
-            eprintln!("Error: {err}");
+            let _ = write_message(&mut channel, MessageClass::Failure, &err.to_string());
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_message, CommandOutput, MessageClass};
+
+    /// The report of a command reaches an arbitrary writer with the shape the
+    /// shared channel declares, so the report is not a write path of its own.
+    #[test]
+    fn report_lines_travel_the_shared_channel() {
+        let output = CommandOutput::single("applied 3 migrations");
+
+        let mut routed = Vec::new();
+        output
+            .write_into(&mut routed)
+            .expect("writing to a buffer cannot fail");
+
+        let mut expected = Vec::new();
+        write_message(&mut expected, MessageClass::Report, "applied 3 migrations")
+            .expect("writing to a buffer cannot fail");
+
+        assert_eq!(routed, expected);
+        assert_eq!(
+            String::from_utf8(routed).expect("the channel wrote UTF-8"),
+            "applied 3 migrations\n"
+        );
+    }
+
+    /// A failure keeps the marker it always carried while sharing the channel
+    /// with the reports, so routing it through the channel lost nothing.
+    #[test]
+    fn failure_lines_keep_their_marker() {
+        let mut written = Vec::new();
+        write_message(&mut written, MessageClass::Failure, "unknown command")
+            .expect("writing to a buffer cannot fail");
+
+        assert_eq!(
+            String::from_utf8(written).expect("the channel wrote UTF-8"),
+            "Error: unknown command\n"
+        );
+    }
+
+    /// A command that produced no line writes none, so an empty report routed
+    /// through the channel emits nothing at all.
+    #[test]
+    fn an_empty_report_writes_nothing() {
+        let mut written = Vec::new();
+        CommandOutput::new()
+            .write_into(&mut written)
+            .expect("writing to a buffer cannot fail");
+
+        assert!(written.is_empty());
     }
 }
