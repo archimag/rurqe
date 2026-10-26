@@ -96,7 +96,10 @@ fn invalid_value<T>(value: &SqlVal, detail: &str) -> RowDecodeError {
 /// Engines without dedicated boolean, narrow integer, or 32-bit storage classes
 /// (SQLite reports every `INTEGER` value as [`SqlVal::I64`]) still decode into
 /// their declared Rust types: narrower integers accept a 64-bit value that fits,
-/// and `bool` accepts the `0` / `1` integer encoding of a boolean column.
+/// `bool` accepts the `0` / `1` integer encoding of a boolean column, a floating
+/// point value accepts the integer kinds (a JSON document renders an integral
+/// value of a float column as a plain number), and a 64-bit integer accepts a
+/// floating point value only when it carries no fraction.
 /// Values outside those ranges are reported as [`RowDecodeError::InvalidValue`]
 /// rather than silently truncated.
 ///
@@ -166,6 +169,16 @@ impl FromSqlValue for i64 {
                     invalid_value::<Self>(value, "value does not fit into a 64-bit integer")
                 })
             }
+            // A nested document reports a fractional number as a floating point
+            // value when no exact decimal representation is compiled in, and an
+            // integral number of the same document is indistinguishable from the
+            // integral value of a floating point column. Only a value the 64-bit
+            // range carries without a fraction is accepted, so a rounded,
+            // fractional, or out-of-range number reports the failure instead of
+            // being silently changed by the conversion.
+            SqlVal::F64(number) => integral_float(*number).ok_or_else(|| {
+                invalid_value::<Self>(value, "value is not an exact 64-bit integer")
+            }),
             _ => Err(type_mismatch::<Self>(value)),
         }
     }
@@ -189,6 +202,16 @@ impl FromSqlValue for f64 {
     fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
         match value {
             SqlVal::F64(value) => Ok(*value),
+            // Engines without a floating point storage class report a `REAL`
+            // value as the integer it fits into, and a JSON document renders an
+            // integral value of a floating point column as a plain number: both
+            // PostgreSQL `to_jsonb` and the object written by `multiset_object`
+            // carry `1200.0` as the integral number `1200`. An integer kind
+            // therefore decodes into the floating point value of the number
+            // instead of reporting a mismatch, exactly like `bool` accepts the
+            // integer encoding of a boolean column.
+            SqlVal::I32(number) => Ok(f64::from(*number)),
+            SqlVal::I64(number) => Ok(*number as f64),
             // A nested document reports a fractional value as the exact decimal
             // holding its digits, so a floating point field of the same row reads
             // the number the document carries.
@@ -224,6 +247,24 @@ fn decode_bool_integer(value: i64) -> Option<bool> {
         0 => Some(false),
         1 => Some(true),
         _ => None,
+    }
+}
+
+/// Reads a floating point value that carries no fraction as the integer it is.
+///
+/// A JSON document reports a fractional number as a floating point value when no
+/// exact decimal representation is compiled in, and an integral number of the
+/// same document is indistinguishable from the integral value of a floating
+/// point column. Only a value the 64-bit integer range holds without a fraction
+/// is read back, so a rounded, fractional, or out-of-range number stays reported
+/// instead of being silently changed by the cast.
+fn integral_float(value: f64) -> Option<i64> {
+    let integer = value as i64;
+
+    if integer as f64 == value {
+        Some(integer)
+    } else {
+        None
     }
 }
 
@@ -584,7 +625,7 @@ mod tests {
         );
         assert!(String::from_sql_value(&SqlVal::I64(7)).is_err());
         assert!(bool::from_sql_value(&SqlVal::Text("true".to_owned())).is_err());
-        assert!(f64::from_sql_value(&SqlVal::I64(7)).is_err());
+        assert!(f64::from_sql_value(&SqlVal::Text("7".to_owned())).is_err());
     }
 
     #[cfg(feature = "uuid")]
@@ -681,6 +722,34 @@ mod tests {
             RowDecodeError::InvalidValue { found: "int64", .. }
         ));
         assert!(error.to_string().contains("0 or 1"));
+    }
+
+    #[test]
+    fn floating_point_values_accept_the_integral_kinds() {
+        assert_eq!(f64::from_sql_value(&SqlVal::I32(7)), Ok(7.0));
+        assert_eq!(f64::from_sql_value(&SqlVal::I64(7)), Ok(7.0));
+        assert_eq!(f64::from_sql_value(&SqlVal::I64(-1200)), Ok(-1200.0));
+        assert_eq!(f64::from_sql_value(&SqlVal::F64(0.5)), Ok(0.5));
+
+        assert!(f64::from_sql_value(&SqlVal::Bool(true)).is_err());
+        assert!(f64::from_sql_value(&SqlVal::Bytes(vec![1, 2])).is_err());
+        assert!(f64::from_sql_value(&SqlVal::Null).is_err());
+    }
+
+    #[test]
+    fn integer_values_accept_a_floating_point_value_carrying_no_fraction() {
+        assert_eq!(i64::from_sql_value(&SqlVal::F64(7.0)), Ok(7));
+        assert_eq!(i64::from_sql_value(&SqlVal::F64(-1200.0)), Ok(-1200));
+
+        let error = i64::from_sql_value(&SqlVal::F64(0.5)).expect_err("a fraction is rejected");
+        assert!(matches!(
+            error,
+            RowDecodeError::InvalidValue { found: "float64", .. }
+        ));
+
+        assert!(i64::from_sql_value(&SqlVal::F64(f64::NAN)).is_err());
+        assert!(i64::from_sql_value(&SqlVal::F64(f64::INFINITY)).is_err());
+        assert!(i64::from_sql_value(&SqlVal::F64(1e30)).is_err());
     }
 
     #[test]

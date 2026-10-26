@@ -536,6 +536,38 @@ mod tests {
         const FIELDS: &'static [&'static str] = &["name", "blob"];
     }
 
+    /// The child row a nested projection decodes into, carrying a float field.
+    #[derive(Debug, Clone, PartialEq)]
+    struct PricedLine {
+        sku: String,
+        total: f64,
+    }
+
+    impl ToSqlVal for PricedLine {
+        fn to_sql_val(self) -> SqlVal {
+            multiset_object(&[
+                ("sku", SqlVal::Text(self.sku)),
+                ("total", SqlVal::F64(self.total)),
+            ])
+        }
+    }
+
+    impl FromSqlValue for PricedLine {
+        fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+            let object = json_object(value)?;
+            Ok(PricedLine {
+                sku: nested_field(&object, "sku")?,
+                total: nested_field(&object, "total")?,
+            })
+        }
+    }
+
+    impl SqlArrayElement for PricedLine {}
+
+    impl MultisetRow for PricedLine {
+        const FIELDS: &'static [&'static str] = &["sku", "total"];
+    }
+
     /// The nested statement of the child rows of every owner.
     fn lines<D: Dialect>() -> SelectQuery<D, Line, OrderLine, HasProjection> {
         SelectQuery::new().from::<Line>().select((LineSku, LineQty))
@@ -678,6 +710,79 @@ mod tests {
             )),
             Ok(Some(("b".to_owned(), 3)))
         );
+    }
+
+    #[test]
+    fn an_integral_json_number_decodes_into_a_float_value() {
+        assert_eq!(
+            f64::from_sql_value(&json_to_sql_value(&serde_json::json!(2))),
+            Ok(2.0)
+        );
+        assert_eq!(
+            f64::from_sql_value(&json_to_sql_value(&serde_json::json!(-1200))),
+            Ok(-1200.0)
+        );
+
+        let object = json_object(&SqlVal::Json(serde_json::json!({ "total": 1200 })))
+            .expect("the object of the nested row decodes");
+
+        assert_eq!(nested_field::<f64>(&object, "total"), Ok(1200.0));
+    }
+
+    #[test]
+    fn a_nested_collection_decodes_integral_numbers_into_float_fields() {
+        // PostgreSQL canonicalises an integral value of a `double precision`
+        // column, so the document of a nested row carries `1200` rather than
+        // `1200.0`, and exactly that row has to decode into the float field.
+        let rows = Vec::<PricedLine>::from_sql_value(&SqlVal::Json(serde_json::json!([
+            { "sku": "a", "total": 1200 },
+            { "sku": "b", "total": 12.5 },
+        ])))
+        .expect("the nested collection decodes");
+
+        assert_eq!(
+            rows,
+            vec![
+                PricedLine {
+                    sku: "a".to_owned(),
+                    total: 1200.0,
+                },
+                PricedLine {
+                    sku: "b".to_owned(),
+                    total: 12.5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_nested_collection_decodes_integral_numbers_from_json_text() {
+        let rows = Vec::<PricedLine>::from_sql_value(&SqlVal::Text(
+            r#"[{"sku":"a","total":1200},{"sku":"b","total":12.5}]"#.to_owned(),
+        ))
+        .expect("the JSON text of a nested collection decodes");
+
+        assert_eq!(
+            rows,
+            vec![
+                PricedLine {
+                    sku: "a".to_owned(),
+                    total: 1200.0,
+                },
+                PricedLine {
+                    sku: "b".to_owned(),
+                    total: 12.5,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_float_collection_decodes_integral_numbers_from_json_text() {
+        let values = Vec::<f64>::from_sql_value(&SqlVal::Text("[1200, 12.5]".to_owned()))
+            .expect("the JSON text of a float collection decodes");
+
+        assert_eq!(values, vec![1200.0, 12.5]);
     }
 
     #[test]
