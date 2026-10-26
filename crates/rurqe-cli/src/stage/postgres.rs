@@ -512,20 +512,59 @@ fn sweep_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
 const DUPLICATE_DATABASE_SQLSTATE: &str = "42P04";
 
 /// How many names a verification proposes before treating creation as failed.
-const CREATE_ATTEMPTS: usize = 2;
-
-/// Creates the scratch database a verification replays into and tags its owner.
 ///
-/// Two hosts sharing one server can generate the same candidate name, so a
-/// creation the server refuses because that database already exists is retried
-/// with a freshly generated name instead of aborting the verification.
-fn create_scratch_database(
-    admin: &mut postgres::Client,
+/// A generated name is unique inside one process, so a collision means another
+/// process — possibly on another host — proposed the same name at the same
+/// second. Every proposal draws a fresh name, and five proposals make a
+/// collision that survives all of them practically unobservable even on a
+/// shared server running many verifications at once.
+const CREATE_ATTEMPTS: usize = 5;
+
+/// The outcome of one `CREATE DATABASE` attempt.
+enum CreationOutcome {
+    /// The server accepted the proposed name.
+    Created,
+    /// The server refused the proposed name because that database already exists.
+    NameTaken,
+    /// The server refused the creation for a reason another name cannot fix.
+    Refused(String),
+}
+
+/// Why a name proposal loop stopped without creating a database.
+enum CreationFailure {
+    /// Every proposed name was already taken by an existing database.
+    NamesExhausted,
+    /// The server refused the creation for a reason another name cannot fix.
+    Refused(String),
+}
+
+/// Proposes names through `next_name` until `attempt` creates one, trying at most `attempts` names.
+///
+/// Every iteration draws a fresh name, so a collision consumes a single proposal
+/// and never the following one: the next name differs in the second it records or
+/// in the per-process sequence counter. Exhausting the proposals is reported as
+/// [`CreationFailure::NamesExhausted`], and the caller renders the diagnostic, so
+/// the message and the number of attempts stay one decision. Every proposal and
+/// every collision is recorded through the `tracing` facade, so a server that
+/// keeps colliding is visible in the logs instead of only through a failed
+/// verification.
+fn propose_scratch_database<G, F>(
+    attempts: usize,
     redacted_url: &str,
-) -> Result<String, String> {
-    for attempt in 1..=CREATE_ATTEMPTS {
-        let database = scratch_database_name();
-        let create = format!("CREATE DATABASE \"{database}\"");
+    mut next_name: G,
+    mut attempt: F,
+) -> Result<String, CreationFailure>
+where
+    G: FnMut() -> String,
+    F: FnMut(&str) -> CreationOutcome,
+{
+    // At least one name is always proposed, so a caller cannot turn the loop into
+    // a failure that never reached the server.
+    let attempts = attempts.max(1);
+    let mut tried: Vec<String> = Vec::with_capacity(attempts);
+
+    for index in 1..=attempts {
+        let database = next_name();
 
         // Database names cannot be bound as parameters, but the generated name only
         // carries ASCII alphanumerics and underscores, so rendering it is
@@ -533,35 +572,84 @@ fn create_scratch_database(
         tracing::debug!(
             url = %redacted_url,
             database = %database,
-            attempt,
+            attempt = index,
+            attempts,
             "creating a postgres scratch database"
         );
 
-        match admin.batch_execute(&create) {
-            Ok(()) => {
-                tag_scratch_database_owner(admin, &database, redacted_url);
-                return Ok(database);
-            }
-            Err(error) if attempt < CREATE_ATTEMPTS && is_duplicate_database(&error) => {
+        match attempt(&database) {
+            CreationOutcome::Created => return Ok(database),
+            CreationOutcome::NameTaken => {
                 tracing::debug!(
                     url = %redacted_url,
                     database = %database,
+                    attempt = index,
+                    attempts,
+                    tried = ?tried,
                     "the scratch database name is already taken, generating another"
                 );
+                tried.push(database);
             }
-            Err(error) => {
-                return Err(format!(
-                    "failed to create the scratch database on `{redacted_url}`: {error}; the \
-                     connected role needs the CREATEDB privilege"
-                ))
-            }
+            CreationOutcome::Refused(error) => return Err(CreationFailure::Refused(error)),
         }
     }
 
-    Err(format!(
-        "failed to create a scratch database on `{redacted_url}`: every generated name was \
-         already taken"
-    ))
+    tracing::debug!(
+        url = %redacted_url,
+        attempts,
+        tried = ?tried,
+        "every proposed postgres scratch database name was already taken"
+    );
+
+    Err(CreationFailure::NamesExhausted)
+}
+
+/// Renders the diagnostic a failed name proposal loop reports.
+fn creation_failure_message(failure: CreationFailure, redacted_url: &str) -> String {
+    match failure {
+        CreationFailure::NamesExhausted => format!(
+            "failed to create a scratch database on `{redacted_url}`: every generated name was \
+             already taken"
+        ),
+        CreationFailure::Refused(error) => format!(
+            "failed to create the scratch database on `{redacted_url}`: {error}; the connected \
+             role needs the CREATEDB privilege"
+        ),
+    }
+}
+
+/// Creates the scratch database a verification replays into and tags its owner.
+///
+/// Two hosts sharing one server can generate the same candidate name, so a
+/// creation the server refuses because that database already exists is retried
+/// with a freshly generated name, up to [`CREATE_ATTEMPTS`] proposals, instead of
+/// aborting the verification.
+fn create_scratch_database(
+    admin: &mut postgres::Client,
+    redacted_url: &str,
+) -> Result<String, String> {
+    let created = propose_scratch_database(
+        CREATE_ATTEMPTS,
+        redacted_url,
+        scratch_database_name,
+        |database| {
+            let create = format!("CREATE DATABASE \"{database}\"");
+
+            match admin.batch_execute(&create) {
+                Ok(()) => CreationOutcome::Created,
+                Err(error) if is_duplicate_database(&error) => CreationOutcome::NameTaken,
+                Err(error) => CreationOutcome::Refused(error.to_string()),
+            }
+        },
+    );
+
+    match created {
+        Ok(database) => {
+            tag_scratch_database_owner(admin, &database, redacted_url);
+            Ok(database)
+        }
+        Err(failure) => Err(creation_failure_message(failure, redacted_url)),
+    }
 }
 
 /// Renders the `COMMENT ON DATABASE` statement recording the owner marker.
@@ -963,5 +1051,98 @@ mod tests {
         let sql = owner_comment_sql("probe\"name", "rurqe:owner=host");
 
         assert_eq!(sql, "COMMENT ON DATABASE \"probe\"\"name\" IS 'rurqe:owner=host'");
+    }
+
+    #[test]
+    fn a_taken_name_is_replaced_with_a_freshly_proposed_one() {
+        let mut proposed: Vec<String> = Vec::new();
+        let mut collisions = 2usize;
+
+        let created = propose_scratch_database(
+            CREATE_ATTEMPTS,
+            "postgres://localhost/app",
+            || {
+                let name = format!("{SCRATCH_PREFIX}1700000000_4321_{}", proposed.len());
+                proposed.push(name.clone());
+                name
+            },
+            |_| {
+                if collisions > 0 {
+                    collisions -= 1;
+                    CreationOutcome::NameTaken
+                } else {
+                    CreationOutcome::Created
+                }
+            },
+        );
+
+        assert_eq!(
+            created.ok(),
+            Some(format!("{SCRATCH_PREFIX}1700000000_4321_2")),
+            "a collision must be answered with the next proposed name"
+        );
+        assert_eq!(proposed.len(), 3, "every collision consumes one proposal");
+    }
+
+    #[test]
+    fn an_always_taken_name_exhausts_the_attempts_and_reports_every_name_taken() {
+        let mut proposed = 0usize;
+        let mut rejected = 0usize;
+
+        let failure = propose_scratch_database(
+            CREATE_ATTEMPTS,
+            "postgres://localhost/app",
+            || {
+                proposed += 1;
+                format!("{SCRATCH_PREFIX}1700000000_4321_{proposed}")
+            },
+            |_| {
+                rejected += 1;
+                CreationOutcome::NameTaken
+            },
+        )
+        .expect_err("every proposed name was already taken");
+
+        assert_eq!(proposed, CREATE_ATTEMPTS);
+        assert_eq!(rejected, CREATE_ATTEMPTS);
+        assert!(matches!(&failure, CreationFailure::NamesExhausted));
+
+        let message = creation_failure_message(failure, "postgres://localhost/app");
+        assert!(
+            message.ends_with("every generated name was already taken"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            !message.contains("CREATEDB"),
+            "a collision is not a privilege problem: {message}"
+        );
+    }
+
+    #[test]
+    fn a_refused_creation_stops_without_proposing_another_name() {
+        let mut proposed = 0usize;
+
+        let failure = propose_scratch_database(
+            CREATE_ATTEMPTS,
+            "postgres://localhost/app",
+            || {
+                proposed += 1;
+                format!("{SCRATCH_PREFIX}1700000000_4321_{proposed}")
+            },
+            |_| CreationOutcome::Refused("permission denied to create database".to_owned()),
+        )
+        .expect_err("the server refused the creation");
+
+        assert_eq!(proposed, 1, "another name cannot fix a refusal");
+
+        let message = creation_failure_message(failure, "postgres://localhost/app");
+        assert!(
+            message.contains("permission denied to create database"),
+            "unexpected message: {message}"
+        );
+        assert!(
+            message.contains("CREATEDB"),
+            "a refusal names the missing privilege: {message}"
+        );
     }
 }
