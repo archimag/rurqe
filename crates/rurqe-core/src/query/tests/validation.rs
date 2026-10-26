@@ -2078,6 +2078,114 @@ fn a_nested_statement_reading_a_plain_column_of_no_relation_is_rejected() {
 }
 
 #[test]
+fn a_plain_column_naming_a_relation_the_statement_does_not_address_is_rejected() {
+    // The statement reads `orders` while the reference names `recent`: no relation
+    // in scope carries that name, so the rendered qualifier would address a table
+    // the engine cannot find.
+    let mut ast = relation_statement("orders", "id");
+    ast.projections.push(ExprKind::Column {
+        table: "recent",
+        name: "total",
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedColumn {
+            table: "recent",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_plain_column_naming_the_alias_of_an_aliased_relation_is_accepted() {
+    // The statement declares the relation as `"orders" AS "o"`, so a reference
+    // naming `o` reaches it through the alias the renderer writes verbatim.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::aliased("orders", "o"));
+    ast.projections.push(ExprKind::Column {
+        table: "o",
+        name: "id",
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_plain_column_naming_the_table_behind_an_alias_is_accepted() {
+    // The renderer substitutes the alias of an aliased occurrence for the table
+    // name the reference carries, so the statement stays resolvable.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::aliased("orders", "o"));
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_plain_column_naming_a_derived_relation_is_accepted() {
+    // A derived table joins the `FROM` clause under the name it is exposed as, so
+    // a reference naming it resolves like a reference to a stored relation.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("totals"));
+    ast.projections.push(ExprKind::Column {
+        table: "totals",
+        name: "total",
+    });
+    ast.derived.push(derived("totals"));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_nested_plain_column_correlating_to_the_enclosing_statement_is_accepted() {
+    // The nested statement introduces `orders` itself and reads `users` from the
+    // statement enclosing it, which is exactly what correlation provides.
+    let mut inner = relation_statement("orders", "id");
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "users",
+            name: "id",
+        }),
+    });
+
+    let mut ast = relation_statement("users", "id");
+    ast.filter = Some(exists_subquery(inner));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_nested_plain_column_naming_no_relation_in_scope_is_rejected() {
+    // Neither the nested statement nor the one enclosing it introduces `ghosts`,
+    // so the reference resolves to nothing at any level of the statement tree.
+    let mut inner = relation_statement("orders", "id");
+    inner.filter = Some(ExprKind::Column {
+        table: "ghosts",
+        name: "id",
+    });
+
+    let mut ast = relation_statement("users", "id");
+    ast.filter = Some(exists_subquery(inner));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedColumn {
+            table: "ghosts",
+            column: "id",
+        })
+    );
+}
+
+#[test]
 fn a_distinct_ordering_matches_a_projected_aggregate() {
     // The ordering criterion repeats the aggregate the projection list
     // exposes, so the DISTINCT rule comparing assembled expressions accepts

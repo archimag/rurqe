@@ -6,8 +6,11 @@
 //! both against the relations the statement renders and against the relations every
 //! statement enclosing it provides for correlation, and it walks the statements an
 //! expression embeds with the namespace the SQL clause grants them. A plain
-//! reference the statement renders no relation for resolves to nothing, so it is
-//! rejected beside an unresolved qualifier.
+//! reference names the relation it reads through the node itself rather than
+//! through a rendered qualifier, so it resolves by that name against the relations
+//! the statement addresses and the ones every statement enclosing it provides; a
+//! name no relation in either scope carries resolves to nothing and is rejected
+//! beside an unresolved qualifier.
 //!
 //! The sections of a statement are enumerated exactly once, by `walk_sections`.
 //! The entry points of the module differ only in the checks that walk applies to
@@ -421,14 +424,16 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
 /// outer scope. A statement at the top of a build chain passes an empty
 /// `outer_relations`, since nothing encloses it.
 ///
-/// A plain column reference states no qualifier to resolve, but it still needs a
-/// relation namespace: the renderer expands it to `<table>.<column>` as soon as
-/// the statement addresses more than one relation, or one under an alias. A
-/// statement that renders no relation at all — no `FROM` clause, no `JOIN`, and
-/// nothing enclosing it to correlate to — therefore leaves the reference
-/// unresolvable, which the engine answers with `missing FROM-clause entry for
-/// table "..."`. Such a reference is rejected beside the qualifier rule, as
-/// [`BuildError::UnresolvedColumn`].
+/// A plain column reference states no qualifier to resolve, but it names the
+/// relation it reads through the node itself, so it resolves by that name against
+/// the same namespace: the statement addresses the relation — under its table name
+/// or under the alias the renderer substitutes for it — or an enclosing statement
+/// provides it for correlation. A name no relation in either scope carries renders
+/// a reference the engine cannot resolve: a statement addressing no relation at all
+/// writes the bare name of the reference, and one addressing other relations writes
+/// a qualifier none of them declares, which the engine answers with
+/// `missing FROM-clause entry for table "..."`. Such a reference is rejected beside
+/// the qualifier rule, as [`BuildError::UnresolvedColumn`].
 ///
 /// The walk mirrors `validate_expr` over the composite nodes of the current
 /// statement and continues into the embedded statements through the section walk
@@ -441,21 +446,23 @@ pub(crate) fn reject_unresolved_qualifiers(
 ) -> Result<(), BuildError> {
     match expr {
         // A plain column reference names its own table without spelling a
-        // qualifier, so it stays accepted as long as the statement addresses a
-        // relation at all: the renderer resolves the qualifier it needs against
-        // the declared relations, or against the one the statement enclosing this
-        // one provides. A statement that addresses none — no `FROM` clause, no
-        // `JOIN`, and nothing enclosing it to correlate to — renders the
-        // reference into a name the engine cannot resolve, so it is rejected
-        // here.
+        // qualifier, so it resolves by that name against the relations the
+        // statement addresses and the relations every statement enclosing it
+        // provides. The renderer expands the reference to `"qualifier"."column"`
+        // as soon as the statement addresses more than one relation, or one under
+        // an alias, and leaves it bare otherwise, so a name no relation in either
+        // scope carries names a table the engine cannot find: a statement that
+        // addresses no relation at all writes the bare name of the reference, and
+        // one addressing other relations writes a qualifier none of them declares.
+        // Both are rejected here.
         ExprKind::Column { table, name } => {
-            if relations.is_empty() && outer_relations.is_empty() {
+            if resolves_plain_column(table, relations, outer_relations) {
+                Ok(())
+            } else {
                 Err(BuildError::UnresolvedColumn {
                     table,
                     column: name,
                 })
-            } else {
-                Ok(())
             }
         }
         // `EXCLUDED` names the proposed row of an upsert, which carries no
@@ -610,6 +617,29 @@ fn resolves_qualifier(
         .iter()
         .chain(outer_relations)
         .any(|relation| effective_relation_name(relation) == qualifier)
+}
+
+/// Whether `table` names a relation the statement addresses or reaches.
+///
+/// A plain column reference carries the name of the relation it reads instead of a
+/// rendered qualifier, so it resolves by that name against the relations the
+/// statement addresses itself and the relations every statement enclosing it
+/// provides for correlation. A relation answers to two such names: the table name
+/// it is declared under, which the renderer substitutes with the alias of an
+/// aliased occurrence, and the alias itself, which addresses the relation directly.
+/// A name no relation in either scope carries leaves the reference unresolvable —
+/// the statement renders a qualifier it never declares, or a bare table name when
+/// it declares no relation at all — so the reference is rejected as
+/// [`BuildError::UnresolvedColumn`].
+fn resolves_plain_column(
+    table: &'static str,
+    relations: &[TableRef],
+    outer_relations: &[TableRef],
+) -> bool {
+    relations
+        .iter()
+        .chain(outer_relations)
+        .any(|relation| relation.name == table || effective_relation_name(relation) == table)
 }
 
 /// Rejects a qualifier no relation of an embedded statement or of an enclosing

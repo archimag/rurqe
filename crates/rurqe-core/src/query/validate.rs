@@ -149,17 +149,23 @@ pub enum BuildError {
         /// The SQL identifier of the referenced column.
         column: &'static str,
     },
-    /// A column reference appears in a statement that addresses no relation.
+    /// A column reference names a relation the statement neither addresses nor reaches.
     ///
-    /// A statement without a `FROM` clause renders no relation namespace, so the
-    /// bare table name of a plain column reference resolves to nothing: the
-    /// renderer qualifies nothing, and the engine answers `SELECT
-    /// "orders"."total"` with `missing FROM-clause entry for table "orders"`.
-    /// The builder typestate keeps the shape out of reach — a projection, a
-    /// filter, or a grouping reads a column of a table the statement introduced
-    /// — but a statement assembled from AST data can still describe it, and a
-    /// nested statement nothing encloses has no outer scope to correlate to
-    /// either. The reference is therefore rejected before any SQL is rendered.
+    /// A plain column reference names the relation it reads through the node
+    /// itself rather than through a rendered qualifier, so the statement has to
+    /// address that relation — through its `FROM` clause, a join, a derived table,
+    /// or a `WITH` entry it exposes — or reach it by correlation from a statement
+    /// enclosing it. The renderer writes the reference as
+    /// `"qualifier"."column"` when the statement addresses more than one
+    /// relation, or one under an alias, and leaves it bare otherwise, so a name no
+    /// relation in either scope carries yields SQL the engine rejects: a statement
+    /// addressing no relation at all writes the bare table name of the reference,
+    /// and one addressing other relations writes a qualifier none of them declares
+    /// — `missing FROM-clause entry for table "..."` in PostgreSQL. The builder
+    /// typestate keeps such references out of the fluent API — a projection, a
+    /// filter, or a grouping reads a column of a table the statement introduced —
+    /// but a statement assembled from AST data can still describe them, and so can
+    /// a nested statement naming a table nothing encloses it with.
     ///
     /// The rule differs from [`BuildError::ColumnWithoutRelation`], which covers
     /// a clause that is evaluated without a relation namespace even though the
@@ -335,10 +341,10 @@ impl fmt::Display for BuildError {
             BuildError::UnresolvedColumn { table, column } => {
                 write!(
                     f,
-                    "column reference `{table}.{column}` appears in a statement that addresses no relation; \
-                     a statement without a `FROM` clause renders no relation namespace, so introduce the \
-                     column's relation with `.from(...)` or a join, or read it from an enclosing statement \
-                     by correlation"
+                    "column reference `{table}.{column}` addresses no relation the statement introduces or reaches by correlation; \
+                     a plain column reference resolves through the relations of the `FROM` clause, its joins, and the statements \
+                     enclosing it, so introduce the column's relation with `.from(...)` or a join, or read it from an enclosing \
+                     statement by correlation"
                 )
             }
             BuildError::UnresolvedQualifier { name } => {
