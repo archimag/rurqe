@@ -12,10 +12,16 @@
 //! reports such a block as closed: it poisons the connection instead, and the
 //! next [`TransactionGuard::begin`] retries the abandoned rollback rather than
 //! running a fresh transaction on top of an unknown one.
+//!
+//! The isolation level belongs to the outermost transaction only:
+//! [`TransactionGuard::begin_with`] renders `BEGIN ISOLATION LEVEL ...`, while
+//! [`TransactionGuard::begin`] keeps the backend default, and a guard opened
+//! inside an open transaction becomes a savepoint, which SQL gives no isolation
+//! of its own.
 
 use core::ops::{Deref, DerefMut};
 
-use super::execution::{TransactionBackend, TransactionContext};
+use super::execution::{IsolationLevel, TransactionBackend, TransactionContext};
 use super::savepoint::SavepointName;
 
 /// The transaction bookkeeping a synchronous connection keeps between calls.
@@ -119,13 +125,40 @@ pub struct TransactionGuard<'a, B: TransactionalConnection + ?Sized> {
 }
 
 impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
-    /// Opens the transaction of `connection`, or a savepoint when one is open.
+    /// Opens the transaction of `connection` with the backend default isolation
+    /// level, or a savepoint when one is already open.
+    ///
+    /// The method is [`begin_with`](TransactionGuard::begin_with) without an
+    /// isolation level, so the rendered `BEGIN` carries no `ISOLATION LEVEL`
+    /// clause.
     ///
     /// A connection poisoned by a failed rollback never opens a new block
     /// silently: the abandoned transaction is rolled back first, so a driver that
     /// refuses the rollback reports the failure here instead of running the next
     /// block inside a transaction whose state is unknown.
     pub fn begin(connection: &'a mut B) -> Result<Self, B::Error> {
+        Self::begin_with(connection, None)
+    }
+
+    /// Opens the transaction of `connection` with `isolation`, or a savepoint
+    /// when a transaction is already open.
+    ///
+    /// The level is rendered into the `BEGIN` statement as
+    /// `BEGIN ISOLATION LEVEL <level>` through [`IsolationLevel::as_str`], and
+    /// `None` keeps the statement at the backend default. The level applies only
+    /// to the outermost transaction: a call made while a transaction is already
+    /// open nests inside a `SAVEPOINT` statement carrying no isolation clause,
+    /// and because SQL defines no per-savepoint isolation the requested level is
+    /// ignored for such a block while the enclosing transaction keeps its own.
+    ///
+    /// A connection poisoned by a failed rollback never opens a new block
+    /// silently: the abandoned transaction is rolled back first, so a driver that
+    /// refuses the rollback reports the failure here instead of running the next
+    /// block inside a transaction whose state is unknown.
+    pub fn begin_with(
+        connection: &'a mut B,
+        isolation: Option<IsolationLevel>,
+    ) -> Result<Self, B::Error> {
         Self::recover(connection)?;
 
         if connection.transaction_status().is_open() {
@@ -147,7 +180,7 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
                 }
             }
         } else {
-            connection.begin(None)?;
+            connection.begin(isolation)?;
             connection.transaction_status().mark_open(true);
             #[cfg(feature = "tracing")]
             tracing::info!("beginning transaction");
@@ -423,5 +456,93 @@ mod tests {
 
         outer.commit().expect("the outer transaction commits");
         assert!(!connection.status.is_open());
+    }
+
+    #[test]
+    fn begin_with_renders_the_requested_isolation_level() {
+        for (level, expected) in [
+            (
+                IsolationLevel::ReadCommitted,
+                "BEGIN ISOLATION LEVEL READ COMMITTED",
+            ),
+            (
+                IsolationLevel::RepeatableRead,
+                "BEGIN ISOLATION LEVEL REPEATABLE READ",
+            ),
+            (
+                IsolationLevel::Serializable,
+                "BEGIN ISOLATION LEVEL SERIALIZABLE",
+            ),
+        ] {
+            let mut connection = MockConnection::default();
+            let guard = TransactionGuard::begin_with(&mut connection, Some(level))
+                .expect("the transaction opens");
+
+            assert!(guard.is_outer());
+            assert_eq!(guard.statements, vec![String::from(expected)]);
+            assert!(guard.status.is_open());
+        }
+    }
+
+    #[test]
+    fn begin_without_an_isolation_level_renders_a_plain_begin() {
+        let mut connection = MockConnection::default();
+        let guard = TransactionGuard::begin(&mut connection).expect("the transaction opens");
+        assert_eq!(guard.statements, vec![String::from("BEGIN")]);
+        drop(guard);
+
+        let mut connection = MockConnection::default();
+        let guard =
+            TransactionGuard::begin_with(&mut connection, None).expect("the transaction opens");
+        assert_eq!(guard.statements, vec![String::from("BEGIN")]);
+    }
+
+    #[test]
+    fn a_nested_block_ignores_the_requested_isolation_level() {
+        let mut connection = MockConnection::default();
+        let mut outer = TransactionGuard::begin(&mut connection).expect("the transaction opens");
+        drop(
+            TransactionGuard::begin_with(&mut *outer, Some(IsolationLevel::Serializable))
+                .expect("the savepoint opens"),
+        );
+
+        assert_eq!(
+            outer.statements,
+            vec![
+                String::from("BEGIN"),
+                String::from("SAVEPOINT rurqe_sp_1"),
+                String::from("ROLLBACK TO SAVEPOINT rurqe_sp_1"),
+                String::from("RELEASE SAVEPOINT rurqe_sp_1"),
+            ]
+        );
+        assert!(
+            !outer
+                .statements
+                .iter()
+                .any(|statement| statement.contains("ISOLATION LEVEL")),
+            "a savepoint carries no isolation clause"
+        );
+        assert!(outer.status.is_open());
+        assert_eq!(outer.status.depth(), 0);
+    }
+
+    #[test]
+    fn a_committed_isolation_transaction_renders_begin_then_commit() {
+        let mut connection = MockConnection::default();
+        let guard =
+            TransactionGuard::begin_with(&mut connection, Some(IsolationLevel::Serializable))
+                .expect("the transaction opens");
+        guard.commit().expect("the transaction commits");
+
+        assert_eq!(
+            connection.statements,
+            vec![
+                String::from("BEGIN ISOLATION LEVEL SERIALIZABLE"),
+                String::from("COMMIT"),
+            ]
+        );
+        assert!(!connection.status.is_open());
+        assert!(!connection.status.is_poisoned());
+        assert_eq!(connection.status.depth(), 0);
     }
 }
