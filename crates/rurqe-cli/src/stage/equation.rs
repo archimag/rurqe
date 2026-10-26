@@ -238,6 +238,24 @@ pub fn materialise_stage(
     materialise(scratch_url, &stage_scripts(stage))
 }
 
+/// Compares the declarative `stage` against `live`, the catalog of the database
+/// it is about to be committed to.
+///
+/// The stage is materialised in the disposable state named by `scratch_url`, so
+/// the declarative DDL is never replayed over the live catalog itself. `live` is
+/// the catalog the caller already introspected for its own artifacts, so the
+/// comparison describes the very database the commit is sealing; the returned
+/// diff is empty exactly when both descriptions agree.
+pub fn compare_stage_with_live(
+    stage: &DeclarativeStage,
+    live: &SchemaCatalog,
+    scratch_url: &str,
+) -> Result<SchemaDiff, StageError> {
+    let stage_catalog = materialise_stage(stage, scratch_url)?;
+
+    Ok(compute_catalog_diff(live, &stage_catalog))
+}
+
 /// The replayable scripts of a declarative stage, in declaration order.
 fn stage_scripts(stage: &DeclarativeStage) -> Vec<Script<'_>> {
     stage

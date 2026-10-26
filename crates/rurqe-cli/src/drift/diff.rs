@@ -122,6 +122,13 @@ impl DiffWording {
         expected: "the stage",
         live: "the tail",
     };
+
+    /// Wording of `stage commit`: the declarative stage versus the live database
+    /// the commit is about to seal.
+    pub const COMMIT: Self = Self {
+        expected: "the stage",
+        live: "the database",
+    };
 }
 
 /// A category of schema object whose findings [`SchemaDiff::write_details`]

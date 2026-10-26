@@ -1,5 +1,6 @@
 //! Declarative stage, checkpoint, and scratch lifecycle commands.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,13 +10,14 @@ use rurqe_migrate::stage::{cold_start, DeclarativeStage, StageMarker};
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::{connect, redact_database_url, CliError, CommandOutput, Connection};
+use crate::drift::{DiffWording, SchemaDiff};
 use crate::introspect::introspect_database_schema_notice;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::postgres::{
     current_owner_tag, drop_stale_scratch_databases, find_stale_scratch_databases,
     ScratchAdminSession,
 };
-use crate::stage::GoldenEquation;
+use crate::stage::{compare_stage_with_live, GoldenEquation};
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
 use super::{
@@ -302,6 +304,12 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 /// `schema` names the catalog the committed snapshot and the anchored hash
 /// describe, so a project keeping its relations outside `public` commits the
 /// digest of its own tables.
+///
+/// The declarative stage and the live catalog are compared before anything is
+/// written: the lock and the marker describe the database while the boundary
+/// snapshot replays the stage, so committing the two while they disagree would
+/// seal a triple that contradicts itself and make [`verify_stage`] fail on a
+/// checkpoint no later commit can repair.
 pub(crate) fn commit_stage(
     version: MigrationVersion,
     database_url: &str,
@@ -329,6 +337,17 @@ pub(crate) fn commit_stage(
 
     let stage = load_stage(stage_dir)?;
     let (catalog, notice) = introspect_database_schema_notice(database_url, schema)?;
+
+    // The parity gate runs before the first artifact is rendered: the lock and
+    // the marker describe the live database while the boundary snapshot replays
+    // the declarative stage, so a stage that drifted from the database would seal
+    // a triple that contradicts itself and make `stage verify` fail on a
+    // checkpoint no later commit could repair.
+    let diff = compare_stage_with_live(&stage, &catalog, parity_scratch_url(database_url))
+        .map_err(cli_error)?;
+    if !diff.is_empty() {
+        return Err(stage_parity_failure(stage_dir, &diff));
+    }
 
     // All artifacts are rendered before the first byte is written, and they land
     // in the order lock, snapshot, marker, so an interrupted commit never leaves
@@ -625,5 +644,44 @@ fn flush_boundary_parent(dir: &Path) -> Option<String> {
              not be flushed, so a crash may still resurrect the previous boundary: {error}",
             parent.display()
         )),
+    }
+}
+
+/// The disposable state the declarative stage is materialised in before a commit.
+///
+/// A PostgreSQL target keeps the stage on the server behind the URL, where
+/// [`compare_stage_with_live`] builds it in a throwaway database through
+/// `materialise_stage`; a SQLite target is materialised in memory instead, because
+/// the URL names the very file the commit is sealing and no declarative DDL may be
+/// replayed over it.
+fn parity_scratch_url(database_url: &str) -> &str {
+    match DatabaseTarget::parse(database_url) {
+        DatabaseTarget::Postgres => database_url,
+        DatabaseTarget::SqliteMemory | DatabaseTarget::SqliteFile(_) => ":memory:",
+    }
+}
+
+/// Renders the failure of a commit whose declarative stage disagrees with the database.
+///
+/// The findings are rendered with the wording of a commit — the stage against the
+/// database — and the remedy names both descriptions, because re-running the very
+/// same commit is exactly what a bare failure would invite.
+fn stage_parity_failure(stage_dir: &Path, diff: &SchemaDiff) -> CliError {
+    CliError(format!(
+        "the declarative stage `{}` does not describe the database this commit would anchor:\n{}Hint: \
+         bring `schema/` and the database back into agreement — apply the migration that closes \
+         the gap, or re-init the stage from the live catalog — then re-run `stage commit`; no \
+         artifact was written",
+        stage_dir.display(),
+        StageFindings(diff)
+    ))
+}
+
+/// The findings of a commit-level parity check rendered with its own wording.
+struct StageFindings<'a>(&'a SchemaDiff);
+
+impl fmt::Display for StageFindings<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.write_details(f, DiffWording::COMMIT)
     }
 }

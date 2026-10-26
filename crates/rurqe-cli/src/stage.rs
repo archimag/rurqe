@@ -65,5 +65,5 @@ mod sandbox;
 
 pub(crate) mod postgres;
 
-pub use equation::{materialise_stage, GoldenEquation, GoldenReport};
+pub use equation::{compare_stage_with_live, materialise_stage, GoldenEquation, GoldenReport};
 pub use error::StageError;

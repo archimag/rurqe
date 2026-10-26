@@ -52,6 +52,12 @@ fn checkpoint_file(path: &Path, version: &str) {
     .expect("write the checkpoint");
 }
 
+/// Applies `sql` to the SQLite database at `path`, creating the file when absent.
+fn apply_live_ddl(path: &Path, sql: &str) {
+    let connection = rusqlite::Connection::open(path).expect("open the live database");
+    connection.execute_batch(sql).expect("apply the live DDL");
+}
+
 /// The entry names of `dir`, sorted alphabetically.
 fn directory_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)
@@ -173,12 +179,17 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     let users = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
     std::fs::write(stage_dir.join("users.sql"), users).expect("write the stage script");
 
+    // The live database holds exactly what the declarative stage declares, so the
+    // parity gate lets the commit seal an agreeing pair of descriptions.
+    let database = dir.join("app.db");
+    apply_live_ddl(&database, users);
+
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
     commit_stage(
         version("3.2"),
-        ":memory:",
+        &database.to_string_lossy(),
         DEFAULT_SCHEMA,
         &stage_dir,
         &lock_path,
@@ -193,14 +204,16 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     );
 
     // A later commit replaces the snapshot, so a script the new boundary
-    // dropped never lingers next to the marker.
+    // dropped never lingers next to the marker. The live database follows the
+    // stage, which keeps the parity gate satisfied.
     std::fs::remove_file(stage_dir.join("users.sql")).expect("drop the script");
     std::fs::write(stage_dir.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
         .expect("write the new script");
+    apply_live_ddl(&database, "DROP TABLE users; CREATE TABLE orders (id INTEGER);");
 
     commit_stage(
         version("4"),
-        ":memory:",
+        &database.to_string_lossy(),
         DEFAULT_SCHEMA,
         &stage_dir,
         &lock_path,
@@ -267,6 +280,62 @@ fn the_committed_boundary_is_never_rewound() {
     .expect_err("the boundary cannot move backwards");
 
     assert!(error.to_string().contains("re-open"));
+}
+
+#[test]
+fn a_stage_that_drifted_from_the_database_is_never_committed() {
+    let dir = workspace("stage-drift");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    // The declarative stage declares a column the live database never received,
+    // which is exactly the drift the stage lifecycle exists to catch.
+    std::fs::write(
+        stage_dir.join("users.sql"),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+    )
+    .expect("write the stage script");
+
+    let database = dir.join("app.db");
+    apply_live_ddl(&database, "CREATE TABLE users (id INTEGER PRIMARY KEY);");
+
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    let error = commit_stage(
+        version("3.2"),
+        &database.to_string_lossy(),
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect_err("the drifted stage cannot be sealed into a checkpoint");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("does not describe the database"),
+        "the diagnostic names the violated parity, got {message}"
+    );
+    assert!(
+        message.contains("email"),
+        "the diagnostic names the drifted column, got {message}"
+    );
+    assert!(
+        message.contains("re-run `stage commit`"),
+        "the diagnostic names the remedy, got {message}"
+    );
+
+    // The gate stands in front of every artifact, so a rejected commit leaves no
+    // half-described triple behind: no marker, no snapshot, and no lock.
+    assert!(
+        !checkpoint_path.exists(),
+        "a rejected commit writes no checkpoint"
+    );
+    assert!(
+        !dir.join("checkpoint-stage").exists(),
+        "a rejected commit writes no boundary snapshot"
+    );
+    assert!(!lock_path.exists(), "a rejected commit writes no lock");
 }
 
 #[test]
