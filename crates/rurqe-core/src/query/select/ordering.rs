@@ -1,9 +1,10 @@
 //! Ordering, pagination, and the clause-by-clause recording of both.
 
 use crate::dialect::{Dialect, SupportsNullsOrdering, SupportsWindowFunctions};
-use crate::expr::{DialectInScope, Expr, ExprKind, NullsOrder, OrderCriterion, OrderDirection};
+use crate::expr::{
+    DialectInScope, Expr, ExprKind, NonAggregate, NullsOrder, OrderCriterion, OrderDirection,
+};
 use crate::query::scope::{Compound, ScopePositions};
-use crate::query::selection::AggregateInDialect;
 use crate::query::window::WindowExpr;
 use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
@@ -196,7 +197,8 @@ impl_order_by!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7, C8 P8);
     message = "`{Self}` is not a valid ORDER BY expression",
     label = "order by an expression over the columns of the query scope",
     note = "ORDER BY accepts typed expressions over the query scope, such as `users.age.gt(18)`, or a window expression such as `row_number().over(Window::partition_by(UserId))`",
-    note = "the expression may reference only tables the query selects from; order by a bare column or a tuple of columns with `order_by` instead"
+    note = "the expression may reference only tables the query selects from; order by a bare column or a tuple of columns with `order_by` instead",
+    note = "an aggregate collapses the rows of a group, so it orders a grouped statement through `GroupedQuery::order_by_expr` instead"
 )]
 pub trait OrderExprTarget<Tables, P = At<0>, D = ()> {
     /// Appends the expression of this ordering target to `out`.
@@ -208,19 +210,56 @@ pub trait OrderExprTarget<Tables, P = At<0>, D = ()> {
 /// The expression keeps the scope it was built with, mirroring the bounds a
 /// projection carries: the tables it reads stay checked against the query
 /// scope, and its dialect requirements stay checked against the statement
-/// dialect. `ORDER BY` sorts the rows the statement itself produced, so the
-/// criterion carries no aggregation requirement of its own: a per-row
-/// expression — a bare column reference, an arithmetic combination, a `CASE`
-/// expression — orders the statement exactly like an aggregate does. The
-/// dialect requirements of the aggregation marker stay checked, so an
-/// aggregate restricted by `FILTER (WHERE ...)` still orders the statement
-/// only through a dialect that renders the clause.
-impl<Tables, T, Scope, Marker, ExprD, P, D> OrderExprTarget<Tables, P, D>
-    for Expr<T, Scope, Marker, ExprD>
+/// dialect.
+///
+/// The aggregation marker is fixed to
+/// [`NonAggregate`](crate::expr::NonAggregate), because a statement that never
+/// grouped its rows produces one row per source row and sorts those rows by a
+/// per-row value — a bare column reference, an arithmetic combination, a `CASE`
+/// expression, or a window expression evaluated with an `OVER (...)` clause. An
+/// aggregate collapses the rows of a group, so ordering by one belongs to a
+/// grouped statement, where
+/// [`GroupedQuery::order_by_expr`](crate::query::GroupedQuery::order_by_expr)
+/// takes it. Ordering a plain statement by an aggregate is therefore rejected at
+/// the call site instead of rendering a statement the engine refuses:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: an aggregate orders the groups of a grouped query,
+///     // and this statement never grouped its rows.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .select((OrderUserId,))
+///         .order_by_expr_desc(Expr::count_all());
+/// }
+/// ```
+impl<Tables, T, Scope, ExprD, P, D> OrderExprTarget<Tables, P, D>
+    for Expr<T, Scope, NonAggregate, ExprD>
 where
     T: 'static + Send + Sync,
     Scope: 'static + Send + Sync + ExprInScope<Tables, P> + ScopePositions<P>,
-    Marker: AggregateInDialect<D>,
     ExprD: DialectInScope<D>,
 {
     fn into_order_exprs(self, out: &mut Vec<ExprKind>) {
@@ -356,6 +395,12 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// ```text
     /// ORDER BY "total" * "quantity" DESC
     /// ```
+    ///
+    /// The criterion carries a per-row expression, so the statement sorts the
+    /// rows it produced without grouping them first: an aggregate collapses the
+    /// rows of a group and orders a grouped statement through
+    /// [`GroupedQuery::order_by_expr`](crate::query::GroupedQuery::order_by_expr)
+    /// instead, which is why passing one here is rejected at the call site.
     ///
     /// The expression is checked against the query scope like a projection,
     /// so an ordering that references a table the query does not select from
