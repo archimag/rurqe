@@ -15,7 +15,8 @@ use crate::stage::materialise_stage;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
 use super::stage::{
-    cleanup_scratch_catalog, move_failure, swap_snapshot, verify_stage, write_staged_boundary,
+    cleanup_scratch_catalog, flush_boundary_parent, move_failure, recover_interrupted_commit,
+    verify_stage, write_staged_boundary,
 };
 use super::{
     commit_stage, initialise_stage, prune_migrations, schema_of, sweep_stale_temporaries, write_file,
@@ -564,39 +565,39 @@ fn a_failed_staged_write_keeps_the_committed_boundary() {
 }
 
 #[test]
-fn an_interrupted_snapshot_swap_restores_the_committed_boundary() {
-    let dir = workspace("snapshot-swap");
-    let boundary = dir.join("checkpoint-stage");
-    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
-    std::fs::write(boundary.join("users.sql"), "CREATE TABLE users (id INTEGER);")
-        .expect("write the committed snapshot");
+fn an_interrupted_commit_restores_the_parked_pair() {
+    let dir = workspace("commit-restore");
+    let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The staging directory is gone, so installing the new snapshot fails right
-    // after the previous boundary has been moved aside.
-    let staged = dir.join(".checkpoint-stage.staged.tmp");
+    // The process was killed after parking the previous marker and boundary but
+    // before installing the new boundary: both are parked, nothing is live.
+    let marker_backup = dir.join(".checkpoint.toml.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
 
-    let error = swap_snapshot(&boundary, &staged)
-        .expect_err("a missing staging directory cannot be installed");
+    let notice = recover_interrupted_commit(&checkpoint_path)
+        .expect("the interrupted commit is repaired")
+        .expect("the repair is reported");
 
-    assert!(error.to_string().contains("checkpoint-stage"), "{error}");
+    assert!(notice.contains("Restored"), "got {notice}");
+    assert!(checkpoint_path.exists(), "the parked marker is restored");
     assert_eq!(
-        std::fs::read_to_string(boundary.join("users.sql")).expect("read the restored snapshot"),
+        std::fs::read_to_string(dir.join("checkpoint-stage").join("users.sql"))
+            .expect("read the restored snapshot"),
         "CREATE TABLE users (id INTEGER);"
     );
-
-    let mut entries: Vec<String> = std::fs::read_dir(&dir)
-        .expect("read the workspace")
-        .map(|entry| {
-            entry
-                .expect("a directory entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    entries.sort();
-
-    assert_eq!(entries, vec!["checkpoint-stage".to_owned()]);
+    assert!(!marker_backup.exists(), "the parked marker is gone");
+    assert!(!boundary_backup.exists(), "the parked boundary is gone");
 }
 
 #[test]
@@ -629,60 +630,35 @@ fn a_failed_rollback_names_the_parked_boundary_it_strands() {
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn an_installation_that_rolls_back_reports_only_the_staged_snapshot() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let dir = workspace("snapshot-rollback");
+fn a_failed_installation_that_restores_the_boundary_reports_no_stranding() {
+    let dir = workspace("install-rollback");
     let boundary = dir.join("checkpoint-stage");
-    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
+    let staged = dir.join(".checkpoint-stage.4242.5.tmp");
+    let parked = dir.join(".checkpoint-stage.previous");
+
+    // The parked boundary is a real directory, so the rollback inside
+    // `move_failure` restores it successfully and reports no stranding.
+    std::fs::create_dir_all(&parked).expect("park the committed boundary");
     std::fs::write(
-        boundary.join("users.sql"),
+        parked.join("users.sql"),
         "CREATE TABLE users (id INTEGER);",
     )
-    .expect("write the committed snapshot");
+    .expect("write the parked snapshot");
 
-    // The staged replacement lives in a directory of its own, so withdrawing the
-    // write permission of that directory fails the installation while the
-    // directory holding the boundary stays writable and the rollback succeeds.
-    let staging = dir.join("staging");
-    std::fs::create_dir_all(&staging).expect("create the staging directory");
-    let staged = staging.join(".checkpoint-stage.4242.5.tmp");
-    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
-    std::fs::write(
-        staged.join("orders.sql"),
-        "CREATE TABLE orders (id INTEGER);",
-    )
-    .expect("write the staged snapshot");
+    let failure = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    let message = move_failure(&boundary, &staged, &failure, Some(&parked)).to_string();
 
-    if !permissions_are_enforced(&staging) {
-        // A superuser renames through the withdrawn permission, so the
-        // installation cannot be made to fail and the rollback is not reached.
-        return;
-    }
-
-    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o500))
-        .expect("withdraw the write permission of the staging directory");
-
-    let swapped = swap_snapshot(&boundary, &staged);
-
-    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))
-        .expect("restore the permissions of the staging directory");
-
-    let error = swapped
-        .expect_err("the staged snapshot cannot leave its directory")
-        .to_string();
-
+    assert!(message.contains(&staged.display().to_string()), "{message}");
     assert!(
-        error.contains(&staged.display().to_string()),
-        "the diagnostic names the snapshot that could not be installed, got {error}"
+        !message.contains("also failed"),
+        "the rollback succeeded, so the diagnostic reports no stranding, got {message}"
     );
-    assert!(
-        !error.contains("also failed"),
-        "the rollback succeeded, so the diagnostic reports no stranding, got {error}"
+    assert_eq!(
+        std::fs::read_to_string(boundary.join("users.sql")).expect("read the restored boundary"),
+        "CREATE TABLE users (id INTEGER);"
     );
-    assert_eq!(directory_names(&boundary), vec!["users.sql".to_owned()]);
+    assert!(!parked.exists(), "the parked boundary was renamed back");
 }
 
 #[test]
@@ -787,53 +763,51 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
 }
 
 #[test]
-fn a_boundary_parked_by_a_killed_swap_is_restored_by_the_next_one() {
-    let dir = workspace("snapshot-parked");
-    let boundary = dir.join("checkpoint-stage");
+fn an_interrupted_commit_discards_the_boundary_it_installed_without_a_marker() {
+    let dir = workspace("commit-installed");
+    let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The swap parked the committed boundary and was killed before the staged
-    // replacement reached its place.
-    let backup = dir.join(".checkpoint-stage.previous");
-    std::fs::create_dir_all(&backup).expect("park the committed boundary");
+    // The process was killed after installing the new boundary but before
+    // writing its marker: the previous marker and boundary are parked while the
+    // installed boundary is live without a marker.
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("install the uncommitted boundary");
+    std::fs::write(boundary.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
+        .expect("write the installed snapshot");
+    let marker_backup = dir.join(".checkpoint.toml.previous");
     std::fs::write(
-        backup.join("users.sql"),
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
         "CREATE TABLE users (id INTEGER);",
     )
     .expect("write the parked snapshot");
 
-    let staged = dir.join(".checkpoint-stage.4242.1.tmp");
-    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
-    std::fs::write(
-        staged.join("orders.sql"),
-        "CREATE TABLE orders (id INTEGER);",
-    )
-    .expect("write the staged snapshot");
+    recover_interrupted_commit(&checkpoint_path).expect("the interrupted commit is repaired");
 
-    swap_snapshot(&boundary, &staged).expect("the replacement boundary is installed");
-
-    assert_eq!(directory_names(&boundary), vec!["orders.sql".to_owned()]);
-    assert!(!backup.exists(), "the superseded parked snapshot is discarded");
-    assert!(!staged.exists(), "the staged snapshot was renamed into place");
+    assert!(checkpoint_path.exists(), "the parked marker is restored");
+    assert_eq!(
+        directory_names(&boundary),
+        vec!["users.sql".to_owned()],
+        "the boundary installed without a marker is replaced by the parked one"
+    );
+    assert!(!marker_backup.exists(), "the parked marker is gone");
+    assert!(!boundary_backup.exists(), "the parked boundary is gone");
 }
 
 #[cfg(unix)]
 #[test]
-fn a_boundary_swap_that_cannot_flush_its_directory_reports_the_gap() {
+fn a_boundary_whose_directory_cannot_be_flushed_reports_the_gap() {
     use std::os::unix::fs::PermissionsExt;
 
-    let dir = workspace("snapshot-flush");
+    let dir = workspace("flush-gap");
     let boundary = dir.join("checkpoint-stage");
-    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
-    std::fs::write(boundary.join("users.sql"), "CREATE TABLE users (id INTEGER);")
-        .expect("write the committed snapshot");
-
-    let staged = dir.join(".checkpoint-stage.4242.11.tmp");
-    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
-    std::fs::write(
-        staged.join("orders.sql"),
-        "CREATE TABLE orders (id INTEGER);",
-    )
-    .expect("write the staged snapshot");
+    std::fs::create_dir_all(&boundary).expect("create the boundary");
 
     if !permissions_are_enforced(&dir) {
         // A superuser reads through the withdrawn permission, so the flush
@@ -841,96 +815,102 @@ fn a_boundary_swap_that_cannot_flush_its_directory_reports_the_gap() {
         return;
     }
 
-    // Both renames need write and search permission on the directory, while
-    // flushing its entry needs the directory open for reading.
+    // Flushing the boundary's directory needs it open for reading.
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300))
         .expect("withdraw the read permission of the directory");
 
-    let swapped = swap_snapshot(&boundary, &staged);
+    let notice = flush_boundary_parent(&boundary);
 
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
         .expect("restore the permissions of the directory");
 
-    let notices = swapped.expect("the boundary is installed");
-    assert!(
-        notices
-            .iter()
-            .any(|notice| notice.contains("could not be flushed")),
-        "the durability gap reaches the report, got {notices:?}"
-    );
-    assert_eq!(directory_names(&boundary), vec!["orders.sql".to_owned()]);
+    let notice = notice.expect("the flush cannot be completed");
+    assert!(notice.contains("could not be flushed"), "got {notice}");
 }
 
 #[test]
-fn a_parked_backup_beside_a_live_boundary_is_discarded_by_the_next_swap() {
-    let dir = workspace("snapshot-superseded");
-    let boundary = dir.join("checkpoint-stage");
-    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
-    std::fs::write(
-        boundary.join("users.sql"),
-        "CREATE TABLE users (id INTEGER);",
-    )
-    .expect("write the committed snapshot");
-
-    // The swap that parked this backup already published its replacement, so
-    // the parked copy is debris rather than the only copy of the boundary.
-    let backup = dir.join(".checkpoint-stage.previous");
-    std::fs::create_dir_all(&backup).expect("park the superseded boundary");
-    std::fs::write(
-        backup.join("legacy.sql"),
-        "CREATE TABLE legacy (id INTEGER);",
-    )
-    .expect("write the superseded snapshot");
-
-    let staged = dir.join(".checkpoint-stage.4242.2.tmp");
-    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
-    std::fs::write(
-        staged.join("orders.sql"),
-        "CREATE TABLE orders (id INTEGER);",
-    )
-    .expect("write the staged snapshot");
-
-    swap_snapshot(&boundary, &staged).expect("the replacement boundary is installed");
-
-    assert_eq!(directory_names(&boundary), vec!["orders.sql".to_owned()]);
-    assert!(!backup.exists(), "the superseded parked snapshot is discarded");
-}
-
-#[test]
-fn verifying_a_missing_boundary_names_the_parked_snapshot_that_restores_it() {
-    let dir = workspace("verify-parked");
-    let stage_dir = dir.join("schema");
-    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
-    std::fs::write(stage_dir.join("users.sql"), "CREATE TABLE users (id INTEGER);")
-        .expect("write the stage script");
-    let migrations_dir = dir.join("migrations");
-    std::fs::create_dir_all(&migrations_dir).expect("create the migrations directory");
-
-    // The marker anchors a non-empty boundary whose snapshot a killed swap
-    // parked, so the committed boundary is no longer where a verification
-    // looks for it.
+fn a_parked_pair_beside_a_committed_pair_is_discarded() {
+    let dir = workspace("commit-discard");
     let checkpoint_path = dir.join("checkpoint.toml");
-    checkpoint_file(&checkpoint_path, "1");
-    let backup = dir.join(".checkpoint-stage.previous");
-    std::fs::create_dir_all(&backup).expect("park the committed boundary");
+
+    // The commit reached its commit point: the live pair is committed and the
+    // parked pair is the previous state the swap replaced.
     std::fs::write(
-        backup.join("users.sql"),
+        &checkpoint_path,
+        Checkpoint::new(version("2"), Checksum::of(b"new")).render(),
+    )
+    .expect("write the committed marker");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("install the committed boundary");
+    std::fs::write(boundary.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
+        .expect("write the committed snapshot");
+
+    let marker_backup = dir.join(".checkpoint.toml.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"old")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
         "CREATE TABLE users (id INTEGER);",
     )
     .expect("write the parked snapshot");
 
-    let error = verify_stage(&stage_dir, None, &migrations_dir, &checkpoint_path, ":memory:")
-        .expect_err("the boundary snapshot is missing");
+    let notice = recover_interrupted_commit(&checkpoint_path)
+        .expect("the debris is discarded")
+        .expect("the discard is reported");
 
-    let message = error.to_string();
-    assert!(
-        message.contains(".checkpoint-stage.previous"),
-        "the diagnostic names the parked snapshot, got {message}"
+    assert!(notice.contains("Discarded"), "got {notice}");
+    assert!(!marker_backup.exists(), "the parked marker is discarded");
+    assert!(!boundary_backup.exists(), "the parked boundary is discarded");
+    assert_eq!(
+        directory_names(&boundary),
+        vec!["orders.sql".to_owned()],
+        "the committed boundary is untouched"
     );
-    assert!(
-        message.contains("mv "),
-        "the diagnostic names the rename that restores it, got {message}"
+}
+
+#[test]
+fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
+    let dir = workspace("verify-restore");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let users = "CREATE TABLE users (id INTEGER);";
+    std::fs::write(stage_dir.join("users.sql"), users).expect("write the stage script");
+    let migrations_dir = dir.join("migrations");
+    std::fs::create_dir_all(&migrations_dir).expect("create the migrations directory");
+
+    // The marker anchors the parked boundary, which a killed swap left beside
+    // no live boundary.
+    let stage = DeclarativeStage::load(&stage_dir)
+        .expect("the stage is readable")
+        .expect("the stage directory exists");
+    let catalog = materialise_stage(&stage, ":memory:").expect("the stage materialises");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    std::fs::write(
+        &checkpoint_path,
+        Checkpoint::new(version("1"), catalog.checksum()).render(),
+    )
+    .expect("write the checkpoint");
+
+    let backup = dir.join(".checkpoint-stage.previous");
+    std::fs::create_dir_all(&backup).expect("park the committed boundary");
+    std::fs::write(backup.join("users.sql"), users).expect("write the parked snapshot");
+
+    // The verification repairs the interrupted commit and then finds the
+    // boundary and its marker in agreement.
+    verify_stage(&stage_dir, None, &migrations_dir, &checkpoint_path, ":memory:")
+        .expect("the repaired checkpoint verifies");
+
+    let boundary = dir.join("checkpoint-stage");
+    assert_eq!(
+        std::fs::read_to_string(boundary.join("users.sql")).expect("read the restored snapshot"),
+        users
     );
+    assert!(!backup.exists(), "the parked snapshot was renamed into place");
 }
 
 #[test]
