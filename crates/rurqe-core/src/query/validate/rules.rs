@@ -147,19 +147,24 @@ impl StatementRef<'_> {
     ///
     /// PostgreSQL requires the leading `ORDER BY` expressions to match the
     /// `DISTINCT ON` expressions left-to-right, because that ordering decides
-    /// which of the duplicate rows survives. The rule compares expressions
-    /// structurally and ignores the direction and null placement of each
-    /// criterion, so the check runs on the assembled statement data during
-    /// `validate` and surfaces as [`BuildError::DistinctOnOrderMismatch`]. An
-    /// absent `ORDER BY` clause stays valid: the engine accepts it and leaves the
-    /// surviving row undetermined.
+    /// which of the duplicate rows survives. The rule ignores the direction and
+    /// null placement of each criterion, so the check runs on the assembled
+    /// statement data during `validate` and surfaces as
+    /// [`BuildError::DistinctOnOrderMismatch`]. An absent `ORDER BY` clause stays
+    /// valid: the engine accepts it and leaves the surviving row undetermined.
+    ///
+    /// The comparison runs on the canonical form of both sides — see
+    /// `equivalent_expressions` — for the same reason the `DISTINCT` rule does: a
+    /// column addressed through `ExprKind::Column` and the same column addressed
+    /// through `ExprKind::QualifiedColumn` name one value of one relation, so
+    /// comparing the raw nodes would reject a statement the engine accepts.
     fn validate_distinct_on_prefix(&self) -> Result<(), BuildError> {
         if self.distinct_on.is_empty() || self.order_by.is_empty() {
             return Ok(());
         }
         for (position, expected) in self.distinct_on.iter().enumerate() {
             match self.order_by.get(position) {
-                Some(criterion) if &criterion.expr == expected => {}
+                Some(criterion) if equivalent_expressions(&criterion.expr, expected) => {}
                 _ => return Err(BuildError::DistinctOnOrderMismatch { position }),
             }
         }

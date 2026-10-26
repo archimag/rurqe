@@ -779,6 +779,62 @@ fn a_distinct_ordering_of_another_computation_is_rejected() {
 }
 
 #[test]
+fn a_distinct_on_prefix_matches_an_order_by_written_through_the_other_node_shape() {
+    // `DISTINCT ON` spells the column as an alias-qualified reference while the
+    // leading ordering criterion reads the schema-marker shape of the same column
+    // of the same relation. Both name one value, so the prefix alignment holds and
+    // the statement built past the fluent builders stays valid.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.distinct_on.push(ExprKind::QualifiedColumn {
+        table: "orders",
+        column: "user_id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_on_prefix_naming_another_column_is_still_rejected() {
+    // The canonical comparison normalises the two spellings of one column; it does
+    // not make distinct columns match, so the alignment rule still rejects a leading
+    // ordering criterion naming a column the clause does not deduplicate by.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.distinct_on.push(ExprKind::QualifiedColumn {
+        table: "orders",
+        column: "user_id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DistinctOnOrderMismatch { position: 0 })
+    );
+}
+
+#[test]
 fn build_error_display_compound_order_index() {
     let err = BuildError::CompoundOrderIndex {
         index: 3,
