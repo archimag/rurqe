@@ -23,6 +23,12 @@
 //! hardened by the seeded property suite in [`property_tests`], which pins span
 //! soundness, round-trip identity, paren balancing, and the handling of
 //! unterminated input over adversarial byte sequences.
+//!
+//! The exception is narrowly ratified in `Conventions.md` §1: it covers a
+//! lexical scanner only. Any extension toward full DDL parsing — AST
+//! construction, semantic modelling, or a parse-tree-based recovery —
+//! re-triggers the no-hand-rolled-parsers mandate and must come with a new
+//! decision record before it lands.
 
 /// Recognised SQL keywords used during SQLite schema introspection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

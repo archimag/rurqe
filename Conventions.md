@@ -25,6 +25,11 @@
   * Strictly forbid rolling custom ad-hoc parsers for standardized data formats (TOML, JSON, YAML, SQL DDL), cryptographic primitives, character encodings, or protocol wire formats when mature, well-tested, de-facto standard community crates exist (e.g. `toml`, `serde`, `syn`, `sha2`).
   * Minimizing Cargo dependency count ("zero-dep fetish") is explicitly rejected when achieved at the expense of specification compliance, validation strictness, or safety.
   * All external configuration and metadata files (`checkpoint.toml`, `rurqe.toml`) must be parsed using standard crates into strongly-typed DTOs with strict validation enabled (e.g. `#[serde(deny_unknown_fields)]`). Silent ignoring of unrecognized sections or misspelled fields is strictly prohibited.
+  * **Ratified exception — SQLite DDL lexer:** `crates/rurqe-cli/src/introspect/sqlite/lexer.rs` may remain a hand-rolled lexical scanner, subject to all of the following:
+    * **Lexer only, no parse tree:** the module emits tokens and token spans and never constructs a DDL AST or semantic model; any move toward full DDL parsing re-triggers the rule above and requires a new decision record.
+    * **Exact-span requirement:** consumers need the exact source byte range of sub-expressions (e.g. the `CHECK ... IN (...)` enum recovery and the check predicate recorded into `schema.lock`) so the snapshot stays bit-stable across runs and SQLite versions; `sqlparser` normalises the statement it parses and hands back no inner byte range, so it cannot meet this requirement.
+    * **Mandatory property suite:** the seeded property suite in `lexer/property_tests.rs` is the merge gate for this module.
+    * **Scope:** the exception covers no other format, dialect, or module.
 * **Unidirectional Dependencies:**
   * Strictly layered architecture (Contracts/Types → Core/Domain Logic → Transport/Interface). Cyclic dependencies are forbidden.
 * **Rust 2018+ Module Layout (No `mod.rs`):**
