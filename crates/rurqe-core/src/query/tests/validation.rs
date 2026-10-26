@@ -2372,3 +2372,205 @@ fn a_grouped_statement_renders_having_ordering_limit_and_offset() {
     );
     assert_eq!(built.params, vec![SqlVal::I64(1)]);
 }
+
+// -----------------------------------------------------------------------------
+// Membership rules end to end on the public AST surface.
+//
+// Both rules are reachable through statement data alone — `SelectAst`, the
+// `Subquery::new` wrapper, and `Expr::from_kind` — which is the surface a caller
+// assembles past the fluent typestate. The tests below pin the positive paths
+// that must not weaken — a grouped statement, a correlated subquery, and a
+// lateral join — beside the exact diagnostic every rejection reports.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn a_plain_column_projection_built_through_the_public_constructor_is_accepted() {
+    // A reference assembled through `Expr::from_kind` names the relation the
+    // statement introduces, so the membership rule accepts it exactly like the
+    // schema-marker shape the fluent builders produce.
+    let ast = orders_statement(vec![
+        Expr::<f64>::from_kind(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        })
+        .into_kind(),
+    ]);
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_grouped_statement_accepts_a_scalar_subquery_correlated_to_the_grouped_column() {
+    // The scalar subquery projects a value of the statement it declares, while
+    // its filter reaches the grouped column of the enclosing statement by
+    // correlation, so neither rule rejects the projection.
+    let mut inner = relation_statement("orders", "total");
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "users",
+            name: "id",
+        }),
+    });
+
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("users"));
+    ast.projections = vec![
+        ExprKind::Column {
+            table: "users",
+            name: "id",
+        },
+        Expr::<f64>::from_kind(scalar_subquery(inner)).into_kind(),
+    ];
+    ast.group_by = vec![ExprKind::Column {
+        table: "users",
+        name: "id",
+    }];
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_lateral_subquery_correlated_to_the_grouped_column_is_accepted() {
+    // A lateral subquery reads the relations in scope where it is written, so
+    // correlating to the grouped column of the statement joining it stays valid
+    // while its aggregate is governed by its own scope.
+    let mut inner = relation_statement("orders", "total");
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "users",
+            name: "id",
+        }),
+    });
+
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("users"));
+    ast.joins.push(JoinAst {
+        kind: JoinKind::LeftLateral,
+        table: TableRef::plain("recent"),
+        lateral: Some(inner),
+        on: None,
+    });
+    ast.projections = vec![
+        ExprKind::Column {
+            table: "users",
+            name: "id",
+        },
+        sum_of("recent", "total"),
+    ];
+    ast.group_by = vec![ExprKind::Column {
+        table: "users",
+        name: "id",
+    }];
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_grouped_statement_deduplicating_by_a_grouped_column_is_accepted() {
+    // The deduplication and the ordering name the grouped column, so both the
+    // prefix alignment and the grouped-column coverage hold together.
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        count_star(),
+    ]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.distinct_on.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_grouped_statement_rejects_a_bare_column_hidden_in_a_computed_projection() {
+    // The grouping dropped the per-row value `total` would name, and wrapping
+    // the reference in a function does not aggregate it, so the projection is
+    // rejected through the column the expression reads.
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        Expr::<f64>::from_kind(ExprKind::Function {
+            name: "COALESCE",
+            args: vec![
+                ExprKind::Column {
+                    table: "orders",
+                    name: "total",
+                },
+                ExprKind::Value(SqlVal::F64(0.0)),
+            ],
+        })
+        .into_kind(),
+    ]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_grouped_statement_nested_in_a_projection_is_validated_itself() {
+    // The embedded statement is validated in full, so the grouped-column
+    // coverage reaches one level deeper than the projection list embedding it.
+    let mut inner = relation_statement("orders", "user_id");
+    inner.projections = vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        count_star(),
+    ];
+    inner.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+
+    let mut ast = relation_statement("users", "id");
+    ast.projections.push(scalar_subquery(inner));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
