@@ -114,6 +114,23 @@ impl SandboxKind {
             SandboxKind::Postgres(sandbox) => sandbox.catalog(),
         }
     }
+
+    /// The vacuous-selection warning the materialised catalog produced, if any.
+    ///
+    /// A SQLite scratch holds a single unnamed catalog, so no selection can
+    /// describe nothing and the notice is always absent, mirroring
+    /// `crate::introspect::report_vacuous_schema`. The PostgreSQL side delegates
+    /// to the sandbox, so a scratch database whose selected schema holds no
+    /// relation while it keeps user relations elsewhere reports the schemas that
+    /// do and the `--schema` remedy instead of certifying equivalence.
+    pub(super) fn vacuous_schema_notice(&mut self) -> Result<Option<String>, String> {
+        match self {
+            // A SQLite scratch has no schema layer, so the selection always
+            // describes the catalog the replay produced.
+            SandboxKind::SqliteMemory(_) | SandboxKind::SqliteFile { .. } => Ok(None),
+            SandboxKind::Postgres(sandbox) => sandbox.vacuous_schema_notice(),
+        }
+    }
 }
 
 /// The user objects a SQLite scratch database currently holds.

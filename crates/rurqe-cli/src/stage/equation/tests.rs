@@ -49,6 +49,11 @@ fn matching_stage_and_tail_are_equivalent() {
 
     assert!(report.is_equivalent());
     assert_eq!(report.stage_hash(), report.tail_hash());
+    assert!(
+        report.schema_notices.is_empty(),
+        "a SQLite scratch holds one unnamed catalog, so no selection can be vacuous: {:?}",
+        report.schema_notices
+    );
 }
 
 #[test]
@@ -430,6 +435,7 @@ fn index_divergences_are_reported_by_name() {
         stage_catalog: catalog.clone(),
         tail_catalog: catalog,
         diff,
+        schema_notices: Vec::new(),
     };
 
     assert!(!report.is_equivalent());

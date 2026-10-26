@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::{connect, redact_database_url, Connection};
-use crate::introspect::introspect_postgres_schema;
+use crate::introspect::{introspect_postgres_schema, report_vacuous_postgres_schema};
 
 /// The prefix every scratch database name carries.
 const SCRATCH_PREFIX: &str = "rurqe_scratch_";
@@ -178,6 +178,37 @@ impl PostgresSandbox {
             .ok_or_else(|| format!("the scratch database `{database}` is already closed"))?;
 
         introspect_postgres_schema(client, schema).map_err(|error| error.to_string())
+    }
+
+    /// The vacuous-selection notice the materialised scratch catalog produced.
+    ///
+    /// The detection is the one the live side runs, so a scratch side is
+    /// analysed exactly like the database it stands in for: when the selected
+    /// schema holds no table or view while the scratch database keeps user
+    /// relations in another schema, the warning names those schemas and the
+    /// `--schema` remedy instead of letting an empty catalog certify
+    /// equivalence.
+    ///
+    /// The notice describes the state the replay left behind, so it has to be
+    /// queried while the replay connection is still open: the scratch database —
+    /// and with it the catalog the query reads — is gone once the sandbox is
+    /// dropped.
+    pub(super) fn vacuous_schema_notice(&mut self) -> Result<Option<String>, String> {
+        // The connection is borrowed mutably while the neighbours are read, so
+        // the fields are destructured once instead of borrowing the schema name
+        // through `self` next to it.
+        let Self {
+            client,
+            database,
+            schema,
+            ..
+        } = self;
+
+        let client = client
+            .as_mut()
+            .ok_or_else(|| format!("the scratch database `{database}` is already closed"))?;
+
+        report_vacuous_postgres_schema(client, schema).map_err(|error| error.to_string())
     }
 
     /// The still-open replay connection.
