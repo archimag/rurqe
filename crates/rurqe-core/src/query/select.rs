@@ -66,10 +66,9 @@ pub struct Locked;
 /// PostgreSQL refuses `FOR UPDATE` and `FOR SHARE` on a statement that
 /// deduplicates its rows (`DISTINCT`, `DISTINCT ON`), so recording the clause
 /// moves the query out of [`NoLock`] and leaves the locking builders unreachable.
-/// Grouping moves the query out of the locking path as well: a grouped query
-/// reaches [`SelectQuery`] again only through
-/// [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select), which
-/// returns an unlocked query carrying this marker.
+/// Grouping keeps a query out of the locking path as well: a grouped statement
+/// produces one row per group, so it never becomes a plain [`SelectQuery`] again
+/// and carries no lock along the way.
 ///
 /// A statement a set operation combined drops its lock for the same reason and
 /// carries [`SetOpApplied`] instead, which moves the query into the
@@ -175,8 +174,8 @@ impl ProjectionPresent for HasProjection {}
 ///
 /// - [`NoLock`] and [`Locked`], where the statement projects the rows of its own
 ///   `FROM` scope whether or not it claims them;
-/// - [`LockUnavailable`], where deduplication or grouping changed how the rows are
-///   produced without fixing them yet.
+/// - [`LockUnavailable`], where deduplication changed how the rows are produced
+///   without fixing them yet.
 ///
 /// A statement a set operation combined carries [`SetOpApplied`], and the
 /// ordering of its combined rows carries [`TailClosed`]: the rows of such a
@@ -567,8 +566,8 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, (), NoProjection, NoLock> {
     /// every projected column is verified to be either grouped or an aggregate.
     /// The grouped query is not lockable: PostgreSQL evaluates a row-level lock on
     /// the rows the statement produced, while a grouped statement produces one row
-    /// per group, so [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select)
-    /// hands the query back with [`LockUnavailable`].
+    /// per group, so the [`GroupedQuery`] state keeps the locking builders out of
+    /// reach.
     ///
     /// ```compile_fail
     /// use rurqe_core::dialect::Dialect;
@@ -980,9 +979,8 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// [`GroupedQuery::having_col`](crate::query::GroupedQuery::having_col): the
     /// rules that make a predicate valid read the grouping the query recorded, and
     /// that grouping is known only while the query carries the grouped typestate.
-    /// The method therefore stays crate-private, which keeps an ungrouped query —
-    /// including the plain query [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select)
-    /// hands back — from rendering a `HAVING` clause the engine would reject.
+    /// The method therefore stays crate-private, which keeps an ungrouped query
+    /// from rendering a `HAVING` clause the engine would reject.
     pub(crate) fn having<Scope, Aggr, P, PredD>(
         mut self,
         predicate: Expr<bool, Scope, Aggr, PredD>,

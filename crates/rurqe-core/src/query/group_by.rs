@@ -11,8 +11,7 @@ use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 use super::cte::{Cte, DerivedTable};
 use super::scope::{ScopePositions, TableScope};
 use super::select::{
-    BuiltQuery, HasProjection, LockUnavailable, NoProjection, OrderDirection, ProjectionPresent,
-    SelectQuery,
+    BuiltQuery, HasProjection, NoProjection, OrderDirection, ProjectionPresent, SelectQuery,
 };
 use super::selection::{AggregateInDialect, SelectTarget, Selection, SelectionFor};
 use super::window::WindowExpr;
@@ -287,7 +286,11 @@ impl_grouped_selection!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
 /// A `SELECT` query whose rows are grouped by the columns recorded in `GroupByCols`.
 ///
 /// `Projected` mirrors [`SelectQuery`]: a grouped query is renderable only once
-/// it projects its rows through [`GroupedQuery::select`].
+/// it projects its rows through [`GroupedQuery::select`]. The grouped typestate
+/// is final: a grouped statement is embedded into a larger statement through
+/// [`GroupedQuery::as_cte`] or [`GroupedQuery::as_table`], and it never degrades
+/// back into a plain `SelectQuery` that would still render a `GROUP BY` clause
+/// the builder chain could no longer check.
 pub struct GroupedQuery<
     D: Dialect,
     Tables = (),
@@ -822,30 +825,7 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
         self
     }
 
-    /// Returns the query of this state, dropping the grouping marker.
-    ///
-    /// The returned query keeps everything the grouped query already recorded —
-    /// the `GROUP BY` columns and the `HAVING` predicate — so a `HAVING` clause
-    /// has to be recorded before the conversion: the plain builder cannot record
-    /// one afterwards, because the grouping that decides whether a predicate is
-    /// valid is only known while the query still carries the grouped typestate.
-    ///
-    /// ```text
-    /// let query = select_from(Order)
-    ///     .group_by(OrderUserId)
-    ///     .select((OrderUserId,))
-    ///     .having(Expr::count_all().gt(1i64));
-    /// let plain = query.into_select(); // the HAVING clause stays recorded
-    /// ```
-    ///
-    /// A grouped statement produces one row per group, so the returned query
-    /// carries `LockUnavailable`: PostgreSQL refuses a row-level lock on a
-    /// statement whose rows are grouped, and the marker keeps
-    /// [`for_update`](SelectQuery::for_update) and
-    /// [`for_share`](SelectQuery::for_share) unreachable on it.
-    pub fn into_select(self) -> SelectQuery<D, Tables, Output, Projected, LockUnavailable> {
-        self.query.retype()
-    }
+
 }
 
 impl<D: Dialect, Tables: TableScope, Output, GroupByCols, P: ProjectionPresent>

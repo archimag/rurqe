@@ -187,10 +187,7 @@ fn grouped_queries_are_executable() {
     let rows = backend.fetch_all(&query).expect("grouped rows decode");
 
     assert_eq!(rows, vec![(1i64, 3i64)]);
-    assert_eq!(backend.executed, vec![query_built.clone()]);
-
-    let built = query_built;
-    assert_eq!(query.into_select().build().expect("valid query"), built);
+    assert_eq!(backend.executed, vec![query_built]);
 }
 
 #[test]
@@ -217,17 +214,17 @@ fn grouped_having_accepts_a_predicate_that_is_constant_within_a_group() {
 }
 
 #[test]
-fn having_recorded_before_leaving_the_grouped_state_stays_in_the_statement() {
-    // The plain query handed back by `into_select` keeps the grouping and the
-    // `HAVING` clause the grouped state recorded, so the conversion preserves the
-    // statement instead of dropping its filter.
+fn having_stays_recorded_in_the_grouped_statement() {
+    // The `HAVING` clause is recorded on the grouped query itself, so the
+    // rendered statement keeps the filter together with the grouping that decides
+    // which values the predicate may read.
     let grouped = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .group_by(OrderUserId)
         .select((OrderUserId,))
         .having(Expr::count_all().gt(1i64));
 
-    let built = grouped.into_select().build().expect("valid query");
+    let built = grouped.build().expect("valid query");
 
     assert_eq!(
         built.sql,
