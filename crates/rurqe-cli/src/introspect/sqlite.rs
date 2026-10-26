@@ -25,6 +25,8 @@ use super::types::{parse_foreign_key_action, RawCatalogSections};
 pub use assembly::{catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections};
 pub use check_enums::parse_sqlite_check_enums;
 
+use assembly::catalog_from_sqlite_metadata_with_enums;
+
 use checks::sqlite_checks;
 use indexes::{sqlite_indexes, sqlite_triggers, sqlite_views};
 
@@ -224,11 +226,11 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
         raw_indexes.extend(sqlite_indexes(conn, table)?);
     }
 
-    let raw_checks = sqlite_checks(&raw_tables, &raw_columns);
+    let (raw_checks, enum_columns) = sqlite_checks(&raw_tables, &raw_columns);
     let raw_views = sqlite_views(conn)?;
     let raw_triggers = sqlite_triggers(conn)?;
 
-    Ok(catalog_from_sqlite_metadata_with_sections(
+    Ok(catalog_from_sqlite_metadata_with_enums(
         &raw_tables,
         &raw_columns,
         &raw_foreign_keys,
@@ -238,5 +240,6 @@ pub fn introspect_sqlite(conn: &rusqlite::Connection) -> Result<SchemaCatalog, C
             views: &raw_views,
             triggers: &raw_triggers,
         },
+        &enum_columns,
     ))
 }

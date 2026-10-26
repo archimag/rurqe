@@ -12,6 +12,7 @@ use crate::introspect::types::{
 };
 
 use super::check_enums::parse_sqlite_check_enums;
+use super::checks::SqliteEnumColumn;
 use super::{RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata, RawSqliteTableMetadata};
 
 /// Assembles a normalized [`SchemaCatalog`] from SQLite introspection results.
@@ -50,6 +51,12 @@ pub fn catalog_from_sqlite_metadata(
 }
 
 /// Assembles a normalized [`SchemaCatalog`] including checks, views, and triggers.
+///
+/// The enum columns of the schema are recovered here by scanning the DDL of every
+/// table once. A caller that already recovered them while collecting the check
+/// constraints of the same statements hands them over through
+/// [`catalog_from_sqlite_metadata_with_enums`] instead, so the assembly never
+/// reads a statement a collection pass already read.
 pub fn catalog_from_sqlite_metadata_with_sections(
     tables: &[RawSqliteTableMetadata],
     columns: &[RawSqliteColumnMetadata],
@@ -57,28 +64,51 @@ pub fn catalog_from_sqlite_metadata_with_sections(
     indexes: &[RawIndexMetadata],
     sections: &RawCatalogSections<'_>,
 ) -> SchemaCatalog {
+    let enum_columns = recover_enum_columns(tables, columns);
+
+    catalog_from_sqlite_metadata_with_enums(
+        tables,
+        columns,
+        foreign_keys,
+        indexes,
+        sections,
+        &enum_columns,
+    )
+}
+
+/// Assembles a normalized [`SchemaCatalog`] from already recovered enum columns.
+///
+/// The catalog of a live SQLite database is built from the enum columns its check
+/// collector recovered while scanning each DDL, so the assembly never lexes a
+/// statement the collection pass has already parsed.
+pub(super) fn catalog_from_sqlite_metadata_with_enums(
+    tables: &[RawSqliteTableMetadata],
+    columns: &[RawSqliteColumnMetadata],
+    foreign_keys: &[RawSqliteForeignKeyMetadata],
+    indexes: &[RawIndexMetadata],
+    sections: &RawCatalogSections<'_>,
+    enum_columns: &[SqliteEnumColumn],
+) -> SchemaCatalog {
     let mut enums_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut check_enums: BTreeMap<(String, String), String> = BTreeMap::new();
-    for table in tables {
-        let table_col_names: Vec<&str> = columns
-            .iter()
-            .filter(|c| c.table_name == table.name)
-            .map(|c| c.column_name.as_str())
-            .collect();
-        if let Some(ref sql) = table.sql {
-            for (col_name, variants) in parse_sqlite_check_enums(sql, &table_col_names) {
-                let candidate = col_name.clone();
-                let enum_name = match enums_by_name.get(&candidate) {
-                    Some(existing_variants) if existing_variants == &variants => candidate,
-                    None => candidate,
-                    Some(_) => format!("{}_{}_enum", table.name, col_name),
-                };
-                enums_by_name
-                    .entry(enum_name.clone())
-                    .or_insert_with(|| variants);
-                check_enums.insert((table.name.clone(), col_name), enum_name);
-            }
-        }
+    for recovered in enum_columns {
+        let candidate = recovered.column_name.clone();
+        let variants = recovered.variants.clone();
+        let enum_name = match enums_by_name.get(&candidate) {
+            Some(existing_variants) if existing_variants == &variants => candidate,
+            None => candidate,
+            Some(_) => format!(
+                "{}_{}_enum",
+                recovered.table_name, recovered.column_name
+            ),
+        };
+        enums_by_name
+            .entry(enum_name.clone())
+            .or_insert_with(|| variants);
+        check_enums.insert(
+            (recovered.table_name.clone(), recovered.column_name.clone()),
+            enum_name,
+        );
     }
 
     let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
@@ -208,6 +238,38 @@ pub fn catalog_from_sqlite_metadata_with_sections(
         .with_enums(enums)
         .with_views(views)
         .with_triggers(triggers)
+}
+
+/// Recovers the enum columns declared by the tables of the schema.
+///
+/// Each DDL is scanned once, in the order the tables are reported, so the enum
+/// names collide and disambiguate exactly as the catalog assembler expects.
+fn recover_enum_columns(
+    tables: &[RawSqliteTableMetadata],
+    columns: &[RawSqliteColumnMetadata],
+) -> Vec<SqliteEnumColumn> {
+    let mut enum_columns = Vec::new();
+
+    for table in tables {
+        let Some(sql) = table.sql.as_deref() else {
+            continue;
+        };
+        let known: Vec<&str> = columns
+            .iter()
+            .filter(|column| column.table_name == table.name)
+            .map(|column| column.column_name.as_str())
+            .collect();
+
+        for (column_name, variants) in parse_sqlite_check_enums(sql, &known) {
+            enum_columns.push(SqliteEnumColumn {
+                table_name: table.name.clone(),
+                column_name,
+                variants,
+            });
+        }
+    }
+
+    enum_columns
 }
 
 /// Names the column a foreign key references when SQLite omits it.

@@ -1,10 +1,11 @@
 //! Unit tests of the SQLite catalog introspection.
 
-use rurqe_migrate::catalog::ForeignKeyAction;
+use rurqe_migrate::catalog::{CheckDef, EnumDef, ForeignKeyAction, TypeKind};
 
 use super::check_enums::parse_sqlite_check_enums;
 use super::checks::{parse_sqlite_checks, scan_check_constraints};
 use super::indexes::{column_list_of, predicate_of};
+use super::lexer::{lex_passes, reset_lex_passes};
 use super::{
     catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
     RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
@@ -409,4 +410,68 @@ fn a_where_inside_a_comment_is_never_an_index_predicate() {
 fn a_column_list_ignores_a_commented_parenthesis() {
     let sql = "CREATE INDEX users_idx ON users /* (fake) */ (email, name);";
     assert_eq!(column_list_of(sql), Some("email, name".to_owned()));
+}
+
+#[test]
+fn one_catalog_build_recovers_enums_checks_and_indexes() {
+    let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             status TEXT NOT NULL CHECK (status IN ('todo', 'done')),
+             priority INTEGER NOT NULL CHECK (priority >= 0)
+         );
+         CREATE INDEX tasks_priority_idx ON tasks (priority);",
+    )
+    .expect("create the schema");
+
+    let catalog = introspect_sqlite(&conn).expect("the catalog is introspected");
+    let tasks = catalog
+        .tables
+        .iter()
+        .find(|table| table.name == "tasks")
+        .expect("the table is assembled");
+
+    assert_eq!(
+        catalog.enums,
+        vec![EnumDef::new(
+            "status".to_owned(),
+            vec!["todo".to_owned(), "done".to_owned()]
+        )]
+    );
+    assert_eq!(
+        tasks.checks,
+        vec![CheckDef::new("tasks_check_0", "priority >= 0")]
+    );
+    assert_eq!(
+        tasks.columns[1].type_kind,
+        TypeKind::Enum("status".to_owned())
+    );
+    assert_eq!(tasks.indexes.len(), 1);
+    assert_eq!(tasks.indexes[0].name, "tasks_priority_idx");
+    assert_eq!(tasks.indexes[0].columns, vec!["priority"]);
+}
+
+#[test]
+fn one_catalog_build_lexes_each_table_ddl_once() {
+    let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             status TEXT NOT NULL CHECK (status IN ('todo', 'done')),
+             priority INTEGER NOT NULL CHECK (priority >= 0)
+         );
+         CREATE TABLE users (email TEXT NOT NULL);",
+    )
+    .expect("create the schema");
+
+    reset_lex_passes();
+    let catalog = introspect_sqlite(&conn).expect("the catalog is introspected");
+
+    assert_eq!(catalog.tables.len(), 2);
+    assert_eq!(catalog.enums.len(), 1);
+    assert_eq!(
+        lex_passes(),
+        2,
+        "each table DDL is lexed exactly once while the catalog is built"
+    );
 }

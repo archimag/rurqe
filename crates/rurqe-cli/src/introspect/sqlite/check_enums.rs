@@ -13,7 +13,19 @@ use super::lexer::{matching_close, tokenize, SqlKeyword, Token, TokenKind};
 /// Parses deterministic `CHECK (<col> IN ('val1', 'val2', ...))` enum constraints
 /// from the table DDL `sql`.
 pub fn parse_sqlite_check_enums(sql: &str, known_columns: &[&str]) -> Vec<(String, Vec<String>)> {
-    let tokens = tokenize(sql);
+    parse_check_enums(&tokenize(sql), known_columns)
+}
+
+/// Recovers the `CHECK (<col> IN (...))` enum constraints of an already
+/// tokenized statement.
+///
+/// A caller that also reads the other constraints of the same statement lexes the
+/// DDL once and hands the same token stream over, so neither scan repeats the
+/// lexing the other already performed.
+pub(super) fn parse_check_enums(
+    tokens: &[Token<'_>],
+    known_columns: &[&str],
+) -> Vec<(String, Vec<String>)> {
     let mut results = Vec::new();
     let mut seen = BTreeSet::new();
     let mut index = 0;
@@ -33,7 +45,7 @@ pub fn parse_sqlite_check_enums(sql: &str, known_columns: &[&str]) -> Vec<(Strin
             continue;
         }
 
-        let Some(close) = matching_close(&tokens, open) else {
+        let Some(close) = matching_close(tokens, open) else {
             index += 1;
             continue;
         };

@@ -168,11 +168,42 @@ impl<'a> Token<'a> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Number of lexer passes the current thread has performed.
+    static LEX_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reads the number of lexer passes the current thread has performed.
+///
+/// The count exists only for the test surface, where it pins how many times a
+/// catalog build reads the same statement.
+#[cfg(test)]
+pub(crate) fn lex_passes() -> usize {
+    LEX_PASSES.with(std::cell::Cell::get)
+}
+
+/// Resets the number of lexer passes the current thread has performed.
+#[cfg(test)]
+pub(crate) fn reset_lex_passes() {
+    LEX_PASSES.with(|passes| passes.set(0));
+}
+
+#[cfg(test)]
+fn record_lex_pass() {
+    LEX_PASSES.with(|passes| passes.set(passes.get() + 1));
+}
+
+#[cfg(not(test))]
+fn record_lex_pass() {}
+
 /// Tokenizes a SQL string into a sequence of [`Token`]s.
 ///
 /// Whitespace, single-line comments (`-- ...\n`), and block comments
 /// (`/* ... */`) are skipped and not emitted as tokens.
 pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
+    record_lex_pass();
+
     let mut tokens = Vec::new();
     let mut i = 0;
 
