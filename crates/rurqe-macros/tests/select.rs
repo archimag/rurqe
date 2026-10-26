@@ -213,15 +213,19 @@ fn named_expressions_project_computed_fields() {
 
 #[test]
 fn expressions_render_through_the_select_target_trait() {
+    // An aggregate collapses the relation into one row, so the column beside it is
+    // grouped: without the grouping the statement would be rejected before any SQL
+    // is rendered.
     let built = SelectQuery::<TestDialect>::new()
         .from::<User>()
+        .group_by(UserId)
         .select(select!(UserId, Expr::sum::<UserId>() as total))
         .build()
         .expect("valid query");
 
     assert_eq!(
         built.sql,
-        "SELECT id AS user_id, SUM(id) AS total FROM users"
+        "SELECT id AS user_id, SUM(id) AS total FROM users GROUP BY id"
     );
     assert!(built.params.is_empty());
 }

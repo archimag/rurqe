@@ -337,6 +337,7 @@ impl<'a> StatementRef<'a> {
         self.validate_distinct_on_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
+        self.validate_aggregation()?;
 
         for cte in self.ctes {
             cte.query.validate()?;
@@ -568,6 +569,64 @@ impl<'a> StatementRef<'a> {
         self.projections
             .iter()
             .any(|projection| projection_output_name(projection) == Some(column))
+    }
+
+    /// Rejects an aggregation the engine cannot evaluate.
+    ///
+    /// An aggregate present in a statement collapses rows, which constrains the
+    /// expressions around it:
+    ///
+    /// - an aggregate without a `GROUP BY` clause collapses the whole relation into
+    ///   a single row, so every projected expression has to be an aggregate, a
+    ///   literal, or an expression computed from them — a bare column would leave
+    ///   the engine without the one value it should report, so it is rejected as
+    ///   [`BuildError::UngroupedColumnWithAggregate`];
+    /// - a `HAVING` predicate runs over the groups the `GROUP BY` clause produced,
+    ///   so a column it reads has to be aggregated or listed in that clause — the
+    ///   grouping dropped the per-row value any other column would name, so it is
+    ///   rejected as [`BuildError::UngroupedHavingColumn`].
+    ///
+    /// Both clauses are assembled as plain statement data, so both rules run here,
+    /// before any SQL is rendered. A window call is not an aggregate for the first
+    /// rule: the engine evaluates it over the rows the statement produced instead
+    /// of collapsing them, which is why `SUM("total") OVER (...)` beside a bare
+    /// column stays valid without a grouping.
+    fn validate_aggregation(&self) -> Result<(), BuildError> {
+        if self.group_by.is_empty() && self.projections.iter().any(has_aggregate) {
+            for projection in self.projections {
+                let mut columns = Vec::new();
+                collect_bare_columns(projection, &mut columns);
+                if let Some(&(table, column)) = columns.first() {
+                    return Err(BuildError::UngroupedColumnWithAggregate { table, column });
+                }
+            }
+        }
+
+        let Some(having) = &self.having else {
+            return Ok(());
+        };
+        let mut columns = Vec::new();
+        collect_bare_columns(having, &mut columns);
+        for (table, column) in columns {
+            if !self.groups_column(table, column) {
+                return Err(BuildError::UngroupedHavingColumn { table, column });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the `GROUP BY` clause groups by the column `(table, column)`.
+    ///
+    /// A clause entry is compared in the canonical form [`column_reference`]
+    /// resolves instead of by the exact node shape the builder happened to produce:
+    /// a column read through a schema marker and the same column read through a
+    /// table alias name one column of one relation, so a predicate reading either
+    /// spelling matches a grouping written as the other one.
+    fn groups_column(&self, table: &'static str, column: &'static str) -> bool {
+        self.group_by
+            .iter()
+            .filter_map(|grouped| column_reference(without_alias(grouped)))
+            .any(|reference| reference == (table, column))
     }
 }
 
@@ -1141,10 +1200,10 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
 /// the projection it is embedded into an aggregate. The operand of an `IN`
 /// predicate is evaluated by the enclosing statement, so it is still walked.
 ///
-/// The rules that read these analyses are wired into the pre-flight pass of the
-/// enclosing statement in the following step, so the walkers of this module stay
-/// unreferenced until then.
-#[allow(dead_code)]
+/// A window call is not an aggregate for the question this walk answers: the
+/// engine evaluates it over the rows the statement produced instead of collapsing
+/// them, so `SUM("total") OVER (...)` beside a bare column stays a valid statement
+/// without any grouping.
 fn has_aggregate(expr: &ExprKind) -> bool {
     match expr {
         // The call itself is what the predicate asks about, so neither its
@@ -1184,27 +1243,10 @@ fn has_aggregate(expr: &ExprKind) -> bool {
                 .any(|branch| has_aggregate(&branch.condition) || has_aggregate(&branch.result))
                 || else_branch.as_deref().is_some_and(has_aggregate)
         }
-        ExprKind::Window {
-            kind,
-            partition_by,
-            order_by,
-            ..
-        } => {
-            let operand = match kind.as_ref() {
-                WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
-                    has_aggregate(column)
-                }
-                WindowExprKind::Expr(inner) => has_aggregate(inner),
-                WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {
-                    false
-                }
-            };
-            operand
-                || partition_by.iter().any(has_aggregate)
-                || order_by
-                    .iter()
-                    .any(|criterion| has_aggregate(&criterion.expr))
-        }
+        // A window function is evaluated over the rows the statement produced, so
+        // it collapses nothing: the call, the expression it wraps, and the columns
+        // its specification names all stay per-row references.
+        ExprKind::Window { .. } => false,
         // The omitted `query` field is the embedded statement, which resolves
         // its own references; only the operand is evaluated by the enclosing
         // statement.
@@ -1325,8 +1367,11 @@ fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static str, &'stat
 /// Whether the expression reads any column outside an aggregate.
 ///
 /// The predicate answers the question [`collect_bare_columns`] answers with a
-/// list, for the rules that only need to know whether such a reference exists at
-/// all — an expression over aggregates and literals alone reads none.
+/// list, for the callers that only need to know whether such a reference exists at
+/// all — an expression over aggregates and literals alone reads none. The
+/// pre-flight rules read the collected names instead, because the diagnostics they
+/// report name the offending column, so the predicate serves the tests of this
+/// module.
 #[allow(dead_code)]
 fn contains_bare_column(expr: &ExprKind) -> bool {
     let mut columns = Vec::new();
@@ -1968,5 +2013,214 @@ mod tests {
 
         assert!(!has_aggregate(&expr));
         assert!(!contains_bare_column(&expr));
+    }
+
+    /// Builds a statement projecting `projections` from the `orders` table.
+    fn orders_statement(projections: Vec<ExprKind>) -> SelectAst {
+        let mut ast = empty_ast();
+        ast.from = Some(TableRef::plain("orders"));
+        ast.projections = projections;
+        ast
+    }
+
+    /// A `COUNT(*)` aggregate expression.
+    fn count_star() -> ExprKind {
+        ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            distinct: false,
+            arg: None,
+            filter: None,
+        }
+    }
+
+    #[test]
+    fn an_aggregate_beside_a_bare_column_is_rejected() {
+        let ast = orders_statement(vec![
+            ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            },
+            sum_of("orders", "total"),
+        ]);
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::UngroupedColumnWithAggregate {
+                table: "orders",
+                column: "user_id",
+            })
+        );
+    }
+
+    #[test]
+    fn an_aggregate_beside_an_alias_qualified_column_is_rejected() {
+        // A reference built through a table alias names a column of a relation like
+        // the schema marker does, so it is reported through the canonical pair.
+        let ast = orders_statement(vec![
+            sum_of("orders", "total"),
+            ExprKind::QualifiedColumn {
+                table: "o",
+                column: "user_id",
+            },
+        ]);
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::UngroupedColumnWithAggregate {
+                table: "o",
+                column: "user_id",
+            })
+        );
+    }
+
+    #[test]
+    fn a_statement_projecting_aggregates_and_literals_is_accepted() {
+        let ast = orders_statement(vec![
+            sum_of("orders", "total"),
+            count_star(),
+            ExprKind::Value(SqlVal::I64(1)),
+        ]);
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_expression_over_an_aggregate_is_accepted_beside_it() {
+        let ast = orders_statement(vec![
+            sum_of("orders", "total"),
+            ExprKind::Function {
+                name: "COALESCE",
+                args: vec![sum_of("orders", "total"), ExprKind::Value(SqlVal::F64(0.0))],
+            },
+        ]);
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_window_call_beside_a_bare_column_is_accepted() {
+        // The engine evaluates the window over the rows the statement produced, so
+        // the call names no grouping and does not collapse the relation.
+        let ast = orders_statement(vec![
+            ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            },
+            ExprKind::Window {
+                kind: Box::new(WindowExprKind::Expr(sum_of("orders", "total"))),
+                partition_by: vec![ExprKind::Column {
+                    table: "orders",
+                    name: "user_id",
+                }],
+                order_by: Vec::new(),
+                frame: None,
+            },
+        ]);
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_having_predicate_reading_a_grouped_column_is_accepted() {
+        let mut ast = orders_statement(vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }]);
+        ast.group_by = vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }];
+        ast.having = Some(ExprKind::Binary {
+            op: BinaryOp::Gt,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }),
+            rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
+        });
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_having_predicate_matches_a_grouped_column_through_the_other_node_shape() {
+        // The grouping records the schema-marker shape while the predicate reads the
+        // alias-qualified shape of the same column of the same relation.
+        let mut ast = orders_statement(vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }]);
+        ast.group_by = vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }];
+        ast.having = Some(ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::QualifiedColumn {
+                table: "orders",
+                column: "user_id",
+            }),
+            rhs: Box::new(ExprKind::Value(SqlVal::I64(7))),
+        });
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_having_predicate_over_an_aggregate_is_accepted() {
+        let mut ast = orders_statement(vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }]);
+        ast.group_by = vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }];
+        ast.having = Some(ExprKind::Binary {
+            op: BinaryOp::Gt,
+            lhs: Box::new(count_star()),
+            rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+        });
+
+        assert_eq!(ast.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_having_predicate_reading_an_ungrouped_column_is_rejected() {
+        let mut ast = orders_statement(vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }]);
+        ast.group_by = vec![ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }];
+        ast.having = Some(ExprKind::Binary {
+            op: BinaryOp::And,
+            lhs: Box::new(ExprKind::Binary {
+                op: BinaryOp::Gt,
+                lhs: Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "user_id",
+                }),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
+            }),
+            rhs: Box::new(ExprKind::Binary {
+                op: BinaryOp::Gt,
+                lhs: Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "total",
+                }),
+                rhs: Box::new(ExprKind::Value(SqlVal::F64(100.0))),
+            }),
+        });
+
+        assert_eq!(
+            ast.validate(),
+            Err(BuildError::UngroupedHavingColumn {
+                table: "orders",
+                column: "total",
+            })
+        );
     }
 }

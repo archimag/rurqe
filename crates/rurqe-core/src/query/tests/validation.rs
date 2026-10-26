@@ -3,7 +3,7 @@
 use super::{
     MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId, User, UserId, UserName,
 };
-use crate::expr::{LockClause, LockStrength};
+use crate::expr::{Expr, LockClause, LockStrength, SqlVal};
 use crate::query::*;
 use crate::schema::AliasedCol;
 
@@ -173,4 +173,112 @@ fn two_differently_named_ctes_are_accepted() {
         "WITH \"active_users\" AS (SELECT \"id\", \"name\" FROM \"users\"), \
          \"large_orders\" AS (SELECT \"id\" FROM \"orders\") SELECT \"id\" FROM \"users\""
     );
+}
+
+#[test]
+fn an_aggregate_beside_an_ungrouped_column_is_rejected_before_rendering() {
+    // An aggregate without a `GROUP BY` clause collapses the relation into one row,
+    // so the bare column beside it names a value the statement never reports.
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderUserId, Expr::count_all()));
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::UngroupedColumnWithAggregate {
+            table: "orders",
+            column: "user_id",
+        })
+    );
+}
+
+#[test]
+fn a_grouped_aggregate_projection_is_accepted() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all(), Expr::sum::<OrderTotal>()))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(*), SUM(\"total\") FROM \"orders\" GROUP BY \"user_id\""
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn an_aggregate_only_projection_without_group_by_is_accepted() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((Expr::count_all(),))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(built.sql, "SELECT COUNT(*) FROM \"orders\"");
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_having_predicate_reading_a_grouped_column_is_accepted() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()))
+        .having(Expr::count_all().gt(1i64))
+        .having_col(OrderUserId, Expr::column::<OrderUserId>().gt(10i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+         HAVING ((COUNT(*) > $1) AND (\"user_id\" > $2))"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(10)]);
+}
+
+#[test]
+fn a_having_predicate_reading_an_ungrouped_column_is_rejected_before_rendering() {
+    // The grouping dropped the per-row value `total` would name, so the predicate
+    // cannot read it: the columns of a group are the aggregated and the grouped ones.
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .having_col(
+            OrderUserId,
+            Expr::column::<OrderUserId>()
+                .gt(10i64)
+                .and(Expr::column::<OrderTotal>().gt(100.0).without_scope()),
+        );
+
+    assert_eq!(
+        query.build(),
+        Err(BuildError::UngroupedHavingColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_window_call_beside_a_bare_column_stays_valid_without_a_grouping() {
+    // A window function is evaluated over the rows the statement produced, so it
+    // neither collapses the relation nor requires a grouping.
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((
+            OrderUserId,
+            Expr::sum::<OrderTotal>().over(Window::partition_by(OrderUserId)),
+        ))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", SUM(\"total\") OVER (PARTITION BY \"user_id\") FROM \"orders\""
+    );
+    assert!(built.params.is_empty());
 }
