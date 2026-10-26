@@ -4,8 +4,8 @@ use postgres::fallible_iterator::FallibleIterator;
 use postgres::types::ToSql;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
-    BuiltQuery, QueryBackend, TransactionBackend, TransactionGuard, TransactionStatus,
-    TransactionalConnection,
+    BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionGuard,
+    TransactionStatus, TransactionalConnection,
 };
 
 use super::types::{rows_to_sql_vals, PgError, SqlValParam};
@@ -121,6 +121,57 @@ impl PgConnection {
         E: From<PgError>,
     {
         let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
+        let value = f(&mut guard)?;
+        guard.commit().map_err(E::from)?;
+        Ok(value)
+    }
+
+    /// Runs `f` inside a transaction at the requested `isolation` level,
+    /// committing on `Ok` and rolling back on `Err`.
+    ///
+    /// The helper mirrors [`transaction`](PgConnection::transaction) and differs
+    /// only in the statement that opens the outermost block: the block runs
+    /// between `BEGIN ISOLATION LEVEL <level>` and `COMMIT`, with the level text
+    /// coming from [`IsolationLevel::as_str`], so every statement of `f` observes
+    /// the isolation the caller asked for. [`transaction`](PgConnection::transaction)
+    /// keeps the backend default instead, so callers that need no specific level
+    /// stay unchanged.
+    ///
+    /// Calling the helper while a transaction is already open nests the block
+    /// inside a `SAVEPOINT`, exactly as [`transaction`](PgConnection::transaction)
+    /// does, and the requested level is ignored for that nested block: SQL
+    /// defines no per-savepoint isolation, so the enclosing transaction keeps the
+    /// level it was opened with. The level therefore applies to the outermost
+    /// block only, which is the contract
+    /// [`TransactionGuard::begin_with`](rurqe_core::query::TransactionGuard::begin_with)
+    /// implements.
+    ///
+    /// A block returning `Err` and a panicking block are both rolled back, so
+    /// neither leaves partial work behind. A driver that refuses that rollback
+    /// leaves the connection poisoned, so the next transaction retries the
+    /// abandoned rollback instead of running on top of an unknown one.
+    ///
+    /// ```
+    /// use rurqe_core::query::IsolationLevel;
+    /// use rurqe_postgres::{PgConnection, PgError};
+    ///
+    /// // The block runs between `BEGIN ISOLATION LEVEL SERIALIZABLE` and
+    /// // `COMMIT`, so no concurrent transaction committing between two
+    /// // statements of the block can change what the next one observes.
+    /// fn archive_invoices(connection: &mut PgConnection) -> Result<(), PgError> {
+    ///     connection.transaction_with_isolation(IsolationLevel::Serializable, |_tx| Ok(()))
+    /// }
+    /// ```
+    pub fn transaction_with_isolation<T, E, F>(
+        &mut self,
+        isolation: IsolationLevel,
+        f: F,
+    ) -> Result<T, E>
+    where
+        F: FnOnce(&mut PgConnection) -> Result<T, E>,
+        E: From<PgError>,
+    {
+        let mut guard = TransactionGuard::begin_with(self, Some(isolation)).map_err(E::from)?;
         let value = f(&mut guard)?;
         guard.commit().map_err(E::from)?;
         Ok(value)
