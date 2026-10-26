@@ -473,6 +473,22 @@ pub fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
     None
 }
 
+/// The source text between two byte offsets of a statement.
+///
+/// The offsets come from the [`Token::span`] values [`tokenize`] reports, and the
+/// text is still read through the checked [`str::get`], so a consumer of
+/// untrusted `sqlite_master` DDL never slices a statement at an offset that is not
+/// a character boundary and never panics on the SQL it introspects.
+///
+/// Span soundness of the scan is pinned by the seeded property suite in
+/// [`property_tests`], which stays the merge gate of the ratified lexer exception,
+/// so `None` reports a broken span invariant rather than malformed SQL. A caller
+/// that receives it skips the construct it was reading instead of failing the
+/// whole introspection.
+pub fn span_text(sql: &str, start: usize, end: usize) -> Option<&str> {
+    sql.get(start..end)
+}
+
 #[cfg(test)]
 mod property_tests;
 

@@ -7,7 +7,7 @@ use rurqe_migrate::catalog::CheckDef;
 use crate::introspect::types::RawCheckMetadata;
 
 use super::check_enums::{parse_check_clause, parse_check_enums};
-use super::lexer::{matching_close, tokenize, SqlKeyword, Token, TokenKind};
+use super::lexer::{matching_close, span_text, tokenize, SqlKeyword, Token, TokenKind};
 use super::{RawSqliteColumnMetadata, RawSqliteTableMetadata};
 
 /// An enum column recovered from the `CHECK (<column> IN (...))` constraint of a table.
@@ -205,13 +205,17 @@ fn scan_check_clauses(tokens: &[Token<'_>], sql: &str) -> Vec<CheckClause> {
                 let open = index + 1;
                 if tokens.get(open).map(|token| token.kind) == Some(TokenKind::OpenParen) {
                     if let Some(close) = matching_close(tokens, open) {
-                        let start = tokens[open].span.1;
-                        let end = tokens[close].span.0;
-                        results.push(CheckClause {
-                            name: pending.take(),
-                            expression: sql[start..end].trim().to_owned(),
-                            body: (open + 1)..close,
-                        });
+                        // The body is read through the checked access, so a span
+                        // the scan did not place on a character boundary skips the
+                        // clause instead of slicing the statement.
+                        match span_text(sql, tokens[open].span.1, tokens[close].span.0) {
+                            Some(expression) => results.push(CheckClause {
+                                name: pending.take(),
+                                expression: expression.trim().to_owned(),
+                                body: (open + 1)..close,
+                            }),
+                            None => pending = None,
+                        }
                         index = close + 1;
                         continue;
                     }

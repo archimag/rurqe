@@ -6,7 +6,7 @@ use crate::cli::CliError;
 use crate::introspect::types::split_top_level_terms;
 use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
-use super::lexer::{matching_close, tokenize, SqlKeyword, Token, TokenKind};
+use super::lexer::{matching_close, span_text, tokenize, SqlKeyword, Token, TokenKind};
 use super::{sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGGERS, SQLITE_VIEWS};
 
 /// Collects the secondary indexes declared on `table`.
@@ -171,7 +171,7 @@ pub(super) fn column_list_of(sql: &str, tokens: &[Token<'_>]) -> Option<String> 
     let close = matching_close(tokens, open)?;
     let start = tokens[open].span.1;
     let end = tokens[close].span.0;
-    Some(sql.get(start..end)?.trim().to_owned())
+    Some(span_text(sql, start, end)?.trim().to_owned())
 }
 
 /// The functional expressions of an index, without the columns it also indexes.
