@@ -3,7 +3,7 @@
 use super::{
     MockBackend, MockDialect, Order, OrderId, OrderTotal, OrderUserId, User, UserId, UserName,
 };
-use crate::expr::{Expr, SqlVal};
+use crate::expr::{coalesce, Expr, SqlVal};
 use crate::query::*;
 use crate::schema::{At, Column, Next};
 
@@ -255,5 +255,70 @@ fn group_set_resolves_grouped_column_positions() {
     assert_grouped::<Grouping, UserName, At<0>>();
     assert_grouped::<Grouping, UserId, Next<At<0>>>();
     assert_grouped_selection::<(UserId, UserName, Expr<i64>), Grouping, (Next<At<0>>, At<0>, At<0>)>(
+    );
+}
+
+#[test]
+fn order_by_expr_orders_the_groups_by_a_computed_aggregate_expression() {
+    // `coalesce` keeps the aggregate marker of its first operand, so the whole
+    // expression collapses the rows of a group and orders the grouped rows,
+    // binding the parameters of its fallback along the way.
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .order_by_expr_desc(coalesce(Expr::sum::<OrderTotal>(), 0.0))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" \
+         ORDER BY COALESCE(SUM(\"total\"), $1) DESC"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(0.0)]);
+}
+
+#[test]
+fn order_by_expr_renders_the_direction_and_nulls_flavours() {
+    let ascending = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .order_by_expr_asc(Expr::count_all())
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        ascending.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" ORDER BY COUNT(*) ASC"
+    );
+
+    let nulls_first = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .order_by_expr_desc_nulls_first(Expr::min::<OrderId>())
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        nulls_first.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" \
+         ORDER BY MIN(\"id\") DESC NULLS FIRST"
+    );
+
+    let nulls_last = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId,))
+        .order_by_expr_asc_nulls_last(Expr::max::<OrderTotal>())
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        nulls_last.sql,
+        "SELECT \"user_id\" FROM \"orders\" GROUP BY \"user_id\" \
+         ORDER BY MAX(\"total\") ASC NULLS LAST"
     );
 }

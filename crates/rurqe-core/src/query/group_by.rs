@@ -750,6 +750,66 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
         self.order_by_expr(expression, OrderDirection::Desc)
     }
 
+    /// Appends an ascending ordering criterion for the aggregate `expression`
+    /// putting NULL values first.
+    pub fn order_by_expr_asc_nulls_first<T, Scope, Marker, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, Marker, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
+        Marker: AggregateMarker + AggregateInDialect<D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Asc, NullsOrder::First)
+    }
+
+    /// Appends an ascending ordering criterion for the aggregate `expression`
+    /// putting NULL values last.
+    pub fn order_by_expr_asc_nulls_last<T, Scope, Marker, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, Marker, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
+        Marker: AggregateMarker + AggregateInDialect<D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Asc, NullsOrder::Last)
+    }
+
+    /// Appends a descending ordering criterion for the aggregate `expression`
+    /// putting NULL values first.
+    pub fn order_by_expr_desc_nulls_first<T, Scope, Marker, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, Marker, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
+        Marker: AggregateMarker + AggregateInDialect<D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Desc, NullsOrder::First)
+    }
+
+    /// Appends a descending ordering criterion for the aggregate `expression`
+    /// putting NULL values last.
+    pub fn order_by_expr_desc_nulls_last<T, Scope, Marker, ExprD, P>(
+        self,
+        expression: Expr<T, Scope, Marker, ExprD>,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        Scope: ExprInScope<Tables, P> + ScopePositions<P>,
+        ExprD: DialectInScope<D>,
+        Marker: AggregateMarker + AggregateInDialect<D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Desc, NullsOrder::Last)
+    }
+
     /// Limits the number of returned groups to `limit`.
     pub fn limit(mut self, limit: u32) -> Self {
         self.query = self.query.limit(limit);
