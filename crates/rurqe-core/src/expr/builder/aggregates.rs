@@ -27,6 +27,18 @@ use crate::expr::scope::{MergeScope, Merged};
 use crate::expr::val::AggregateFunc;
 use crate::schema::Column;
 
+/// Text rendered in place of a `FILTER (WHERE ...)` clause attached to an
+/// expression that is not an aggregate call.
+///
+/// The clause belongs to an aggregate call, so the situation is reachable only
+/// through a tree whose aggregation marker contradicts its root — a tree only
+/// this crate can assemble, because `Expr::new` is crate-private. The
+/// placeholder keeps that internal fault visible in every build profile, so a
+/// release build never silently drops the predicate the return type keeps
+/// promising.
+const DROPPED_FILTER_PLACEHOLDER: &str =
+    "/* invalid aggregate marker: FILTER predicate dropped */";
+
 impl<T> Expr<T, ()> {
     /// Builds a `SUM(C)` expression for column `C`.
     ///
@@ -210,6 +222,14 @@ where
     /// rules of a grouped query keep accepting it and repeated calls keep
     /// accumulating their conditions on the same call.
     ///
+    /// The method never discards the clause it is given. An expression whose
+    /// marker names an aggregate call while its tree holds none — a state only
+    /// this crate can assemble, because `Expr::new` is crate-private — is
+    /// reported in every build profile rather than in a debug build alone: the
+    /// trace records the contradiction and the returned tree carries a
+    /// diagnostic placeholder where the `FILTER` clause would have been, so the
+    /// rendered statement shows the discarded predicate instead of hiding it.
+    ///
     /// ```
     /// use rurqe_core::expr::{sum, Expr, ExprKind};
     ///
@@ -272,10 +292,12 @@ where
         Scope: MergeScope<P>,
         D: MergeDialect<PredD>,
     {
-        debug_assert!(
-            matches!(self.kind, ExprKind::Aggregate { .. }),
-            "the aggregation marker names an aggregate call, but the tree is not one"
-        );
+        // The marker gate restricts the method to an aggregate call, so the tree
+        // is one whenever the type system was used as intended. The check is a
+        // total branch rather than an assertion, because an assertion only fires
+        // in a debug build: a release build would silently discard the clause
+        // the return type keeps promising, which the panic-free invariant of the
+        // crate forbids just as much as unwinding would.
         let ExprKind::Aggregate {
             func,
             distinct,
@@ -283,12 +305,22 @@ where
             filter,
         } = self.kind
         else {
-            // Only an aggregate call accepts the clause, so the tree is an
-            // aggregate here; the branch keeps the method total — and the
-            // invariant panic-free — without ever being reached. The
-            // assertion keeps a forged marker loud in debug builds instead
-            // of letting the branch discard `predicate` silently.
-            return Expr::new(self.kind);
+            // Only an aggregate call accepts the clause, so this branch is
+            // unreachable through the public API: `Expr::new` is crate-private
+            // and every aggregate constructor roots its tree in the call. It
+            // still keeps the method total — and the crate panic-free — while
+            // reporting the contradiction in both build profiles: the trace
+            // records it, and the returned tree carries a diagnostic placeholder
+            // where the `FILTER` clause would have been, so the rendered
+            // statement shows the discarded predicate instead of hiding it.
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                "an expression marked as an aggregate call does not hold one; its FILTER predicate is replaced by a diagnostic placeholder"
+            );
+            return Expr::new(ExprKind::Raw {
+                fragments: vec![DROPPED_FILTER_PLACEHOLDER.to_owned()],
+                params: Vec::new(),
+            });
         };
 
         let new_filter = match filter {
