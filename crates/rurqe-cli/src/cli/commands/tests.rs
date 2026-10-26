@@ -1193,3 +1193,181 @@ fn a_pruned_report_reaches_the_operator_through_the_shared_channel() {
         "the report leaves the crate through one write path"
     );
 }
+
+#[test]
+fn a_commit_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
+    let dir = workspace("commit-takeover");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    // The expired heartbeat proves the writer that created the entry dead, so
+    // the commit takes the section over instead of waiting out the full
+    // bounded wait for an owner that no longer exists.
+    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+
+    commit_stage(
+        version("3.2"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the section of the dead writer is taken over");
+
+    // The takeover installs the acquiring writer's own owner record and the
+    // release drops together with the section, so the workspace is left
+    // with no entry a later command would wait behind.
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "the taken-over lock is released with the section"
+    );
+    assert!(
+        checkpoint_path.exists(),
+        "a commit over a taken-over section still writes its marker"
+    );
+
+    let leftovers: Vec<String> = directory_names(&dir)
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
+fn a_prune_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
+    let dir = workspace("prune-takeover");
+    let migrations_dir = dir.join("migrations");
+    // `V4__orders.sql` sits above the prune boundary, so the takeover drops
+    // the version-1 script alone and the tail script stays in place.
+    scripts(&migrations_dir, &["V1__init.sql", "V4__orders.sql"]);
+    let checkpoint_path = dir.join("checkpoint.toml");
+    checkpoint_file(&checkpoint_path, "9");
+
+    // The prune holds the same exclusive section as the commit and the
+    // verification, so it faces the same takeover decision over an entry a
+    // dead writer left behind.
+    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+
+    prune_migrations(version("3"), &migrations_dir, &checkpoint_path, false)
+        .expect("the section of the dead writer is taken over");
+
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "the taken-over lock is released with the section"
+    );
+    assert!(
+        !migrations_dir.join("V1__init.sql").exists(),
+        "a prune over a taken-over section still drops the scripts below the boundary"
+    );
+    assert!(
+        migrations_dir.join("V4__orders.sql").exists(),
+        "the prune keeps the scripts above the boundary"
+    );
+}
+
+#[test]
+fn a_verification_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
+    let dir = workspace("verify-takeover");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let users = "CREATE TABLE users (id INTEGER);";
+    std::fs::write(stage_dir.join("users.sql"), users).expect("write the stage script");
+    let migrations_dir = dir.join("migrations");
+    std::fs::create_dir_all(&migrations_dir).expect("create the migrations directory");
+
+    // The boundary is live beside the marker and no copy is parked, so the
+    // repair the verification runs first finds nothing to classify and the
+    // equation replays exactly the pair both artifacts describe.
+    let stage = DeclarativeStage::load(&stage_dir)
+        .expect("the stage is readable")
+        .expect("the stage directory exists");
+    let catalog =
+        materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA).expect("the stage materialises");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    std::fs::write(
+        &checkpoint_path,
+        Checkpoint::new(version("1"), catalog.checksum()).render(),
+    )
+    .expect("write the checkpoint");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("install the boundary");
+    std::fs::write(boundary.join("users.sql"), users).expect("write the boundary snapshot");
+
+    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+
+    verify_stage(
+        &stage_dir,
+        None,
+        &migrations_dir,
+        &checkpoint_path,
+        DEFAULT_SCHEMA,
+        ":memory:",
+    )
+    .expect("the section of the dead writer is taken over");
+
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "the taken-over lock is released with the section"
+    );
+}
+
+#[test]
+fn two_sequential_commits_converge_to_the_last_one() {
+    let dir = workspace("commit-sequence");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let users = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
+    std::fs::write(stage_dir.join("users.sql"), users).expect("write the stage script");
+
+    // The live database holds exactly what the declarative stage declares, so
+    // both commits pass the parity gate that stands in front of the artifacts.
+    let database = dir.join("app.db");
+    apply_live_ddl(&database, users);
+
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    commit_stage(
+        version("3"),
+        &database.to_string_lossy(),
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the first commit succeeds");
+    commit_stage(
+        version("4"),
+        &database.to_string_lossy(),
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the second commit succeeds");
+
+    // The second commit holds the section after the first one released it, so
+    // it runs over the pair the first one left live: the marker it parks is
+    // the first commit's own, and the workspace converges on the second one.
+    let checkpoint = Checkpoint::load(&checkpoint_path)
+        .expect("the checkpoint is readable")
+        .expect("the checkpoint exists");
+    assert_eq!(checkpoint.pruned_up_to_version().to_string(), "4");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("checkpoint-stage").join("users.sql"))
+            .expect("read the committed boundary"),
+        users
+    );
+
+    // No recoverable copy of a previous pair is left behind: the first commit's
+    // pair was parked by the second and discarded once the second marker was
+    // durable, and the second commit has no previous pair of its own.
+    let leftovers: Vec<String> = directory_names(&dir)
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
