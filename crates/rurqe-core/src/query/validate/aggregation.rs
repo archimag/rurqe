@@ -33,11 +33,13 @@ impl StatementRef<'_> {
     ///   so a column it reads has to be aggregated or listed in that clause — the
     ///   grouping dropped the per-row value any other column would name, so it is
     ///   rejected as [`BuildError::UngroupedHavingColumn`];
-    /// - a statement that groups reads its rows through the groups the `GROUP BY`
-    ///   clause produced, so every projected expression, every ordering criterion,
-    ///   and every `DISTINCT ON` expression has to be computed from the grouped
-    ///   columns and the aggregates over them — a bare column the clause dropped is
-    ///   rejected as [`BuildError::UngroupedColumn`].
+    /// - an aggregate trunk — a statement projecting an aggregate without a
+    ///   `GROUP BY` clause — collapses the rows of its relation exactly like a
+    ///   grouping over the empty set, so the `ORDER BY` criteria and the
+    ///   `DISTINCT ON` expressions that run over the collapsed row read one value
+    ///   per row and have to be computed from the aggregates and the constants
+    ///   around them; a bare column among them is rejected as
+    ///   [`BuildError::UngroupedColumn`] as well.
     ///
     /// The per-row positions are checked first, because a statement reading an
     /// aggregate there is rejected by the engine before the question of grouping
@@ -61,6 +63,21 @@ impl StatementRef<'_> {
                 if let Some(&(table, column)) = columns.first() {
                     return Err(BuildError::UngroupedColumnWithAggregate { table, column });
                 }
+            }
+            // An aggregate trunk collapses the rows of its relation exactly like a
+            // grouping over the empty set, so the clauses that run over the collapsed
+            // row — the `ORDER BY` criteria and the `DISTINCT ON` expressions — read
+            // one value per row and have to be computed from the aggregates and the
+            // constants around them. The walk is the one the grouped rule below uses,
+            // and the empty grouping makes `groups_column` answer `false` for every
+            // reference, so a bare column is reported as `UngroupedColumn` while an
+            // aggregate, a constant, or a raw fragment without references stays
+            // accepted.
+            for criterion in self.order_by {
+                self.reject_ungrouped_column(&criterion.expr)?;
+            }
+            for expression in self.distinct_on {
+                self.reject_ungrouped_column(expression)?;
             }
         }
 

@@ -1859,6 +1859,135 @@ fn an_expression_over_an_aggregate_is_accepted_beside_it() {
 }
 
 #[test]
+fn an_aggregate_trunk_ordering_by_a_bare_column_is_rejected_before_rendering() {
+    // A statement projecting an aggregate without a `GROUP BY` clause collapses its
+    // relation into one row, so an ordering criterion reading a stored column names a
+    // value that row does not carry. The builder leaves the criterion reachable at the
+    // call site, so the statement is assembled on its AST.
+    let mut ast = orders_statement(vec![count_star()]);
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn an_aggregate_trunk_deduplicating_by_a_bare_column_is_rejected_before_rendering() {
+    // `DISTINCT ON` runs over the collapsed row as well, so a bare column there names
+    // no value of it. Repeating the clause in the leading ordering criterion keeps the
+    // prefix alignment satisfied, which isolates the grouping rule from the
+    // `DISTINCT ON` / `ORDER BY` alignment; the second statement drops that criterion
+    // entirely, so the deduplication is the only clause reading the column, and it
+    // spells the reference through the alias-qualified shape to exercise the canonical
+    // comparison.
+    let mut prefixed = orders_statement(vec![count_star()]);
+    prefixed.distinct_on.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    prefixed.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        prefixed.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "user_id",
+        })
+    );
+
+    let mut deduplicated = orders_statement(vec![count_star()]);
+    deduplicated.distinct_on.push(ExprKind::QualifiedColumn {
+        table: "orders",
+        column: "user_id",
+    });
+
+    assert_eq!(
+        deduplicated.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "user_id",
+        })
+    );
+}
+
+#[test]
+fn an_aggregate_trunk_orders_by_an_aggregate_and_a_constant() {
+    // An ordering criterion computed from aggregates and constants reads one value per
+    // collapsed row, so the trunk keeps it and renders the tail as it was written.
+    let mut ast = orders_statement(vec![count_star()]);
+    ast.order_by
+        .push(OrderCriterion::new(count_star(), OrderDirection::Desc));
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Raw {
+            fragments: vec!["1".to_owned()],
+            params: Vec::new(),
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+
+    let mut sql = String::new();
+    let mut params = Vec::new();
+    ast.render::<MockDialect>(&mut sql, &mut params)
+        .expect("the statement renders");
+
+    assert_eq!(
+        sql,
+        "SELECT COUNT(*) FROM \"orders\" ORDER BY COUNT(*) DESC, 1 ASC"
+    );
+    assert!(params.is_empty());
+}
+
+#[test]
+fn an_aggregate_trunk_deduplicates_by_an_aggregate() {
+    // The deduplication reads a value the aggregate computes over the collapsed rows,
+    // so the clause stays valid and its prefix alignment holds.
+    let mut ast = orders_statement(vec![count_star()]);
+    ast.distinct_on.push(count_star());
+    ast.order_by
+        .push(OrderCriterion::new(count_star(), OrderDirection::Asc));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_per_row_trunk_still_orders_by_a_bare_column() {
+    // A trunk without an aggregate produces one row per source row, so a stored column
+    // is exactly what its ordering criterion may read.
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "id",
+    }]);
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        OrderDirection::Desc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
 fn a_window_call_beside_a_bare_column_is_accepted() {
     // The engine evaluates the window over the rows the statement produced, so
     // the call names no grouping and does not collapse the relation.
