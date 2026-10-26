@@ -258,7 +258,9 @@ fn first_aggregate(expr: &ExprKind) -> Option<AggregateFunc> {
         }
         // A window function is evaluated over the rows the statement produced, so
         // it collapses nothing: the call, the expression it wraps, and the columns
-        // its specification names all stay per-row references.
+        // its specification names all stay per-row references. The columns its
+        // operand reads are still governed by the grouping, which is why
+        // `collect_bare_columns` descends into them instead of stopping here.
         ExprKind::Window { .. } => None,
         // The omitted `query` field is the embedded statement, which resolves its
         // own references; only the operand is evaluated by the enclosing statement.
@@ -301,6 +303,15 @@ pub(crate) fn has_aggregate(expr: &ExprKind) -> bool {
 /// through its own `FROM` scope. An alias is dropped: it only names the output
 /// column of the projection list, while the columns the expression computes are
 /// found inside it.
+///
+/// A window call is the one node the walk decomposes instead of stopping at it.
+/// The call itself collapses nothing, but the aggregate it evaluates reads the
+/// rows the statement produced — after the grouping has collapsed them — so the
+/// columns of its operand have to be covered by that grouping exactly like the
+/// operand of a statement aggregate. `collect_window_operand` performs that
+/// descent, and an aggregate nested inside the operand — `SUM(SUM("total")) OVER
+/// (...)` — still stops the walk, because the inner call is a statement aggregate
+/// whose own clause governs the columns it reads.
 pub(crate) fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static str, &'static str)>) {
     match expr {
         ExprKind::Column { table, name } => columns.push((table, name)),
@@ -375,7 +386,7 @@ pub(crate) fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static 
                 WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
                     collect_bare_columns(column, columns);
                 }
-                WindowExprKind::Expr(inner) => collect_bare_columns(inner, columns),
+                WindowExprKind::Expr(inner) => collect_window_operand(inner, columns),
                 WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
             }
             for partition in partition_by {
@@ -392,6 +403,37 @@ pub(crate) fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static 
         }
         ExprKind::Multiset { .. } => {}
         ExprKind::Aliased { expr, .. } => collect_bare_columns(expr, columns),
+    }
+}
+
+/// Collects the columns the operand of a window call reads from the produced rows.
+///
+/// The operand of a window is evaluated once the statement has produced its rows,
+/// so the grouping decides which values are available there: an aggregate
+/// evaluated over the groups, a grouped column, or a constant. The call the
+/// operand spells has the node shape of a statement aggregate — `SUM("total") OVER
+/// (...)` carries the same `Aggregate` node as `SUM("total")` — yet it is a window
+/// aggregate, reading the rows of its partition instead of collapsing them, so it
+/// does not govern the columns of its own argument. The walk therefore descends
+/// into the argument and into the `FILTER (WHERE ...)` condition of that aggregate
+/// and collects every column they read outside a nested aggregate.
+///
+/// A nested aggregate stops that descent through `collect_bare_columns`, which is
+/// what keeps `SUM(SUM("total")) OVER (...)` valid: the inner call collapses the
+/// groups, so it governs the column it reads and the grouping has nothing to say
+/// about it. Every other operand shape — a bare column, an arithmetic expression,
+/// a `CASE` — is decomposed by the same walk the enclosing expression uses.
+fn collect_window_operand(expr: &ExprKind, columns: &mut Vec<(&'static str, &'static str)>) {
+    match expr {
+        ExprKind::Aggregate { arg, filter, .. } => {
+            if let Some(arg) = arg {
+                collect_bare_columns(arg, columns);
+            }
+            if let Some(filter) = filter {
+                collect_bare_columns(filter, columns);
+            }
+        }
+        operand => collect_bare_columns(operand, columns),
     }
 }
 

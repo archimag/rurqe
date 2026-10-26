@@ -289,7 +289,12 @@ where
 ///
 /// An aggregate operand and a constant operand both keep one value per group, so
 /// both stay projectable, and so does a grouped column read by `LAG` or `LEAD`,
-/// whose column is checked through the window column set instead:
+/// whose column is checked through the window column set instead. An aggregate
+/// operand is an operand of the statement like any other, so the columns it reads
+/// have to survive the grouping as well: the example below aggregates a grouped
+/// column, while `SUM("total") OVER (...)` over an ungrouped `"total"` names a
+/// per-row value the grouped query never reports and is rejected while the
+/// statement is built.
 ///
 /// ```
 /// use rurqe_core::dialect::{Dialect, SupportsWindowFunctions};
@@ -325,13 +330,13 @@ where
 ///         .group_by(OrderUserId)
 ///         .select((
 ///             OrderUserId,
-///             Expr::sum::<OrderTotal>().over(Window::partition_by(OrderUserId)),
+///             Expr::sum::<OrderUserId>().over(Window::partition_by(OrderUserId)),
 ///         ))
 ///         .build()
 ///         .expect("an aggregate operand keeps one value per group");
 ///
 ///     assert!(
-///         aggregated.sql.contains("SUM(\"total\")"),
+///         aggregated.sql.contains("SUM(\"user_id\")"),
 ///         "{}",
 ///         aggregated.sql
 ///     );
