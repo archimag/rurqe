@@ -5,9 +5,9 @@ use super::{
     RecentTotal, User, UserId, UserName,
 };
 use crate::expr::{
-    AggregateFunc, BinaryOp, CaseBranch, CteAst, DerivedAst, Expr, ExprKind, LockClause,
-    LockStrength, OrderCriterion, OrderDirection, RawSqlError, SelectAst, SqlVal, Subquery,
-    SubqueryOp,
+    AggregateFunc, BinaryOp, CaseBranch, CteAst, DerivedAst, Expr, ExprKind, JoinAst, JoinKind,
+    LockClause, LockStrength, OrderCriterion, OrderDirection, RawSqlError, SelectAst, SetOpAst,
+    SetOpKind, SqlVal, Subquery, SubqueryOp,
 };
 use crate::query::validate::{
     collect_bare_columns, contains_bare_column, has_aggregate, register_relation,
@@ -407,6 +407,368 @@ fn a_correlated_subquery_may_reference_the_alias_of_the_enclosing_statement() {
 fn a_correlated_subquery_qualified_by_a_name_nothing_declares_is_rejected() {
     assert_eq!(
         correlated_statement("ghosts").validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Section coverage of the consolidated walk.
+//
+// One enumeration describes the sections of a statement, so every rule of the
+// pass reaches every section by construction. The tests below pin that down
+// section by section: each one is reached by the structural rules and by the
+// qualifier resolution alike, and each embedded statement is handed the relation
+// namespace its own SQL clause grants it — the closed one for a `WITH` body, a
+// derived table, and a set-operation operand, and the enclosing one for a
+// correlated subquery and a lateral join.
+// -----------------------------------------------------------------------------
+
+/// Builds a statement over `table` projecting its `column`.
+fn relation_statement(table: &'static str, column: &'static str) -> SelectAst {
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain(table));
+    ast.projections.push(ExprKind::Column {
+        table,
+        name: column,
+    });
+    ast
+}
+
+/// Builds a statement projecting a reference qualified by `qualifier` alone.
+fn qualified_body(qualifier: &'static str) -> SelectAst {
+    let mut ast = empty_ast();
+    ast.projections.push(ExprKind::QualifiedColumn {
+        table: qualifier,
+        column: "id",
+    });
+    ast
+}
+
+/// Builds a lateral subquery over `orders` correlating a reference qualified by
+/// `qualifier` to the statement joining it.
+fn lateral_body(qualifier: &'static str) -> SelectAst {
+    let mut ast = relation_statement("orders", "id");
+    ast.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+        rhs: Box::new(ExprKind::QualifiedColumn {
+            table: qualifier,
+            column: "id",
+        }),
+    });
+    ast
+}
+
+/// Builds an `EXISTS (...)` predicate around `inner`.
+fn exists_subquery(inner: SelectAst) -> ExprKind {
+    ExprKind::Subquery {
+        op: SubqueryOp::Exists,
+        operand: None,
+        query: Subquery::new(inner),
+        negated: false,
+    }
+}
+
+/// A raw expression whose fragment/parameter census does not balance.
+fn unbalanced_raw() -> ExprKind {
+    ExprKind::Raw {
+        fragments: vec!["1".to_owned(), " + 1".to_owned()],
+        params: Vec::new(),
+    }
+}
+
+/// The error an unbalanced raw expression is reported through.
+fn unbalanced_raw_error() -> BuildError {
+    BuildError::RawSql(RawSqlError::PlaceholderCount {
+        expected: 1,
+        provided: 0,
+    })
+}
+
+#[test]
+fn a_join_on_predicate_qualified_by_a_name_nothing_declares_is_rejected() {
+    // The `ON` condition of a join belongs to the statement scope, so it resolves
+    // its references against the relations the statement introduces.
+    let mut ast = relation_statement("users", "id");
+    ast.joins.push(JoinAst {
+        kind: JoinKind::Inner,
+        table: TableRef::plain("orders"),
+        lateral: None,
+        on: Some(ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }),
+            rhs: Box::new(ExprKind::QualifiedColumn {
+                table: "ghosts",
+                column: "id",
+            }),
+        }),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_join_on_predicate_carrying_an_unbalanced_raw_expression_is_rejected() {
+    // The structural rules reach the same section the qualifier pass reaches, so
+    // an unbalanced raw expression is caught inside an `ON` condition as well.
+    let mut ast = relation_statement("users", "id");
+    ast.joins.push(JoinAst {
+        kind: JoinKind::Inner,
+        table: TableRef::plain("orders"),
+        lateral: None,
+        on: Some(unbalanced_raw()),
+    });
+
+    assert_eq!(ast.validate(), Err(unbalanced_raw_error()));
+}
+
+#[test]
+fn a_lateral_subquery_reads_the_relations_of_the_statement_joining_it() {
+    let mut ast = relation_statement("users", "id");
+    ast.joins.push(JoinAst {
+        kind: JoinKind::LeftLateral,
+        table: TableRef::plain("recent"),
+        lateral: Some(lateral_body("users")),
+        on: None,
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_lateral_subquery_qualified_by_a_name_nothing_declares_is_rejected() {
+    let mut ast = relation_statement("users", "id");
+    ast.joins.push(JoinAst {
+        kind: JoinKind::LeftLateral,
+        table: TableRef::plain("recent"),
+        lateral: Some(lateral_body("ghosts")),
+        on: None,
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_common_table_expression_resolves_its_own_relations() {
+    let mut ast = relation_statement("orders", "id");
+    ast.ctes.push(CteAst {
+        name: "active_users",
+        query: relation_statement("users", "id"),
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_common_table_expression_correlates_with_no_enclosing_statement() {
+    // The `WITH` body is validated against its own relations alone: the engine
+    // correlates none of it to the statement declaring it.
+    let mut ast = relation_statement("orders", "id");
+    ast.ctes.push(CteAst {
+        name: "active_users",
+        query: qualified_body("users"),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "users" })
+    );
+}
+
+#[test]
+fn a_derived_table_resolves_its_own_relations() {
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("totals"));
+    ast.projections.push(ExprKind::Column {
+        table: "totals",
+        name: "id",
+    });
+    ast.derived.push(DerivedAst {
+        name: "totals",
+        query: relation_statement("orders", "total"),
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_derived_table_correlates_with_no_enclosing_statement() {
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("totals"));
+    ast.projections.push(ExprKind::Column {
+        table: "totals",
+        name: "id",
+    });
+    ast.derived.push(DerivedAst {
+        name: "totals",
+        query: qualified_body("users"),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "users" })
+    );
+}
+
+#[test]
+fn a_set_operation_operand_resolves_its_own_relations() {
+    let mut ast = relation_statement("orders", "id");
+    ast.set_operations.push(SetOpAst {
+        kind: SetOpKind::UnionAll,
+        query: relation_statement("archived", "id"),
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_set_operation_operand_correlates_with_no_enclosing_statement() {
+    // An operand of `UNION ALL` is validated with the closed scope as well, so it
+    // cannot reach a relation of the statement combining it.
+    let mut ast = relation_statement("orders", "id");
+    ast.set_operations.push(SetOpAst {
+        kind: SetOpKind::UnionAll,
+        query: qualified_body("users"),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "users" })
+    );
+}
+
+#[test]
+fn a_group_by_expression_qualified_by_a_name_nothing_declares_is_rejected() {
+    let mut ast = relation_statement("orders", "user_id");
+    ast.group_by.push(ExprKind::QualifiedColumn {
+        table: "ghosts",
+        column: "id",
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_distinct_on_expression_qualified_by_a_name_nothing_declares_is_rejected() {
+    let mut ast = relation_statement("orders", "id");
+    ast.distinct_on.push(ExprKind::QualifiedColumn {
+        table: "ghosts",
+        column: "id",
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_having_predicate_qualified_by_a_name_nothing_declares_is_rejected() {
+    // The aggregate reads the foreign reference, so the aggregation consistency
+    // leaves the clause alone and the qualifier rule is the one that reports it.
+    let mut ast = relation_statement("orders", "user_id");
+    ast.group_by.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            distinct: false,
+            arg: Some(Box::new(ExprKind::QualifiedColumn {
+                table: "ghosts",
+                column: "id",
+            })),
+            filter: None,
+        }),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_having_predicate_carrying_an_unbalanced_raw_expression_is_rejected() {
+    let mut ast = relation_statement("orders", "user_id");
+    ast.group_by.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.having = Some(unbalanced_raw());
+
+    assert_eq!(ast.validate(), Err(unbalanced_raw_error()));
+}
+
+#[test]
+fn an_order_by_criterion_carrying_an_unbalanced_raw_expression_is_rejected() {
+    let mut ast = relation_statement("orders", "id");
+    ast.order_by.push(OrderCriterion::new(
+        unbalanced_raw(),
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Err(unbalanced_raw_error()));
+}
+
+#[test]
+fn a_structural_violation_inside_a_nested_statement_of_a_projection_is_reported() {
+    // The structural rules reach the statements a clause embeds, so a violation
+    // nested one level deeper surfaces through the same typed error.
+    let mut inner = relation_statement("orders", "id");
+    inner.projections.push(unbalanced_raw());
+
+    let mut ast = relation_statement("users", "id");
+    ast.projections.push(scalar_subquery(inner));
+
+    assert_eq!(ast.validate(), Err(unbalanced_raw_error()));
+}
+
+#[test]
+fn a_doubly_nested_subquery_reaches_the_outermost_relation_by_correlation() {
+    // The enclosing namespace accumulates statement by statement, so a reference
+    // nested two levels deep still resolves against the outermost relation.
+    let innermost = qualified_body("users");
+
+    let mut middle = relation_statement("orders", "id");
+    middle.projections.push(scalar_subquery(innermost));
+
+    let mut ast = relation_statement("users", "id");
+    ast.filter = Some(exists_subquery(middle));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_doubly_nested_subquery_qualified_by_a_name_nothing_declares_is_rejected() {
+    let innermost = qualified_body("ghosts");
+
+    let mut middle = relation_statement("orders", "id");
+    middle.projections.push(scalar_subquery(innermost));
+
+    let mut ast = relation_statement("users", "id");
+    ast.filter = Some(exists_subquery(middle));
+
+    assert_eq!(
+        ast.validate(),
         Err(BuildError::UnresolvedQualifier { name: "ghosts" })
     );
 }
