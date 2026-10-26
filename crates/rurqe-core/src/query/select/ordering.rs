@@ -1,9 +1,11 @@
 //! Ordering, pagination, and the clause-by-clause recording of both.
 
-use crate::dialect::{Dialect, SupportsNullsOrdering};
-use crate::expr::{ExprKind, NullsOrder, OrderCriterion, OrderDirection};
-use crate::query::scope::Compound;
-use crate::schema::{At, Column, Table, TableInScope};
+use crate::dialect::{Dialect, SupportsNullsOrdering, SupportsWindowFunctions};
+use crate::expr::{DialectInScope, Expr, ExprKind, NullsOrder, OrderCriterion, OrderDirection};
+use crate::query::scope::{Compound, ScopePositions};
+use crate::query::selection::AggregateInDialect;
+use crate::query::window::WindowExpr;
+use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
 use super::{HasProjection, LockUnavailable, SelectQuery, TailClosed};
 
@@ -141,6 +143,112 @@ impl_order_by!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6);
 impl_order_by!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7);
 impl_order_by!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7, C8 P8);
 
+/// A typed expression an `ORDER BY` clause of a statement sorts by.
+///
+/// Column markers and tuples of them order through [`OrderBy`], while every
+/// other ordering target — a computed expression over the columns of the query
+/// scope, a `CASE` expression, a raw SQL fragment, or a window expression
+/// evaluated with an `OVER (...)` clause — orders through this trait. Like a
+/// projection, the expression carries the tables it reads and the dialect
+/// requirements of its clauses, so an ordering that references a table the
+/// query does not select from is rejected at the call site instead of
+/// rendering a statement the engine cannot resolve:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the ordering reads `OrderTotal`, whose table the
+///     // query does not select from.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<User>()
+///         .select((UserId,))
+///         .order_by_expr_asc(Expr::column::<OrderTotal>().gt(0.0));
+/// }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a valid ORDER BY expression",
+    label = "order by an expression over the columns of the query scope",
+    note = "ORDER BY accepts typed expressions over the query scope, such as `users.age.gt(18)`, or a window expression such as `row_number().over(Window::partition_by(UserId))`",
+    note = "the expression may reference only tables the query selects from; order by a bare column or a tuple of columns with `order_by` instead"
+)]
+pub trait OrderExprTarget<Tables, P = At<0>, D = ()> {
+    /// Appends the expression of this ordering target to `out`.
+    fn into_order_exprs(self, out: &mut Vec<ExprKind>);
+}
+
+/// Orders a statement by a computed expression over its query scope.
+///
+/// The expression keeps the scope it was built with, mirroring the bounds a
+/// projection carries: the tables it reads stay checked against the query
+/// scope, and its dialect requirements stay checked against the statement
+/// dialect. `ORDER BY` sorts the rows the statement itself produced, so the
+/// criterion carries no aggregation requirement of its own: a per-row
+/// expression — a bare column reference, an arithmetic combination, a `CASE`
+/// expression — orders the statement exactly like an aggregate does. The
+/// dialect requirements of the aggregation marker stay checked, so an
+/// aggregate restricted by `FILTER (WHERE ...)` still orders the statement
+/// only through a dialect that renders the clause.
+impl<Tables, T, Scope, Marker, ExprD, P, D> OrderExprTarget<Tables, P, D>
+    for Expr<T, Scope, Marker, ExprD>
+where
+    T: 'static + Send + Sync,
+    Scope: 'static + Send + Sync + ExprInScope<Tables, P> + ScopePositions<P>,
+    Marker: AggregateInDialect<D>,
+    ExprD: DialectInScope<D>,
+{
+    fn into_order_exprs(self, out: &mut Vec<ExprKind>) {
+        out.push(self.into_kind());
+    }
+}
+
+/// Orders a statement by a window expression evaluated with an `OVER (...)` clause.
+///
+/// The statement dialect has to support window functions through
+/// [`SupportsWindowFunctions`](crate::dialect::SupportsWindowFunctions), and
+/// the window keeps the dialect requirements of its specification, so a
+/// specification written with `NULLS FIRST` or `NULLS LAST` orders the
+/// statement only through a dialect that renders the modifier.
+impl<Tables, T, Scope, Cols, WinD, P, D> OrderExprTarget<Tables, P, D>
+    for WindowExpr<T, Scope, Cols, WinD>
+where
+    T: 'static + Send + Sync,
+    Scope: 'static + Send + Sync + ExprInScope<Tables, P> + ScopePositions<P>,
+    Cols: 'static + Send + Sync,
+    WinD: DialectInScope<D>,
+    D: SupportsWindowFunctions,
+{
+    fn into_order_exprs(self, out: &mut Vec<ExprKind>) {
+        out.push(self.to_expr_kind());
+    }
+}
+
 impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
     /// Appends an ordering criterion for `columns` with `direction`.
     ///
@@ -236,6 +344,192 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         O: OrderBy<Tables, P>,
     {
         self.order_by_nulls(columns, OrderDirection::Desc, NullsOrder::Last)
+    }
+
+    /// Appends an ordering criterion for `expression` with `direction`.
+    ///
+    /// The criterion renders the expression instead of a bare column, so a
+    /// computed value — an arithmetic expression over the columns of the query
+    /// scope, a `CASE` expression, or a window expression — sorts the rows it
+    /// evaluates:
+    ///
+    /// ```text
+    /// ORDER BY "total" * "quantity" DESC
+    /// ```
+    ///
+    /// The expression is checked against the query scope like a projection,
+    /// so an ordering that references a table the query does not select from
+    /// is rejected at the call site:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expr;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///         OrderTotal => "total": f64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let built = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .select((OrderUserId,))
+    ///         .order_by_expr_desc(Expr::column::<OrderTotal>())
+    ///         .build()
+    ///         .expect("valid query");
+    ///
+    ///     assert_eq!(
+    ///         built.sql,
+    ///         "SELECT \"user_id\" FROM \"orders\" ORDER BY \"total\" DESC"
+    ///     );
+    /// }
+    /// ```
+    ///
+    /// A window expression orders the statement through the same builder,
+    /// keeping its `OVER (...)` specification inside the criterion:
+    ///
+    /// ```
+    /// use rurqe_core::dialect::{Dialect, SupportsWindowFunctions};
+    /// use rurqe_core::query::{SelectQuery, Window, row_number};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsWindowFunctions for MockDialect {}
+    ///
+    /// rurqe_core::table! {
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let built = SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .select((OrderUserId,))
+    ///         .order_by_expr_desc(row_number().over(Window::partition_by(OrderUserId)))
+    ///         .build()
+    ///         .expect("valid query");
+    ///
+    ///     assert!(
+    ///         built.sql.contains("OVER"),
+    ///         "window specification rendered: {}",
+    ///         built.sql
+    ///     );
+    /// }
+    /// ```
+    pub fn order_by_expr<E, P>(mut self, expression: E, direction: OrderDirection) -> Self
+    where
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        let mut expressions = Vec::new();
+        expression.into_order_exprs(&mut expressions);
+        for expression in expressions {
+            self.push_ordering(OrderCriterion::new(expression, direction));
+        }
+        self
+    }
+
+    /// Appends an ascending ordering criterion for `expression`.
+    pub fn order_by_expr_asc<E, P>(self, expression: E) -> Self
+    where
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        self.order_by_expr(expression, OrderDirection::Asc)
+    }
+
+    /// Appends a descending ordering criterion for `expression`.
+    pub fn order_by_expr_desc<E, P>(self, expression: E) -> Self
+    where
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        self.order_by_expr(expression, OrderDirection::Desc)
+    }
+
+    /// Appends an ordering criterion for `expression` fixing where its NULL
+    /// values sort.
+    pub fn order_by_expr_nulls<E, P>(
+        mut self,
+        expression: E,
+        direction: OrderDirection,
+        nulls: NullsOrder,
+    ) -> Self
+    where
+        D: SupportsNullsOrdering,
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        let mut expressions = Vec::new();
+        expression.into_order_exprs(&mut expressions);
+        for expression in expressions {
+            self.push_ordering(OrderCriterion::new(expression, direction).nulls(nulls));
+        }
+        self
+    }
+
+    /// Appends an ascending ordering criterion for `expression` putting NULL
+    /// values first.
+    pub fn order_by_expr_asc_nulls_first<E, P>(self, expression: E) -> Self
+    where
+        D: SupportsNullsOrdering,
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Asc, NullsOrder::First)
+    }
+
+    /// Appends an ascending ordering criterion for `expression` putting NULL
+    /// values last.
+    pub fn order_by_expr_asc_nulls_last<E, P>(self, expression: E) -> Self
+    where
+        D: SupportsNullsOrdering,
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Asc, NullsOrder::Last)
+    }
+
+    /// Appends a descending ordering criterion for `expression` putting NULL
+    /// values first.
+    pub fn order_by_expr_desc_nulls_first<E, P>(self, expression: E) -> Self
+    where
+        D: SupportsNullsOrdering,
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Desc, NullsOrder::First)
+    }
+
+    /// Appends a descending ordering criterion for `expression` putting NULL
+    /// values last.
+    pub fn order_by_expr_desc_nulls_last<E, P>(self, expression: E) -> Self
+    where
+        D: SupportsNullsOrdering,
+        E: OrderExprTarget<Tables, P, D>,
+    {
+        self.order_by_expr_nulls(expression, OrderDirection::Desc, NullsOrder::Last)
     }
 
     /// Records `criterion` on the clause the query currently orders with.
