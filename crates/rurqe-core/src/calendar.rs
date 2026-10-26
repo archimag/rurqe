@@ -12,12 +12,22 @@
 
 /// Converts days since the UNIX epoch into a proleptic Gregorian civil date.
 ///
-/// The algorithm keeps the day within `1..=31` and the month within `1..=12`, so
-/// the conversions below never truncate and their fallbacks are unreachable: they
-/// exist so the function stays panic-free and truncation-free by construction,
-/// rather than relying on an unchecked cast whose overflow a caller cannot see.
+/// The accepted day count is unbounded, so the shift onto the era anchor is a
+/// saturating addition: a count above `i64::MAX - 719_468` saturates onto
+/// `i64::MAX` and yields the same deterministic date as that last representable
+/// shift, instead of overflowing the way an unchecked `days + 719_468` would —
+/// aborting under `overflow-checks` and wrapping silently in release. Nothing
+/// saturates at the lower end: the epoch offset is positive, so adding it to any
+/// negative `i64` stays representable, and the extreme minimum is carried through
+/// the era arithmetic unaided.
+///
+/// After that saturation the algorithm keeps the day within `1..=31` and the month
+/// within `1..=12`, so the conversions below never truncate and their fallbacks are
+/// unreachable: they exist so the function stays panic-free and truncation-free by
+/// construction, rather than relying on an unchecked cast whose overflow a caller
+/// cannot see.
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let shifted = days + 719_468;
+    let shifted = days.saturating_add(719_468);
     let era = shifted.div_euclid(146_097);
     let day_of_era = shifted.rem_euclid(146_097);
     let year_of_era =
@@ -50,5 +60,38 @@ mod tests {
         assert_eq!(civil_from_days(11_016), (2000, 2, 29));
         assert_eq!(civil_from_days(-25_508), (1900, 3, 1));
         assert_eq!(civil_from_days(47_541), (2100, 3, 1));
+    }
+
+    #[test]
+    fn extreme_day_counts_resolve_deterministically_without_overflowing() {
+        // The shift onto the era anchor saturates at the upper end, so a day count
+        // past the last representable shift resolves to the date of that shift
+        // instead of wrapping (release) or aborting on arithmetic overflow (debug).
+        let last_representable_shift = i64::MAX - 719_468;
+
+        assert_eq!(
+            civil_from_days(i64::MAX),
+            civil_from_days(last_representable_shift)
+        );
+
+        // The lower end never saturates: `i64::MIN + 719_468` is representable, so
+        // the extreme minimum is carried through the era arithmetic unaided and is
+        // exercised on its own merits rather than through a boundary comparison.
+        for days in [i64::MIN, last_representable_shift, i64::MAX] {
+            let date = civil_from_days(days);
+            let (_, month, day) = date;
+            assert!(
+                (1..=12).contains(&month),
+                "month {month} out of range for day count {days}"
+            );
+            assert!(
+                (1..=31).contains(&day),
+                "day {day} out of range for day count {days}"
+            );
+            assert_eq!(date, civil_from_days(days), "day count {days} is not stable");
+        }
+
+        assert!(civil_from_days(i64::MAX).0 > 0);
+        assert!(civil_from_days(i64::MIN).0 < 0);
     }
 }
