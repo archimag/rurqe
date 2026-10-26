@@ -272,6 +272,29 @@ pub enum BuildError {
         /// The number of values the offending row carries.
         actual: usize,
     },
+    /// An `INSERT` row assigns a different column than the statement inserts into.
+    ///
+    /// The column list of an `INSERT` is rendered once, from the first recorded
+    /// row, and every row contributes its values positionally, so a row assigning
+    /// another column at one of those positions would bind its value to the wrong
+    /// column: the engine either rejects the statement with a type error or, when
+    /// the two column types happen to agree, stores the wrong value without any
+    /// diagnostic. The [`AssignmentSet`] implementations inside the crate fix the
+    /// column order in the type, so only a set declared outside it can describe
+    /// such a row; the mismatch is reported here before a single character of the
+    /// statement is rendered.
+    ///
+    /// [`AssignmentSet`]: crate::dml::AssignmentSet
+    MismatchedRowColumns {
+        /// The 0-based position of the offending row among the recorded rows.
+        row: usize,
+        /// The 0-based position of the column inside the row.
+        position: usize,
+        /// The column the statement inserts into at that position.
+        expected: &'static str,
+        /// The column the offending row assigns at that position.
+        actual: &'static str,
+    },
     /// An `INSERT` records a row that assigns no column.
     ///
     /// The column list of an `INSERT` is rendered once, from the assignments the
@@ -509,6 +532,20 @@ impl fmt::Display for BuildError {
                     "row {row} of this INSERT carries {actual} value(s) but the statement inserts into {expected} column(s); \
                      every row of one statement has to assign the same columns in the same order, \
                      so a row source whose assignments collapse differently per row cannot be rendered"
+                )
+            }
+            BuildError::MismatchedRowColumns {
+                row,
+                position,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "row {row} of this INSERT assigns column `{actual}` at position {position}, \
+                     where the statement inserts into column `{expected}`; \
+                     every row of one statement has to assign the same columns in the same order, \
+                     because the column list is rendered once and each row contributes its values positionally"
                 )
             }
             BuildError::EmptyInsertRow { row } => {

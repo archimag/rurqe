@@ -159,7 +159,7 @@ impl<T: Table, Row> InsertSource<T> for InsertedSelect<Row> {}
 /// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing).
 pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
     columns: Vec<&'static str>,
-    rows: Vec<Vec<AssignValue>>,
+    rows: Vec<Vec<(&'static str, AssignValue)>>,
     select: Option<SelectAst>,
     conflict: Option<Conflict>,
     returning: Vec<ExprKind>,
@@ -437,7 +437,10 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// reported as [`BuildError::UnresolvedQualifier`] before any SQL is
     /// rendered. A row that records no assignment at all is rejected as
     /// [`BuildError::EmptyInsertRow`], so the statement can never render a
-    /// `VALUES` list without a column list.
+    /// `VALUES` list without a column list, and a row assigning another column
+    /// than the first one at the same position is rejected as
+    /// [`BuildError::MismatchedRowColumns`], so a value can never be bound to a
+    /// column its own row did not name.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The target renders through its `Table::table_ref`, so a target
         // referenced under an alias renders its `AS "alias"` clause and is
@@ -470,7 +473,27 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
                     actual: row.len(),
                 });
             }
-            for value in row {
+            for (position, (column, value)) in row.iter().enumerate() {
+                // The column list is rendered once, from the first row, while
+                // every row contributes only its values, so a row assigning
+                // another column at this position would bind its value to the
+                // wrong column: the engine either rejects the statement with a
+                // type error or, when the two column types agree, stores the
+                // wrong value without any diagnostic. The names are therefore
+                // compared, not only the arity.
+                let expected = self.columns.get(position).copied();
+                if let Some(expected) = expected.filter(|expected| *expected != *column) {
+                    // The name is copied out of the borrowed row before the error
+                    // is assembled, so the field carries the column the row
+                    // assigned rather than reborrowing it from the row.
+                    let actual = *column;
+                    return Err(BuildError::MismatchedRowColumns {
+                        row: row_index,
+                        position,
+                        expected,
+                        actual,
+                    });
+                }
                 value.validate()?;
                 // The `VALUES` list addresses no relation at all: it renders the
                 // values of one row, so a reference to a stored column names a
@@ -527,7 +550,7 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
                     sql.push_str(", ");
                 }
                 sql.push('(');
-                for (value_index, value) in row.iter().enumerate() {
+                for (value_index, (_, value)) in row.iter().enumerate() {
                     if value_index > 0 {
                         sql.push_str(", ");
                     }
@@ -576,8 +599,9 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
             self.columns = assignments.iter().map(|(col, _)| *col).collect();
         }
 
-        self.rows
-            .push(assignments.into_iter().map(|(_, value)| value).collect());
+        // The column names move into the recorded row, so `build` can check every
+        // row by name as well as by arity.
+        self.rows.push(assignments);
     }
 
     fn retype<D2: Dialect, T2: Table, Values2, Returning2>(
@@ -893,6 +917,66 @@ mod tests {
                 SqlVal::I64(2),
                 SqlVal::Text("b".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_row_assigning_the_recorded_columns_in_another_order_is_rejected() {
+        // A set declared outside the crate can describe a second row that assigns
+        // the same columns in another order. Rendering it positionally against the
+        // column list of the first row would bind `name` to `id` and the
+        // identifier of the second row to `name`.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values_many([
+                RaggedRow(vec![
+                    ("id", AssignValue::Value(SqlVal::I64(1))),
+                    ("name", AssignValue::Value(SqlVal::Text("a".to_owned()))),
+                ]),
+                RaggedRow(vec![
+                    ("name", AssignValue::Value(SqlVal::Text("b".to_owned()))),
+                    ("id", AssignValue::Value(SqlVal::I64(2))),
+                ]),
+            ])
+            .expect("the row source is not empty")
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::MismatchedRowColumns {
+                row: 1,
+                position: 0,
+                expected: "id",
+                actual: "name",
+            })
+        );
+    }
+
+    #[test]
+    fn a_row_assigning_another_column_of_the_same_arity_is_rejected() {
+        // Both rows carry two values, so the arity agrees while the second row
+        // assigns a column the statement does not insert into at that position.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values_many([
+                RaggedRow(vec![
+                    ("id", AssignValue::Value(SqlVal::I64(1))),
+                    ("name", AssignValue::Value(SqlVal::Text("a".to_owned()))),
+                ]),
+                RaggedRow(vec![
+                    ("id", AssignValue::Value(SqlVal::I64(2))),
+                    ("active", AssignValue::Value(SqlVal::Bool(true))),
+                ]),
+            ])
+            .expect("the row source is not empty")
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::MismatchedRowColumns {
+                row: 1,
+                position: 1,
+                expected: "name",
+                actual: "active",
+            })
         );
     }
 

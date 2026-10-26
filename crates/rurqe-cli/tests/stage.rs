@@ -561,6 +561,10 @@ fn the_golden_equation_holds_for_a_consistent_stage_and_tail() {
 
     let stage = path_string(&stage_dir);
     let dir = path_string(&migrations);
+    // `stage verify` takes the exclusive section guarding the artifacts beside
+    // the marker, so each test names a marker inside its own workspace: a shared
+    // default would serialise the parallel tests on one lock.
+    let checkpoint = path_string(&workspace.join("checkpoint.toml"));
 
     run_cli(argv(&[
         "stage",
@@ -569,6 +573,8 @@ fn the_golden_equation_holds_for_a_consistent_stage_and_tail() {
         &stage,
         "--migrations-dir",
         &dir,
+        "--checkpoint-path",
+        &checkpoint,
         "--scratch-url",
         ":memory:",
     ]))
@@ -591,6 +597,9 @@ fn the_golden_equation_reports_a_tail_that_lost_a_column() {
 
     let stage = path_string(&stage_dir);
     let dir = path_string(&migrations);
+    // The marker sits inside the workspace of the test, so the section the
+    // verification takes never overlaps that of a test running in parallel.
+    let checkpoint = path_string(&workspace.join("checkpoint.toml"));
 
     let error = run_cli(argv(&[
         "stage",
@@ -599,6 +608,8 @@ fn the_golden_equation_reports_a_tail_that_lost_a_column() {
         &stage,
         "--migrations-dir",
         &dir,
+        "--checkpoint-path",
+        &checkpoint,
         "--scratch-url",
         ":memory:",
     ]))
@@ -638,6 +649,9 @@ fn the_base_stage_anchors_an_incremental_tail() {
     let stage = path_string(&stage_dir);
     let base = path_string(&base_dir);
     let dir = path_string(&migrations);
+    // Both verifications of the test share one marker inside its own workspace,
+    // so they never contend with a test running in parallel.
+    let checkpoint = path_string(&workspace.join("checkpoint.toml"));
 
     run_cli(argv(&[
         "stage",
@@ -648,6 +662,8 @@ fn the_base_stage_anchors_an_incremental_tail() {
         &base,
         "--migrations-dir",
         &dir,
+        "--checkpoint-path",
+        &checkpoint,
         "--scratch-url",
         ":memory:",
     ]))
@@ -660,6 +676,8 @@ fn the_base_stage_anchors_an_incremental_tail() {
         &stage,
         "--migrations-dir",
         &dir,
+        "--checkpoint-path",
+        &checkpoint,
         "--scratch-url",
         ":memory:",
     ]))

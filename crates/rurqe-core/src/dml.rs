@@ -373,6 +373,17 @@ pub struct AssignColumn<'a> {
 /// values over so a statement builder moves them into its own buffer instead of
 /// cloning every [`AssignValue`].
 ///
+/// Every set a statement consumes has to describe the same row shape: the column
+/// list of an `INSERT` is rendered once, from the first recorded row, and every
+/// further row contributes only its values, so a set yielding a different column
+/// at one of those positions would bind its value to the wrong one. The shape is
+/// therefore enforced while the statement is built — a row of another arity is
+/// reported as
+/// [`InconsistentRows`](crate::query::BuildError::InconsistentRows), and a row
+/// naming another column at a recorded position as
+/// [`MismatchedRowColumns`](crate::query::BuildError::MismatchedRowColumns) —
+/// before any SQL is rendered.
+///
 /// [`extend_assignments`]: AssignmentSet::extend_assignments
 /// [`into_assignments`]: AssignmentSet::into_assignments
 pub trait AssignmentSet<T: Table> {
