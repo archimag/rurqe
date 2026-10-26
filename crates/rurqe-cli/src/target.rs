@@ -48,8 +48,8 @@ impl DatabaseTarget {
             return DatabaseTarget::Postgres;
         }
 
-        if let Some(location) = strip_scheme(url, "sqlite") {
-            return sqlite_location(location);
+        if let Some(path) = sqlite_url_path(url) {
+            return sqlite_target(path);
         }
 
         if url == ":memory:" {
@@ -104,22 +104,68 @@ fn strip_scheme<'a>(url: &'a str, scheme: &str) -> Option<&'a str> {
     url.get(scheme.len()..)?.strip_prefix(':')
 }
 
-/// Classifies what follows a `sqlite:` scheme, which may keep the `//` of a URL.
+/// The file a `sqlite:` connection string opens.
 ///
-/// A scheme-qualified spelling is a URL, so the location ends where its query
-/// string or fragment begins: `sqlite:app.db?mode=rwc` opens `app.db`. SQLite
-/// interprets URI parameters only for names that begin with `file:`, so keeping
-/// the query in the location would open a file whose literal name contains it,
-/// while every diagnostic — which re-renders the value through `url::Url` — named
-/// the stripped location.
-fn sqlite_location(location: &str) -> DatabaseTarget {
-    let path = location.strip_prefix("//").unwrap_or(location);
-    let path = location_without_query(path);
+/// The location is derived exactly once, here, because the classifier that opens
+/// the database and the diagnostics that report it have to name the same file.
+/// The returned path carries neither the scheme, the `//` of a URL, the userinfo
+/// of its authority, nor its query string, and `None` reports a value that does
+/// not spell the `sqlite:` scheme at all.
+pub(crate) fn sqlite_url_path(url: &str) -> Option<&str> {
+    let location = strip_scheme(url.trim(), "sqlite")?;
 
+    Some(sqlite_path(location))
+}
+
+/// Classifies the path a `sqlite:` connection string opens.
+fn sqlite_target(path: &str) -> DatabaseTarget {
     if path.is_empty() || path == ":memory:" {
         DatabaseTarget::SqliteMemory
     } else {
         DatabaseTarget::SqliteFile(path.to_owned())
+    }
+}
+
+/// Reduces what follows a `sqlite:` scheme to the file it opens.
+///
+/// A scheme-qualified spelling is a URL, so the location ends where its query
+/// string or fragment begins — `sqlite:app.db?mode=rwc` opens `app.db` — and the
+/// userinfo of its authority is dropped: `sqlite://user:pass@host/db` opens
+/// `host/db`, the very file `sqlite://host/db` opens, so a credential never
+/// becomes a directory of the opened path and no diagnostic has to render one.
+/// SQLite interprets URI parameters only for names that begin with `file:`, so
+/// keeping the query in the location would open a file whose literal name
+/// contains it.
+fn sqlite_path(location: &str) -> &str {
+    let location = location_without_query(location);
+
+    match location.strip_prefix("//") {
+        Some(authority_and_path) => after_userinfo(authority_and_path),
+        None => location,
+    }
+}
+
+/// Drops the userinfo a URL authority carries.
+///
+/// The authority is the segment before the first `/`, and everything up to its
+/// last `@` is userinfo, which names no path. A location without an `@` there is
+/// returned unchanged, and the leading `/` of `sqlite:///var/lib/app.db` leaves
+/// the authority empty, so a file name that genuinely carries `@` keeps it.
+fn after_userinfo(authority_and_path: &str) -> &str {
+    let authority_end = authority_and_path
+        .find('/')
+        .unwrap_or(authority_and_path.len());
+    let authority = authority_and_path
+        .get(..authority_end)
+        .unwrap_or_default();
+
+    match authority.rfind('@') {
+        // `@` is an ASCII character, so the index after it always falls on a
+        // scalar boundary.
+        Some(at) => authority_and_path
+            .get(at + 1..)
+            .unwrap_or(authority_and_path),
+        None => authority_and_path,
     }
 }
 
@@ -211,6 +257,32 @@ mod tests {
             assert_eq!(
                 DatabaseTarget::parse(url),
                 DatabaseTarget::SqliteFile(expected.to_owned()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_userinfo_bearing_url_opens_the_file_that_carries_no_credential() {
+        for url in [
+            "sqlite://user:pass@host/db",
+            "sqlite://user@host/db",
+            "sqlite://user:pass@host/db?mode=rwc",
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                DatabaseTarget::SqliteFile("host/db".to_owned()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_name_carrying_an_at_sign_keeps_it() {
+        for url in ["sqlite:/var/lib/app@2.db", "sqlite:///var/lib/app@2.db"] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                DatabaseTarget::SqliteFile("/var/lib/app@2.db".to_owned()),
                 "{url}"
             );
         }

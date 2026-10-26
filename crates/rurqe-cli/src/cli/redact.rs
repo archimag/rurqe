@@ -10,8 +10,10 @@
 //! * a PostgreSQL target is parsed by the driver's own `postgres::Config`, the
 //!   parser `connect` uses, and re-rendered from its user, host, port, and
 //!   database-name fields;
-//! * a SQLite target is parsed by `url::Url`, which drops the userinfo, the query
-//!   string, and the fragment before the location is re-rendered;
+//! * a SQLite target has its location derived by `crate::target::sqlite_url_path`,
+//!   the very function the classifier that opens the database calls, so the
+//!   diagnostic names the file the command works on and the location carries no
+//!   userinfo, query string, or fragment to rebuild in the first place;
 //! * a connection string neither parser accepts is replaced by a fixed
 //!   placeholder that embeds no byte of the input.
 //!
@@ -120,28 +122,20 @@ pub(super) fn host_name(host: &postgres::config::Host) -> String {
     }
 }
 
-/// Rebinds a SQLite target to the location its URL parser reduced it to.
+/// Rebinds a SQLite target to the location the shared derivation reduced it to.
 ///
-/// The parser drops the userinfo, the query string, and the fragment, so a
-/// secret spelled as a SQLite query parameter cannot survive. What it keeps is
-/// the authority segment and the path, and the target classifier — which strips
-/// only the scheme and the leading `//` — treats both together as the name of
-/// the file it opens, so the diagnostic names the very file the command works on
-/// rather than a shortened form of it. A scheme-less value — a bare `app.db`
-/// path — is not a URL at all, and the target classifier only admits such a
-/// value when it names a plain file, so the path is echoed as it stands.
+/// The derivation `crate::target::sqlite_url_path` performs is the one the
+/// classifier that opens the database performs, so the diagnostic names the very
+/// file the command works on instead of a form of it re-derived by a second
+/// parser. It drops the userinfo, the query string, and the fragment, so a secret
+/// spelled as a SQLite user name, password, or URI parameter cannot survive into
+/// the answer. A scheme-less value — a bare `app.db` path — spells no `sqlite:`
+/// scheme at all and is not a URL, and the target classifier only admits such a
+/// value when it names a plain file, so that path is echoed as it stands.
 fn redact_sqlite(url: &str, path: &str) -> String {
-    match url::Url::parse(url) {
-        Ok(parsed) => {
-            let scheme = parsed.scheme();
-            // The authority of a `sqlite:` URL is not a network host: the
-            // classifier keeps it as the leading directory of the opened file,
-            // so it belongs to the location the diagnostic has to name.
-            let authority = parsed.host_str().unwrap_or_default();
-            let location = parsed.path();
-            format!("{scheme}:{authority}{location}")
-        }
-        Err(_) => path.to_owned(),
+    match crate::target::sqlite_url_path(url) {
+        Some(location) => format!("sqlite:{location}"),
+        None => path.to_owned(),
     }
 }
 
@@ -156,6 +150,8 @@ mod tests {
             "sqlite:/tmp/x.db?a=1#f",
             "sqlite:///var/lib/app.db?cache=shared",
             "sqlite://db.internal/app.sqlite3?mode=ro",
+            "sqlite://user:pass@db.internal/app.sqlite3",
+            "sqlite://user@db.internal/app.db?mode=rwc",
             "app.sqlite",
         ] {
             let opened = match DatabaseTarget::parse(url) {
@@ -167,6 +163,32 @@ mod tests {
             let reported = redacted.strip_prefix("sqlite:").unwrap_or(&redacted);
 
             assert_eq!(reported, opened, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_userinfo_bearing_sqlite_url_reports_the_file_without_the_credential() {
+        for (url, opened) in [
+            ("sqlite://user:pass@host/db", "host/db"),
+            ("sqlite://user@host/db", "host/db"),
+            ("sqlite://user:pass@host/app.db?mode=rwc", "host/app.db"),
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                DatabaseTarget::SqliteFile(opened.to_owned()),
+                "{url}"
+            );
+
+            let redacted = redact_database_url(url);
+
+            assert_eq!(redacted, format!("sqlite:{opened}"), "{url}");
+
+            for credential in ["user", "pass"] {
+                assert!(
+                    !redacted.contains(credential),
+                    "{url} leaked {credential} into {redacted}"
+                );
+            }
         }
     }
 
