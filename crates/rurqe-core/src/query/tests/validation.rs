@@ -3167,3 +3167,199 @@ fn build_error_display_nested_lock() {
     assert!(msg.contains("derived table"));
 }
 
+// -----------------------------------------------------------------------------
+// Totality of the consolidated pass on the public surface.
+//
+// The rules of the pass are stated once and reached by one section walk, so the
+// regressions below pin the surface a caller assembles past the tier-1 typestate:
+// a `RETURNING` clause addressing a relation the mutation does not declare, an
+// aggregate written into a clause the engine evaluates row by row — in the
+// statement and in the one it embeds — and the row-level lock clause, which
+// describes a statement of its own alone. Every rejection is paired with the
+// accepted shape the same rule has to leave alone.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn an_insert_returning_projection_qualified_by_a_foreign_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The clause belongs to the statement that inserts into `orders`, so a
+    // reference qualified through another relation names nothing the rendered
+    // statement declares. The selection types require every projected column to
+    // belong to the mutated table, which leaves a clause assembled past the type
+    // system as the only way the shape reaches the pass.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set(1i64))
+        .returning(TrunkReturning(ExprKind::QualifiedColumn {
+            table: "recent",
+            column: "id",
+        }))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedQualifier { name: "recent" })
+    );
+}
+
+#[test]
+fn an_update_returning_projection_reading_a_foreign_column_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // A plain column reference names its relation through the node itself, so the
+    // clause is rejected through the membership rule rather than the qualifier
+    // rule: `recent` is a relation the `UPDATE` neither mutates nor reaches.
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(ExprKind::Column {
+            table: "recent",
+            name: "total",
+        }))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedColumn {
+            table: "recent",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_delete_returning_projection_qualified_by_a_foreign_relation_is_rejected() {
+    use crate::dml::DeleteQuery;
+
+    // The deletion renders its own target only, so an alias-qualified projection
+    // names a relation the statement never declares.
+    let built = DeleteQuery::<UpsertDialect, Order>::new()
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(ExprKind::QualifiedColumn {
+            table: "recent",
+            column: "total",
+        }))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedQualifier { name: "recent" })
+    );
+}
+
+#[test]
+fn a_returning_projection_repeating_the_mutated_target_is_accepted() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The projection names the mutated relation under the name the statement
+    // renders it by, so the same rule that rejects a foreign reference accepts
+    // this one — and the clause renders unqualified beside the single relation.
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        }))
+        .build()
+        .expect("the returning projection addresses the mutated relation");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"orders\" SET \"total\" = $1 WHERE (\"id\" = $2) RETURNING \"total\""
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(2.5), SqlVal::I64(1)]);
+}
+
+#[test]
+fn an_aggregate_in_the_filter_of_a_nested_statement_is_rejected() {
+    // The predicate of the nested statement decides which of its rows take part,
+    // so the engine evaluates it before those rows could be collapsed. The rule
+    // reaches the statement embedded through `Subquery::new` exactly like the
+    // statement at the top of the build chain.
+    let mut inner = relation_statement("orders", "id");
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(count_star()),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+    });
+
+    let mut ast = relation_statement("users", "id");
+    ast.filter = Some(exists_subquery(inner));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::AggregateInRowClause {
+            clause: RowClause::Where,
+            aggregate: "COUNT",
+        })
+    );
+}
+
+#[test]
+fn an_aggregate_in_the_grouping_of_a_nested_statement_is_rejected() {
+    // The grouping of the nested statement decides how its rows are collapsed, so
+    // it cannot itself read a value that only exists once they are collapsed.
+    let mut inner = relation_statement("orders", "user_id");
+    inner.projections = vec![ExprKind::Value(SqlVal::I64(1))];
+    inner.group_by = vec![sum_of("orders", "total")];
+
+    let mut ast = relation_statement("users", "id");
+    ast.projections.push(scalar_subquery(inner));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::AggregateInRowClause {
+            clause: RowClause::GroupBy,
+            aggregate: "SUM",
+        })
+    );
+}
+
+#[test]
+fn an_update_assignment_reading_a_scalar_subquery_with_an_aggregate_is_accepted() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The aggregate belongs to the nested statement, which collapses its own rows
+    // into the one value the assignment reads, so the assigned expression stays a
+    // per-row value: the placement rule stops at the statement boundary instead of
+    // rejecting a legal assignment.
+    let mut inner = relation_statement("orders", "total");
+    inner.projections = vec![sum_of("orders", "total")];
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set_expr(
+            Expr::<f64>::from_kind(scalar_subquery(inner)).without_scope(),
+        ))
+        .allow_all()
+        .build()
+        .expect("a scalar subquery aggregates its own scope");
+
+    assert!(built.sql.contains("SELECT SUM(\"total\") FROM \"orders\""));
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn the_lock_wait_modifiers_cannot_coexist_on_one_clause() {
+    // `NOWAIT` and `SKIP LOCKED` describe two behaviours a statement may not
+    // request at once. The clause records the wait behaviour as one value, so
+    // applying both modifiers keeps the last one: the combination the engine
+    // refuses stays unrepresentable instead of being rejected after the fact.
+    let mut ast = relation_statement("orders", "id");
+    ast.lock = Some(
+        LockClause::new(LockStrength::Update)
+            .nowait()
+            .skip_locked(),
+    );
+
+    assert_eq!(ast.validate(), Ok(()));
+
+    let mut sql = String::new();
+    let mut params = Vec::new();
+    ast.render::<MockDialect>(&mut sql, &mut params)
+        .expect("a locking statement of its own stays renderable");
+
+    assert!(sql.ends_with("FOR UPDATE SKIP LOCKED"));
+    assert!(!sql.contains("NOWAIT"));
+}
+
