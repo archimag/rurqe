@@ -651,7 +651,14 @@ fn a_set_operation_operand_correlates_with_no_enclosing_statement() {
 
 #[test]
 fn a_group_by_expression_qualified_by_a_name_nothing_declares_is_rejected() {
+    // The `GROUP BY` entry is a section of the statement like the projection
+    // list, so a qualifier nothing declares is rejected from it as well. The
+    // projection stays a literal so the grouped entry is the only reference
+    // the walk resolves: a grouped statement projecting a bare column the
+    // `GROUP BY` clause dropped is rejected by the aggregation consistency
+    // before the qualifier walk runs.
     let mut ast = relation_statement("orders", "user_id");
+    ast.projections = vec![ExprKind::Value(SqlVal::I64(1))];
     ast.group_by.push(ExprKind::QualifiedColumn {
         table: "ghosts",
         column: "id",
@@ -1967,6 +1974,146 @@ fn a_having_predicate_reading_an_ungrouped_ast_column_is_rejected() {
             column: "total",
         })
     );
+}
+
+#[test]
+fn a_grouped_statement_projecting_an_ungrouped_column_is_rejected() {
+    // The grouping dropped the per-row value `total` would name, so the statement
+    // has no per-group value to report for the column it projects beside it.
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+    ]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_grouped_statement_ordering_by_an_ungrouped_column_is_rejected() {
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        count_star(),
+    ]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_grouped_statement_deduplicating_by_an_ungrouped_column_is_rejected() {
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        count_star(),
+    ]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.distinct_on.push(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_grouped_statement_ordering_by_an_aggregate_is_accepted() {
+    // The aggregate is computed over the groups the clause produced, so ordering
+    // by it stays valid beside the grouped column.
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        sum_of("orders", "total"),
+    ]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.order_by.push(OrderCriterion::new(
+        sum_of("orders", "total"),
+        OrderDirection::Desc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_grouped_projection_matches_a_grouping_written_through_the_other_node_shape() {
+    // The grouping records the alias-qualified shape of the column while the
+    // projection reads the schema-marker shape, so the canonical comparison
+    // resolves both to one grouped column.
+    let mut ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        sum_of("orders", "total"),
+    ]);
+    ast.group_by = vec![ExprKind::QualifiedColumn {
+        table: "orders",
+        column: "user_id",
+    }];
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn build_error_display_ungrouped_column() {
+    let err = BuildError::UngroupedColumn {
+        table: "orders",
+        column: "status",
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("`orders.status`"));
+    assert!(msg.contains("neither aggregated nor grouped"));
+    assert!(msg.contains("`.group_by(...)`"));
 }
 
 #[test]

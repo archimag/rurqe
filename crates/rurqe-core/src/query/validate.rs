@@ -236,6 +236,22 @@ pub enum BuildError {
         /// The SQL identifier of the column the predicate reads.
         column: &'static str,
     },
+    /// A clause expression of a grouped statement reads a column the `GROUP BY`
+    /// clause dropped.
+    ///
+    /// A statement that groups reads its rows through the groups the `GROUP BY`
+    /// clause produced, so every expression it projects, orders by, or
+    /// deduplicates by has to be computed from the grouped columns and the
+    /// aggregates over them. A bare column the clause dropped leaves the engine
+    /// without the one per-group value it should report — PostgreSQL answers
+    /// `column "..." must appear in the GROUP BY clause or be used in an aggregate
+    /// function` — so the mismatch is rejected before any SQL is rendered.
+    UngroupedColumn {
+        /// The SQL identifier of the relation the column belongs to.
+        table: &'static str,
+        /// The SQL identifier of the referenced column.
+        column: &'static str,
+    },
     /// A raw SQL expression binds a number of parameters other than its
     /// fragments declare.
     ///
@@ -382,6 +398,15 @@ impl fmt::Display for BuildError {
                     "HAVING predicate reads column `{table}.{column}`, which is neither aggregated nor grouped; \
                      HAVING runs over the groups produced by the GROUP BY clause, so the column has to be \
                      aggregated or listed in `.group_by(...)`"
+                )
+            }
+            BuildError::UngroupedColumn { table, column } => {
+                write!(
+                    f,
+                    "expression reads column `{table}.{column}`, which is neither aggregated nor grouped; \
+                     a statement that groups reads its rows through the groups the GROUP BY clause produced, \
+                     so every projected, ordered, and deduplicated expression has to name a grouped column \
+                     or an aggregate; group the column via `.group_by(...)` or aggregate it"
                 )
             }
             BuildError::RawSql(error) => {

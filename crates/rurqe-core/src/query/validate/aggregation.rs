@@ -2,9 +2,10 @@
 //!
 //! An aggregate present in a statement collapses rows, which constrains every
 //! expression around it: a bare column projected beside an aggregate without a
-//! grouping, and a `HAVING` predicate reading a column the grouping dropped, both
-//! describe a statement the engine rejects. The walks in this module answer those
-//! questions on the assembled expressions, before any SQL is rendered.
+//! grouping, a `HAVING` predicate reading a column the grouping dropped, and a
+//! grouped statement reading a column its `GROUP BY` clause dropped, each describe
+//! a statement the engine rejects. The walks in this module answer those questions
+//! on the assembled expressions, before any SQL is rendered.
 
 use crate::expr::{ExprKind, StatementRef, WindowExprKind};
 
@@ -25,9 +26,14 @@ impl StatementRef<'_> {
     /// - a `HAVING` predicate runs over the groups the `GROUP BY` clause produced,
     ///   so a column it reads has to be aggregated or listed in that clause — the
     ///   grouping dropped the per-row value any other column would name, so it is
-    ///   rejected as [`BuildError::UngroupedHavingColumn`].
+    ///   rejected as [`BuildError::UngroupedHavingColumn`];
+    /// - a statement that groups reads its rows through the groups the `GROUP BY`
+    ///   clause produced, so every projected expression, every ordering criterion,
+    ///   and every `DISTINCT ON` expression has to be computed from the grouped
+    ///   columns and the aggregates over them — a bare column the clause dropped is
+    ///   rejected as [`BuildError::UngroupedColumn`].
     ///
-    /// Both clauses are assembled as plain statement data, so both rules run here,
+    /// Every clause is assembled as plain statement data, so every rule runs here,
     /// before any SQL is rendered. A window call is not an aggregate for the first
     /// rule: the engine evaluates it over the rows the statement produced instead
     /// of collapsing them, which is why `SUM("total") OVER (...)` beside a bare
@@ -43,6 +49,24 @@ impl StatementRef<'_> {
             }
         }
 
+        // A statement that groups reads its rows through the groups the `GROUP BY`
+        // clause produced, so every expression it projects, orders by, or
+        // deduplicates by has to name one of the grouped columns or be computed
+        // from the aggregates over them. The walk stops at an aggregate exactly
+        // like the ungrouped rule above, so a column an aggregate reads stays
+        // governed by the aggregate itself.
+        if !self.group_by.is_empty() {
+            for projection in self.projections {
+                self.reject_ungrouped_column(projection)?;
+            }
+            for criterion in self.order_by {
+                self.reject_ungrouped_column(&criterion.expr)?;
+            }
+            for expression in self.distinct_on {
+                self.reject_ungrouped_column(expression)?;
+            }
+        }
+
         let Some(having) = &self.having else {
             return Ok(());
         };
@@ -51,6 +75,25 @@ impl StatementRef<'_> {
         for (table, column) in columns {
             if !self.groups_column(table, column) {
                 return Err(BuildError::UngroupedHavingColumn { table, column });
+            }
+        }
+        Ok(())
+    }
+
+    /// Rejects a clause expression of a grouped statement that reads a column the
+    /// `GROUP BY` clause dropped.
+    ///
+    /// The expression is walked by `collect_bare_columns`, which stops at an
+    /// aggregate, so only a bare column the statement reads beside its aggregates
+    /// is collected. Every collected reference is compared against the grouped
+    /// columns through `groups_column`, which resolves both node shapes of one
+    /// column into the same canonical pair.
+    fn reject_ungrouped_column(&self, expr: &ExprKind) -> Result<(), BuildError> {
+        let mut columns = Vec::new();
+        collect_bare_columns(expr, &mut columns);
+        for (table, column) in columns {
+            if !self.groups_column(table, column) {
+                return Err(BuildError::UngroupedColumn { table, column });
             }
         }
         Ok(())
