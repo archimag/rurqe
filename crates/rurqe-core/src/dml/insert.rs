@@ -21,8 +21,8 @@ use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
 use crate::query::{
-    reject_columns_without_relations, reject_unresolved_qualifiers, BuildError, BuiltQuery,
-    HasProjection, SelectQuery, Selection, TableScope, TableSelection,
+    reject_columns_without_relations, reject_unresolved_qualifiers, validate_expr, BuildError,
+    BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
 use crate::schema::{Column, ColumnBelongsTo, Table};
 
@@ -428,13 +428,16 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     ///
     /// The embedded statements and expressions are validated before any SQL is
     /// rendered: a source `SELECT`, a scalar expression assigned to a column,
-    /// and the predicates and assignments of an `ON CONFLICT` clause may all
-    /// carry a nested statement, so a semantic violation inside one of them is
-    /// reported as [`BuildError`] instead of reaching the engine. The `VALUES`
-    /// list, the `ON CONFLICT` clause, and the `RETURNING` projections are
-    /// pre-flighted against the rendered target as well: a reference qualified
-    /// through a name the target does not declare is reported as
-    /// [`BuildError::UnresolvedQualifier`] before any SQL is rendered.
+    /// the predicates and assignments of an `ON CONFLICT` clause, and the
+    /// `RETURNING` projections may all carry a nested statement, so a semantic
+    /// violation inside one of them is reported as [`BuildError`] instead of
+    /// reaching the engine. The `VALUES` list, the `ON CONFLICT` clause, and the
+    /// `RETURNING` projections are pre-flighted against the rendered target as
+    /// well: a reference qualified through a name the target does not declare is
+    /// reported as [`BuildError::UnresolvedQualifier`] before any SQL is
+    /// rendered. A row that records no assignment at all is rejected as
+    /// [`BuildError::EmptyInsertRow`], so the statement can never render a
+    /// `VALUES` list without a column list.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The target renders through its `Table::table_ref`, so a target
         // referenced under an alias renders its `AS "alias"` clause and is
@@ -448,6 +451,14 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
             select.validate()?;
         }
         for (row_index, row) in self.rows.iter().enumerate() {
+            // A row that records no assignment leaves the statement without a
+            // column list, so it could only render `INSERT INTO "users" ()
+            // VALUES ()` — a statement no engine accepts. The fluent row source
+            // keeps such a row out at the call site, while an assignment set that
+            // collapses once it is merged still reaches the renderer.
+            if row.is_empty() {
+                return Err(BuildError::EmptyInsertRow { row: row_index });
+            }
             // The column list is rendered once, from the first row, while every
             // row contributes only its values: a row carrying a different number
             // of values would render a `VALUES` tuple of the wrong arity, which no
@@ -482,8 +493,11 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         // alias of an aliased target, which only the rendered target
         // declares, so a qualifier naming no rendered relation is rejected
         // before any SQL is rendered. The statement sits at the top of the
-        // build chain, so it reaches no enclosing relations.
+        // build chain, so it reaches no enclosing relations. A projection is an
+        // expression of the statement like any other, so the same pass audits the
+        // statements it embeds.
         for projection in &self.returning {
+            validate_expr(projection)?;
             reject_unresolved_qualifiers(projection, &relations, &[])?;
         }
 

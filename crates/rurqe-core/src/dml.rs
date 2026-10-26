@@ -129,7 +129,11 @@ impl AssignValue {
     ///
     /// A bound value and the `DEFAULT` keyword embed no statement data, so only
     /// an expression assignment — which may read a nested subquery — takes part
-    /// in the pre-flight validation of the statement that renders it.
+    /// in the pre-flight validation of the statement that renders it. The
+    /// statement builders apply the same pass to every other expression they
+    /// render — a filter, a `RETURNING` projection, and the predicates of an
+    /// `ON CONFLICT` clause — so an assignment is audited exactly like the
+    /// clauses around it.
     pub(crate) fn validate(&self) -> Result<(), crate::query::BuildError> {
         match self {
             AssignValue::Value(_) | AssignValue::Default => Ok(()),

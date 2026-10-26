@@ -22,8 +22,8 @@ use crate::dml::insert::merge_assignments;
 use crate::dml::render_expr;
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate};
 use crate::query::{
-    register_relation, reject_unresolved_qualifiers, BuildError, BuiltQuery, ScopePositions,
-    Selection, TableSelection,
+    register_relation, reject_unresolved_qualifiers, validate_expr, BuildError, BuiltQuery,
+    ScopePositions, Selection, TableSelection,
 };
 use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 
@@ -369,16 +369,19 @@ where
         // their column references through an alias, which only a rendered
         // relation declares: a qualifier naming none of the registered
         // relations is rejected before any SQL is rendered. The statement sits at
-        // the top of the build chain, so it reaches no enclosing relations.
+        // the top of the build chain, so it reaches no enclosing relations. Each
+        // of them is an expression of the statement like any other, so the same
+        // pass audits the statements it embeds as well.
         for (_, value) in &self.assignments {
-            if let AssignValue::Expr(expr) = value {
-                reject_unresolved_qualifiers(expr, &relations, &[])?;
-            }
+            value.validate()?;
+            value.validate_qualifiers(&relations, &[])?;
         }
         if let Some(filter) = &self.filter {
+            validate_expr(filter)?;
             reject_unresolved_qualifiers(filter, &relations, &[])?;
         }
         for projection in &self.returning {
+            validate_expr(projection)?;
             reject_unresolved_qualifiers(projection, &relations, &[])?;
         }
 

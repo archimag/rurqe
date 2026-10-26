@@ -208,6 +208,21 @@ pub enum BuildError {
         /// The number of values the offending row carries.
         actual: usize,
     },
+    /// An `INSERT` records a row that assigns no column.
+    ///
+    /// The column list of an `INSERT` is rendered once, from the assignments the
+    /// recorded rows carry, so a row source collapsing to zero assignments leaves
+    /// the statement with neither a column list nor a value: it could only render
+    /// `INSERT INTO "users" () VALUES ()`, which every engine rejects. The fluent
+    /// builders keep an empty row source out at the call site through
+    /// `InsertQuery::values_many`, which reports `EmptyRows`, but an assignment
+    /// set that only collapses once it is merged — or a row recorded through the
+    /// public `InsertSource` trait — still reaches the renderer, so the emptiness
+    /// is reported here before a single character of the statement is rendered.
+    EmptyInsertRow {
+        /// The 0-based position of the row that records no assignment.
+        row: usize,
+    },
     /// A projection reads a bare column beside an aggregate without grouping.
     ///
     /// An aggregate without a `GROUP BY` clause collapses the whole relation into
@@ -381,6 +396,15 @@ impl fmt::Display for BuildError {
                     "row {row} of this INSERT carries {actual} value(s) but the statement inserts into {expected} column(s); \
                      every row of one statement has to assign the same columns in the same order, \
                      so a row source whose assignments collapse differently per row cannot be rendered"
+                )
+            }
+            BuildError::EmptyInsertRow { row } => {
+                write!(
+                    f,
+                    "row {row} of this INSERT records no column assignment; \
+                     the statement would render `INSERT INTO \"...\" () VALUES ()`, which no engine accepts, \
+                     so every row has to assign at least one column through `.values(...)` or `.values_many(...)`, \
+                     or the statement has to take its rows from a source `SELECT` through `.from_select(...)`"
                 )
             }
             BuildError::UngroupedColumnWithAggregate { table, column } => {

@@ -803,6 +803,12 @@ impl crate::dialect::Dialect for UpsertDialect {
 
 impl crate::dialect::SupportsOnConflict for UpsertDialect {}
 
+// The DML trunk checks the clauses of the mutation statements, `RETURNING`
+// projections included, so the dialect declares that capability as well: the
+// clause stays reachable and the rejection comes from the pre-flight pass
+// instead of from a missing trait bound.
+impl crate::dialect::SupportsReturning for UpsertDialect {}
+
 #[test]
 fn an_insert_value_addresses_no_relation_at_all() {
     use crate::dml::{ColumnAssign, InsertQuery};
@@ -2539,6 +2545,154 @@ fn a_grouped_statement_rejects_a_bare_column_hidden_in_a_computed_projection() {
             column: "total",
         })
     );
+}
+
+// -----------------------------------------------------------------------------
+// The DML trunk inside the consolidated pass.
+//
+// The rules above reach the clauses of a `SELECT` statement through one section
+// walk. The DML builders render clauses of their own — the `RETURNING`
+// projections, the `SET` assignments, and the filters — and those are expressions
+// of the statement exactly like a projection is, so the same pass audits the
+// statements they embed and resolves the qualifiers they name. The tests below
+// pin the rejections down on the public AST surface, where the tier-1 typestate
+// cannot reach.
+// -----------------------------------------------------------------------------
+
+/// A statement addressing `orders` twice without an alias.
+///
+/// No engine accepts the `FROM` clause it renders, so every clause embedding it
+/// describes an invalid statement — which is what the DML trunk tests need.
+fn duplicated_relation_statement() -> SelectAst {
+    let mut ast = relation_statement("orders", "id");
+    ast.joins.push(JoinAst {
+        kind: JoinKind::Inner,
+        table: TableRef::plain("orders"),
+        lateral: None,
+        on: None,
+    });
+    ast
+}
+
+/// A `RETURNING` clause whose single projection is chosen by the test.
+///
+/// The clause declares a projected column of `Order`, so the DML builders accept
+/// it as a selection of the mutated table, while the projection it records is
+/// supplied by the test: the fluent selection types cannot describe a projection
+/// embedding an invalid statement, which is exactly the shape the pre-flight pass
+/// has to catch.
+struct TrunkReturning(ExprKind);
+
+impl Selection for TrunkReturning {
+    type Row = (i64,);
+
+    fn push_projections(&self, out: &mut Vec<ExprKind>) {
+        out.push(self.0.clone());
+    }
+}
+
+impl TableSelection<Order> for TrunkReturning {}
+
+#[test]
+fn an_insert_returning_projection_embedding_an_invalid_statement_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The `RETURNING` clause belongs to the same statement, so a nested statement
+    // it embeds is audited exactly like a projection of a `SELECT`.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .returning(TrunkReturning(scalar_subquery(
+            duplicated_relation_statement(),
+        )))
+        .build();
+
+    assert_eq!(built, Err(BuildError::DuplicateRelation { name: "orders" }));
+}
+
+#[test]
+fn an_update_returning_projection_embedding_an_invalid_statement_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(scalar_subquery(
+            duplicated_relation_statement(),
+        )))
+        .build();
+
+    assert_eq!(built, Err(BuildError::DuplicateRelation { name: "orders" }));
+}
+
+#[test]
+fn a_delete_returning_projection_embedding_an_invalid_statement_is_rejected() {
+    use crate::dml::DeleteQuery;
+
+    let built = DeleteQuery::<UpsertDialect, Order>::new()
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(scalar_subquery(
+            duplicated_relation_statement(),
+        )))
+        .build();
+
+    assert_eq!(built, Err(BuildError::DuplicateRelation { name: "orders" }));
+}
+
+#[test]
+fn an_update_assignment_embedding_an_invalid_statement_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The assigned value is an expression of the statement, so it is audited by
+    // the same pass that audits a filter or a projection.
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set_expr(
+            Expr::<f64>::from_kind(scalar_subquery(duplicated_relation_statement()))
+                .without_scope(),
+        ))
+        .allow_all()
+        .build();
+
+    assert_eq!(built, Err(BuildError::DuplicateRelation { name: "orders" }));
+}
+
+#[test]
+fn an_insert_row_source_collapsing_to_no_assignment_is_rejected() {
+    use crate::dml::insert::InsertSource;
+    use crate::dml::{AssignColumn, AssignmentScope, AssignmentSet, AssignValue, InsertQuery};
+
+    /// A row source collapsing to no assignment at all.
+    ///
+    /// The fluent builders keep such a row out at the call site, but the traits
+    /// describing a row are public, so the emptiness has to be reported while the
+    /// statement is built instead of by the engine.
+    struct EmptyRow;
+
+    impl AssignmentSet<Order> for EmptyRow {
+        fn extend_assignments<'a>(&'a self, _out: &mut Vec<AssignColumn<'a>>) {}
+
+        fn into_assignments(self, _out: &mut Vec<(&'static str, AssignValue)>) {}
+    }
+
+    impl AssignmentScope for EmptyRow {
+        type Scope = ();
+        type Dialect = ();
+    }
+
+    impl InsertSource<Order> for EmptyRow {}
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(EmptyRow)
+        .build();
+
+    assert_eq!(built, Err(BuildError::EmptyInsertRow { row: 0 }));
+}
+
+#[test]
+fn build_error_display_empty_insert_row() {
+    let msg = BuildError::EmptyInsertRow { row: 2 }.to_string();
+    assert!(msg.contains("row 2"));
+    assert!(msg.contains("VALUES ()"));
+    assert!(msg.contains(".from_select(...)"));
 }
 
 #[test]
