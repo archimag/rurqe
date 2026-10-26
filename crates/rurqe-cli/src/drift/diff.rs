@@ -10,7 +10,8 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rurqe_migrate::catalog::{
-    CheckDef, ColumnDef, EnumDef, IndexDef, SchemaCatalog, TableDef, TriggerDef, ViewDef,
+    CheckDef, ColumnDef, EnumDef, ForeignKeyDef, IndexDef, SchemaCatalog, TableDef, TriggerDef,
+    ViewDef,
 };
 
 /// Structural schema diff describing exact discrepancies.
@@ -53,142 +54,45 @@ impl SchemaDiff {
     /// the drift report and the golden-equation report never describe the same
     /// finding with two drifting implementations.
     pub fn write_details(&self, f: &mut fmt::Formatter<'_>, wording: DiffWording) -> fmt::Result {
-        let DiffWording { expected, live } = wording;
+        write_findings(
+            f,
+            Category::Enum,
+            None,
+            Findings::of(&self.missing_enums, &self.extra_enums, &self.altered_enums),
+            wording,
+        )?;
+        write_findings(
+            f,
+            Category::View,
+            None,
+            Findings::of(&self.missing_views, &self.extra_views, &self.altered_views),
+            wording,
+        )?;
+        write_findings(
+            f,
+            Category::Trigger,
+            None,
+            Findings::of(
+                &self.missing_triggers,
+                &self.extra_triggers,
+                &self.altered_triggers,
+            ),
+            wording,
+        )?;
+        write_findings(
+            f,
+            Category::Table,
+            None,
+            Findings::of(&self.missing_tables, &self.extra_tables, &[]),
+            wording,
+        )?;
 
-        for enum_name in &self.missing_enums {
-            writeln!(
-                f,
-                "  - Enum `{enum_name}` is declared in {expected} but missing from {live}."
-            )?;
-        }
-        for enum_name in &self.extra_enums {
-            writeln!(
-                f,
-                "  - Enum `{enum_name}` exists in {live} but is missing from {expected}."
-            )?;
-        }
-        for enum_name in &self.altered_enums {
-            writeln!(
-                f,
-                "  - Enum `{enum_name}` definition differs between {live} and {expected}."
-            )?;
-        }
-        for view_name in &self.missing_views {
-            writeln!(
-                f,
-                "  - View `{view_name}` is declared in {expected} but missing from {live}."
-            )?;
-        }
-        for view_name in &self.extra_views {
-            writeln!(
-                f,
-                "  - View `{view_name}` exists in {live} but is missing from {expected}."
-            )?;
-        }
-        for view_name in &self.altered_views {
-            writeln!(
-                f,
-                "  - View `{view_name}` definition differs between {live} and {expected}."
-            )?;
-        }
-        for trigger_name in &self.missing_triggers {
-            writeln!(
-                f,
-                "  - Trigger `{trigger_name}` is declared in {expected} but missing from {live}."
-            )?;
-        }
-        for trigger_name in &self.extra_triggers {
-            writeln!(
-                f,
-                "  - Trigger `{trigger_name}` exists in {live} but is missing from {expected}."
-            )?;
-        }
-        for trigger_name in &self.altered_triggers {
-            writeln!(
-                f,
-                "  - Trigger `{trigger_name}` definition differs between {live} and {expected}."
-            )?;
-        }
-        for table in &self.missing_tables {
-            writeln!(
-                f,
-                "  - Table `{table}` is declared in {expected} but missing from {live}."
-            )?;
-        }
-        for table in &self.extra_tables {
-            writeln!(
-                f,
-                "  - Table `{table}` exists in {live} but is missing from {expected}."
-            )?;
-        }
+        // A table that drifted is described member by member instead of with a
+        // single `definition differs` line, so its detail is rendered here.
         for (table, diff) in &self.table_diffs {
-            for col in &diff.missing_columns {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: column `{col}` is in {expected} but missing from {live}."
-                )?;
-            }
-            for col in &diff.extra_columns {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: column `{col}` exists in {live} but is missing from {expected}."
-                )?;
-            }
-            for col in &diff.altered_columns {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: column `{col}` definition differs between {live} and {expected}."
-                )?;
-            }
-            if diff.primary_key_mismatch {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: primary key constraint differs between {live} and {expected}."
-                )?;
-            }
-            if diff.foreign_key_mismatch {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: foreign key constraints differ between {live} and {expected}."
-                )?;
-            }
-            for check in &diff.missing_checks {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: check `{check}` is in {expected} but missing from {live}."
-                )?;
-            }
-            for check in &diff.extra_checks {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: check `{check}` exists in {live} but is missing from {expected}."
-                )?;
-            }
-            for check in &diff.altered_checks {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: check `{check}` definition differs between {live} and {expected}."
-                )?;
-            }
-            for index in &diff.missing_indexes {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: index `{index}` is in {expected} but missing from {live}."
-                )?;
-            }
-            for index in &diff.extra_indexes {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: index `{index}` exists in {live} but is missing from {expected}."
-                )?;
-            }
-            for index in &diff.altered_indexes {
-                writeln!(
-                    f,
-                    "  - Table `{table}`: index `{index}` definition differs between {live} and {expected}."
-                )?;
-            }
+            diff.write_details(f, table, wording)?;
         }
+
         Ok(())
     }
 }
@@ -218,6 +122,146 @@ impl DiffWording {
         expected: "the stage",
         live: "the tail",
     };
+}
+
+/// A category of schema object whose findings [`SchemaDiff::write_details`]
+/// renders.
+///
+/// The noun a sentence uses and whether the sentence is qualified with the owning
+/// table are the only differences between the categories, so one category value
+/// drives every section instead of a hand-written block per category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Category {
+    /// An enum type declared by the database.
+    Enum,
+    /// A view declared by the database.
+    View,
+    /// A trigger attached to a table.
+    Trigger,
+    /// A table of the schema.
+    Table,
+    /// A column of a table.
+    Column,
+    /// A check constraint of a table.
+    Check,
+    /// An index of a table.
+    Index,
+}
+
+impl Category {
+    /// The noun a sentence about this category uses.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Enum => "Enum",
+            Self::View => "View",
+            Self::Trigger => "Trigger",
+            Self::Table => "Table",
+            Self::Column => "column",
+            Self::Check => "check",
+            Self::Index => "index",
+        }
+    }
+
+    /// Whether the category is declared inside a table, which qualifies the
+    /// sentence with the owning table.
+    fn is_member(self) -> bool {
+        matches!(self, Self::Column | Self::Check | Self::Index)
+    }
+}
+
+/// The subject of a finding: a top-level object, or an item qualified by the
+/// table that declares it.
+struct Subject<'a> {
+    owner: Option<&'a str>,
+    category: Category,
+    name: &'a str,
+}
+
+impl fmt::Display for Subject<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let category = self.category.label();
+        let name = self.name;
+        match self.owner {
+            Some(table) => write!(f, "Table `{table}`: {category} `{name}`"),
+            None => write!(f, "{category} `{name}`"),
+        }
+    }
+}
+
+/// One category's findings, borrowed from either a [`SchemaDiff`] or a
+/// [`TableDiff`].
+#[derive(Debug, Clone, Copy)]
+struct Findings<'a> {
+    missing: &'a [String],
+    extra: &'a [String],
+    altered: &'a [String],
+}
+
+impl<'a> Findings<'a> {
+    /// Borrows the three state lists of one category.
+    fn of(missing: &'a [String], extra: &'a [String], altered: &'a [String]) -> Self {
+        Self {
+            missing,
+            extra,
+            altered,
+        }
+    }
+}
+
+/// Renders the missing, extra, and altered findings of one category.
+///
+/// Only the `missing` sentence distinguishes a top-level object (declared in the
+/// expected catalog) from an item nested in a table (present in it), so every
+/// category shares the remaining wording.
+fn write_findings(
+    f: &mut fmt::Formatter<'_>,
+    category: Category,
+    owner: Option<&str>,
+    findings: Findings<'_>,
+    wording: DiffWording,
+) -> fmt::Result {
+    let DiffWording { expected, live } = wording;
+    let missing_verb = if category.is_member() {
+        "is in"
+    } else {
+        "is declared in"
+    };
+
+    for name in findings.missing {
+        let subject = Subject {
+            owner,
+            category,
+            name: name.as_str(),
+        };
+        writeln!(
+            f,
+            "  - {subject} {missing_verb} {expected} but missing from {live}."
+        )?;
+    }
+    for name in findings.extra {
+        let subject = Subject {
+            owner,
+            category,
+            name: name.as_str(),
+        };
+        writeln!(
+            f,
+            "  - {subject} exists in {live} but is missing from {expected}."
+        )?;
+    }
+    for name in findings.altered {
+        let subject = Subject {
+            owner,
+            category,
+            name: name.as_str(),
+        };
+        writeln!(
+            f,
+            "  - {subject} definition differs between {live} and {expected}."
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Discrepancies within a specific table.
@@ -250,123 +294,192 @@ impl TableDiff {
             && self.extra_indexes.is_empty()
             && self.altered_indexes.is_empty()
     }
+
+    /// Renders the findings of one table, every sentence qualified by its name.
+    fn write_details(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        table: &str,
+        wording: DiffWording,
+    ) -> fmt::Result {
+        write_findings(
+            f,
+            Category::Column,
+            Some(table),
+            Findings::of(
+                &self.missing_columns,
+                &self.extra_columns,
+                &self.altered_columns,
+            ),
+            wording,
+        )?;
+
+        let DiffWording { expected, live } = wording;
+
+        if self.primary_key_mismatch {
+            writeln!(
+                f,
+                "  - Table `{table}`: primary key constraint differs between {live} and {expected}."
+            )?;
+        }
+        if self.foreign_key_mismatch {
+            writeln!(
+                f,
+                "  - Table `{table}`: foreign key constraints differ between {live} and {expected}."
+            )?;
+        }
+
+        write_findings(
+            f,
+            Category::Check,
+            Some(table),
+            Findings::of(
+                &self.missing_checks,
+                &self.extra_checks,
+                &self.altered_checks,
+            ),
+            wording,
+        )?;
+        write_findings(
+            f,
+            Category::Index,
+            Some(table),
+            Findings::of(
+                &self.missing_indexes,
+                &self.extra_indexes,
+                &self.altered_indexes,
+            ),
+            wording,
+        )?;
+
+        Ok(())
+    }
+}
+
+/// The three states a named entry can be in, together with the entries both
+/// catalogs declare.
+struct NamedEntries<'a, V> {
+    /// Names only the expected catalog declares.
+    missing: Vec<String>,
+    /// Names only the live catalog declares.
+    extra: Vec<String>,
+    /// Entries both catalogs declare, in name order.
+    shared: Vec<(&'a str, &'a V, &'a V)>,
+}
+
+impl<'a, V> NamedEntries<'a, V> {
+    /// Splits the comparison into the three state lists, using `altered` to decide
+    /// which shared entries changed their definition.
+    fn into_states(
+        self,
+        altered: impl Fn(&V, &V) -> bool,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let altered = self
+            .shared
+            .iter()
+            .filter(|(_, live, expected)| altered(live, expected))
+            .map(|(name, _, _)| (*name).to_owned())
+            .collect();
+        (self.missing, self.extra, altered)
+    }
+}
+
+/// Groups two catalogs' entries by name and reports which names only one side
+/// declares, together with the entries both sides share.
+///
+/// Every category of the comparison goes through this single traversal, so the
+/// unreachable `(None, None)` state is matched once instead of once per category.
+fn compare_named_entries<'a, V>(
+    live: &'a [V],
+    expected: &'a [V],
+    name: impl Fn(&'a V) -> &'a str,
+) -> NamedEntries<'a, V> {
+    let live_by_name: BTreeMap<&'a str, &'a V> =
+        live.iter().map(|entry| (name(entry), entry)).collect();
+    let expected_by_name: BTreeMap<&'a str, &'a V> = expected
+        .iter()
+        .map(|entry| (name(entry), entry))
+        .collect();
+
+    let names: BTreeSet<&'a str> = live_by_name
+        .keys()
+        .copied()
+        .chain(expected_by_name.keys().copied())
+        .collect();
+
+    let mut comparison = NamedEntries {
+        missing: Vec::new(),
+        extra: Vec::new(),
+        shared: Vec::new(),
+    };
+
+    for entry_name in names {
+        match (
+            live_by_name.get(entry_name).copied(),
+            expected_by_name.get(entry_name).copied(),
+        ) {
+            (Some(live_entry), Some(expected_entry)) => {
+                comparison
+                    .shared
+                    .push((entry_name, live_entry, expected_entry));
+            }
+            (Some(_), None) => comparison.extra.push(entry_name.to_owned()),
+            (None, Some(_)) => comparison.missing.push(entry_name.to_owned()),
+            (None, None) => {}
+        }
+    }
+
+    comparison
 }
 
 /// Computes the structural differences between the `live` and `expected` catalogs.
 pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
 
-    let live_enums: BTreeMap<&str, &EnumDef> =
-        live.enums.iter().map(|e| (e.name.as_str(), e)).collect();
-    let expected_enums: BTreeMap<&str, &EnumDef> = expected
-        .enums
-        .iter()
-        .map(|e| (e.name.as_str(), e))
-        .collect();
+    let (missing, extra, altered) = compare_named_entries(
+        &live.enums,
+        &expected.enums,
+        |entry: &EnumDef| entry.name.as_str(),
+    )
+    .into_states(|live, expected| live.variants != expected.variants);
+    diff.missing_enums = missing;
+    diff.extra_enums = extra;
+    diff.altered_enums = altered;
 
-    let all_enums: BTreeSet<&str> = live_enums
-        .keys()
-        .copied()
-        .chain(expected_enums.keys().copied())
-        .collect();
+    let (missing, extra, altered) = compare_named_entries(
+        &live.views,
+        &expected.views,
+        |entry: &ViewDef| entry.name.as_str(),
+    )
+    .into_states(|live, expected| live.definition != expected.definition);
+    diff.missing_views = missing;
+    diff.extra_views = extra;
+    diff.altered_views = altered;
 
-    for enum_name in all_enums {
-        match (live_enums.get(enum_name), expected_enums.get(enum_name)) {
-            (None, Some(_)) => diff.missing_enums.push(enum_name.to_owned()),
-            (Some(_), None) => diff.extra_enums.push(enum_name.to_owned()),
-            (Some(live_enum), Some(expected_enum)) => {
-                if live_enum.variants != expected_enum.variants {
-                    diff.altered_enums.push(enum_name.to_owned());
-                }
-            }
-            (None, None) => {}
-        }
-    }
+    let (missing, extra, altered) = compare_named_entries(
+        &live.triggers,
+        &expected.triggers,
+        |entry: &TriggerDef| entry.name.as_str(),
+    )
+    .into_states(|live, expected| {
+        live.table_name != expected.table_name || live.definition != expected.definition
+    });
+    diff.missing_triggers = missing;
+    diff.extra_triggers = extra;
+    diff.altered_triggers = altered;
 
-    let live_views: BTreeMap<&str, &ViewDef> =
-        live.views.iter().map(|v| (v.name.as_str(), v)).collect();
-    let expected_views: BTreeMap<&str, &ViewDef> = expected
-        .views
-        .iter()
-        .map(|v| (v.name.as_str(), v))
-        .collect();
-
-    let all_views: BTreeSet<&str> = live_views
-        .keys()
-        .copied()
-        .chain(expected_views.keys().copied())
-        .collect();
-
-    for view_name in all_views {
-        match (live_views.get(view_name), expected_views.get(view_name)) {
-            (None, Some(_)) => diff.missing_views.push(view_name.to_owned()),
-            (Some(_), None) => diff.extra_views.push(view_name.to_owned()),
-            (Some(live_view), Some(expected_view)) => {
-                if live_view.definition != expected_view.definition {
-                    diff.altered_views.push(view_name.to_owned());
-                }
-            }
-            (None, None) => {}
-        }
-    }
-
-    let live_triggers: BTreeMap<&str, &TriggerDef> =
-        live.triggers.iter().map(|t| (t.name.as_str(), t)).collect();
-    let expected_triggers: BTreeMap<&str, &TriggerDef> = expected
-        .triggers
-        .iter()
-        .map(|t| (t.name.as_str(), t))
-        .collect();
-
-    let all_triggers: BTreeSet<&str> = live_triggers
-        .keys()
-        .copied()
-        .chain(expected_triggers.keys().copied())
-        .collect();
-
-    for trigger_name in all_triggers {
-        match (
-            live_triggers.get(trigger_name),
-            expected_triggers.get(trigger_name),
-        ) {
-            (None, Some(_)) => diff.missing_triggers.push(trigger_name.to_owned()),
-            (Some(_), None) => diff.extra_triggers.push(trigger_name.to_owned()),
-            (Some(live_trigger), Some(expected_trigger)) => {
-                if live_trigger.table_name != expected_trigger.table_name
-                    || live_trigger.definition != expected_trigger.definition
-                {
-                    diff.altered_triggers.push(trigger_name.to_owned());
-                }
-            }
-            (None, None) => {}
-        }
-    }
-
-    let live_tables: BTreeMap<&str, &TableDef> =
-        live.tables.iter().map(|t| (t.name.as_str(), t)).collect();
-    let expected_tables: BTreeMap<&str, &TableDef> = expected
-        .tables
-        .iter()
-        .map(|t| (t.name.as_str(), t))
-        .collect();
-
-    let all_tables: BTreeSet<&str> = live_tables
-        .keys()
-        .copied()
-        .chain(expected_tables.keys().copied())
-        .collect();
-
-    for table_name in all_tables {
-        match (live_tables.get(table_name), expected_tables.get(table_name)) {
-            (None, Some(_)) => diff.missing_tables.push(table_name.to_owned()),
-            (Some(_), None) => diff.extra_tables.push(table_name.to_owned()),
-            (Some(live_table), Some(expected_table)) => {
-                let table_diff = compute_table_diff(live_table, expected_table);
-                if !table_diff.is_empty() {
-                    diff.table_diffs.insert(table_name.to_owned(), table_diff);
-                }
-            }
-            (None, None) => {}
+    // A table that drifted is described by the members it changed, so the shared
+    // entries stay around for [`compute_table_diff`] instead of collapsing into an
+    // `altered` name list.
+    let tables = compare_named_entries(&live.tables, &expected.tables, |entry: &TableDef| {
+        entry.name.as_str()
+    });
+    diff.missing_tables = tables.missing;
+    diff.extra_tables = tables.extra;
+    for (table_name, live_table, expected_table) in tables.shared {
+        let table_diff = compute_table_diff(live_table, expected_table);
+        if !table_diff.is_empty() {
+            diff.table_diffs.insert(table_name.to_owned(), table_diff);
         }
     }
 
@@ -385,78 +498,42 @@ fn normalize_expression(expression: &str) -> String {
 fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
     let mut diff = TableDiff::default();
 
-    let live_cols: BTreeMap<&str, &ColumnDef> =
-        live.columns.iter().map(|c| (c.name.as_str(), c)).collect();
-    let expected_cols: BTreeMap<&str, &ColumnDef> = expected
-        .columns
-        .iter()
-        .map(|c| (c.name.as_str(), c))
-        .collect();
-
-    let all_cols: BTreeSet<&str> = live_cols
-        .keys()
-        .copied()
-        .chain(expected_cols.keys().copied())
-        .collect();
-
-    for col in all_cols {
-        match (live_cols.get(col), expected_cols.get(col)) {
-            (None, Some(_)) => diff.missing_columns.push(col.to_owned()),
-            (Some(_), None) => diff.extra_columns.push(col.to_owned()),
-            (Some(live_col), Some(expected_col)) => {
-                if live_col.type_kind != expected_col.type_kind
-                    || live_col.nullable != expected_col.nullable
-                    || live_col.default != expected_col.default
-                {
-                    diff.altered_columns.push(col.to_owned());
-                }
-            }
-            (None, None) => {}
-        }
-    }
+    let (missing, extra, altered) = compare_named_entries(
+        &live.columns,
+        &expected.columns,
+        |entry: &ColumnDef| entry.name.as_str(),
+    )
+    .into_states(|live, expected| {
+        live.type_kind != expected.type_kind
+            || live.nullable != expected.nullable
+            || live.default != expected.default
+    });
+    diff.missing_columns = missing;
+    diff.extra_columns = extra;
+    diff.altered_columns = altered;
 
     if live.primary_key != expected.primary_key {
         diff.primary_key_mismatch = true;
     }
 
-    let live_checks: BTreeMap<&str, &CheckDef> = live
-        .checks
-        .iter()
-        .map(|check| (check.name.as_str(), check))
-        .collect();
-    let expected_checks: BTreeMap<&str, &CheckDef> = expected
-        .checks
-        .iter()
-        .map(|check| (check.name.as_str(), check))
-        .collect();
+    let (missing, extra, altered) = compare_named_entries(
+        &live.checks,
+        &expected.checks,
+        |entry: &CheckDef| entry.name.as_str(),
+    )
+    .into_states(|live, expected| {
+        normalize_expression(&live.expression) != normalize_expression(&expected.expression)
+    });
+    diff.missing_checks = missing;
+    diff.extra_checks = extra;
+    diff.altered_checks = altered;
 
-    let all_checks: BTreeSet<&str> = live_checks
-        .keys()
-        .copied()
-        .chain(expected_checks.keys().copied())
-        .collect();
-
-    for check in all_checks {
-        match (live_checks.get(check), expected_checks.get(check)) {
-            (None, Some(_)) => diff.missing_checks.push(check.to_owned()),
-            (Some(_), None) => diff.extra_checks.push(check.to_owned()),
-            (Some(live_check), Some(expected_check)) => {
-                if normalize_expression(&live_check.expression)
-                    != normalize_expression(&expected_check.expression)
-                {
-                    diff.altered_checks.push(check.to_owned());
-                }
-            }
-            (None, None) => {}
-        }
-    }
-
-    let live_foreign_keys: BTreeMap<&str, &_> = live
+    let live_foreign_keys: BTreeMap<&str, &ForeignKeyDef> = live
         .foreign_keys
         .iter()
         .map(|fk| (fk.name.as_str(), fk))
         .collect();
-    let expected_foreign_keys: BTreeMap<&str, &_> = expected
+    let expected_foreign_keys: BTreeMap<&str, &ForeignKeyDef> = expected
         .foreign_keys
         .iter()
         .map(|fk| (fk.name.as_str(), fk))
@@ -465,40 +542,24 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
         diff.foreign_key_mismatch = true;
     }
 
-    let live_indexes: BTreeMap<&str, &IndexDef> = live
-        .indexes
-        .iter()
-        .map(|index| (index.name.as_str(), index))
-        .collect();
-    let expected_indexes: BTreeMap<&str, &IndexDef> = expected
-        .indexes
-        .iter()
-        .map(|index| (index.name.as_str(), index))
-        .collect();
-
-    let all_indexes: BTreeSet<&str> = live_indexes
-        .keys()
-        .copied()
-        .chain(expected_indexes.keys().copied())
-        .collect();
-
-    for index in all_indexes {
-        match (live_indexes.get(index), expected_indexes.get(index)) {
-            (None, Some(_)) => diff.missing_indexes.push(index.to_owned()),
-            (Some(_), None) => diff.extra_indexes.push(index.to_owned()),
-            (Some(live_index), Some(expected_index)) => {
-                if live_index.unique != expected_index.unique
-                    || live_index.columns != expected_index.columns
-                    || live_index.method != expected_index.method
-                    || live_index.predicate != expected_index.predicate
-                    || live_index.expression != expected_index.expression
-                {
-                    diff.altered_indexes.push(index.to_owned());
-                }
-            }
-            (None, None) => {}
-        }
-    }
+    let (missing, extra, altered) = compare_named_entries(
+        &live.indexes,
+        &expected.indexes,
+        |entry: &IndexDef| entry.name.as_str(),
+    )
+    .into_states(|live, expected| {
+        live.unique != expected.unique
+            || live.columns != expected.columns
+            || live.method != expected.method
+            || live.predicate != expected.predicate
+            || live.expression != expected.expression
+    });
+    diff.missing_indexes = missing;
+    diff.extra_indexes = extra;
+    diff.altered_indexes = altered;
 
     diff
 }
+
+#[cfg(test)]
+mod tests;
