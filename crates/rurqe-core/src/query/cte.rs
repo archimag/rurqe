@@ -55,10 +55,13 @@ impl<T, Row, D> fmt::Debug for Cte<T, Row, D> {
 
 impl<T: Table, Row, D: Dialect> Cte<T, Row, D> {
     /// Creates a CTE for the table `T` from a `SelectQuery`.
+    ///
+    /// The query is consumed, so its clauses move into the expression instead of
+    /// being copied.
     pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
         Self {
             name: T::NAME,
-            query: query.to_ast(),
+            query: query.into_ast(),
             _marker: PhantomData,
         }
     }
@@ -72,7 +75,7 @@ impl<Row, D: Dialect> Cte<(), Row, D> {
     ) -> Self {
         Self {
             name,
-            query: query.to_ast(),
+            query: query.into_ast(),
             _marker: PhantomData,
         }
     }
@@ -135,9 +138,12 @@ impl<T, Row, D> fmt::Debug for Lateral<T, Row, D> {
 
 impl<T: Table, Row, D: Dialect> Lateral<T, Row, D> {
     /// Wraps `query` into a `LATERAL` subquery exposed under the table `T`.
+    ///
+    /// The query is consumed, so its clauses move into the subquery instead of
+    /// being copied.
     pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
         Self {
-            query: query.to_ast(),
+            query: query.into_ast(),
             _marker: PhantomData,
         }
     }
@@ -210,7 +216,7 @@ impl<T: Table, Row, D: Dialect> DerivedTable<T, Row, D> {
         let reference = T::table_ref();
         Self {
             name: reference.alias.unwrap_or(reference.name),
-            query: query.to_ast(),
+            query: query.into_ast(),
             _marker: PhantomData,
         }
     }

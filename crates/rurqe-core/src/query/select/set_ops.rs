@@ -57,9 +57,11 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
         kind: SetOpKind,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
     ) -> SelectQuery<D, Compound, Output, HasProjection, LockUnavailable> {
+        // The combined query is consumed, so its clauses move into the operand
+        // instead of being copied.
         self.set_operations.push(SetOpAst {
             kind,
-            query: other.to_ast(),
+            query: other.into_ast(),
         });
         self.retype()
     }

@@ -296,7 +296,9 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         S: TableScope,
     {
         columns.push_column_names(&mut self.columns);
-        self.select = Some(select.to_ast());
+        // The source statement is consumed, so its clauses move into the `INSERT`
+        // instead of being copied.
+        self.select = Some(select.into_ast());
         self.retype()
     }
 }
@@ -305,11 +307,14 @@ impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
     InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning>
 {
     /// Configures the statement to insert rows produced by `select` into the specified columns.
+    ///
+    /// The source statement is consumed, so its clauses move into the `INSERT`
+    /// instead of being copied.
     pub fn from_select<S: TableScope>(
         mut self,
         select: SelectQuery<D, S, Cols::Row, HasProjection>,
     ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning> {
-        self.select = Some(select.to_ast());
+        self.select = Some(select.into_ast());
         self.retype()
     }
 }

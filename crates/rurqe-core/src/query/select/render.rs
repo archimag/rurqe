@@ -18,7 +18,24 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     SelectQuery<D, Tables, Output, P, Lock>
 {
     /// Describes the query as a dialect-neutral statement AST.
+    ///
+    /// The conversion copies every clause the builder records, which is what a
+    /// caller keeping the query needs. A builder that is consumed instead — a
+    /// subquery, a CTE, a derived table, or a lateral join — takes
+    /// [`SelectQuery::into_ast`], which hands the clauses over without copying
+    /// them.
     pub fn to_ast(&self) -> SelectAst {
+        self.clone().into_ast()
+    }
+
+    /// Consumes the query into its dialect-neutral statement AST.
+    ///
+    /// Every clause the builder owns is moved into the statement, so the
+    /// conversion copies neither the clause vectors nor the nested statements and
+    /// expression trees they hold: an `EXISTS` predicate, a CTE, a lateral join,
+    /// or a derived table built from a query that is dropped right afterwards
+    /// allocates the statement once instead of twice.
+    pub fn into_ast(self) -> SelectAst {
         let from = self.from.or_else(|| {
             let mut tables: Vec<TableRef> = Vec::new();
             Tables::push_table_refs(&mut tables);
@@ -26,21 +43,21 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
         });
 
         SelectAst {
-            ctes: self.ctes.clone(),
+            ctes: self.ctes,
             distinct: self.distinct,
-            distinct_on: self.distinct_on.clone(),
-            projections: self.projections.clone(),
+            distinct_on: self.distinct_on,
+            projections: self.projections,
             from,
-            joins: self.joins.clone(),
-            derived: self.derived.clone(),
-            filter: self.filter.clone(),
-            group_by: self.group_by.clone(),
-            having: self.having.clone(),
-            order_by: self.order_by.clone(),
+            joins: self.joins,
+            derived: self.derived,
+            filter: self.filter,
+            group_by: self.group_by,
+            having: self.having,
+            order_by: self.order_by,
             limit: self.limit,
             offset: self.offset,
-            set_operations: self.set_operations.clone(),
-            compound_order_by: self.compound_order_by.clone(),
+            set_operations: self.set_operations,
+            compound_order_by: self.compound_order_by,
             compound_limit: self.compound_limit,
             compound_offset: self.compound_offset,
             lock: self.lock,
@@ -116,26 +133,55 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     }
 
     /// Wraps the query into a [`Subquery`] carrying this statement as plain data.
+    ///
+    /// The query is consumed, so the statement moves its clauses into the
+    /// subquery instead of copying them.
     pub fn into_subquery(self) -> Subquery {
-        Subquery::new(self.to_ast())
+        Subquery::new(self.into_ast())
     }
 
     /// Builds an `EXISTS (subquery)` predicate over this query.
+    ///
+    /// The predicate is built from a copy of the query, which is what a caller
+    /// that keeps using it needs. A query that is dropped right afterwards takes
+    /// [`SelectQuery::into_exists`] instead, which moves the statement rather
+    /// than copying it.
     pub fn exists(&self) -> Expr<bool, (), NonAggregate, D> {
+        self.clone().into_exists()
+    }
+
+    /// Builds a `NOT EXISTS (subquery)` predicate over this query.
+    ///
+    /// The predicate is built from a copy of the query, exactly like
+    /// [`SelectQuery::exists`]; [`SelectQuery::into_not_exists`] is the
+    /// consuming form.
+    pub fn not_exists(&self) -> Expr<bool, (), NonAggregate, D> {
+        self.clone().into_not_exists()
+    }
+
+    /// Builds an `EXISTS (subquery)` predicate over this query, consuming it.
+    ///
+    /// The nested statement takes the clauses the builder owns, so a predicate
+    /// assembled from a query that is dropped right afterwards copies neither the
+    /// clause vectors nor the statements and expressions they hold.
+    pub fn into_exists(self) -> Expr<bool, (), NonAggregate, D> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
-            query: Subquery::new(self.to_ast()),
+            query: Subquery::new(self.into_ast()),
             negated: false,
         })
     }
 
-    /// Builds a `NOT EXISTS (subquery)` predicate over this query.
-    pub fn not_exists(&self) -> Expr<bool, (), NonAggregate, D> {
+    /// Builds a `NOT EXISTS (subquery)` predicate over this query, consuming it.
+    ///
+    /// The nested statement takes the clauses the builder owns, exactly like
+    /// [`SelectQuery::into_exists`].
+    pub fn into_not_exists(self) -> Expr<bool, (), NonAggregate, D> {
         Expr::new(ExprKind::Subquery {
             op: SubqueryOp::Exists,
             operand: None,
-            query: Subquery::new(self.to_ast()),
+            query: Subquery::new(self.into_ast()),
             negated: true,
         })
     }
@@ -172,5 +218,116 @@ impl<D: Dialect, Tables: TableScope, Output> From<SelectQuery<D, Tables, Output,
 {
     fn from(query: SelectQuery<D, Tables, Output, HasProjection>) -> Self {
         query.into_subquery()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockDialect;
+
+    impl Dialect for MockDialect {
+        fn push_quoted_identifier(out: &mut String, ident: &str) {
+            out.push('"');
+            out.push_str(ident);
+            out.push('"');
+        }
+
+        fn push_placeholder(out: &mut String, index: usize) {
+            let _ = index;
+            out.push('?');
+        }
+    }
+
+    crate::table! {
+        /// The `users` table.
+        User => "users" {
+            UserId => "id": i64,
+        }
+    }
+
+    /// A query recording one projection, the shape every conversion below starts from.
+    fn user_ids() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
+        SelectQuery::<MockDialect>::new()
+            .from::<User>()
+            .select((UserId,))
+    }
+
+    #[test]
+    fn building_a_query_borrows_the_clauses_it_records() {
+        let query = user_ids();
+        let statement = query.statement();
+
+        // The statement view aliases the clause vectors the builder owns, so
+        // validating and rendering it copies neither them nor the statements and
+        // expressions they hold: a plain `build` allocates no clause vector.
+        assert_eq!(statement.projections.as_ptr(), query.projections.as_ptr());
+        assert_eq!(statement.ctes.as_ptr(), query.ctes.as_ptr());
+        assert_eq!(statement.joins.as_ptr(), query.joins.as_ptr());
+        assert_eq!(statement.order_by.as_ptr(), query.order_by.as_ptr());
+        assert_eq!(
+            statement.set_operations.as_ptr(),
+            query.set_operations.as_ptr()
+        );
+    }
+
+    #[test]
+    fn building_a_query_twice_keeps_the_builder_intact() {
+        let query = user_ids();
+
+        let first = query.build().expect("valid query");
+        let second = query.build().expect("valid query");
+
+        // A borrowed build leaves the recorded clauses in place, so the same
+        // statement renders again without re-assembling anything.
+        assert_eq!(first, second);
+        assert_eq!(first.sql, "SELECT \"id\" FROM \"users\"");
+    }
+
+    #[test]
+    fn a_consuming_conversion_moves_the_recorded_clauses() {
+        let query = user_ids();
+        let projections = query.projections.as_ptr();
+        let ctes = query.ctes.as_ptr();
+
+        let ast = query.into_ast();
+
+        // The conversion hands the clauses over, so a subquery, CTE, lateral join,
+        // or derived table built from a consumed builder allocates no second copy
+        // of the statement.
+        assert_eq!(ast.projections.as_ptr(), projections);
+        assert_eq!(ast.ctes.as_ptr(), ctes);
+        assert_eq!(ast.projections.len(), 1);
+    }
+
+    #[test]
+    fn a_borrowing_conversion_copies_the_recorded_clauses() {
+        let query = user_ids();
+
+        let ast = query.to_ast();
+
+        // The borrowed form keeps the query usable, so the statement owns a copy of
+        // every clause instead of aliasing them.
+        assert_eq!(ast.projections, query.projections);
+        assert_ne!(ast.projections.as_ptr(), query.projections.as_ptr());
+    }
+
+    #[test]
+    fn a_consuming_exists_predicate_moves_the_nested_statement() {
+        let query = user_ids();
+        let projections = query.projections.as_ptr();
+
+        let nested = match query.into_exists().into_kind() {
+            ExprKind::Subquery {
+                op: SubqueryOp::Exists,
+                query,
+                negated: false,
+                ..
+            } => query,
+            other => panic!("expected an EXISTS predicate, got {other:?}"),
+        };
+
+        assert_eq!(nested.ast().projections.as_ptr(), projections);
     }
 }
