@@ -239,6 +239,174 @@ where
 /// column set `Cols` recorded by the window expression is therefore checked
 /// against the grouped columns through [`WindowColsInGroupBy`], so a window
 /// reading an ungrouped column is rejected at the call site.
+///
+/// The expression the window evaluates over is an operand of the statement like
+/// any other: the grouping collapses the rows of a group before the window runs,
+/// so the operand keeps one value per group only when it aggregates those rows —
+/// `SUM("total") OVER (...)` collapses its group exactly like the bare
+/// `SUM("total")` does — or reads no table at all. The aggregation marker of the
+/// operand is therefore checked through [`AggregateMarker`], which a per-row
+/// operand never satisfies:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::{Dialect, SupportsWindowFunctions};
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::{SelectQuery, Window};
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// impl SupportsWindowFunctions for MockDialect {}
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the window reads `total` of every row of the group,
+///     // and the query never aggregates it.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((
+///             OrderUserId,
+///             Expr::column::<OrderTotal>().over(Window::partition_by(OrderUserId)),
+///         ));
+/// }
+/// ```
+///
+/// An aggregate operand and a constant operand both keep one value per group, so
+/// both stay projectable, and so does a grouped column read by `LAG` or `LEAD`,
+/// whose column is checked through the window column set instead:
+///
+/// ```
+/// use rurqe_core::dialect::{Dialect, SupportsWindowFunctions};
+/// use rurqe_core::expr::Expr;
+/// use rurqe_core::query::{lag, SelectQuery, Window};
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push('"');
+///         out.push_str(ident);
+///         out.push('"');
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// impl SupportsWindowFunctions for MockDialect {}
+///
+/// rurqe_core::table! {
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///         OrderTotal => "total": f64,
+///     }
+/// }
+///
+/// fn main() {
+///     let aggregated = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((
+///             OrderUserId,
+///             Expr::sum::<OrderTotal>().over(Window::partition_by(OrderUserId)),
+///         ))
+///         .build()
+///         .expect("an aggregate operand keeps one value per group");
+///
+///     assert!(
+///         aggregated.sql.contains("SUM(\"total\")"),
+///         "{}",
+///         aggregated.sql
+///     );
+///     assert!(
+///         aggregated.sql.contains("OVER (PARTITION BY \"user_id\")"),
+///         "{}",
+///         aggregated.sql
+///     );
+///
+///     let constant = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((
+///             OrderUserId,
+///             Expr::<i64>::raw("COUNT(*)", Vec::new())
+///                 .expect("a template without placeholders")
+///                 .over(Window::partition_by(OrderUserId)),
+///         ))
+///         .build()
+///         .expect("a constant operand keeps one value per group");
+///
+///     assert!(
+///         constant.sql.contains("COUNT(*)"),
+///         "{}",
+///         constant.sql
+///     );
+///
+///     let lagged = SelectQuery::<MockDialect>::new()
+///         .from::<Order>()
+///         .group_by(OrderUserId)
+///         .select((
+///             OrderUserId,
+///             lag(OrderUserId).over(Window::order_by_asc(OrderUserId)),
+///         ))
+///         .build()
+///         .expect("a grouped column is a valid window operand");
+///
+///     assert!(
+///         lagged.sql.contains("OVER (ORDER BY \"user_id\" ASC)"),
+///         "{}",
+///         lagged.sql
+///     );
+/// }
+/// ```
+impl<
+        GroupByCols,
+        T: 'static + Send + Sync,
+        Scope: 'static + Send + Sync,
+        Cols: 'static + Send + Sync,
+        WinD,
+        OperandScope,
+        OperandAggr: AggregateMarker,
+        StmtD,
+        Positions,
+    > GroupedSelectTarget<GroupByCols, Positions, StmtD>
+    for WindowExpr<T, Scope, Cols, WinD, OperandScope, OperandAggr>
+where
+    Cols: WindowColsInGroupBy<GroupByCols, Positions>,
+    WinD: DialectInScope<StmtD>,
+{
+    type Output = T;
+}
+
+/// Derives the row item produced by a window expression over a constant operand
+/// in a `GROUP BY` query.
+///
+/// An expression referencing no table — a literal, a raw SQL fragment such as
+/// `sql!(<i64> "COUNT(*)")` — is constant within a group, so a window evaluated
+/// over it reads no per-row value and stays projectable from a grouped query even
+/// though nothing is aggregated. The pair of the empty operand scope and the
+/// [`NonAggregate`] marker states exactly that, and the two implementations stay
+/// disjoint because [`NonAggregate`] implements no [`AggregateMarker`].
+///
+/// The columns the specification partitions by and orders by are checked against
+/// the grouped columns exactly like for an aggregate operand.
 impl<
         GroupByCols,
         T: 'static + Send + Sync,
@@ -247,7 +415,8 @@ impl<
         WinD,
         StmtD,
         Positions,
-    > GroupedSelectTarget<GroupByCols, Positions, StmtD> for WindowExpr<T, Scope, Cols, WinD>
+    > GroupedSelectTarget<GroupByCols, Positions, StmtD>
+    for WindowExpr<T, Scope, Cols, WinD, (), NonAggregate>
 where
     Cols: WindowColsInGroupBy<GroupByCols, Positions>,
     WinD: DialectInScope<StmtD>,

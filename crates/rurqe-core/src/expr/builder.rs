@@ -147,10 +147,22 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// two sides merge as well, so an ordering fixing the placement of NULL values
     /// keeps requiring a dialect that renders the modifier even when the
     /// expression it is evaluated over is dialect-neutral.
+    ///
+    /// This expression travels on as the operand of the produced window: its scope
+    /// and its aggregation marker are recorded beside the merged markers, so a
+    /// grouped query rejects a window evaluated over a per-row expression while
+    /// keeping one evaluated over an aggregate or a constant.
     pub fn over<WinScope, WinCols, WinD>(
         self,
         window: crate::query::WindowSpec<WinScope, WinCols, WinD>,
-    ) -> crate::query::WindowExpr<T, Merged<Scope, WinScope>, WinCols, MergedDialect<WinD, D>>
+    ) -> crate::query::WindowExpr<
+        T,
+        Merged<Scope, WinScope>,
+        WinCols,
+        MergedDialect<WinD, D>,
+        Scope,
+        Aggr,
+    >
     where
         Scope: MergeScope<WinScope>,
         WinD: MergeDialect<D>,

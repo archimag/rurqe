@@ -274,8 +274,9 @@ where
 /// the window keeps the dialect requirements of its specification, so a
 /// specification written with `NULLS FIRST` or `NULLS LAST` orders the
 /// statement only through a dialect that renders the modifier.
-impl<Tables, T, Scope, Cols, WinD, P, D> OrderExprTarget<Tables, P, D>
-    for WindowExpr<T, Scope, Cols, WinD>
+impl<Tables, T, Scope, Cols, WinD, OperandScope, OperandAggr, P, D>
+    OrderExprTarget<Tables, P, D>
+    for WindowExpr<T, Scope, Cols, WinD, OperandScope, OperandAggr>
 where
     T: 'static + Send + Sync,
     Scope: 'static + Send + Sync + ExprInScope<Tables, P> + ScopePositions<P>,

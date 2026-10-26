@@ -30,8 +30,9 @@ use crate::dialect::Dialect;
 #[cfg(test)]
 use crate::expr::render_expr;
 use crate::expr::{
-    DialectInScope, ExprKind, MergeDialect, MergeScope, Merged, MergedDialect, NullsOrder,
-    OrderCriterion, RequiresNullsOrdering, WindowFrame, WindowFrameBound, WindowFrameKind,
+    Aggregate, DialectInScope, ExprKind, MergeDialect, MergeScope, Merged, MergedDialect,
+    NullsOrder, OrderCriterion, RequiresNullsOrdering, WindowFrame, WindowFrameBound,
+    WindowFrameKind,
 };
 use crate::schema::{Column, ExprInScope};
 
@@ -470,13 +471,14 @@ impl Window {
     }
 }
 
-/// Phantom marker carrying the result type, referenced scope, column set, and
-/// dialect requirements of a [`WindowExpr`].
+/// Phantom marker carrying the result type, referenced scope, column set,
+/// dialect requirements, and operand markers of a [`WindowExpr`].
 ///
 /// The alias keeps the phantom field readable at its declaration site and keeps
 /// the field type out of the clippy complexity budget, mirroring the expression,
 /// query, and statement markers of the surrounding modules.
-type WindowExprMarker<T, Scope, Cols, D> = PhantomData<fn() -> (T, Scope, Cols, D)>;
+type WindowExprMarker<T, Scope, Cols, D, OperandScope, OperandAggr> =
+    PhantomData<fn() -> (T, Scope, Cols, D, OperandScope, OperandAggr)>;
 
 /// A typed window expression evaluated with an `OVER (...)` clause.
 ///
@@ -484,13 +486,29 @@ type WindowExprMarker<T, Scope, Cols, D> = PhantomData<fn() -> (T, Scope, Cols, 
 /// expression and by its window specification, the type-level set `Cols` of the
 /// columns the window reads, and the dialect requirements `D` of both the
 /// clauses of the specification and the wrapped expression.
-pub struct WindowExpr<T, Scope = (), Cols = EmptyGroupSet, D = ()> {
+///
+/// Beside the columns its specification names, a window reads the expression it
+/// evaluates over, so the scope and the aggregation marker of that operand travel
+/// as `OperandScope` and `OperandAggr`. A grouped query collapses the rows of a
+/// group before the window runs, which leaves the operand with one value per group
+/// only when it aggregates those rows or reads no table at all; the two markers
+/// are what the grouped projection rule checks to tell those cases apart.
+pub struct WindowExpr<
+    T,
+    Scope = (),
+    Cols = EmptyGroupSet,
+    D = (),
+    OperandScope = (),
+    OperandAggr = Aggregate,
+> {
     kind: WindowExprKind,
     window: WindowSpec<(), EmptyGroupSet, D>,
-    _result: WindowExprMarker<T, Scope, Cols, D>,
+    _result: WindowExprMarker<T, Scope, Cols, D, OperandScope, OperandAggr>,
 }
 
-impl<T, Scope, Cols, D> Clone for WindowExpr<T, Scope, Cols, D> {
+impl<T, Scope, Cols, D, OperandScope, OperandAggr> Clone
+    for WindowExpr<T, Scope, Cols, D, OperandScope, OperandAggr>
+{
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
@@ -500,13 +518,17 @@ impl<T, Scope, Cols, D> Clone for WindowExpr<T, Scope, Cols, D> {
     }
 }
 
-impl<T, Scope, Cols, D> PartialEq for WindowExpr<T, Scope, Cols, D> {
+impl<T, Scope, Cols, D, OperandScope, OperandAggr> PartialEq
+    for WindowExpr<T, Scope, Cols, D, OperandScope, OperandAggr>
+{
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind && self.window == other.window
     }
 }
 
-impl<T, Scope, Cols, D> fmt::Debug for WindowExpr<T, Scope, Cols, D> {
+impl<T, Scope, Cols, D, OperandScope, OperandAggr> fmt::Debug
+    for WindowExpr<T, Scope, Cols, D, OperandScope, OperandAggr>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowExpr")
             .field("kind", &self.kind)
@@ -517,13 +539,16 @@ impl<T, Scope, Cols, D> fmt::Debug for WindowExpr<T, Scope, Cols, D> {
     }
 }
 
-impl<T, Scope, Cols, D> WindowExpr<T, Scope, Cols, D> {
+impl<T, Scope, Cols, D, OperandScope, OperandAggr>
+    WindowExpr<T, Scope, Cols, D, OperandScope, OperandAggr>
+{
     /// Creates a window expression of scope `Scope`, column set `Cols`, and
     /// requirements `D` over `window`.
     ///
     /// The caller is responsible for `Scope` and `Cols` covering both the wrapped
-    /// expression and the window specification, and for `D` collecting the
-    /// requirements of both sides, which is exactly what the `over` builders of the
+    /// expression and the window specification, for `D` collecting the requirements
+    /// of both sides, and for `OperandScope` / `OperandAggr` describing the operand
+    /// the window evaluates over, which is exactly what the `over` builders of the
     /// expressions and of `LAG` / `LEAD` arrange for.
     pub(crate) fn of_window<WinScope, WinCols>(
         kind: WindowExprKind,
@@ -562,8 +587,14 @@ impl<T> WindowExpr<T, ()> {
     }
 }
 
-impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Cols: 'static + Send + Sync, D>
-    SelectTarget for WindowExpr<T, Scope, Cols, D>
+impl<
+        T: 'static + Send + Sync,
+        Scope: 'static + Send + Sync,
+        Cols: 'static + Send + Sync,
+        D,
+        OperandScope,
+        OperandAggr,
+    > SelectTarget for WindowExpr<T, Scope, Cols, D, OperandScope, OperandAggr>
 {
     type RustType = T;
 
@@ -582,8 +613,9 @@ impl<T: 'static + Send + Sync, Scope: 'static + Send + Sync, Cols: 'static + Sen
 /// sort, for instance, keeps the requirement of
 /// [`SupportsNullsOrdering`](crate::dialect::SupportsNullsOrdering) beside the
 /// window capability.
-impl<Tables, T, Scope, Cols, WinD, StmtD, P> SelectTargetInScope<Tables, P, StmtD>
-    for WindowExpr<T, Scope, Cols, WinD>
+impl<Tables, T, Scope, Cols, WinD, OperandScope, OperandAggr, StmtD, P>
+    SelectTargetInScope<Tables, P, StmtD>
+    for WindowExpr<T, Scope, Cols, WinD, OperandScope, OperandAggr>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
     WinD: DialectInScope<StmtD>,
@@ -593,14 +625,22 @@ where
 }
 
 /// A window function awaiting an `OVER (...)` specification.
+///
+/// The builder carries the aggregation marker `Aggr` of the expression the window
+/// evaluates over. `row_number`, `rank`, and `dense_rank` read no operand at all,
+/// so they carry [`Aggregate`] as the identity of the marker fold: the marker
+/// states what a grouped query has to know about the operand, and a function
+/// without an operand contributes nothing that could be read per row. A function
+/// built from a raw [`WindowExprKind`] keeps the same marker and leaves its operand
+/// under the second tier of the guarantee.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WindowFn<T> {
+pub struct WindowFn<T, Aggr = Aggregate> {
     kind: WindowExprKind,
-    _result: PhantomData<fn() -> T>,
+    _result: PhantomData<fn() -> (T, Aggr)>,
 }
 
-impl<T> WindowFn<T> {
-    /// Creates a new window function builder.
+impl<T, Aggr> WindowFn<T, Aggr> {
+    /// Creates a new window function builder carrying the operand marker `Aggr`.
     pub fn new(kind: WindowExprKind) -> Self {
         Self {
             kind,
@@ -612,11 +652,13 @@ impl<T> WindowFn<T> {
     ///
     /// The produced expression references the tables, the columns, and the
     /// dialect requirements of the specification, so the enclosing query checks
-    /// all three.
+    /// all three. The builder carries no operand of its own and states that with
+    /// the empty operand scope, while the operand marker `Aggr` travels on: a
+    /// function without an operand reads nothing that a grouping could collapse.
     pub fn over<WinScope, WinCols, WinD>(
         self,
         window: WindowSpec<WinScope, WinCols, WinD>,
-    ) -> WindowExpr<T, WinScope, WinCols, WinD> {
+    ) -> WindowExpr<T, WinScope, WinCols, WinD, (), Aggr> {
         WindowExpr::of_window(self.kind, window)
     }
 }
@@ -649,10 +691,22 @@ impl<T, Scope, Col> LagLeadFn<T, Scope, Col> {
     }
 
     /// Evaluates this function over `window`.
+    ///
+    /// The column the function reads is already recorded in the window column set,
+    /// where the grouped projection rule checks it against the grouped columns, so
+    /// the produced window carries no per-row operand scope and states the identity
+    /// of the operand marker fold.
     pub fn over<WinScope, WinCols, WinD>(
         self,
         window: WindowSpec<WinScope, WinCols, WinD>,
-    ) -> WindowExpr<T, Merged<Scope, WinScope>, <Col as GroupSetColumns<WinCols>>::Columns, WinD>
+    ) -> WindowExpr<
+        T,
+        Merged<Scope, WinScope>,
+        <Col as GroupSetColumns<WinCols>>::Columns,
+        WinD,
+        (),
+        Aggregate,
+    >
     where
         Scope: MergeScope<WinScope>,
         Col: GroupSetColumns<WinCols>,
@@ -673,17 +727,17 @@ impl<T, Scope, Col> LagLeadFn<T, Scope, Col> {
 }
 
 /// Starts a `ROW_NUMBER()` window function builder.
-pub fn row_number() -> WindowFn<i64> {
+pub fn row_number() -> WindowFn<i64, Aggregate> {
     WindowFn::new(WindowExprKind::RowNumber)
 }
 
 /// Starts a `RANK()` window function builder.
-pub fn rank() -> WindowFn<i64> {
+pub fn rank() -> WindowFn<i64, Aggregate> {
     WindowFn::new(WindowExprKind::Rank)
 }
 
 /// Starts a `DENSE_RANK()` window function builder.
-pub fn dense_rank() -> WindowFn<i64> {
+pub fn dense_rank() -> WindowFn<i64, Aggregate> {
     WindowFn::new(WindowExprKind::DenseRank)
 }
 
