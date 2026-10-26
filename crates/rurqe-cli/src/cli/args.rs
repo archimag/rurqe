@@ -117,6 +117,46 @@ impl std::fmt::Display for CliError {
 
 impl std::error::Error for CliError {}
 
+/// Why a per-action parsing walk stopped before producing a command.
+///
+/// The universal flags are answered in every position they can occupy, including
+/// the position of a value, so a walk reports that answer as an interruption
+/// instead of consuming the flag as data: whoever started the walk collapses the
+/// interruption into the result the caller sees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Interrupt {
+    /// The walk reached a universal flag and answers it instead of its action.
+    ///
+    /// The answer is boxed so every fallible step of a parse keeps an `Err`
+    /// payload as small as the diagnostic it competes with: a command built out
+    /// of paths, URLs, and a schema name is several times larger than the
+    /// `CliError` the same steps report.
+    Universal(Box<CliCommand>),
+    /// The arguments do not describe a command.
+    Malformed(CliError),
+}
+
+impl From<CliError> for Interrupt {
+    fn from(error: CliError) -> Self {
+        Interrupt::Malformed(error)
+    }
+}
+
+impl Interrupt {
+    /// Interrupts a walk that reached a universal flag and answers it.
+    fn universal(command: CliCommand) -> Self {
+        Interrupt::Universal(Box::new(command))
+    }
+
+    /// Collapses the interruption into the result `parse_args` reports.
+    fn resolve(self) -> Result<CliCommand, CliError> {
+        match self {
+            Interrupt::Universal(command) => Ok(*command),
+            Interrupt::Malformed(error) => Err(error),
+        }
+    }
+}
+
 /// The binary the CLI was invoked through.
 ///
 /// Cargo dispatches custom subcommands as `cargo-<name> <name> ...`, so the
@@ -254,12 +294,32 @@ fn scratch_url(supplied: Option<String>) -> Option<String> {
 /// Borrows the value following the flag at `*idx`, advancing past both.
 ///
 /// A missing value is reported against the flag itself instead of degrading
-/// into the misleading `unknown option` diagnostic.
-fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a str, CliError> {
+/// into the misleading `unknown option` diagnostic. A universal flag standing
+/// where the value belongs is answered exactly like one leading the argument
+/// list — it never becomes the database URL, the file name, or the path the
+/// command would otherwise use — while a token beginning with `--` is refused
+/// against the flag that stayed without its value.
+fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a str, Interrupt> {
     let value = tokens
         .get(*idx + 1)
         .copied()
         .ok_or_else(|| CliError(format!("option `{flag}` requires a value")))?;
+
+    // `--version` is deliberately not answered here: `baseline`, `stage init`,
+    // and `stage commit` take it as their own argument, so a bare `--version`
+    // where a value belongs stays ambiguous and is refused like any other
+    // option-shaped token.
+    if let Some(command) = universal_flag_beside_version(value) {
+        return Err(Interrupt::universal(command));
+    }
+
+    if value.starts_with("--") {
+        return Err(CliError(format!(
+            "option `{flag}` requires a value, but `{value}` is another option"
+        ))
+        .into());
+    }
+
     *idx += 2;
     Ok(value)
 }
@@ -268,14 +328,15 @@ fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a
 ///
 /// The name decides which catalog every digest of a command describes, so a
 /// blank value is refused instead of silently selecting nothing.
-fn take_schema(tokens: &[&str], idx: &mut usize, flag: &str) -> Result<String, CliError> {
+fn take_schema(tokens: &[&str], idx: &mut usize, flag: &str) -> Result<String, Interrupt> {
     let value = take_value(tokens, idx, flag)?;
     let name = value.trim();
 
     if name.is_empty() {
         return Err(CliError(format!(
             "option `{flag}` requires a database schema name"
-        )));
+        ))
+        .into());
     }
 
     Ok(name.to_owned())
@@ -362,7 +423,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         None => (*first, remaining),
     };
 
-    match subcmd {
+    let parsed: Result<CliCommand, Interrupt> = match subcmd {
         "--help" | "-h" | "help" => Ok(CliCommand::Help),
         "--version" | "-v" | "version" => Ok(CliCommand::Version),
 
@@ -373,7 +434,14 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         "db-stage" | "stage" => stage::parse_stage(tokens),
         "db-prune" | "prune" => prune::parse_prune(tokens),
 
-        other => Err(CliError(format!("unknown command `{other}`"))),
+        other => Err(CliError(format!("unknown command `{other}`")).into()),
+    };
+
+    // A walk that answered a universal flag reports the answer it reached, while
+    // an unusable argument list reports the diagnostic it stopped on.
+    match parsed {
+        Ok(command) => Ok(command),
+        Err(interrupt) => interrupt.resolve(),
     }
 }
 

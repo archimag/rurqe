@@ -2,10 +2,10 @@
 
 use rurqe_migrate::version::MigrationVersion;
 
-use super::{take_value, universal_flag_beside_version, CliCommand, CliError};
+use super::{take_value, universal_flag_beside_version, CliCommand, CliError, Interrupt};
 
 /// Parses a `baseline` invocation into its typed command.
-pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, CliError> {
+pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut version_str = None;
     let mut description = "baseline".to_owned();
     let mut database_url = None;
@@ -25,7 +25,7 @@ pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for baseline")));
+                return Err(CliError(format!("unknown option `{other}` for baseline")).into());
             }
         }
     }
@@ -35,7 +35,7 @@ pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, CliError> {
             .parse::<MigrationVersion>()
             .map_err(|e| CliError(format!("invalid baseline version `{v}`: {e}")))?,
         None => {
-            return Err(CliError("missing required `--version` argument".to_owned()));
+            return Err(CliError("missing required `--version` argument".to_owned()).into());
         }
     };
 

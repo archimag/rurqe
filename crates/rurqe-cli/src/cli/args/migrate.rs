@@ -4,14 +4,14 @@ use std::path::PathBuf;
 
 use super::{
     default_checkpoint_path, default_migrations_dir, take_schema, take_value, universal_flag,
-    CliCommand, CliError,
+    CliCommand, CliError, Interrupt,
 };
 
 /// Parses a `migrate <action>` invocation into its typed command.
 ///
 /// Without an action token the invocation defaults to `up`, so the cargo
 /// entrypoint `cargo db-migrate` migrates when it receives nothing but flags.
-pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
+pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let (action, tokens): (&str, &[&str]) = match tokens.split_first() {
         Some((action, tail)) if !action.starts_with('-') => (*action, tail),
         _ => ("up", tokens),
@@ -42,7 +42,7 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for migrate")));
+                return Err(CliError(format!("unknown option `{other}` for migrate")).into());
             }
         }
     }
@@ -66,6 +66,7 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
         }),
         other => Err(CliError(format!(
             "unknown migrate action `{other}` (expected `up`, `status`, or `repair`)"
-        ))),
+        ))
+        .into()),
     }
 }

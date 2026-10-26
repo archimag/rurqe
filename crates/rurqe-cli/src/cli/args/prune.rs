@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use super::{
     default_checkpoint_path, default_migrations_dir, parse_version, take_value, universal_flag,
-    CliCommand, CliError,
+    CliCommand, CliError, Interrupt,
 };
 
 /// Parses `prune`: drop migration scripts the checkpoint already folded in.
-pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, CliError> {
+pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut before = None;
     let mut migrations_dir = default_migrations_dir();
     let mut checkpoint_path = default_checkpoint_path();
@@ -35,7 +35,7 @@ pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 idx += 1;
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for prune")));
+                return Err(CliError(format!("unknown option `{other}` for prune")).into());
             }
         }
     }

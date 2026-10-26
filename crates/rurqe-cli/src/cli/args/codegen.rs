@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use super::{
     default_lock_path, default_schema_output, take_schema, take_value, universal_flag, CliCommand,
-    CliError,
+    CliError, Interrupt,
 };
 
 /// Parses a `codegen` invocation into its typed command.
-pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
+pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut database_url = None;
     let mut output = default_schema_output();
     let mut lock_path = default_lock_path();
@@ -39,7 +39,7 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for codegen")));
+                return Err(CliError(format!("unknown option `{other}` for codegen")).into());
             }
         }
     }
@@ -54,7 +54,7 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
 }
 
 /// Parses a `verify` invocation into its typed command.
-pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
+pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut database_url = None;
     let mut schema_path = None;
     let mut lock_path = default_lock_path();
@@ -80,7 +80,7 @@ pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for verify")));
+                return Err(CliError(format!("unknown option `{other}` for verify")).into());
             }
         }
     }

@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use super::{
     default_checkpoint_path, default_lock_path, default_migrations_dir, default_stage_dir,
     parse_version, take_schema, take_value, universal_flag, universal_flag_beside_version,
-    CliCommand, CliError,
+    CliCommand, CliError, Interrupt,
 };
 
 /// The default age above which a scratch database counts as abandoned.
 const DEFAULT_CLEANUP_AGE: u64 = crate::stage::postgres::DEFAULT_SCRATCH_MAX_AGE.as_secs();
 
 /// Parses a `stage <action>` invocation into its typed command.
-pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
+pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let action = match tokens.first() {
         Some(action) if !action.starts_with('-') => *action,
         other => {
@@ -25,7 +25,8 @@ pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
             return Err(CliError(
                 "missing stage action (expected `init`, `verify`, `commit`, or `cleanup`)"
                     .to_owned(),
-            ));
+            )
+            .into());
         }
     };
 
@@ -36,12 +37,13 @@ pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
         "cleanup" => parse_stage_cleanup(&tokens[1..]),
         other => Err(CliError(format!(
             "unknown stage action `{other}` (expected `init`, `verify`, `commit`, or `cleanup`)"
-        ))),
+        ))
+        .into()),
     }
 }
 
 /// Parses `stage init`: cold start the database from the declarative stage.
-fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
+fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut stage_dir = default_stage_dir();
     let mut description = "stage".to_owned();
     let mut version = None;
@@ -71,7 +73,7 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for stage init")));
+                return Err(CliError(format!("unknown option `{other}` for stage init")).into());
             }
         }
     }
@@ -90,7 +92,7 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
 }
 
 /// Parses `stage verify`: check the golden equation between stage and tail.
-fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
+fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut stage_dir = default_stage_dir();
     let mut base_stage_dir = None;
     let mut migrations_dir = default_migrations_dir();
@@ -130,7 +132,8 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage verify"
-                )));
+                ))
+                .into());
             }
         }
     }
@@ -147,7 +150,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
 }
 
 /// Parses `stage commit`: seal the live database as the new stage anchor.
-fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
+fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut version = None;
     let mut stage_dir = default_stage_dir();
     let mut lock_path = default_lock_path();
@@ -183,7 +186,8 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage commit"
-                )));
+                ))
+                .into());
             }
         }
     }
@@ -203,7 +207,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
 }
 
 /// Parses `stage cleanup`: drop the scratch databases earlier verifications abandoned.
-fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
+fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut scratch_url = None;
     let mut database_url = None;
     let mut older_than_secs = DEFAULT_CLEANUP_AGE;
@@ -232,7 +236,8 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage cleanup"
-                )));
+                ))
+                .into());
             }
         }
     }

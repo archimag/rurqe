@@ -1115,3 +1115,73 @@ fn a_command_failure_reaches_the_shared_channel() {
         "the diagnostic names the missing artifact, got {text}"
     );
 }
+
+#[test]
+fn a_universal_flag_in_value_position_is_answered() {
+    // A universal flag standing where a value belongs is answered exactly like
+    // one leading the argument list: it never becomes the database URL, the file
+    // name, or the path the command would otherwise use.
+    for args in [
+        vec!["rurqe", "migrate", "up", "--database-url", "--help"],
+        vec!["rurqe", "codegen", "--lock-path", "--help"],
+        vec!["rurqe", "verify", "--schema-path", "--help"],
+        vec!["rurqe", "stage", "verify", "--migrations-dir", "-h"],
+        vec!["cargo-db-codegen", "--output", "--help"],
+    ] {
+        let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+        assert_eq!(
+            parse_args(&argv).expect("the help flag is answered"),
+            CliCommand::Help,
+            "argv {args:?}"
+        );
+    }
+
+    for args in [
+        vec!["rurqe", "migrate", "status", "--checkpoint-path", "-V"],
+        vec!["rurqe", "codegen", "--output", "-v"],
+        vec!["rurqe", "stage", "commit", "--stage-dir", "-V"],
+        vec!["rurqe", "stage", "init", "--description", "-v"],
+    ] {
+        let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+        assert_eq!(
+            parse_args(&argv).expect("the version flag is answered"),
+            CliCommand::Version,
+            "argv {args:?}"
+        );
+    }
+}
+
+#[test]
+fn a_value_position_never_binds_another_option() {
+    // A flag standing where the value belongs used to be bound as that value, so
+    // `--schema --` selected `--` as the schema name and `--output --lock-path`
+    // wrote to a file named after the next option.
+    for (flag, value) in [
+        ("--schema", "--"),
+        ("--output", "--lock-path"),
+        ("--database-url", "--version"),
+    ] {
+        let argv: Vec<String> = ["rurqe", "codegen", flag, value]
+            .iter()
+            .map(|arg| (*arg).to_owned())
+            .collect();
+
+        let error = parse_args(&argv).expect_err("an option is not a value");
+
+        assert!(
+            error.to_string().contains(flag),
+            "the diagnostic names `{flag}`, got {error}"
+        );
+        assert!(
+            error.to_string().contains("requires a value"),
+            "the diagnostic names the missing value, got {error}"
+        );
+    }
+
+    // A genuinely missing value keeps the diagnostic it always carried.
+    let missing = parse_args(&["rurqe".into(), "codegen".into(), "--output".into()])
+        .expect_err("the output path is required");
+    assert_eq!(missing.to_string(), "option `--output` requires a value");
+}
