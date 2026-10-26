@@ -6,6 +6,213 @@
 //! written last as the commit point, and only then is the parked pair discarded,
 //! so a process killed in between leaves a state [`recover_interrupted_commit`]
 //! restores instead of a fresh boundary described by a stale marker.
+//!
+//! Being kill-safe is not the same as being multi-writer-safe: `stage commit`,
+//! `stage verify`, and `prune` all mutate the same workspace artifacts, and two of
+//! them running at once can discard the only copy the other one could still
+//! restore. The protocol therefore adds one exclusive `checkpoint.lock` that
+//! serialises every writer, gives each parked copy a writer scope so no writer can
+//! ever rename, restore, or discard a copy another writer parked, and recovers a
+//! writer that died holding the lock from its expired heartbeat instead of from a
+//! guess.
+//!
+//! # Protocol record
+//!
+//! The sections below are the normative contract of this module tree: the states an
+//! artifact can be in, the critical section each command holds, the transitions a
+//! commit walks through, the recovery classification, the interleavings of two
+//! writers, and the invariants every action preserves. The record is written ahead
+//! of the installer that satisfies it, so the code beside it is expected to match
+//! the record rather than the record matching the code; a change to the protocol
+//! edits this record first, together with the regression pairs it names.
+//!
+//! ## Artifact states
+//!
+//! At any instant every artifact below is in exactly one of four states:
+//!
+//! | State | Meaning |
+//! | --- | --- |
+//! | live | the entry sits at the path every command reads it from |
+//! | staged | the new bytes are assembled beside the artifact and are not visible under the live path |
+//! | parked | the previous copy was renamed aside and is the one recoverable copy of the state before the commit |
+//! | absent | no entry at the path |
+//!
+//! The writer scope of a name is `<pid>.<nonce>`: the process id keeps two live
+//! processes apart, and the nonce keeps a recycled id from inheriting the parking of
+//! an earlier one.
+//!
+//! * marker — live `<dir>/checkpoint.toml`, staged
+//!   `<dir>/.checkpoint.toml.<pid>.<seq>.tmp`, parked
+//!   `<dir>/.checkpoint.toml.<pid>.<nonce>.previous`.
+//! * boundary — live `<dir>/checkpoint-stage`, staged
+//!   `<dir>/.checkpoint-stage.<pid>.<seq>.tmp`, parked
+//!   `<dir>/.checkpoint-stage.<pid>.<nonce>.previous`.
+//!
+//! Two further artifacts take part in the same critical section without taking part
+//! in the swap:
+//!
+//! * `schema.lock` is written through the staged-and-renamed discipline but is never
+//!   parked. It describes the live catalog the commit read, and the same commit
+//!   recomputes it, so there is no previous copy worth restoring.
+//! * `checkpoint.lock` is created create-new (opened with `O_EXCL`) and is never
+//!   staged, because the creation itself is atomic. It is never parked either, since
+//!   it describes the writer and not a state a reader restores. Its states are free
+//!   (absent), held (the owner record names the pid, the nonce, and a heartbeat), and
+//!   stale (the entry is present but its heartbeat expired, so its owner is dead).
+//!
+//! ## Critical sections
+//!
+//! * `stage commit` holds the section across the sweep of staging debris, the
+//!   recovery pass, the parity gate, the `schema.lock` write, and `seal_commit`.
+//! * `stage verify` holds it across the recovery pass and the reads of the marker,
+//!   the base boundary, and the tail. The scratch databases stay outside it: each is
+//!   per-verification and the catalog work on it is serially safe on its own.
+//! * `prune` holds it across the checkpoint read, the `migrations/` scan, and the
+//!   deletions.
+//!
+//! Command signatures do not change: the dispatcher reaches the same entry points,
+//! and each of them takes the section itself, so no caller can forget it.
+//!
+//! ## Commit transitions
+//!
+//! `seal_commit` walks the sequence below while it holds the section; the right
+//! column is the resulting state of the marker/boundary pair.
+//!
+//! | Step | Action | State after the step |
+//! | --- | --- | --- |
+//! | 0 | the section is taken, `schema.lock` is written | live(prev) / live(prev) |
+//! | 1 | the new boundary is assembled into the staging directory and flushed | live(prev) / live(prev), staged(new) |
+//! | 2 | the previous marker is parked | parked(prev) / live(prev) |
+//! | 3 | the previous boundary is parked | parked(prev) / parked(prev) |
+//! | 4 | the staged boundary is renamed into place and the directory flushed | parked(prev) / live(new) |
+//! | 5 | the new marker is written and the directory flushed — the commit point | live(new) / live(new) |
+//! | 6 | the parked pair is discarded | live(new) / live(new), no recoverable copy left |
+//!
+//! Every failure before step 5 is rolled back inside `seal_commit`: the staging
+//! directory is removed and whatever was already parked is renamed back, so the
+//! command reports a failure with the previous pair untouched. From step 5 on the
+//! commit has happened, so a parked pair that cannot be removed is reported as a
+//! warning and swept by a later writer, never rolled back.
+//!
+//! The order of steps 2 and 3 is what makes the sequence recoverable: parking the
+//! marker first leaves the boundary the parked marker describes still live, so a
+//! kill between the two parks needs only the marker put back, while parking the
+//! boundary first would leave a live marker describing a boundary that is gone.
+//!
+//! ## Recovery classification
+//!
+//! `recover_interrupted_commit` runs under the section, so it observes only a pair a
+//! writer left behind when it died — never a pair a live writer is between two steps
+//! of. It classifies what it finds and takes exactly one action:
+//!
+//! | Observation | Verdict | Action | Invariant |
+//! | --- | --- | --- | --- |
+//! | no parked name found | nothing was interrupted | nothing | I1, I2 |
+//! | marker live and boundary live | the commit reached its commit point | discard every parked copy, flush the directory | I1, I2 |
+//! | boundary live, its marker parked | a boundary installed without its commit point | drop the installed boundary, restore the parked one | I1 |
+//! | marker live, its boundary parked | a marker installed without its boundary | drop the installed marker, restore the parked one | I1 |
+//! | both parked | the commit stopped between the two parks | restore the boundary, then the marker | I1, I2 |
+//! | the copy belongs to a live foreign writer | not debris and not recoverable here | refuse with a diagnostic naming the owner | I3, I5 |
+//!
+//! The last row is the rule that replaces the fixed `.previous` names: a parked copy
+//! belongs to the writer whose scope its name carries, and no writer touches another
+//! live writer's copy even when the protocol went wrong around it.
+//!
+//! ## Interleavings of two writers
+//!
+//! ### commit × commit
+//!
+//! Two commits over fixed `.previous` names break the pair in two ways. A second
+//! writer that enters recovery while the first is between steps 4 and 5 sees a live
+//! marker beside a live boundary, concludes that the pair reached its commit point,
+//! and discards the parked pair the first writer still needs — invariant I2 broken. A
+//! second writer that starts while the first is between steps 3 and 5 renames the
+//! previous boundary back over the boundary the first writer just installed, so the
+//! marker the first writer goes on to write describes a boundary it no longer sits
+//! beside — invariants I1 and I2 broken at once.
+//!
+//! Under the section both are serialised: the second writer waits for it, takes it
+//! once the first releases it, and then finds either a completed commit, whose parked
+//! pair is debris, or a pair whose owner is gone, which it repairs. While the first
+//! writer is alive the second one never reaches the artifacts at all: its bounded wait
+//! expires and it fails with a diagnostic naming the live owner. That refusal is the
+//! negative half of the commit × commit regression pair; the positive half runs the
+//! two commits one after another and asserts that the pair converges to the second
+//! commit with at most one recoverable copy in between.
+//!
+//! ### commit × verify
+//!
+//! A verification mutates the artifacts too: it repairs an interrupted commit before it
+//! reads anything, and then reads the marker, the base boundary, and the tail. Unlocked,
+//! its repair can restore a parked boundary underneath a commit that is between steps 4
+//! and 5, so the commit publishes a marker describing a boundary another writer
+//! replaced. Its reads are no safer: between steps 3 and 5 the boundary is absent under
+//! its live path, so a verification would replay the tail over no base at all and reject
+//! a project whose commit is perfectly healthy. Holding the section across the repair
+//! and the reads means a verification that overlaps a commit waits, and one that runs
+//! after it reads exactly the committed pair, never a half-swapped one.
+//!
+//! ### commit × prune
+//!
+//! Between steps 2 and 5 the marker does not exist under its live path: it sits parked,
+//! waiting for the commit point. A prune that reads the marker in that window sees a
+//! project without a checkpoint and refuses, so a healthy project reports the "commit the
+//! stage before pruning" failure; a prune that repairs the pair first instead decides from
+//! the boundary the in-flight commit is about to replace. The deletions themselves are the
+//! one mutation this protocol cannot undo — neither a parked nor a staged copy brings a
+//! removed script back — so they must also never overlap a verification replaying the tail.
+//! Inside the section a prune either runs entirely before a commit, where it reads the
+//! committed marker and removes only what that marker already excludes, or entirely after
+//! it, where the advanced marker excludes at least as much.
+//!
+//! | Interleaving | Failure the section removes | Invariants |
+//! | --- | --- | --- |
+//! | commit × commit | discarding the only recoverable copy; restoring over a fresh boundary | I1, I2, I3, I4 |
+//! | commit × verify | a repair underneath a swap; a comparison of a half-swapped pair | I1, I4, I6 |
+//! | commit × prune | a marker read in its parked window; deletions racing a tail replay | I2, I4, I6 |
+//!
+//! ## The lock itself
+//!
+//! `checkpoint.lock` is a sibling of the marker, created create-new, and carries the
+//! owner record of the writer (pid, nonce, heartbeat). Acquisition waits for a bounded
+//! time and then fails naming the live owner; a lock whose heartbeat is older than the
+//! budget is stale, so its owner is dead, the acquisition takes it over, and the recovery
+//! that follows may repair the dead writer's parked pair. Release is RAII and re-validates
+//! ownership: the lock is re-read and removed only when it still names the current writer,
+//! so a writer whose stale lock was already taken over cannot remove its successor's. The
+//! freshness decision is a pure core over the owner record and the clock — modelled on the
+//! bounded advisory-lock polling in `driver/postgres.rs` — so the recovery semantics are
+//! testable without a second process. The lock is std-only, adds no dependency, and is
+//! panic-free.
+//!
+//! ## Invariants
+//!
+//! * I1 (marker ↔ boundary): a live marker always describes the boundary beside it. The
+//!   marker is written only after its boundary is in place and restored only after the
+//!   boundary it describes has been restored.
+//! * I2 (one recoverable copy): at most one recoverable copy of the previous pair exists
+//!   at any instant, it is owned by the writer that parked it, and it is discarded only
+//!   after that writer's commit point is durable — or after its owner is provably dead.
+//! * I3 (writer isolation): no writer ever renames, restores, or removes a parked copy
+//!   another live writer created.
+//! * I4 (one writer): at most one writer mutates the workspace artifacts at a time, and a
+//!   second one either waits for the section or fails with a diagnostic naming the
+//!   current owner.
+//! * I5 (lock ownership): the lock is removed only by the writer that still owns it,
+//!   re-validated from the owner record immediately before the removal.
+//! * I6 (no half-swapped read): every read of the pair happens inside the section, so no
+//!   observation spans a swap.
+//!
+//! ## What the regression suite pins
+//!
+//! Each test is paired: the negative pin asserts the diagnostic and the absence of damage
+//! to another writer's artifacts, the positive pin asserts that sequential operations
+//! converge to a consistent state and that a stale-lock recovery repairs the pair and
+//! clears the abandoned lock. The pairs are two interleaved commits, an injected failure
+//! at every `seal_commit` step (with the previous boundary still recoverable at each one
+//! of them), a verification concurrent with an in-flight commit, and a prune concurrent
+//! with a reader. They run over the real filesystem in a temporary directory, while the
+//! freshness decision they lean on stays a pure core testable without a second process.
 
 use std::path::{Path, PathBuf};
 
