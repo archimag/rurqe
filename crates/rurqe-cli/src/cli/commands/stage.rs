@@ -27,6 +27,7 @@ use crate::target::{DatabaseDialect, DatabaseTarget};
 
 use super::{cli_error, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
 
+mod lock;
 mod swap;
 
 pub(crate) use self::swap::recover_interrupted_commit;
@@ -37,6 +38,7 @@ pub(crate) use self::swap::recover_interrupted_commit;
 #[cfg(test)]
 pub(crate) use self::swap::{flush_boundary_parent, move_failure, write_staged_boundary};
 
+use self::lock::CheckpointLock;
 use self::swap::{boundary_dir, path_exists, seal_commit};
 
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
@@ -208,6 +210,12 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 /// `checkpoint_path` is always the one the live marker describes. When
 /// `--base-stage-dir` is omitted, that snapshot is loaded as the base stage, so
 /// the boundary the tail replays over is the one the toolchain itself wrote.
+///
+/// The repair and the artifact reads run inside the exclusive `checkpoint.lock`
+/// section [`CheckpointLock`] guards, so a verification that overlaps a commit
+/// waits for it and reads exactly the committed pair instead of a half-swapped
+/// one; the scratch materialisation stays outside the section, because each
+/// scratch database is per-verification and serially safe on its own.
 pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
@@ -216,22 +224,30 @@ pub(crate) fn verify_stage(
     schema: &str,
     scratch_url: &str,
 ) -> Result<CommandOutput, CliError> {
-    // A commit an interrupted process left halfway is repaired before the
-    // boundary is read, so the snapshot loaded below is the one the live marker
-    // describes.
-    let recovery = recover_interrupted_commit(checkpoint_path)?;
+    // The section is held across the repair and the reads of the marker, the
+    // boundary, and the tail; the scratch materialisation below runs outside it.
+    let (recovery, stage, tail, checkpoint, base) = {
+        // A commit an interrupted process left halfway is repaired before the
+        // boundary is read, so the snapshot loaded below is the one the live
+        // marker describes.
+        let _section = CheckpointLock::acquire(checkpoint_path)?;
+        let recovery = recover_interrupted_commit(checkpoint_path)?;
 
-    let stage = load_stage(stage_dir)?;
-    let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
-    let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
+        let stage = load_stage(stage_dir)?;
+        let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+        let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
 
-    // An explicit `--base-stage-dir` overrides the recorded snapshot; without
-    // one, the boundary snapshot `stage commit` wrote next to the marker is
-    // loaded, and an absent snapshot leaves the base unset so the golden equation
-    // itself rejects a checkpoint that cannot be replayed from nothing.
-    let base = match base_stage_dir {
-        Some(dir) => Some(load_stage(dir)?),
-        None => load_recorded_boundary(&boundary_dir(checkpoint_path))?,
+        // An explicit `--base-stage-dir` overrides the recorded snapshot;
+        // without one, the boundary snapshot `stage commit` wrote next to the
+        // marker is loaded, and an absent snapshot leaves the base unset so the
+        // golden equation itself rejects a checkpoint that cannot be replayed
+        // from nothing.
+        let base = match base_stage_dir {
+            Some(dir) => Some(load_stage(dir)?),
+            None => load_recorded_boundary(&boundary_dir(checkpoint_path))?,
+        };
+
+        (recovery, stage, tail, checkpoint, base)
     };
 
     let mut equation = match &base {
@@ -338,6 +354,12 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 /// mid-commit leaves a parked pair [`recover_interrupted_commit`] restores instead
 /// of a fresh boundary described by a stale marker. The lock is not parked, because
 /// it describes the live catalog the commit read and the next commit recomputes it.
+///
+/// The whole commit — the debris sweep, the repair, the rewind guard, the parity
+/// gate, the `schema.lock` write, and the swap itself — runs inside the exclusive
+/// `checkpoint.lock` section [`CheckpointLock`] guards, so a second writer either
+/// waits for this one or fails naming it, and never interleaves with the
+/// artifacts below.
 pub(crate) fn commit_stage(
     version: MigrationVersion,
     database_url: &str,
@@ -347,6 +369,12 @@ pub(crate) fn commit_stage(
     checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
     let boundary = boundary_dir(checkpoint_path);
+
+    // The section is held across the whole commit: the sweep, the repair, the
+    // rewind guard, the parity gate, the `schema.lock` write, and the swap
+    // never interleave with another writer, which either waits for this one
+    // or fails naming it.
+    let _section = CheckpointLock::acquire(checkpoint_path)?;
 
     // Debris of an interrupted commit is discarded first, so the artifacts
     // written below never share a directory with the staged siblings a killed

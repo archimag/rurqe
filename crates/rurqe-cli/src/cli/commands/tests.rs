@@ -328,7 +328,10 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
     );
 
     // The gate stands in front of every artifact, so a rejected commit leaves no
-    // half-described triple behind: no marker, no snapshot, and no lock.
+    // half-described triple behind: no marker, no snapshot, and no lock. The
+    // section entry is released with the scope on the failure path as well, so
+    // a rejected commit never leaves a later one waiting for a lock that
+    // guards nothing.
     assert!(
         !checkpoint_path.exists(),
         "a rejected commit writes no checkpoint"
@@ -338,6 +341,10 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
         "a rejected commit writes no boundary snapshot"
     );
     assert!(!lock_path.exists(), "a rejected commit writes no lock");
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "a rejected commit releases its section"
+    );
 }
 
 #[test]
@@ -491,7 +498,7 @@ fn a_failed_write_reports_the_directory_it_could_not_prepare() {
 }
 
 #[test]
-fn a_failed_checkpoint_write_keeps_the_committed_lock_readable() {
+fn a_commit_that_cannot_take_the_section_writes_no_artifact() {
     let dir = workspace("commit-partial");
     let stage_dir = dir.join("schema");
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
@@ -500,9 +507,10 @@ fn a_failed_checkpoint_write_keeps_the_committed_lock_readable() {
     std::fs::write(&blocker, "not a directory").expect("write the blocking file");
     let checkpoint_path = blocker.join("checkpoint.toml");
 
-    // The lock lands before the boundary artifacts, and the marker lands last,
-    // so a boundary that cannot be written never leaves a checkpoint pointing
-    // at a lock file that describes a different database.
+    // The section guards every artifact write of the commit — the lock, the
+    // boundary, and the marker — so a commit whose checkpoint directory cannot
+    // even be prepared for the lock entry fails before the first one: nothing
+    // is left behind for a later commit or a verification to disagree with.
     let error = commit_stage(
         version("3.2"),
         ":memory:",
@@ -511,12 +519,21 @@ fn a_failed_checkpoint_write_keeps_the_committed_lock_readable() {
         &lock_path,
         &checkpoint_path,
     )
-    .expect_err("a file cannot hold the boundary artifacts");
+    .expect_err("a file cannot hold the checkpoint artifacts");
 
     assert!(error.to_string().contains("blocker"), "{error}");
-
-    let lock = std::fs::read_to_string(&lock_path).expect("read the lock");
-    SchemaCatalog::from_lock(&lock).expect("the committed lock stays canonical");
+    assert!(
+        !lock_path.exists(),
+        "a commit that never entered its section writes no lock"
+    );
+    assert!(
+        !checkpoint_path.exists(),
+        "a commit that never entered its section writes no checkpoint"
+    );
+    assert!(
+        !blocker.join("checkpoint-stage").exists(),
+        "a commit that never entered its section writes no boundary snapshot"
+    );
 }
 
 #[test]
