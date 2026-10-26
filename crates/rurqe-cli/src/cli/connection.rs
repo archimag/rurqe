@@ -261,34 +261,84 @@ fn tls_unavailable(ssl_mode: &str, url: &str) -> CliError {
 /// of being told that the encryption it demands is unavailable.
 const TLS_DEMANDING_SPELLINGS: [&str; 3] = ["require", "verify-ca", "verify-full"];
 
+/// The name libpq gives the transport-mode parameter of a connection string.
+const SSLMODE_PARAMETER: &str = "sslmode";
+
 /// The TLS-demanding `sslmode` spelling a connection string asks for while the
 /// driver's parser does not model it.
 ///
 /// This is the fallback the parse failure in [`connect_postgres`] consults: a spelling
 /// the driver does not know makes the whole string unparseable, so the typed
-/// `SslMode` never exists and the policy has nothing to classify. The `sslmode` value
-/// is read from the parameters of the string — the query of a URL, or the
-/// whitespace-separated keyword/value list handed to the same parser by joining its
-/// parameters on `&` — so it comes from a parsed key/value pair instead of a scan of
-/// the raw text. [`driver_models_sslmode`] keeps the fallback honest: a spelling the
-/// driver understands is reported by the policy, never here, so an unrelated defect
-/// in a connection string is not blamed on TLS.
+/// `SslMode` never exists and the policy has nothing to classify.
+/// [`sslmode_parameter`] reads the value out of either documented libpq form instead of
+/// reconstructing one from the other, and [`driver_models_sslmode`] keeps the fallback
+/// honest: a spelling the driver understands is reported by the policy, never here, so
+/// an unrelated defect in a connection string is not blamed on TLS.
 fn unmodelled_tls_demand(url: &str) -> Option<&'static str> {
-    let parameters = match url::Url::parse(url) {
-        Ok(parsed) => parsed.query().unwrap_or_default().to_owned(),
-        Err(_) => url.replace(|character: char| character.is_ascii_whitespace(), "&"),
-    };
+    let spelling = sslmode_parameter(url)?;
 
-    url::form_urlencoded::parse(parameters.as_bytes())
-        .filter(|(key, _)| key.as_ref() == "sslmode")
-        .find_map(|(_, value)| {
-            let spelling =
-                value.trim_matches(|character: char| character == '\'' || character == '"');
+    TLS_DEMANDING_SPELLINGS
+        .into_iter()
+        .find(|candidate| *candidate == spelling.as_str() && !driver_models_sslmode(candidate))
+}
 
-            TLS_DEMANDING_SPELLINGS
-                .into_iter()
-                .find(|candidate| *candidate == spelling && !driver_models_sslmode(candidate))
-        })
+/// Reads the `sslmode` parameter out of either documented libpq connection-string form.
+///
+/// libpq accepts two spellings of the same connection and both are understood here,
+/// without either one being reconstructed from the other:
+///
+/// * the URL form — `postgres://host/db?sslmode=require` — where the value is read from
+///   the query component of the parsed [`url::Url`] through
+///   [`url::form_urlencoded::parse`], so percent-encoding and repeated keys follow that
+///   parser's documented rules;
+/// * the keyword/value form — `host=db sslmode=require` — where the string is split on
+///   ASCII whitespace and every token at its first `=` into a key and a value, and the
+///   value has its surrounding single or double quotes removed.
+///
+/// The key comparison is case-insensitive, because libpq parameter names are not
+/// case-sensitive (`SSLMODE=` and `SslMode=` mean the same as `sslmode=`), and the
+/// result is `None` only when the string names the parameter in neither form.
+fn sslmode_parameter(url: &str) -> Option<String> {
+    if let Ok(parsed) = url::Url::parse(url) {
+        if is_postgres_scheme(parsed.scheme()) {
+            return url::form_urlencoded::parse(parsed.query().unwrap_or_default().as_bytes())
+                .find(|(key, _)| key.eq_ignore_ascii_case(SSLMODE_PARAMETER))
+                .map(|(_, value)| unquoted(value.as_ref()));
+        }
+    }
+
+    keyword_parameter(url, SSLMODE_PARAMETER)
+}
+
+/// Whether a URL scheme names a PostgreSQL connection string.
+///
+/// Only the two schemes libpq registers take the query-component path; every other
+/// string — the keyword/value form included, which carries no scheme at all — is read
+/// as a keyword list.
+fn is_postgres_scheme(scheme: &str) -> bool {
+    matches!(scheme, "postgres" | "postgresql")
+}
+
+/// Reads a parameter out of the libpq keyword/value form of a connection string.
+///
+/// The string is split on ASCII whitespace and every token at its first `=`, so a value
+/// that itself contains `=` keeps the remainder while a token holding no `=` is skipped.
+/// The key is compared case-insensitively, so the keyword form yields the same result as
+/// the URL form of the same connection.
+fn keyword_parameter(url: &str, parameter: &str) -> Option<String> {
+    url.split_ascii_whitespace().find_map(|token| {
+        let (key, value) = token.split_once('=')?;
+
+        key.eq_ignore_ascii_case(parameter)
+            .then(|| unquoted(value))
+    })
+}
+
+/// Removes the single or double quotes libpq allows around a keyword-form value.
+fn unquoted(value: &str) -> String {
+    value
+        .trim_matches(|character: char| character == '\'' || character == '"')
+        .to_owned()
 }
 
 /// Whether the driver's own parser accepts a mode spelling.
@@ -617,5 +667,78 @@ mod tests {
         // it does not support is never silently treated as one.
         assert!(driver_models_sslmode("require"));
         assert!(!driver_models_sslmode("maybe"));
+    }
+
+    #[test]
+    fn the_sslmode_parameter_reads_both_libpq_forms_alike() {
+        // The same connection written both ways has to yield the same value, so the
+        // fallback never depends on which form the operator happened to write.
+        for (url, expected) in [
+            (
+                "postgres://app@db.internal/app?sslmode=require",
+                "require",
+            ),
+            ("host=db.internal user=app dbname=app sslmode=require", "require"),
+            (
+                "postgresql://app@db.internal/app?sslmode=verify-full",
+                "verify-full",
+            ),
+            (
+                "host=db.internal user=app sslmode='verify-full'",
+                "verify-full",
+            ),
+        ] {
+            assert_eq!(
+                sslmode_parameter(url).as_deref(),
+                Some(expected),
+                "`{url}`"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sslmode_parameter_matches_the_key_case_insensitively() {
+        for url in [
+            "postgres://app@db.internal/app?SSLMODE=require",
+            "postgres://app@db.internal/app?SslMode=require",
+            "host=db.internal user=app SSLMODE=require",
+            "host=db.internal user=app SslMode=require",
+        ] {
+            assert_eq!(
+                sslmode_parameter(url).as_deref(),
+                Some("require"),
+                "`{url}`"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sslmode_parameter_reports_an_absent_parameter_as_missing() {
+        for url in [
+            "postgres://app@db.internal/app",
+            "postgres://app@db.internal/app?connect_timeout=5",
+            "postgresql://app@db.internal/app?user=app",
+            "host=db.internal user=app dbname=app",
+            "host=db.internal user=app",
+            "db.internal",
+        ] {
+            assert_eq!(sslmode_parameter(url), None, "`{url}`");
+        }
+    }
+
+    #[test]
+    fn a_mode_the_policy_accepts_is_never_reported_by_the_fallback() {
+        // The fallback only speaks about a TLS demand the driver could not model, so a
+        // mode the policy accepts — or a string naming no mode at all — stays silent and
+        // an unrelated parse failure keeps its own wording.
+        for url in [
+            "postgres://app@db.internal/app?sslmode=disable",
+            "postgres://app@db.internal/app?sslmode=prefer",
+            "host=db.internal user=app sslmode=disable",
+            "host=db.internal user=app sslmode=maybe",
+            "host=db.internal user=app",
+        ] {
+            assert_eq!(unmodelled_tls_demand(url), None, "`{url}`");
+        }
     }
 }
