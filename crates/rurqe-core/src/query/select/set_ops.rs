@@ -64,6 +64,6 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
             kind,
             query: other.into_ast(),
         });
-        self.retype()
+        self.combined()
     }
 }

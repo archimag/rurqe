@@ -63,7 +63,7 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// ```
     pub fn for_update(mut self) -> SelectQuery<D, Tables, Output, HasProjection, Locked> {
         self.lock = Some(LockClause::new(LockStrength::Update));
-        self.retype()
+        self.locked()
     }
 
     /// Locks the selected rows in shared mode (`FOR SHARE`).
@@ -114,7 +114,7 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// ```
     pub fn for_share(mut self) -> SelectQuery<D, Tables, Output, HasProjection, Locked> {
         self.lock = Some(LockClause::new(LockStrength::Share));
-        self.retype()
+        self.locked()
     }
 }
 
@@ -131,7 +131,7 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// together.
     pub fn nowait(mut self) -> SelectQuery<D, Tables, Output, HasProjection, LockWaitSet> {
         self.lock = self.lock.map(LockClause::nowait);
-        self.retype()
+        self.lock_wait_set()
     }
 
     /// Skips rows locked by concurrent transactions (`SKIP LOCKED`).
@@ -144,6 +144,6 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     /// [`nowait`](SelectQuery::nowait) is reachable again.
     pub fn skip_locked(mut self) -> SelectQuery<D, Tables, Output, HasProjection, LockWaitSet> {
         self.lock = self.lock.map(LockClause::skip_locked);
-        self.retype()
+        self.lock_wait_set()
     }
 }

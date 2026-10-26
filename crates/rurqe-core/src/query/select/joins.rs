@@ -64,7 +64,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Inner, T::table_ref(), None, Some(on.into_kind()))
-            .retype()
+            .with_scope::<Joined<Tables, T>>()
     }
 
     /// Joins `table` to the query with an `INNER JOIN` restricted by `on`.
@@ -87,7 +87,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Inner, T::table_ref(), None, Some(on.into_kind()))
-            .retype()
+            .with_scope::<Joined<Tables, T>>()
     }
 
     /// Joins the table `T` to the query with a `LEFT JOIN` restricted by `on`.
@@ -103,7 +103,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Left, T::table_ref(), None, Some(on.into_kind()))
-            .retype()
+            .with_scope::<LeftJoined<Tables, T>>()
     }
 
     /// Joins `table` to the query with a `LEFT JOIN` restricted by `on`.
@@ -122,7 +122,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         Scope: ExprInScope<LeftJoined<Tables, T>, P> + ScopePositions<P>,
     {
         self.push_join(JoinKind::Left, T::table_ref(), None, Some(on.into_kind()))
-            .retype()
+            .with_scope::<LeftJoined<Tables, T>>()
     }
 
     /// Joins the table `T` to the query with an unconditional `CROSS JOIN`.
@@ -136,7 +136,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         Tables: TableScope,
     {
         self.push_join(JoinKind::Cross, T::table_ref(), None, None)
-            .retype()
+            .with_scope::<CrossJoined<Tables, T>>()
     }
 
     /// Joins `table` to the query with an unconditional `CROSS JOIN`.
@@ -152,7 +152,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         Tables: TableScope,
     {
         self.push_join(JoinKind::Cross, T::table_ref(), None, None)
-            .retype()
+            .with_scope::<CrossJoined<Tables, T>>()
     }
 
     /// Joins the table `T` to the query with a `FULL OUTER JOIN` restricted by `on`.
@@ -174,7 +174,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
             None,
             Some(on.into_kind()),
         )
-        .retype()
+        .with_scope::<FullOuterJoined<Tables, T>>()
     }
 
     /// Joins `table` to the query with a `FULL OUTER JOIN` restricted by `on`.
@@ -198,7 +198,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
             None,
             Some(on.into_kind()),
         )
-        .retype()
+        .with_scope::<FullOuterJoined<Tables, T>>()
     }
 
     /// Joins the derived table `derived` to the query with an `INNER JOIN`.
@@ -218,7 +218,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     {
         self.derived.push(derived.into_ast());
         self.push_join(JoinKind::Inner, T::table_ref(), None, Some(on.into_kind()))
-            .retype()
+            .with_scope::<Joined<Tables, T>>()
     }
 
     /// Joins the derived table `derived` to the query with a `LEFT JOIN`.
@@ -238,7 +238,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     {
         self.derived.push(derived.into_ast());
         self.push_join(JoinKind::Left, T::table_ref(), None, Some(on.into_kind()))
-            .retype()
+            .with_scope::<LeftJoined<Tables, T>>()
     }
 
     /// Records a regular join clause whose relational effect is expressed by the
@@ -277,7 +277,7 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
             on: None,
             lateral: Some(lateral.query),
         });
-        self.retype()
+        self.with_scope::<CrossLateralJoined<Tables, T>>()
     }
 
     /// Joins `lateral` to the query with a `LEFT JOIN LATERAL ... ON true`.
@@ -297,6 +297,6 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
             }),
             lateral: Some(lateral.query),
         });
-        self.retype()
+        self.with_scope::<LeftLateralJoined<Tables, T>>()
     }
 }

@@ -201,7 +201,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         let mut assignments = Vec::new();
         set.into_assignments(&mut assignments);
         merge_assignments(&mut self.assignments, assignments);
-        self.retype()
+        self.with_assignments()
     }
 
     /// Restricts the update to rows matching `predicate`.
@@ -217,7 +217,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         PredD: DialectInScope<D>,
     {
         self.push_filter(predicate.into_kind());
-        self.retype()
+        self.filtered()
     }
 
     /// Restricts the update to rows matching `predicate` when one is given,
@@ -267,17 +267,17 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///     .where_opt_or_all(target.map(|target| UsersId.eq(target)));
     /// ```
     pub fn where_opt_or_all<PredicateScope, P, PredD>(
-        self,
+        mut self,
         predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
         PredD: DialectInScope<D>,
     {
-        match predicate {
-            Some(predicate) => self.where_(predicate),
-            None => self.retype(),
+        if let Some(predicate) = predicate {
+            self.push_filter(predicate.into_kind());
         }
+        self.filtered()
     }
 
     /// Restricts the update to rows matching `predicate` when one is given,
@@ -297,20 +297,21 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     ///     .allow_all();
     /// ```
     pub fn where_if<PredicateScope, P, PredD>(
-        self,
+        mut self,
         predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> UpdateQuery<D, T, State, Returning, Scope, Assignments>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
         PredD: DialectInScope<D>,
     {
-        match predicate {
-            // A recorded predicate moves the statement into `Filtered`; the
-            // typestate is restored so the permission to build the statement
-            // still depends only on the state the caller established.
-            Some(predicate) => self.where_(predicate).retype(),
-            None => self,
+        if let Some(predicate) = predicate {
+            // The predicate is recorded without restating the typestate, so the
+            // permission to build the statement still depends only on the state
+            // the caller established: an absent optional predicate never widens
+            // into a full-table mutation.
+            self.push_filter(predicate.into_kind());
         }
+        self
     }
 
     /// Merges `predicate` into the recorded filter with a boolean `AND`.
@@ -331,12 +332,47 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     /// This transitions the query to [`Filtered`] state without adding a condition,
     /// permitting a full-table mutation.
     pub fn allow_all(self) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments> {
-        self.retype()
+        self.filtered()
     }
 
-    fn retype<D2: Dialect, T2: Table, State2, Returning2, Scope2, Assignments2>(
-        self,
-    ) -> UpdateQuery<D2, T2, State2, Returning2, Scope2, Assignments2> {
+    /// Restates the filtering typestate the statement reached.
+    ///
+    /// Recording a `WHERE` predicate and explicitly allowing every row both make
+    /// the statement executable, so both builders restate the state here. The
+    /// dialect, the mutated table, the `RETURNING` row type, the scope, and the
+    /// recorded assignments stay exactly as they were.
+    fn filtered(self) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments> {
+        UpdateQuery {
+            assignments: self.assignments,
+            from_tables: self.from_tables,
+            filter: self.filter,
+            returning: self.returning,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Restates the assignment typestate after a value was recorded.
+    ///
+    /// The recorded value is what makes the statement renderable, so the
+    /// transition fixes the state to `HasAssignments` alone: the filtering
+    /// typestate the caller established, the dialect, the mutated table, the
+    /// `RETURNING` row type, and the scope stay untouched.
+    fn with_assignments(self) -> UpdateQuery<D, T, State, Returning, Scope, HasAssignments> {
+        UpdateQuery {
+            assignments: self.assignments,
+            from_tables: self.from_tables,
+            filter: self.filter,
+            returning: self.returning,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Restates the row type of the recorded `RETURNING` clause.
+    ///
+    /// The projected selection fixes the rows the statement hands back, while the
+    /// dialect, the mutated table, the scope, and the recorded assignments stay
+    /// untouched.
+    fn with_returning<Row>(self) -> UpdateQuery<D, T, State, Row, Scope, Assignments> {
         UpdateQuery {
             assignments: self.assignments,
             from_tables: self.from_tables,
@@ -361,7 +397,7 @@ impl<D: Dialect + SupportsReturning, T: Table, State, Scope, Assignments>
         selection: S,
     ) -> UpdateQuery<D, T, State, <S as Selection>::Row, Scope, Assignments> {
         selection.push_projections(&mut self.returning);
-        self.retype()
+        self.with_returning()
     }
 }
 
@@ -960,5 +996,58 @@ mod tests {
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert_eq!(built.params, vec![SqlVal::Text("alice".to_owned())]);
+    }
+
+    #[test]
+    fn filtered_restates_only_the_filtering_typestate() {
+        // The annotated type pins the dialect, the mutated table, the `RETURNING`
+        // row type, the scope, and the recorded assignments: `allow_all` restates
+        // the filtering typestate alone.
+        let filtered: UpdateQuery<MockDialect, User, Filtered, (i64,), User, HasAssignments> =
+            UpdateQuery::<MockDialect, User>::new()
+                .set(UserName::set("root"))
+                .returning((UserId,))
+                .allow_all();
+
+        assert_eq!(
+            filtered.build().expect("valid query").sql,
+            "UPDATE \"users\" SET \"name\" = $1 RETURNING \"id\""
+        );
+    }
+
+    #[test]
+    fn with_assignments_restates_only_the_assignment_typestate() {
+        // Recording a value keeps the filtering typestate the caller established,
+        // so a statement that already filtered its rows stays filtered.
+        let assigned: UpdateQuery<MockDialect, User, Filtered, (), User, HasAssignments> =
+            UpdateQuery::<MockDialect, User>::new()
+                .where_(Expr::column::<UserId>().eq(1i64))
+                .set(UserName::set("root"));
+
+        assert_eq!(
+            assigned.build().expect("valid query").sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+    }
+
+    #[test]
+    fn where_if_records_the_predicate_without_restating_the_typestate() {
+        fn assert_unfiltered(
+            _query: &UpdateQuery<MockDialect, User, Unfiltered, (), User, HasAssignments>,
+        ) {
+        }
+
+        // The optional predicate is recorded, while the permission to build the
+        // statement still belongs to the caller.
+        let pending = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_if(Some(Expr::column::<UserId>().eq(1i64)));
+        assert_unfiltered(&pending);
+
+        // The recorded predicate is what renders once the caller opts in.
+        assert_eq!(
+            pending.allow_all().build().expect("valid query").sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
     }
 }

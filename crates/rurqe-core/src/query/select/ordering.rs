@@ -672,7 +672,7 @@ macro_rules! impl_compound_ordering {
                 direction: OrderDirection,
             ) -> SelectQuery<D, Compound, Output, HasProjection, TailClosed> {
                 self.push_ordering(OrderCriterion::new(compound_order_position(index), direction));
-                self.retype()
+                self.tail_closed()
             }
 
             /// Orders the combined rows by the 1-based position `index`, ascending.
@@ -710,7 +710,7 @@ macro_rules! impl_compound_ordering {
                 direction: OrderDirection,
             ) -> SelectQuery<D, Compound, Output, HasProjection, TailClosed> {
                 self.push_ordering(OrderCriterion::new(compound_order_column::<C>(), direction));
-                self.retype()
+                self.tail_closed()
             }
 
             /// Orders the combined rows by their `column` output column, ascending.
@@ -743,7 +743,7 @@ macro_rules! impl_compound_ordering {
                 self.push_ordering(
                     OrderCriterion::new(compound_order_column::<C>(), direction).nulls(nulls),
                 );
-                self.retype()
+                self.tail_closed()
             }
 
             /// Orders the combined rows by their `column` output column, ascending,

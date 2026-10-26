@@ -147,7 +147,7 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
         PredD: DialectInScope<D>,
     {
         self.push_filter(predicate.into_kind());
-        self.retype()
+        self.filtered()
     }
 
     /// Restricts the deletion to rows matching `predicate` when one is given,
@@ -195,17 +195,17 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     ///     .where_opt_or_all(target.map(|target| UsersId.eq(target)));
     /// ```
     pub fn where_opt_or_all<PredicateScope, P, PredD>(
-        self,
+        mut self,
         predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> DeleteQuery<D, T, Filtered, Returning, Scope>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
         PredD: DialectInScope<D>,
     {
-        match predicate {
-            Some(predicate) => self.where_(predicate),
-            None => self.retype(),
+        if let Some(predicate) = predicate {
+            self.push_filter(predicate.into_kind());
         }
+        self.filtered()
     }
 
     /// Restricts the deletion to rows matching `predicate` when one is given,
@@ -224,20 +224,21 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     ///     .allow_all();
     /// ```
     pub fn where_if<PredicateScope, P, PredD>(
-        self,
+        mut self,
         predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> DeleteQuery<D, T, State, Returning, Scope>
     where
         PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
         PredD: DialectInScope<D>,
     {
-        match predicate {
-            // A recorded predicate moves the statement into `Filtered`; the
-            // typestate is restored so the permission to build the statement
-            // still depends only on the state the caller established.
-            Some(predicate) => self.where_(predicate).retype(),
-            None => self,
+        if let Some(predicate) = predicate {
+            // The predicate is recorded without restating the typestate, so the
+            // permission to build the statement still depends only on the state
+            // the caller established: an absent optional predicate never widens
+            // into a full-table deletion.
+            self.push_filter(predicate.into_kind());
         }
+        self
     }
 
     /// Merges `predicate` into the recorded filter with a boolean `AND`.
@@ -258,12 +259,30 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
     /// This transitions the query to [`Filtered`] state without adding a condition,
     /// permitting a full-table deletion.
     pub fn allow_all(self) -> DeleteQuery<D, T, Filtered, Returning, Scope> {
-        self.retype()
+        self.filtered()
     }
 
-    fn retype<D2: Dialect, T2: Table, State2, Returning2, Scope2>(
-        self,
-    ) -> DeleteQuery<D2, T2, State2, Returning2, Scope2> {
+    /// Restates the filtering typestate the statement reached.
+    ///
+    /// Recording a `WHERE` predicate and explicitly allowing every row both make
+    /// the statement executable, so both builders restate the state here. The
+    /// dialect, the deleted table, the `RETURNING` row type, and the scope stay
+    /// exactly as they were.
+    fn filtered(self) -> DeleteQuery<D, T, Filtered, Returning, Scope> {
+        DeleteQuery {
+            using_tables: self.using_tables,
+            filter: self.filter,
+            returning: self.returning,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Restates the row type of the recorded `RETURNING` clause.
+    ///
+    /// The projected selection fixes the rows the statement hands back, while the
+    /// dialect, the deleted table, the scope, and the filtering typestate stay
+    /// untouched.
+    fn with_returning<Row>(self) -> DeleteQuery<D, T, State, Row, Scope> {
         DeleteQuery {
             using_tables: self.using_tables,
             filter: self.filter,
@@ -285,7 +304,7 @@ impl<D: Dialect + SupportsReturning, T: Table, State, Scope> DeleteQuery<D, T, S
         selection: S,
     ) -> DeleteQuery<D, T, State, <S as Selection>::Row, Scope> {
         selection.push_projections(&mut self.returning);
-        self.retype()
+        self.with_returning()
     }
 }
 
@@ -660,5 +679,37 @@ mod tests {
              WHERE (\"users\".\"id\" = \"accounts\".\"id\")"
         );
         assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn filtered_restates_only_the_filtering_typestate() {
+        // The annotated type pins the dialect, the deleted table, the `RETURNING`
+        // row type, and the scope: `allow_all` restates the filtering typestate
+        // alone.
+        let filtered: DeleteQuery<MockDialect, User, Filtered, (i64,), User> =
+            DeleteQuery::<MockDialect, User>::new()
+                .returning((UserId,))
+                .allow_all();
+
+        assert_eq!(
+            filtered.build().expect("valid query").sql,
+            "DELETE FROM \"users\" RETURNING \"id\""
+        );
+    }
+
+    #[test]
+    fn where_if_records_the_predicate_without_restating_the_typestate() {
+        fn assert_unfiltered(_query: &DeleteQuery<MockDialect, User, Unfiltered, (), User>) {}
+
+        // The optional predicate is recorded, while the permission to build the
+        // statement still belongs to the caller.
+        let pending = DeleteQuery::<MockDialect, User>::new()
+            .where_if(Some(Expr::column::<UserId>().eq(5i64)));
+        assert_unfiltered(&pending);
+
+        assert_eq!(
+            pending.allow_all().build().expect("valid query").sql,
+            "DELETE FROM \"users\" WHERE (\"id\" = $1)"
+        );
     }
 }

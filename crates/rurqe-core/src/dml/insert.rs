@@ -266,7 +266,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         self.push_row(set);
-        self.retype()
+        self.with_row_source()
     }
 
     /// Inserts every row produced by `rows` as a single multi-row statement.
@@ -292,7 +292,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
             return Err(EmptyRows);
         }
 
-        Ok(self.retype())
+        Ok(self.with_row_source())
     }
 
     /// Specifies the target columns for an `INSERT INTO ... SELECT` statement.
@@ -301,7 +301,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         columns: Cols,
     ) -> InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning> {
         columns.push_column_names(&mut self.columns);
-        self.retype()
+        self.with_row_source()
     }
 
     /// Configures the statement to insert rows from `select` into `columns`.
@@ -322,7 +322,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         // The source statement is consumed, so its clauses move into the `INSERT`
         // instead of being copied.
         self.select = Some(select.into_ast());
-        self.retype()
+        self.with_row_source()
     }
 }
 
@@ -338,7 +338,7 @@ impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
         select: SelectQuery<D, S, Cols::Row, HasProjection>,
     ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning> {
         self.select = Some(select.into_ast());
-        self.retype()
+        self.with_row_source()
     }
 }
 
@@ -358,7 +358,7 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
         // plain column: the row type of the statement keeps naming every item the
         // selection declares.
         selection.push_projections(&mut self.returning);
-        self.retype()
+        self.with_returning()
     }
 }
 
@@ -604,9 +604,29 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
         self.rows.push(assignments);
     }
 
-    fn retype<D2: Dialect, T2: Table, Values2, Returning2>(
-        self,
-    ) -> InsertQuery<D2, T2, Values2, Returning2> {
+    /// Restates the row source the statement records.
+    ///
+    /// Supplying `VALUES` rows, the target column list of an
+    /// `INSERT INTO ... SELECT`, and the source statement itself all change what
+    /// the statement inserts, so those builders restate the recorded source here.
+    /// The dialect, the inserted table, and the row type of the recorded
+    /// `RETURNING` clause stay exactly as they were.
+    fn with_row_source<Source>(self) -> InsertQuery<D, T, Source, Returning> {
+        InsertQuery {
+            columns: self.columns,
+            rows: self.rows,
+            select: self.select,
+            conflict: self.conflict,
+            returning: self.returning,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Restates the row type of the recorded `RETURNING` clause.
+    ///
+    /// The projected selection fixes the rows the statement hands back, while the
+    /// dialect, the inserted table, and the recorded row source stay untouched.
+    fn with_returning<Row>(self) -> InsertQuery<D, T, Values, Row> {
         InsertQuery {
             columns: self.columns,
             rows: self.rows,
@@ -1471,6 +1491,43 @@ mod tests {
         assert_eq!(
             built,
             Err(BuildError::DuplicateRelation { name: "archive_users" })
+        );
+    }
+
+    #[test]
+    fn with_row_source_restates_only_the_recorded_source() {
+        let query = InsertQuery::<MockDialect, User>::new()
+            .values(UserId::set(1i64))
+            .returning((UserId,));
+
+        // The annotated type pins what the transition leaves alone: the dialect,
+        // the inserted table, and the row type of the `RETURNING` clause.
+        let restated: InsertQuery<MockDialect, User, Assignment<UserId, i64>, (i64,)> =
+            query.with_row_source();
+
+        let built = restated.build().expect("valid query");
+
+        // The recorded clauses reach the renderer untouched.
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\") VALUES ($1) RETURNING \"id\""
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+    }
+
+    #[test]
+    fn with_returning_restates_only_the_projected_row_type() {
+        // The annotated type pins the dialect, the inserted table, and the recorded
+        // row source, so the projection restates the row type of the statement
+        // alone.
+        let projected: InsertQuery<MockDialect, User, Assignment<UserId, i64>, (i64,)> =
+            InsertQuery::<MockDialect, User>::new()
+                .values(UserId::set(1i64))
+                .returning((UserId,));
+
+        assert_eq!(
+            projected.build().expect("valid query").sql,
+            "INSERT INTO \"users\" (\"id\") VALUES ($1) RETURNING \"id\""
         );
     }
 }

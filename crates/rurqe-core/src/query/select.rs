@@ -21,13 +21,15 @@ use super::set_ops::SetOpAst;
 
 // The builder is decomposed by responsibility: joins establish the relational
 // scope, ordering and pagination move rows of the clause they are written on,
-// locking and set operations change the typestate of the statement, and the
+// locking and set operations change the typestate of the statement, the
+// transitions module names every typestate change a builder may make, and the
 // rendering adapters convert the query into its statement AST.
 mod joins;
 mod locking;
 mod ordering;
 mod render;
 mod set_ops;
+mod transitions;
 
 pub use self::ordering::OrderBy;
 
@@ -606,7 +608,7 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// ```
     pub fn from<T: Table>(mut self) -> SelectQuery<D, T, Output, Projected> {
         self.from = Some(T::table_ref());
-        self.retype()
+        self.with_scope::<T>()
     }
 
     /// Introduces `table` as the table rows are selected from.
@@ -698,7 +700,7 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     /// ```
     pub fn from_table<T: Table>(mut self, _table: T) -> SelectQuery<D, T, Output, Projected> {
         self.from = Some(T::table_ref());
-        self.retype()
+        self.with_scope::<T>()
     }
 
     /// Introduces the derived table `derived` as the relation rows are selected from.
@@ -716,7 +718,7 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     {
         self.from = Some(T::table_ref());
         self.derived.push(derived.into_ast());
-        self.retype()
+        self.with_scope::<T>()
     }
 }
 
@@ -826,7 +828,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     /// ```
     pub fn distinct(mut self) -> SelectQuery<D, Tables, Output, Projected, LockUnavailable> {
         self.distinct = true;
-        self.retype()
+        self.lock_unavailable()
     }
 }
 
@@ -897,7 +899,7 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
         Tables: TableInScope<C::Table, P>,
     {
         self.distinct_on.push(C::expr_kind());
-        self.retype()
+        self.lock_unavailable()
     }
 }
 
@@ -1038,7 +1040,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock: ProjectionOpen>
         let mut projections = Vec::new();
         Selection::push_projections(&selection, &mut projections);
         self.projections = projections;
-        self.retype()
+        self.with_projection()
     }
 }
 
@@ -1163,36 +1165,5 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         };
         self.having = Some(having);
         self
-    }
-
-    /// Reinterprets the recorded statement under another set of typestates.
-    ///
-    /// The statement data is untouched, so the method only renames the phantom
-    /// parameters the callers want to reach: the grouped query builder hands a
-    /// query back with [`LockUnavailable`] through it.
-    pub(super) fn retype<D2: Dialect, Tables2, Output2, Projected2, Lock2>(
-        self,
-    ) -> SelectQuery<D2, Tables2, Output2, Projected2, Lock2> {
-        SelectQuery {
-            ctes: self.ctes,
-            from: self.from,
-            projections: self.projections,
-            joins: self.joins,
-            derived: self.derived,
-            filter: self.filter,
-            group_by: self.group_by,
-            having: self.having,
-            order_by: self.order_by,
-            limit: self.limit,
-            offset: self.offset,
-            set_operations: self.set_operations,
-            distinct: self.distinct,
-            distinct_on: self.distinct_on,
-            compound_order_by: self.compound_order_by,
-            compound_limit: self.compound_limit,
-            compound_offset: self.compound_offset,
-            lock: self.lock,
-            _marker: PhantomData,
-        }
     }
 }
