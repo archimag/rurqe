@@ -793,6 +793,32 @@ fn a_case_over_aggregates_stays_an_aggregate() {
 }
 
 #[test]
+fn a_comparison_never_becomes_the_aggregate_call_it_is_built_from() {
+    // The comparison folds the markers of both operands, so it collapses the rows
+    // of its group without being the aggregate call itself: `DISTINCT` and
+    // `FILTER (WHERE ...)` attach to a call, and the predicate is no call at all.
+    let over_two_calls: Expr<bool, _, Aggregate> = sum(OrderTotal).gt(sum(OrderTax));
+    assert!(matches!(
+        over_two_calls.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Gt,
+            ..
+        }
+    ));
+
+    // A bound operand references no table, so it leaves the marker of the call
+    // standing while the comparison still is no call of its own.
+    let over_a_value: Expr<bool, _, Aggregate> = count_all().gt(1i64);
+    assert!(matches!(
+        over_a_value.kind(),
+        ExprKind::Binary {
+            op: BinaryOp::Gt,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn a_bare_direct_aggregate_renders_without_modifiers() {
     let (sql, params) = render(sum(OrderTotal).kind());
 
@@ -1289,5 +1315,89 @@ fn a_window_freed_from_its_scope_names_its_table_in_a_single_relation_statement(
     .expect("a valid window expression");
 
     assert_eq!(sql, "LEAD(\"users\".\"id\") OVER ()");
+    assert!(params.is_empty());
+}
+
+#[test]
+fn a_comparison_derives_its_marker_from_both_operands() {
+    // An aggregate compared with a bound value still collapses the rows of its
+    // group, so the predicate keeps the aggregate marker and a grouped query
+    // accepts it in `HAVING` or in its projection list.
+    let _: Expr<bool, _, Aggregate> = sum(OrderTotal).gt(1.0f64);
+    let _: Expr<bool, _, Aggregate> = count_all().eq(0i64);
+    let _: Expr<bool, _, Aggregate> = count_distinct(OrderQty).lt(count_distinct(OrderQty));
+
+    // The same aggregate compared with a bare column reads one value per row of the
+    // group, so the predicate is per-row and the grouped rules reject it at the call
+    // site instead of the engine rejecting the rendered statement.
+    let _: Expr<bool, _, NonAggregate> = sum(OrderTotal).gt(Expr::column::<OrderTax>());
+
+    // A range folds the markers of the tested expression and both of its bounds.
+    let _: Expr<bool, _, Aggregate> = sum(OrderTotal).between(0.0f64, 1.0f64);
+    let _: Expr<bool, _, NonAggregate> =
+        sum(OrderTotal).between(0.0f64, Expr::column::<OrderTax>());
+
+    // A membership list folds the markers of its candidates the same way.
+    let _: Expr<bool, _, Aggregate> = sum(OrderTotal).in_list(vec![0.0f64, 1.0f64]);
+    let _: Expr<bool, _, NonAggregate> = sum(OrderTotal).in_list(vec![Expr::column::<OrderTax>()]);
+
+    // Combining two predicates folds their markers as well.
+    let _: Expr<bool, _, Aggregate> = sum(OrderTotal).gt(1.0f64).and(sum(OrderTax).lt(1.0f64));
+}
+
+#[test]
+fn the_aggregate_clauses_stay_on_the_call_that_recorded_them() {
+    // `DISTINCT` and `FILTER (WHERE ...)` restrict the rows an aggregate call
+    // aggregates, so both are offered by the call itself, and a call that already
+    // carries a filter keeps accepting further conditions.
+    let call: Expr<f64, Order, DirectAggregate> = sum(OrderTotal);
+    let distinct: Expr<f64, Order, DirectAggregate> = call.distinct();
+    assert!(matches!(
+        distinct.kind(),
+        ExprKind::Aggregate {
+            distinct: true,
+            ..
+        }
+    ));
+
+    let filtered: Expr<i64, (Order, Order), FilteredAggregate> =
+        count_distinct(OrderQty).filter_where(OrderQty.gt(0i64));
+    let accumulated: Expr<i64, _, FilteredAggregate> = filtered.filter_where(OrderQty.lt(100i64));
+    assert!(matches!(
+        accumulated.kind(),
+        ExprKind::Aggregate {
+            filter: Some(_),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn the_valid_aggregate_forms_render_verbatim() {
+    // The clauses keep rendering where SQL puts them: the modifier inside the call
+    // and the filter after it, so the marker rules changed no rendered byte.
+    let (sql, params) = render(count_distinct(OrderTotal).kind());
+    assert_eq!(sql, "COUNT(DISTINCT \"total\")");
+    assert!(params.is_empty());
+
+    let (sql, params) = render(
+        count_distinct(OrderQty)
+            .filter_where(OrderQty.gt(0i64))
+            .kind(),
+    );
+    assert_eq!(sql, "COUNT(DISTINCT \"qty\") FILTER (WHERE (\"qty\" > ?))");
+    assert_eq!(params, vec![SqlVal::I64(0)]);
+
+    // A predicate computed from an aggregate and a bound value renders unchanged as
+    // well, so the grouped statements built from it keep their SQL.
+    let (sql, params) = render(sum(OrderTotal).gt(1.0f64).kind());
+    assert_eq!(sql, "(SUM(\"total\") > ?)");
+    assert_eq!(params, vec![SqlVal::F64(1.0)]);
+
+    // The per-row predicate the grouped rules reject is still a renderable
+    // expression: the rejection happens while the statement is checked, not in the
+    // renderer.
+    let (sql, params) = render(sum(OrderTotal).gt(Expr::column::<OrderTax>()).kind());
+    assert_eq!(sql, "(SUM(\"total\") > \"tax\")");
     assert!(params.is_empty());
 }

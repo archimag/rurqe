@@ -384,3 +384,144 @@
 //!     .select((JobId,))
 //!     .nowait();
 //! ```
+//!
+//! A `HAVING` predicate reads one value per group, so it is written over the rows
+//! an aggregate collapses. The aggregation marker of a comparison is derived from
+//! both of its operands, so comparing an aggregate with a bare column makes the
+//! whole predicate per-row and the clause is rejected at the call site instead of
+//! by the database:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderUserId => "user_id": i64,
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: the predicate compares an aggregate with a bare column, so
+//! // it computes one value per row instead of one value per group.
+//! let _ = select_from::<Postgres<Pg16>, Order>()
+//!     .group_by(OrderUserId)
+//!     .select((OrderUserId, count_all()))
+//!     .having(sum(OrderTotal).gt(Expr::column::<OrderTotal>()));
+//! ```
+//!
+//! The same rule keeps such a comparison out of the projection list of a grouped
+//! query, where it is neither grouped nor an aggregate:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderUserId => "user_id": i64,
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: the comparison computes one value per row, so it is neither
+//! // grouped nor an aggregate.
+//! let _ = select_from::<Postgres<Pg16>, Order>()
+//!     .group_by(OrderUserId)
+//!     .select((OrderUserId, sum(OrderTotal).gt(Expr::column::<OrderTotal>())));
+//! ```
+//!
+//! Comparing the aggregate with a bound value keeps the predicate an aggregate, so
+//! the clause is accepted and renders as written:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderUserId => "user_id": i64,
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! let built = select_from::<Postgres<Pg16>, Order>()
+//!     .group_by(OrderUserId)
+//!     .select((OrderUserId, count_all()))
+//!     .having(sum(OrderTotal).gt(0.0f64))
+//!     .build()
+//!     .expect("valid query");
+//!
+//! assert_eq!(
+//!     built.sql,
+//!     "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+//!      HAVING (SUM(\"total\") > $1)"
+//! );
+//! assert_eq!(built.params, vec![SqlVal::F64(0.0)]);
+//! ```
+//!
+//! The `DISTINCT` and `FILTER (WHERE ...)` clauses restrict the rows an aggregate
+//! call aggregates, so they exist on the call itself alone: a per-row expression
+//! aggregates nothing, and an expression combining the call with arithmetic or a
+//! scalar function no longer ends with it.
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: a column reference aggregates nothing, so there is no call
+//! // for the `DISTINCT` modifier to restrict.
+//! let _ = Expr::column::<OrderTotal>().distinct();
+//! ```
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: `COALESCE(SUM("total"), $1)` is a scalar function over the
+//! // call, so it takes no `FILTER` clause of its own.
+//! let _ = coalesce(sum(OrderTotal), 0.0f64)
+//!     .filter_where(Expr::column::<OrderTotal>().gt(0.0f64));
+//! ```
+//!
+//! The call itself accepts both clauses, and they render where SQL puts them:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! let distinct = select_from::<Postgres<Pg16>, Order>()
+//!     .select((sum_distinct(OrderTotal),))
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(distinct.sql, "SELECT SUM(DISTINCT \"total\") FROM \"orders\"");
+//!
+//! let filtered = select_from::<Postgres<Pg16>, Order>()
+//!     .select((Expr::<i64>::count::<OrderTotal>()
+//!         .filter_where(Expr::column::<OrderTotal>().gt(0.0f64)),))
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(
+//!     filtered.sql,
+//!     "SELECT COUNT(\"total\") FILTER (WHERE (\"total\" > $1)) FROM \"orders\""
+//! );
+//! assert_eq!(filtered.params, vec![SqlVal::F64(0.0)]);
+//! ```

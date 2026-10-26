@@ -302,3 +302,97 @@
 //!     .allow_all()
 //!     .returning(select!(UserId, doubled: Expr::count_all()));
 //! ```
+//!
+//! A `SET` clause computes one value per affected row, so an aggregate written
+//! there describes a value no single row carries. The assignment constructor takes
+//! the per-row marker only, so the call does not compile:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: `SUM("total")` collapses the rows of a group, so it is no
+//! // per-row value the `SET` clause could assign.
+//! let _ = update::<Postgres, Order>()
+//!     .set(OrderTotal::set_expr(sum(OrderTotal)))
+//!     .allow_all();
+//! ```
+//!
+//! A per-row expression computes exactly one value per affected row, so it is
+//! accepted and renders as written:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! let built = update::<Postgres<Pg16>, Order>()
+//!     .set(OrderTotal::set_expr(Expr::column::<OrderTotal>() + 1.0f64))
+//!     .allow_all()
+//!     .build()
+//!     .expect("valid query");
+//!
+//! assert_eq!(built.sql, "UPDATE \"orders\" SET \"total\" = (\"total\" + $1)");
+//! assert_eq!(built.params, vec![SqlVal::F64(1.0)]);
+//! ```
+//!
+//! `DISTINCT` and `FILTER (WHERE ...)` restrict the rows an aggregate call
+//! aggregates, so both belong to that call and to nothing else. A stored column
+//! aggregates nothing, so no clause attaches to it — which is exactly what keeps a
+//! `SET` clause from smuggling one into the assigned value:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! // Fails to compile: `"total"` is a stored column rather than an aggregate
+//! // call, so there is no call for the `DISTINCT` modifier to restrict.
+//! let _ = update::<Postgres, Order>()
+//!     .set(OrderTotal::set_expr(Expr::column::<OrderTotal>().distinct()))
+//!     .allow_all();
+//! ```
+//!
+//! The aggregate call itself accepts the modifiers, and the expression records them
+//! in the call it was written on, so a valid form keeps rendering them where SQL
+//! puts them:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `orders` table.
+//!     Order => "orders" {
+//!         OrderTotal => "total": f64,
+//!     }
+//! }
+//!
+//! let distinct = sum(OrderTotal).distinct();
+//! assert!(matches!(
+//!     distinct.kind(),
+//!     ExprKind::Aggregate { distinct: true, .. }
+//! ));
+//!
+//! let filtered = Expr::<i64>::count::<OrderTotal>()
+//!     .filter_where(Expr::column::<OrderTotal>().gt(0.0f64));
+//! assert!(matches!(
+//!     filtered.kind(),
+//!     ExprKind::Aggregate { filter: Some(_), .. }
+//! ));
+//! ```
