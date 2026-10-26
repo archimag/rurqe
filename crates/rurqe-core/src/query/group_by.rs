@@ -604,6 +604,15 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     ///         .select((UserId, row_number().over(Window::partition_by(OrderUserId))));
     /// }
     /// ```
+    ///
+    /// The selection is consumed where it is written: its projection nodes are
+    /// drained into the statement at the call site and nothing of the selection is
+    /// stored, so a selection borrowing its state — one holding a `&str`, for
+    /// instance — is accepted exactly like an owned one. Only the two semantic
+    /// contracts bound it, matching the bounds `SelectQuery::select` imposes on the
+    /// same trait: it has to be projectable from the scope of the statement
+    /// (`SelectionFor`), and every item it records has to name a grouped column, an
+    /// aggregate, or a constant (`GroupedSelection`).
     pub fn select<S, Positions, GroupPositions>(
         self,
         selection: S,
@@ -615,11 +624,7 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
         HasProjection,
     >
     where
-        S: SelectionFor<Tables, Positions, D>
-            + GroupedSelection<GroupByCols, GroupPositions, D>
-            + Send
-            + Sync
-            + 'static,
+        S: SelectionFor<Tables, Positions, D> + GroupedSelection<GroupByCols, GroupPositions, D>,
     {
         GroupedQuery {
             query: self.query.select::<S, Positions>(selection),

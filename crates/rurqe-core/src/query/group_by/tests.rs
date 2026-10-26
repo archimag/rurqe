@@ -5,8 +5,14 @@
 //! pin that `coalesce`, `CASE`, and `Expr::without_scope` keep the tables their
 //! expressions read instead of degrading into that empty scope.
 
+//! One test pins that the builder drains a borrowed selection in place, so the
+//! contract of `GroupedQuery::select` stays the two semantic traits it shares
+//! with `SelectQuery::select` instead of demanding an owned, thread-safe one.
+
 use crate::dialect::Dialect;
-use crate::expr::{coalesce, Aggregate, DirectAggregate, Expr, SqlVal, Unscoped};
+use crate::expr::{coalesce, Aggregate, DirectAggregate, Expr, ExprKind, SqlVal, Unscoped};
+use crate::query::{GroupedSelection, Selection, SelectionFor};
+use crate::schema::At;
 use crate::{row_number, SelectQuery, Window};
 
 struct MockDialect;
@@ -200,6 +206,54 @@ fn a_grouped_query_accepts_a_window_over_its_grouped_columns() {
         built.sql,
         "SELECT \"user_id\", ROW_NUMBER() OVER (PARTITION BY \"user_id\" ORDER BY \"total\" ASC) \
          FROM \"orders\" GROUP BY \"user_id\", \"total\""
+    );
+    assert!(built.params.is_empty());
+}
+
+/// A projection borrowing the SQL text it renders.
+///
+/// `GroupedQuery::select` drains the projection into the statement at the call
+/// site and keeps nothing of the selection, so a selection borrowing its state is
+/// consumed exactly like an owned one. The type states that directly instead of
+/// going through a tuple: the builder records one item, so it answers the
+/// single-item selection contracts itself.
+struct Borrowed<'a> {
+    /// The SQL text of the projection, borrowed for the life of the query.
+    sql: &'a str,
+}
+
+impl Selection for Borrowed<'_> {
+    type Row = (i64,);
+
+    fn push_projections(&self, out: &mut Vec<ExprKind>) {
+        let projection =
+            Expr::<i64>::raw(self.sql, Vec::new()).expect("a template without placeholders");
+        out.push(projection.into_kind());
+    }
+}
+
+impl<Tables, D> SelectionFor<Tables, At<0>, D> for Borrowed<'_> {
+    type Row = (i64,);
+}
+
+impl<GroupByCols, D> GroupedSelection<GroupByCols, At<0>, D> for Borrowed<'_> {}
+
+#[test]
+fn a_grouped_query_projects_a_borrowed_selection() {
+    // The selection borrows the text it renders, so it is neither owned nor
+    // `'static`: the builder drains it in place, exactly like an owned one.
+    let label = String::from("COUNT(*)");
+
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select(Borrowed { sql: &label })
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT COUNT(*) FROM \"orders\" GROUP BY \"user_id\""
     );
     assert!(built.params.is_empty());
 }
