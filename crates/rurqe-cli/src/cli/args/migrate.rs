@@ -2,7 +2,10 @@
 
 use std::path::PathBuf;
 
-use super::{default_checkpoint_path, default_migrations_dir, take_value, CliCommand, CliError};
+use super::{
+    default_checkpoint_path, default_migrations_dir, take_value, universal_flag, CliCommand,
+    CliError,
+};
 
 /// Parses a `migrate <action>` invocation into its typed command.
 ///
@@ -21,6 +24,9 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag(flag) {
+            return Ok(command);
+        }
         match flag {
             "--migrations-dir" => {
                 migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);

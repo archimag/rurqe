@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use super::{
-    default_checkpoint_path, default_migrations_dir, parse_version, take_value, CliCommand,
-    CliError,
+    default_checkpoint_path, default_migrations_dir, parse_version, take_value, universal_flag,
+    CliCommand, CliError,
 };
 
 /// Parses `prune`: drop migration scripts the checkpoint already folded in.
@@ -17,6 +17,9 @@ pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag(flag) {
+            return Ok(command);
+        }
         match flag {
             "--before" => {
                 before = Some(parse_version(flag, take_value(tokens, &mut idx, flag)?)?);

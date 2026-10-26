@@ -2,7 +2,7 @@
 
 use rurqe_migrate::version::MigrationVersion;
 
-use super::{take_value, CliCommand, CliError};
+use super::{take_value, universal_flag_beside_version, CliCommand, CliError};
 
 /// Parses a `baseline` invocation into its typed command.
 pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, CliError> {
@@ -13,6 +13,9 @@ pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag_beside_version(flag) {
+            return Ok(command);
+        }
         match flag {
             "--version" => version_str = Some(take_value(tokens, &mut idx, flag)?),
             "--description" => {

@@ -249,6 +249,32 @@ fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a
     Ok(value)
 }
 
+/// Recognizes the universal flags every subcommand answers alike.
+///
+/// The per-action parsers consult this while walking their own tokens, so a
+/// trailing `--help` or `-V` is answered exactly like a leading one instead of
+/// being reported as an unknown option of the action it follows.
+fn universal_flag(token: &str) -> Option<CliCommand> {
+    match token {
+        "--help" | "-h" => Some(CliCommand::Help),
+        "-V" | "--version" | "-v" => Some(CliCommand::Version),
+        _ => None,
+    }
+}
+
+/// Recognizes the universal flags beside `--version`.
+///
+/// `--version` names an argument of `baseline`, `stage init`, and `stage
+/// commit`, so those parsers keep it for themselves and answer only the flags
+/// that carry no meaning of their own.
+fn universal_flag_beside_version(token: &str) -> Option<CliCommand> {
+    match token {
+        "--help" | "-h" => Some(CliCommand::Help),
+        "-V" | "-v" => Some(CliCommand::Version),
+        _ => None,
+    }
+}
+
 /// Parses command-line arguments into a typed [`CliCommand`].
 pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
     let tokens: Vec<&str> = args.iter().map(String::as_str).collect();

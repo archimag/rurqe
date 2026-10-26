@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use super::{
     default_checkpoint_path, default_lock_path, default_migrations_dir, default_stage_dir,
-    parse_version, take_value, CliCommand, CliError,
+    parse_version, take_value, universal_flag, universal_flag_beside_version, CliCommand,
+    CliError,
 };
 
 /// The default age above which a scratch database counts as abandoned.
@@ -14,11 +15,17 @@ const DEFAULT_CLEANUP_AGE: u64 = crate::stage::postgres::DEFAULT_SCRATCH_MAX_AGE
 pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let action = match tokens.first() {
         Some(action) if !action.starts_with('-') => *action,
-        _ => {
+        other => {
+            // A universal flag standing where the action belongs is answered
+            // before the action is looked up, so `rurqe stage --help` prints the
+            // help instead of demanding a stage action.
+            if let Some(command) = other.copied().and_then(universal_flag) {
+                return Ok(command);
+            }
             return Err(CliError(
                 "missing stage action (expected `init`, `verify`, `commit`, or `cleanup`)"
                     .to_owned(),
-            ))
+            ));
         }
     };
 
@@ -43,6 +50,9 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag_beside_version(flag) {
+            return Ok(command);
+        }
         match flag {
             "--stage-dir" => {
                 stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
@@ -86,6 +96,9 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag(flag) {
+            return Ok(command);
+        }
         match flag {
             "--stage-dir" => {
                 stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
@@ -134,6 +147,9 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag_beside_version(flag) {
+            return Ok(command);
+        }
         match flag {
             "--version" => {
                 version = Some(parse_version(flag, take_value(tokens, &mut idx, flag)?)?);
@@ -181,6 +197,9 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag(flag) {
+            return Ok(command);
+        }
         match flag {
             "--scratch-url" => {
                 scratch_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());

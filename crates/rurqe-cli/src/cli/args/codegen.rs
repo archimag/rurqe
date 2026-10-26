@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use super::{default_lock_path, default_schema_output, take_value, CliCommand, CliError};
+use super::{
+    default_lock_path, default_schema_output, take_value, universal_flag, CliCommand, CliError,
+};
 
 /// Parses a `codegen` invocation into its typed command.
 pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
@@ -14,6 +16,9 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag(flag) {
+            return Ok(command);
+        }
         match flag {
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
@@ -51,6 +56,9 @@ pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut idx = 0;
     while idx < tokens.len() {
         let flag = tokens[idx];
+        if let Some(command) = universal_flag(flag) {
+            return Ok(command);
+        }
         match flag {
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());

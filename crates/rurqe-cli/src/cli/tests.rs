@@ -601,6 +601,95 @@ fn cargo_entrypoints_answer_the_universal_flags() {
 }
 
 #[test]
+fn help_flags_answer_after_the_action_token() {
+    // The universal flags are recognized in every position, so a trailing
+    // `--help` prints the help instead of being reported as an unknown option of
+    // the action it follows.
+    for flag in ["--help", "-h"] {
+        for args in [
+            vec!["rurqe", "migrate", flag],
+            vec!["rurqe", "migrate", "up", flag],
+            vec!["cargo-db-migrate", "db-migrate", "up", flag],
+            vec!["rurqe", "baseline", flag],
+            vec!["rurqe", "codegen", "--output", "src/db/schema.rs", flag],
+            vec!["rurqe", "verify", "--lock-path", "custom.lock", flag],
+            vec!["rurqe", "prune", "--before", "3.2", flag],
+            vec!["rurqe", "stage", flag],
+            vec!["rurqe", "stage", "init", "--version", "3.2", flag],
+            vec!["rurqe", "stage", "verify", flag],
+            vec!["rurqe", "stage", "commit", "--version", "3.2", flag],
+            vec!["rurqe", "stage", "cleanup", flag],
+        ] {
+            let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+            assert_eq!(
+                parse_args(&argv).expect("the help flag is recognized"),
+                CliCommand::Help,
+                "argv {args:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn version_flags_answer_after_the_action_token() {
+    for flag in ["--version", "-V", "-v"] {
+        for args in [
+            vec!["rurqe", "migrate", "up", flag],
+            vec!["rurqe", "migrate", "status", flag],
+            vec!["cargo-db-verify", "db-verify", flag],
+            vec!["rurqe", "codegen", flag],
+            vec!["rurqe", "verify", flag],
+            vec!["rurqe", "prune", "--before", "3.2", flag],
+            vec!["rurqe", "stage", flag],
+            vec!["rurqe", "stage", "verify", flag],
+            vec!["rurqe", "stage", "cleanup", flag],
+        ] {
+            let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+            assert_eq!(
+                parse_args(&argv).expect("the version flag is recognized"),
+                CliCommand::Version,
+                "argv {args:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn universal_flags_beside_a_subcommand_version_argument() {
+    // `--version` names the argument of `baseline`, `stage init`, and `stage
+    // commit`, so it keeps that meaning there while the flags carrying no
+    // meaning of their own stay universal.
+    for flag in ["-V", "-v"] {
+        for args in [
+            vec!["rurqe", "baseline", flag],
+            vec!["rurqe", "stage", "init", "--version", "3.2", flag],
+            vec!["rurqe", "stage", "commit", "--version", "3.2", flag],
+        ] {
+            let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+            assert_eq!(
+                parse_args(&argv).expect("the version flag is recognized"),
+                CliCommand::Version,
+                "argv {args:?}"
+            );
+        }
+    }
+
+    // A trailing help flag answers while the baseline version argument keeps
+    // its own meaning instead of turning into the program version.
+    let help = parse_args(&[
+        "cargo-db-baseline".into(),
+        "--version".into(),
+        "1.0.0".into(),
+        "-h".into(),
+    ])
+    .expect("the help flag is recognized");
+    assert_eq!(help, CliCommand::Help);
+}
+
+#[test]
 fn baseline_keeps_its_version_argument_under_a_cargo_entrypoint() {
     // `--version` on the baseline entrypoint names the baseline, not the program.
     let cmd = parse_args(&[
