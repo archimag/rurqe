@@ -523,7 +523,12 @@ impl Expr<i64> {
     ///
     /// The produced expression carries the [`DirectAggregate`] marker, so it
     /// stays projectable from a grouped query and accepts the `DISTINCT` and
-    /// `FILTER (WHERE ...)` clauses of the call.
+    /// `FILTER (WHERE ...)` clauses of the call. Those clauses are written on the
+    /// call itself through [`Expr::distinct`] and [`Expr::filter_where`], and the
+    /// call alone offers them: an expression built from it — a comparison, an
+    /// arithmetic combination, a scalar function, a `CASE` branch — carries
+    /// [`Aggregate`] and takes neither, exactly as SQL attaches both to an
+    /// aggregate call and to nothing else.
     pub fn count_all() -> Expr<i64, (), DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
@@ -538,8 +543,10 @@ impl Expr<i64> {
     /// The produced expression carries the [`DirectAggregate`] marker, so it
     /// stays projectable from a grouped query even when `C` is not grouped, and
     /// it accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call.
-    /// It also references the table of `C`, so a statement whose scope lacks that
-    /// table rejects it like any other column reference.
+    /// Both stay reachable through [`Expr::distinct`] and [`Expr::filter_where`]
+    /// on the call alone, and an expression built from it carries [`Aggregate`]
+    /// instead. It also references the table of `C`, so a statement whose scope
+    /// lacks that table rejects it like any other column reference.
     pub fn count<C: Column>() -> Expr<i64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
@@ -554,7 +561,10 @@ impl Expr<i64> {
     /// The scope is the table of `C` in both the distinct and the plain form, so
     /// the aggregate is checked against the statement it is projected into, and
     /// the marker states that the expression still is the aggregate call itself,
-    /// so the `FILTER (WHERE ...)` clause applies to it.
+    /// so the `DISTINCT` modifier is part of the call it was written on and the
+    /// `FILTER (WHERE ...)` clause applies to it through
+    /// [`Expr::filter_where`]. An expression built from the call carries
+    /// [`Aggregate`] and accepts neither.
     pub fn count_distinct<C: Column>() -> Expr<i64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Count,
@@ -571,8 +581,10 @@ impl Expr<f64> {
     /// The produced expression carries the [`DirectAggregate`] marker, so it
     /// stays projectable from a grouped query even when `C` is not grouped, and
     /// it accepts the `DISTINCT` and `FILTER (WHERE ...)` clauses of the call.
-    /// It also references the table of `C`, so a statement whose scope lacks that
-    /// table rejects it like any other column reference.
+    /// Both stay reachable through [`Expr::distinct`] and [`Expr::filter_where`]
+    /// on the call alone, and an expression built from it carries [`Aggregate`]
+    /// instead. It also references the table of `C`, so a statement whose scope
+    /// lacks that table rejects it like any other column reference.
     pub fn avg<C: Column>() -> Expr<f64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
@@ -587,7 +599,10 @@ impl Expr<f64> {
     /// The scope is the table of `C` in both the distinct and the plain form, so
     /// the aggregate is checked against the statement it is projected into, and
     /// the marker states that the expression still is the aggregate call itself,
-    /// so the `FILTER (WHERE ...)` clause applies to it.
+    /// so the `DISTINCT` modifier is part of the call it was written on and the
+    /// `FILTER (WHERE ...)` clause applies to it through
+    /// [`Expr::filter_where`]. An expression built from the call carries
+    /// [`Aggregate`] and accepts neither.
     pub fn avg_distinct<C: Column>() -> Expr<f64, C::Table, DirectAggregate> {
         Expr::new(ExprKind::Aggregate {
             func: AggregateFunc::Avg,
