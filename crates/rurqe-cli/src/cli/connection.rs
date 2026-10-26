@@ -8,21 +8,24 @@
 //! backend, so the transport policy is enforced in front of the driver instead of
 //! being left to it:
 //!
-//! * a connection string demanding TLS (`sslmode=require`) is refused, because
-//!   the requirement cannot be honoured;
+//! * a connection string demanding TLS — `sslmode=require` today, the verified
+//!   `verify-ca` / `verify-full` modes as soon as the driver models them, and any
+//!   mode a later driver adds — is refused on every host, because the requirement
+//!   cannot be honoured;
 //! * reaching a remote host in cleartext is refused unless the connection string
 //!   spells `sslmode=disable`, because the libpq default `prefer` would have
 //!   negotiated TLS and is exactly the silent downgrade this policy rejects;
-//! * a loopback address and a Unix-domain socket are accepted in every mode,
-//!   because those bytes never leave the machine.
+//! * a loopback address and a Unix-domain socket are accepted in the modes that
+//!   demand no TLS, because those bytes never leave the machine.
 //!
 //! Every accepted session is announced once per process — at `warn!` when a
 //! remote host was explicitly acknowledged, at `debug!` for a local transport —
 //! so plaintext is never silent. The sink carrying those notices is installed by
 //! the shipped binaries in [`crate::install_diagnostics`]. The mode and the host
-//! list come from the typed
-//! `postgres::Config` the driver's own parser produces, never from a
-//! hand-written scan of the URL.
+//! list come from the typed `postgres::Config` the driver's own parser produces;
+//! the raw string is consulted only for an `sslmode` spelling that parser rejects
+//! outright, and then through `url::form_urlencoded` rather than a hand-written
+//! scan.
 
 use postgres::config::SslMode;
 use postgres::error::SqlState;
@@ -94,15 +97,21 @@ fn open_sqlite(path: Option<&str>, url: &str) -> Result<rusqlite::Connection, Cl
 ///
 /// The connection string is parsed by the driver's own `postgres::Config`
 /// parser, so the transport mode comes from a typed `SslMode` and a malformed
-/// string is reported before any connection is attempted. A server that refuses
-/// the session before authentication is reported with a remediation hint keyed
-/// on its typed `SqlState`, never on the wording of the driver message.
+/// string is reported before any connection is attempted. A spelling of `sslmode`
+/// the driver does not model — `verify-ca` and `verify-full` in this build — makes
+/// the whole string unparseable, so that failure is attributed to the TLS demand it
+/// carries instead of to a syntax error the operator cannot act upon. A server that
+/// refuses the session before authentication is reported with a remediation hint
+/// keyed on its typed `SqlState`, never on the wording of the driver message.
 fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
     let config = url.parse::<postgres::Config>().map_err(|error| {
-        CliError(format!(
-            "invalid PostgreSQL connection string `{}`: {error}",
-            redact_database_url(url)
-        ))
+        match unmodelled_tls_demand(url) {
+            Some(spelling) => tls_unavailable(spelling, url),
+            None => CliError(format!(
+                "invalid PostgreSQL connection string `{}`: {error}",
+                redact_database_url(url)
+            )),
+        }
     })?;
 
     enforce_transport_policy(&config, url)?;
@@ -127,31 +136,73 @@ fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
 /// The libpq spelling of a transport security mode.
 ///
 /// `SslMode` is a non-exhaustive enum, so a mode added by the driver upstream is
-/// rendered through its `Debug` spelling instead of failing to compile; this
-/// build links no TLS backend, so only the three libpq modes are ever reached.
+/// rendered from its `Debug` spelling in the hyphenated form libpq accepts —
+/// `VerifyFull` becomes `verify-full`, never `verifyfull` — instead of failing to
+/// compile, so a refusal always names the mode the way an operator writes it in a
+/// connection string.
 fn ssl_mode_name(ssl_mode: SslMode) -> String {
     match ssl_mode {
         SslMode::Disable => "disable".to_owned(),
         SslMode::Prefer => "prefer".to_owned(),
         SslMode::Require => "require".to_owned(),
-        other => format!("{other:?}").to_lowercase(),
+        other => kebab_case(&format!("{other:?}")),
     }
+}
+
+/// Renders a driver `Debug` spelling in the hyphenated form libpq accepts.
+///
+/// A hyphen is emitted before an upper-case letter that follows a lower-case or
+/// digit character, so `VerifyFull` renders as `verify-full` and `VerifyCa` as
+/// `verify-ca`; a closing run of capitals stays one word, so a hypothetical
+/// `VerifyCA` renders as `verify-ca` as well.
+fn kebab_case(debug: &str) -> String {
+    let mut rendered = String::with_capacity(debug.len() + 2);
+    let mut previous_upper = true;
+
+    for character in debug.chars() {
+        if character.is_ascii_uppercase() {
+            if !previous_upper {
+                rendered.push('-');
+            }
+            rendered.push(character.to_ascii_lowercase());
+            previous_upper = true;
+        } else {
+            rendered.push(character);
+            previous_upper = false;
+        }
+    }
+
+    rendered
+}
+
+/// Whether a transport mode demands TLS this build cannot provide.
+///
+/// The classification is structural rather than a list of remembered spellings: the
+/// two modes that demand no encryption — `disable`, and `prefer`, which merely
+/// tolerates TLS — are the only accepted ones, so `require`, the verified
+/// `verify-ca` / `verify-full` modes a driver update may start modelling, and any
+/// further variant the non-exhaustive enum gains all land in the refusal. An
+/// unpinned assumption about the driver's feature set therefore cannot silently
+/// reopen the gap.
+fn demands_tls(ssl_mode: SslMode) -> bool {
+    !matches!(ssl_mode, SslMode::Disable | SslMode::Prefer)
 }
 
 /// Refuses a transport this build cannot secure without the operator stating the intent.
 ///
 /// This build links no TLS backend, so every PostgreSQL session is cleartext. The
-/// policy therefore separates the transports that never leave the machine from the
-/// ones that do:
+/// policy therefore separates a transport that demands encryption from the ones that
+/// never leave the machine:
 ///
-/// * `sslmode=require` is refused, because the requirement cannot be honoured and
+/// * a mode demanding TLS is refused on every host — a loopback address and a
+///   Unix-domain socket included — because the requirement cannot be honoured and
 ///   gaining the session anyway would send credentials and data in cleartext;
 /// * any other mode on a remote host is refused unless it is `sslmode=disable`,
 ///   because the libpq default `prefer` would have negotiated TLS and is exactly
 ///   the silent downgrade this policy rejects — cleartext to a remote server is
 ///   accepted only when the connection string spells it out;
-/// * a loopback address and a Unix-domain socket are accepted in every mode,
-///   because those bytes never reach a network.
+/// * a loopback address and a Unix-domain socket are accepted in the modes that
+///   demand no TLS, because those bytes never reach a network.
 ///
 /// The host list and the mode come from the driver's own `postgres::Config`, and
 /// the refusal carries the redacted connection string, so a refused attempt never
@@ -159,14 +210,8 @@ fn ssl_mode_name(ssl_mode: SslMode) -> String {
 fn enforce_transport_policy(config: &postgres::Config, url: &str) -> Result<(), CliError> {
     let ssl_mode = config.get_ssl_mode();
 
-    if ssl_mode == SslMode::Require {
-        return Err(CliError(format!(
-            "`{}` demands TLS (`sslmode=require`), but this build of rurqe-cli links no TLS \
-             backend; refusing to send credentials and data in cleartext. Terminate TLS in front \
-             of the server (in stunnel, pgbouncer, or a cloud proxy, for example) and connect to \
-             that local hop with `sslmode=disable`, or connect over a Unix-domain socket",
-            redact_database_url(url)
-        )));
+    if demands_tls(ssl_mode) {
+        return Err(tls_unavailable(&ssl_mode_name(ssl_mode), url));
     }
 
     let Some(host) = remote_host(config) else {
@@ -187,6 +232,73 @@ fn enforce_transport_policy(config: &postgres::Config, url: &str) -> Result<(), 
         redact_database_url(url),
         ssl_mode_name(ssl_mode)
     )))
+}
+
+/// The single refusal of every connection string that demands TLS.
+///
+/// The mode is rendered the way libpq spells it, so both paths reaching this refusal
+/// — a mode the driver models and a spelling its parser does not know yet — state one
+/// policy and one pair of remedies, and the strictness of the demand never decides
+/// the wording: refuse to chat in cleartext when encryption was asked for, terminate
+/// TLS in front of the server and connect to that local hop, or acknowledge the
+/// plaintext path explicitly with `sslmode=disable`; a Unix-domain socket needs
+/// neither.
+fn tls_unavailable(ssl_mode: &str, url: &str) -> CliError {
+    CliError(format!(
+        "`{}` demands TLS (`sslmode={ssl_mode}`), but this build of rurqe-cli links no TLS \
+         backend; refusing to send credentials and data in cleartext. Terminate TLS in front of \
+         the server and connect to that local hop, or acknowledge the plaintext path explicitly \
+         with `sslmode=disable`; a Unix-domain socket needs neither",
+        redact_database_url(url)
+    ))
+}
+
+/// The TLS-demanding spellings libpq defines for the `sslmode` parameter.
+///
+/// A spelling the linked driver does not model never reaches the typed `SslMode`,
+/// which is exactly why it has to be recognised here: the connection string fails
+/// parsing otherwise, and the operator would be told the string is malformed instead
+/// of being told that the encryption it demands is unavailable.
+const TLS_DEMANDING_SPELLINGS: [&str; 3] = ["require", "verify-ca", "verify-full"];
+
+/// The TLS-demanding `sslmode` spelling a connection string asks for while the
+/// driver's parser does not model it.
+///
+/// This is the fallback the parse failure in [`connect_postgres`] consults: a spelling
+/// the driver does not know makes the whole string unparseable, so the typed
+/// `SslMode` never exists and the policy has nothing to classify. The `sslmode` value
+/// is read from the parameters of the string — the query of a URL, or the
+/// whitespace-separated keyword/value list handed to the same parser by joining its
+/// parameters on `&` — so it comes from a parsed key/value pair instead of a scan of
+/// the raw text. [`driver_models_sslmode`] keeps the fallback honest: a spelling the
+/// driver understands is reported by the policy, never here, so an unrelated defect
+/// in a connection string is not blamed on TLS.
+fn unmodelled_tls_demand(url: &str) -> Option<&'static str> {
+    let parameters = match url::Url::parse(url) {
+        Ok(parsed) => parsed.query().unwrap_or_default().to_owned(),
+        Err(_) => url.replace(|character: char| character.is_ascii_whitespace(), "&"),
+    };
+
+    url::form_urlencoded::parse(parameters.as_bytes())
+        .filter(|(key, _)| key.as_ref() == "sslmode")
+        .find_map(|(_, value)| {
+            let spelling =
+                value.trim_matches(|character: char| character == '\'' || character == '"');
+
+            TLS_DEMANDING_SPELLINGS
+                .into_iter()
+                .find(|candidate| *candidate == spelling && !driver_models_sslmode(candidate))
+        })
+}
+
+/// Whether the driver's own parser accepts a mode spelling.
+///
+/// The probe is a minimal connection string handed to the driver, so a spelling the
+/// driver models is reported by the driver rather than by a list kept here.
+fn driver_models_sslmode(spelling: &str) -> bool {
+    format!("sslmode={spelling}")
+        .parse::<postgres::Config>()
+        .is_ok()
 }
 
 /// The first host of a connection string that is not reachable over a local transport.
@@ -444,5 +556,66 @@ mod tests {
         assert!(notice.contains("db.internal"), "got {notice}");
         assert!(notice.contains("sslmode=disable"), "got {notice}");
         assert!(notice.contains("cleartext"), "got {notice}");
+    }
+
+    #[test]
+    fn every_mode_that_demands_tls_is_classified_as_unavailable() {
+        assert!(demands_tls(SslMode::Require));
+        assert!(!demands_tls(SslMode::Prefer));
+        assert!(!demands_tls(SslMode::Disable));
+    }
+
+    #[test]
+    fn the_refusal_names_a_mode_the_way_libpq_spells_it() {
+        assert_eq!(ssl_mode_name(SslMode::Require), "require");
+        assert_eq!(ssl_mode_name(SslMode::Prefer), "prefer");
+        assert_eq!(ssl_mode_name(SslMode::Disable), "disable");
+
+        // A mode a driver update may add is rendered hyphenated, never as the
+        // `Debug` spelling.
+        assert_eq!(kebab_case("VerifyFull"), "verify-full");
+        assert_eq!(kebab_case("VerifyCa"), "verify-ca");
+        assert_eq!(kebab_case("VerifyCA"), "verify-ca");
+        assert_eq!(kebab_case("Require"), "require");
+    }
+
+    #[test]
+    fn a_verified_tls_demand_never_opens_a_cleartext_session() {
+        // The linked driver models neither `verify-ca` nor `verify-full`, so these
+        // strings fail its parser and the refusal is attributed to the TLS demand.
+        // A driver that starts modelling them lands in `demands_tls` and is refused
+        // with the same wording, so either way the demand never becomes a cleartext
+        // session on a Unix-domain socket or a loopback address.
+        for url in [
+            "host=/var/run/postgresql user=app dbname=app sslmode=verify-full",
+            "host=localhost user=app dbname=app sslmode=verify-ca",
+            "host=localhost user=app sslmode='verify-full'",
+            "postgres://app@localhost/app?sslmode=verify-full",
+            "postgres://app@127.0.0.1/app?sslmode=verify-ca",
+        ] {
+            let error = connect_postgres(url)
+                .err()
+                .unwrap_or_else(|| panic!("`{url}` demands TLS this build cannot provide"));
+
+            let message = error.to_string();
+            assert!(message.contains("TLS backend"), "`{url}`: {message}");
+            assert!(
+                message.contains("sslmode=verify-"),
+                "`{url}` names the demanded mode: {message}"
+            );
+            assert!(
+                !message.contains("invalid PostgreSQL connection string"),
+                "`{url}` reports the TLS demand instead of a syntax error: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_driver_probe_answers_for_the_mode_it_models() {
+        // The probe is what keeps the parse-failure fallback honest: the mode this
+        // build really supports is reported by the driver itself, while a spelling
+        // it does not support is never silently treated as one.
+        assert!(driver_models_sslmode("require"));
+        assert!(!driver_models_sslmode("maybe"));
     }
 }
