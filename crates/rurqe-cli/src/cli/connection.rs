@@ -16,9 +16,11 @@
 //! * a loopback address and a Unix-domain socket are accepted in every mode,
 //!   because those bytes never leave the machine.
 //!
-//! Every accepted session is announced once per process — at `info!` when a
+//! Every accepted session is announced once per process — at `warn!` when a
 //! remote host was explicitly acknowledged, at `debug!` for a local transport —
-//! so plaintext is never silent. The mode and the host list come from the typed
+//! so plaintext is never silent. The sink carrying those notices is installed by
+//! the shipped binaries in [`crate::install_diagnostics`]. The mode and the host
+//! list come from the typed
 //! `postgres::Config` the driver's own parser produces, never from a
 //! hand-written scan of the URL.
 
@@ -248,22 +250,17 @@ fn is_loopback_name(name: &str) -> bool {
 /// cleartext only because it stays on the machine or because the operator wrote
 /// `sslmode=disable` for a remote host. The first case is the normal shape of a
 /// developer workstation and is reported at `debug!`; the second one is a
-/// deliberate exception and is recorded at `info!`. The notices travel through
-/// the `tracing` facade, which leaves the sink to the application embedding this
-/// crate.
+/// security-relevant exception and is recorded at `warn!`, so the sink the shipped
+/// binaries install carries it to the operator instead of leaving plaintext
+/// silent. The notices travel through the `tracing` facade, which leaves the sink
+/// to the application embedding this crate.
 fn announce_cleartext(ssl_mode: SslMode, remote: Option<&str>) {
     static ACKNOWLEDGED: std::sync::Once = std::sync::Once::new();
     static LOCAL: std::sync::Once = std::sync::Once::new();
 
     if let Some(host) = remote {
         ACKNOWLEDGED.call_once(|| {
-            tracing::info!(
-                host = %host,
-                ssl_mode = %ssl_mode_name(ssl_mode),
-                "connecting to a remote PostgreSQL host in cleartext, as the connection string \
-                 requests with `sslmode=disable`; a build with a TLS backend would encrypt this \
-                 session"
-            );
+            tracing::warn!("{}", acknowledged_cleartext_notice(host, ssl_mode));
         });
         return;
     }
@@ -279,6 +276,18 @@ fn announce_cleartext(ssl_mode: SslMode, remote: Option<&str>) {
              backend and the session never leaves the machine"
         );
     });
+}
+
+/// The notice announcing a remote session the operator acknowledged in cleartext.
+///
+/// The wording is built apart from the emission, so the notice names both the host
+/// and the mode the session really uses and a regression test can pin them.
+fn acknowledged_cleartext_notice(host: &str, ssl_mode: SslMode) -> String {
+    format!(
+        "connecting to the remote PostgreSQL host `{host}` in cleartext, as the connection string \
+         requests with `sslmode={}`; a build with a TLS backend would encrypt this session",
+        ssl_mode_name(ssl_mode)
+    )
 }
 
 #[cfg(test)]
@@ -426,5 +435,14 @@ mod tests {
         ] {
             assert!(!is_loopback_name(remote), "`{remote}` leaves the machine");
         }
+    }
+
+    #[test]
+    fn an_acknowledged_cleartext_session_is_announced_with_its_host_and_mode() {
+        let notice = acknowledged_cleartext_notice("db.internal", SslMode::Disable);
+
+        assert!(notice.contains("db.internal"), "got {notice}");
+        assert!(notice.contains("sslmode=disable"), "got {notice}");
+        assert!(notice.contains("cleartext"), "got {notice}");
     }
 }

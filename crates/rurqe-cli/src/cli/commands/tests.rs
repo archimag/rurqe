@@ -659,6 +659,51 @@ fn a_boundary_parked_by_a_killed_swap_is_restored_by_the_next_one() {
     assert!(!staged.exists(), "the staged snapshot was renamed into place");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_boundary_swap_that_cannot_flush_its_directory_reports_the_gap() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = workspace("snapshot-flush");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
+    std::fs::write(boundary.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+        .expect("write the committed snapshot");
+
+    let staged = dir.join(".checkpoint-stage.4242.11.tmp");
+    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
+    std::fs::write(
+        staged.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the staged snapshot");
+
+    if !permissions_are_enforced(&dir) {
+        // A superuser reads through the withdrawn permission, so the flush
+        // cannot be made to fail and the swap stays durable either way.
+        return;
+    }
+
+    // Both renames need write and search permission on the directory, while
+    // flushing its entry needs the directory open for reading.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300))
+        .expect("withdraw the read permission of the directory");
+
+    let swapped = swap_snapshot(&boundary, &staged);
+
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .expect("restore the permissions of the directory");
+
+    let notices = swapped.expect("the boundary is installed");
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("could not be flushed")),
+        "the durability gap reaches the report, got {notices:?}"
+    );
+    assert_eq!(directory_names(&boundary), vec!["orders.sql".to_owned()]);
+}
+
 #[test]
 fn a_parked_backup_beside_a_live_boundary_is_discarded_by_the_next_swap() {
     let dir = workspace("snapshot-superseded");

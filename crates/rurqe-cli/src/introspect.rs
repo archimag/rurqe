@@ -59,9 +59,33 @@ pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
 /// A selection that describes nothing is reported through the `tracing` facade
 /// before the catalog is handed on; see [`report_vacuous_schema`].
 pub fn introspect_database_schema(url: &str, schema: &str) -> Result<SchemaCatalog, CliError> {
+    let (catalog, notice) = introspect_database_schema_notice(url, schema)?;
+
+    // A caller of this entry point receives the catalog alone, so the notice is
+    // logged here; a command that builds a report of its own reaches it through
+    // [`introspect_database_schema_notice`] and never duplicates it on both
+    // streams.
+    if let Some(notice) = notice {
+        tracing::warn!("{notice}");
+    }
+
+    Ok(catalog)
+}
+
+/// Introspects `schema` of the live database identified by `url`, reporting a
+/// selection that describes nothing.
+///
+/// The notice is returned instead of being only logged, so a command puts it in
+/// the report it prints and the hazard reaches the operator whether or not a
+/// `tracing` sink is installed. See [`report_vacuous_schema`] for the analysis.
+pub(crate) fn introspect_database_schema_notice(
+    url: &str,
+    schema: &str,
+) -> Result<(SchemaCatalog, Option<String>), CliError> {
     let mut connection = connect(url)?;
-    report_vacuous_schema(&mut connection, schema)?;
-    introspect_connection_schema(&mut connection, schema)
+    let notice = report_vacuous_schema(&mut connection, schema)?;
+
+    introspect_connection_schema(&mut connection, schema).map(|catalog| (catalog, notice))
 }
 
 /// Introspects `schema` of an already opened [`Connection`].
@@ -94,11 +118,11 @@ pub(crate) fn introspect_connection_schema(
 pub(crate) fn report_vacuous_schema(
     connection: &mut Connection,
     schema: &str,
-) -> Result<(), CliError> {
+) -> Result<Option<String>, CliError> {
     match connection {
         // A SQLite database holds one unnamed catalog, so the selection always
         // describes it whatever name the caller passed.
-        Connection::Sqlite(_) => Ok(()),
+        Connection::Sqlite(_) => Ok(None),
         Connection::Postgres(client) => report_vacuous_postgres_schema(client, schema),
     }
 }
@@ -108,21 +132,27 @@ pub(crate) fn report_vacuous_schema(
 pub(crate) fn report_vacuous_postgres_schema(
     client: &mut ::postgres::Client,
     schema: &str,
-) -> Result<(), CliError> {
+) -> Result<Option<String>, CliError> {
     let neighbours = postgres::schema_neighbours(client, schema)?;
 
+    Ok(vacuous_schema_notice(schema, &neighbours))
+}
+
+/// The notice a selection that describes nothing produces, when it describes nothing.
+///
+/// A selection holding a relation of its own describes the database it was asked
+/// about, and one asked about a database that keeps no user relation anywhere else
+/// either is empty rather than wrong, so both produce no notice at all. The wording
+/// names the neighbours, because they are the schemas the operator selects instead.
+pub(crate) fn vacuous_schema_notice(schema: &str, neighbours: &[String]) -> Option<String> {
     if neighbours.is_empty() {
-        return Ok(());
+        return None;
     }
 
     let names = neighbours.join(", ");
-    tracing::warn!(
-        schema,
-        schemas = %names,
-        "the selected schema `{schema}` holds no table or view while the database keeps user \
-         relations in {names}; the catalog digest computed from it describes nothing, so pass \
+    Some(format!(
+        "warning: the selected schema `{schema}` holds no table or view while the database keeps \
+         user relations in {names}; the catalog digest computed from it describes nothing, so pass \
          `--schema <name>` or set `schema = \"<name>\"` in `rurqe.toml`"
-    );
-
-    Ok(())
+    ))
 }

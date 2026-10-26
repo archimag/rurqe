@@ -36,7 +36,7 @@ use self::connection::resolve_database_url;
 use crate::codegen::generate_schema_rs;
 use crate::drift::verify_drift;
 use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
-use crate::introspect::{introspect_database_schema, report_vacuous_postgres_schema};
+use crate::introspect::{introspect_database_schema_notice, report_vacuous_postgres_schema};
 
 /// Opens the migration backend for `database_url` and evaluates `$run` against it.
 ///
@@ -77,9 +77,15 @@ macro_rules! with_migration_backend {
             }
             Connection::Postgres(mut client) => {
                 let schema = $schema?;
-                report_vacuous_postgres_schema(&mut client, &schema)?;
+                let notice = report_vacuous_postgres_schema(&mut client, &schema)?;
                 let mut $backend = PostgresMigrationBackend::new(client).with_schema(schema);
-                $run
+
+                // The notice travels in the report of the command, so a digest
+                // computed over a schema that describes nothing reaches the
+                // operator whether or not a tracing sink is installed.
+                let mut output = $run?;
+                output.notice(notice);
+                Ok(output)
             }
         }
     }};
@@ -146,7 +152,7 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
             let config = load_config()?;
             let schema = schema_of(schema.as_deref(), &config);
             let url = resolve_database_url(database_url)?;
-            let catalog = introspect_database_schema(&url, &schema)?;
+            let (catalog, notice) = introspect_database_schema_notice(&url, &schema)?;
             let mut options = codegen_options(config);
             if domain_types {
                 options.domain_types = true;
@@ -155,12 +161,16 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
                 .map_err(|err| CliError(format!("failed to generate schema code: {err}")))?;
             write_file(&output, &code)?;
             write_file(&lock_path, &catalog.to_lock())?;
-            Ok(CommandOutput::single(format!(
+
+            let mut report = CommandOutput::new();
+            report.notice(notice);
+            report.line(format!(
                 "Generated schema to {} and snapshot to {} (hash {})",
                 output.display(),
                 lock_path.display(),
                 catalog.schema_hash()
-            )))
+            ));
+            Ok(report)
         }
         CliCommand::Verify {
             database_url,
@@ -177,13 +187,20 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
                 ))
             })?;
             let schema_code = resolve_schema_code(schema_path)?;
-            let catalog = introspect_database_schema(&url, &schema)?;
+            let (catalog, notice) = introspect_database_schema_notice(&url, &schema)?;
             verify_drift(&catalog, &expected_lock, schema_code.as_deref())
                 .map_err(|err| CliError(err.to_string()))?;
-            Ok(CommandOutput::single(format!(
+
+            // A selection that describes nothing compares nothing against
+            // nothing, so the pass is reported together with the notice that
+            // says what the digest really covered.
+            let mut report = CommandOutput::new();
+            report.notice(notice);
+            report.line(format!(
                 "Schema verification passed against {}",
                 lock_path.display()
-            )))
+            ));
+            Ok(report)
         }
         CliCommand::StageInit {
             stage_dir,

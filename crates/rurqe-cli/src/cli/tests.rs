@@ -1,6 +1,22 @@
 use std::path::PathBuf;
 
 use super::*;
+use crate::install_diagnostics;
+
+#[test]
+fn the_binary_entry_point_installs_a_diagnostic_sink() {
+    install_diagnostics();
+
+    // The crate routes its environment notices through the `tracing` facade,
+    // which leaves the sink to the application. The shipped binaries are that
+    // application, so installing a second sink is refused exactly when the entry
+    // point provided the one the facade contract delegates.
+    let probe = tracing_subscriber::fmt::Subscriber::builder().finish();
+    assert!(
+        tracing::subscriber::set_global_default(probe).is_err(),
+        "the process entry point installs the sink the facade diagnostics travel through"
+    );
+}
 
 #[test]
 fn parses_migrate_up() {

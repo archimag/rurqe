@@ -35,6 +35,23 @@ impl CommandOutput {
         self.lines.push(text.to_owned());
     }
 
+    /// Appends the notice a command collected for the operator, if it produced one.
+    ///
+    /// A notice states a command-level guarantee — a schema selection that
+    /// describes nothing, a boundary whose directory could not be flushed — so it
+    /// travels in the report and reaches the operator even when no `tracing` sink
+    /// is installed.
+    pub fn notice(&mut self, notice: Option<String>) {
+        if let Some(notice) = notice {
+            self.lines.push(notice);
+        }
+    }
+
+    /// Appends every notice in `notices`, in the order the command produced them.
+    pub fn notices(&mut self, notices: impl IntoIterator<Item = String>) {
+        self.lines.extend(notices);
+    }
+
     /// The lines of the output in the order the command produced them.
     pub fn lines(&self) -> &[String] {
         &self.lines

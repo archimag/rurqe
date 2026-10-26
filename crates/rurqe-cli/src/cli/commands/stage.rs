@@ -9,7 +9,7 @@ use rurqe_migrate::stage::{cold_start, DeclarativeStage, StageMarker};
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::{connect, redact_database_url, CliError, CommandOutput, Connection};
-use crate::introspect::introspect_database_schema;
+use crate::introspect::introspect_database_schema_notice;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::postgres::{
     current_owner_tag, drop_stale_scratch_databases, find_stale_scratch_databases,
@@ -328,7 +328,7 @@ pub(crate) fn commit_stage(
     }
 
     let stage = load_stage(stage_dir)?;
-    let catalog = introspect_database_schema(database_url, schema)?;
+    let (catalog, notice) = introspect_database_schema_notice(database_url, schema)?;
 
     // All artifacts are rendered before the first byte is written, and they land
     // in the order lock, snapshot, marker, so an interrupted commit never leaves
@@ -337,10 +337,16 @@ pub(crate) fn commit_stage(
     let checkpoint = Checkpoint::new(version, catalog.checksum());
 
     write_file(lock_path, &lock)?;
-    snapshot_boundary_stage(&stage, checkpoint_path)?;
+    let boundary_notices = snapshot_boundary_stage(&stage, checkpoint_path)?;
     write_file(checkpoint_path, &checkpoint.render())?;
 
-    Ok(CommandOutput::single(format!(
+    // The notices travel in the report of the command, so a selection that
+    // describes nothing and a boundary whose directory could not be flushed reach
+    // the operator whether or not a tracing sink is installed.
+    let mut output = CommandOutput::new();
+    output.notice(notice);
+    output.notices(boundary_notices);
+    output.line(format!(
         "Committed the stage to {}, snapshotted the boundary to {}, and anchored `{}` up to \
          version {} (hash {}, schema `{schema}`)",
         lock_path.display(),
@@ -348,7 +354,8 @@ pub(crate) fn commit_stage(
         checkpoint_path.display(),
         checkpoint.pruned_up_to_version(),
         catalog.schema_hash()
-    )))
+    ));
+    Ok(output)
 }
 
 /// The directory holding the verbatim DDL of a committed stage boundary.
@@ -397,7 +404,7 @@ fn path_exists(path: &Path) -> Result<bool, CliError> {
 fn snapshot_boundary_stage(
     stage: &DeclarativeStage,
     checkpoint_path: &Path,
-) -> Result<(), CliError> {
+) -> Result<Vec<String>, CliError> {
     let dir = boundary_dir(checkpoint_path);
     let staged = create_staging_dir(&dir)?;
 
@@ -465,6 +472,11 @@ pub(super) fn write_staged_boundary(
 
 /// Installs the staged snapshot of `staged` at `dir`, keeping the previous one whole.
 ///
+/// The installed boundary is complete once the renames are done, so a durability gap
+/// of the swap — a superseded snapshot that cannot be discarded, a directory that
+/// cannot be flushed — is returned as a notice for the command's report instead of
+/// failing a commit that already happened.
+///
 /// The previous boundary is parked at [`boundary_backup`] before the new one
 /// takes its place and is renamed back when that move fails, so a reader never
 /// observes a mixture of two boundaries. A parked backup found without a live
@@ -473,12 +485,16 @@ pub(super) fn write_staged_boundary(
 /// restored before the new one is installed. The previous snapshot is discarded
 /// only once the swap succeeded: failing the commit there would leave
 /// `checkpoint.toml` describing a boundary the directory no longer holds.
-pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
+pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<Vec<String>, CliError> {
     let backup = boundary_backup(dir);
+    let mut notices: Vec<String> = Vec::new();
 
-    if let Err(error) = restore_parked_boundary(dir, &backup) {
-        let _ = std::fs::remove_dir_all(staged);
-        return Err(error);
+    match restore_parked_boundary(dir, &backup) {
+        Ok(notice) => notices.extend(notice),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(staged);
+            return Err(error);
+        }
     }
 
     let previous = match std::fs::rename(dir, &backup) {
@@ -505,12 +521,12 @@ pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
     }
 
     if let Some(previous) = previous {
-        discard_previous_snapshot(&previous);
+        notices.extend(discard_previous_snapshot(&previous));
     }
 
-    flush_boundary_parent(dir);
+    notices.extend(flush_boundary_parent(dir));
 
-    Ok(())
+    Ok(notices)
 }
 
 /// Puts a boundary an interrupted swap parked back in place.
@@ -519,14 +535,13 @@ pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<(), CliError> {
 /// published its replacement, so it is discarded; one found without a live
 /// boundary is restored, because the parked snapshot is then the only copy of
 /// the committed boundary.
-fn restore_parked_boundary(dir: &Path, backup: &Path) -> Result<(), CliError> {
+fn restore_parked_boundary(dir: &Path, backup: &Path) -> Result<Option<String>, CliError> {
     if !path_exists(backup)? {
-        return Ok(());
+        return Ok(None);
     }
 
     if path_exists(dir)? {
-        discard_previous_snapshot(backup);
-        return Ok(());
+        return Ok(discard_previous_snapshot(backup));
     }
 
     std::fs::rename(backup, dir).map_err(|error| {
@@ -535,7 +550,9 @@ fn restore_parked_boundary(dir: &Path, backup: &Path) -> Result<(), CliError> {
             dir.display(),
             backup.display()
         ))
-    })
+    })?;
+
+    Ok(None)
 }
 
 /// Discards the previous boundary once the new snapshot is in place.
@@ -543,13 +560,13 @@ fn restore_parked_boundary(dir: &Path, backup: &Path) -> Result<(), CliError> {
 /// The swap already succeeded, so a backup that cannot be removed is debris only:
 /// reporting it would abort a commit whose snapshot is already the one the marker
 /// is about to describe.
-fn discard_previous_snapshot(previous: &Path) {
-    if let Err(error) = std::fs::remove_dir_all(previous) {
-        tracing::warn!(
-            backup = %previous.display(),
-            error = %error,
-            "failed to discard the previous boundary snapshot"
-        );
+fn discard_previous_snapshot(previous: &Path) -> Option<String> {
+    match std::fs::remove_dir_all(previous) {
+        Ok(()) => None,
+        Err(error) => Some(format!(
+            "warning: failed to discard the previous boundary snapshot `{}`: {error}",
+            previous.display()
+        )),
     }
 }
 
@@ -561,13 +578,15 @@ fn discard_previous_snapshot(previous: &Path) {
 /// would reject a swap that did happen. The flush itself goes through the same
 /// shared `sync_directory` primitive every artifact write uses, so the
 /// durability discipline cannot drift between call sites.
-fn flush_boundary_parent(dir: &Path) {
+fn flush_boundary_parent(dir: &Path) -> Option<String> {
     let parent = artifact_directory(dir);
-    if let Err(error) = sync_directory(parent) {
-        tracing::warn!(
-            directory = %parent.display(),
-            error = %error,
-            "failed to flush the directory holding the installed boundary snapshot"
-        );
+
+    match sync_directory(parent) {
+        Ok(()) => None,
+        Err(error) => Some(format!(
+            "warning: the boundary snapshot is installed but the directory `{}` holding it could \
+             not be flushed, so a crash may still resurrect the previous boundary: {error}",
+            parent.display()
+        )),
     }
 }

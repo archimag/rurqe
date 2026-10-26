@@ -7,8 +7,33 @@ fn a_schema_selection_describes_the_single_sqlite_catalog() {
     // A SQLite file has no schema layer, so the notice that reports a vacuous
     // selection never fires whatever name the caller passes.
     let mut connection = connect(":memory:").expect("open the in-memory database");
-    report_vacuous_schema(&mut connection, "tenant_a")
+    let notice = report_vacuous_schema(&mut connection, "tenant_a")
         .expect("one unnamed catalog is never a vacuous selection");
+
+    assert!(
+        notice.is_none(),
+        "a SQLite selection always describes the file it opened, got {notice:?}"
+    );
+}
+
+#[test]
+fn a_vacuous_selection_names_the_schema_and_the_populated_neighbours() {
+    // The neighbour query needs a PostgreSQL server, so the wording that reaches
+    // the operator is pinned on the pure builder the query result feeds.
+    let notice = vacuous_schema_notice("tenant_a", &["app".to_owned(), "billing".to_owned()])
+        .expect("a selection that describes nothing is reported");
+
+    assert!(notice.contains("tenant_a"), "got {notice}");
+    assert!(notice.contains("app, billing"), "got {notice}");
+    assert!(notice.contains("--schema"), "got {notice}");
+}
+
+#[test]
+fn a_selection_that_describes_the_database_produces_no_notice() {
+    assert!(
+        vacuous_schema_notice("public", &[]).is_none(),
+        "a populated selection names no neighbour"
+    );
 }
 
 #[test]
