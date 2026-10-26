@@ -64,6 +64,33 @@ impl StatementRef<'_> {
         validate_clauses(self, &relations, outer_relations)
     }
 
+    /// Validates a statement written inside a clause of another statement.
+    ///
+    /// The statement is validated exactly like a statement of its own, except for
+    /// the row-level lock it may request. A locking clause claims the rows the
+    /// statement read for the transaction that runs it, so it describes a statement
+    /// the application executes itself; a statement embedded in a clause of another
+    /// statement only supplies rows to it — as a scalar operand, an `EXISTS` or `IN`
+    /// predicate, a `WITH` body, a derived table, a `LATERAL` subquery, or an operand
+    /// of a set operation — so the lock it would claim has no statement of its own to
+    /// belong to.
+    ///
+    /// The conversions of the builder nest an unlocked query alone, which is what
+    /// `Unlocked` states, so the pair stays unreachable through the fluent API; a
+    /// statement assembled from AST data can still describe it, so the lock is
+    /// rejected here as [`BuildError::NestedLock`] before a single character of the
+    /// statement is rendered. The `LockClause` itself stays untouched: a locking
+    /// statement of its own renders its clause unchanged.
+    pub(super) fn validate_nested_in(
+        &self,
+        outer_relations: Option<&[TableRef]>,
+    ) -> Result<(), BuildError> {
+        if self.lock.is_some() {
+            return Err(BuildError::NestedLock);
+        }
+        self.validate_in(outer_relations)
+    }
+
     /// Validates the rules that read the statement data alone.
     ///
     /// The aggregation consistency belongs to the same statement-level family,
@@ -74,7 +101,7 @@ impl StatementRef<'_> {
         self.validate_relations()?;
         self.validate_cte_names()?;
         self.validate_distinct_on_prefix()?;
-        self.validate_distinct_on_lock()?;
+        self.validate_distinct_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
         self.validate_set_operand_arity()
@@ -175,21 +202,35 @@ impl StatementRef<'_> {
         Ok(())
     }
 
-    /// Rejects a `DISTINCT ON (...)` statement that also requests a row-level lock.
+    /// Rejects a `DISTINCT` or `DISTINCT ON (...)` statement that also requests a
+    /// row-level lock.
     ///
-    /// PostgreSQL accepts neither `SELECT DISTINCT ON (...) ... FOR UPDATE` nor
-    /// its `FOR SHARE` variant, because a row-level lock claims the rows the
-    /// statement read while the deduplication keeps one row per group. The
-    /// builder keeps the pair apart through its typestate — a deduplicated query
-    /// carries `LockUnavailable` — but a statement assembled from AST data can
-    /// still describe it, so the rule is checked on the statement data during
-    /// `validate` and surfaces as [`BuildError::DistinctOnWithLock`] before any
-    /// SQL is rendered.
-    fn validate_distinct_on_lock(&self) -> Result<(), BuildError> {
-        if self.distinct_on.is_empty() || self.lock.is_none() {
+    /// PostgreSQL accepts neither `SELECT DISTINCT ON (...) ... FOR UPDATE` nor its
+    /// `FOR SHARE` variant, and it refuses the plain `DISTINCT` pair for the same
+    /// reason: a row-level lock claims the rows the statement read while the
+    /// deduplication keeps one row per group, so the two clauses contradict each
+    /// other.
+    ///
+    /// The `DISTINCT ON` pair keeps the diagnostic it has always reported —
+    /// [`BuildError::DistinctOnWithLock`] — and the `DISTINCT` pair is reported as
+    /// [`BuildError::DistinctWithLock`]; a statement describing both flavours is
+    /// therefore reported through the first one. The builder keeps either pair out
+    /// of reach through its typestate — `distinct` and `distinct_on` move the query
+    /// out of `NoLock`, while `for_update` and `for_share` stay unreachable from
+    /// that state — but a statement assembled from AST data can still describe
+    /// them, so the clause pair is checked on the statement data during `validate`
+    /// and rejected before any SQL is rendered.
+    fn validate_distinct_lock(&self) -> Result<(), BuildError> {
+        if self.lock.is_none() {
             return Ok(());
         }
-        Err(BuildError::DistinctOnWithLock)
+        if !self.distinct_on.is_empty() {
+            return Err(BuildError::DistinctOnWithLock);
+        }
+        if self.distinct {
+            return Err(BuildError::DistinctWithLock);
+        }
+        Ok(())
     }
 
     /// Rejects a `DISTINCT` statement whose `ORDER BY` names no projected expression.

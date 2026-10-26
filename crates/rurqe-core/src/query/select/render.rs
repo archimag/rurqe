@@ -12,7 +12,7 @@ use crate::query::cte::{Cte, DerivedTable, Lateral};
 use crate::query::scope::TableScope;
 use crate::schema::{Table, TableRef};
 
-use super::{BuiltQuery, HasProjection, ProjectionPresent, SelectQuery};
+use super::{BuiltQuery, HasProjection, ProjectionPresent, SelectQuery, Unlocked};
 
 impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     SelectQuery<D, Tables, Output, P, Lock>
@@ -131,11 +131,26 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
         statement.render::<D>(&mut sql, &mut params)?;
         Ok(BuiltQuery { sql, params })
     }
+}
 
+/// Conversions nesting the query inside another statement.
+///
+/// A nested statement renders inside a clause of the statement embedding it, so the
+/// rows it contributes are the rows of *that* statement: a row-level lock it could
+/// claim would belong to no statement of its own. The conversions therefore accept
+/// an [`Unlocked`] query alone, which leaves the typestate builders
+/// [`SelectQuery::for_update`] and [`SelectQuery::for_share`] as the only way to
+/// request a lock, while [`SelectQuery::build`] still renders a locked statement and
+/// [`SelectQuery::to_ast`] still describes one.
+impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock: Unlocked>
+    SelectQuery<D, Tables, Output, P, Lock>
+{
     /// Wraps the query into a [`Subquery`] carrying this statement as plain data.
     ///
     /// The query is consumed, so the statement moves its clauses into the
-    /// subquery instead of copying them.
+    /// subquery instead of copying them. It also has to be unlocked: a statement
+    /// that claims its rows for its own transaction is executed on its own rather
+    /// than nested into another statement — see [`Unlocked`].
     pub fn into_subquery(self) -> Subquery {
         Subquery::new(self.into_ast())
     }
@@ -145,7 +160,8 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock>
     /// The predicate is built from a copy of the query, which is what a caller
     /// that keeps using it needs. A query that is dropped right afterwards takes
     /// [`SelectQuery::into_exists`] instead, which moves the statement rather
-    /// than copying it.
+    /// than copying it. Like every conversion into a nested position, the
+    /// predicate accepts an unlocked query alone — see [`Unlocked`].
     pub fn exists(&self) -> Expr<bool, (), NonAggregate, D> {
         self.clone().into_exists()
     }

@@ -56,9 +56,9 @@ pub use self::scope::{
     TableScope,
 };
 pub use self::select::{
-    BuiltQuery, HasProjection, LockUnavailable, Locked, LockedQuery, NoLock, NoProjection,
-    NullsOrder, OrderBy, OrderDirection, ProjectionOpen, ProjectionPresent, Query, SelectQuery,
-    SetOpApplied, SetOperand, TailClosed,
+    BuiltQuery, HasProjection, LockUnavailable, LockWaitSet, Locked, LockedQuery, NoLock,
+    NoProjection, NullsOrder, OrderBy, OrderDirection, ProjectionOpen, ProjectionPresent, Query,
+    SelectQuery, SetOpApplied, SetOperand, TailClosed, Unlocked,
 };
 pub use self::selection::{
     ApplyNullability, ColumnInScope, MakeNullable, Nullable, SelectTarget, SelectTargetInScope,

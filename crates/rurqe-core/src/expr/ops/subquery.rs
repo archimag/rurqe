@@ -1,7 +1,7 @@
 //! Nesting contracts for statements embedded in predicates.
 
 use crate::dialect::Dialect;
-use crate::query::{HasProjection, LockUnavailable, SelectQuery, SetOpApplied, TableScope};
+use crate::query::{HasProjection, SelectQuery, TableScope, Unlocked};
 
 use crate::expr::ast::Subquery;
 
@@ -36,39 +36,16 @@ impl AnySubquery for Subquery {
     }
 }
 
-impl<D, Tables, Output> AnySubquery for SelectQuery<D, Tables, Output, HasProjection>
+// A locked query claims the rows it reads for the transaction that runs it, so it
+// stays a statement of its own: the impl accepts an unlocked query alone, which is
+// what the `Unlocked` bound states. A deduplicated statement, a combined one, and a
+// combined one that already ordered its rows request no lock either — all three
+// carry a lock-free typestate — so they nest like a plain query.
+impl<D, Tables, Output, Lock> AnySubquery for SelectQuery<D, Tables, Output, HasProjection, Lock>
 where
     D: Dialect,
     Tables: TableScope,
-{
-    type Dialect = D;
-
-    fn into_subquery(self) -> Subquery {
-        self.into_subquery()
-    }
-}
-
-// A statement a set operation combined or a deduplication changed cannot request
-// a row-level lock, but both are still plain statements an enclosing one can
-// nest, so both participate in the predicates that read a nested query. Only the
-// lockable queries excluded by the impl above — the ones carrying `Locked` — stay
-// statements of their own.
-impl<D, Tables, Output> AnySubquery for SelectQuery<D, Tables, Output, HasProjection, LockUnavailable>
-where
-    D: Dialect,
-    Tables: TableScope,
-{
-    type Dialect = D;
-
-    fn into_subquery(self) -> Subquery {
-        self.into_subquery()
-    }
-}
-
-impl<D, Tables, Output> AnySubquery for SelectQuery<D, Tables, Output, HasProjection, SetOpApplied>
-where
-    D: Dialect,
-    Tables: TableScope,
+    Lock: Unlocked,
 {
     type Dialect = D;
 
@@ -132,25 +109,13 @@ where
 )]
 pub trait InSubquery<Row>: AnySubquery {}
 
-impl<D, Tables, Row> InSubquery<Row> for SelectQuery<D, Tables, Row, HasProjection>
+// A membership predicate reads the rows a statement projects, so the statement it
+// nests accepts an unlocked query alone — the same bound the conversion into a
+// subquery carries.
+impl<D, Tables, Row, Lock> InSubquery<Row> for SelectQuery<D, Tables, Row, HasProjection, Lock>
 where
     D: Dialect,
     Tables: TableScope,
-{
-}
-
-// A deduplicated or combined statement compares its rows like any other nested
-// query, so both accept the same row contract in a membership predicate.
-impl<D, Tables, Row> InSubquery<Row> for SelectQuery<D, Tables, Row, HasProjection, LockUnavailable>
-where
-    D: Dialect,
-    Tables: TableScope,
-{
-}
-
-impl<D, Tables, Row> InSubquery<Row> for SelectQuery<D, Tables, Row, HasProjection, SetOpApplied>
-where
-    D: Dialect,
-    Tables: TableScope,
+    Lock: Unlocked,
 {
 }

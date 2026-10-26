@@ -3,7 +3,7 @@
 use crate::dialect::{Dialect, SupportsRowLocking};
 use crate::expr::{LockClause, LockStrength};
 
-use super::{HasProjection, Locked, NoLock, SelectQuery};
+use super::{HasProjection, LockWaitSet, Locked, NoLock, SelectQuery};
 
 impl<D: Dialect + SupportsRowLocking, Tables, Output>
     SelectQuery<D, Tables, Output, HasProjection, NoLock>
@@ -125,18 +125,25 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     ///
     /// The method modifies the lock the query already requests, so it stays
     /// unreachable until [`SelectQuery::for_update`] or
-    /// [`SelectQuery::for_share`] was called.
-    pub fn nowait(mut self) -> Self {
+    /// [`SelectQuery::for_share`] was called. It also fixes the wait behaviour of
+    /// the clause once, so the query moves into [`LockWaitSet`], where neither
+    /// modifier is reachable again: SQL refuses `NOWAIT` and `SKIP LOCKED`
+    /// together.
+    pub fn nowait(mut self) -> SelectQuery<D, Tables, Output, HasProjection, LockWaitSet> {
         self.lock = self.lock.map(LockClause::nowait);
-        self
+        self.retype()
     }
 
     /// Skips rows locked by concurrent transactions (`SKIP LOCKED`).
     ///
     /// This is how competing workers partition a queue of pending rows between
     /// themselves: none of them waits for a row another worker already holds.
-    pub fn skip_locked(mut self) -> Self {
+    ///
+    /// The modifier fixes the wait behaviour of the clause, so the query moves
+    /// into [`LockWaitSet`], where neither it nor
+    /// [`nowait`](SelectQuery::nowait) is reachable again.
+    pub fn skip_locked(mut self) -> SelectQuery<D, Tables, Output, HasProjection, LockWaitSet> {
         self.lock = self.lock.map(LockClause::skip_locked);
-        self
+        self.retype()
     }
 }

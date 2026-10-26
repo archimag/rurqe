@@ -58,8 +58,63 @@ pub struct NoLock;
 /// The state is reached through [`SelectQuery::for_update`] or
 /// [`SelectQuery::for_share`], the only builders of the marker, so a locking
 /// clause can neither be requested twice nor modified before it exists.
+///
+/// The closing wait mode is reachable from this state alone: both
+/// [`SelectQuery::nowait`] and [`SelectQuery::skip_locked`] are defined on it and
+/// each of them moves the query into [`LockWaitSet`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Locked;
+
+/// Typestate marker indicating that a locked `SELECT` query fixed how it reacts to rows locked elsewhere.
+///
+/// A row-level lock carries at most one closing modifier, and SQL refuses to
+/// combine them: PostgreSQL answers `FOR UPDATE NOWAIT SKIP LOCKED` with `NOWAIT
+/// and SKIP LOCKED cannot be specified together`. The builder therefore records
+/// the modifier once — `nowait` and `skip_locked` are reachable from [`Locked`]
+/// alone, and each of them moves the query here, where neither of them is
+/// available any more. The exclusion is thus a property of the typestate rather
+/// than of a runtime check, so no build chain spells a clause the engine refuses:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::{Dialect, SupportsRowLocking};
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// impl SupportsRowLocking for MockDialect {}
+///
+/// rurqe_core::table! {
+///     Job => "jobs" {
+///         JobId => "id": i64,
+///     }
+/// }
+///
+/// fn main() {
+///     // Fails to compile: the lock already fixed its wait behaviour, so it cannot
+///     // also skip the rows locked elsewhere.
+///     let _ = SelectQuery::<MockDialect>::new()
+///         .from::<Job>()
+///         .select((JobId,))
+///         .for_update()
+///         .nowait()
+///         .skip_locked();
+/// }
+/// ```
+///
+/// The mirrored order — `skip_locked()` followed by `nowait()` — is rejected the
+/// same way, because both modifiers are reachable from [`Locked`] alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockWaitSet;
 
 /// Typestate marker indicating that a `SELECT` query cannot request a row-level lock.
 ///
@@ -174,6 +229,8 @@ impl ProjectionPresent for HasProjection {}
 ///
 /// - [`NoLock`] and [`Locked`], where the statement projects the rows of its own
 ///   `FROM` scope whether or not it claims them;
+/// - [`LockWaitSet`], where the statement claimed them and fixed how it reacts to
+///   rows locked elsewhere;
 /// - [`LockUnavailable`], where deduplication changed how the rows are produced
 ///   without fixing them yet.
 ///
@@ -192,6 +249,8 @@ pub trait ProjectionOpen {}
 impl ProjectionOpen for NoLock {}
 
 impl ProjectionOpen for Locked {}
+
+impl ProjectionOpen for LockWaitSet {}
 
 impl ProjectionOpen for LockUnavailable {}
 
@@ -257,6 +316,101 @@ impl SetOperand for NoLock {}
 impl SetOperand for LockUnavailable {}
 
 impl SetOperand for SetOpApplied {}
+
+/// Statically asserts that a `SELECT` query requests no row-level lock.
+///
+/// A row-level lock claims the rows a statement read for the transaction that runs
+/// it, so it describes a statement the application executes itself. A statement
+/// nested in a clause of another statement — a scalar operand, an `EXISTS` or `IN`
+/// predicate, a `WITH` body, a derived table, a `LATERAL` subquery, or an operand
+/// of a set operation — only supplies rows to that statement, so a lock written
+/// there would belong to no statement of its own. The conversions that nest a
+/// query therefore accept an unlocked query alone, which leaves `for_update` and
+/// `for_share` as the only way to request a lock, while `to_ast` still describes a
+/// locked statement and `build` still renders one.
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::{Dialect, SupportsRowLocking};
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// impl SupportsRowLocking for MockDialect {}
+///
+/// rurqe_core::table! {
+///     Job => "jobs" {
+///         JobId => "id": i64,
+///     }
+/// }
+///
+/// fn main() {
+///     let locked = SelectQuery::<MockDialect>::new()
+///         .from::<Job>()
+///         .select((JobId,))
+///         .for_update();
+///
+///     // Fails to compile: the locking statement is a statement of its own, so it
+///     // cannot become the nested statement of an `EXISTS` predicate.
+///     let _ = locked.exists();
+/// }
+/// ```
+///
+/// A statement that requests no lock nests normally:
+///
+/// ```
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::query::SelectQuery;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Job => "jobs" {
+///         JobId => "id": i64,
+///     }
+/// }
+///
+/// let predicate = SelectQuery::<MockDialect>::new()
+///     .from::<Job>()
+///     .select((JobId,))
+///     .exists();
+///
+/// assert!(matches!(predicate.kind(), rurqe_core::expr::ExprKind::Subquery { .. }));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` requests a row-level lock, so it cannot be nested in another statement",
+    label = "this statement locks the rows it selects",
+    note = "a `FOR UPDATE` or `FOR SHARE` clause claims the rows a statement read for its own transaction, so a locking statement is executed on its own instead of being nested as a subquery, a `WITH` body, a derived table, a `LATERAL` subquery, or a set-operation operand",
+    note = "drop the locking clause before nesting the query, or request the lock on the statement that executes the query"
+)]
+pub trait Unlocked {}
+
+impl Unlocked for NoLock {}
+
+impl Unlocked for LockUnavailable {}
+
+impl Unlocked for SetOpApplied {}
+
+impl Unlocked for TailClosed {}
 
 /// A `SELECT` query that projects its rows and requests no row-level lock.
 ///

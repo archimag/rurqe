@@ -121,6 +121,29 @@ pub enum BuildError {
     /// moves the query out of `NoLock` — but a statement assembled from AST data
     /// still can, so the clause pair is rejected here instead of by the engine.
     DistinctOnWithLock,
+    /// A `DISTINCT` statement also requests a row-level lock.
+    ///
+    /// PostgreSQL refuses `SELECT DISTINCT ... FOR UPDATE` and its `FOR SHARE`
+    /// variant with `FOR UPDATE is not allowed with DISTINCT clause`: the lock
+    /// claims the rows the statement read, while the deduplication keeps one row of
+    /// each group, so the two clauses contradict each other. The builder typestate
+    /// cannot reach such a statement — `distinct` moves the query out of `NoLock`,
+    /// while `for_update` and `for_share` stay unreachable from that state — but a
+    /// statement assembled from AST data still can, so the clause pair is rejected
+    /// here instead of by the engine.
+    DistinctWithLock,
+    /// A statement nested inside another statement requests a row-level lock.
+    ///
+    /// A locking clause claims the rows the statement read until the transaction
+    /// ends, so it describes a statement the application executes itself. A
+    /// statement embedded in a clause of another statement only supplies rows to it
+    /// — as a scalar operand, an `EXISTS` or `IN` predicate, a `WITH` body, a
+    /// derived table, a `LATERAL` subquery, or an operand of a set operation — so
+    /// the lock it would claim has no statement of its own to belong to. The
+    /// conversions of the builder that nest a query accept an unlocked query alone,
+    /// so the pair stays unreachable through the fluent API, while a statement
+    /// assembled from AST data is rejected here before any SQL is rendered.
+    NestedLock,
     /// An `ORDER BY` expression of a `DISTINCT` statement is not projected.
     ///
     /// The engine sorts the rows the statement produced rather than the rows it
@@ -368,6 +391,23 @@ impl fmt::Display for BuildError {
                     "a DISTINCT ON statement cannot request a row-level lock; \
                      PostgreSQL rejects `SELECT DISTINCT ON (...) ... FOR UPDATE` and `... FOR SHARE`, \
                      so drop the locking clause or the DISTINCT ON clause"
+                )
+            }
+            BuildError::DistinctWithLock => {
+                write!(
+                    f,
+                    "a DISTINCT statement cannot request a row-level lock; \
+                     PostgreSQL rejects `SELECT DISTINCT ... FOR UPDATE` and `... FOR SHARE`, \
+                     so drop the locking clause or the DISTINCT clause"
+                )
+            }
+            BuildError::NestedLock => {
+                write!(
+                    f,
+                    "a nested statement requests a row-level lock; \
+                     a locking clause claims the rows a statement read for the transaction that runs it, \
+                     so it belongs to a statement of its own rather than to a subquery, a `WITH` body, \
+                     a derived table, or a set-operation operand"
                 )
             }
             BuildError::DistinctOrderNotProjected { position } => {

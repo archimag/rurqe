@@ -210,9 +210,11 @@ fn visit_nested(
 ) -> Result<(), BuildError> {
     match (checks, outer_relations) {
         // The full pass runs the whole statement pass on the embedded statement,
-        // its statement-level rules included.
+        // its statement-level rules included, and rejects the row-level lock it may
+        // request: the embedded statement only supplies rows to the one around it,
+        // so the lock has no statement of its own to belong to.
         (ClauseChecks::Full, outer_relations) => {
-            StatementRef::from(query).validate_in(outer_relations)
+            StatementRef::from(query).validate_nested_in(outer_relations)
         }
         // The structural rules of an embedded statement belong to the statement
         // pass, so the qualifier pass resolves the references of its sections and
@@ -324,8 +326,10 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
             }
             // A correlated subquery reaches the relations in scope where it is
             // written, so the namespace of this statement becomes its outer
-            // scope.
-            StatementRef::from(query.ast()).validate_in(scope.map(|scope| scope.enclosing))
+            // scope. It supplies rows to a clause of this statement, so a
+            // row-level lock it requests is rejected as well.
+            StatementRef::from(query.ast())
+                .validate_nested_in(scope.map(|scope| scope.enclosing))
         }
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
             validate_expr_tree(operand, scope)
@@ -392,10 +396,10 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
             Ok(())
         }
         // A nested collection embeds a statement reaching the enclosing one by
-        // correlating a reference to it, exactly like a subquery.
-        ExprKind::Multiset { query, .. } => {
-            StatementRef::from(query.ast()).validate_in(scope.map(|scope| scope.enclosing))
-        }
+        // correlating a reference to it, exactly like a subquery — the lock rule
+        // applies to it the same way.
+        ExprKind::Multiset { query, .. } => StatementRef::from(query.ast())
+            .validate_nested_in(scope.map(|scope| scope.enclosing)),
         ExprKind::Aliased { expr, .. } => validate_expr_tree(expr, scope),
     }
 }
