@@ -221,10 +221,10 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 /// The repair and the artifact reads run inside the exclusive `checkpoint.lock`
 /// section [`CheckpointLock`] guards, so a verification that overlaps a commit
 /// waits for it and reads exactly the committed pair instead of a half-swapped
-/// one; a lock a provably live writer holds is never taken over, so the
-/// verification refuses with a diagnostic naming that owner instead of repairing
-/// a commit still in flight, while a lock whose owner is gone is taken over and
-/// the commit it interrupted is repaired here. The section is released as soon as
+/// one; the kernel holds the section for its writer alone, so a live commit refuses
+/// the acquisition with a diagnostic naming its owner instead of having its pair
+/// repaired underneath it, while a commit whose writer died had its section released
+/// by the kernel and is repaired here. The section is released as soon as
 /// the artifacts are read, because the scratch materialisation below writes no
 /// workspace artifact: each scratch database is per-verification and serially
 /// safe on its own.
@@ -244,8 +244,8 @@ pub(crate) fn verify_stage(
 
     // A commit an interrupted process left halfway is repaired before the
     // boundary is read, so the snapshot loaded below is the one the live marker
-    // describes. The repair never classifies a parked pair while a provably live
-    // writer holds the section, so a commit still in flight is not undone here.
+    // describes. The section is taken above, so a commit still in flight refuses
+    // the acquisition here instead of having its pair repaired underneath it.
     //
     // The repair has already renamed artifacts into place by the time any read
     // below can fail, so every one of them folds its report into the failure it
@@ -385,8 +385,8 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 /// it describes the live catalog the commit read and the next commit recomputes it.
 ///
 /// The commit is split into a preparation phase and a minimal critical section,
-/// because the section is bounded by the liveness budget of the checkpoint lock
-/// while the preparation is not. Loading the stage, reading the live catalog over
+/// because the section keeps every other artifact writer waiting while the preparation
+/// does not. Loading the stage, reading the live catalog over
 /// the network, materialising the stage in a parity scratch database, rendering
 /// the lock and the marker, and staging the boundary snapshot all take as long as a
 /// remote server, a large stage, and slow storage take, and none of them mutates a

@@ -13,8 +13,8 @@
 //! restore. The protocol therefore adds one exclusive `checkpoint.lock` that
 //! serialises every writer, gives each parked copy a writer scope so no writer can
 //! ever rename, restore, or discard a copy another writer parked, and recovers a
-//! writer that died holding the lock from its expired heartbeat instead of from a
-//! guess.
+//! writer that died holding the lock from the kernel's release of its section instead
+//! of from a guess.
 //!
 //! # Protocol record
 //!
@@ -41,8 +41,8 @@
 //! processes apart, and the nonce keeps a recycled id from inheriting the parking of
 //! an earlier one. A commit takes that scope from the owner record the section
 //! installed when it was acquired, never from a later re-read of the lock entry, so
-//! a section taken over while it ran cannot make the writer park under the identity
-//! of the writer that replaced it.
+//! an entry another writer rewrote later cannot make the writer park under an
+//! identity that is not its own.
 //!
 //! * marker — live `<dir>/checkpoint.toml`, staged
 //!   `<dir>/.checkpoint.toml.<pid>.<seq>.tmp`, parked
@@ -57,11 +57,14 @@
 //! * `schema.lock` is written through the staged-and-renamed discipline but is never
 //!   parked. It describes the live catalog the commit read, and the same commit
 //!   recomputes it, so there is no previous copy worth restoring.
-//! * `checkpoint.lock` is created create-new (opened with `O_EXCL`) and is never
-//!   staged, because the creation itself is atomic. It is never parked either, since
-//!   it describes the writer and not a state a reader restores. Its states are free
-//!   (absent), held (the owner record names the pid, the nonce, and a heartbeat), and
-//!   stale (the entry is present but its heartbeat expired, so its owner is dead).
+//! * `checkpoint.lock` is opened read+write+create and taken with a non-blocking
+//!   exclusive advisory lock, so the kernel arbitrates the acquisition atomically and
+//!   the entry is never staged. It is never parked and never removed either, since it
+//!   describes the section and not a state a reader restores: an unlinked entry would
+//!   let the next writer lock a fresh file while the previous holder still owns the old
+//!   one. Its states are free (no description holds the advisory lock) and held (the
+//!   kernel holds the section for one description, whose owner record names the pid and
+//!   the nonce).
 //!
 //! ## Critical sections
 //!
@@ -186,17 +189,20 @@
 //!
 //! ## The lock itself
 //!
-//! `checkpoint.lock` is a sibling of the marker, created create-new, and carries the
-//! owner record of the writer (pid, nonce, heartbeat). Acquisition waits for a bounded
-//! time and then fails naming the live owner; a lock whose heartbeat is older than the
-//! budget is stale, so its owner is dead, the acquisition takes it over, and the recovery
-//! that follows may repair the dead writer's parked pair. Release is RAII and re-validates
-//! ownership: the lock is re-read and removed only when it still names the current writer,
-//! so a writer whose stale lock was already taken over cannot remove its successor's. The
-//! freshness decision is a pure core over the owner record and the clock — modelled on the
-//! bounded advisory-lock polling in `driver/postgres.rs` — so the recovery semantics are
-//! testable without a second process. The lock is std-only, adds no dependency, and is
-//! panic-free.
+//! `checkpoint.lock` is a sibling of the marker, opened read+write+create so the entry
+//! persists, and taken with a non-blocking exclusive advisory lock (`flock` on Unix,
+//! `LockFileEx` on Windows) through the `fs4` crate. Once the lock is held, the entry is
+//! truncated and rewritten with the owner record of the writer (pid, nonce, and the
+//! instant it entered the section), which names that owner in a refusal and scopes the
+//! copies a commit parks. Acquisition polls the lock for a bounded time and then fails
+//! naming that owner; it never takes a section over, because it cannot: the kernel
+//! releases the advisory lock when its holder's file description closes, which happens for
+//! every process that exits however it dies, so a section held by a live writer is never
+//! preempted and a section held by a crashed writer is simply free. Release is RAII:
+//! dropping the guard closes the description and the kernel releases the section, so no
+//! writer ever removes an entry another writer owns. Contention is observable between two
+//! descriptions of one process, so the refusal and the recovery are testable without a
+//! second process. The lock adds one dependency, and is panic-free.
 //!
 //! ## Invariants
 //!
@@ -211,8 +217,9 @@
 //! * I4 (one writer): at most one writer mutates the workspace artifacts at a time, and a
 //!   second one either waits for the section or fails with a diagnostic naming the
 //!   current owner.
-//! * I5 (lock ownership): the lock is removed only by the writer that still owns it,
-//!   re-validated from the owner record immediately before the removal.
+//! * I5 (lock ownership): the section is released only by its holder, and the kernel
+//!   releases it when that holder dies, so no writer holds a section another live writer
+//!   still owns and no writer ever removes an entry another writer owns.
 //! * I6 (no half-swapped read): every read of the pair happens inside the section, so no
 //!   observation spans a swap.
 //!
@@ -220,12 +227,13 @@
 //!
 //! Each test is paired: the negative pin asserts the diagnostic and the absence of damage
 //! to another writer's artifacts, the positive pin asserts that sequential operations
-//! converge to a consistent state and that a stale-lock recovery repairs the pair and
-//! clears the abandoned lock. The pairs are two interleaved commits, an injected failure
-//! at every `seal_commit` step (with the previous boundary still recoverable at each one
-//! of them), a verification concurrent with an in-flight commit, and a prune concurrent
-//! with a reader. They run over the real filesystem in a temporary directory, while the
-//! freshness decision they lean on stays a pure core testable without a second process.
+//! converge to a consistent state and that a crashed-holder recovery repairs the pair and
+//! leaves the entry re-acquirable by the next writer. The pairs are two interleaved
+//! commits, an injected failure at every `seal_commit` step (with the previous boundary
+//! still recoverable at each one of them), a verification concurrent with an in-flight
+//! commit, and a prune concurrent with a reader. They run over the real filesystem in a
+//! temporary directory, while the contention they lean on is observable between two
+//! descriptions of one process and needs no second one.
 
 use std::path::{Path, PathBuf};
 
@@ -234,7 +242,7 @@ use rurqe_migrate::stage::DeclarativeStage;
 use crate::cli::CliError;
 
 use super::super::{artifact_directory, sync_directory, temporary_sibling, write_file};
-use super::lock::{live_writer, WriterId};
+use super::lock::{recorded_writer, WriterId};
 
 /// The directory holding the verbatim DDL of a committed stage boundary.
 const CHECKPOINT_STAGE_DIR: &str = "checkpoint-stage";
@@ -351,22 +359,21 @@ fn discard_copies(copies: &[(PathBuf, WriterId)]) -> Vec<String> {
         .collect()
 }
 
-/// Refuses to repair the pair while another provably live writer holds the section.
+/// Refuses to repair the pair while the entry records another writer.
 ///
-/// A parked copy names the writer that created it, and the lock entry is the only
-/// proof that a writer still lives. While the entry names another process with a
-/// heartbeat younger than the budget, that writer is between two steps of its own
-/// commit, so its parked copies are the only recoverable copy of the state it is
-/// replacing: classifying them here would either discard that copy or restore it
-/// underneath the install in progress. The recovery therefore refuses and names the
-/// owner instead of mutating anything.
-fn refuse_live_foreign(checkpoint_path: &Path) -> Result<(), CliError> {
-    match live_writer(checkpoint_path)? {
+/// Under the kernel's advisory lock no foreign writer can be between two steps of its
+/// own commit while this process holds the section: a live holder would have refused
+/// the acquisition, and a holder that died had its section released before the repair
+/// began. A record naming a foreign process therefore marks a caller repairing outside
+/// the section, where the parked pair may still be the only recoverable copy of the
+/// state that section owns. The repair refuses and names the record instead of
+/// mutating anything.
+fn refuse_foreign_record(checkpoint_path: &Path) -> Result<(), CliError> {
+    match recorded_writer(checkpoint_path)? {
         Some(owner) if owner.pid != std::process::id() => Err(CliError(format!(
-            "refusing to repair the checkpoint artifacts beside `{}`: the checkpoint lock names \
-             the live writer pid {} (nonce {}), which is between two steps of its own commit, so \
-             the parked marker and boundary it left are the only recoverable copy of that state; \
-             re-run this command once that writer finishes",
+            "refusing to repair the checkpoint artifacts beside `{}`: the checkpoint lock records \
+             the writer pid {} (nonce {}), so these artifacts belong to a section this process \
+             does not hold; take the section before repairing them",
             checkpoint_path.display(),
             owner.pid,
             owner.nonce
@@ -415,12 +422,12 @@ fn names_a_directory(path: &Path) -> bool {
 /// marker never describes a boundary another commit replaced.
 ///
 /// The copies are discovered by their writer-scoped names instead of a fixed
-/// `.previous` path, and nothing is classified while the checkpoint lock names a
-/// different, provably live writer: its parked pair is the only recoverable copy of
-/// the state that writer is between two steps of, so discarding or restoring it here
-/// would be the very damage the scope exists to prevent. A copy whose writer is
-/// provably gone — the lock names this process, names nobody, or names a writer
-/// whose heartbeat expired — is debris this run may repair.
+/// `.previous` path, and nothing is classified from a section this process does not
+/// hold: the entry records the writer the artifacts belong to, so a foreign record
+/// marks a caller repairing outside the section that owns the parked pair. A copy
+/// this run may repair belongs to the section it holds — the record names this
+/// process, or names nobody — and the writer that parked it is gone, because the
+/// kernel released its advisory lock when its process exited.
 ///
 /// Every removal and rename happens before a command reads the pair, so neither
 /// `stage commit` nor `stage verify` ever observes a self-inconsistent marker and
@@ -434,10 +441,10 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
         return Ok(None);
     }
 
-    // A copy is never classified while another provably live writer holds the
-    // section: the repair below would either discard the only recoverable copy of
-    // its state or restore that copy underneath the install it is performing.
-    refuse_live_foreign(checkpoint_path)?;
+    // A copy is never classified from a section this process does not hold: the
+    // repair below would either discard the only recoverable copy of that section's
+    // state or restore that copy underneath the install it is performing.
+    refuse_foreign_record(checkpoint_path)?;
 
     let marker_live = path_exists(checkpoint_path)?;
     let boundary_live = path_exists(&dir)?;

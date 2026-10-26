@@ -14,6 +14,7 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
+use super::stage::lock::CheckpointLock;
 use super::stage::{
     cleanup_scratch_catalog, flush_boundary_parent, move_failure, recover_interrupted_commit,
     verify_stage, write_staged_boundary,
@@ -337,10 +338,9 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
     );
 
     // The gate stands in front of every artifact, so a rejected commit leaves no
-    // half-described triple behind: no marker, no snapshot, and no lock. The
-    // section entry is released with the scope on the failure path as well, so
-    // a rejected commit never leaves a later one waiting for a lock that
-    // guards nothing.
+    // half-described triple behind: no marker, no snapshot, and no lock. The gate
+    // also runs before the checkpoint section is taken, so it creates no entry a
+    // later command would have to wait behind.
     assert!(
         !checkpoint_path.exists(),
         "a rejected commit writes no checkpoint"
@@ -352,7 +352,7 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
     assert!(!lock_path.exists(), "a rejected commit writes no lock");
     assert!(
         !dir.join("checkpoint.lock").exists(),
-        "a rejected commit releases its section"
+        "a rejected commit enters no section and leaves no lock entry"
     );
 }
 
@@ -971,8 +971,9 @@ fn the_parked_copies_of_a_live_foreign_writer_are_never_repaired() {
     let dir = workspace("commit-foreign");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The writer pid 1 holds the section: the pair it parked is the only
-    // recoverable copy of the state its commit is between two steps of.
+    // The entry records the writer pid 1, so these artifacts belong to a section
+    // this process does not hold: the pair that writer parked may still be the only
+    // recoverable copy of its state.
     lock_entry(&dir, 1, 2, Duration::ZERO);
     let marker_backup = dir.join(".checkpoint.toml.1.2.previous");
     std::fs::write(
@@ -1010,13 +1011,15 @@ fn the_parked_copies_of_a_live_foreign_writer_are_never_repaired() {
 }
 
 #[test]
-fn the_parked_copies_of_a_writer_whose_heartbeat_expired_are_repaired() {
+fn the_parked_copies_of_a_crashed_writer_are_repaired() {
     let dir = workspace("commit-dead-owner");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // A heartbeat older than the budget proves the writer dead, so the pair it
-    // parked is debris a later run repairs even though it carries a foreign scope.
-    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+    // The entry names this process, which acquired the section after the writer that
+    // parked this pair died: the kernel released that writer's advisory lock when its
+    // process exited, so the copies it left behind carry a foreign scope and are
+    // debris this run repairs.
+    lock_entry(&dir, std::process::id(), 1, Duration::ZERO);
     let marker_backup = dir.join(".checkpoint.toml.1.2.previous");
     std::fs::write(
         &marker_backup,
@@ -1032,7 +1035,7 @@ fn the_parked_copies_of_a_writer_whose_heartbeat_expired_are_repaired() {
     .expect("write the parked snapshot");
 
     let notice = recover_interrupted_commit(&checkpoint_path)
-        .expect("the dead writer's pair is repaired")
+        .expect("the crashed writer's pair is repaired")
         .expect("the repair is reported");
 
     assert!(notice.contains("Restored"), "got {notice}");
@@ -1204,16 +1207,18 @@ fn a_pruned_report_reaches_the_operator_through_the_shared_channel() {
 }
 
 #[test]
-fn a_commit_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
+fn a_commit_takes_over_the_section_of_a_crashed_writer() {
     let dir = workspace("commit-takeover");
     let stage_dir = dir.join("schema");
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The expired heartbeat proves the writer that created the entry dead, so
-    // the commit takes the section over instead of waiting out the full
-    // bounded wait for an owner that no longer exists.
+    // The entry names a writer that died holding the section. Its record is old
+    // because that writer entered the section long before it crashed, and the age
+    // keeps it dead: the kernel released the writer's advisory lock when its process
+    // exited, so the commit acquires the section at once instead of waiting for an
+    // owner that no longer exists.
     lock_entry(&dir, 1, 2, Duration::from_secs(120));
 
     commit_stage(
@@ -1224,18 +1229,14 @@ fn a_commit_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
         &lock_path,
         &checkpoint_path,
     )
-    .expect("the section of the dead writer is taken over");
+    .expect("the section of the crashed writer is acquired");
 
-    // The takeover installs the acquiring writer's own owner record and the
-    // release drops together with the section, so the workspace is left
-    // with no entry a later command would wait behind.
-    assert!(
-        !dir.join("checkpoint.lock").exists(),
-        "the taken-over lock is released with the section"
-    );
+    // The entry persists and the commit released the section, so the next writer
+    // acquires it again instead of waiting behind a command that already left.
+    CheckpointLock::acquire(&checkpoint_path).expect("the committed section is free again");
     assert!(
         checkpoint_path.exists(),
-        "a commit over a taken-over section still writes its marker"
+        "a commit over a crashed writer's section still writes its marker"
     );
 
     let leftovers: Vec<String> = directory_names(&dir)
@@ -1246,30 +1247,29 @@ fn a_commit_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
 }
 
 #[test]
-fn a_prune_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
+fn a_prune_takes_over_the_section_of_a_crashed_writer() {
     let dir = workspace("prune-takeover");
     let migrations_dir = dir.join("migrations");
-    // `V4__orders.sql` sits above the prune boundary, so the takeover drops
-    // the version-1 script alone and the tail script stays in place.
+    // `V4__orders.sql` sits above the prune boundary, so the prune drops the
+    // version-1 script alone and the tail script stays in place.
     scripts(&migrations_dir, &["V1__init.sql", "V4__orders.sql"]);
     let checkpoint_path = dir.join("checkpoint.toml");
     checkpoint_file(&checkpoint_path, "9");
 
     // The prune holds the same exclusive section as the commit and the
-    // verification, so it faces the same takeover decision over an entry a
-    // dead writer left behind.
+    // verification, so it acquires over the entry a crashed writer left behind: the
+    // kernel released that writer's advisory lock when its process exited.
     lock_entry(&dir, 1, 2, Duration::from_secs(120));
 
     prune_migrations(version("3"), &migrations_dir, &checkpoint_path, false)
-        .expect("the section of the dead writer is taken over");
+        .expect("the section of the crashed writer is acquired");
 
-    assert!(
-        !dir.join("checkpoint.lock").exists(),
-        "the taken-over lock is released with the section"
-    );
+    // The entry persists and the prune released the section, so the next writer
+    // acquires it again.
+    CheckpointLock::acquire(&checkpoint_path).expect("the pruned section is free again");
     assert!(
         !migrations_dir.join("V1__init.sql").exists(),
-        "a prune over a taken-over section still drops the scripts below the boundary"
+        "a prune over a crashed writer's section still drops the scripts below the boundary"
     );
     assert!(
         migrations_dir.join("V4__orders.sql").exists(),
@@ -1278,7 +1278,7 @@ fn a_prune_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
 }
 
 #[test]
-fn a_verification_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
+fn a_verification_takes_over_the_section_of_a_crashed_writer() {
     let dir = workspace("verify-takeover");
     let stage_dir = dir.join("schema");
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
@@ -1315,12 +1315,11 @@ fn a_verification_takes_over_the_section_of_a_writer_whose_heartbeat_expired() {
         DEFAULT_SCHEMA,
         ":memory:",
     )
-    .expect("the section of the dead writer is taken over");
+    .expect("the section of the crashed writer is acquired");
 
-    assert!(
-        !dir.join("checkpoint.lock").exists(),
-        "the taken-over lock is released with the section"
-    );
+    // The entry persists and the verification released the section together with
+    // the reads it guarded, so the next writer acquires it again.
+    CheckpointLock::acquire(&checkpoint_path).expect("the verified section is free again");
 }
 
 #[test]
