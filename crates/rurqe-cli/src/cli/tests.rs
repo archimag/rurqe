@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
+use rurqe_migrate::checkpoint::Checkpoint;
+use rurqe_migrate::Checksum;
+
 use super::*;
-use crate::install_diagnostics;
+use crate::{install_diagnostics, write_message, MessageClass};
 
 #[test]
 fn the_binary_entry_point_installs_a_diagnostic_sink() {
@@ -905,4 +908,172 @@ fn every_migration_command_validates_the_project_configuration() {
     .expect_err("a malformed configuration aborts the cold start");
 
     assert!(error.to_string().contains("workspace"), "stage init: {error}");
+}
+
+/// A directory of its own for a test that needs files on disk.
+fn scratch(name: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("rurqe-cli-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("create the workspace");
+    path
+}
+
+#[test]
+fn a_repeated_installation_neither_fails_nor_replaces_the_sink() {
+    install_diagnostics();
+
+    // A process reaches the entry point again when it runs a second command, so
+    // the installation has to stay idempotent instead of installing a second
+    // sink over the first one.
+    install_diagnostics();
+
+    let probe = tracing_subscriber::fmt::Subscriber::builder().finish();
+    assert!(
+        tracing::subscriber::set_global_default(probe).is_err(),
+        "the sink of the first installation stays in place"
+    );
+}
+
+#[test]
+fn a_refused_sink_installation_is_reported_instead_of_discarded() {
+    // A test cannot install a second global sink without disturbing the
+    // process-wide dispatcher this binary shares, so the refusal path is pinned
+    // where it is written: the installation keeps a sink an embedding
+    // application put in place first, and the refusal reaches the operator
+    // through that sink instead of being dropped with the result.
+    let root = include_str!("../lib.rs");
+
+    assert!(root.contains("set_global_default"), "the sink is installed");
+    assert!(
+        root.contains("tracing::warn!"),
+        "a refused installation is reported through the sink already in place"
+    );
+    assert!(
+        root.contains("toolchain diagnostic sink not installed"),
+        "the refusal names what did not take effect"
+    );
+    assert!(
+        !root.contains("let _ = tracing::subscriber::set_global_default"),
+        "the result of the installation is never discarded silently"
+    );
+}
+
+#[test]
+fn the_operator_channel_is_the_single_place_that_formats_output() {
+    let root = include_str!("../lib.rs");
+    let report = include_str!("report.rs");
+
+    // The destination is declared once, and both a report line and a failure are
+    // shaped by the helper that writes into it.
+    assert!(
+        root.contains("pub fn operator_channel"),
+        "the destination of the operator output is declared in one place"
+    );
+    assert!(
+        root.contains("pub fn write_message"),
+        "the shape of an operator line is declared in one place"
+    );
+    assert!(
+        root.contains("MessageClass::Failure"),
+        "a failure that ended the process travels the helper"
+    );
+
+    // The report of a command reaches the helper instead of opening a stream of
+    // its own, so the two classes of operator output share one write path.
+    assert!(
+        report.contains("crate::write_message"),
+        "a report line travels the helper"
+    );
+    assert!(
+        !report.contains("std::io::stderr"),
+        "the report opens no stream of its own"
+    );
+
+    for (name, source) in [("lib.rs", root), ("report.rs", report)] {
+        for direct in ["println!", "eprintln!", "eprint!", "print!"] {
+            assert!(
+                !source.contains(direct),
+                "`{name}` writes through `{direct}` instead of the channel"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_command_report_reaches_the_shared_channel() {
+    let dir = scratch("report-channel");
+
+    // A committed checkpoint keeps the command offline while it still produces a
+    // report, and the absent migration directory makes that report a single
+    // predictable line.
+    std::fs::write(
+        dir.join("checkpoint.toml"),
+        Checkpoint::new("1".parse().expect("a valid version"), Checksum::of(b"stage")).render(),
+    )
+    .expect("write the checkpoint");
+
+    let migrations_dir = dir.join("migrations");
+    let output = run_cli(vec![
+        "rurqe".to_owned(),
+        "prune".to_owned(),
+        "--before".to_owned(),
+        "1".to_owned(),
+        "--migrations-dir".to_owned(),
+        migrations_dir.display().to_string(),
+        "--checkpoint-path".to_owned(),
+        dir.join("checkpoint.toml").display().to_string(),
+    ])
+    .expect("the command reports instead of failing");
+
+    // The bytes the report produces are exactly the bytes the shared channel
+    // declares, so routing the report through the channel lost nothing.
+    let mut routed = Vec::new();
+    output
+        .write_into(&mut routed)
+        .expect("writing to a buffer cannot fail");
+
+    let mut expected = Vec::new();
+    for line in output.lines() {
+        write_message(&mut expected, MessageClass::Report, line)
+            .expect("writing to a buffer cannot fail");
+    }
+
+    assert_eq!(routed, expected);
+    assert_eq!(
+        String::from_utf8(routed).expect("the channel wrote UTF-8"),
+        format!(
+            "No migration directory `{}` to prune\n",
+            migrations_dir.display()
+        )
+    );
+}
+
+#[test]
+fn a_command_failure_reaches_the_shared_channel() {
+    let dir = scratch("failure-channel");
+
+    let error = run_cli(vec![
+        "rurqe".to_owned(),
+        "prune".to_owned(),
+        "--before".to_owned(),
+        "1".to_owned(),
+        "--migrations-dir".to_owned(),
+        dir.join("migrations").display().to_string(),
+        "--checkpoint-path".to_owned(),
+        dir.join("checkpoint.toml").display().to_string(),
+    ])
+    .expect_err("a missing checkpoint fails the prune");
+
+    // The failure the process boundary prints is shaped by the same helper the
+    // reports travel, so the two classes of operator output cannot diverge.
+    let mut routed = Vec::new();
+    write_message(&mut routed, MessageClass::Failure, &error.to_string())
+        .expect("writing to a buffer cannot fail");
+
+    let text = String::from_utf8(routed).expect("the channel wrote UTF-8");
+    assert_eq!(text, format!("Error: {error}\n"));
+    assert!(
+        text.contains("checkpoint.toml"),
+        "the diagnostic names the missing artifact, got {text}"
+    );
 }

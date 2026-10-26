@@ -978,3 +978,45 @@ fn an_unconfirmed_cleanup_names_the_candidates_without_dropping() {
         "got {message}"
     );
 }
+
+#[test]
+fn a_pruned_report_reaches_the_operator_through_the_shared_channel() {
+    let dir = workspace("prune-channel");
+    let migrations_dir = dir.join("migrations");
+    scripts(&migrations_dir, &["V1__init.sql", "V2__orders.sql"]);
+    let checkpoint_path = dir.join("checkpoint.toml");
+    checkpoint_file(&checkpoint_path, "3");
+
+    let output = prune_migrations(version("3"), &migrations_dir, &checkpoint_path, false)
+        .expect("the prune succeeds");
+
+    // The command reports one line per pruned script plus the summary, so the
+    // routing of a report is observed on a report that really carries several
+    // lines: none of them is dropped on the way to the operator.
+    assert_eq!(
+        output.lines().len(),
+        3,
+        "unexpected report: {:?}",
+        output.lines()
+    );
+    assert_eq!(
+        output.lines().last().map(String::as_str),
+        Some("Pruned 2 migration(s) below version 3")
+    );
+
+    let mut routed = Vec::new();
+    output
+        .write_into(&mut routed)
+        .expect("writing to a buffer cannot fail");
+
+    let mut expected = Vec::new();
+    for line in output.lines() {
+        crate::write_message(&mut expected, crate::MessageClass::Report, line)
+            .expect("writing to a buffer cannot fail");
+    }
+
+    assert_eq!(
+        routed, expected,
+        "the report leaves the crate through one write path"
+    );
+}
