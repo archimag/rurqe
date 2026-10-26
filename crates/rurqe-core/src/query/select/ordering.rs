@@ -8,7 +8,7 @@ use crate::query::scope::{Compound, ScopePositions};
 use crate::query::window::WindowExpr;
 use crate::schema::{At, Column, ExprInScope, Table, TableInScope};
 
-use super::{HasProjection, LockUnavailable, SelectQuery, TailClosed};
+use super::{HasProjection, SelectQuery, SetOpApplied, TailClosed};
 
 /// A column, or a tuple of columns, an `ORDER BY` clause sorts by.
 ///
@@ -646,7 +646,7 @@ fn compound_order_column<C: Column>() -> ExprKind {
 /// Implements the ordering builders of a compound statement for one tail state.
 ///
 /// The builders are reachable while the ordering of the combined rows is still
-/// being written: from [`LockUnavailable`], where the last set operation left the
+/// being written: from [`SetOpApplied`], where the last set operation left the
 /// query, and from [`TailClosed`], where the previous criterion left it. Every call
 /// moves the query into [`TailClosed`], so a criterion can never be written after
 /// another operand was combined with the statement.
@@ -796,5 +796,5 @@ macro_rules! impl_compound_ordering {
     };
 }
 
-impl_compound_ordering!(LockUnavailable);
+impl_compound_ordering!(SetOpApplied);
 impl_compound_ordering!(TailClosed);

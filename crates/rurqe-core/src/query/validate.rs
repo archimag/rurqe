@@ -82,6 +82,23 @@ pub enum BuildError {
     /// position inside it. An aggregate, a function call, a `CASE`, or any other
     /// computed expression names neither, so the engine would reject the clause.
     CompoundOrderExpression,
+    /// A set-operation operand projects a different number of columns.
+    ///
+    /// `UNION`, `INTERSECT`, and `EXCEPT` render one output row out of the rows of
+    /// every operand, so all of them have to project the same number of columns.
+    /// The builder typestate keeps the shape out of reach — a combined statement
+    /// records its projection for good, so `select` cannot rebind the rows the
+    /// operands were combined against — but a statement assembled from AST data can
+    /// still combine operands of different arity, which every engine rejects with
+    /// `each UNION query must have the same number of columns`.
+    SetOperandArity {
+        /// The 0-based position of the offending operand among the set operations.
+        operand: usize,
+        /// The number of columns the projection list of the statement produces.
+        expected: usize,
+        /// The number of columns the offending operand projects.
+        actual: usize,
+    },
     /// An aliased relation registered its derived subquery under another name.
     ///
     /// The subquery is inlined under the name it was registered with, so a
@@ -222,6 +239,18 @@ impl fmt::Display for BuildError {
                     f,
                     "ORDER BY of a compound query names an expression rather than an output column or a position; \
                      a compound statement sorts its combined rows, so the ordering may only reference an output column name or a 1-based position"
+                )
+            }
+            BuildError::SetOperandArity {
+                operand,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "set operation {operand} combines a statement projecting {actual} column(s) with one projecting {expected}; \
+                     a UNION, INTERSECT, or EXCEPT statement renders one output row out of the rows of every operand, \
+                     so all of them have to project the same number of columns"
                 )
             }
             BuildError::AliasedDerivedRelation { name } => {
@@ -378,6 +407,7 @@ impl<'a> StatementRef<'a> {
         self.validate_distinct_on_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
+        self.validate_set_operand_arity()?;
         self.validate_aggregation()
     }
 
@@ -644,6 +674,40 @@ impl<'a> StatementRef<'a> {
         self.projections
             .iter()
             .any(|projection| projection_output_name(projection) == Some(column))
+    }
+
+    /// Rejects a set operation whose operand projects a different number of columns.
+    ///
+    /// `UNION`, `INTERSECT`, and `EXCEPT` render one output row out of the rows of
+    /// every operand, so the projection list of the statement and of each operand
+    /// have to name the same number of columns. The builder typestate keeps the
+    /// shape out of reach — a combined statement records its projection for good,
+    /// so `.select(...)` cannot rebind the rows the operands were combined
+    /// against — but a statement assembled from AST data can still combine operands
+    /// of different arity, which every engine rejects with `each UNION query must
+    /// have the same number of columns`. The clause is plain statement data, so the
+    /// arity is checked here and surfaces as [`BuildError::SetOperandArity`] before
+    /// any SQL is rendered.
+    ///
+    /// The element kinds of the combined columns stay out of this check on
+    /// purpose: the fluent builders require the operands to share one `Output`
+    /// type, so an arity-compatible combination of incompatible kinds is
+    /// unrepresentable through the API, and comparing rendered column kinds
+    /// client-side would only approximate what the engine resolves through
+    /// implicit casts.
+    fn validate_set_operand_arity(&self) -> Result<(), BuildError> {
+        let expected = self.projections.len();
+        for (operand, operation) in self.set_operations.iter().enumerate() {
+            let actual = operation.query.projections.len();
+            if actual != expected {
+                return Err(BuildError::SetOperandArity {
+                    operand,
+                    expected,
+                    actual,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Rejects an aggregation the engine cannot evaluate.

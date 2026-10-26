@@ -4,7 +4,7 @@ use crate::dialect::Dialect;
 use crate::expr::{SetOpAst, SetOpKind};
 use crate::query::scope::{Compound, TableScope};
 
-use super::{HasProjection, LockUnavailable, SelectQuery, SetOperand};
+use super::{HasProjection, SelectQuery, SetOpApplied, SetOperand};
 
 impl<D: Dialect, Tables, Output, Lock: SetOperand>
     SelectQuery<D, Tables, Output, HasProjection, Lock>
@@ -12,16 +12,17 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
     /// Combines this query with `other` using `UNION`, removing duplicate rows.
     ///
     /// The combined statement produces the output columns of its first projection
-    /// list, so the query moves into the [`Compound`] scope: its rows no longer
-    /// belong to a table, and the ordering of the combined rows goes through
-    /// `order_by_output` or `order_by_index`. A combined statement can neither
-    /// keep the row-level lock of an operand nor accept a new one, so the query
-    /// carries [`LockUnavailable`], and the first criterion written after it closes
-    /// the statement for further operands.
+    /// list, so the query moves into the [`Compound`] scope and carries
+    /// [`SetOpApplied`]: its rows no longer belong to a table, its projection is
+    /// recorded for good — [`select`](SelectQuery::select) stays unreachable — and
+    /// the ordering of the combined rows goes through `order_by_output` or
+    /// `order_by_index`. A combined statement can neither keep the row-level lock
+    /// of an operand nor accept a new one, so the first criterion written after it
+    /// closes the statement for further operands.
     pub fn union<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> SelectQuery<D, Compound, Output, HasProjection, LockUnavailable> {
+    ) -> SelectQuery<D, Compound, Output, HasProjection, SetOpApplied> {
         self.with_set_operation(SetOpKind::Union, other)
     }
 
@@ -32,7 +33,7 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
     pub fn union_all<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> SelectQuery<D, Compound, Output, HasProjection, LockUnavailable> {
+    ) -> SelectQuery<D, Compound, Output, HasProjection, SetOpApplied> {
         self.with_set_operation(SetOpKind::UnionAll, other)
     }
 
@@ -40,7 +41,7 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
     pub fn intersect<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> SelectQuery<D, Compound, Output, HasProjection, LockUnavailable> {
+    ) -> SelectQuery<D, Compound, Output, HasProjection, SetOpApplied> {
         self.with_set_operation(SetOpKind::Intersect, other)
     }
 
@@ -48,7 +49,7 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
     pub fn except<Tables2: TableScope>(
         self,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> SelectQuery<D, Compound, Output, HasProjection, LockUnavailable> {
+    ) -> SelectQuery<D, Compound, Output, HasProjection, SetOpApplied> {
         self.with_set_operation(SetOpKind::Except, other)
     }
 
@@ -56,7 +57,7 @@ impl<D: Dialect, Tables, Output, Lock: SetOperand>
         mut self,
         kind: SetOpKind,
         other: SelectQuery<D, Tables2, Output, HasProjection>,
-    ) -> SelectQuery<D, Compound, Output, HasProjection, LockUnavailable> {
+    ) -> SelectQuery<D, Compound, Output, HasProjection, SetOpApplied> {
         // The combined query is consumed, so its clauses move into the operand
         // instead of being copied.
         self.set_operations.push(SetOpAst {

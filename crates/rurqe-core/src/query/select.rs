@@ -64,19 +64,44 @@ pub struct Locked;
 /// Typestate marker indicating that a `SELECT` query cannot request a row-level lock.
 ///
 /// PostgreSQL refuses `FOR UPDATE` and `FOR SHARE` on a statement that
-/// deduplicates its rows (`DISTINCT`, `DISTINCT ON`) or combines several
-/// statements (`UNION`, `INTERSECT`, `EXCEPT`), so recording one of those clauses
+/// deduplicates its rows (`DISTINCT`, `DISTINCT ON`), so recording the clause
 /// moves the query out of [`NoLock`] and leaves the locking builders unreachable.
 /// Grouping moves the query out of the locking path as well: a grouped query
 /// reaches [`SelectQuery`] again only through
 /// [`GroupedQuery::into_select`](crate::query::GroupedQuery::into_select), which
 /// returns an unlocked query carrying this marker.
 ///
-/// Combining the query with a set operation also moves it into the
-/// [`Compound`](crate::query::Compound) scope, where the ordering of the combined
-/// rows names output columns and positions instead of relations in scope.
+/// A statement a set operation combined drops its lock for the same reason and
+/// carries [`SetOpApplied`] instead, which moves the query into the
+/// [`Compound`](crate::query::Compound) scope as well: the ordering of the
+/// combined rows names output columns and positions instead of relations in
+/// scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LockUnavailable;
+
+/// Typestate marker indicating that a `SELECT` query combined its rows with another statement.
+///
+/// `UNION`, `INTERSECT`, and `EXCEPT` fix the rows the combined statement
+/// produces: its output columns are the ones the first projection list names, and
+/// every operand was combined on the understanding that it projects the same
+/// arity. The statement the combination left behind therefore records its
+/// projection for good — [`ProjectionOpen`] stays unimplemented for it, so
+/// [`SelectQuery::select`] is unreachable and the rows of the combination cannot
+/// be rebound to a projection the operands were never checked against:
+///
+/// ```text
+/// first.union(second).select((other_column,)) // rejected
+/// ```
+///
+/// The state carries two further consequences, mirroring the lock the combination
+/// drops. The combined statement can neither request a row-level lock, so
+/// [`SelectQuery::for_update`] and [`SelectQuery::for_share`] stay unreachable,
+/// nor keep combining a locked operand. The ordering of the combined rows goes
+/// through [`SelectQuery::order_by_output`] and
+/// [`SelectQuery::order_by_index`], either of which closes the statement for
+/// further operands through [`TailClosed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetOpApplied;
 
 /// Typestate marker indicating that a compound statement recorded its ordering tail.
 ///
@@ -141,6 +166,36 @@ pub trait ProjectionPresent {}
 
 impl ProjectionPresent for HasProjection {}
 
+/// Statically asserts that a `SELECT` query may still record the rows it projects.
+///
+/// A statement records one projection list, and everything written around it —
+/// the filter, the grouping, the ordering, and the set operations it takes part
+/// in — is stated in terms of those output columns. The marker names the states
+/// where that list may still be recorded:
+///
+/// - [`NoLock`] and [`Locked`], where the statement projects the rows of its own
+///   `FROM` scope whether or not it claims them;
+/// - [`LockUnavailable`], where deduplication or grouping changed how the rows are
+///   produced without fixing them yet.
+///
+/// A statement a set operation combined carries [`SetOpApplied`], and the
+/// ordering of its combined rows carries [`TailClosed`]: the rows of such a
+/// statement are the output columns the first projection list named, so a second
+/// `select` would rebind what the operands were never combined against.
+#[diagnostic::on_unimplemented(
+    message = "cannot select the rows of `{Self}`",
+    label = "this statement already fixed the rows it produces",
+    note = "`select` records the projection of a statement, so it is unavailable once `UNION`, `INTERSECT`, or `EXCEPT` combined the statement with another operand",
+    note = "order the combined rows with `order_by_output` or `order_by_index` instead of re-projecting them"
+)]
+pub trait ProjectionOpen {}
+
+impl ProjectionOpen for NoLock {}
+
+impl ProjectionOpen for Locked {}
+
+impl ProjectionOpen for LockUnavailable {}
+
 /// Statically asserts that a `SELECT` query may be combined with another statement.
 ///
 /// A set operation compares the rows of several queries, so the combined
@@ -202,6 +257,8 @@ impl SetOperand for NoLock {}
 
 impl SetOperand for LockUnavailable {}
 
+impl SetOperand for SetOpApplied {}
+
 /// A `SELECT` query that projects its rows and requests no row-level lock.
 ///
 /// The alias names the everyday shape of a rendered statement, hiding the
@@ -249,9 +306,11 @@ type QueryMarker<D, Tables, Output, Projected, Lock> =
 /// [`SelectQuery::nowait`] and [`SelectQuery::skip_locked`] modifiers stay
 /// reachable. A query that cannot be locked carries [`LockUnavailable`] instead:
 /// deduplicating its rows with [`SelectQuery::distinct`] or
-/// [`SelectQuery::distinct_on`], grouping it, or combining it with
-/// [`SelectQuery::union`] and the other set operations moves it out of [`NoLock`],
-/// because PostgreSQL refuses a row-level lock on such a statement.
+/// [`SelectQuery::distinct_on`], or grouping it, moves it out of [`NoLock`],
+/// because PostgreSQL refuses a row-level lock on such a statement. Combining the
+/// query with a set operation reaches [`SetOpApplied`] instead, which drops the
+/// lock for the same reason while also fixing the rows the combined statement
+/// produces.
 pub struct SelectQuery<
     D: Dialect,
     Tables = (),
@@ -745,7 +804,9 @@ impl<D: Dialect + SupportsDistinctOn, Tables, Output, Projected>
     }
 }
 
-impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
+impl<D: Dialect, Tables, Output, Projected, Lock: ProjectionOpen>
+    SelectQuery<D, Tables, Output, Projected, Lock>
+{
     /// Selects `selection`, fixing the row type of the query to the selection row.
     ///
     /// The selection is captured as dialect-neutral AST nodes at the call site,
@@ -757,6 +818,48 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     /// The query must already select from a table, so the row type is derived
     /// from the scope the projection is read from: a column of a `LEFT JOIN`ed
     /// table reaches the row as `Option<T>`.
+    ///
+    /// A statement records its projection once. After `UNION`, `INTERSECT`, or
+    /// `EXCEPT` the output columns are the ones the first projection list named —
+    /// the operands were combined on that understanding — so the query carries
+    /// [`SetOpApplied`], [`ProjectionOpen`] stays unimplemented for it, and the
+    /// call is rejected instead of rebinding the left operand behind the back of
+    /// the operands already combined:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::{HasProjection, SelectQuery};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn base() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
+    ///     SelectQuery::<MockDialect>::new()
+    ///         .from::<User>()
+    ///         .select((UserId,))
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: the set operation already fixed the rows the
+    ///     // combined statement produces, so `select` cannot rebind them.
+    ///     let _ = base().union(base()).select((UserId,));
+    /// }
+    /// ```
     pub fn select<S, Positions>(
         mut self,
         selection: S,
@@ -776,7 +879,9 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
         self.projections = projections;
         self.retype()
     }
+}
 
+impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
     /// Adds a Common Table Expression (`WITH cte AS (...)`) to this query.
     ///
     /// The expression was built for the dialect `CteD`, which must be the

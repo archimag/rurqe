@@ -231,6 +231,35 @@ fn a_compound_ordering_accepts_an_aliased_output_column() {
 }
 
 #[test]
+fn a_hand_assembled_compound_statement_of_mismatched_arity_is_rejected() {
+    // The fluent builders keep this shape out of reach: a combined statement fixes
+    // the rows it produces, so `select` cannot rebind them. A statement assembled
+    // from AST data can still combine operands of different arity, which no engine
+    // accepts, so the mismatch is caught while building.
+    let left = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName));
+    let right = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId,));
+
+    let mut ast = left.into_ast();
+    ast.set_operations.push(SetOpAst {
+        kind: SetOpKind::Union,
+        query: right.into_ast(),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::SetOperandArity {
+            operand: 0,
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
 fn a_compound_ordering_can_fix_where_nulls_sort() {
     fn base() -> SelectQuery<MockDialect, Order, (i64, f64), HasProjection> {
         SelectQuery::<MockDialect>::new()
