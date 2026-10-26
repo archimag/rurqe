@@ -1336,6 +1336,158 @@ fn a_compound_ordering_by_a_qualified_column_is_rejected() {
     );
 }
 
+/// A compound statement projecting `name` of `users` as `label` beside `total` of
+/// `orders`.
+///
+/// Both operands project one column, while only the left one exposes its output
+/// under a name — which is the output column a compound ordering may address. The
+/// helper leaves the ordering to the test, so each regression below writes exactly
+/// the criterion it exercises.
+fn labelled_compound() -> SelectAst {
+    let mut left = empty_ast();
+    left.from = Some(TableRef::plain("users"));
+    left.projections.push(ExprKind::Aliased {
+        expr: Box::new(ExprKind::QualifiedColumn {
+            table: "users",
+            column: "name",
+        }),
+        alias: "label",
+    });
+
+    let mut right = empty_ast();
+    right.from = Some(TableRef::plain("orders"));
+    right.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
+
+    left.set_operations.push(SetOpAst {
+        kind: SetOpKind::Union,
+        query: right,
+    });
+    left
+}
+
+#[test]
+fn a_compound_statement_sorts_its_output_columns_rather_than_a_relation_of_an_operand() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The criterion names the output column `label` of the projection list while the
+    // node carries the table of a relation the left operand never declares. The
+    // assignment embeds the statement as a scalar subquery, which is exactly the
+    // shape the DML qualifier pass reaches: resolving the criterion against the
+    // relation scope of the statement would reject valid SQL, so the statement is
+    // accepted and rendered with the bare output column.
+    let mut compound = labelled_compound();
+    compound.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "label",
+        },
+        OrderDirection::Asc,
+    ));
+
+    let built = UpdateQuery::<UpsertDialect, User>::new()
+        .set(UserName::set_expr(
+            Expr::<String>::from_kind(scalar_subquery(compound)).without_scope(),
+        ))
+        .allow_all()
+        .build()
+        .expect("a compound ordering addresses the output columns of the combination");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"users\" SET \"name\" = (SELECT \"users\".\"name\" AS \"label\" FROM \"users\" \
+         UNION SELECT \"total\" FROM \"orders\" ORDER BY \"label\" ASC)"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_compound_statement_embedded_in_an_assignment_orders_by_an_output_position() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    let mut compound = labelled_compound();
+    compound.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Raw {
+            fragments: vec!["1".to_owned()],
+            params: Vec::new(),
+        },
+        OrderDirection::Desc,
+    ));
+
+    let built = UpdateQuery::<UpsertDialect, User>::new()
+        .set(UserName::set_expr(
+            Expr::<String>::from_kind(scalar_subquery(compound)).without_scope(),
+        ))
+        .allow_all()
+        .build()
+        .expect("a compound ordering addresses a 1-based position of the projection list");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"users\" SET \"name\" = (SELECT \"users\".\"name\" AS \"label\" FROM \"users\" \
+         UNION SELECT \"total\" FROM \"orders\" ORDER BY 1 DESC)"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_compound_statement_ordering_by_an_unprojected_output_column_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The projection list exposes `label` alone, so an ordering naming another
+    // output column is rejected by the statement rules before any SQL is rendered.
+    let mut compound = labelled_compound();
+    compound.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "ghost",
+        },
+        OrderDirection::Asc,
+    ));
+
+    let built = UpdateQuery::<UpsertDialect, User>::new()
+        .set(UserName::set_expr(
+            Expr::<String>::from_kind(scalar_subquery(compound)).without_scope(),
+        ))
+        .allow_all()
+        .build();
+
+    assert_eq!(built, Err(BuildError::CompoundOrderColumn { column: "ghost" }));
+}
+
+#[test]
+fn a_compound_statement_ordering_by_a_position_outside_its_arity_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The combination produces one output column, so a position beyond it addresses
+    // nothing the combined rows carry.
+    let mut compound = labelled_compound();
+    compound.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Raw {
+            fragments: vec!["2".to_owned()],
+            params: Vec::new(),
+        },
+        OrderDirection::Asc,
+    ));
+
+    let built = UpdateQuery::<UpsertDialect, User>::new()
+        .set(UserName::set_expr(
+            Expr::<String>::from_kind(scalar_subquery(compound)).without_scope(),
+        ))
+        .allow_all()
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::CompoundOrderIndex {
+            index: 2,
+            columns: 1,
+        })
+    );
+}
+
 #[test]
 fn build_error_display_raw_sql() {
     let err = BuildError::RawSql(RawSqlError::PlaceholderCount {

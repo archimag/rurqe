@@ -18,6 +18,15 @@
 //! together with the statements they embed, while the qualifier pass reached from
 //! `reject_unresolved_qualifiers` resolves the references of a statement whose
 //! structure its caller has already validated.
+//!
+//! One section is the exception both entry points share. The `ORDER BY` clause of
+//! a compound statement sorts the rows the combination produced, so it names an
+//! output column of the projection list — an alias or a 1-based position — rather
+//! than a relation of any operand, and the walk therefore visits it without a
+//! relation namespace in either mode. Whether the output column it names exists is
+//! decided by the statement rules (`validate_compound_order`), never by the
+//! qualifier resolution: an output column of a compound statement names no
+//! relation at all, so resolving it against one would reject valid SQL.
 
 use crate::expr::{ExprKind, RawSqlError, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
@@ -118,13 +127,15 @@ pub(super) fn validate_clauses(
 /// predicate the walk visits, and both of them decide it together rather than one
 /// clause alone, so it runs once at the head of the walk instead of per section.
 ///
-/// The `ORDER BY` clause of a compound statement is checked structurally on
-/// purpose: it sorts the rows the combination produced, so it names the output
-/// columns of the projection list rather than a relation of the statement — which
-/// is why the full pass visits it without a relation namespace. The qualifier pass
-/// resolves it against the statement instead, because rejecting a reference to a
-/// relation the combination no longer declares belongs to the statement rules, not
-/// to the qualifier walk.
+/// The `ORDER BY` clause of a compound statement is visited without a relation
+/// namespace by both modes on purpose: it sorts the rows the combination
+/// produced, so it names an output column of the projection list — an alias or a
+/// 1-based position — rather than a relation of any operand. The full pass
+/// therefore checks it structurally, and the qualifier pass leaves it alone
+/// entirely: whether the output column it names exists is decided by
+/// `validate_compound_order`, while the qualifier rules answer a different
+/// question — whether a reference names a relation the statement declares, which
+/// an output column of a compound statement precisely does not have to do.
 fn walk_sections(
     statement: &StatementRef<'_>,
     scope: Option<ClauseScope<'_>>,
@@ -179,16 +190,16 @@ fn walk_sections(
         visit_clause(&criterion.expr, scope, checks)?;
     }
 
-    // A compound ordering sorts the combined rows, so it names the output columns
-    // of the projection list: the full pass checks it structurally, without a
-    // relation namespace, while the qualifier pass resolves the references it
-    // reads against the statement itself.
-    let compound_scope = match checks {
-        ClauseChecks::Full => None,
-        ClauseChecks::Qualifiers => scope,
-    };
+    // A compound ordering sorts the combined rows, so it names an output column of
+    // the projection list — an alias or a 1-based position — rather than a relation
+    // of any operand. Both modes therefore visit it without a relation namespace:
+    // the full pass checks the clause structurally, the qualifier pass leaves it
+    // alone, and whether the output column it names exists is decided by
+    // `validate_compound_order`. Resolving the reference against the relations of
+    // the left operand would reject valid SQL, because an output column of a
+    // compound statement names no relation at all.
     for criterion in statement.compound_order_by {
-        visit_clause(&criterion.expr, compound_scope, checks)?;
+        visit_clause(&criterion.expr, None, checks)?;
     }
 
     for operation in statement.set_operations {
