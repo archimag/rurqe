@@ -27,7 +27,7 @@ use crate::target::{DatabaseDialect, DatabaseTarget};
 
 use super::{cli_error, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
 
-mod lock;
+pub(super) mod lock;
 mod swap;
 
 pub(crate) use self::swap::recover_interrupted_commit;

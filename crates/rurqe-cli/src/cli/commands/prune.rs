@@ -1,4 +1,9 @@
 //! Pruning of the migration history already folded into the committed checkpoint.
+//!
+//! The whole prune — the checkpoint read, the `migrations/` scan, and the file
+//! removals — runs inside the exclusive [`CheckpointLock`] section the other
+//! artifact writers take, so no reader observes a half-pruned tail: a checkpoint
+//! anchored to scripts that are already gone.
 
 use std::path::Path;
 
@@ -10,6 +15,7 @@ use rurqe_migrate::version::MigrationVersion;
 use crate::cli::{CliError, CommandOutput};
 
 use super::cli_error;
+use super::stage::lock::CheckpointLock;
 
 /// Deletes the migration scripts the committed checkpoint already folded in.
 pub(crate) fn prune_migrations(
@@ -18,6 +24,14 @@ pub(crate) fn prune_migrations(
     checkpoint_path: &Path,
     dry_run: bool,
 ) -> Result<CommandOutput, CliError> {
+    // The section is entered before the checkpoint is read and released only once
+    // the deletions are done, so the whole prune is a single observation for every
+    // other artifact writer: between the read and the last removal no `stage
+    // commit`, `stage verify`, or second prune interleaves, and a concurrent writer
+    // is reported with the pid of its live owner instead of the two deleting
+    // through each other's reads.
+    let _section = CheckpointLock::acquire(checkpoint_path)?;
+
     let checkpoint = Checkpoint::load(checkpoint_path)
         .map_err(cli_error)?
         .ok_or_else(|| {

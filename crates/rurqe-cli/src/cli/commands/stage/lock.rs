@@ -66,7 +66,7 @@ const NANOS_PER_SECOND: u128 = 1_000_000_000;
 /// The guard is installed by [`CheckpointLock::acquire`] and released by `Drop`,
 /// so a command that leaves its scope early — through `?` or through `return` —
 /// cannot leave the section held behind it.
-pub(super) struct CheckpointLock {
+pub(crate) struct CheckpointLock {
     /// The lock entry guarding the section.
     lock_path: PathBuf,
     /// The owner record the lock entry was written with.
@@ -82,7 +82,7 @@ impl CheckpointLock {
     /// fails naming it; one that finds a stale heartbeat, or an entry no owner
     /// record can be read from after the full wait, takes the debris over and
     /// installs its own.
-    pub(super) fn acquire(checkpoint_path: &Path) -> Result<Self, CliError> {
+    pub(crate) fn acquire(checkpoint_path: &Path) -> Result<Self, CliError> {
         let lock_path = lock_path_of(checkpoint_path);
 
         // The lock lives in the directory holding the marker, which the artifact
