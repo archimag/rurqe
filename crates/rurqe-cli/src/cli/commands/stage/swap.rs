@@ -39,7 +39,10 @@
 //!
 //! The writer scope of a name is `<pid>.<nonce>`: the process id keeps two live
 //! processes apart, and the nonce keeps a recycled id from inheriting the parking of
-//! an earlier one.
+//! an earlier one. A commit takes that scope from the owner record the section
+//! installed when it was acquired, never from a later re-read of the lock entry, so
+//! a section taken over while it ran cannot make the writer park under the identity
+//! of the writer that replaced it.
 //!
 //! * marker — live `<dir>/checkpoint.toml`, staged
 //!   `<dir>/.checkpoint.toml.<pid>.<seq>.tmp`, parked
@@ -362,17 +365,6 @@ fn refuse_live_foreign(checkpoint_path: &Path) -> Result<(), CliError> {
     }
 }
 
-/// The writer scope the artifacts of a commit are parked under.
-///
-/// A commit runs inside the exclusive section, so the live lock entry names the
-/// writer performing it and the parked copies carry exactly that identity; a later
-/// recovery can then attribute them to the section their creator held instead of
-/// guessing from a fixed name. A commit that finds no live entry takes a scope of
-/// its own rather than borrowing another writer's identity.
-fn writer_scope(checkpoint_path: &Path) -> Result<WriterId, CliError> {
-    Ok(live_writer(checkpoint_path)?.unwrap_or_else(WriterId::current))
-}
-
 /// Whether `path` exists, reporting a path that cannot be inspected.
 pub(super) fn path_exists(path: &Path) -> Result<bool, CliError> {
     match std::fs::symlink_metadata(path) {
@@ -527,9 +519,9 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
 ///
 /// The new boundary is assembled and flushed first, so a failure up to there
 /// leaves the committed pair exactly as it was. The previous marker and boundary
-/// are then parked under the scope of the writer performing the commit — see
-/// [`writer_scope`] — the staged boundary is installed, and the marker is written
-/// last as the commit point. Only once the marker is durable are the parked
+/// are then parked under `scope` — the identity the writer holding the section
+/// installed when it entered it — the staged boundary is installed, and the marker
+/// is written last as the commit point. Only once the marker is durable are the parked
 /// artifacts discarded. A process killed before the commit point leaves the
 /// previous pair parked for [`recover_interrupted_commit`] to restore; one killed
 /// after it leaves the committed pair live with the previous pair parked as
@@ -538,9 +530,9 @@ pub(super) fn seal_commit(
     stage: &DeclarativeStage,
     checkpoint_path: &Path,
     marker: &str,
+    scope: WriterId,
 ) -> Result<Vec<String>, CliError> {
     let dir = boundary_dir(checkpoint_path);
-    let scope = writer_scope(checkpoint_path)?;
     let marker_backup = parked_sibling(checkpoint_path, scope);
     let boundary_backup = parked_sibling(&dir, scope);
 

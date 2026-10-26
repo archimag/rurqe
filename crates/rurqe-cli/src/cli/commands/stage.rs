@@ -427,7 +427,14 @@ pub(crate) fn commit_stage(
     // the marker and boundary are then swapped as one pair, with the marker
     // written last as the commit point.
     write_file(lock_path, &lock)?;
-    let swap_notices = seal_commit(&stage, checkpoint_path, &checkpoint.render())?;
+    // The parked pair this commit writes carries the scope of the section it
+    // holds, so a copy it leaves behind stays attributable to this writer.
+    let swap_notices = seal_commit(
+        &stage,
+        checkpoint_path,
+        &checkpoint.render(),
+        _section.writer(),
+    )?;
 
     // The notices travel in the report of the command, so a selection that
     // describes nothing, a repaired commit, and a boundary whose directory could

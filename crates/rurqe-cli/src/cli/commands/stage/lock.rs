@@ -18,7 +18,10 @@
 //! dead and takes the entry over. Release is RAII and re-validates ownership —
 //! the lock is re-read and removed only while it still names the current writer
 //! — so a writer whose section was taken over can never remove its successor's
-//! entry.
+//! entry. The same record names the writer for the rest of its section: a commit
+//! parks its copies under the scope it installed at acquisition instead of one
+//! re-read later, so a takeover can never make it park under the identity of the
+//! writer that replaced it.
 //!
 //! # Takeover
 //!
@@ -125,6 +128,20 @@ impl CheckpointLock {
                     }
                 },
             }
+        }
+    }
+
+    /// The identity of the writer holding this section.
+    ///
+    /// The parked copies a commit installs carry this scope, so the name a commit
+    /// parks under is the identity recorded when it entered the section rather than
+    /// one re-read from the entry afterwards: a writer whose section was taken over
+    /// can never park under the identity of the writer that replaced it, and a copy
+    /// it parked stays attributable to the scope that created it.
+    pub(super) fn writer(&self) -> WriterId {
+        WriterId {
+            pid: self.record.pid,
+            nonce: self.record.nonce,
         }
     }
 }
@@ -267,16 +284,6 @@ pub(super) struct WriterId {
     /// The value taken when the writer entered the section, keeping a recycled
     /// process id from being read as the writer of an earlier record.
     pub(super) nonce: u128,
-}
-
-impl WriterId {
-    /// The identity a writer that holds no recorded section takes up.
-    pub(super) fn current() -> Self {
-        Self {
-            pid: std::process::id(),
-            nonce: now_nanos(),
-        }
-    }
 }
 
 /// The identity a live lock entry names, if one provably lives.
