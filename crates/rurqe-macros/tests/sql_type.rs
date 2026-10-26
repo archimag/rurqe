@@ -480,6 +480,49 @@ fn macro_declared_newtypes_are_scalar_function_operands() {
     );
 }
 
+/// Asserts that `V` converts into a comparison operand of type `T` that
+/// computes one value per row of the enclosing statement.
+fn assert_into_expr<T, V>()
+where
+    V: rurqe_core::expr::IntoExpr<T, Scope = (), Aggr = NonAggregate, Dialect = ()>,
+{
+}
+
+#[test]
+fn derived_newtypes_are_per_row_comparison_operands() {
+    // A delegated newtype binds the value it wraps, which computes one value
+    // per row.
+    assert_into_expr::<UserId, UserId>();
+    assert_into_expr::<Email, Email>();
+
+    // A binary newtype is accepted by value and by reference.
+    assert_into_expr::<Txid, Txid>();
+    assert_into_expr::<Txid, &Txid>();
+
+    // A text newtype carries the operand impls of its own value, of its
+    // borrowed form, and of the string literals it is compared with.
+    assert_into_expr::<Address, Address>();
+    assert_into_expr::<Address, &Address>();
+    assert_into_expr::<Address, &str>();
+    assert_into_expr::<Address, String>();
+
+    // An enum is stored as the label of its variant, so it accepts the same
+    // textual operand forms.
+    assert_into_expr::<Mood, Mood>();
+    assert_into_expr::<Mood, &Mood>();
+    assert_into_expr::<Mood, &str>();
+    assert_into_expr::<Mood, String>();
+
+    // The declarative helper macros emit the same operand contracts as the
+    // derive.
+    assert_into_expr::<Nonce, Nonce>();
+    assert_into_expr::<Nonce, &Nonce>();
+    assert_into_expr::<Nonce, &str>();
+    assert_into_expr::<Nonce, String>();
+    assert_into_expr::<Digest, Digest>();
+    assert_into_expr::<Digest, &Digest>();
+}
+
 #[test]
 fn derived_newtypes_bind_as_scalar_function_arguments() {
     let coalesced = coalesce(AccountId, UserId(0));

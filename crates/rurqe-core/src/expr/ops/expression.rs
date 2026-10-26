@@ -6,6 +6,7 @@ use crate::expr::scope::{MergeScope, Merged, Merged3, Unscoped};
 use crate::schema::Column;
 
 use super::conversion::{IntoExpr, IntoExprList};
+use super::numeric::{CombineAggr, CombinedAggr};
 
 /// A SQL expression of type `T` that can be compared with bound values.
 ///
@@ -63,13 +64,14 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged<Self::Scope, V::Scope>,
-        NonAggregate,
+        CombinedAggr<NonAggregate, V::Aggr, V::Scope>,
         MergedDialect<Self::Dialect, V::Dialect>,
     >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         Self::Dialect: MergeDialect<V::Dialect>,
+        NonAggregate: CombineAggr<V::Aggr, V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().eq(value)
@@ -83,13 +85,14 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged<Self::Scope, V::Scope>,
-        NonAggregate,
+        CombinedAggr<NonAggregate, V::Aggr, V::Scope>,
         MergedDialect<Self::Dialect, V::Dialect>,
     >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         Self::Dialect: MergeDialect<V::Dialect>,
+        NonAggregate: CombineAggr<V::Aggr, V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().ne(value)
@@ -103,13 +106,14 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged<Self::Scope, V::Scope>,
-        NonAggregate,
+        CombinedAggr<NonAggregate, V::Aggr, V::Scope>,
         MergedDialect<Self::Dialect, V::Dialect>,
     >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         Self::Dialect: MergeDialect<V::Dialect>,
+        NonAggregate: CombineAggr<V::Aggr, V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().gt(value)
@@ -123,13 +127,14 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged<Self::Scope, V::Scope>,
-        NonAggregate,
+        CombinedAggr<NonAggregate, V::Aggr, V::Scope>,
         MergedDialect<Self::Dialect, V::Dialect>,
     >
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
         Self::Dialect: MergeDialect<V::Dialect>,
+        NonAggregate: CombineAggr<V::Aggr, V::Scope>,
         V: IntoExpr<T>,
     {
         self.into_expression().lt(value)
@@ -166,7 +171,7 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged3<Self::Scope, L::Scope, H::Scope>,
-        NonAggregate,
+        CombinedAggr<CombinedAggr<NonAggregate, L::Aggr, L::Scope>, H::Aggr, H::Scope>,
         MergedDialect<MergedDialect<Self::Dialect, L::Dialect>, H::Dialect>,
     >
     where
@@ -175,6 +180,8 @@ pub trait Expression<T> {
         Merged<Self::Scope, L::Scope>: MergeScope<H::Scope>,
         Self::Dialect: MergeDialect<L::Dialect>,
         MergedDialect<Self::Dialect, L::Dialect>: MergeDialect<H::Dialect>,
+        NonAggregate: CombineAggr<L::Aggr, L::Scope>,
+        CombinedAggr<NonAggregate, L::Aggr, L::Scope>: CombineAggr<H::Aggr, H::Scope>,
         L: IntoExpr<T>,
         H: IntoExpr<T>,
     {
@@ -193,13 +200,14 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged<Self::Scope, I::Scope>,
-        NonAggregate,
+        CombinedAggr<NonAggregate, I::Aggr, I::Scope>,
         MergedDialect<Self::Dialect, I::Dialect>,
     >
     where
         Self: Sized,
         Self::Scope: MergeScope<I::Scope>,
         Self::Dialect: MergeDialect<I::Dialect>,
+        NonAggregate: CombineAggr<I::Aggr, I::Scope>,
         I: IntoExprList<T>,
     {
         self.into_expression().in_list(values)
@@ -216,13 +224,14 @@ pub trait Expression<T> {
     ) -> Expr<
         bool,
         Merged<Self::Scope, I::Scope>,
-        NonAggregate,
+        CombinedAggr<NonAggregate, I::Aggr, I::Scope>,
         MergedDialect<Self::Dialect, I::Dialect>,
     >
     where
         Self: Sized,
         Self::Scope: MergeScope<I::Scope>,
         Self::Dialect: MergeDialect<I::Dialect>,
+        NonAggregate: CombineAggr<I::Aggr, I::Scope>,
         I: IntoExprList<T>,
     {
         self.into_expression().not_in_list(values)

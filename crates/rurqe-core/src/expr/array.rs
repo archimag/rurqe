@@ -12,7 +12,7 @@
 //! column type, so reading it as an array of blobs would silently change the
 //! meaning of every existing blob column.
 
-use crate::expr::{ExprKind, IntoExpr, SqlVal, ToSqlVal};
+use crate::expr::{ExprKind, IntoExpr, NonAggregate, SqlVal, ToSqlVal};
 use crate::query::MakeNullable;
 use crate::row::{FromSqlValue, RowDecodeError};
 
@@ -144,6 +144,7 @@ impl<T: SqlArrayElement> MakeNullable for Vec<T> {
 
 impl<T: SqlArrayElement> IntoExpr<Vec<T>> for Vec<T> {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {

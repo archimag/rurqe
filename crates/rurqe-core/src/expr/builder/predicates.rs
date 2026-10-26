@@ -3,11 +3,15 @@
 //! Every method checks operand compatibility at the call site and merges the
 //! scopes of its operands, so a predicate comparing a value read from one table
 //! with a value read from another references both tables and is accepted only by
-//! a query selecting from them.
+//! a query selecting from them. The comparison, range, and membership methods
+//! also fold the aggregation markers of their operands exactly the way
+//! arithmetic does, so a predicate collapses the rows of its group only when
+//! every operand it reads does, and a grouped query admits it into `HAVING`
+//! accordingly.
 
 use super::Expr;
 use crate::expr::ast::{ExprKind, MergeDialect, MergedDialect, SubqueryOp};
-use crate::expr::ops::{InSubquery, IntoExpr, IntoExprList};
+use crate::expr::ops::{CombineAggr, CombinedAggr, InSubquery, IntoExpr, IntoExprList};
 use crate::expr::scope::{MergeScope, Merged, Merged3};
 use crate::expr::val::BinaryOp;
 
@@ -127,13 +131,56 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 
     /// Compares the expression with `value` using the SQL `=` operator.
+    ///
+    /// The predicate folds the aggregation markers of both operands exactly the
+    /// way arithmetic does, so it collapses the rows of its group only when
+    /// every operand does: an aggregate compared with a bound value stays an
+    /// aggregate a grouped query accepts in `HAVING`, while the same aggregate
+    /// compared with a bare column computes one value per row, so the grouped
+    /// query rejects the predicate unless the column is grouped.
+    ///
+    /// ```
+    /// use rurqe_core::expr::{Aggregate, Expr, NonAggregate};
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `users` table.
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn assert_aggregate<T, Scope, D>(_: &Expr<T, Scope, Aggregate, D>) {}
+    /// fn assert_per_row<T, Scope, D>(_: &Expr<T, Scope, NonAggregate, D>) {}
+    ///
+    /// // An aggregate compared with a bound value keeps collapsing the rows
+    /// // of its group, so a grouped query accepts the predicate in `HAVING`.
+    /// assert_aggregate(&Expr::count::<UserId>().eq(0i64));
+    ///
+    /// // The same aggregate compared with a bare column computes one value
+    /// // per row, so the predicate is per-row and `HAVING` rejects it unless
+    /// // the column is grouped.
+    /// assert_per_row(&Expr::count::<UserId>().eq(Expr::column::<OrderUserId>()));
+    /// ```
     #[allow(clippy::type_complexity)]
     pub fn eq<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, V::Aggr, V::Scope>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<V::Aggr, V::Scope>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
@@ -141,13 +188,22 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 
     /// Compares the expression with `value` using the SQL `<>` operator.
+    ///
+    /// The predicate folds the aggregation markers of both operands exactly as
+    /// [`eq`](Self::eq) does.
     #[allow(clippy::type_complexity)]
     pub fn ne<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, V::Aggr, V::Scope>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<V::Aggr, V::Scope>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
@@ -155,13 +211,22 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 
     /// Compares the expression with `value` using the SQL `>` operator.
+    ///
+    /// The predicate folds the aggregation markers of both operands exactly as
+    /// [`eq`](Self::eq) does.
     #[allow(clippy::type_complexity)]
     pub fn gt<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, V::Aggr, V::Scope>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<V::Aggr, V::Scope>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
@@ -169,13 +234,22 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     }
 
     /// Compares the expression with `value` using the SQL `<` operator.
+    ///
+    /// The predicate folds the aggregation markers of both operands exactly as
+    /// [`eq`](Self::eq) does.
     #[allow(clippy::type_complexity)]
     pub fn lt<V>(
         self,
         value: V,
-    ) -> Expr<bool, Merged<Scope, V::Scope>, Aggr, MergedDialect<D, V::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, V::Scope>,
+        CombinedAggr<Aggr, V::Aggr, V::Scope>,
+        MergedDialect<D, V::Dialect>,
+    >
     where
         Scope: MergeScope<V::Scope>,
+        Aggr: CombineAggr<V::Aggr, V::Scope>,
         D: MergeDialect<V::Dialect>,
         V: IntoExpr<T>,
     {
@@ -184,7 +258,11 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
 
     /// Builds a `BETWEEN low AND high` range predicate over this expression.
     ///
-    /// Both bounds are inclusive and must be compatible with the expression type.
+    /// Both bounds are inclusive and must be compatible with the expression
+    /// type. The predicate folds the aggregation markers of the tested
+    /// expression and both bounds the same way [`eq`](Self::eq) folds its two
+    /// operands, so a range over an aggregate stays projectable from a grouped
+    /// query while a bound reading a bare column makes the predicate per-row.
     #[allow(clippy::type_complexity)]
     pub fn between<L, H>(
         self,
@@ -193,12 +271,14 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ) -> Expr<
         bool,
         Merged3<Scope, L::Scope, H::Scope>,
-        Aggr,
+        CombinedAggr<CombinedAggr<Aggr, L::Aggr, L::Scope>, H::Aggr, H::Scope>,
         MergedDialect<MergedDialect<D, L::Dialect>, H::Dialect>,
     >
     where
         Scope: MergeScope<L::Scope>,
         Merged<Scope, L::Scope>: MergeScope<H::Scope>,
+        Aggr: CombineAggr<L::Aggr, L::Scope>,
+        CombinedAggr<Aggr, L::Aggr, L::Scope>: CombineAggr<H::Aggr, H::Scope>,
         D: MergeDialect<L::Dialect>,
         MergedDialect<D, L::Dialect>: MergeDialect<H::Dialect>,
         L: IntoExpr<T>,
@@ -217,14 +297,22 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// tables the candidates reference join the scope of the predicate: a list of
     /// bound values references no table and leaves the scope unchanged, while a
     /// candidate reading a column of another table extends it, so the enclosing
-    /// query has to select from that table as well.
+    /// query has to select from that table as well. The candidates also state
+    /// their aggregation marker, which folds with the marker of the tested
+    /// expression exactly as [`eq`](Self::eq) folds its operands.
     #[allow(clippy::type_complexity)]
     pub fn in_list<I>(
         self,
         values: I,
-    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, I::Scope>,
+        CombinedAggr<Aggr, I::Aggr, I::Scope>,
+        MergedDialect<D, I::Dialect>,
+    >
     where
         Scope: MergeScope<I::Scope>,
+        Aggr: CombineAggr<I::Aggr, I::Scope>,
         D: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
@@ -233,16 +321,23 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
 
     /// Builds a `NOT IN (value, ...)` negated membership predicate over this expression.
     ///
-    /// The negation keeps the scope of the positive form: every candidate value
-    /// still has to be comparable with the expression, and the tables it
-    /// references still join the scope of the predicate.
+    /// The negation keeps the scope and the aggregation-marker fold of the
+    /// positive form: every candidate value still has to be comparable with the
+    /// expression, and the tables it references still join the scope of the
+    /// predicate.
     #[allow(clippy::type_complexity)]
     pub fn not_in_list<I>(
         self,
         values: I,
-    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, I::Scope>,
+        CombinedAggr<Aggr, I::Aggr, I::Scope>,
+        MergedDialect<D, I::Dialect>,
+    >
     where
         Scope: MergeScope<I::Scope>,
+        Aggr: CombineAggr<I::Aggr, I::Scope>,
         D: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
@@ -254,9 +349,15 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         self,
         values: I,
         negated: bool,
-    ) -> Expr<bool, Merged<Scope, I::Scope>, Aggr, MergedDialect<D, I::Dialect>>
+    ) -> Expr<
+        bool,
+        Merged<Scope, I::Scope>,
+        CombinedAggr<Aggr, I::Aggr, I::Scope>,
+        MergedDialect<D, I::Dialect>,
+    >
     where
         Scope: MergeScope<I::Scope>,
+        Aggr: CombineAggr<I::Aggr, I::Scope>,
         D: MergeDialect<I::Dialect>,
         I: IntoExprList<T>,
     {
@@ -280,11 +381,11 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
         })
     }
 
-    fn compare<TargetScope, TargetDialect>(
+    fn compare<TargetScope, TargetAggr, TargetDialect>(
         self,
         op: BinaryOp,
         rhs: ExprKind,
-    ) -> Expr<bool, TargetScope, Aggr, TargetDialect> {
+    ) -> Expr<bool, TargetScope, TargetAggr, TargetDialect> {
         Expr::new(ExprKind::Binary {
             op,
             lhs: Box::new(self.kind),

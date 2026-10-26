@@ -4,7 +4,7 @@ use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
 
 use crate::expr::ast::{ExprKind, SubqueryOp};
-use crate::expr::builder::Expr;
+use crate::expr::builder::{Expr, NonAggregate};
 use crate::expr::val::ToSqlVal;
 
 use super::compat::SqlCompatible;
@@ -28,6 +28,16 @@ pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
     /// built expression keeps the scope of its columns.
     type Scope;
 
+    /// The aggregation marker the operand contributes to a predicate.
+    ///
+    /// A bound value and a scalar subquery compute one value per row of the
+    /// enclosing statement, so their implementations state [`NonAggregate`],
+    /// which leaves the aggregation marker of the expression they are compared
+    /// with standing. A built expression states the marker it was constructed
+    /// with, so a comparison folds the markers of both operands the same way
+    /// arithmetic does.
+    type Aggr;
+
     /// The dialect marker of the operand.
     type Dialect;
 
@@ -37,6 +47,7 @@ pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
 
 impl IntoExpr<i32> for i32 {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -46,6 +57,7 @@ impl IntoExpr<i32> for i32 {
 
 impl IntoExpr<i64> for i64 {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -55,6 +67,7 @@ impl IntoExpr<i64> for i64 {
 
 impl IntoExpr<f64> for f64 {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -65,6 +78,7 @@ impl IntoExpr<f64> for f64 {
 #[cfg(feature = "decimal")]
 impl IntoExpr<rust_decimal::Decimal> for rust_decimal::Decimal {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -75,6 +89,7 @@ impl IntoExpr<rust_decimal::Decimal> for rust_decimal::Decimal {
 #[cfg(feature = "decimal")]
 impl IntoExpr<rust_decimal::Decimal> for &rust_decimal::Decimal {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -84,6 +99,7 @@ impl IntoExpr<rust_decimal::Decimal> for &rust_decimal::Decimal {
 
 impl IntoExpr<bool> for bool {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -93,6 +109,7 @@ impl IntoExpr<bool> for bool {
 
 impl IntoExpr<String> for String {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -102,6 +119,7 @@ impl IntoExpr<String> for String {
 
 impl IntoExpr<String> for &str {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -111,6 +129,7 @@ impl IntoExpr<String> for &str {
 
 impl IntoExpr<Vec<u8>> for Vec<u8> {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -120,6 +139,7 @@ impl IntoExpr<Vec<u8>> for Vec<u8> {
 
 impl IntoExpr<Vec<u8>> for &[u8] {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -129,6 +149,7 @@ impl IntoExpr<Vec<u8>> for &[u8] {
 
 impl<T, Scope, Aggr, D> IntoExpr<T> for Expr<T, Scope, Aggr, D> {
     type Scope = Scope;
+    type Aggr = Aggr;
     type Dialect = D;
 
     fn into_expr_kind(self) -> ExprKind {
@@ -142,6 +163,7 @@ where
     Tables: TableScope,
 {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = D;
 
     fn into_expr_kind(self) -> ExprKind {
@@ -157,6 +179,7 @@ where
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for uuid::Uuid {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -167,6 +190,7 @@ impl IntoExpr<uuid::Uuid> for uuid::Uuid {
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for &uuid::Uuid {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -177,6 +201,7 @@ impl IntoExpr<uuid::Uuid> for &uuid::Uuid {
 #[cfg(feature = "uuid")]
 impl IntoExpr<uuid::Uuid> for &str {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -187,6 +212,7 @@ impl IntoExpr<uuid::Uuid> for &str {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -197,6 +223,7 @@ impl IntoExpr<chrono::NaiveDateTime> for chrono::NaiveDateTime {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDateTime> for &chrono::NaiveDateTime {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -207,6 +234,7 @@ impl IntoExpr<chrono::NaiveDateTime> for &chrono::NaiveDateTime {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -217,6 +245,7 @@ impl IntoExpr<chrono::DateTime<chrono::Utc>> for chrono::DateTime<chrono::Utc> {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::DateTime<chrono::Utc>> for &chrono::DateTime<chrono::Utc> {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -227,6 +256,7 @@ impl IntoExpr<chrono::DateTime<chrono::Utc>> for &chrono::DateTime<chrono::Utc> 
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -237,6 +267,7 @@ impl IntoExpr<chrono::NaiveDate> for chrono::NaiveDate {
 #[cfg(feature = "chrono")]
 impl IntoExpr<chrono::NaiveDate> for &chrono::NaiveDate {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -247,6 +278,7 @@ impl IntoExpr<chrono::NaiveDate> for &chrono::NaiveDate {
 #[cfg(feature = "serde_json")]
 impl IntoExpr<serde_json::Value> for serde_json::Value {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -257,6 +289,7 @@ impl IntoExpr<serde_json::Value> for serde_json::Value {
 #[cfg(feature = "serde_json")]
 impl IntoExpr<serde_json::Value> for &serde_json::Value {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -267,6 +300,7 @@ impl IntoExpr<serde_json::Value> for &serde_json::Value {
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for crate::expr::Json<T> {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -277,6 +311,7 @@ impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for crate::expr::Json<T
 #[cfg(feature = "serde_json")]
 impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<T> {
     type Scope = ();
+    type Aggr = NonAggregate;
     type Dialect = ();
 
     fn into_expr_kind(self) -> ExprKind {
@@ -318,6 +353,14 @@ pub trait IntoExprList<T> {
     /// The scope of the tables the candidates reference.
     type Scope;
 
+    /// The aggregation marker the candidates contribute to a predicate.
+    ///
+    /// A list of bound values references no table and computes one value per
+    /// row, so its implementation states [`NonAggregate`]; a list holding built
+    /// expressions keeps the marker of its candidates, so a membership test
+    /// folds the markers of the tested expression and its candidates together.
+    type Aggr;
+
     /// The dialect marker of the candidates.
     type Dialect;
 
@@ -332,6 +375,7 @@ where
     V: IntoExpr<T>,
 {
     type Scope = V::Scope;
+    type Aggr = V::Aggr;
     type Dialect = V::Dialect;
 
     fn push_expr_kinds(self, values: &mut Vec<ExprKind>) {

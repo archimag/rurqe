@@ -616,6 +616,7 @@ macro_rules! impl_sql_newtype {
 
         impl $crate::expr::IntoExpr<$ty> for $ty {
             type Scope = ();
+            type Aggr = $crate::expr::NonAggregate;
             type Dialect = ();
 
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
@@ -627,6 +628,7 @@ macro_rules! impl_sql_newtype {
 
         impl<'a> $crate::expr::IntoExpr<$ty> for &'a $ty {
             type Scope = ();
+            type Aggr = $crate::expr::NonAggregate;
             type Dialect = ();
 
             fn into_expr_kind(self) -> $crate::expr::ExprKind {
@@ -747,6 +749,7 @@ macro_rules! impl_sql_text_newtype {
 
                 impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
                     type Scope = ();
+                    type Aggr = $crate::expr::NonAggregate;
                     type Dialect = ();
 
                     fn into_expr_kind(self) -> $crate::expr::ExprKind {
@@ -761,6 +764,7 @@ macro_rules! impl_sql_text_newtype {
 
                 impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
                     type Scope = ();
+                    type Aggr = $crate::expr::NonAggregate;
                     type Dialect = ();
 
                     fn into_expr_kind(self) -> $crate::expr::ExprKind {
