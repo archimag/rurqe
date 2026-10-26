@@ -828,3 +828,81 @@ fn baseline_keeps_its_version_argument_under_a_cargo_entrypoint() {
         }
     );
 }
+
+/// Serialises the tests that replace the project configuration of the working directory.
+static PROJECT_CONFIGURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A `rurqe.toml` written into the working directory for the duration of a test.
+///
+/// The toolchain reads the project configuration from the working directory, so a
+/// test of its validation has to place the file there; the guard removes it again
+/// even when an assertion fails, so the checkout never keeps a configuration the
+/// other tests of the binary would then read.
+struct ProjectConfiguration;
+
+impl ProjectConfiguration {
+    /// Writes `contents` as the `rurqe.toml` of the working directory.
+    fn write(contents: &str) -> Self {
+        std::fs::write(crate::config::DEFAULT_CONFIG_PATH, contents)
+            .expect("write the project configuration");
+
+        Self
+    }
+}
+
+impl Drop for ProjectConfiguration {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(crate::config::DEFAULT_CONFIG_PATH);
+    }
+}
+
+#[test]
+fn every_migration_command_validates_the_project_configuration() {
+    let _serial = PROJECT_CONFIGURATION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _configuration = ProjectConfiguration::write(
+        "# a section the toolchain does not know\n[workspace]\nmembers = [\"a\"]\n",
+    );
+
+    // The migrations directory holds no script, so only the configuration stands
+    // between a command and an empty history.
+    let migrations_dir = std::env::temp_dir()
+        .join(format!("rurqe-absent-migrations-{}", std::process::id()))
+        .to_string_lossy()
+        .into_owned();
+
+    // The catalog-digest commands reach the configuration through one macro, so a
+    // single malformed file fails every one of them on a SQLite target instead of
+    // being tolerated by the engine whose backend never reads the resolved name.
+    for action in ["up", "status", "repair"] {
+        let error = run_cli(vec![
+            "rurqe".to_owned(),
+            "migrate".to_owned(),
+            action.to_owned(),
+            "--migrations-dir".to_owned(),
+            migrations_dir.clone(),
+            "--database-url".to_owned(),
+            ":memory:".to_owned(),
+        ])
+        .expect_err("a malformed configuration aborts the command");
+
+        assert!(
+            error.to_string().contains("workspace"),
+            "migrate {action}: {error}"
+        );
+    }
+
+    let error = run_cli(vec![
+        "rurqe".to_owned(),
+        "stage".to_owned(),
+        "init".to_owned(),
+        "--version".to_owned(),
+        "1".to_owned(),
+        "--database-url".to_owned(),
+        ":memory:".to_owned(),
+    ])
+    .expect_err("a malformed configuration aborts the cold start");
+
+    assert!(error.to_string().contains("workspace"), "stage init: {error}");
+}

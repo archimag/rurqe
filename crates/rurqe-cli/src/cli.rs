@@ -44,12 +44,15 @@ use crate::introspect::{introspect_database_schema_notice, report_vacuous_postgr
 /// constructed once per command through the shared connection helper instead of
 /// repeating the dialect match and connection logic by hand.
 ///
-/// `$schema` is a `Result` the PostgreSQL arm alone evaluates: a SQLite database
-/// holds one unnamed catalog, so the selection never applies to it and a project
-/// migrating SQLite is never made to load the selection configuration. The
-/// resolved name reaches `PostgresMigrationBackend::with_schema`, so the recorded
-/// catalog digest — and the checkpoint guard comparing it — describes the same
-/// schema the codegen snapshot and the drift gate read.
+/// `$schema` is a `Result` resolved before the engine is known, so the project
+/// configuration behind it is loaded and validated for every engine: a malformed
+/// `rurqe.toml` fails a SQLite command exactly like a PostgreSQL one, instead of
+/// being tolerated on the engine whose backend never reads the resolved name.
+/// Only that name is engine-conditional — a SQLite database holds one unnamed
+/// catalog the selection would never select, so the SQLite arm drops it — while
+/// the PostgreSQL arm passes it to `PostgresMigrationBackend::with_schema`, so the
+/// recorded catalog digest — and the checkpoint guard comparing it — describes
+/// the same schema the codegen snapshot and the drift gate read.
 ///
 /// The two-argument form serves the one command that records no catalog digest:
 /// `baseline` only writes a history marker, so it carries no schema selection and
@@ -70,13 +73,21 @@ macro_rules! with_migration_backend {
     }};
     ($database_url:expr, $schema:expr, |$backend:ident| $run:expr) => {{
         let url = resolve_database_url($database_url)?;
+
+        // The selection is resolved before the engine is known, so the project
+        // configuration behind it is validated for a SQLite target as well: a file
+        // skipped on that engine would let a typo pass on the very commands that
+        // record a catalog digest. Only the resolved name is engine-conditional,
+        // because a SQLite database holds one unnamed catalog the selection would
+        // never select.
+        let schema = $schema?;
+
         match connect(&url)? {
             Connection::Sqlite(conn) => {
                 let mut $backend = SqliteMigrationBackend::new(conn);
                 $run
             }
             Connection::Postgres(mut client) => {
-                let schema = $schema?;
                 let notice = report_vacuous_postgres_schema(&mut client, &schema)?;
                 let mut $backend = PostgresMigrationBackend::new(client).with_schema(schema);
 
