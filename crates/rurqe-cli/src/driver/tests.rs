@@ -10,7 +10,7 @@ use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction, Migrator};
 use rurqe_migrate::sleeper::{NoopSleeper, Sleeper};
 
 use super::postgres::{apply_unlock_answer, poll_advisory_lock, MIGRATION_LOCK_ID};
-use super::sqlite::SqliteMigrationBackend;
+use super::sqlite::{left_open_message, SqliteMigrationBackend};
 
 /// A [`Sleeper`] recording the pause of every waiting round.
 #[derive(Default)]
@@ -268,6 +268,105 @@ fn a_script_that_never_commits_is_reported_as_an_imbalance() {
         )
         .expect("the rolled back table stays absent");
     assert_eq!(users, 0);
+}
+
+#[test]
+fn the_composed_diagnostic_reports_the_imbalance_alone() {
+    let message = left_open_message(Ok(()), Ok(()));
+
+    assert!(
+        message.starts_with("non-transactional script left a transaction open"),
+        "{message}"
+    );
+    assert!(
+        message.contains("balance the BEGIN statements"),
+        "{message}"
+    );
+    assert!(!message.contains("failed"), "{message}");
+}
+
+#[test]
+fn the_composed_diagnostic_keeps_the_script_cause_over_a_successful_rollback() {
+    let message = left_open_message(
+        Err(Error::Backend("near \"oops\": syntax error".to_owned())),
+        Ok(()),
+    );
+
+    assert!(
+        message.starts_with("near \"oops\": syntax error"),
+        "{message}"
+    );
+    assert!(
+        message.contains("its applied statements were rolled back"),
+        "{message}"
+    );
+    assert!(!message.contains("rolling it back failed"), "{message}");
+}
+
+#[test]
+fn the_composed_diagnostic_reports_a_rollback_that_could_not_undo_the_script() {
+    let message = left_open_message(Ok(()), Err(Error::Backend("disk I/O error".to_owned())));
+
+    assert!(
+        message.starts_with("non-transactional script left a transaction open"),
+        "{message}"
+    );
+    assert!(
+        message.contains("rolling it back failed: disk I/O error"),
+        "{message}"
+    );
+    assert!(message.contains("fresh connection"), "{message}");
+}
+
+#[test]
+fn the_composed_diagnostic_carries_both_the_script_and_the_rollback_failure() {
+    let message = left_open_message(
+        Err(Error::Backend("near \"oops\": syntax error".to_owned())),
+        Err(Error::Backend("disk I/O error".to_owned())),
+    );
+
+    assert!(
+        message.starts_with("near \"oops\": syntax error"),
+        "{message}"
+    );
+    assert!(
+        message.contains("rolling it back failed: disk I/O error"),
+        "{message}"
+    );
+    assert!(
+        message.contains("balance the BEGIN statements"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_backend_a_failed_rollback_left_unusable_reports_the_cause_instead_of_stepping() {
+    let mut backend = backend();
+    backend.poisoned = Some(
+        "disk I/O error; the script also left a transaction open and rolling it back failed"
+            .to_owned(),
+    );
+
+    let error = match backend.begin() {
+        Ok(_) => panic!("a poisoned backend opens no step"),
+        Err(error) => error,
+    };
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(message.contains("unusable"), "{message}");
+    assert!(message.contains("disk I/O error"), "{message}");
+
+    let error = backend
+        .execute_non_transactional("CREATE TABLE users (id INTEGER NOT NULL);")
+        .expect_err("a poisoned backend executes no script");
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(message.contains("unusable"), "{message}");
+    assert!(message.contains("rolling it back failed"), "{message}");
 }
 
 /// A fresh database file no concurrent test can collide with.

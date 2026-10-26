@@ -32,6 +32,16 @@ pub struct SqliteMigrationBackend {
     pub(super) conn: rusqlite::Connection,
     lock_held: bool,
     lock_timeout: Duration,
+    /// The diagnostic of the failure that left the connection unusable.
+    ///
+    /// A non-transactional script that ends with an open transaction is
+    /// recovered from by rolling that transaction back. When the rollback
+    /// itself fails, the connection stays inside the abandoned transaction and
+    /// SQLite rejects every following `BEGIN` with a transaction-state
+    /// diagnostic instead of the failure that caused it, so the backend is
+    /// poisoned with the composed cause and every later step reports it. The
+    /// field is `pub(super)` for the tests that exercise the guard.
+    pub(super) poisoned: Option<String>,
 }
 
 impl SqliteMigrationBackend {
@@ -41,6 +51,7 @@ impl SqliteMigrationBackend {
             conn,
             lock_held: false,
             lock_timeout: DEFAULT_SQLITE_LOCK_TIMEOUT,
+            poisoned: None,
         }
     }
 
@@ -62,6 +73,23 @@ impl SqliteMigrationBackend {
     /// types follow the SQLite affinity rules.
     pub fn introspect_catalog(&self) -> Result<SchemaCatalog, Error> {
         introspect_sqlite(&self.conn).map_err(backend_error)
+    }
+
+    /// Rejects a step on a connection a failed rollback left unusable.
+    ///
+    /// Nothing can be recovered from inside the adapter: the connection is
+    /// still inside the abandoned transaction the script opened, so SQLite
+    /// answers every `BEGIN IMMEDIATE` with its transaction-state diagnostic.
+    /// Reporting the composed cause of the poisoning instead keeps the failure
+    /// of the script — and of the rollback that could not undo it — in front of
+    /// the operator.
+    fn reject_poisoned(&self) -> Result<(), Error> {
+        match &self.poisoned {
+            Some(cause) => Err(Error::Backend(format!(
+                "the SQLite migration connection is unusable after a failed rollback: {cause}"
+            ))),
+            None => Ok(()),
+        }
     }
 }
 
@@ -107,6 +135,7 @@ impl MigrationBackend for SqliteMigrationBackend {
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        self.reject_poisoned()?;
         if self.lock_held {
             self.conn
                 .execute_batch(&format!("SAVEPOINT {SQLITE_STEP_SAVEPOINT}"))
@@ -138,7 +167,10 @@ impl MigrationBackend for SqliteMigrationBackend {
     /// failure for a subsequent `repair`. A script that leaves a transaction
     /// open is rejected instead: the leftover transaction is rolled back and
     /// the error the script itself raised, when there is one, is reported with
-    /// the imbalance appended as context.
+    /// the imbalance appended as context. A rollback that fails leaves the
+    /// connection inside the abandoned transaction, so the backend is poisoned
+    /// with the composed cause and every later step reports it instead of
+    /// SQLite's transaction-state diagnostic.
     ///
     /// Between the `COMMIT` and the re-take below the write lock is free:
     /// SQLite materialises its single-writer lock only as a transaction, so
@@ -148,6 +180,7 @@ impl MigrationBackend for SqliteMigrationBackend {
     /// [`release_lock`](MigrationBackend::release_lock) tolerates the missing
     /// lock transaction.
     fn execute_non_transactional(&mut self, sql: &str) -> Result<(), Error> {
+        self.reject_poisoned()?;
         if self.lock_held {
             self.conn.execute_batch("COMMIT").map_err(backend_error)?;
             self.lock_held = false;
@@ -160,8 +193,18 @@ impl MigrationBackend for SqliteMigrationBackend {
             // transaction is rolled back first, so the connection stays usable
             // for the failure record, and the diagnostic names the imbalance of
             // the script instead of the lock error a re-take would report.
-            let _ = self.conn.execute_batch("ROLLBACK");
-            return Err(left_open_error(result));
+            let rollback = self.conn.execute_batch("ROLLBACK").map_err(backend_error);
+            let message = left_open_message(result, rollback);
+            // A rollback that failed leaves the connection inside the abandoned
+            // transaction, where SQLite rejects every following
+            // `BEGIN IMMEDIATE` with a transaction-state diagnostic that hides
+            // the failure of the script and even prevents the failed attempt
+            // from being recorded. The backend is poisoned instead, so every
+            // later step reports the composed cause of this run.
+            if !self.conn.is_autocommit() {
+                self.poisoned = Some(message.clone());
+            }
+            return Err(Error::Backend(message));
         }
 
         // Take the write lock again so the history row of the script and the
@@ -235,25 +278,46 @@ impl Drop for SqliteMigrationBackend {
 /// only context, so the imbalance is appended instead of replacing it. The bare
 /// imbalance message is reserved for a script that completed successfully yet
 /// never closed the transaction it opened — there the imbalance is the only
-/// thing wrong with the script.
-fn left_open_error(script: Result<(), Error>) -> Error {
-    // The remedy appended to both diagnostics.
+/// thing wrong with the script. A rollback that failed is reported the same way,
+/// after the imbalance it could not undo, because the connection then stays
+/// inside the abandoned transaction and the run cannot record its outcome.
+pub(super) fn left_open_message(script: Result<(), Error>, rollback: Result<(), Error>) -> String {
+    // The remedy appended to every diagnostic.
     const REMEDY: &str = "balance the BEGIN statements of a script marked non-transactional";
 
-    match script {
-        Ok(()) => Error::Backend(format!(
-            "non-transactional script left a transaction open; {REMEDY}"
-        )),
-        Err(error) => {
-            let cause = match error {
-                Error::Backend(message) => message,
-                other => other.to_string(),
-            };
-            Error::Backend(format!(
-                "{cause}; the script also left a transaction open and its applied statements \
-                 were rolled back; {REMEDY}"
-            ))
-        }
+    match (script, rollback) {
+        // The script completed and its work was undone: the imbalance is the
+        // only thing wrong with it.
+        (Ok(()), Ok(())) => format!("non-transactional script left a transaction open; {REMEDY}"),
+        (Err(error), Ok(())) => format!(
+            "{}; the script also left a transaction open and its applied statements were \
+             rolled back; {REMEDY}",
+            error_message(error)
+        ),
+        // The rollback failed, so the connection stays inside the abandoned
+        // transaction and every later statement is rejected: the rollback's own
+        // failure is reported after the imbalance it could not undo.
+        (Ok(()), Err(error)) => format!(
+            "non-transactional script left a transaction open and rolling it back failed: {}; \
+             the connection remains inside the abandoned transaction, so the run cannot record \
+             its outcome and has to be restarted on a fresh connection; {REMEDY}",
+            error_message(error)
+        ),
+        (Err(error), Err(rollback)) => format!(
+            "{}; the script also left a transaction open and rolling it back failed: {}; the \
+             connection remains inside the abandoned transaction, so the run cannot record its \
+             outcome and has to be restarted on a fresh connection; {REMEDY}",
+            error_message(error),
+            error_message(rollback)
+        ),
+    }
+}
+
+/// The operator-facing text of a backend failure.
+fn error_message(error: Error) -> String {
+    match error {
+        Error::Backend(message) => message,
+        other => other.to_string(),
     }
 }
 
