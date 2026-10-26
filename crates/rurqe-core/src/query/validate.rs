@@ -35,6 +35,7 @@ use crate::schema::TableRef;
 #[cfg(test)]
 pub(crate) use self::aggregation::{collect_bare_columns, contains_bare_column, has_aggregate};
 pub(crate) use self::qualifiers::{reject_unresolved_qualifiers, validate_expr};
+pub(crate) use self::rules::reject_columns_without_relations;
 #[cfg(test)]
 pub(crate) use self::rules::reject_shadowed_derived;
 
@@ -131,6 +132,20 @@ pub enum BuildError {
     AliasedDerivedRelation {
         /// The alias the relation is addressed by.
         name: &'static str,
+    },
+    /// A column reference appears in a clause that addresses no relation.
+    ///
+    /// The `VALUES` list of an `INSERT` renders the values of one row, and the
+    /// `ORDER BY` clause of a compound statement sorts the rows a set operation
+    /// produced: neither introduces a relation, so a reference to a stored column
+    /// names a table the statement never declares. The engine answers such a
+    /// reference with `column "..." does not exist` or `missing FROM-clause entry
+    /// for table "..."`, so the mismatch is reported before any SQL is rendered.
+    ColumnWithoutRelation {
+        /// The SQL identifier of the relation the reference names.
+        table: &'static str,
+        /// The SQL identifier of the referenced column.
+        column: &'static str,
     },
     /// A column reference is qualified by a name no rendered relation declares.
     ///
@@ -282,6 +297,15 @@ impl fmt::Display for BuildError {
                     "derived relation is addressed as `{name}` but its subquery is registered under another name; \
                      rendering the statement would read the stored table the relation names instead of the rows of the subquery, \
                      so a derived table has to be registered under the alias it is referenced by"
+                )
+            }
+            BuildError::ColumnWithoutRelation { table, column } => {
+                write!(
+                    f,
+                    "column reference `{table}.{column}` appears in a clause that addresses no relation; \
+                     the `VALUES` list of an INSERT and the `ORDER BY` of a compound statement are evaluated \
+                     without a relation namespace, so they may only compute from constants or name an output \
+                     column of the projection list"
                 )
             }
             BuildError::UnresolvedQualifier { name } => {

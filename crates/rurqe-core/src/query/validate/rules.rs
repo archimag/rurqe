@@ -11,7 +11,7 @@
 //! of the rules ask: whether two assembled expressions name the value the engine
 //! sees, regardless of the node shape a builder happened to produce.
 
-use crate::expr::{DerivedAst, ExprKind, SelectAst, StatementRef};
+use crate::expr::{DerivedAst, ExprKind, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
 
 use super::qualifiers::{validate_clauses, ROOT_SCOPE};
@@ -240,7 +240,10 @@ impl StatementRef<'_> {
     /// column it reads or the alias it carries, so an expression projected without an
     /// alias produces no name and is addressed by its position instead. Every other
     /// shape — an aggregate, a function call, a `CASE`, or a raw fragment that is not
-    /// a single bare number — names no output column, so it is rejected as well.
+    /// a single bare number — names no output column, so it is rejected as well. A
+    /// reference qualified through a table names a relation the combined statement
+    /// no longer declares, so it can address no output column at all and is reported
+    /// as [`BuildError::ColumnWithoutRelation`].
     fn validate_compound_order(&self) -> Result<(), BuildError> {
         let columns = self.projections.len();
         for criterion in self.compound_order_by {
@@ -250,13 +253,18 @@ impl StatementRef<'_> {
                     Some(index) => return Err(BuildError::CompoundOrderIndex { index, columns }),
                     None => return Err(BuildError::CompoundOrderExpression),
                 },
+                // A column reaches the clause by the bare name its projection
+                // exposes, which is the only spelling the combined statement
+                // resolves.
                 ExprKind::Column { name, .. } if !self.projects_output(name) => {
                     return Err(BuildError::CompoundOrderColumn { column: name });
                 }
-                ExprKind::QualifiedColumn { column, .. } if !self.projects_output(column) => {
-                    return Err(BuildError::CompoundOrderColumn { column });
+                ExprKind::Column { .. } => {}
+                // A qualified reference names a relation the combined statement no
+                // longer declares, so it can address no output column at all.
+                ExprKind::QualifiedColumn { table, column } => {
+                    return Err(BuildError::ColumnWithoutRelation { table, column });
                 }
-                ExprKind::Column { .. } | ExprKind::QualifiedColumn { .. } => {}
                 _ => return Err(BuildError::CompoundOrderExpression),
             }
         }
@@ -608,4 +616,128 @@ fn projection_output_name(projection: &ExprKind) -> Option<&'static str> {
         ExprKind::Aliased { alias, .. } => Some(alias),
         _ => None,
     }
+}
+
+/// Rejects a column reference written into a clause that addresses no relation.
+///
+/// The `VALUES` list of an `INSERT` renders the values of one row, and the
+/// `ORDER BY` clause of a compound statement sorts the rows a set operation
+/// produced: neither introduces a relation, so a reference to a stored column
+/// names a table the statement never declares. Such a reference renders a name the
+/// engine cannot resolve — `VALUES ("accounts"."id")` or
+/// `ORDER BY "orders"."total"` — so it is reported as
+/// [`BuildError::ColumnWithoutRelation`] before a single character of the statement
+/// is rendered. The walk mirrors the qualifier pass, except that it applies the
+/// rule to the unqualified shape of a reference as well, because a clause without
+/// relations leaves even a bare column name unresolvable.
+///
+/// A statement embedded in the expression is left to the statement pass: it
+/// declares its relations itself, so its columns resolve against its own `FROM`
+/// scope.
+pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), BuildError> {
+    match expr {
+        ExprKind::Column { table, name } => Err(BuildError::ColumnWithoutRelation {
+            table,
+            column: name,
+        }),
+        ExprKind::QualifiedColumn { table, column } => {
+            Err(BuildError::ColumnWithoutRelation { table, column })
+        }
+        // A bound value carries no reference, and the `EXCLUDED` pseudo-relation of
+        // an upsert names the proposed row rather than a column of a relation.
+        ExprKind::Value(_) | ExprKind::Excluded { .. } => Ok(()),
+        // Raw fragments are user text: a reference inside them reached the
+        // template already rendered.
+        ExprKind::Raw { .. } => Ok(()),
+        ExprKind::Row { values } | ExprKind::InList { values, .. } => {
+            reject_columns_without_relations_each(values)
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
+            reject_columns_without_relations(lhs)?;
+            reject_columns_without_relations(rhs)
+        }
+        ExprKind::Aggregate { arg, filter, .. } => {
+            if let Some(arg) = arg {
+                reject_columns_without_relations(arg)?;
+            }
+            if let Some(filter) = filter {
+                reject_columns_without_relations(filter)?;
+            }
+            Ok(())
+        }
+        // The operand of an `IN (subquery)` predicate belongs to the clause being
+        // checked, while the nested statement declares its relations itself.
+        ExprKind::Subquery { operand, .. } => match operand {
+            Some(operand) => reject_columns_without_relations(operand),
+            None => Ok(()),
+        },
+        // A nested collection embeds a whole statement, exactly like a subquery.
+        ExprKind::Multiset { .. } => Ok(()),
+        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
+            reject_columns_without_relations(operand)
+        }
+        ExprKind::Like {
+            operand, pattern, ..
+        } => {
+            reject_columns_without_relations(operand)?;
+            reject_columns_without_relations(pattern)
+        }
+        ExprKind::Between {
+            operand,
+            low,
+            high,
+        } => {
+            reject_columns_without_relations(operand)?;
+            reject_columns_without_relations(low)?;
+            reject_columns_without_relations(high)
+        }
+        ExprKind::Function { args, .. } => reject_columns_without_relations_each(args),
+        ExprKind::DistinctFrom { lhs, rhs, .. } => {
+            reject_columns_without_relations(lhs)?;
+            reject_columns_without_relations(rhs)
+        }
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
+            for branch in branches {
+                reject_columns_without_relations(&branch.condition)?;
+                reject_columns_without_relations(&branch.result)?;
+            }
+            match else_branch {
+                Some(fallback) => reject_columns_without_relations(fallback),
+                None => Ok(()),
+            }
+        }
+        ExprKind::Window {
+            kind,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            match kind.as_ref() {
+                WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
+                    reject_columns_without_relations(column)?;
+                }
+                WindowExprKind::Expr(inner) => reject_columns_without_relations(inner)?,
+                WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
+            }
+            reject_columns_without_relations_each(partition_by)?;
+            for criterion in order_by {
+                reject_columns_without_relations(&criterion.expr)?;
+            }
+            Ok(())
+        }
+        ExprKind::Aliased { expr, .. } => reject_columns_without_relations(expr),
+    }
+}
+
+/// Applies `reject_columns_without_relations` to every expression of a list.
+fn reject_columns_without_relations_each(
+    expressions: &[ExprKind],
+) -> Result<(), BuildError> {
+    for expression in expressions {
+        reject_columns_without_relations(expression)?;
+    }
+    Ok(())
 }

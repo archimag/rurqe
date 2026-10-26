@@ -435,20 +435,29 @@ impl crate::dialect::Dialect for UpsertDialect {
 impl crate::dialect::SupportsOnConflict for UpsertDialect {}
 
 #[test]
-fn an_insert_value_qualified_by_a_foreign_relation_is_rejected() {
+fn an_insert_value_addresses_no_relation_at_all() {
     use crate::dml::{ColumnAssign, InsertQuery};
 
-    // The assigned expression reads `recent.total` explicitly, which the `VALUES`
-    // list of an `INSERT INTO "orders"` never declares.
+    // The `VALUES` list of an `INSERT INTO "orders"` renders the values of one row
+    // and declares no relation, so even an expression reading `recent.total`
+    // explicitly names a table the statement cannot resolve. The builder keeps a
+    // column-bearing expression out of the clause at compile time, so the check is
+    // exercised on a tree assembled past the type system.
     let built = InsertQuery::<UpsertDialect, Order>::new()
-        .values(OrderTotal::set_expr(
-            Expr::column::<RecentTotal>().without_scope(),
-        ))
+        .values(OrderTotal::set_expr(Expr::<f64>::from_kind(
+            ExprKind::QualifiedColumn {
+                table: "recent",
+                column: "total",
+            },
+        )))
         .build();
 
     assert_eq!(
         built,
-        Err(BuildError::UnresolvedQualifier { name: "recent" })
+        Err(BuildError::ColumnWithoutRelation {
+            table: "recent",
+            column: "total",
+        })
     );
 }
 
@@ -795,6 +804,17 @@ fn build_error_display_compound_order_expression() {
 }
 
 #[test]
+fn build_error_display_column_without_relation() {
+    let err = BuildError::ColumnWithoutRelation {
+        table: "orders",
+        column: "total",
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("`orders.total`"));
+    assert!(msg.contains("addresses no relation"));
+}
+
+#[test]
 fn a_compound_ordering_by_an_aggregate_is_rejected() {
     // An aggregate collapses the rows of a group, so it names no output column
     // the combined statement produced.
@@ -852,6 +872,34 @@ fn a_compound_ordering_by_a_single_fragment_position_is_accepted() {
     ));
 
     assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_compound_ordering_by_a_qualified_column_is_rejected() {
+    // The ordering of a compound statement sorts the rows the combination
+    // produced, so it addresses no relation: a reference qualified through a table
+    // names a relation the combined statement no longer declares, even when the
+    // projection list exposes a column of that name.
+    let mut ast = empty_ast();
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
+    ast.compound_order_by.push(OrderCriterion::new(
+        ExprKind::QualifiedColumn {
+            table: "orders",
+            column: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::ColumnWithoutRelation {
+            table: "orders",
+            column: "total",
+        })
+    );
 }
 
 #[test]

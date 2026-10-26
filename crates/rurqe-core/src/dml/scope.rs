@@ -315,6 +315,61 @@ where
     type Dialect = TupleDialect8<A, B, C, D, E, F, G, H>;
 }
 
+/// Statically asserts that the values recorded by a row of an `INSERT` address no
+/// relation.
+///
+/// The `VALUES` list renders the values of one row without introducing any
+/// relation, so an expression recorded there may only compute from constants. A
+/// column reference names the table of its column and therefore reports it as the
+/// scope of the assignment, while the [`Unscoped`](crate::expr::Unscoped) marker
+/// reports no table as well — it states that the tables of an expression are
+/// checked by the statement it is written into instead, which is exactly what a
+/// `VALUES` row cannot do.
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::dml::{ColumnAssign, InsertQuery};
+/// use rurqe_core::expr::Expr;
+///
+/// struct MockDialect;
+///
+/// impl Dialect for MockDialect {
+///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+///         out.push_str(ident);
+///     }
+///
+///     fn push_placeholder(out: &mut String, index: usize) {
+///         let _ = index;
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     Account => "accounts" {
+///         AccountId => "id": i64,
+///     }
+/// }
+///
+/// // Fails to compile: the assignment reads `Account`, and dropping the scope
+/// // states so explicitly — the `VALUES` list declares no relation to read it
+/// // from.
+/// let _ = InsertQuery::<MockDialect, User>::new()
+///     .values(UserId::set_expr(Expr::column::<AccountId>().without_scope()));
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "the values of an INSERT row cannot read a column",
+    label = "this assignment reports a relation, while the `VALUES` list declares none",
+    note = "a `VALUES` row renders one row without addressing any relation, so an expression there may only compute from constants; move the rows through a source `SELECT` to read a table"
+)]
+pub trait ValuesScope {}
+
+impl ValuesScope for () {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

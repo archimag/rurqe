@@ -15,15 +15,16 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
+use super::scope::ValuesScope;
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
 use crate::query::{
-    reject_unresolved_qualifiers, BuildError, BuiltQuery, HasProjection, SelectQuery, Selection,
-    TableScope, TableSelection,
+    reject_columns_without_relations, reject_unresolved_qualifiers, BuildError, BuiltQuery,
+    HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
-use crate::schema::{Column, ColumnBelongsTo, ExprInScope, Table};
+use crate::schema::{Column, ColumnBelongsTo, Table};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -211,10 +212,12 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     ///
     /// An assigned value is rendered inside the `VALUES` list of the statement,
     /// which addresses no relation at all, so an expression assignment can only
-    /// read constants (or reference its own columns explicitly through
-    /// [`without_scope`](crate::expr::Expr::without_scope)). An assignment reading
-    /// a table would render as `VALUES ("accounts"."id")`, which no engine
-    /// accepts, so it is rejected at compile time:
+    /// read constants. Dropping the scope of an expression does not make it
+    /// admissible: the marker states that its tables are checked by the statement
+    /// it is written into, while a `VALUES` row has no relation namespace to check
+    /// them against. An assignment reading a table would render as
+    /// `VALUES ("accounts"."id")`, which no engine accepts, so it is rejected at
+    /// compile time:
     ///
     /// ```compile_fail
     /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
@@ -232,12 +235,32 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     /// let _ = InsertQuery::<MockDialect, User>::new()
     ///     .values(UserId::set_expr(Expr::column::<AccountId>()));
     /// ```
+    ///
+    /// Spelling the same reference through `without_scope` names its table
+    /// explicitly, and is rejected just the same:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    /// use rurqe_core::expr::Expr;
+    /// # use rurqe_core::dialect::Dialect;
+    /// # struct MockDialect;
+    /// # impl Dialect for MockDialect {
+    /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+    /// #     fn push_placeholder(_: &mut String, _: usize) {}
+    /// # }
+    /// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+    /// # rurqe_core::table! { Account => "accounts" { AccountId => "id": i64, } }
+    /// // Fails to compile: dropping the scope keeps the reference to `Account`,
+    /// // which the `VALUES` list still cannot declare.
+    /// let _ = InsertQuery::<MockDialect, User>::new()
+    ///     .values(UserId::set_expr(Expr::column::<AccountId>().without_scope()));
+    /// ```
     pub fn values<S>(mut self, set: S) -> InsertQuery<D, T, S, Returning>
     where
         S: AssignmentSet<T> + AssignmentScope,
         // A `VALUES` list addresses no relation at all, so an assigned
         // expression may read constants only.
-        <S as AssignmentScope>::Scope: ExprInScope<()>,
+        <S as AssignmentScope>::Scope: ValuesScope,
         // An assigned expression may require a dialect capability, which the
         // statement has to provide like any other expression it renders.
         <S as AssignmentScope>::Dialect: DialectInScope<D>,
@@ -258,7 +281,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     where
         I: IntoIterator<Item = S>,
         S: AssignmentSet<T> + AssignmentScope,
-        <S as AssignmentScope>::Scope: ExprInScope<()>,
+        <S as AssignmentScope>::Scope: ValuesScope,
         <S as AssignmentScope>::Dialect: DialectInScope<D>,
     {
         for set in rows {
@@ -438,11 +461,15 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
             }
             for value in row {
                 value.validate()?;
-                // The `VALUES` list addresses the inserted table only, so an
-                // expression assignment resolves its qualifiers against it: a
-                // reference qualified through any other name would render a
-                // qualifier the statement never declares.
-                value.validate_qualifiers(&relations, &[])?;
+                // The `VALUES` list addresses no relation at all: it renders the
+                // values of one row, so a reference to a stored column names a
+                // relation the statement never declares — and a bare column name
+                // reads a column the engine cannot resolve. The scope of the
+                // assignment keeps such an expression out of the builder, and the
+                // check catches a tree assembled past the type system.
+                if let AssignValue::Expr(expr) = value {
+                    reject_columns_without_relations(expr)?;
+                }
             }
         }
         if let Some(conflict) = &self.conflict {
@@ -668,6 +695,45 @@ mod tests {
                 SqlVal::Text("second".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn a_column_reaching_a_values_row_is_rejected_before_rendering() {
+        use crate::expr::Expr;
+
+        // The `VALUES` list addresses no relation, so a column reference carries a
+        // name the statement cannot resolve. The scope of the assignment keeps such
+        // an expression out of the builder, so the check is exercised on a tree
+        // assembled past the type system.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values(UserId::set_expr(Expr::<i64>::from_kind(ExprKind::Column {
+                table: "accounts",
+                name: "id",
+            })))
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::ColumnWithoutRelation {
+                table: "accounts",
+                column: "id",
+            })
+        );
+    }
+
+    #[test]
+    fn a_constant_expression_is_accepted_in_a_values_row() {
+        use crate::expr::Expr;
+
+        // A constant reads no table, so the `VALUES` list renders it like any other
+        // scalar value — as a bound parameter.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values(UserId::set_expr(Expr::<i64>::literal(7i64)))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(built.sql, "INSERT INTO \"users\" (\"id\") VALUES ($1)");
+        assert_eq!(built.params, vec![SqlVal::I64(7)]);
     }
 
     #[test]
