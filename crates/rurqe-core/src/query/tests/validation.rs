@@ -5,11 +5,16 @@ use super::{
     RecentTotal, User, UserId, UserName,
 };
 use crate::expr::{
-    BinaryOp, Expr, ExprKind, LockClause, LockStrength, OrderCriterion, OrderDirection, SelectAst,
-    SqlVal, Subquery, SubqueryOp,
+    AggregateFunc, BinaryOp, CaseBranch, CteAst, DerivedAst, Expr, ExprKind, LockClause,
+    LockStrength, OrderCriterion, OrderDirection, RawSqlError, SelectAst, SqlVal, Subquery,
+    SubqueryOp,
+};
+use crate::query::validate::{
+    collect_bare_columns, contains_bare_column, has_aggregate, register_relation,
+    reject_shadowed_derived, reject_unresolved_qualifiers,
 };
 use crate::query::*;
-use crate::schema::{Aliased, AliasedCol};
+use crate::schema::{Aliased, AliasedCol, TableRef};
 
 #[test]
 fn distinct_on_qualifies_aliased_columns() {
@@ -528,5 +533,969 @@ fn an_upsert_addressing_the_target_relation_and_its_proposed_row_is_accepted() {
             SqlVal::I64(0),
             SqlVal::F64(0.0),
         ]
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Rule coverage assembled on raw statement data.
+//
+// The tests below build a `SelectAst` directly, so they exercise the rules the
+// fluent builders keep unreachable and the exact diagnostics those rules report.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn build_error_display_duplicate_relation() {
+    let err = BuildError::DuplicateRelation { name: "users" };
+    let msg = err.to_string();
+    assert!(msg.contains("duplicate unaliased relation `users`"));
+    assert!(msg.contains("table_alias!"));
+}
+
+#[test]
+fn build_error_display_duplicate_cte() {
+    let err = BuildError::DuplicateCte {
+        name: "active_users",
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("duplicate CTE name `active_users`"));
+    assert!(msg.contains("cte_named"));
+}
+
+#[test]
+fn a_statement_declaring_one_cte_name_twice_is_rejected() {
+    let mut ast = empty_ast();
+    ast.ctes.push(cte("active_users"));
+    ast.ctes.push(cte("active_users"));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DuplicateCte {
+            name: "active_users"
+        })
+    );
+}
+
+#[test]
+fn a_statement_declaring_differently_named_ctes_is_accepted() {
+    let mut ast = empty_ast();
+    ast.ctes.push(cte("active_users"));
+    ast.ctes.push(cte("large_orders"));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+/// Declares an empty statement as a Common Table Expression named `name`.
+fn cte(name: &'static str) -> CteAst {
+    CteAst {
+        name,
+        query: empty_ast(),
+    }
+}
+
+#[test]
+fn build_error_display_distinct_on_mismatch() {
+    let err = BuildError::DistinctOnOrderMismatch { position: 1 };
+    let msg = err.to_string();
+    assert!(msg.contains("ORDER BY criterion at position 1"));
+    assert!(msg.contains("DISTINCT ON"));
+}
+
+#[test]
+fn build_error_display_distinct_order_not_projected() {
+    let err = BuildError::DistinctOrderNotProjected { position: 1 };
+    let msg = err.to_string();
+    assert!(msg.contains("ORDER BY criterion at position 1"));
+    assert!(msg.contains("must appear in the select list"));
+}
+
+#[test]
+fn a_distinct_statement_ordering_a_projected_expression_is_accepted() {
+    let mut ast = empty_ast();
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "id",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_statement_ordering_an_unprojected_expression_is_rejected() {
+    let mut ast = empty_ast();
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DistinctOrderNotProjected { position: 0 })
+    );
+}
+
+#[test]
+fn a_distinct_ordering_matches_an_aliased_projection_and_a_bare_position() {
+    // The ordering criterion matches the expression the aliased projection
+    // wraps, and a bare 1-based position addresses the first projection.
+    let mut ast = empty_ast();
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Aliased {
+        expr: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        }),
+        alias: "net_total",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "total",
+        },
+        OrderDirection::Desc,
+    ));
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Raw {
+            fragments: vec!["1".to_owned()],
+            params: Vec::new(),
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_matches_a_column_addressed_through_the_other_node_shape() {
+    // A projection built from a schema marker and an ordering built through a
+    // table alias name the same column of the same relation, so both shapes
+    // resolve to one canonical reference. The statement declares the relation
+    // both shapes name, so the qualifier of the ordering resolves against it.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::QualifiedColumn {
+            table: "orders",
+            column: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_matches_an_aliased_computed_projection() {
+    // The projection is exposed under an alias and computes a `CAST` over a
+    // column marker, while the ordering names the same computation over the
+    // alias-qualified shape of that column. The statement declares the relation
+    // both shapes name, so the qualifier of the ordering resolves against it.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Aliased {
+        expr: Box::new(ExprKind::Cast {
+            operand: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }),
+            target: "numeric",
+        }),
+        alias: "net_total",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Cast {
+            operand: Box::new(ExprKind::QualifiedColumn {
+                table: "orders",
+                column: "total",
+            }),
+            target: "numeric",
+        },
+        OrderDirection::Desc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_of_another_computation_is_rejected() {
+    // The projection is computed as numeric while the ordering computes text,
+    // so the two expressions differ even though both read the same column.
+    let mut ast = empty_ast();
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Cast {
+        operand: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        }),
+        target: "numeric",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Cast {
+            operand: Box::new(ExprKind::QualifiedColumn {
+                table: "orders",
+                column: "total",
+            }),
+            target: "text",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DistinctOrderNotProjected { position: 0 })
+    );
+}
+
+#[test]
+fn build_error_display_compound_order_index() {
+    let err = BuildError::CompoundOrderIndex {
+        index: 3,
+        columns: 2,
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("ORDER BY position 3"));
+    assert!(msg.contains("2 projected column(s)"));
+    assert!(msg.contains("between 1 and 2"));
+}
+
+#[test]
+fn build_error_display_compound_order_column() {
+    let err = BuildError::CompoundOrderColumn { column: "total" };
+    let msg = err.to_string();
+    assert!(msg.contains("`total`"));
+    assert!(msg.contains("output column name or a 1-based position"));
+}
+
+#[test]
+fn build_error_display_compound_order_expression() {
+    let msg = BuildError::CompoundOrderExpression.to_string();
+    assert!(msg.contains("names an expression"));
+    assert!(msg.contains("output column name or a 1-based position"));
+}
+
+#[test]
+fn a_compound_ordering_by_an_aggregate_is_rejected() {
+    // An aggregate collapses the rows of a group, so it names no output column
+    // the combined statement produced.
+    let mut ast = empty_ast();
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    ast.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Aggregate {
+            func: AggregateFunc::Count,
+            distinct: false,
+            arg: None,
+            filter: None,
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Err(BuildError::CompoundOrderExpression));
+}
+
+#[test]
+fn a_compound_ordering_by_a_multi_fragment_raw_expression_is_rejected() {
+    // The leading fragment parses as a number, but the expression continues, so
+    // it is a computed value rather than a 1-based position.
+    let mut ast = empty_ast();
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    ast.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Raw {
+            fragments: vec!["1".to_owned(), " + 1".to_owned()],
+            params: Vec::new(),
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Err(BuildError::CompoundOrderExpression));
+}
+
+#[test]
+fn a_compound_ordering_by_a_single_fragment_position_is_accepted() {
+    let mut ast = empty_ast();
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    ast.compound_order_by.push(OrderCriterion::new(
+        ExprKind::Raw {
+            fragments: vec!["1".to_owned()],
+            params: Vec::new(),
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn build_error_display_raw_sql() {
+    let err = BuildError::RawSql(RawSqlError::PlaceholderCount {
+        expected: 2,
+        provided: 1,
+    });
+    let msg = err.to_string();
+    assert!(msg.contains("invalid raw SQL expression"));
+    assert!(msg.contains("expects 2 parameter(s), but 1 were provided"));
+}
+
+#[test]
+fn an_unbalanced_raw_expression_is_rejected_before_rendering() {
+    // Two fragments with no parameter would place a bound placeholder after
+    // the first fragment and then continue with literal text, so the
+    // statement is rejected before a single character of it is rendered.
+    let mut ast = empty_ast();
+    ast.projections.push(ExprKind::Raw {
+        fragments: vec!["1".to_owned(), " + 1".to_owned()],
+        params: Vec::new(),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::RawSql(RawSqlError::PlaceholderCount {
+            expected: 1,
+            provided: 0,
+        }))
+    );
+}
+
+#[test]
+fn build_error_display_aliased_derived_relation() {
+    let err = BuildError::AliasedDerivedRelation { name: "o" };
+    let msg = err.to_string();
+    assert!(msg.contains("addressed as `o`"));
+    assert!(msg.contains("registered under another name"));
+}
+
+/// Builds a statement AST without any clause, used as the body of a derived
+/// subquery in the registration checks below.
+fn empty_ast() -> SelectAst {
+    SelectAst {
+        ctes: Vec::new(),
+        distinct: false,
+        distinct_on: Vec::new(),
+        projections: Vec::new(),
+        from: None,
+        joins: Vec::new(),
+        derived: Vec::new(),
+        filter: None,
+        group_by: Vec::new(),
+        having: None,
+        order_by: Vec::new(),
+        limit: None,
+        offset: None,
+        set_operations: Vec::new(),
+        compound_order_by: Vec::new(),
+        compound_limit: None,
+        compound_offset: None,
+        lock: None,
+    }
+}
+
+/// Registers a derived subquery under `name`.
+fn derived(name: &'static str) -> DerivedAst {
+    DerivedAst {
+        name,
+        query: empty_ast(),
+    }
+}
+
+#[test]
+fn a_derived_relation_registered_under_the_base_name_of_its_alias_is_rejected() {
+    assert_eq!(
+        reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[derived("recent")]),
+        Err(BuildError::AliasedDerivedRelation { name: "o" })
+    );
+}
+
+#[test]
+fn a_derived_relation_registered_under_the_name_it_is_addressed_by_is_accepted() {
+    assert_eq!(
+        reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[derived("o")]),
+        Ok(())
+    );
+    assert_eq!(
+        reject_shadowed_derived(&TableRef::plain("recent"), &[derived("recent")]),
+        Ok(())
+    );
+    assert_eq!(
+        reject_shadowed_derived(&TableRef::aliased("recent", "o"), &[]),
+        Ok(())
+    );
+}
+
+#[test]
+fn registering_one_relation_twice_reports_the_effective_name() {
+    let mut relations = Vec::new();
+    assert_eq!(
+        register_relation(&mut relations, TableRef::plain("users")),
+        Ok(())
+    );
+    assert_eq!(
+        register_relation(&mut relations, TableRef::plain("users")),
+        Err(BuildError::DuplicateRelation { name: "users" })
+    );
+}
+
+#[test]
+fn alias_distinguished_occurrences_of_one_table_are_accepted() {
+    let mut relations = Vec::new();
+    assert_eq!(
+        register_relation(&mut relations, TableRef::plain("accounts")),
+        Ok(())
+    );
+    assert_eq!(
+        register_relation(&mut relations, TableRef::aliased("accounts", "a")),
+        Ok(())
+    );
+    // A reference resolves through the alias, so reusing it collides even
+    // though the underlying tables differ.
+    assert_eq!(
+        register_relation(&mut relations, TableRef::aliased("customers", "a")),
+        Err(BuildError::DuplicateRelation { name: "a" })
+    );
+}
+
+#[test]
+fn build_error_display_unresolved_qualifier() {
+    let err = BuildError::UnresolvedQualifier { name: "u" };
+    let msg = err.to_string();
+    assert!(msg.contains("qualified as `u`"));
+    assert!(msg.contains("`Table::table_ref`"));
+}
+
+#[test]
+fn a_reference_qualified_by_a_declared_relation_name_is_accepted() {
+    let relations = [TableRef::aliased("users", "u"), TableRef::plain("accounts")];
+
+    // The alias of the target and the plain name of a `FROM` source are
+    // both declared by the rendered statement.
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &ExprKind::QualifiedColumn {
+                table: "u",
+                column: "id",
+            },
+            &relations,
+            &[],
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &ExprKind::QualifiedColumn {
+                table: "accounts",
+                column: "id",
+            },
+            &relations,
+            &[],
+        ),
+        Ok(())
+    );
+
+    // A plain column reference states no qualifier of its own: the
+    // renderer resolves the qualifier it needs against the declared
+    // relations.
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &ExprKind::Column {
+                table: "users",
+                name: "id",
+            },
+            &relations,
+            &[],
+        ),
+        Ok(())
+    );
+
+    // The walk reaches a qualifier nested inside a composite expression.
+    let filter = ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::QualifiedColumn {
+            table: "ghosts",
+            column: "id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "users",
+            name: "id",
+        }),
+    };
+    assert_eq!(
+        reject_unresolved_qualifiers(&filter, &relations, &[]),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_reference_qualified_by_the_base_name_of_an_aliased_relation_is_rejected() {
+    let relations = [TableRef::aliased("users", "u")];
+
+    // The relation is only reachable as `u`, so a reference spelled
+    // through its base table name resolves to nothing the statement
+    // renders.
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &ExprKind::QualifiedColumn {
+                table: "users",
+                column: "id",
+            },
+            &relations,
+            &[],
+        ),
+        Err(BuildError::UnresolvedQualifier { name: "users" })
+    );
+}
+
+/// Builds a scalar subquery around `inner`.
+fn scalar_subquery(inner: SelectAst) -> ExprKind {
+    ExprKind::Subquery {
+        op: SubqueryOp::Scalar,
+        operand: None,
+        query: Subquery::new(inner),
+        negated: false,
+    }
+}
+
+#[test]
+fn a_correlated_subquery_may_reference_a_relation_of_the_enclosing_statement() {
+    // The nested statement reads `u.id` without introducing the relation: a
+    // correlated reference reaches the enclosing statement, whose relations
+    // are in scope where the subquery is written.
+    let mut inner = empty_ast();
+    inner.from = Some(TableRef::plain("orders"));
+    inner.projections.push(ExprKind::QualifiedColumn {
+        table: "u",
+        column: "id",
+    });
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::QualifiedColumn {
+            table: "u",
+            column: "id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &scalar_subquery(inner),
+            &[TableRef::aliased("users", "u")],
+            &[],
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn an_outer_relation_stays_reachable_from_a_nested_statement() {
+    // The relation belongs to a statement enclosing the validated one, so it
+    // is only reachable through the outer scope the walk carries along.
+    let mut inner = empty_ast();
+    inner.projections.push(ExprKind::QualifiedColumn {
+        table: "u",
+        column: "id",
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &scalar_subquery(inner),
+            &[],
+            &[TableRef::aliased("users", "u")],
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_nested_statement_qualified_by_a_name_nothing_declares_is_rejected() {
+    let mut inner = empty_ast();
+    inner.from = Some(TableRef::plain("orders"));
+    inner.projections.push(ExprKind::QualifiedColumn {
+        table: "ghosts",
+        column: "id",
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(
+            &scalar_subquery(inner),
+            &[TableRef::aliased("users", "u")],
+            &[],
+        ),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+#[test]
+fn a_nested_collection_resolves_a_correlated_reference() {
+    let mut inner = empty_ast();
+    inner.from = Some(TableRef::plain("orders"));
+    inner.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::QualifiedColumn {
+            table: "u",
+            column: "id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+    });
+
+    let collection = ExprKind::Multiset {
+        query: Subquery::new(inner),
+        fields: vec!["id"],
+        single: false,
+    };
+
+    assert_eq!(
+        reject_unresolved_qualifiers(&collection, &[TableRef::aliased("users", "u")], &[]),
+        Ok(())
+    );
+}
+
+#[test]
+fn build_error_display_ungrouped_column_with_aggregate() {
+    let err = BuildError::UngroupedColumnWithAggregate {
+        table: "orders",
+        column: "status",
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("`orders.status`"));
+    assert!(msg.contains("beside an aggregate"));
+    assert!(msg.contains("GROUP BY"));
+}
+
+#[test]
+fn build_error_display_ungrouped_having_column() {
+    let err = BuildError::UngroupedHavingColumn {
+        table: "orders",
+        column: "status",
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("`orders.status`"));
+    assert!(msg.contains("HAVING predicate reads column"));
+    assert!(msg.contains("`.group_by(...)`"));
+}
+
+/// Builds a `SUM(table.name)` aggregate over one column.
+fn sum_of(table: &'static str, name: &'static str) -> ExprKind {
+    ExprKind::Aggregate {
+        func: AggregateFunc::Sum,
+        distinct: false,
+        arg: Some(Box::new(ExprKind::Column { table, name })),
+        filter: None,
+    }
+}
+
+#[test]
+fn an_aggregate_nested_in_a_function_is_detected() {
+    let expr = ExprKind::Function {
+        name: "COALESCE",
+        args: vec![sum_of("orders", "total"), ExprKind::Value(SqlVal::I64(0))],
+    };
+
+    assert!(has_aggregate(&expr));
+    assert!(!contains_bare_column(&expr));
+}
+
+#[test]
+fn a_column_read_beside_an_aggregate_is_collected() {
+    let expr = ExprKind::Binary {
+        op: BinaryOp::Add,
+        lhs: Box::new(sum_of("orders", "total")),
+        rhs: Box::new(ExprKind::QualifiedColumn {
+            table: "o",
+            column: "tax",
+        }),
+    };
+    let mut columns = Vec::new();
+    collect_bare_columns(&expr, &mut columns);
+
+    // The column the aggregate reads stays inside the aggregate, so only the
+    // reference the expression computes beside it is collected — and it is
+    // collected in the canonical `(table, column)` form both node shapes
+    // resolve to.
+    assert_eq!(columns, vec![("o", "tax")]);
+    assert!(contains_bare_column(&expr));
+}
+
+#[test]
+fn an_expression_over_aggregates_collects_no_bare_column() {
+    let expr = ExprKind::Case {
+        branches: vec![CaseBranch {
+            condition: ExprKind::Binary {
+                op: BinaryOp::Gt,
+                lhs: Box::new(sum_of("orders", "total")),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
+            },
+            result: sum_of("orders", "tax"),
+        }],
+        else_branch: Some(Box::new(ExprKind::Value(SqlVal::I64(0)))),
+    };
+    let mut columns = Vec::new();
+    collect_bare_columns(&expr, &mut columns);
+
+    assert!(columns.is_empty());
+    assert!(!contains_bare_column(&expr));
+    assert!(has_aggregate(&expr));
+}
+
+#[test]
+fn a_nested_statement_hides_its_aggregates_from_the_enclosing_expression() {
+    // The aggregate belongs to the nested statement and collapses the rows of
+    // its own `FROM` scope, so it does not make the projection it is embedded
+    // into an aggregate.
+    let mut inner = empty_ast();
+    inner.projections.push(sum_of("orders", "total"));
+    let expr = ExprKind::Subquery {
+        op: SubqueryOp::Scalar,
+        operand: None,
+        query: Subquery::new(inner),
+        negated: false,
+    };
+
+    assert!(!has_aggregate(&expr));
+    assert!(!contains_bare_column(&expr));
+}
+
+/// Builds a statement projecting `projections` from the `orders` table.
+fn orders_statement(projections: Vec<ExprKind>) -> SelectAst {
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.projections = projections;
+    ast
+}
+
+/// A `COUNT(*)` aggregate expression.
+fn count_star() -> ExprKind {
+    ExprKind::Aggregate {
+        func: AggregateFunc::Count,
+        distinct: false,
+        arg: None,
+        filter: None,
+    }
+}
+
+#[test]
+fn an_aggregate_beside_a_bare_column_is_rejected() {
+    let ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        sum_of("orders", "total"),
+    ]);
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumnWithAggregate {
+            table: "orders",
+            column: "user_id",
+        })
+    );
+}
+
+#[test]
+fn an_aggregate_beside_an_alias_qualified_column_is_rejected() {
+    // A reference built through a table alias names a column of a relation like
+    // the schema marker does, so it is reported through the canonical pair.
+    let ast = orders_statement(vec![
+        sum_of("orders", "total"),
+        ExprKind::QualifiedColumn {
+            table: "o",
+            column: "user_id",
+        },
+    ]);
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedColumnWithAggregate {
+            table: "o",
+            column: "user_id",
+        })
+    );
+}
+
+#[test]
+fn a_statement_projecting_aggregates_and_literals_is_accepted() {
+    let ast = orders_statement(vec![
+        sum_of("orders", "total"),
+        count_star(),
+        ExprKind::Value(SqlVal::I64(1)),
+    ]);
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn an_expression_over_an_aggregate_is_accepted_beside_it() {
+    let ast = orders_statement(vec![
+        sum_of("orders", "total"),
+        ExprKind::Function {
+            name: "COALESCE",
+            args: vec![sum_of("orders", "total"), ExprKind::Value(SqlVal::F64(0.0))],
+        },
+    ]);
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_window_call_beside_a_bare_column_is_accepted() {
+    // The engine evaluates the window over the rows the statement produced, so
+    // the call names no grouping and does not collapse the relation.
+    let ast = orders_statement(vec![
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        ExprKind::Window {
+            kind: Box::new(WindowExprKind::Expr(sum_of("orders", "total"))),
+            partition_by: vec![ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }],
+            order_by: Vec::new(),
+            frame: None,
+        },
+    ]);
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_having_predicate_reading_a_grouped_column_is_accepted_at_the_ast_level() {
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        }),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_having_predicate_matches_a_grouped_column_through_the_other_node_shape() {
+    // The grouping records the schema-marker shape while the predicate reads the
+    // alias-qualified shape of the same column of the same relation.
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::QualifiedColumn {
+            table: "orders",
+            column: "user_id",
+        }),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(7))),
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_having_predicate_over_an_aggregate_is_accepted_at_the_ast_level() {
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(count_star()),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+    });
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_having_predicate_reading_an_ungrouped_ast_column_is_rejected() {
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }]);
+    ast.group_by = vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }];
+    ast.having = Some(ExprKind::Binary {
+        op: BinaryOp::And,
+        lhs: Box::new(ExprKind::Binary {
+            op: BinaryOp::Gt,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }),
+            rhs: Box::new(ExprKind::Value(SqlVal::I64(10))),
+        }),
+        rhs: Box::new(ExprKind::Binary {
+            op: BinaryOp::Gt,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "total",
+            }),
+            rhs: Box::new(ExprKind::Value(SqlVal::F64(100.0))),
+        }),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UngroupedHavingColumn {
+            table: "orders",
+            column: "total",
+        })
     );
 }
