@@ -58,11 +58,13 @@ WHERE type = 'trigger'
 ORDER BY name;
 "#;
 
-/// Query to fetch the DDL an index was declared with.
+/// Query to fetch the DDL of every index declared on one table.
 ///
-/// An index SQLite builds implicitly for a `UNIQUE` constraint carries no DDL, and
-/// the statement then reports no row at all.
-const SQLITE_INDEX_DDL: &str = "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1;";
+/// The statement reports one row per index declared on the table, and an index
+/// SQLite builds implicitly for a `UNIQUE` constraint or a primary key carries no
+/// DDL and reports a `NULL` definition for the row it occupies.
+const SQLITE_INDEX_DDL: &str =
+    "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1;";
 
 /// Builds the `PRAGMA table_info` query for `table`.
 ///

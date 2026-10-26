@@ -5,7 +5,7 @@ use rurqe_migrate::catalog::{CheckDef, EnumDef, ForeignKeyAction, TypeKind};
 use super::check_enums::parse_sqlite_check_enums;
 use super::checks::{parse_sqlite_checks, scan_check_constraints};
 use super::indexes::{column_list_of, predicate_of};
-use super::lexer::{lex_passes, reset_lex_passes};
+use super::lexer::{lex_passes, reset_lex_passes, tokenize};
 use super::{
     catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
     RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
@@ -400,16 +400,19 @@ fn a_constraint_named_in_a_comment_names_nothing() {
 #[test]
 fn a_where_inside_a_comment_is_never_an_index_predicate() {
     let line = "CREATE INDEX users_idx ON users (email) -- WHERE email IS NOT NULL\n;";
-    assert_eq!(predicate_of(line), None);
+    assert_eq!(predicate_of(line, &tokenize(line)), None);
 
     let block = "CREATE INDEX users_idx ON users (email) /* WHERE email IS NOT NULL */;";
-    assert_eq!(predicate_of(block), None);
+    assert_eq!(predicate_of(block, &tokenize(block)), None);
 }
 
 #[test]
 fn a_column_list_ignores_a_commented_parenthesis() {
     let sql = "CREATE INDEX users_idx ON users /* (fake) */ (email, name);";
-    assert_eq!(column_list_of(sql), Some("email, name".to_owned()));
+    assert_eq!(
+        column_list_of(sql, &tokenize(sql)),
+        Some("email, name".to_owned())
+    );
 }
 
 #[test]
@@ -473,5 +476,35 @@ fn one_catalog_build_lexes_each_table_ddl_once() {
         lex_passes(),
         2,
         "each table DDL is lexed exactly once while the catalog is built"
+    );
+}
+
+#[test]
+fn one_catalog_build_lexes_each_index_ddl_once() {
+    let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+    conn.execute_batch(
+        "CREATE TABLE users (
+             id INTEGER PRIMARY KEY,
+             email TEXT NOT NULL,
+             name TEXT NOT NULL
+         );
+         CREATE UNIQUE INDEX users_email_idx ON users (email) WHERE email IS NOT NULL;
+         CREATE INDEX users_mixed_idx ON users (email, lower(name));",
+    )
+    .expect("create the schema");
+
+    reset_lex_passes();
+    let catalog = introspect_sqlite(&conn).expect("the catalog is introspected");
+
+    let users = catalog
+        .tables
+        .iter()
+        .find(|table| table.name == "users")
+        .expect("the table is assembled");
+    assert_eq!(users.indexes.len(), 2);
+    assert_eq!(
+        lex_passes(),
+        3,
+        "the table DDL and both index definitions are lexed exactly once"
     );
 }

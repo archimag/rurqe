@@ -1,10 +1,12 @@
 //! Introspection of the secondary indexes, views, and triggers of a schema.
 
+use std::collections::HashMap;
+
 use crate::cli::CliError;
 use crate::introspect::types::split_top_level_terms;
 use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
-use super::lexer::{matching_close, tokenize, SqlKeyword, TokenKind};
+use super::lexer::{matching_close, tokenize, SqlKeyword, Token, TokenKind};
 use super::{sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGGERS, SQLITE_VIEWS};
 
 /// Collects the secondary indexes declared on `table`.
@@ -14,10 +16,13 @@ use super::{sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGG
 /// is already described by the key columns of its table.
 ///
 /// The pragma reports no method, no partial predicate, and no expression, so the
-/// DDL of the index is read from `sqlite_master` for those. An index over an
-/// expression reports an unnamed column, and the functional terms of the
-/// parenthesised list of its DDL are then recorded as the expression of the index,
-/// so the named columns it also indexes are never repeated there.
+/// DDL of the index is read from `sqlite_master` for those. Every definition of
+/// the table arrives in one statement and each one is lexed at most once, so a
+/// partial index over an expression neither costs a dedicated catalog query nor
+/// two lexer passes. An index over an expression reports an unnamed column, and
+/// the functional terms of the parenthesised list of its DDL are then recorded as
+/// the expression of the index, so the named columns it also indexes are never
+/// repeated there.
 pub(super) fn sqlite_indexes(
     conn: &rusqlite::Connection,
     table: &str,
@@ -39,6 +44,8 @@ pub(super) fn sqlite_indexes(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| CliError(format!("failed to read index for `{table}`: {e}")))?;
 
+    let definitions = sqlite_index_definitions(conn, table)?;
+
     let mut rows = Vec::new();
     for (index_name, unique, origin, partial) in declared {
         if origin == "pk" {
@@ -46,17 +53,30 @@ pub(super) fn sqlite_indexes(
         }
 
         let columns = sqlite_index_columns(conn, &index_name)?;
-        let ddl = sqlite_index_ddl(conn, &index_name)?;
+        let definition = definitions.get(&index_name).and_then(Option::as_deref);
 
-        let expression = match ddl.as_deref() {
-            Some(sql) if columns.iter().any(Option::is_none) => {
-                sqlite_index_expressions(sql, &columns)
-            }
-            _ => None,
+        let searches_expression = columns.iter().any(Option::is_none);
+        // One lexer pass serves both consumers of the definition, so a partial
+        // index over an expression is never lexed twice.
+        let tokens = if partial || searches_expression {
+            definition.map(tokenize)
+        } else {
+            None
         };
-        let predicate = match ddl.as_deref() {
-            Some(sql) if partial => predicate_of(sql),
-            _ => None,
+
+        let expression = if searches_expression {
+            definition
+                .zip(tokens.as_deref())
+                .and_then(|(sql, tokens)| sqlite_index_expressions(sql, tokens, &columns))
+        } else {
+            None
+        };
+        let predicate = if partial {
+            definition
+                .zip(tokens.as_deref())
+                .and_then(|(sql, tokens)| predicate_of(sql, tokens))
+        } else {
+            None
         };
 
         let names: Vec<String> = columns.into_iter().flatten().collect();
@@ -92,6 +112,32 @@ pub(super) fn sqlite_indexes(
     Ok(rows)
 }
 
+/// The DDL of every index declared on `table`, keyed by index name.
+///
+/// One statement reads the whole `sqlite_master` slice of the table, so an
+/// introspection never issues a dedicated catalog query per index. An index
+/// SQLite builds implicitly carries no DDL, and its entry then holds `None`.
+fn sqlite_index_definitions(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> Result<HashMap<String, Option<String>>, CliError> {
+    let mut statement = conn.prepare(SQLITE_INDEX_DDL).map_err(|e| {
+        CliError(format!(
+            "failed to prepare the index definitions for `{table}`: {e}"
+        ))
+    })?;
+
+    let definitions = statement
+        .query_map([table], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| CliError(format!("failed to inspect index definitions for `{table}`: {e}")))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| CliError(format!("failed to read index definition for `{table}`: {e}")))?;
+
+    Ok(definitions.into_iter().collect())
+}
+
 /// The indexed columns of `index` in key order, with `None` for an expression.
 fn sqlite_index_columns(
     conn: &rusqlite::Connection,
@@ -110,36 +156,22 @@ fn sqlite_index_columns(
     Ok(columns)
 }
 
-/// The DDL an index was declared with, if `sqlite_master` records one.
-fn sqlite_index_ddl(conn: &rusqlite::Connection, index: &str) -> Result<Option<String>, CliError> {
-    let mut statement = conn
-        .prepare(SQLITE_INDEX_DDL)
-        .map_err(|e| CliError(format!("failed to prepare the index definition query: {e}")))?;
-
-    match statement.query_row([index], |row| row.get::<_, Option<String>>(0)) {
-        Ok(sql) => Ok(sql),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(error) => Err(CliError(format!(
-            "failed to read the definition of `{index}`: {error}"
-        ))),
-    }
-}
-
 /// The parenthesised column list of an index DDL.
 ///
 /// The first opening parenthesis of an index statement introduces the list of
-/// indexed terms, so everything inside it is what the index searches. The token
-/// stream already splits quoted and commented spans apart, so a parenthesis
-/// written inside a comment never opens the list.
-pub(super) fn column_list_of(sql: &str) -> Option<String> {
-    let tokens = tokenize(sql);
+/// indexed terms, so everything inside it is what the index searches. The caller
+/// hands over the statement together with the token stream it already lexed, so
+/// the list is never recovered by lexing the statement again. The token stream
+/// already splits quoted and commented spans apart, so a parenthesis written
+/// inside a comment never opens the list.
+pub(super) fn column_list_of(sql: &str, tokens: &[Token<'_>]) -> Option<String> {
     let open = tokens
         .iter()
         .position(|token| token.kind == TokenKind::OpenParen)?;
-    let close = matching_close(&tokens, open)?;
+    let close = matching_close(tokens, open)?;
     let start = tokens[open].span.1;
     let end = tokens[close].span.0;
-    Some(sql[start..end].trim().to_owned())
+    Some(sql.get(start..end)?.trim().to_owned())
 }
 
 /// The functional expressions of an index, without the columns it also indexes.
@@ -149,8 +181,12 @@ pub(super) fn column_list_of(sql: &str) -> Option<String> {
 /// for each one declared as an expression. Keeping the terms whose reported name
 /// is absent leaves the expressions alone, so a mixed index neither repeats its
 /// named columns in the expression field nor loses the expressions it computes.
-fn sqlite_index_expressions(sql: &str, columns: &[Option<String>]) -> Option<String> {
-    let list = column_list_of(sql)?;
+fn sqlite_index_expressions(
+    sql: &str,
+    tokens: &[Token<'_>],
+    columns: &[Option<String>],
+) -> Option<String> {
+    let list = column_list_of(sql, tokens)?;
 
     let expressions: Vec<&str> = split_top_level_terms(&list)
         .into_iter()
@@ -170,17 +206,20 @@ fn sqlite_index_expressions(sql: &str, columns: &[Option<String>]) -> Option<Str
 ///
 /// The predicate is the text after the `WHERE` keyword that closes the index
 /// statement, and a `WHERE` written inside a comment or a nested parenthesis is
-/// skipped by the token stream.
-pub(super) fn predicate_of(sql: &str) -> Option<String> {
-    let tokens = tokenize(sql);
+/// skipped by the token stream the caller lexed once.
+pub(super) fn predicate_of(sql: &str, tokens: &[Token<'_>]) -> Option<String> {
     let mut depth = 0usize;
 
-    for token in &tokens {
+    for token in tokens {
         match token.kind {
             TokenKind::OpenParen => depth = depth.saturating_add(1),
             TokenKind::CloseParen => depth = depth.saturating_sub(1),
             TokenKind::Keyword(SqlKeyword::Where) if depth == 0 => {
-                let predicate = sql[token.span.1..].trim().trim_end_matches(';').trim();
+                let predicate = sql
+                    .get(token.span.1..)?
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim();
                 return if predicate.is_empty() {
                     None
                 } else {
