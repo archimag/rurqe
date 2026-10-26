@@ -567,8 +567,6 @@ macro_rules! impl_sql_binary_newtype {
     };
 }
 
-/// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
-/// and expression compatibility for a text domain newtype.
 /// Generates the conversion impls shared by the domain-newtype macros.
 ///
 /// [`impl_sql_binary_newtype!`](crate::impl_sql_binary_newtype) and
@@ -666,6 +664,64 @@ macro_rules! impl_sql_newtype {
     };
 }
 
+/// Implements [`ToSqlVal`], [`FromSqlValue`](crate::row::FromSqlValue),
+/// and expression compatibility for a text domain newtype.
+///
+/// The wrapped type has to provide the two conversions that move it into and out
+/// of its textual form: [`Display`](core::fmt::Display) for encoding, and
+/// [`FromStr`](core::str::FromStr) for decoding. The macro binds a value as
+/// [`SqlVal::Text`] and reads one back through the parser, so it never inspects
+/// the internals of the type. A payload the parser rejects becomes a
+/// [`RowDecodeError::InvalidValue`](crate::row::RowDecodeError) carrying the
+/// parser's own message, which keeps an invalid payload a reported decoding
+/// failure instead of a panic.
+///
+/// Beyond the value conversions, a text literal is accepted wherever the newtype
+/// is compared: `&str` and `String` implement
+/// [`SqlCompatible`](crate::expr::SqlCompatible) and
+/// [`IntoExpr`](crate::expr::IntoExpr) for the newtype, so a predicate can be
+/// written against a literal directly.
+///
+/// ```
+/// use core::fmt;
+/// use core::str::FromStr;
+///
+/// use rurqe_core::expr::{SqlVal, ToSqlVal};
+/// use rurqe_core::row::FromSqlValue;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// struct Nonce(String);
+///
+/// impl fmt::Display for Nonce {
+///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+///         f.write_str(&self.0)
+///     }
+/// }
+///
+/// impl FromStr for Nonce {
+///     type Err = &'static str;
+///
+///     fn from_str(value: &str) -> Result<Self, Self::Err> {
+///         if value.len() == 8 {
+///             Ok(Nonce(value.to_owned()))
+///         } else {
+///             Err("nonces are eight characters wide")
+///         }
+///     }
+/// }
+///
+/// rurqe_core::impl_sql_text_newtype!(Nonce);
+///
+/// assert_eq!(
+///     Nonce("nonce123".to_owned()).to_sql_val(),
+///     SqlVal::Text("nonce123".to_owned())
+/// );
+/// assert_eq!(
+///     Nonce::from_sql_value(&SqlVal::Text("nonce123".to_owned())),
+///     Ok(Nonce("nonce123".to_owned()))
+/// );
+/// assert!(Nonce::from_sql_value(&SqlVal::Text("short".to_owned())).is_err());
+/// ```
 #[macro_export]
 macro_rules! impl_sql_text_newtype {
     ($ty:ty) => {
