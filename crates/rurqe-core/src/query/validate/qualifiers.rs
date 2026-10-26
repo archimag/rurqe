@@ -8,8 +8,15 @@
 //! expression embeds with the namespace the SQL clause grants them. A plain
 //! reference the statement renders no relation for resolves to nothing, so it is
 //! rejected beside an unresolved qualifier.
+//!
+//! The sections of a statement are enumerated exactly once, by `walk_sections`.
+//! The entry points of the module differ only in the checks that walk applies to
+//! each section: `validate_clauses` validates the clauses structurally as well,
+//! together with the statements they embed, while the qualifier pass reached from
+//! `reject_unresolved_qualifiers` resolves the references of a statement whose
+//! structure its caller has already validated.
 
-use crate::expr::{ExprKind, RawSqlError, StatementRef, WindowExprKind};
+use crate::expr::{ExprKind, RawSqlError, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
 
 use super::{effective_relation_name, BuildError};
@@ -36,6 +43,27 @@ struct ClauseScope<'a> {
     enclosing: &'a [TableRef],
 }
 
+/// The checks the section walk applies to every clause it reaches.
+///
+/// The walk enumerates the sections of a statement the same way under either mode
+/// — that is what keeps the enumeration in one place — while the checks themselves
+/// differ: [`ClauseChecks::Full`] validates a clause structurally, resolves its
+/// references, and validates the statements it embeds in full, whereas
+/// [`ClauseChecks::Qualifiers`] resolves the references alone and descends into the
+/// embedded statements the same way. The second mode serves the callers that reach
+/// a statement through an expression whose structure they audited separately: the
+/// DML builders check the structure of their expressions through `validate_expr`
+/// and leave the resolution of the references to this walk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClauseChecks {
+    /// The structural rules, the qualifier resolution, and the full validation of
+    /// the embedded statements.
+    Full,
+    /// The qualifier resolution alone, on the statement and on the statements it
+    /// embeds.
+    Qualifiers,
+}
+
 /// Validates every clause expression of a statement and the statements embedded in
 /// them.
 ///
@@ -48,88 +76,169 @@ pub(super) fn validate_clauses(
     relations: &[TableRef],
     outer_relations: Option<&[TableRef]>,
 ) -> Result<(), BuildError> {
-    let Some(outer_relations) = outer_relations else {
-        return validate_statement_clauses(statement, None);
-    };
-    let enclosing = enclosing_scope(relations, outer_relations);
-    validate_statement_clauses(
-        statement,
-        Some(ClauseScope {
-            relations,
-            outer_relations,
-            enclosing: &enclosing,
-        }),
-    )
+    match outer_relations {
+        Some(outer_relations) => {
+            let enclosing = enclosing_scope(relations, outer_relations);
+            let scope = ClauseScope {
+                relations,
+                outer_relations,
+                enclosing: &enclosing,
+            };
+            walk_sections(statement, Some(scope), ClauseChecks::Full)
+        }
+        // Without a known relation scope the clauses are checked structurally
+        // alone, and so are the statements they embed: an unknown scope is handed
+        // over unchanged instead of turning into an empty one.
+        None => walk_sections(statement, None, ClauseChecks::Full),
+    }
 }
 
-/// Validates every clause expression and the statements embedded in them.
+/// Enumerates every section of a statement and applies `checks` to each of them.
 ///
-/// `scope` names the relations a clause expression is resolved against; `None`
-/// applies the structural rules alone, which is what a statement whose relation
-/// scope this pass does not know is checked with.
+/// This is the single place that decides which clauses a statement consists of, so
+/// a rule that works per clause reaches all of them by construction: the `ON`
+/// conditions of the joins, the projections, the `DISTINCT ON` expressions, the
+/// `WHERE` filter, the `GROUP BY` entries, the `HAVING` predicate, the `ORDER BY`
+/// criteria, and the compound ordering — together with the statements these
+/// sections embed.
 ///
-/// The statements a clause embeds relate to this one in two ways. The `WITH`
-/// clause bodies, the derived tables of `FROM`, and the operands of a set
-/// operation take the closed one: the engine correlates none of them to the
-/// statement embedding them, so each is validated against its own relations
-/// alone. A subquery and a lateral join are the exception the SQL clause
-/// itself states — they read the relations in scope where they are written —
-/// so they are validated with that namespace as their outer scope.
+/// The statements a section embeds relate to this one in two ways, and the walk
+/// hands each of them the namespace the SQL clause grants it. The `WITH` bodies,
+/// the derived tables of `FROM`, and the operands of a set operation take the
+/// closed one: the engine correlates none of them to the statement embedding them,
+/// so each is validated against its own relations alone. A subquery and a lateral
+/// join are the exception the SQL clause itself states — they read the relations in
+/// scope where they are written — so they are validated with that namespace as
+/// their outer scope.
+///
+/// The aggregation consistency constrains the projections and the `HAVING`
+/// predicate the walk visits, and both of them decide it together rather than one
+/// clause alone, so it runs once at the head of the walk instead of per section.
 ///
 /// The `ORDER BY` clause of a compound statement is checked structurally on
 /// purpose: it sorts the rows the combination produced, so it names the output
-/// columns of the projection list rather than a relation of the statement —
-/// which is why it is rendered without the relations as well.
-fn validate_statement_clauses(
+/// columns of the projection list rather than a relation of the statement — which
+/// is why the full pass visits it without a relation namespace. The qualifier pass
+/// resolves it against the statement instead, because rejecting a reference to a
+/// relation the combination no longer declares belongs to the statement rules, not
+/// to the qualifier walk.
+fn walk_sections(
     statement: &StatementRef<'_>,
     scope: Option<ClauseScope<'_>>,
+    checks: ClauseChecks,
 ) -> Result<(), BuildError> {
+    // The aggregation state of the statement is decided by its projections and its
+    // `HAVING` predicate together, which makes it a statement-level rule; it still
+    // runs here, ahead of the sections it constrains, so a projection or a
+    // predicate it rejects is reported before the clause rules reach them.
+    if checks == ClauseChecks::Full {
+        statement.validate_aggregation()?;
+    }
+
+    // The `WITH` bodies, the derived tables, and the operands of a set operation
+    // correlate to no enclosing statement, so they are handed the closed scope —
+    // or the unknown one, when this pass does not know the relation scope at all.
     let closed = scope.map(|_| ROOT_SCOPE);
 
     for cte in statement.ctes {
-        StatementRef::from(&cte.query).validate_in(closed)?;
+        visit_nested(&cte.query, closed, checks)?;
     }
 
     for derived in statement.derived {
-        StatementRef::from(&derived.query).validate_in(closed)?;
+        visit_nested(&derived.query, closed, checks)?;
     }
 
     for join in statement.joins {
         if let Some(lateral) = &join.lateral {
-            StatementRef::from(lateral).validate_in(scope.map(|scope| scope.enclosing))?;
+            visit_nested(lateral, scope.map(|scope| scope.enclosing), checks)?;
         }
         if let Some(on) = &join.on {
-            validate_clause(on, scope)?;
+            visit_clause(on, scope, checks)?;
         }
     }
 
     for projection in statement.projections {
-        validate_clause(projection, scope)?;
+        visit_clause(projection, scope, checks)?;
     }
     for expression in statement.distinct_on {
-        validate_clause(expression, scope)?;
+        visit_clause(expression, scope, checks)?;
     }
     if let Some(filter) = statement.filter {
-        validate_clause(filter, scope)?;
+        visit_clause(filter, scope, checks)?;
     }
     for grouped in statement.group_by {
-        validate_clause(grouped, scope)?;
+        visit_clause(grouped, scope, checks)?;
     }
     if let Some(having) = statement.having {
-        validate_clause(having, scope)?;
+        visit_clause(having, scope, checks)?;
     }
     for criterion in statement.order_by {
-        validate_clause(&criterion.expr, scope)?;
+        visit_clause(&criterion.expr, scope, checks)?;
     }
+
+    // A compound ordering sorts the combined rows, so it names the output columns
+    // of the projection list: the full pass checks it structurally, without a
+    // relation namespace, while the qualifier pass resolves the references it
+    // reads against the statement itself.
+    let compound_scope = match checks {
+        ClauseChecks::Full => None,
+        ClauseChecks::Qualifiers => scope,
+    };
     for criterion in statement.compound_order_by {
-        validate_clause(&criterion.expr, None)?;
+        visit_clause(&criterion.expr, compound_scope, checks)?;
     }
 
     for operation in statement.set_operations {
-        StatementRef::from(&operation.query).validate_in(closed)?;
+        visit_nested(&operation.query, closed, checks)?;
     }
 
     Ok(())
+}
+
+/// Applies `checks` to one statement a visited section embeds.
+///
+/// `outer_relations` names the namespace the embedded statement may reach by
+/// correlation — the closed scope for a statement nothing encloses it into, and
+/// `None` when this pass does not know the relation scope it is embedded in.
+fn visit_nested(
+    query: &SelectAst,
+    outer_relations: Option<&[TableRef]>,
+    checks: ClauseChecks,
+) -> Result<(), BuildError> {
+    match (checks, outer_relations) {
+        // The full pass runs the whole statement pass on the embedded statement,
+        // its statement-level rules included.
+        (ClauseChecks::Full, outer_relations) => {
+            StatementRef::from(query).validate_in(outer_relations)
+        }
+        // The structural rules of an embedded statement belong to the statement
+        // pass, so the qualifier pass resolves the references of its sections and
+        // leaves the structure to the caller that already validated it.
+        (ClauseChecks::Qualifiers, Some(outer_relations)) => {
+            reject_unresolved_qualifiers_in_statement(&StatementRef::from(query), outer_relations)
+        }
+        // The qualifier rules resolve a reference against a relation namespace, so
+        // a statement reached without one has nothing to resolve here.
+        (ClauseChecks::Qualifiers, None) => Ok(()),
+    }
+}
+
+/// Applies `checks` to one clause expression of the visited statement.
+fn visit_clause(
+    expr: &ExprKind,
+    scope: Option<ClauseScope<'_>>,
+    checks: ClauseChecks,
+) -> Result<(), BuildError> {
+    match (checks, scope) {
+        (ClauseChecks::Full, scope) => validate_clause(expr, scope),
+        (ClauseChecks::Qualifiers, Some(scope)) => {
+            reject_unresolved_qualifiers(expr, scope.relations, scope.outer_relations)
+        }
+        // The qualifier rules resolve a reference against a relation namespace, so
+        // a clause reached without one leaves them nothing to check: the structural
+        // rules that still apply to such a clause belong to the full pass.
+        (ClauseChecks::Qualifiers, None) => Ok(()),
+    }
 }
 
 /// Validates a clause expression of a statement.
@@ -322,9 +431,9 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
 /// [`BuildError::UnresolvedColumn`].
 ///
 /// The walk mirrors `validate_expr` over the composite nodes of the current
-/// statement and continues into the embedded statements through
-/// `reject_unresolved_qualifiers_in_statement`, so a correlated reference
-/// stays accepted while a qualifier nothing declares is still rejected.
+/// statement and continues into the embedded statements through the section walk
+/// of `walk_sections`, so a correlated reference stays accepted while a qualifier
+/// nothing declares is still rejected.
 pub(crate) fn reject_unresolved_qualifiers(
     expr: &ExprKind,
     relations: &[TableRef],
@@ -508,67 +617,22 @@ fn resolves_qualifier(
 ///
 /// The statement resolves a reference through its own `FROM` / `JOIN` scope first
 /// and reaches an enclosing statement by correlation afterwards, so the walk
-/// combines both namespaces before it inspects the clauses: the projections, the
-/// `DISTINCT ON` expressions, the filter, the `GROUP BY` entries, the `HAVING`
-/// predicate, the `ORDER BY` criteria, the `ON` conditions of the joins, and the
-/// lateral subqueries they introduce.
-///
-/// The `WITH` clause bodies, the derived tables of the `FROM` clause, and the
-/// operands of a set operation stay closed: the engine correlates none of them to
-/// the statement embedding them, so each is judged against its own relations
-/// alone. A lateral subquery is the exception the clause itself states, so it
-/// keeps reading the relations of the statement introducing it.
+/// combines both namespaces before it inspects the clauses — and the sections it
+/// inspects are the ones `walk_sections` enumerates, reached in the qualifier mode
+/// of that walk instead of through a second traversal of its own. The `WITH`
+/// clause bodies, the derived tables of the `FROM` clause, and the operands of a
+/// set operation stay closed, while a lateral subquery keeps reading the relations
+/// of the statement introducing it.
 fn reject_unresolved_qualifiers_in_statement(
     statement: &StatementRef<'_>,
     outer_relations: &[TableRef],
 ) -> Result<(), BuildError> {
-    let mut relations = Vec::with_capacity(statement.joins.len() + outer_relations.len() + 1);
-    relations.extend(statement.from);
-    relations.extend(statement.joins.iter().map(|join| join.table));
-    relations.extend_from_slice(outer_relations);
-
-    for cte in statement.ctes {
-        reject_unresolved_qualifiers_in_statement(&StatementRef::from(&cte.query), &[])?;
-    }
-
-    for derived in statement.derived {
-        reject_unresolved_qualifiers_in_statement(&StatementRef::from(&derived.query), &[])?;
-    }
-
-    for join in statement.joins {
-        if let Some(lateral) = &join.lateral {
-            reject_unresolved_qualifiers_in_statement(&StatementRef::from(lateral), &relations)?;
-        }
-        if let Some(on) = &join.on {
-            reject_unresolved_qualifiers(on, &relations, outer_relations)?;
-        }
-    }
-
-    for projection in statement.projections {
-        reject_unresolved_qualifiers(projection, &relations, outer_relations)?;
-    }
-    for expression in statement.distinct_on {
-        reject_unresolved_qualifiers(expression, &relations, outer_relations)?;
-    }
-    if let Some(filter) = statement.filter {
-        reject_unresolved_qualifiers(filter, &relations, outer_relations)?;
-    }
-    for grouped in statement.group_by {
-        reject_unresolved_qualifiers(grouped, &relations, outer_relations)?;
-    }
-    if let Some(having) = statement.having {
-        reject_unresolved_qualifiers(having, &relations, outer_relations)?;
-    }
-    for criterion in statement.order_by {
-        reject_unresolved_qualifiers(&criterion.expr, &relations, outer_relations)?;
-    }
-    for criterion in statement.compound_order_by {
-        reject_unresolved_qualifiers(&criterion.expr, &relations, outer_relations)?;
-    }
-
-    for operation in statement.set_operations {
-        reject_unresolved_qualifiers_in_statement(&StatementRef::from(&operation.query), &[])?;
-    }
-
-    Ok(())
+    let relations = statement.statement_relations();
+    let enclosing = enclosing_scope(&relations, outer_relations);
+    let scope = ClauseScope {
+        relations: &relations,
+        outer_relations,
+        enclosing: &enclosing,
+    };
+    walk_sections(statement, Some(scope), ClauseChecks::Qualifiers)
 }

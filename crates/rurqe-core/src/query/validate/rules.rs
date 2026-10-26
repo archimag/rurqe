@@ -48,9 +48,10 @@ impl StatementRef<'_> {
     ///
     /// The rules that read the statement data alone run first — relation
     /// disjointness, `WITH` clause names, the `DISTINCT` and `DISTINCT ON`
-    /// alignment, the compound ordering, and the aggregation consistency — and
-    /// the clause expressions are validated afterwards by the traversal of the
-    /// `qualifiers` module.
+    /// alignment, and the compound ordering — and the clauses are validated
+    /// afterwards by the single section walk of the `qualifiers` module, which
+    /// enumerates every section of the statement and every statement a section
+    /// embeds, the aggregation consistency included.
     pub(super) fn validate_in(
         &self,
         outer_relations: Option<&[TableRef]>,
@@ -62,6 +63,11 @@ impl StatementRef<'_> {
     }
 
     /// Validates the rules that read the statement data alone.
+    ///
+    /// The aggregation consistency belongs to the same statement-level family,
+    /// but it constrains the projections and the `HAVING` predicate the section
+    /// walk visits, so it runs at the head of that walk — see
+    /// `qualifiers::walk_sections`.
     fn validate_rules(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
         self.validate_cte_names()?;
@@ -69,8 +75,7 @@ impl StatementRef<'_> {
         self.validate_distinct_on_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
-        self.validate_set_operand_arity()?;
-        self.validate_aggregation()
+        self.validate_set_operand_arity()
     }
 
     /// The relations the statement introduces itself, in `FROM` order.
@@ -78,7 +83,7 @@ impl StatementRef<'_> {
     /// The `FROM` source comes first and every join follows, which is the order
     /// the rendered statement declares them in and the order a qualifier resolves
     /// against.
-    fn statement_relations(&self) -> Vec<TableRef> {
+    pub(super) fn statement_relations(&self) -> Vec<TableRef> {
         let mut relations = Vec::with_capacity(self.joins.len() + 1);
         relations.extend(self.from);
         relations.extend(self.joins.iter().map(|join| join.table));
