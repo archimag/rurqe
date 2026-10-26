@@ -137,6 +137,34 @@ impl AssignValue {
         }
     }
 
+    /// Validates the relation qualifiers named by the expression of the value.
+    ///
+    /// An expression assignment renders its columns exactly like any other
+    /// expression of the statement it belongs to: a column is resolved against
+    /// the relations that statement declares, while a reference built through a
+    /// table alias renders its qualifier verbatim. A qualifier naming a relation
+    /// the statement never renders therefore leaves it unresolvable — the engine
+    /// answers `missing FROM-clause entry for table "..."` — so the DML builders
+    /// resolve the qualifiers of every expression assignment against the
+    /// relations the statement renders, beside the structural rules
+    /// [`validate`](Self::validate) applies.
+    ///
+    /// `relations` are the relations the validated statement renders itself, and
+    /// `outer_relations` are the relations of every statement enclosing it, which
+    /// is the namespace a correlated reference reaches.
+    pub(crate) fn validate_qualifiers(
+        &self,
+        relations: &[TableRef],
+        outer_relations: &[TableRef],
+    ) -> Result<(), crate::query::BuildError> {
+        match self {
+            AssignValue::Value(_) | AssignValue::Default => Ok(()),
+            AssignValue::Expr(expr) => {
+                crate::query::reject_unresolved_qualifiers(expr, relations, outer_relations)
+            }
+        }
+    }
+
     /// Appends the value to `sql`, binding it to `params` when it carries a parameter.
     ///
     /// `relations` names the relations of the statement being rendered, so an

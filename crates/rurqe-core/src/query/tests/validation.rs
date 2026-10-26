@@ -1,8 +1,8 @@
 //! Pre-flight validation of the assembled statement.
 
 use super::{
-    MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId, RecentId, RecentOrder, User,
-    UserId, UserName,
+    MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId, RecentId, RecentOrder,
+    RecentTotal, User, UserId, UserName,
 };
 use crate::expr::{
     BinaryOp, Expr, ExprKind, LockClause, LockStrength, OrderCriterion, OrderDirection, SelectAst,
@@ -403,5 +403,130 @@ fn a_correlated_subquery_qualified_by_a_name_nothing_declares_is_rejected() {
     assert_eq!(
         correlated_statement("ghosts").validate(),
         Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
+}
+
+/// A dialect exposing the upsert clause the DML validation tests exercise.
+///
+/// The `ON CONFLICT` builder is only reachable on a dialect implementing
+/// [`SupportsOnConflict`](crate::dialect::SupportsOnConflict), so the DML
+/// regressions are checked against this dialect instead of the mock one the
+/// query tests share.
+struct UpsertDialect;
+
+impl crate::dialect::Dialect for UpsertDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        use core::fmt::Write;
+        let _ = write!(out, "${index}");
+    }
+}
+
+impl crate::dialect::SupportsOnConflict for UpsertDialect {}
+
+#[test]
+fn an_insert_value_qualified_by_a_foreign_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The assigned expression reads `recent.total` explicitly, which the `VALUES`
+    // list of an `INSERT INTO "orders"` never declares.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderTotal::set_expr(
+            Expr::column::<RecentTotal>().without_scope(),
+        ))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedQualifier { name: "recent" })
+    );
+}
+
+#[test]
+fn a_conflict_target_predicate_qualified_by_a_foreign_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .on_conflict((OrderId,))
+        .target_where(Expr::column::<RecentId>().without_scope().gt(0i64))
+        .do_nothing()
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedQualifier { name: "recent" })
+    );
+}
+
+#[test]
+fn a_conflict_update_predicate_qualified_by_a_foreign_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .on_conflict((OrderId,))
+        .update_where(Expr::column::<RecentTotal>().without_scope().gt(0.0f64))
+        .do_update(OrderTotal::set(0.0f64))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedQualifier { name: "recent" })
+    );
+}
+
+#[test]
+fn a_conflict_assignment_reading_a_foreign_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .on_conflict((OrderId,))
+        .do_update(OrderTotal::set_expr(
+            Expr::column::<RecentTotal>().without_scope(),
+        ))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::UnresolvedQualifier { name: "recent" })
+    );
+}
+
+#[test]
+fn an_upsert_addressing_the_target_relation_and_its_proposed_row_is_accepted() {
+    use crate::dml::{excluded, ColumnAssign, InsertQuery};
+
+    // Both predicates qualify their references through the inserted table, and the
+    // assignment copies the proposed row, which names no qualifier of its own.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .on_conflict((OrderId,))
+        .target_where(Expr::column::<OrderId>().without_scope().gt(0i64))
+        .update_where(Expr::column::<OrderTotal>().without_scope().gt(0.0f64))
+        .do_update(OrderTotal::set_expr(excluded(OrderTotal)))
+        .build()
+        .expect("the clause addresses the inserted table and its proposed row");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"orders\" (\"id\", \"total\") VALUES ($1, $2) \
+         ON CONFLICT (\"id\") WHERE (\"orders\".\"id\" > $3) \
+         DO UPDATE SET \"total\" = EXCLUDED.\"total\" WHERE (\"orders\".\"total\" > $4)"
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::I64(1),
+            SqlVal::F64(2.5),
+            SqlVal::I64(0),
+            SqlVal::F64(0.0),
+        ]
     );
 }

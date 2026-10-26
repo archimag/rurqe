@@ -25,8 +25,8 @@ use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::expr::{
     render_expr, DialectInScope, Expr, ExprKind, NonAggregate, RawSqlError, SqlVal, Unscoped,
 };
-use crate::query::{validate_expr, BuildError};
-use crate::schema::Table;
+use crate::query::{reject_unresolved_qualifiers, validate_expr, BuildError};
+use crate::schema::{Table, TableRef};
 
 use super::insert::merge_assignments;
 use super::{AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery};
@@ -69,9 +69,15 @@ impl Conflict {
     /// of the `DO UPDATE` branch may all carry a nested statement, so the clause
     /// is audited before the statement renders and a semantic violation inside
     /// one of them is reported as [`BuildError`].
-    pub(crate) fn validate(&self) -> Result<(), BuildError> {
+    ///
+    /// `relations` names the relations the clause is rendered against — the table
+    /// the row is inserted into — so a reference qualified through a name that
+    /// table does not declare is reported as
+    /// [`BuildError::UnresolvedQualifier`] as well. The proposed row of
+    /// `EXCLUDED` carries no qualifier of its own, so reading it stays accepted.
+    pub(crate) fn validate(&self, relations: &[TableRef]) -> Result<(), BuildError> {
         if let Some(predicate) = &self.target_predicate {
-            validate_expr(predicate)?;
+            validate_qualifiers(predicate, relations)?;
         }
         match &self.action {
             ConflictAction::DoNothing => Ok(()),
@@ -81,9 +87,10 @@ impl Conflict {
             } => {
                 for (_, value) in assignments {
                     value.validate()?;
+                    value.validate_qualifiers(relations, &[])?;
                 }
                 if let Some(predicate) = predicate {
-                    validate_expr(predicate)?;
+                    validate_qualifiers(predicate, relations)?;
                 }
                 Ok(())
             }
@@ -153,6 +160,17 @@ impl Conflict {
 
         Ok(())
     }
+}
+
+/// Validates a predicate of the clause and the relation qualifiers it names.
+///
+/// The clause addresses the inserted table as well as the proposed row its
+/// `EXCLUDED` relation exposes, so `relations` — the relations the prepared
+/// statement renders — is the namespace a qualifier resolves against, exactly
+/// like the one the renderer hands to every expression of the clause.
+fn validate_qualifiers(expr: &ExprKind, relations: &[TableRef]) -> Result<(), BuildError> {
+    validate_expr(expr)?;
+    reject_unresolved_qualifiers(expr, relations, &[])
 }
 
 /// Statically asserts that a conflict target predicate only reads the table the

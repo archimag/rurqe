@@ -407,11 +407,11 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// rendered: a source `SELECT`, a scalar expression assigned to a column,
     /// and the predicates and assignments of an `ON CONFLICT` clause may all
     /// carry a nested statement, so a semantic violation inside one of them is
-    /// reported as [`BuildError`] instead of reaching the engine. The
-    /// `RETURNING` projections are pre-flighted against the rendered target as
-    /// well: a reference qualified through a name the target does not declare
-    /// is reported as [`BuildError::UnresolvedQualifier`] before any SQL is
-    /// rendered.
+    /// reported as [`BuildError`] instead of reaching the engine. The `VALUES`
+    /// list, the `ON CONFLICT` clause, and the `RETURNING` projections are
+    /// pre-flighted against the rendered target as well: a reference qualified
+    /// through a name the target does not declare is reported as
+    /// [`BuildError::UnresolvedQualifier`] before any SQL is rendered.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The target renders through its `Table::table_ref`, so a target
         // referenced under an alias renders its `AS "alias"` clause and is
@@ -438,10 +438,18 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
             }
             for value in row {
                 value.validate()?;
+                // The `VALUES` list addresses the inserted table only, so an
+                // expression assignment resolves its qualifiers against it: a
+                // reference qualified through any other name would render a
+                // qualifier the statement never declares.
+                value.validate_qualifiers(&relations, &[])?;
             }
         }
         if let Some(conflict) = &self.conflict {
-            conflict.validate()?;
+            // The clause addresses the inserted table as well, together with the
+            // proposed row its `EXCLUDED` relation exposes, so it resolves its
+            // qualifiers against the same target.
+            conflict.validate(&relations)?;
         }
         // A `RETURNING` projection may qualify its references through the
         // alias of an aliased target, which only the rendered target
