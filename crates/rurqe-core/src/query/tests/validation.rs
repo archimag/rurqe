@@ -1,11 +1,15 @@
 //! Pre-flight validation of the assembled statement.
 
 use super::{
-    MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId, User, UserId, UserName,
+    MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId, RecentId, RecentOrder, User,
+    UserId, UserName,
 };
-use crate::expr::{Expr, LockClause, LockStrength, SqlVal};
+use crate::expr::{
+    BinaryOp, Expr, ExprKind, LockClause, LockStrength, OrderCriterion, OrderDirection, SelectAst,
+    SqlVal, Subquery, SubqueryOp,
+};
 use crate::query::*;
-use crate::schema::AliasedCol;
+use crate::schema::{Aliased, AliasedCol};
 
 #[test]
 fn distinct_on_qualifies_aliased_columns() {
@@ -281,4 +285,123 @@ fn a_window_call_beside_a_bare_column_stays_valid_without_a_grouping() {
         "SELECT \"user_id\", SUM(\"total\") OVER (PARTITION BY \"user_id\") FROM \"orders\""
     );
     assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_projection_qualified_by_the_declared_alias_is_accepted() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<Order, OrderAlias>>()
+        .select((AliasedCol::<OrderAlias, OrderId>::new(),))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(built.sql, "SELECT \"o\".\"id\" FROM \"orders\" AS \"o\"");
+}
+
+#[test]
+fn a_projection_qualified_by_a_name_the_statement_does_not_declare_is_rejected() {
+    let mut ast = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .to_ast();
+    ast.projections = vec![ExprKind::QualifiedColumn {
+        table: "o",
+        column: "id",
+    }];
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "o" })
+    );
+}
+
+#[test]
+fn a_filter_qualified_by_a_name_the_statement_does_not_declare_is_rejected() {
+    let mut ast = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .to_ast();
+    ast.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::QualifiedColumn {
+            table: "o",
+            column: "user_id",
+        }),
+        rhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        }),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "o" })
+    );
+}
+
+#[test]
+fn an_order_by_qualified_by_a_name_the_statement_does_not_declare_is_rejected() {
+    let mut ast = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .to_ast();
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::QualifiedColumn {
+            table: "o",
+            column: "total",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedQualifier { name: "o" })
+    );
+}
+
+/// Builds a statement whose filter is a subquery over `recent` correlating a
+/// reference qualified as `qualifier` to the enclosing `orders AS o` statement.
+fn correlated_statement(qualifier: &'static str) -> SelectAst {
+    let mut inner = SelectQuery::<MockDialect>::new()
+        .from::<RecentOrder>()
+        .select((RecentId,))
+        .to_ast();
+    inner.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Eq,
+        lhs: Box::new(ExprKind::Column {
+            table: "recent",
+            name: "id",
+        }),
+        rhs: Box::new(ExprKind::QualifiedColumn {
+            table: qualifier,
+            column: "id",
+        }),
+    });
+
+    let mut outer = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<Order, OrderAlias>>()
+        .select((AliasedCol::<OrderAlias, OrderId>::new(),))
+        .to_ast();
+    outer.filter = Some(ExprKind::Subquery {
+        op: SubqueryOp::Exists,
+        operand: None,
+        query: Subquery::new(inner),
+        negated: false,
+    });
+    outer
+}
+
+#[test]
+fn a_correlated_subquery_may_reference_the_alias_of_the_enclosing_statement() {
+    // The nested statement introduces `recent` only, so `o.id` resolves through
+    // the alias the statement enclosing it declares.
+    assert_eq!(correlated_statement("o").validate(), Ok(()));
+}
+
+#[test]
+fn a_correlated_subquery_qualified_by_a_name_nothing_declares_is_rejected() {
+    assert_eq!(
+        correlated_statement("ghosts").validate(),
+        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
+    );
 }

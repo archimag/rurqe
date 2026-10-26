@@ -202,10 +202,13 @@ fn an_aliased_marker_inlines_the_derived_subquery_it_registers() {
 
 #[test]
 fn an_aliased_derived_table_joins_under_its_alias() {
+    // A derived table is materialised before the statement it is joined into, so
+    // its body resolves against its own relations alone: the filter reads a column
+    // of `orders` instead of reaching for the relation the join introduces.
     let derived = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderId, OrderTotal))
-        .where_(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>().without_scope()))
+        .where_(Expr::column::<OrderTotal>().gt(10.0))
         .as_table::<Aliased<RecentOrder, OrderAlias>>();
 
     let built = SelectQuery::<MockDialect>::new()
@@ -221,10 +224,10 @@ fn an_aliased_derived_table_joins_under_its_alias() {
     assert_eq!(
         built.sql,
         "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" INNER JOIN \
-         (SELECT \"id\", \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\")) AS \"o\" \
+         (SELECT \"id\", \"total\" FROM \"orders\" WHERE (\"total\" > $1)) AS \"o\" \
          ON (\"users\".\"id\" = \"o\".\"id\")"
     );
-    assert!(built.params.is_empty());
+    assert_eq!(built.params, vec![SqlVal::F64(10.0)]);
 }
 
 #[test]

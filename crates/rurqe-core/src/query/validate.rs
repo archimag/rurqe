@@ -330,59 +330,134 @@ impl<'a> StatementRef<'a> {
     ///
     /// The statement is read in place, so validating a query allocates nothing for
     /// the clauses it validates.
+    ///
+    /// A statement at the top of a build chain encloses nothing, so a column
+    /// qualifier it reads has to resolve against the relations the statement
+    /// renders itself.
     pub(crate) fn validate(&self) -> Result<(), BuildError> {
+        self.validate_in(Some(ROOT_SCOPE))
+    }
+
+    /// Validates the statement written inside the relations `outer_relations`.
+    ///
+    /// `outer_relations` names the relations of every statement enclosing this
+    /// one, which is what a correlated reference reaches. `None` validates the
+    /// statement without resolving the qualifiers of its column references at
+    /// all, which is how a statement embedded in a clause whose relation scope
+    /// this pass does not know is checked.
+    ///
+    /// The rules that read the statement data alone run first — relation
+    /// disjointness, `WITH` clause names, the `DISTINCT` and `DISTINCT ON`
+    /// alignment, the compound ordering, and the aggregation consistency — and
+    /// the clause expressions are validated afterwards through
+    /// [`StatementRef::validate_clauses`].
+    fn validate_in(&self, outer_relations: Option<&[TableRef]>) -> Result<(), BuildError> {
+        self.validate_rules()?;
+
+        let relations = self.statement_relations();
+        let Some(outer_relations) = outer_relations else {
+            return self.validate_clauses(None);
+        };
+
+        // The namespace a statement embedded here may reach: the relations this
+        // statement renders together with the outer relations they already
+        // reach.
+        let enclosing = enclosing_scope(&relations, outer_relations);
+        self.validate_clauses(Some(ClauseScope {
+            relations: &relations,
+            outer_relations,
+            enclosing: &enclosing,
+        }))
+    }
+
+    /// Validates the rules that read the statement data alone.
+    fn validate_rules(&self) -> Result<(), BuildError> {
         self.validate_relations()?;
         self.validate_cte_names()?;
         self.validate_distinct_on_prefix()?;
         self.validate_distinct_on_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
-        self.validate_aggregation()?;
+        self.validate_aggregation()
+    }
+
+    /// Validates every clause expression and the statements embedded in them.
+    ///
+    /// `scope` names the relations a clause expression is resolved against;
+    /// `None` applies the structural rules alone, which is what a statement whose
+    /// relation scope this pass does not know is checked with.
+    ///
+    /// The statements a clause embeds relate to this one in two ways. The `WITH`
+    /// clause bodies, the derived tables of `FROM`, and the operands of a set
+    /// operation take the closed one: the engine correlates none of them to the
+    /// statement embedding them, so each is validated against its own relations
+    /// alone. A subquery and a lateral join are the exception the SQL clause
+    /// itself states — they read the relations in scope where they are written —
+    /// so they are validated with that namespace as their outer scope.
+    ///
+    /// The `ORDER BY` clause of a compound statement is checked structurally on
+    /// purpose: it sorts the rows the combination produced, so it names the output
+    /// columns of the projection list rather than a relation of the statement —
+    /// which is why it is rendered without the relations as well.
+    fn validate_clauses(&self, scope: Option<ClauseScope<'_>>) -> Result<(), BuildError> {
+        let closed = scope.map(|_| ROOT_SCOPE);
 
         for cte in self.ctes {
-            cte.query.validate()?;
+            StatementRef::from(&cte.query).validate_in(closed)?;
         }
 
         for derived in self.derived {
-            derived.query.validate()?;
+            StatementRef::from(&derived.query).validate_in(closed)?;
         }
 
         for join in self.joins {
             if let Some(lateral) = &join.lateral {
-                lateral.validate()?;
+                StatementRef::from(lateral).validate_in(scope.map(|scope| scope.enclosing))?;
             }
             if let Some(on) = &join.on {
-                validate_expr(on)?;
+                validate_clause(on, scope)?;
             }
         }
 
-        for proj in self.projections {
-            validate_expr(proj)?;
+        for projection in self.projections {
+            validate_clause(projection, scope)?;
         }
-        for dist_on in self.distinct_on {
-            validate_expr(dist_on)?;
+        for expression in self.distinct_on {
+            validate_clause(expression, scope)?;
         }
         if let Some(filter) = self.filter {
-            validate_expr(filter)?;
+            validate_clause(filter, scope)?;
         }
-        for gb in self.group_by {
-            validate_expr(gb)?;
+        for grouped in self.group_by {
+            validate_clause(grouped, scope)?;
         }
         if let Some(having) = self.having {
-            validate_expr(having)?;
+            validate_clause(having, scope)?;
         }
-        for order in self.order_by {
-            validate_expr(&order.expr)?;
+        for criterion in self.order_by {
+            validate_clause(&criterion.expr, scope)?;
         }
-        for order in self.compound_order_by {
-            validate_expr(&order.expr)?;
+        for criterion in self.compound_order_by {
+            validate_clause(&criterion.expr, None)?;
         }
 
-        for set_op in self.set_operations {
-            set_op.query.validate()?;
+        for operation in self.set_operations {
+            StatementRef::from(&operation.query).validate_in(closed)?;
         }
 
         Ok(())
+    }
+
+    /// The relations the statement introduces itself, in `FROM` order.
+    ///
+    /// The `FROM` source comes first and every join follows, which is the order
+    /// the rendered statement declares them in and the order a qualifier resolves
+    /// against.
+    fn statement_relations(&self) -> Vec<TableRef> {
+        let mut relations = Vec::with_capacity(self.joins.len() + 1);
+        relations.extend(self.from);
+        relations.extend(self.joins.iter().map(|join| join.table));
+        relations
     }
 
     /// Rejects a statement whose relations collide under one effective name or
@@ -1191,13 +1266,61 @@ fn projection_output_name(projection: &ExprKind) -> Option<&'static str> {
     }
 }
 
+/// The outer scope of a statement nothing encloses.
+const ROOT_SCOPE: &[TableRef] = &[];
+
+/// The relations a clause expression of a statement is validated against.
+///
+/// The two relation sets answer different questions: a qualifier resolves against
+/// the relations the statement renders itself or one of the statements enclosing
+/// it, while a statement embedded in the expression reaches only the first set by
+/// correlation together with whatever those relations reach themselves.
+/// `enclosing` is therefore the concatenation of both sets, which is what an
+/// embedded subquery or a lateral join is validated with.
+#[derive(Clone, Copy)]
+struct ClauseScope<'a> {
+    /// The relations the validated statement renders itself.
+    relations: &'a [TableRef],
+    /// The relations every statement enclosing it provides for correlation.
+    outer_relations: &'a [TableRef],
+    /// Both sets together: the namespace a subquery written in the statement may
+    /// reach.
+    enclosing: &'a [TableRef],
+}
+
+/// Validates a clause expression of a statement.
+///
+/// The clause is checked in two passes, because they answer different questions:
+/// [`reject_unresolved_qualifiers`] resolves the qualifier of every column
+/// reference against the relation namespace the expression is written in, and
+/// [`validate_expr_tree`] applies the structural rules and descends into the
+/// statements the expression embeds. `scope` is `None` for a clause whose relation
+/// scope this pass does not know, which leaves only the structural rules to run.
+fn validate_clause(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result<(), BuildError> {
+    if let Some(scope) = scope {
+        reject_unresolved_qualifiers(expr, scope.relations, scope.outer_relations)?;
+    }
+    validate_expr_tree(expr, scope)
+}
+
 /// Validates a single expression, recursing into every statement it embeds.
 ///
 /// The check is shared by the clause validation of a `SELECT` statement and by
 /// the DML builders, which walk their embedded expressions — column assignments
 /// and conflict predicates — through it, so a violation nested anywhere in a
 /// statement is reported through one typed error before SQL is rendered.
+///
+/// The relation scope of the expression is not known here, so a statement it
+/// embeds is validated against its own relations alone: the DML builders resolve
+/// the qualifiers of such an expression themselves, and only a `SELECT` statement
+/// reaches [`validate_clause`], which hands the namespace over.
 pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
+    validate_expr_tree(expr, None)
+}
+
+/// Applies the structural rules to every node of an expression tree and validates
+/// the statements it embeds in `scope`.
+fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result<(), BuildError> {
     match expr {
         ExprKind::Column { .. }
         | ExprKind::QualifiedColumn { .. }
@@ -1222,67 +1345,70 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
         }
         ExprKind::Row { values } | ExprKind::InList { values, .. } => {
             for v in values {
-                validate_expr(v)?;
+                validate_expr_tree(v, scope)?;
             }
             Ok(())
         }
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
-            validate_expr(lhs)?;
-            validate_expr(rhs)
+            validate_expr_tree(lhs, scope)?;
+            validate_expr_tree(rhs, scope)
         }
         ExprKind::Aggregate { arg, filter, .. } => {
             if let Some(arg) = arg {
-                validate_expr(arg)?;
+                validate_expr_tree(arg, scope)?;
             }
             if let Some(filter) = filter {
-                validate_expr(filter)?;
+                validate_expr_tree(filter, scope)?;
             }
             Ok(())
         }
         ExprKind::Subquery { operand, query, .. } => {
             if let Some(operand) = operand {
-                validate_expr(operand)?;
+                validate_expr_tree(operand, scope)?;
             }
-            query.ast().validate()
+            // A correlated subquery reaches the relations in scope where it is
+            // written, so the namespace of this statement becomes its outer
+            // scope.
+            StatementRef::from(query.ast()).validate_in(scope.map(|scope| scope.enclosing))
         }
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
-            validate_expr(operand)
+            validate_expr_tree(operand, scope)
         }
         ExprKind::Like {
             operand, pattern, ..
         } => {
-            validate_expr(operand)?;
-            validate_expr(pattern)
+            validate_expr_tree(operand, scope)?;
+            validate_expr_tree(pattern, scope)
         }
         ExprKind::Between {
             operand,
             low,
             high,
         } => {
-            validate_expr(operand)?;
-            validate_expr(low)?;
-            validate_expr(high)
+            validate_expr_tree(operand, scope)?;
+            validate_expr_tree(low, scope)?;
+            validate_expr_tree(high, scope)
         }
         ExprKind::Function { args, .. } => {
             for arg in args {
-                validate_expr(arg)?;
+                validate_expr_tree(arg, scope)?;
             }
             Ok(())
         }
         ExprKind::DistinctFrom { lhs, rhs, .. } => {
-            validate_expr(lhs)?;
-            validate_expr(rhs)
+            validate_expr_tree(lhs, scope)?;
+            validate_expr_tree(rhs, scope)
         }
         ExprKind::Case {
             branches,
             else_branch,
         } => {
             for b in branches {
-                validate_expr(&b.condition)?;
-                validate_expr(&b.result)?;
+                validate_expr_tree(&b.condition, scope)?;
+                validate_expr_tree(&b.result, scope)?;
             }
             if let Some(e) = else_branch {
-                validate_expr(e)?;
+                validate_expr_tree(e, scope)?;
             }
             Ok(())
         }
@@ -1294,23 +1420,27 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
         } => {
             match kind.as_ref() {
                 WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
-                    validate_expr(column)?;
+                    validate_expr_tree(column, scope)?;
                 }
                 WindowExprKind::Expr(e) => {
-                    validate_expr(e)?;
+                    validate_expr_tree(e, scope)?;
                 }
                 WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
             }
             for p in partition_by {
-                validate_expr(p)?;
+                validate_expr_tree(p, scope)?;
             }
             for o in order_by {
-                validate_expr(&o.expr)?;
+                validate_expr_tree(&o.expr, scope)?;
             }
             Ok(())
         }
-        ExprKind::Multiset { query, .. } => query.ast().validate(),
-        ExprKind::Aliased { expr, .. } => validate_expr(expr),
+        // A nested collection embeds a statement reaching the enclosing one by
+        // correlating a reference to it, exactly like a subquery.
+        ExprKind::Multiset { query, .. } => {
+            StatementRef::from(query.ast()).validate_in(scope.map(|scope| scope.enclosing))
+        }
+        ExprKind::Aliased { expr, .. } => validate_expr_tree(expr, scope),
     }
 }
 
@@ -1649,8 +1779,10 @@ mod tests {
     fn a_distinct_ordering_matches_a_column_addressed_through_the_other_node_shape() {
         // A projection built from a schema marker and an ordering built through a
         // table alias name the same column of the same relation, so both shapes
-        // resolve to one canonical reference.
+        // resolve to one canonical reference. The statement declares the relation
+        // both shapes name, so the qualifier of the ordering resolves against it.
         let mut ast = empty_ast();
+        ast.from = Some(TableRef::plain("orders"));
         ast.distinct = true;
         ast.projections.push(ExprKind::Column {
             table: "orders",
@@ -1671,8 +1803,10 @@ mod tests {
     fn a_distinct_ordering_matches_an_aliased_computed_projection() {
         // The projection is exposed under an alias and computes a `CAST` over a
         // column marker, while the ordering names the same computation over the
-        // alias-qualified shape of that column.
+        // alias-qualified shape of that column. The statement declares the relation
+        // both shapes name, so the qualifier of the ordering resolves against it.
         let mut ast = empty_ast();
+        ast.from = Some(TableRef::plain("orders"));
         ast.distinct = true;
         ast.projections.push(ExprKind::Aliased {
             expr: Box::new(ExprKind::Cast {
