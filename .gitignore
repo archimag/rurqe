@@ -1,1 +1,13 @@
 /target
+
+# Runtime artifacts of the stage lifecycle. `stage commit`, `stage verify`, and
+# `prune` write the advisory-lock entry, the boundary snapshot, and the staged /
+# parked staging siblings beside the marker, and the lock entry is deliberately
+# never removed, so none of them may enter version control.
+checkpoint.lock
+checkpoint-stage/
+.checkpoint.toml.*.tmp
+.checkpoint-stage.*.tmp
+.schema.lock.*.tmp
+.checkpoint.toml.*.previous
+.checkpoint-stage.*.previous
