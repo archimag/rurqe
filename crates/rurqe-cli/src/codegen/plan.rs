@@ -254,16 +254,6 @@ fn optional_path(ty: &syn::Type) -> bool {
 /// `serde_json::Value`, `chrono::NaiveDateTime`, `chrono::NaiveDate`, and
 /// `rust_decimal::Decimal` instead.
 fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -> String {
-    if let TypeKind::Array(inner) = kind {
-        let element = type_kind_to_rust_type(inner, false, domain_types);
-        let base = format!("Vec<{element}>");
-        return if nullable {
-            format!("Option<{base}>")
-        } else {
-            base
-        };
-    }
-
     let base = match kind {
         TypeKind::Boolean => "bool".to_owned(),
         TypeKind::Int32 => "i32".to_owned(),
@@ -280,7 +270,12 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         | TypeKind::Numeric => "String".to_owned(),
         TypeKind::Enum(name) => table_type_ident(name),
         TypeKind::Other(_) => "String".to_owned(),
-        TypeKind::Array(_) => "String".to_owned(),
+        // The element keeps its own nullability out of the picture: a nullable array
+        // column wraps the vector, never its elements, so the element is mapped as
+        // non-nullable and only the shared trailing wrapper below applies.
+        TypeKind::Array(inner) => {
+            format!("Vec<{}>", type_kind_to_rust_type(inner, false, domain_types))
+        }
     };
 
     if nullable {
