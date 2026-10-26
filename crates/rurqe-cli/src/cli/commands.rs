@@ -399,6 +399,11 @@ STAGE OPTIONS:
     prune            --before <version> [--migrations-dir <dir>] [--dry-run]
 
 NOTES:
+    `--checkpoint-path` is accepted by `migrate up` alone, where it arms the guard
+    that refuses a database older than the pruned checkpoint boundary. `migrate
+    status` and `migrate repair` read the history table only, so the flag is
+    rejected there instead of being accepted and ignored.
+
     `stage commit` snapshots the declarative stage verbatim into `checkpoint-stage/`
     next to `checkpoint.toml`. `stage verify` loads that snapshot as the base stage
     when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has

@@ -94,6 +94,33 @@ fn parses_migrate_up_checkpoint_path() {
 }
 
 #[test]
+fn status_and_repair_reject_the_checkpoint_path() {
+    // The checkpoint arms the outdated-target guard of `up` alone, so the two
+    // history actions refuse the flag instead of accepting and discarding it.
+    for action in ["status", "repair"] {
+        let argv: Vec<String> = [
+            "rurqe",
+            "migrate",
+            action,
+            "--checkpoint-path",
+            "deploy/checkpoint.toml",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+
+        let error = parse_args(&argv).expect_err("the checkpoint guards `up` alone");
+        let text = error.to_string();
+
+        assert!(text.contains("--checkpoint-path"), "got {text}");
+        assert!(
+            text.contains(&format!("migrate {action}")),
+            "the diagnostic names the action, got {text}"
+        );
+    }
+}
+
+#[test]
 fn parses_cargo_db_codegen_invocation() {
     let cmd = parse_args(&[
         "cargo-db-codegen".into(),
@@ -1123,6 +1150,8 @@ fn a_universal_flag_in_value_position_is_answered() {
     // name, or the path the command would otherwise use.
     for args in [
         vec!["rurqe", "migrate", "up", "--database-url", "--help"],
+        vec!["rurqe", "migrate", "status", "--checkpoint-path", "--help"],
+        vec!["rurqe", "migrate", "repair", "--checkpoint-path", "-h"],
         vec!["rurqe", "codegen", "--lock-path", "--help"],
         vec!["rurqe", "verify", "--schema-path", "--help"],
         vec!["rurqe", "stage", "verify", "--migrations-dir", "-h"],
