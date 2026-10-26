@@ -942,18 +942,47 @@ fn a_forged_direct_aggregate_marker_reports_the_dropped_filter_in_every_profile(
 }
 
 #[test]
-#[should_panic(expected = "the aggregation marker names an aggregate call, but the tree is not one")]
-fn a_forged_filtered_aggregate_marker_cannot_silently_ignore_distinct() {
-    // The `DISTINCT` modifier mutates the aggregate call it belongs to, so a
-    // forged marker on a non-aggregate tree would silently mutate nothing; the
-    // assertion fires before the method returns an expression that still
-    // carries the marker.
+fn a_forged_filtered_aggregate_marker_reports_the_dropped_distinct_in_every_profile() {
+    // `Expr::new` stays crate-internal, so only this crate can assemble a tree
+    // that disagrees with the aggregation marker it carries. The branch
+    // handling that contradiction is checked without relying on an assertion,
+    // so the regression is caught in a release build as well: the returned
+    // tree carries a placeholder naming the dropped modifier instead of
+    // silently mutating nothing while the return type keeps advertising
+    // `DISTINCT`.
     let forged: Expr<i64, Order, FilteredAggregate> = Expr::new(ExprKind::Column {
         table: "orders",
         name: "qty",
     });
 
-    let _ = forged.distinct();
+    let marked = forged.distinct();
+
+    let ExprKind::Raw {
+        fragments,
+        params: bound,
+    } = marked.kind()
+    else {
+        panic!(
+            "expected the diagnostic placeholder, got {:?}",
+            marked.kind()
+        );
+    };
+    assert_eq!(
+        fragments.len(),
+        1,
+        "the placeholder is a single fragment carrying no parameter"
+    );
+    assert!(
+        fragments[0].contains("DISTINCT"),
+        "the placeholder names the modifier it dropped: {fragments:?}"
+    );
+    assert!(bound.is_empty());
+
+    // The placeholder reaches the rendered statement, so the dropped modifier
+    // surfaces in the SQL a caller inspects instead of vanishing in the build.
+    let (sql, rendered_params) = render(marked.kind());
+    assert_eq!(sql, fragments[0]);
+    assert!(rendered_params.is_empty());
 }
 
 #[test]

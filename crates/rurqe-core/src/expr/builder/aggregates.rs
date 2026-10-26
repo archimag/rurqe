@@ -39,6 +39,18 @@ use crate::schema::Column;
 const DROPPED_FILTER_PLACEHOLDER: &str =
     "/* invalid aggregate marker: FILTER predicate dropped */";
 
+/// Text rendered in place of the `DISTINCT` modifier attached to an expression
+/// that is not an aggregate call.
+///
+/// The modifier belongs to an aggregate call, so the situation is reachable
+/// only through a tree whose aggregation marker contradicts its root — a tree
+/// only this crate can assemble, because `Expr::new` is crate-private. The
+/// placeholder keeps that internal fault visible in every build profile, so a
+/// release build never silently drops the modifier the return type keeps
+/// promising.
+const DROPPED_DISTINCT_PLACEHOLDER: &str =
+    "/* invalid aggregate marker: DISTINCT modifier dropped */";
+
 impl<T> Expr<T, ()> {
     /// Builds a `SUM(C)` expression for column `C`.
     ///
@@ -189,23 +201,49 @@ where
     /// the call with arithmetic or a scalar function carries [`Aggregate`] and
     /// offers no `distinct`, which keeps the modifier from being written where SQL
     /// has no place for it.
-    pub fn distinct(mut self) -> Self {
-        debug_assert!(
-            matches!(self.kind, ExprKind::Aggregate { .. }),
-            "the aggregation marker names an aggregate call, but the tree is not one"
-        );
+    ///
+    /// The method never discards the modifier it applies. An expression whose
+    /// marker names an aggregate call while its tree holds none — a state only
+    /// this crate can assemble, because `Expr::new` is crate-private — is
+    /// reported in every build profile rather than in a debug build alone: the
+    /// trace records the contradiction and the returned tree carries a
+    /// diagnostic placeholder in place of the modifier, so the rendered
+    /// statement shows the dropped `DISTINCT` instead of hiding it.
+    pub fn distinct(self) -> Self {
         // The marker gate restricts the method to a call, so the tree is an
-        // aggregate; matching it keeps the modifier on the call instead of
-        // rewriting the tree. The assertion keeps a forged marker loud in
-        // debug builds instead of letting the branch silently mutate nothing
-        // while the return type still advertises the modifier.
-        if let ExprKind::Aggregate {
-            ref mut distinct, ..
+        // aggregate whenever the type system was used as intended. The check
+        // is a total branch rather than an assertion, because an assertion
+        // only fires in a debug build: a release build would silently drop
+        // the modifier the return type keeps promising, which the panic-free
+        // invariant of the crate forbids just as much as unwinding would.
+        let ExprKind::Aggregate {
+            func, arg, filter, ..
         } = self.kind
-        {
-            *distinct = true;
-        }
-        self
+        else {
+            // Only an aggregate call accepts the modifier, so this branch is
+            // unreachable through the public API: `Expr::new` is crate-private
+            // and every aggregate constructor roots its tree in the call. It
+            // still keeps the method total — and the crate panic-free — while
+            // reporting the contradiction in both build profiles: the trace
+            // records it, and the returned tree carries a diagnostic
+            // placeholder where the modifier would have been, so the rendered
+            // statement shows the dropped `DISTINCT` instead of hiding it.
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                "an expression marked as an aggregate call does not hold one; its DISTINCT modifier is replaced by a diagnostic placeholder"
+            );
+            return Expr::new(ExprKind::Raw {
+                fragments: vec![DROPPED_DISTINCT_PLACEHOLDER.to_owned()],
+                params: Vec::new(),
+            });
+        };
+
+        Expr::new(ExprKind::Aggregate {
+            func,
+            distinct: true,
+            arg,
+            filter,
+        })
     }
 
     /// Adds a `FILTER (WHERE ...)` clause restricting the rows this aggregate evaluates.
