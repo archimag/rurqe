@@ -123,6 +123,34 @@ pub enum BuildError {
         /// The number of values the offending row carries.
         actual: usize,
     },
+    /// A projection reads a bare column beside an aggregate without grouping.
+    ///
+    /// An aggregate without a `GROUP BY` clause collapses the whole relation into
+    /// a single row, so every projected expression has to be an aggregate, a
+    /// literal, or an expression computed from them. Reading a stored column
+    /// beside the aggregate leaves the engine without the one value it should
+    /// report — PostgreSQL answers `column "..." must appear in the GROUP BY
+    /// clause or be used in an aggregate function` — so the mismatch is rejected
+    /// before any SQL is rendered.
+    UngroupedColumnWithAggregate {
+        /// The SQL identifier of the relation the column belongs to.
+        table: &'static str,
+        /// The SQL identifier of the projected column.
+        column: &'static str,
+    },
+    /// A `HAVING` predicate reads a column that is neither aggregated nor grouped.
+    ///
+    /// `HAVING` runs over the groups the `GROUP BY` clause produced, so a column
+    /// it reads has to be aggregated or to be one of the grouped expressions.
+    /// PostgreSQL rejects the statement otherwise with `column "..." must appear
+    /// in the GROUP BY clause or be used in an aggregate function`, so the
+    /// mismatch is rejected before any SQL is rendered.
+    UngroupedHavingColumn {
+        /// The SQL identifier of the relation the column belongs to.
+        table: &'static str,
+        /// The SQL identifier of the column the predicate reads.
+        column: &'static str,
+    },
     /// A raw SQL expression binds a number of parameters other than its
     /// fragments declare.
     ///
@@ -222,6 +250,23 @@ impl fmt::Display for BuildError {
                     "row {row} of this INSERT carries {actual} value(s) but the statement inserts into {expected} column(s); \
                      every row of one statement has to assign the same columns in the same order, \
                      so a row source whose assignments collapse differently per row cannot be rendered"
+                )
+            }
+            BuildError::UngroupedColumnWithAggregate { table, column } => {
+                write!(
+                    f,
+                    "projection reads column `{table}.{column}` beside an aggregate without a GROUP BY clause; \
+                     an aggregate collapses the whole relation into one row, so every projected expression \
+                     has to be an aggregate, a literal, or an expression over them; \
+                     group the column via `.group_by(...)` or aggregate it"
+                )
+            }
+            BuildError::UngroupedHavingColumn { table, column } => {
+                write!(
+                    f,
+                    "HAVING predicate reads column `{table}.{column}`, which is neither aggregated nor grouped; \
+                     HAVING runs over the groups produced by the GROUP BY clause, so the column has to be \
+                     aggregated or listed in `.group_by(...)`"
                 )
             }
             BuildError::RawSql(error) => {
@@ -1089,10 +1134,213 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
     }
 }
 
+/// Whether the expression calls an aggregate function.
+///
+/// The walk stops at an embedded statement: the aggregates it contains belong to
+/// its own `FROM` scope, so a scalar subquery projecting `COUNT(*)` does not make
+/// the projection it is embedded into an aggregate. The operand of an `IN`
+/// predicate is evaluated by the enclosing statement, so it is still walked.
+///
+/// The rules that read these analyses are wired into the pre-flight pass of the
+/// enclosing statement in the following step, so the walkers of this module stay
+/// unreferenced until then.
+#[allow(dead_code)]
+fn has_aggregate(expr: &ExprKind) -> bool {
+    match expr {
+        // The call itself is what the predicate asks about, so neither its
+        // operand nor its `FILTER (WHERE ...)` clause is walked.
+        ExprKind::Aggregate { .. } => true,
+        ExprKind::Column { .. }
+        | ExprKind::QualifiedColumn { .. }
+        | ExprKind::Excluded { .. }
+        | ExprKind::Value(_)
+        // A raw fragment reached the template already rendered, so the calls it
+        // spells are not described by the expression tree.
+        | ExprKind::Raw { .. } => false,
+        ExprKind::Row { values } => values.iter().any(has_aggregate),
+        ExprKind::InList { operand, values, .. } => {
+            has_aggregate(operand) || values.iter().any(has_aggregate)
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
+            has_aggregate(lhs) || has_aggregate(rhs)
+        }
+        ExprKind::DistinctFrom { lhs, rhs, .. } => has_aggregate(lhs) || has_aggregate(rhs),
+        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => has_aggregate(operand),
+        ExprKind::Like {
+            operand, pattern, ..
+        } => has_aggregate(operand) || has_aggregate(pattern),
+        ExprKind::Between {
+            operand,
+            low,
+            high,
+        } => has_aggregate(operand) || has_aggregate(low) || has_aggregate(high),
+        ExprKind::Function { args, .. } => args.iter().any(has_aggregate),
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
+            branches
+                .iter()
+                .any(|branch| has_aggregate(&branch.condition) || has_aggregate(&branch.result))
+                || else_branch.as_deref().is_some_and(has_aggregate)
+        }
+        ExprKind::Window {
+            kind,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            let operand = match kind.as_ref() {
+                WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
+                    has_aggregate(column)
+                }
+                WindowExprKind::Expr(inner) => has_aggregate(inner),
+                WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {
+                    false
+                }
+            };
+            operand
+                || partition_by.iter().any(has_aggregate)
+                || order_by
+                    .iter()
+                    .any(|criterion| has_aggregate(&criterion.expr))
+        }
+        // The omitted `query` field is the embedded statement, which resolves
+        // its own references; only the operand is evaluated by the enclosing
+        // statement.
+        ExprKind::Subquery { operand, .. } => operand.as_deref().is_some_and(has_aggregate),
+        ExprKind::Multiset { .. } => false,
+        ExprKind::Aliased { expr, .. } => has_aggregate(expr),
+    }
+}
+
+/// Collects every column reference the expression reads outside an aggregate.
+///
+/// Each collected reference is the `(table, column)` pair of the relation it is
+/// qualified by and the column it names — the same canonical form
+/// [`column_reference`] resolves — so a caller matches it against the grouped
+/// columns of the statement without re-deriving either identifier.
+///
+/// The walk stops at an aggregate, because the columns an aggregate reads are
+/// governed by its own clause rather than by the aggregation state of the
+/// enclosing expression, and at an embedded statement, whose references resolve
+/// through its own `FROM` scope. An alias is dropped: it only names the output
+/// column of the projection list, while the columns the expression computes are
+/// found inside it.
+#[allow(dead_code)]
+fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static str, &'static str)>) {
+    match expr {
+        ExprKind::Column { table, name } => columns.push((table, name)),
+        ExprKind::QualifiedColumn { table, column } => columns.push((table, column)),
+        ExprKind::Aggregate { .. } => {}
+        // `EXCLUDED` names the proposed row of an upsert, which carries no column
+        // of the relations the statement declares.
+        ExprKind::Excluded { .. } => {}
+        ExprKind::Value(_) => {}
+        ExprKind::Raw { .. } => {}
+        ExprKind::Row { values } => {
+            for value in values {
+                collect_bare_columns(value, columns);
+            }
+        }
+        ExprKind::InList { operand, values, .. } => {
+            collect_bare_columns(operand, columns);
+            for value in values {
+                collect_bare_columns(value, columns);
+            }
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
+            collect_bare_columns(lhs, columns);
+            collect_bare_columns(rhs, columns);
+        }
+        ExprKind::DistinctFrom { lhs, rhs, .. } => {
+            collect_bare_columns(lhs, columns);
+            collect_bare_columns(rhs, columns);
+        }
+        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
+            collect_bare_columns(operand, columns);
+        }
+        ExprKind::Like {
+            operand, pattern, ..
+        } => {
+            collect_bare_columns(operand, columns);
+            collect_bare_columns(pattern, columns);
+        }
+        ExprKind::Between {
+            operand,
+            low,
+            high,
+        } => {
+            collect_bare_columns(operand, columns);
+            collect_bare_columns(low, columns);
+            collect_bare_columns(high, columns);
+        }
+        ExprKind::Function { args, .. } => {
+            for arg in args {
+                collect_bare_columns(arg, columns);
+            }
+        }
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
+            for branch in branches {
+                collect_bare_columns(&branch.condition, columns);
+                collect_bare_columns(&branch.result, columns);
+            }
+            if let Some(fallback) = else_branch {
+                collect_bare_columns(fallback, columns);
+            }
+        }
+        ExprKind::Window {
+            kind,
+            partition_by,
+            order_by,
+            ..
+        } => {
+            match kind.as_ref() {
+                WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
+                    collect_bare_columns(column, columns);
+                }
+                WindowExprKind::Expr(inner) => collect_bare_columns(inner, columns),
+                WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
+            }
+            for partition in partition_by {
+                collect_bare_columns(partition, columns);
+            }
+            for criterion in order_by {
+                collect_bare_columns(&criterion.expr, columns);
+            }
+        }
+        ExprKind::Subquery { operand, .. } => {
+            if let Some(operand) = operand {
+                collect_bare_columns(operand, columns);
+            }
+        }
+        ExprKind::Multiset { .. } => {}
+        ExprKind::Aliased { expr, .. } => collect_bare_columns(expr, columns),
+    }
+}
+
+/// Whether the expression reads any column outside an aggregate.
+///
+/// The predicate answers the question [`collect_bare_columns`] answers with a
+/// list, for the rules that only need to know whether such a reference exists at
+/// all — an expression over aggregates and literals alone reads none.
+#[allow(dead_code)]
+fn contains_bare_column(expr: &ExprKind) -> bool {
+    let mut columns = Vec::new();
+    collect_bare_columns(expr, &mut columns);
+    !columns.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::expr::{AggregateFunc, CteAst, OrderCriterion, OrderDirection};
+    use crate::expr::{
+        AggregateFunc, BinaryOp, CaseBranch, CteAst, OrderCriterion, OrderDirection, SqlVal,
+        Subquery, SubqueryOp,
+    };
 
     #[test]
     fn build_error_display_duplicate_relation() {
@@ -1615,5 +1863,110 @@ mod tests {
             ),
             Err(BuildError::UnresolvedQualifier { name: "users" })
         );
+    }
+
+    #[test]
+    fn build_error_display_ungrouped_column_with_aggregate() {
+        let err = BuildError::UngroupedColumnWithAggregate {
+            table: "orders",
+            column: "status",
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("`orders.status`"));
+        assert!(msg.contains("beside an aggregate"));
+        assert!(msg.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn build_error_display_ungrouped_having_column() {
+        let err = BuildError::UngroupedHavingColumn {
+            table: "orders",
+            column: "status",
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("`orders.status`"));
+        assert!(msg.contains("HAVING predicate reads column"));
+        assert!(msg.contains("`.group_by(...)`"));
+    }
+
+    /// Builds a `SUM(table.name)` aggregate over one column.
+    fn sum_of(table: &'static str, name: &'static str) -> ExprKind {
+        ExprKind::Aggregate {
+            func: AggregateFunc::Sum,
+            distinct: false,
+            arg: Some(Box::new(ExprKind::Column { table, name })),
+            filter: None,
+        }
+    }
+
+    #[test]
+    fn an_aggregate_nested_in_a_function_is_detected() {
+        let expr = ExprKind::Function {
+            name: "COALESCE",
+            args: vec![sum_of("orders", "total"), ExprKind::Value(SqlVal::I64(0))],
+        };
+
+        assert!(has_aggregate(&expr));
+        assert!(!contains_bare_column(&expr));
+    }
+
+    #[test]
+    fn a_column_read_beside_an_aggregate_is_collected() {
+        let expr = ExprKind::Binary {
+            op: BinaryOp::Add,
+            lhs: Box::new(sum_of("orders", "total")),
+            rhs: Box::new(ExprKind::QualifiedColumn {
+                table: "o",
+                column: "tax",
+            }),
+        };
+        let mut columns = Vec::new();
+        collect_bare_columns(&expr, &mut columns);
+
+        // The column the aggregate reads stays inside the aggregate, so only the
+        // reference the expression computes beside it is collected — and it is
+        // collected in the canonical `(table, column)` form both node shapes
+        // resolve to.
+        assert_eq!(columns, vec![("o", "tax")]);
+        assert!(contains_bare_column(&expr));
+    }
+
+    #[test]
+    fn an_expression_over_aggregates_collects_no_bare_column() {
+        let expr = ExprKind::Case {
+            branches: vec![CaseBranch {
+                condition: ExprKind::Binary {
+                    op: BinaryOp::Gt,
+                    lhs: Box::new(sum_of("orders", "total")),
+                    rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
+                },
+                result: sum_of("orders", "tax"),
+            }],
+            else_branch: Some(Box::new(ExprKind::Value(SqlVal::I64(0)))),
+        };
+        let mut columns = Vec::new();
+        collect_bare_columns(&expr, &mut columns);
+
+        assert!(columns.is_empty());
+        assert!(!contains_bare_column(&expr));
+        assert!(has_aggregate(&expr));
+    }
+
+    #[test]
+    fn a_nested_statement_hides_its_aggregates_from_the_enclosing_expression() {
+        // The aggregate belongs to the nested statement and collapses the rows of
+        // its own `FROM` scope, so it does not make the projection it is embedded
+        // into an aggregate.
+        let mut inner = empty_ast();
+        inner.projections.push(sum_of("orders", "total"));
+        let expr = ExprKind::Subquery {
+            op: SubqueryOp::Scalar,
+            operand: None,
+            query: Subquery::new(inner),
+            negated: false,
+        };
+
+        assert!(!has_aggregate(&expr));
+        assert!(!contains_bare_column(&expr));
     }
 }
