@@ -5,7 +5,9 @@
 //! an `ExprKind::Column` that the renderer qualifies itself. This module resolves
 //! both against the relations the statement renders and against the relations every
 //! statement enclosing it provides for correlation, and it walks the statements an
-//! expression embeds with the namespace the SQL clause grants them.
+//! expression embeds with the namespace the SQL clause grants them. A plain
+//! reference the statement renders no relation for resolves to nothing, so it is
+//! rejected beside an unresolved qualifier.
 
 use crate::expr::{ExprKind, RawSqlError, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
@@ -310,6 +312,15 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
 /// outer scope. A statement at the top of a build chain passes an empty
 /// `outer_relations`, since nothing encloses it.
 ///
+/// A plain column reference states no qualifier to resolve, but it still needs a
+/// relation namespace: the renderer expands it to `<table>.<column>` as soon as
+/// the statement addresses more than one relation, or one under an alias. A
+/// statement that renders no relation at all — no `FROM` clause, no `JOIN`, and
+/// nothing enclosing it to correlate to — therefore leaves the reference
+/// unresolvable, which the engine answers with `missing FROM-clause entry for
+/// table "..."`. Such a reference is rejected beside the qualifier rule, as
+/// [`BuildError::UnresolvedColumn`].
+///
 /// The walk mirrors `validate_expr` over the composite nodes of the current
 /// statement and continues into the embedded statements through
 /// `reject_unresolved_qualifiers_in_statement`, so a correlated reference
@@ -320,9 +331,24 @@ pub(crate) fn reject_unresolved_qualifiers(
     outer_relations: &[TableRef],
 ) -> Result<(), BuildError> {
     match expr {
-        // A plain column reference names its own table, and the renderer
-        // resolves the qualifier it needs against the declared relations.
-        ExprKind::Column { .. } => Ok(()),
+        // A plain column reference names its own table without spelling a
+        // qualifier, so it stays accepted as long as the statement addresses a
+        // relation at all: the renderer resolves the qualifier it needs against
+        // the declared relations, or against the one the statement enclosing this
+        // one provides. A statement that addresses none — no `FROM` clause, no
+        // `JOIN`, and nothing enclosing it to correlate to — renders the
+        // reference into a name the engine cannot resolve, so it is rejected
+        // here.
+        ExprKind::Column { table, name } => {
+            if relations.is_empty() && outer_relations.is_empty() {
+                Err(BuildError::UnresolvedColumn {
+                    table,
+                    column: name,
+                })
+            } else {
+                Ok(())
+            }
+        }
         // `EXCLUDED` names the proposed row of an upsert, which carries no
         // qualifier of its own.
         ExprKind::Excluded { .. } => Ok(()),

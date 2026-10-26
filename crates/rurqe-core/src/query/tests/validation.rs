@@ -620,6 +620,7 @@ fn build_error_display_distinct_order_not_projected() {
 #[test]
 fn a_distinct_statement_ordering_a_projected_expression_is_accepted() {
     let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
     ast.distinct = true;
     ast.projections.push(ExprKind::Column {
         table: "orders",
@@ -663,6 +664,7 @@ fn a_distinct_ordering_matches_an_aliased_projection_and_a_bare_position() {
     // The ordering criterion matches the expression the aliased projection
     // wraps, and a bare 1-based position addresses the first projection.
     let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
     ast.distinct = true;
     ast.projections.push(ExprKind::Aliased {
         expr: Box::new(ExprKind::Column {
@@ -859,6 +861,7 @@ fn a_compound_ordering_by_a_multi_fragment_raw_expression_is_rejected() {
 #[test]
 fn a_compound_ordering_by_a_single_fragment_position_is_accepted() {
     let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
     ast.projections.push(ExprKind::Column {
         table: "orders",
         name: "id",
@@ -1542,6 +1545,114 @@ fn a_having_predicate_reading_an_ungrouped_ast_column_is_rejected() {
     assert_eq!(
         ast.validate(),
         Err(BuildError::UngroupedHavingColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn build_error_display_unresolved_column() {
+    let err = BuildError::UnresolvedColumn {
+        table: "orders",
+        column: "total",
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("`orders.total`"));
+    assert!(msg.contains("addresses no relation"));
+    assert!(msg.contains("`FROM`"));
+}
+
+/// Builds a statement projecting `projections` without introducing any relation.
+fn relation_free_statement(projections: Vec<ExprKind>) -> SelectAst {
+    let mut ast = empty_ast();
+    ast.projections = projections;
+    ast
+}
+
+#[test]
+fn a_plain_column_projected_by_a_statement_without_relations_is_rejected() {
+    // The statement renders no `FROM` clause, so the bare table name of the column
+    // it projects names a relation nothing declares. The builder requires the table
+    // to be in scope, so the statement is assembled past the type system.
+    let ast = relation_free_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "total",
+    }]);
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_plain_column_read_by_a_filter_without_relations_is_rejected() {
+    let mut ast = relation_free_statement(vec![ExprKind::Value(SqlVal::I64(1))]);
+    ast.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "total",
+        }),
+        rhs: Box::new(ExprKind::Value(SqlVal::F64(0.0))),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::UnresolvedColumn {
+            table: "orders",
+            column: "total",
+        })
+    );
+}
+
+#[test]
+fn a_plain_column_projected_beside_the_relation_it_names_is_accepted() {
+    // The statement introduces the relation the reference names, so the renderer
+    // qualifies the column against it.
+    let ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "total",
+    }]);
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_nested_statement_reaches_a_plain_column_of_an_enclosing_relation() {
+    // The nested statement introduces no relation of its own, so the bare
+    // reference resolves by correlation through the relations in scope where it is
+    // written.
+    let mut inner = empty_ast();
+    inner.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(&scalar_subquery(inner), &[TableRef::plain("orders")], &[]),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_nested_statement_reading_a_plain_column_of_no_relation_is_rejected() {
+    // Nothing encloses the nested statement with a relation and it introduces none
+    // itself, so the bare reference names a relation the rendered statement never
+    // declares.
+    let mut inner = empty_ast();
+    inner.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
+
+    assert_eq!(
+        reject_unresolved_qualifiers(&scalar_subquery(inner), &[], &[]),
+        Err(BuildError::UnresolvedColumn {
             table: "orders",
             column: "total",
         })

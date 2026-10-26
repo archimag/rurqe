@@ -15,8 +15,10 @@
 //!   the set operation arity;
 //! - `aggregation` decides whether the projections, the `GROUP BY` clause, and the
 //!   `HAVING` predicate describe one evaluable aggregation;
-//! - `qualifiers` resolves the qualifier of every column reference against the
-//!   relation namespace its statement provides and walks the statements a clause
+//! - `qualifiers` resolves every column reference against the relation namespace
+//!   its statement provides — the qualifier of a `QualifiedColumn`, and the bare
+//!   table name of a `Column` that neither the statement nor the statement
+//!   enclosing it declares a relation for — and walks the statements a clause
 //!   embeds.
 //!
 //! This facade keeps what every submodule shares: the error type, the relation
@@ -142,6 +144,28 @@ pub enum BuildError {
     /// reference with `column "..." does not exist` or `missing FROM-clause entry
     /// for table "..."`, so the mismatch is reported before any SQL is rendered.
     ColumnWithoutRelation {
+        /// The SQL identifier of the relation the reference names.
+        table: &'static str,
+        /// The SQL identifier of the referenced column.
+        column: &'static str,
+    },
+    /// A column reference appears in a statement that addresses no relation.
+    ///
+    /// A statement without a `FROM` clause renders no relation namespace, so the
+    /// bare table name of a plain column reference resolves to nothing: the
+    /// renderer qualifies nothing, and the engine answers `SELECT
+    /// "orders"."total"` with `missing FROM-clause entry for table "orders"`.
+    /// The builder typestate keeps the shape out of reach — a projection, a
+    /// filter, or a grouping reads a column of a table the statement introduced
+    /// — but a statement assembled from AST data can still describe it, and a
+    /// nested statement nothing encloses has no outer scope to correlate to
+    /// either. The reference is therefore rejected before any SQL is rendered.
+    ///
+    /// The rule differs from [`BuildError::ColumnWithoutRelation`], which covers
+    /// a clause that is evaluated without a relation namespace even though the
+    /// statement around it addresses one — the `VALUES` list of an `INSERT` and
+    /// the `ORDER BY` of a compound statement.
+    UnresolvedColumn {
         /// The SQL identifier of the relation the reference names.
         table: &'static str,
         /// The SQL identifier of the referenced column.
@@ -306,6 +330,15 @@ impl fmt::Display for BuildError {
                      the `VALUES` list of an INSERT and the `ORDER BY` of a compound statement are evaluated \
                      without a relation namespace, so they may only compute from constants or name an output \
                      column of the projection list"
+                )
+            }
+            BuildError::UnresolvedColumn { table, column } => {
+                write!(
+                    f,
+                    "column reference `{table}.{column}` appears in a statement that addresses no relation; \
+                     a statement without a `FROM` clause renders no relation namespace, so introduce the \
+                     column's relation with `.from(...)` or a join, or read it from an enclosing statement \
+                     by correlation"
                 )
             }
             BuildError::UnresolvedQualifier { name } => {
