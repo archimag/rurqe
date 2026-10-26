@@ -231,7 +231,11 @@
 //! leaves the entry re-acquirable by the next writer. The pairs are two interleaved
 //! commits, an injected failure at every `seal_commit` step (with the previous boundary
 //! still recoverable at each one of them), a verification concurrent with an in-flight
-//! commit, and a prune concurrent with a reader. They run over the real filesystem in a
+//! commit, a verification concurrent with a live writer that is between the steps of its
+//! swap — where the negative pin refuses with that writer's pid and nonce named and leaves
+//! the pair it parked untouched (I1–I3), and the positive pin converges once the holder is
+//! gone, discarding the parked pair as the debris of a writer whose death the kernel proved
+//! (I2) — and a prune concurrent with a reader. They run over the real filesystem in a
 //! temporary directory, while the contention they lean on is observable between two
 //! descriptions of one process and needs no second one.
 
