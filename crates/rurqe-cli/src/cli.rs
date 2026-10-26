@@ -252,13 +252,22 @@ pub(crate) fn run_cli_with_config(
             checkpoint_path,
             scratch_url,
             database_url,
+            schema,
         } => {
+            // The equation materialises both sides in a scratch database and reads
+            // their catalogs over the selected schema, so the selection is resolved
+            // before that database is opened: a project keeping its relations
+            // outside `public` describes the schema it declares instead of an empty
+            // `public`, and a malformed configuration aborts the verification
+            // exactly like every other catalog-digest command.
+            let schema = resolve_schema(schema.as_deref())?;
             let url = resolve_equation_url(scratch_url.or(database_url))?;
             verify_stage(
                 &stage_dir,
                 base_stage_dir.as_deref(),
                 &migrations_dir,
                 &checkpoint_path,
+                &schema,
                 &url,
             )
         }

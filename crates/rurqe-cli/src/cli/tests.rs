@@ -258,6 +258,30 @@ fn parses_the_schema_selection_of_each_catalog_command() {
             schema: Some("app".into()),
         }
     );
+
+    // The golden equation materialises both of its sides in a scratch database and
+    // reads their catalogs over one schema, so `stage verify` carries the same
+    // selection as every other catalog-digest command.
+    let stage_verify = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "verify".into(),
+        "--schema".into(),
+        "app".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        stage_verify,
+        CliCommand::StageVerify {
+            stage_dir: PathBuf::from("schema"),
+            base_stage_dir: None,
+            migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            scratch_url: None,
+            database_url: None,
+            schema: Some("app".into()),
+        }
+    );
 }
 
 #[test]
@@ -473,6 +497,7 @@ fn parses_stage_commands() {
             checkpoint_path: PathBuf::from("checkpoint.toml"),
             scratch_url: None,
             database_url: None,
+            schema: None,
         }
     );
 
@@ -543,6 +568,7 @@ fn parses_an_explicit_scratch_url() {
             checkpoint_path: PathBuf::from("checkpoint.toml"),
             scratch_url: Some("postgres://db.internal:5432/scratch".into()),
             database_url: None,
+            schema: None,
         }
     );
 }

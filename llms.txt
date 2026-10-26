@@ -896,11 +896,14 @@ use rurqe_cli::stage::GoldenEquation;
 
 let report = GoldenEquation::new(&stage, &tail)
     .with_base(&base_stage) // the stage snapshot the checkpoint was cut at
+    .with_schema("app") // the PostgreSQL schema both sides are read over (`public` by default)
     .verify(":memory:")?;
 
 assert!(report.is_equivalent());
 assert_eq!(report.stage_hash(), report.tail_hash());
 ```
+
+`GoldenEquation::with_schema` selects the PostgreSQL schema both sides are materialised into and introspected over, defaulting to `public`; a SQLite scratch holds a single unnamed catalog and ignores the name. `cargo rurqe stage verify --schema <name>` applies the same selection through the shared precedence (`--schema` > the `schema` key of `rurqe.toml` > `public`), so a project keeping its relations outside `public` compares the catalogs it really declares. A scratch materialisation whose selection describes nothing while the server keeps user relations elsewhere is reported in the command's output instead of certifying an empty comparison.
 
 A divergence is returned as `StageError::Diverged` carrying the full report — missing or extra tables and columns, altered column definitions, and primary/foreign key mismatches — so CI fails with the exact gap instead of a production incident.
 
@@ -919,6 +922,6 @@ The `rurqe-cli` toolchain manages database lifecycles for both PostgreSQL and SQ
 - `cargo db-codegen --output src/db/schema.rs [--database-url <URL>]` — Introspect live database (`postgres://...`, `postgresql://...`, `sqlite://...`, or local file), generate Rust schema, and create `schema.lock`. Schema names are sanitized into valid Rust identifiers (`2fa` → `_2fa`, `user.email` → `user_email`), Rust keywords are escaped (`type` → `r#type`, `self` → `self_`), and two names that reduce to the same identifier fail codegen with an error listing the conflicting names instead of emitting duplicate definitions. `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific columns are generated as `String`, matching the text decoding of the execution adapters. The optional `rurqe.toml` `[codegen.type_overrides]` table maps a `table.column` schema path onto the Rust type generated for that column (`"users.id" = "uuid::Uuid"`), so domain newtypes survive code generation; the declared nullability still applies, wrapping a nullable override into `Option<T>` and never wrapping an already optional type twice.
 - `cargo db-verify [--database-url <URL>] [--lock-path schema.lock]` — CI drift verification: verifies bit-for-bit parity between the live database catalog, `schema.lock`, and the embedded `pub const SCHEMA_HASH`.
 - `cargo rurqe stage init --version <V> [--stage-dir schema] [--description <desc>] [--database-url <URL>]` — Cold start an empty database from the declarative stage in one transaction and record the synthetic `<< Stage >>` baseline marker.
-- `cargo rurqe stage verify [--stage-dir schema] [--base-stage-dir <DIR>] [--migrations-dir migrations] [--database-url <URL>]` — Verify the golden equation `State(schema/) == State(Checkpoint + migrations/)` in a disposable scratch database; the boundary snapshot recorded by `stage commit` is used as the base stage when `--base-stage-dir` is omitted, and divergence is reported per table and column.
+- `cargo rurqe stage verify [--stage-dir schema] [--base-stage-dir <DIR>] [--migrations-dir migrations] [--database-url <URL>] [--schema <name>]` — Verify the golden equation `State(schema/) == State(Checkpoint + migrations/)` in a disposable scratch database; the boundary snapshot recorded by `stage commit` is used as the base stage when `--base-stage-dir` is omitted, and divergence is reported per table and column.
 - `cargo rurqe stage commit --version <V> [--stage-dir schema] [--lock-path schema.lock] [--checkpoint-path checkpoint.toml] [--database-url <URL>]` — Introspect the live database, write `schema.lock`, snapshot the boundary stage verbatim into `checkpoint-stage/` next to `checkpoint.toml`, and anchor the marker; the boundary can never be rewound to an older version.
 - `cargo rurqe prune --before <V> [--migrations-dir migrations] [--checkpoint-path checkpoint.toml] [--dry-run]` — Delete migration scripts below the committed checkpoint boundary; the command refuses to drop anything above it, because the active tail still needs those scripts.

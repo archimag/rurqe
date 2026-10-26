@@ -904,8 +904,15 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
 
     // The verification repairs the interrupted commit and then finds the
     // boundary and its marker in agreement.
-    verify_stage(&stage_dir, None, &migrations_dir, &checkpoint_path, ":memory:")
-        .expect("the repaired checkpoint verifies");
+    verify_stage(
+        &stage_dir,
+        None,
+        &migrations_dir,
+        &checkpoint_path,
+        DEFAULT_SCHEMA,
+        ":memory:",
+    )
+    .expect("the repaired checkpoint verifies");
 
     let boundary = dir.join("checkpoint-stage");
     assert_eq!(

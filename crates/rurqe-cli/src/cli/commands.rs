@@ -392,7 +392,7 @@ COMMANDS:
 STAGE OPTIONS:
     stage init       --version <version> [--stage-dir <dir>] [--description <desc>]
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
-                     [--checkpoint-path <path>] [--scratch-url <url>]
+                     [--checkpoint-path <path>] [--scratch-url <url>] [--schema <name>]
     stage commit     --version <version> [--stage-dir <dir>] [--lock-path <path>]
                      [--checkpoint-path <path>]
     stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force]

@@ -97,6 +97,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut checkpoint_path = default_checkpoint_path();
     let mut scratch_url = None;
     let mut database_url = None;
+    let mut schema = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -123,6 +124,9 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
+            "--schema" => {
+                schema = Some(take_schema(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage verify"
@@ -138,6 +142,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
         checkpoint_path,
         scratch_url,
         database_url,
+        schema,
     })
 }
 

@@ -182,6 +182,12 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 
 /// Verifies the golden equation between the declarative stage and the tail.
 ///
+/// `schema` names the PostgreSQL schema both sides are materialised into and
+/// introspected over, so a project keeping its relations outside `public`
+/// compares the catalogs it really declares instead of an empty `public`; the
+/// selection is the one the surrounding commands resolve, and a SQLite scratch
+/// holds a single unnamed catalog that ignores it.
+///
 /// `scratch_url` names the scratch database both sides are materialised in; see
 /// [`GoldenEquation`] for its emptiness contract. A commit an interrupted process
 /// left halfway is repaired first, so the boundary snapshot loaded next to
@@ -193,6 +199,7 @@ pub(crate) fn verify_stage(
     base_stage_dir: Option<&Path>,
     migrations_dir: &Path,
     checkpoint_path: &Path,
+    schema: &str,
     scratch_url: &str,
 ) -> Result<CommandOutput, CliError> {
     // A commit an interrupted process left halfway is repaired before the
@@ -214,18 +221,27 @@ pub(crate) fn verify_stage(
     };
 
     let mut equation = match &base {
-        Some(base) => GoldenEquation::new(&stage, &tail).with_base(base),
-        None => GoldenEquation::new(&stage, &tail),
+        Some(base) => GoldenEquation::new(&stage, &tail)
+            .with_schema(schema)
+            .with_base(base),
+        None => GoldenEquation::new(&stage, &tail).with_schema(schema),
     };
     if let Some(checkpoint) = &checkpoint {
         equation = equation.with_checkpoint(checkpoint);
     }
     let report = equation.verify(scratch_url).map_err(cli_error)?;
 
+    // The notices travel in the report of the command, so a selection that
+    // describes nothing reaches the operator whether or not a tracing sink is
+    // installed: an equation over an empty catalog compares nothing against
+    // nothing, and certifying that silently is the false pass the detection
+    // exists to prevent.
     let mut output = CommandOutput::new();
     output.notice(recovery);
+    output.notices(report.schema_notices.iter().cloned());
     output.line(format!(
-        "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {}, scratch `{}`)",
+        "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {}, schema `{schema}`, \
+         scratch `{}`)",
         stage_dir.display(),
         migrations_dir.display(),
         report.stage_hash(),

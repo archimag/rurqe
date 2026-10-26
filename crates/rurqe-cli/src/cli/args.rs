@@ -79,6 +79,7 @@ pub enum CliCommand {
         checkpoint_path: PathBuf,
         scratch_url: Option<String>,
         database_url: Option<String>,
+        schema: Option<String>,
     },
     StageCommit {
         version: MigrationVersion,
