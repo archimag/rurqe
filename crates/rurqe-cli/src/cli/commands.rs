@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::codegen::CodegenOptions;
 use crate::config::{CodegenConfig, DEFAULT_CONFIG_PATH};
+use crate::introspect::DEFAULT_SCHEMA;
 
 use super::args::CliError;
 
@@ -33,21 +34,47 @@ pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
     CliError(err.to_string())
 }
 
-/// Loads the codegen options of the project from `rurqe.toml`.
+/// Loads the project configuration from `rurqe.toml`.
 ///
-/// The file is optional: a project without it generates the engine-neutral
-/// types, while a malformed file aborts generation instead of silently emitting
-/// wrong types for overridden columns.
-pub(super) fn codegen_options() -> Result<CodegenOptions, CliError> {
-    let config = CodegenConfig::load(Path::new(DEFAULT_CONFIG_PATH)).map_err(cli_error)?;
+/// The file is optional: a project without it keeps the engine-neutral types and
+/// the default schema, while a malformed file aborts the command instead of
+/// silently emitting wrong types for overridden columns or describing the wrong
+/// schema.
+pub(super) fn load_config() -> Result<CodegenConfig, CliError> {
+    CodegenConfig::load(Path::new(DEFAULT_CONFIG_PATH)).map_err(cli_error)
+}
+
+/// Resolves the schema a command's catalog digests describe.
+///
+/// The `--schema` argument wins over the `schema` key of `rurqe.toml`, and the
+/// libpq default `public` applies when neither names a schema. The single
+/// resolved value reaches the codegen snapshot, the drift gate, the cold-start
+/// marker, and the checkpoint guard, so those digests always describe the same
+/// schema.
+pub(super) fn resolve_schema(explicit: Option<&str>) -> Result<String, CliError> {
+    Ok(schema_of(explicit, &load_config()?))
+}
+
+/// Picks the schema out of an already loaded configuration.
+pub(super) fn schema_of(explicit: Option<&str>, config: &CodegenConfig) -> String {
+    explicit
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .or_else(|| config.schema())
+        .unwrap_or(DEFAULT_SCHEMA)
+        .to_owned()
+}
+
+/// Reads the code generation options out of the project configuration.
+pub(super) fn codegen_options(config: CodegenConfig) -> CodegenOptions {
     let domain_types = config.domain_types();
     let type_overrides = config.into_type_overrides();
 
-    Ok(CodegenOptions {
+    CodegenOptions {
         type_overrides,
         domain_types,
         ..CodegenOptions::default()
-    })
+    }
 }
 
 /// Reads the generated schema code used for `SCHEMA_HASH` verification.
@@ -282,10 +309,11 @@ pub(super) fn help_text() -> &'static str {
 
 USAGE:
     cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>] [--database-url <url>]
-    cargo db-migrate [status|repair] [--migrations-dir <dir>]
+                       [--schema <name>]
+    cargo db-migrate [status|repair] [--migrations-dir <dir>] [--schema <name>]
     cargo db-baseline --version <version> [--description <desc>]
-    cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types]
-    cargo db-verify [--schema-path <path>] [--lock-path <path>]
+    cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types] [--schema <name>]
+    cargo db-verify [--schema-path <path>] [--lock-path <path>] [--schema <name>]
     cargo rurqe stage init|verify|commit|cleanup [options]
     cargo rurqe prune --before <version> [options]
 
@@ -318,8 +346,16 @@ NOTES:
     when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has
     no base stage is rejected instead of replaying the tail over an empty database.
 
+SCHEMA SELECTION:
+    --schema <name>  PostgreSQL schema every catalog digest describes. A command line
+                     selection wins over the `schema` key of `rurqe.toml`, which wins
+                     over `public`. A selected schema that holds no table while the
+                     database keeps user relations elsewhere is reported instead of
+                     anchoring an empty catalog hash.
+
 CONFIGURATION:
-    `rurqe.toml` `[codegen.type_overrides]` maps a `table.column` onto the Rust
-    type generated for it, e.g. `"users.id" = "uuid::Uuid"`.
+    `rurqe.toml` `schema = "app"` names the described schema, and
+    `[codegen.type_overrides]` maps a `table.column` onto the Rust type generated
+    for it, e.g. `"users.id" = "uuid::Uuid"`.
 "#
 }

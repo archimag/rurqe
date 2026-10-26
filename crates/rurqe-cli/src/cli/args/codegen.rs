@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use super::{
-    default_lock_path, default_schema_output, take_value, universal_flag, CliCommand, CliError,
+    default_lock_path, default_schema_output, take_schema, take_value, universal_flag, CliCommand,
+    CliError,
 };
 
 /// Parses a `codegen` invocation into its typed command.
@@ -12,6 +13,7 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut output = default_schema_output();
     let mut lock_path = default_lock_path();
     let mut domain_types = false;
+    let mut schema = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -33,6 +35,9 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
                 domain_types = true;
                 idx += 1;
             }
+            "--schema" => {
+                schema = Some(take_schema(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!("unknown option `{other}` for codegen")));
             }
@@ -44,6 +49,7 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, CliError> {
         output,
         lock_path,
         domain_types,
+        schema,
     })
 }
 
@@ -52,6 +58,7 @@ pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut database_url = None;
     let mut schema_path = None;
     let mut lock_path = default_lock_path();
+    let mut schema = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -69,6 +76,9 @@ pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--lock-path" => {
                 lock_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
+            "--schema" => {
+                schema = Some(take_schema(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!("unknown option `{other}` for verify")));
             }
@@ -79,5 +89,6 @@ pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, CliError> {
         database_url,
         schema_path,
         lock_path,
+        schema,
     })
 }

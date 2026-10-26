@@ -11,6 +11,7 @@ fn parses_migrate_up() {
             migrations_dir: PathBuf::from("migrations"),
             checkpoint_path: PathBuf::from("checkpoint.toml"),
             database_url: None,
+            schema: None,
         }
     );
 }
@@ -46,6 +47,7 @@ fn parses_cargo_db_migrate_invocation() {
             migrations_dir: PathBuf::from("migrations"),
             checkpoint_path: PathBuf::from("checkpoint.toml"),
             database_url: None,
+            schema: None,
         }
     );
 }
@@ -67,6 +69,7 @@ fn parses_migrate_up_checkpoint_path() {
             migrations_dir: PathBuf::from("migrations"),
             checkpoint_path: PathBuf::from("deploy/checkpoint.toml"),
             database_url: None,
+            schema: None,
         }
     );
 }
@@ -87,6 +90,7 @@ fn parses_cargo_db_codegen_invocation() {
             output: PathBuf::from("src/db/schema.rs"),
             lock_path: PathBuf::from("schema.lock"),
             domain_types: false,
+            schema: None,
         }
     );
 }
@@ -102,6 +106,7 @@ fn parses_codegen_domain_types_flag() {
             output: PathBuf::from("src/schema.rs"),
             lock_path: PathBuf::from("schema.lock"),
             domain_types: true,
+            schema: None,
         }
     );
 }
@@ -115,6 +120,7 @@ fn parses_cargo_db_verify_invocation() {
             database_url: None,
             schema_path: None,
             lock_path: PathBuf::from("schema.lock"),
+            schema: None,
         }
     );
 }
@@ -133,6 +139,7 @@ fn parses_explicit_verify_schema_path() {
             database_url: None,
             schema_path: Some(PathBuf::from("custom/schema.rs")),
             lock_path: PathBuf::from("schema.lock"),
+            schema: None,
         }
     );
 }
@@ -154,6 +161,99 @@ fn parses_cargo_db_baseline_invocation() {
             database_url: None,
         }
     );
+}
+
+#[test]
+fn parses_the_schema_selection_of_each_catalog_command() {
+    let migrate = parse_args(&[
+        "rurqe".into(),
+        "migrate".into(),
+        "up".into(),
+        "--schema".into(),
+        "app".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        migrate,
+        CliCommand::MigrateUp {
+            migrations_dir: PathBuf::from("migrations"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            database_url: None,
+            schema: Some("app".into()),
+        }
+    );
+
+    let codegen = parse_args(&[
+        "rurqe".into(),
+        "codegen".into(),
+        "--schema".into(),
+        "app".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        codegen,
+        CliCommand::Codegen {
+            database_url: None,
+            output: PathBuf::from("src/schema.rs"),
+            lock_path: PathBuf::from("schema.lock"),
+            domain_types: false,
+            schema: Some("app".into()),
+        }
+    );
+
+    let verify = parse_args(&[
+        "rurqe".into(),
+        "verify".into(),
+        "--schema".into(),
+        "app".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        verify,
+        CliCommand::Verify {
+            database_url: None,
+            schema_path: None,
+            lock_path: PathBuf::from("schema.lock"),
+            schema: Some("app".into()),
+        }
+    );
+
+    let commit = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "commit".into(),
+        "--version".into(),
+        "3.2".into(),
+        "--schema".into(),
+        "app".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        commit,
+        CliCommand::StageCommit {
+            version: "3.2".parse().unwrap(),
+            database_url: None,
+            stage_dir: PathBuf::from("schema"),
+            lock_path: PathBuf::from("schema.lock"),
+            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            schema: Some("app".into()),
+        }
+    );
+}
+
+#[test]
+fn a_blank_schema_selection_is_rejected() {
+    // The name decides which catalog every digest of a command describes, so a
+    // blank value is refused instead of silently selecting nothing.
+    let error = parse_args(&[
+        "rurqe".into(),
+        "codegen".into(),
+        "--schema".into(),
+        "   ".into(),
+    ])
+    .expect_err("a blank schema name describes nothing");
+
+    assert!(error.to_string().contains("schema"), "got {error}");
 }
 
 #[test]
@@ -333,6 +433,7 @@ fn parses_stage_commands() {
             version: "3.2".parse().unwrap(),
             description: "stage".into(),
             database_url: None,
+            schema: None,
         }
     );
 
@@ -372,6 +473,7 @@ fn parses_stage_commands() {
             stage_dir: PathBuf::from("schema"),
             lock_path: PathBuf::from("schema.lock"),
             checkpoint_path: PathBuf::from("checkpoint.toml"),
+            schema: None,
         }
     );
 }
@@ -397,6 +499,7 @@ fn parses_stage_commit_stage_dir() {
             stage_dir: PathBuf::from("stages/boundary"),
             lock_path: PathBuf::from("schema.lock"),
             checkpoint_path: PathBuf::from("checkpoint.toml"),
+            schema: None,
         }
     );
 }
@@ -573,6 +676,7 @@ fn parses_codegen_command() {
             output: PathBuf::from("src/db/schema.rs"),
             lock_path: PathBuf::from("schema.lock"),
             domain_types: false,
+            schema: None,
         }
     );
 }

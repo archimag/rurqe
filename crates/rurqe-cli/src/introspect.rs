@@ -55,8 +55,12 @@ pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
 /// there. A SQLite database holds a single unnamed catalog, so the name is
 /// ignored rather than rejected: the same project then introspects both engines
 /// without branching on the dialect.
+///
+/// A selection that describes nothing is reported through the `tracing` facade
+/// before the catalog is handed on; see [`report_vacuous_schema`].
 pub fn introspect_database_schema(url: &str, schema: &str) -> Result<SchemaCatalog, CliError> {
     let mut connection = connect(url)?;
+    report_vacuous_schema(&mut connection, schema)?;
     introspect_connection_schema(&mut connection, schema)
 }
 
@@ -75,4 +79,50 @@ pub(crate) fn introspect_connection_schema(
         Connection::Sqlite(conn) => introspect_sqlite(conn),
         Connection::Postgres(client) => introspect_postgres_schema(client, schema),
     }
+}
+
+/// Reports a selected schema that describes nothing while the database keeps
+/// user relations in other schemas.
+///
+/// A PostgreSQL project may keep its relations in a schema of its own, and a
+/// catalog read from the wrong one is empty rather than wrong: every digest
+/// computed from it — the codegen snapshot, the drift gate, the cold-start
+/// marker, and the checkpoint hash — then compares nothing against nothing and
+/// passes vacuously. The notice names the schemas that do hold relations, so the
+/// operator selects one with `--schema` (or the `schema` key of `rurqe.toml`)
+/// instead of trusting a verification that never looked at their tables.
+pub(crate) fn report_vacuous_schema(
+    connection: &mut Connection,
+    schema: &str,
+) -> Result<(), CliError> {
+    match connection {
+        // A SQLite database holds one unnamed catalog, so the selection always
+        // describes it whatever name the caller passed.
+        Connection::Sqlite(_) => Ok(()),
+        Connection::Postgres(client) => report_vacuous_postgres_schema(client, schema),
+    }
+}
+
+/// Reports a selected PostgreSQL schema that holds no relation while relations
+/// live elsewhere.
+pub(crate) fn report_vacuous_postgres_schema(
+    client: &mut ::postgres::Client,
+    schema: &str,
+) -> Result<(), CliError> {
+    let neighbours = postgres::schema_neighbours(client, schema)?;
+
+    if neighbours.is_empty() {
+        return Ok(());
+    }
+
+    let names = neighbours.join(", ");
+    tracing::warn!(
+        schema,
+        schemas = %names,
+        "the selected schema `{schema}` holds no table or view while the database keeps user \
+         relations in {names}; the catalog digest computed from it describes nothing, so pass \
+         `--schema <name>` or set `schema = \"<name>\"` in `rurqe.toml`"
+    );
+
+    Ok(())
 }

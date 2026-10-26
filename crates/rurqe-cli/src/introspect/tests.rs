@@ -3,6 +3,15 @@ use rurqe_migrate::catalog::TypeKind;
 use super::*;
 
 #[test]
+fn a_schema_selection_describes_the_single_sqlite_catalog() {
+    // A SQLite file has no schema layer, so the notice that reports a vacuous
+    // selection never fires whatever name the caller passes.
+    let mut connection = connect(":memory:").expect("open the in-memory database");
+    report_vacuous_schema(&mut connection, "tenant_a")
+        .expect("one unnamed catalog is never a vacuous selection");
+}
+
+#[test]
 fn metadata_assembly_builds_catalog() {
     let tables = vec![RawTableMetadata {
         name: "users".to_owned(),

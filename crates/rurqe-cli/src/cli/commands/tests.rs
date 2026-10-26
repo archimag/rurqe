@@ -8,13 +8,15 @@ use rurqe_migrate::{
     Checksum, DeclarativeStage, InMemoryBackend, SchemaCatalog, StageScript, STAGE_SCRIPT,
 };
 
+use crate::config::CodegenConfig;
 use crate::driver::SqliteMigrationBackend;
+use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
 use super::stage::{cleanup_scratch_catalog, swap_snapshot, verify_stage, write_staged_boundary};
 use super::{
-    commit_stage, initialise_stage, prune_migrations, sweep_stale_temporaries, write_file,
+    commit_stage, initialise_stage, prune_migrations, schema_of, sweep_stale_temporaries, write_file,
     STALE_TEMPORARY_AGE,
 };
 
@@ -140,8 +142,15 @@ fn committing_the_stage_anchors_the_checkpoint() {
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    commit_stage(version("3.2"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
-        .expect("an empty database commits cleanly");
+    commit_stage(
+        version("3.2"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("an empty database commits cleanly");
 
     let catalog =
         SchemaCatalog::from_lock(&std::fs::read_to_string(&lock_path).expect("read the lock"))
@@ -165,8 +174,15 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    commit_stage(version("3.2"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
-        .expect("the boundary is committed together with its snapshot");
+    commit_stage(
+        version("3.2"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the boundary is committed together with its snapshot");
 
     let snapshot = dir.join("checkpoint-stage");
     assert_eq!(
@@ -180,8 +196,15 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     std::fs::write(stage_dir.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
         .expect("write the new script");
 
-    commit_stage(version("4"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
-        .expect("the boundary is re-committed");
+    commit_stage(
+        version("4"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the boundary is re-committed");
 
     let mut names: Vec<String> = std::fs::read_dir(&snapshot)
         .expect("read the snapshot directory")
@@ -221,11 +244,25 @@ fn the_committed_boundary_is_never_rewound() {
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
-    commit_stage(version("5"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
-        .expect("the first commit succeeds");
+    commit_stage(
+        version("5"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the first commit succeeds");
 
-    let error = commit_stage(version("3"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
-        .expect_err("the boundary cannot move backwards");
+    let error = commit_stage(
+        version("3"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect_err("the boundary cannot move backwards");
 
     assert!(error.to_string().contains("re-open"));
 }
@@ -329,9 +366,15 @@ fn a_failed_checkpoint_write_keeps_the_committed_lock_readable() {
     // The lock lands before the boundary artifacts, and the marker lands last,
     // so a boundary that cannot be written never leaves a checkpoint pointing
     // at a lock file that describes a different database.
-    let error =
-        commit_stage(version("3.2"), ":memory:", &stage_dir, &lock_path, &checkpoint_path)
-            .expect_err("a file cannot hold the boundary artifacts");
+    let error = commit_stage(
+        version("3.2"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect_err("a file cannot hold the boundary artifacts");
 
     assert!(error.to_string().contains("blocker"), "{error}");
 
@@ -491,6 +534,7 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
     commit_stage(
         version("3.2"),
         ":memory:",
+        DEFAULT_SCHEMA,
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -621,6 +665,16 @@ fn verifying_a_missing_boundary_names_the_parked_snapshot_that_restores_it() {
         message.contains("mv "),
         "the diagnostic names the rename that restores it, got {message}"
     );
+}
+
+#[test]
+fn the_command_line_schema_wins_over_the_configured_one() {
+    let configured = CodegenConfig::parse("schema = \"app\"\n").expect("the schema key parses");
+
+    assert_eq!(schema_of(Some("reporting"), &configured), "reporting");
+    assert_eq!(schema_of(Some("   "), &configured), "app");
+    assert_eq!(schema_of(None, &configured), "app");
+    assert_eq!(schema_of(None, &CodegenConfig::default()), DEFAULT_SCHEMA);
 }
 
 /// A scratch admin session recording the catalog scans and drops it performs.

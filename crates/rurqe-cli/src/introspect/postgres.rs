@@ -246,6 +246,52 @@ WHERE namespace.nspname = $1
 ORDER BY trigger_table.relname, trigger_row.tgname;
 "#;
 
+/// Query naming the schemas that hold user relations while the introspected one
+/// holds none.
+///
+/// The statement answers with nothing as soon as the selected schema carries a
+/// table or a view of its own, and with nothing at all on a database that keeps
+/// no relation anywhere else either: only a selection describing an empty catalog
+/// while the database holds relations elsewhere is reported. The history table the
+/// migration engine creates is never counted, so a project whose relations live in
+/// another schema is still reported after a run created
+/// `__rurqe_schema_history` in `public`.
+pub(crate) const POSTGRES_SCHEMA_NEIGHBOURS: &str = r#"
+WITH selected AS (
+    SELECT count(*) AS relations
+    FROM information_schema.tables
+    WHERE table_schema = $1
+      AND table_type IN ('BASE TABLE', 'VIEW')
+      AND table_name != '__rurqe_schema_history'
+)
+SELECT DISTINCT table_row.table_schema
+FROM information_schema.tables table_row
+CROSS JOIN selected
+WHERE selected.relations = 0
+  AND table_row.table_type IN ('BASE TABLE', 'VIEW')
+  AND table_row.table_schema != $1
+  AND table_row.table_schema NOT IN ('pg_catalog', 'information_schema')
+  AND table_row.table_name != '__rurqe_schema_history'
+ORDER BY table_row.table_schema;
+"#;
+
+/// Reads the schemas that keep user relations while `schema` keeps none.
+///
+/// The call answers with an empty list when `schema` describes the database it is
+/// asked about, so a caller reports a vacuous selection from one round trip.
+pub(crate) fn schema_neighbours(
+    client: &mut postgres::Client,
+    schema: &str,
+) -> Result<Vec<String>, CliError> {
+    let rows = client
+        .query(POSTGRES_SCHEMA_NEIGHBOURS, &[&schema])
+        .map_err(|error| CliError(format!("failed to query PostgreSQL schemas: {error}")))?;
+
+    rows.iter()
+        .map(|row| read_column(row, 0, "schemas", "table_schema"))
+        .collect()
+}
+
 /// Introspects the `public` schema of a live PostgreSQL database client.
 pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalog, CliError> {
     introspect_postgres_schema(client, "public")
@@ -478,6 +524,23 @@ mod tests {
             "the check query must read the check constraints alone"
         );
         assert!(POSTGRES_CHECKS.contains("pg_get_expr"));
+    }
+
+    #[test]
+    fn the_schema_neighbour_statement_ignores_a_populated_selection() {
+        assert!(
+            POSTGRES_SCHEMA_NEIGHBOURS.contains("selected.relations = 0"),
+            "the statement only answers for a selection that holds no relation"
+        );
+        assert!(
+            POSTGRES_SCHEMA_NEIGHBOURS.contains("table_name != '__rurqe_schema_history'"),
+            "the history table never makes a selection look populated"
+        );
+        assert!(
+            POSTGRES_SCHEMA_NEIGHBOURS
+                .contains("NOT IN ('pg_catalog', 'information_schema')"),
+            "a system schema is never proposed as a target"
+        );
     }
 
     #[test]

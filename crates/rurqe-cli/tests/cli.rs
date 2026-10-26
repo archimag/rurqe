@@ -218,8 +218,86 @@ fn cli_argument_dispatch() {
         CliCommand::MigrateStatus {
             migrations_dir: PathBuf::from("sql_migrations"),
             database_url: None,
+            schema: None,
         }
     );
+}
+
+#[test]
+fn a_named_schema_reaches_codegen_and_verify() {
+    let workspace = temp_workspace("schema-selection");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);")
+            .expect("create schema");
+    }
+
+    let schema = workspace.join("src").join("schema.rs");
+    let lock = workspace.join("schema.lock");
+
+    run_cli(vec![
+        "rurqe".to_owned(),
+        "codegen".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--output".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+        "--schema".to_owned(),
+        "tenant_a".to_owned(),
+    ])
+    .expect("codegen accepts a selected schema");
+
+    // A SQLite file keeps one unnamed catalog, so a selected schema still
+    // describes the tables it holds: the snapshot is populated rather than empty,
+    // which is exactly what a non-public PostgreSQL schema has to produce as well.
+    let snapshot = fs::read_to_string(&lock).expect("read the schema lock");
+    let parsed = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
+    assert_eq!(parsed.tables.len(), 1);
+    assert_eq!(parsed.tables[0].name, "users");
+
+    run_cli(vec![
+        "rurqe".to_owned(),
+        "verify".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--schema-path".to_owned(),
+        path_string(&schema),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+        "--schema".to_owned(),
+        "tenant_a".to_owned(),
+    ])
+    .expect("verification passes for the selected schema");
+
+    // Drift inside the selected schema is still reported rather than compared
+    // against an empty catalog.
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("ALTER TABLE users ADD COLUMN phone TEXT;")
+            .expect("mutate schema");
+    }
+
+    let drift = run_cli(vec![
+        "rurqe".to_owned(),
+        "verify".to_owned(),
+        "--database-url".to_owned(),
+        path_string(&db),
+        "--lock-path".to_owned(),
+        path_string(&lock),
+        "--schema".to_owned(),
+        "tenant_a".to_owned(),
+    ])
+    .expect_err("drift is reported for the selected schema");
+
+    let message = drift.to_string();
+    assert!(
+        message.contains("Schema drift detected!"),
+        "unexpected error: {message}"
+    );
+    assert!(message.contains("phone"), "unexpected error: {message}");
 }
 
 fn temp_workspace(label: &str) -> PathBuf {

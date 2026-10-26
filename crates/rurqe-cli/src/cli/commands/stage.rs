@@ -9,7 +9,7 @@ use rurqe_migrate::stage::{cold_start, DeclarativeStage, StageMarker};
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::{connect, redact_database_url, CliError, CommandOutput, Connection};
-use crate::introspect::introspect_database;
+use crate::introspect::introspect_database_schema;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::postgres::{
     current_owner_tag, drop_stale_scratch_databases, find_stale_scratch_databases,
@@ -137,7 +137,9 @@ fn load_stage(dir: &Path) -> Result<DeclarativeStage, CliError> {
 /// digest of the stage directory. The backend derives that digest from the
 /// catalog the stage produced under the engine that really executes it, so a
 /// PostgreSQL stage is never measured through SQLite; only a backend that cannot
-/// introspect itself keeps the stage digest supplied here as its fallback.
+/// introspect itself keeps the stage digest supplied here as its fallback. A
+/// PostgreSQL backend reads the schema selected for the command, so the marker
+/// anchors the very relations the project declares.
 pub(crate) fn initialise_stage<B: MigrationBackend>(
     backend: &mut B,
     stage_dir: &Path,
@@ -297,9 +299,13 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 /// is snapshotted verbatim into [`CHECKPOINT_STAGE_DIR`] next to the marker
 /// before the marker itself is written: the scripts keep their names and their
 /// comments, which is where the replay re-reads their transactionality from.
+/// `schema` names the catalog the committed snapshot and the anchored hash
+/// describe, so a project keeping its relations outside `public` commits the
+/// digest of its own tables.
 pub(crate) fn commit_stage(
     version: MigrationVersion,
     database_url: &str,
+    schema: &str,
     stage_dir: &Path,
     lock_path: &Path,
     checkpoint_path: &Path,
@@ -322,7 +328,7 @@ pub(crate) fn commit_stage(
     }
 
     let stage = load_stage(stage_dir)?;
-    let catalog = introspect_database(database_url)?;
+    let catalog = introspect_database_schema(database_url, schema)?;
 
     // All artifacts are rendered before the first byte is written, and they land
     // in the order lock, snapshot, marker, so an interrupted commit never leaves
@@ -336,7 +342,7 @@ pub(crate) fn commit_stage(
 
     Ok(CommandOutput::single(format!(
         "Committed the stage to {}, snapshotted the boundary to {}, and anchored `{}` up to \
-         version {} (hash {})",
+         version {} (hash {}, schema `{schema}`)",
         lock_path.display(),
         boundary.display(),
         checkpoint_path.display(),

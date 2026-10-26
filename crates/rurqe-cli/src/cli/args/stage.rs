@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use super::{
     default_checkpoint_path, default_lock_path, default_migrations_dir, default_stage_dir,
-    parse_version, take_value, universal_flag, universal_flag_beside_version, CliCommand,
-    CliError,
+    parse_version, take_schema, take_value, universal_flag, universal_flag_beside_version,
+    CliCommand, CliError,
 };
 
 /// The default age above which a scratch database counts as abandoned.
@@ -46,6 +46,7 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut description = "stage".to_owned();
     let mut version = None;
     let mut database_url = None;
+    let mut schema = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -66,6 +67,9 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
+            "--schema" => {
+                schema = Some(take_schema(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!("unknown option `{other}` for stage init")));
             }
@@ -81,6 +85,7 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, CliError> {
         version,
         description,
         database_url,
+        schema,
     })
 }
 
@@ -143,6 +148,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut lock_path = default_lock_path();
     let mut checkpoint_path = default_checkpoint_path();
     let mut database_url = None;
+    let mut schema = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -166,6 +172,9 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--stage-dir" => {
                 stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
             }
+            "--schema" => {
+                schema = Some(take_schema(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!(
                     "unknown option `{other}` for stage commit"
@@ -184,6 +193,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, CliError> {
         stage_dir,
         lock_path,
         checkpoint_path,
+        schema,
     })
 }
 

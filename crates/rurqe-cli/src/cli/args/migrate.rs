@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use super::{
-    default_checkpoint_path, default_migrations_dir, take_value, universal_flag, CliCommand,
-    CliError,
+    default_checkpoint_path, default_migrations_dir, take_schema, take_value, universal_flag,
+    CliCommand, CliError,
 };
 
 /// Parses a `migrate <action>` invocation into its typed command.
@@ -20,6 +20,7 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
     let mut migrations_dir = default_migrations_dir();
     let mut checkpoint_path = default_checkpoint_path();
     let mut database_url = None;
+    let mut schema = None;
 
     let mut idx = 0;
     while idx < tokens.len() {
@@ -37,6 +38,9 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
+            "--schema" => {
+                schema = Some(take_schema(tokens, &mut idx, flag)?);
+            }
             other => {
                 return Err(CliError(format!("unknown option `{other}` for migrate")));
             }
@@ -48,14 +52,17 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, CliError> {
             migrations_dir,
             checkpoint_path,
             database_url,
+            schema,
         }),
         "status" => Ok(CliCommand::MigrateStatus {
             migrations_dir,
             database_url,
+            schema,
         }),
         "repair" => Ok(CliCommand::MigrateRepair {
             migrations_dir,
             database_url,
+            schema,
         }),
         other => Err(CliError(format!(
             "unknown migrate action `{other}` (expected `up`, `status`, or `repair`)"

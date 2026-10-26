@@ -25,20 +25,27 @@ const DEFAULT_SCHEMA_OUTPUT: &str = "src/schema.rs";
 const DEFAULT_LOCK_PATH: &str = "schema.lock";
 
 /// Parsed CLI commands.
+///
+/// The commands that compare catalogs carry the schema selected with `--schema`,
+/// which the dispatcher resolves against the `schema` key of `rurqe.toml` before
+/// any catalog is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     MigrateUp {
         migrations_dir: PathBuf,
         checkpoint_path: PathBuf,
         database_url: Option<String>,
+        schema: Option<String>,
     },
     MigrateStatus {
         migrations_dir: PathBuf,
         database_url: Option<String>,
+        schema: Option<String>,
     },
     MigrateRepair {
         migrations_dir: PathBuf,
         database_url: Option<String>,
+        schema: Option<String>,
     },
     Baseline {
         version: MigrationVersion,
@@ -50,17 +57,20 @@ pub enum CliCommand {
         output: PathBuf,
         lock_path: PathBuf,
         domain_types: bool,
+        schema: Option<String>,
     },
     Verify {
         database_url: Option<String>,
         schema_path: Option<PathBuf>,
         lock_path: PathBuf,
+        schema: Option<String>,
     },
     StageInit {
         stage_dir: PathBuf,
         version: MigrationVersion,
         description: String,
         database_url: Option<String>,
+        schema: Option<String>,
     },
     StageVerify {
         stage_dir: PathBuf,
@@ -76,6 +86,7 @@ pub enum CliCommand {
         stage_dir: PathBuf,
         lock_path: PathBuf,
         checkpoint_path: PathBuf,
+        schema: Option<String>,
     },
     StageCleanup {
         scratch_url: Option<String>,
@@ -148,17 +159,20 @@ impl Entrypoint {
                 migrations_dir: default_migrations_dir(),
                 checkpoint_path: default_checkpoint_path(),
                 database_url: None,
+                schema: None,
             }),
             Entrypoint::CargoDbCodegen => Some(CliCommand::Codegen {
                 database_url: None,
                 output: default_schema_output(),
                 lock_path: default_lock_path(),
                 domain_types: false,
+                schema: None,
             }),
             Entrypoint::CargoDbVerify => Some(CliCommand::Verify {
                 database_url: None,
                 schema_path: None,
                 lock_path: default_lock_path(),
+                schema: None,
             }),
             Entrypoint::CargoDbBaseline | Entrypoint::Direct => None,
         }
@@ -247,6 +261,23 @@ fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a
         .ok_or_else(|| CliError(format!("option `{flag}` requires a value")))?;
     *idx += 2;
     Ok(value)
+}
+
+/// Borrows the schema name following `--schema`, rejecting a blank one.
+///
+/// The name decides which catalog every digest of a command describes, so a
+/// blank value is refused instead of silently selecting nothing.
+fn take_schema(tokens: &[&str], idx: &mut usize, flag: &str) -> Result<String, CliError> {
+    let value = take_value(tokens, idx, flag)?;
+    let name = value.trim();
+
+    if name.is_empty() {
+        return Err(CliError(format!(
+            "option `{flag}` requires a database schema name"
+        )));
+    }
+
+    Ok(name.to_owned())
 }
 
 /// Recognizes the universal flags every subcommand answers alike.

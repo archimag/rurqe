@@ -7,7 +7,20 @@
 //! domain newtypes (`uuid::Uuid`, `chrono::NaiveDateTime`, money wrappers)
 //! survive code generation instead of degrading to the engine-neutral fallback.
 //!
+//! The root-level `schema` key names the one database schema every catalog
+//! digest of the project describes. It is read by each command that compares
+//! catalogs — `codegen`, `verify`, `stage init`, `stage commit`, and the
+//! `migrate` actions — where an explicit `--schema` argument wins over it and
+//! the libpq default `public` applies when neither name a schema, so a project
+//! keeping its relations outside `public` never anchors a hash of an empty
+//! catalog.
+//!
 //! ```toml
+//! schema = "app"
+//!
+//! [codegen]
+//! domain_types = true
+//!
 //! [codegen.type_overrides]
 //! "users.id" = "uuid::Uuid"
 //! users.created_at = "chrono::NaiveDateTime"
@@ -27,10 +40,13 @@ use std::fmt;
 use std::ops::Range;
 use std::path::Path;
 
-use toml_edit::{ImDocument, TableLike};
+use toml_edit::{ImDocument, Item, TableLike};
 
 /// The configuration file read by default.
 pub const DEFAULT_CONFIG_PATH: &str = "rurqe.toml";
+
+/// The document-root key naming the database schema every catalog digest describes.
+const SCHEMA_KEY: &str = "schema";
 
 /// The section holding the code generation settings.
 const CODEGEN_SECTION: &str = "codegen";
@@ -41,9 +57,11 @@ const DOMAIN_TYPES_KEY: &str = "domain_types";
 /// The key declaring the per-column Rust type overrides.
 const TYPE_OVERRIDES_KEY: &str = "type_overrides";
 
-/// The codegen configuration of a project.
+/// The project configuration read from `rurqe.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CodegenConfig {
+    /// The database schema the project's catalogs describe, if named.
+    schema: Option<String>,
     /// Rust types keyed by their `table.column` schema path.
     type_overrides: BTreeMap<String, String>,
     /// Whether domain types (`Uuid`, `Json`, `Timestamp`, `Date`) are enabled.
@@ -53,8 +71,9 @@ pub struct CodegenConfig {
 impl CodegenConfig {
     /// Reads the configuration file at `path`, defaulting when it is absent.
     ///
-    /// A missing file means "no overrides", while an unreadable or malformed
-    /// file is an error: silently ignoring a typo would generate wrong types.
+    /// A missing file means "no overrides and no schema selection", while an
+    /// unreadable or malformed file is an error: silently ignoring a typo would
+    /// generate wrong types or describe the wrong schema.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
             Ok(contents) => Self::parse(&contents),
@@ -66,7 +85,8 @@ impl CodegenConfig {
         }
     }
 
-    /// Parses the `[codegen]` and `[codegen.type_overrides]` tables out of `contents`.
+    /// Parses the root-level `schema` key, the `[codegen]` table, and the
+    /// `[codegen.type_overrides]` sub-table out of `contents`.
     ///
     /// Both spellings of an override are read: the quoted `"users.id" = "..."` form
     /// declares one path directly, and the `users.id = "..."` (or
@@ -86,14 +106,19 @@ impl CodegenConfig {
         let root = document.as_table();
         let mut config = Self::default();
 
-        for (section, item) in root.iter() {
-            let span = key_span(root, section);
+        for (key, item) in root.iter() {
+            let span = key_span(root, key);
 
-            if section != CODEGEN_SECTION {
+            if key == SCHEMA_KEY {
+                config.schema = Some(read_schema_name(contents, span, item)?);
+                continue;
+            }
+
+            if key != CODEGEN_SECTION {
                 return Err(syntax_error(
                     contents,
                     span,
-                    format!("unknown configuration section `{section}`"),
+                    format!("unknown configuration section `{key}`"),
                 ));
             }
 
@@ -246,6 +271,18 @@ impl CodegenConfig {
         self.domain_types
     }
 
+    /// Returns the database schema the project's catalogs describe, if named.
+    ///
+    /// A project keeping its relations outside the libpq default `public` names
+    /// its schema here, so the codegen snapshot, the drift gate, the cold-start
+    /// marker, and the checkpoint hash all describe the same catalog. The
+    /// resolution of the selection — an explicit `--schema` argument winning over
+    /// this key, and `public` applying when neither names a schema — belongs to
+    /// the command layer, which reads this accessor.
+    pub fn schema(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
     /// Returns the declared overrides keyed by their `table.column` path.
     pub fn type_overrides(&self) -> &BTreeMap<String, String> {
         &self.type_overrides
@@ -297,6 +334,37 @@ impl fmt::Display for ConfigError {
 }
 
 impl std::error::Error for ConfigError {}
+
+/// Reads the document-root `schema` key naming the described database schema.
+///
+/// The name decides which catalog every digest of the project describes, so a
+/// value that is not a string is reported where it is declared and a blank one
+/// is refused instead of silently selecting nothing.
+fn read_schema_name(
+    contents: &str,
+    span: Option<Range<usize>>,
+    item: &Item,
+) -> Result<String, ConfigError> {
+    let value = item.as_str().ok_or_else(|| {
+        syntax_error(
+            contents,
+            span.clone(),
+            format!("`{SCHEMA_KEY}` must be a database schema name string"),
+        )
+    })?;
+
+    let name = value.trim();
+
+    if name.is_empty() {
+        return Err(syntax_error(
+            contents,
+            span,
+            format!("`{SCHEMA_KEY}` requires a database schema name"),
+        ));
+    }
+
+    Ok(name.to_owned())
+}
 
 /// The span covering the declaration of `key` inside `table`.
 ///
@@ -374,6 +442,53 @@ mod tests {
             Some("chrono::NaiveDateTime")
         );
         assert_eq!(config.type_override("users", "email"), None);
+    }
+
+    #[test]
+    fn the_schema_key_names_the_described_schema() {
+        let config = CodegenConfig::parse("schema = \"app\"\n").expect("the schema key parses");
+        assert_eq!(config.schema(), Some("app"));
+
+        let config = CodegenConfig::parse(
+            "schema = \"  app  \"\n\
+             [codegen]\n\
+             domain_types = true\n",
+        )
+        .expect("the schema key parses beside the codegen section");
+        assert_eq!(config.schema(), Some("app"));
+        assert!(config.domain_types());
+    }
+
+    #[test]
+    fn the_schema_selection_is_absent_by_default() {
+        assert_eq!(
+            CodegenConfig::parse("")
+                .expect("an empty file is valid")
+                .schema(),
+            None
+        );
+        assert_eq!(
+            CodegenConfig::parse("[codegen.type_overrides]\n")
+                .expect("an empty overrides table is valid")
+                .schema(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_blank_or_non_string_schema_is_rejected() {
+        let blank = CodegenConfig::parse("schema = \"   \"\n")
+            .expect_err("a blank schema name selects nothing");
+        assert!(matches!(&blank, ConfigError::Syntax { line: 1, .. }), "{blank}");
+        assert!(blank.to_string().contains("schema"), "{blank}");
+
+        let numeric =
+            CodegenConfig::parse("schema = 42\n").expect_err("a numeric schema name is rejected");
+        assert!(
+            matches!(&numeric, ConfigError::Syntax { line: 1, .. }),
+            "{numeric}"
+        );
+        assert!(numeric.to_string().contains("schema"), "{numeric}");
     }
 
     #[test]
@@ -464,13 +579,14 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "[codegen.type_overrides]\n\"users.id\" = \"uuid::Uuid\"\n",
+            "schema = \"app\"\n[codegen.type_overrides]\n\"users.id\" = \"uuid::Uuid\"\n",
         )
         .expect("write configuration");
 
         let config = CodegenConfig::load(&path).expect("the file is valid");
         let _ = std::fs::remove_file(&path);
 
+        assert_eq!(config.schema(), Some("app"));
         assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
     }
 
@@ -486,6 +602,7 @@ mod tests {
         let config = CodegenConfig::load(&path).expect("a missing file is not an error");
 
         assert_eq!(config, CodegenConfig::default());
+        assert_eq!(config.schema(), None);
         assert!(config.type_override("users", "id").is_none());
     }
 

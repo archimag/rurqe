@@ -178,7 +178,10 @@ impl PostgresMigrationBackend {
     /// `public` suits a deployment keeping its tables in the default schema,
     /// while a project owning a schema of its own names it here, so the digest a
     /// migration records describes the very tables the declarative stage
-    /// declares instead of an unrelated `public` catalog.
+    /// declares instead of an unrelated `public` catalog. The CLI threads the
+    /// selection its commands resolved — `--schema`, the `schema` key of
+    /// `rurqe.toml`, or `public` — through this selector, so the checkpoint guard
+    /// compares the same schema the codegen snapshot and the drift gate read.
     pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
         self.schema = schema.into();
         self
