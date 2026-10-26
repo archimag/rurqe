@@ -105,13 +105,32 @@ fn strip_scheme<'a>(url: &'a str, scheme: &str) -> Option<&'a str> {
 }
 
 /// Classifies what follows a `sqlite:` scheme, which may keep the `//` of a URL.
+///
+/// A scheme-qualified spelling is a URL, so the location ends where its query
+/// string or fragment begins: `sqlite:app.db?mode=rwc` opens `app.db`. SQLite
+/// interprets URI parameters only for names that begin with `file:`, so keeping
+/// the query in the location would open a file whose literal name contains it,
+/// while every diagnostic — which re-renders the value through `url::Url` — named
+/// the stripped location.
 fn sqlite_location(location: &str) -> DatabaseTarget {
     let path = location.strip_prefix("//").unwrap_or(location);
+    let path = location_without_query(path);
 
     if path.is_empty() || path == ":memory:" {
         DatabaseTarget::SqliteMemory
     } else {
         DatabaseTarget::SqliteFile(path.to_owned())
+    }
+}
+
+/// Truncates `path` where the query string or fragment of its URL begins.
+///
+/// The delimiter is an ASCII character, so the byte index `find` reports always
+/// falls on a character boundary and the slice never splits a scalar value.
+fn location_without_query(path: &str) -> &str {
+    match path.find(['?', '#']) {
+        Some(end) => path.get(..end).unwrap_or(path),
+        None => path,
     }
 }
 
@@ -178,6 +197,38 @@ mod tests {
         assert_eq!(
             DatabaseTarget::parse("sqlite:data/app.sqlite3"),
             DatabaseTarget::SqliteFile("data/app.sqlite3".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_sqlite_url_opens_the_location_its_query_does_not_belong_to() {
+        for (url, expected) in [
+            ("sqlite:app.db?mode=rwc", "app.db"),
+            ("sqlite:/tmp/x.db?a=1#f", "/tmp/x.db"),
+            ("sqlite:///var/lib/app.db?cache=shared", "/var/lib/app.db"),
+            ("sqlite://host/app.db#fragment", "host/app.db"),
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                DatabaseTarget::SqliteFile(expected.to_owned()),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_in_memory_spelling_survives_a_query_string() {
+        assert_eq!(
+            DatabaseTarget::parse("sqlite::memory:?cache=shared"),
+            DatabaseTarget::SqliteMemory
+        );
+    }
+
+    #[test]
+    fn a_scheme_less_file_name_keeps_the_literal_question_mark_it_spells() {
+        assert_eq!(
+            DatabaseTarget::parse("data/app?.db"),
+            DatabaseTarget::SqliteFile("data/app?.db".to_owned())
         );
     }
 
