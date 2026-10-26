@@ -1658,3 +1658,44 @@ fn a_nested_statement_reading_a_plain_column_of_no_relation_is_rejected() {
         })
     );
 }
+
+#[test]
+fn a_distinct_ordering_matches_a_projected_aggregate() {
+    // The ordering criterion repeats the aggregate the projection list
+    // exposes, so the DISTINCT rule comparing assembled expressions accepts
+    // it: the statement deduplicates rows it sorts by the counted value.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(count_star());
+    ast.order_by.push(OrderCriterion::new(
+        count_star(),
+        OrderDirection::Desc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_grouped_statement_renders_having_ordering_limit_and_offset() {
+    // The grouped query keeps its per-group predicates, deterministic
+    // ordering, and pagination after `.group_by(...)` transitioned the
+    // typestate, so the tail clauses render in their fixed SQL positions.
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .group_by(OrderUserId)
+        .select((OrderUserId, Expr::count_all()))
+        .having(Expr::count_all().gt(1i64))
+        .order_by_desc(OrderUserId)
+        .limit(5)
+        .offset(10)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"user_id\", COUNT(*) FROM \"orders\" GROUP BY \"user_id\" \
+         HAVING (COUNT(*) > $1) ORDER BY \"user_id\" DESC LIMIT 5 OFFSET 10"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}

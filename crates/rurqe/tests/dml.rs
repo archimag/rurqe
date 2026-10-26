@@ -536,3 +536,49 @@ fn an_assignment_renders_an_arithmetic_expression() {
     );
     assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(10)]);
 }
+
+#[test]
+fn bulk_insert_supports_returning_projections() {
+    // The multi-row source keeps the projection clause reachable, so every
+    // inserted row reports its identifier in a single round trip.
+    let built = insert_into::<Postgres, User>()
+        .values_many([
+            (UserId::set(1i64), UserName::set("a")),
+            (UserId::set(2i64), UserName::set("b")),
+        ])
+        .expect("the row source is not empty")
+        .returning((UserId,))
+        .build().expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2), ($3, $4) RETURNING \"id\""
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::I64(1),
+            SqlVal::Text("a".to_owned()),
+            SqlVal::I64(2),
+            SqlVal::Text("b".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn an_assignment_copies_a_column_of_the_mutated_table() {
+    // The right-hand side reads a column of the table the statement mutates,
+    // so the assignment keeps the relation in scope and renders a plain
+    // column reference instead of a bound parameter.
+    let built = update::<Postgres, User>()
+        .set(UserName::set_expr(Expr::column::<UserName>()))
+        .where_(Expr::column::<UserId>().gt(0i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"users\" SET \"name\" = \"name\" WHERE (\"id\" > $1)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(0)]);
+}
