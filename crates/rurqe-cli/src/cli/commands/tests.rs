@@ -1371,3 +1371,112 @@ fn two_sequential_commits_converge_to_the_last_one() {
         .collect();
     assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
 }
+
+#[test]
+fn a_failed_commit_reports_the_interrupted_commit_it_repaired() {
+    let dir = workspace("commit-recovery-failure");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    // The declarative stage declares a column the live database never received,
+    // so the commit fails after its repair and before any of its own artifacts.
+    std::fs::write(
+        stage_dir.join("users.sql"),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+    )
+    .expect("write the stage script");
+    let database = dir.join("app.db");
+    apply_live_ddl(&database, "CREATE TABLE users (id INTEGER PRIMARY KEY);");
+
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    // A killed commit left the previous marker and boundary parked, so the commit
+    // restores the pair and the parity gate then rejects the drifted stage: the
+    // failure has to say that the workspace already changed underneath it.
+    let marker_backup = dir.join(".checkpoint.toml.4242.7.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.4242.7.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    let error = commit_stage(
+        version("3.2"),
+        &database.to_string_lossy(),
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect_err("the drifted stage cannot be sealed into a checkpoint");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("does not describe the database"),
+        "the diagnostic still names the violated parity, got {message}"
+    );
+    assert!(
+        message.contains("Restored the checkpoint marker"),
+        "the failure names the repair that already moved artifacts, got {message}"
+    );
+    assert!(
+        checkpoint_path.exists(),
+        "the repair really restored the marker the failure reports"
+    );
+}
+
+#[test]
+fn a_failed_verification_reports_the_interrupted_commit_it_repaired() {
+    let dir = workspace("verify-recovery-failure");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    std::fs::write(stage_dir.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+        .expect("write the stage script");
+    let migrations_dir = dir.join("migrations");
+    std::fs::create_dir_all(&migrations_dir).expect("create the migrations directory");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    // The parked boundary replays a different relation than the declarative
+    // stage, so the repaired checkpoint cannot satisfy the golden equation and
+    // the failure has to say that the workspace already changed underneath it.
+    let marker_backup = dir.join(".checkpoint.toml.4242.7.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+    let boundary_backup = dir.join(".checkpoint-stage.4242.7.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the previous boundary");
+    std::fs::write(
+        boundary_backup.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    let error = verify_stage(
+        &stage_dir,
+        None,
+        &migrations_dir,
+        &checkpoint_path,
+        DEFAULT_SCHEMA,
+        ":memory:",
+    )
+    .expect_err("the diverging stage cannot satisfy the golden equation");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("Restored the checkpoint marker"),
+        "the failure names the repair that already moved artifacts, got {message}"
+    );
+    assert!(
+        checkpoint_path.exists(),
+        "the repair really restored the marker the failure reports"
+    );
+}

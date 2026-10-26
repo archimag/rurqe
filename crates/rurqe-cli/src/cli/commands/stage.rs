@@ -239,19 +239,29 @@ pub(crate) fn verify_stage(
     // boundary is read, so the snapshot loaded below is the one the live marker
     // describes. The repair never classifies a parked pair while a provably live
     // writer holds the section, so a commit still in flight is not undone here.
+    //
+    // The repair has already renamed artifacts into place by the time any read
+    // below can fail, so every one of them folds its report into the failure it
+    // returns: the failure channel is the only output a failing command
+    // guarantees.
     let recovery = recover_interrupted_commit(checkpoint_path)?;
+    let fail = |error: CliError| carry_recovery(recovery.as_deref(), error);
 
-    let stage = load_stage(stage_dir)?;
-    let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
-    let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
+    let stage = load_stage(stage_dir).map_err(fail)?;
+    let tail = load_migrations_from_dir(migrations_dir)
+        .map_err(cli_error)
+        .map_err(fail)?;
+    let checkpoint = Checkpoint::load(checkpoint_path)
+        .map_err(cli_error)
+        .map_err(fail)?;
 
     // An explicit `--base-stage-dir` overrides the recorded snapshot; without
     // one, the boundary snapshot `stage commit` wrote next to the marker is
     // loaded, and an absent snapshot leaves the base unset so the golden equation
     // itself rejects a checkpoint that cannot be replayed from nothing.
     let base = match base_stage_dir {
-        Some(dir) => Some(load_stage(dir)?),
-        None => load_recorded_boundary(&boundary_dir(checkpoint_path))?,
+        Some(dir) => Some(load_stage(dir).map_err(fail)?),
+        None => load_recorded_boundary(&boundary_dir(checkpoint_path)).map_err(fail)?,
     };
 
     // The section ends here: the artifacts are read, and the equation below only
@@ -268,7 +278,10 @@ pub(crate) fn verify_stage(
     if let Some(checkpoint) = &checkpoint {
         equation = equation.with_checkpoint(checkpoint);
     }
-    let report = equation.verify(scratch_url).map_err(cli_error)?;
+    let report = equation
+        .verify(scratch_url)
+        .map_err(cli_error)
+        .map_err(fail)?;
 
     // The notices travel in the report of the command, so a selection that
     // describes nothing reaches the operator whether or not a tracing sink is
@@ -393,21 +406,32 @@ pub(crate) fn commit_stage(
     // A commit an earlier process left halfway is repaired before the boundary is
     // read, so the rewind guard and the artifacts below operate on a
     // self-consistent marker/boundary pair.
+    //
+    // The repair has already renamed artifacts into place by the time the rewind
+    // guard, the stage load, the introspection, the parity gate, the lock write,
+    // or the swap can fail, so every one of them folds its report into the
+    // failure it returns: the failure channel is the only output a failing
+    // command guarantees.
     let recovery = recover_interrupted_commit(checkpoint_path)?;
+    let fail = |error: CliError| carry_recovery(recovery.as_deref(), error);
 
-    if let Some(existing) = Checkpoint::load(checkpoint_path).map_err(cli_error)? {
+    if let Some(existing) = Checkpoint::load(checkpoint_path)
+        .map_err(cli_error)
+        .map_err(fail)?
+    {
         if existing.pruned_up_to_version() > &version {
-            return Err(CliError(format!(
+            return Err(fail(CliError(format!(
                 "`{}` already anchors the history up to version {}; rewinding it to {version} \
                  would re-open pruned migrations",
                 checkpoint_path.display(),
                 existing.pruned_up_to_version()
-            )));
+            ))));
         }
     }
 
-    let stage = load_stage(stage_dir)?;
-    let (catalog, notice) = introspect_database_schema_notice(database_url, schema)?;
+    let stage = load_stage(stage_dir).map_err(fail)?;
+    let (catalog, notice) =
+        introspect_database_schema_notice(database_url, schema).map_err(fail)?;
 
     // The parity gate runs before the first artifact is rendered: the lock and
     // the marker describe the live database while the boundary snapshot replays
@@ -424,9 +448,10 @@ pub(crate) fn commit_stage(
         parity_scratch_url(database_url),
         schema,
     )
-    .map_err(cli_error)?;
+    .map_err(cli_error)
+    .map_err(fail)?;
     if !diff.is_empty() {
-        return Err(stage_parity_failure(stage_dir, &diff));
+        return Err(fail(stage_parity_failure(stage_dir, &diff)));
     }
 
     let lock = catalog.to_lock();
@@ -435,7 +460,7 @@ pub(crate) fn commit_stage(
     // The lock describes the live catalog the commit seals and is written first;
     // the marker and boundary are then swapped as one pair, with the marker
     // written last as the commit point.
-    write_file(lock_path, &lock)?;
+    write_file(lock_path, &lock).map_err(fail)?;
     // The parked pair this commit writes carries the scope of the section it
     // holds, so a copy it leaves behind stays attributable to this writer.
     let swap_notices = seal_commit(
@@ -443,7 +468,8 @@ pub(crate) fn commit_stage(
         checkpoint_path,
         &checkpoint.render(),
         _section.writer(),
-    )?;
+    )
+    .map_err(fail)?;
 
     // The notices travel in the report of the command, so a selection that
     // describes nothing, a repaired commit, and a boundary whose directory could
@@ -478,17 +504,47 @@ fn parity_scratch_url(database_url: &str) -> &str {
     }
 }
 
+/// The heading a repaired interrupted commit is reported under once a command fails.
+///
+/// A repair renames checkpoint artifacts into place long before the command it
+/// belongs to finishes, so a later failure has to say that the workspace already
+/// changed underneath the command; the heading states that side effect plainly,
+/// and the report of the repair itself follows it.
+const RECOVERY_NOTE: &str =
+    "note: this command repaired an interrupted commit before it failed, so the workspace already \
+     changed underneath it; the repair reported:";
+
+/// Folds the report of a repaired interrupted commit into a later failure.
+///
+/// [`recover_interrupted_commit`] restores or discards the parked marker and
+/// boundary pair before the command does any of its own work, and the command goes
+/// on through several fallible steps afterwards. Returning that report on the
+/// success path alone would drop it exactly when it matters most: the failure
+/// channel is the only output a command guarantees once it errors, so the report
+/// travels inside the error instead of beside it.
+fn carry_recovery(recovery: Option<&str>, error: CliError) -> CliError {
+    let Some(recovery) = recovery else {
+        return error;
+    };
+
+    CliError(format!("{}\n{RECOVERY_NOTE}\n{recovery}", error.0))
+}
+
 /// Renders the failure of a commit whose declarative stage disagrees with the database.
 ///
 /// The findings are rendered with the wording of a commit — the stage against the
 /// database — and the remedy names both descriptions, because re-running the very
-/// same commit is exactly what a bare failure would invite.
+/// same commit is exactly what a bare failure would invite. The claim that nothing
+/// was written is narrowed to the artifacts this commit writes: the repair of an
+/// interrupted commit that precedes it may already have restored the previous pair,
+/// and that report travels in the same failure.
 fn stage_parity_failure(stage_dir: &Path, diff: &SchemaDiff) -> CliError {
     CliError(format!(
         "the declarative stage `{}` does not describe the database this commit would anchor:\n{}Hint: \
          bring `schema/` and the database back into agreement — apply the migration that closes \
-         the gap, or re-init the stage from the live catalog — then re-run `stage commit`; no \
-         artifact was written",
+         the gap, or re-init the stage from the live catalog — then re-run `stage commit`. The gate \
+         stands in front of every artifact this commit writes, so it wrote none of them: \
+         `schema.lock`, `checkpoint.toml`, and the boundary snapshot are untouched by it",
         stage_dir.display(),
         StageFindings(diff)
     ))
