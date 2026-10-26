@@ -15,6 +15,7 @@ mod connection;
 mod redact;
 mod report;
 
+use std::path::Path;
 use std::time::Duration;
 
 #[cfg(test)]
@@ -34,6 +35,7 @@ use self::commands::{
 use self::connection::resolve_database_url;
 
 use crate::codegen::generate_schema_rs;
+use crate::config::DEFAULT_CONFIG_PATH;
 use crate::drift::verify_drift;
 use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
 use crate::introspect::{introspect_database_schema_notice, report_vacuous_postgres_schema};
@@ -110,7 +112,28 @@ macro_rules! with_migration_backend {
 /// about the environment travel through the `tracing` facade instead, which
 /// leaves the sink to the application that embeds the crate.
 pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
+    run_cli_with_config(args, Path::new(DEFAULT_CONFIG_PATH))
+}
+
+/// Runs the CLI toolchain against the project configuration at `config_path`.
+///
+/// The configuration path is a parameter rather than a constant of this function,
+/// so whoever owns the directory holding `rurqe.toml` decides which file a
+/// command reads: a test points every command it runs at a file it wrote into a
+/// private temporary directory, and an embedding application keeps two projects
+/// apart. Neither of them has to write into the working directory of the process
+/// to configure a command. [`run_cli`] is the entry point that passes the
+/// conventional `rurqe.toml` of the working directory.
+pub(crate) fn run_cli_with_config(
+    args: Vec<String>,
+    config_path: &Path,
+) -> Result<CommandOutput, CliError> {
     let cmd = parse_args(&args)?;
+
+    // Every catalog-digest arm below resolves its schema against the
+    // configuration file this run was pointed at, so the path is bound once here
+    // and the arms keep naming only the schema selection.
+    let resolve_schema = |explicit: Option<&str>| resolve_schema(explicit, config_path);
 
     match cmd {
         CliCommand::Help => {
@@ -160,7 +183,7 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
             domain_types,
             schema,
         } => {
-            let config = load_config()?;
+            let config = load_config(config_path)?;
             let schema = schema_of(schema.as_deref(), &config);
             let url = resolve_database_url(database_url)?;
             let (catalog, notice) = introspect_database_schema_notice(&url, &schema)?;

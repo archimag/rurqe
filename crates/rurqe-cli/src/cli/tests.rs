@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::Checksum;
@@ -832,39 +832,49 @@ fn baseline_keeps_its_version_argument_under_a_cargo_entrypoint() {
     );
 }
 
-/// Serialises the tests that replace the project configuration of the working directory.
-static PROJECT_CONFIGURATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// A `rurqe.toml` written into the working directory for the duration of a test.
+/// A `rurqe.toml` written into a directory of its own for one test.
 ///
-/// The toolchain reads the project configuration from the working directory, so a
-/// test of its validation has to place the file there; the guard removes it again
-/// even when an assertion fails, so the checkout never keeps a configuration the
-/// other tests of the binary would then read.
-struct ProjectConfiguration;
+/// The toolchain resolves the project configuration from the path a command is
+/// pointed at, so a test of its validation places the file in a private temporary
+/// directory and passes that path to every command it runs: the checkout keeps no
+/// configuration that the other tests of this binary — or a test binary running
+/// concurrently in the same working directory — could read. The guard removes the
+/// directory again even when an assertion fails.
+struct ProjectConfiguration {
+    path: PathBuf,
+}
 
 impl ProjectConfiguration {
-    /// Writes `contents` as the `rurqe.toml` of the working directory.
+    /// Writes `contents` as the `rurqe.toml` of a directory of its own.
     fn write(contents: &str) -> Self {
-        std::fs::write(crate::config::DEFAULT_CONFIG_PATH, contents)
-            .expect("write the project configuration");
+        let dir = scratch("project-configuration");
+        let path = dir.join(crate::config::DEFAULT_CONFIG_PATH);
 
-        Self
+        std::fs::write(&path, contents).expect("write the project configuration");
+
+        Self { path }
+    }
+
+    /// The configuration file the commands of the test are pointed at.
+    fn path(&self) -> &Path {
+        &self.path
     }
 }
 
 impl Drop for ProjectConfiguration {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(crate::config::DEFAULT_CONFIG_PATH);
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }
 
+/// A malformed configuration fails every catalog-digest command on any engine,
+/// because each of them resolves the file it was pointed at instead of one shared
+/// by the working directory.
 #[test]
 fn every_migration_command_validates_the_project_configuration() {
-    let _serial = PROJECT_CONFIGURATION
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _configuration = ProjectConfiguration::write(
+    let configuration = ProjectConfiguration::write(
         "# a section the toolchain does not know\n[workspace]\nmembers = [\"a\"]\n",
     );
 
@@ -879,7 +889,7 @@ fn every_migration_command_validates_the_project_configuration() {
     // single malformed file fails every one of them on a SQLite target instead of
     // being tolerated by the engine whose backend never reads the resolved name.
     for action in ["up", "status", "repair"] {
-        let error = run_cli(vec![
+        let argv = vec![
             "rurqe".to_owned(),
             "migrate".to_owned(),
             action.to_owned(),
@@ -887,8 +897,9 @@ fn every_migration_command_validates_the_project_configuration() {
             migrations_dir.clone(),
             "--database-url".to_owned(),
             ":memory:".to_owned(),
-        ])
-        .expect_err("a malformed configuration aborts the command");
+        ];
+        let error = run_cli_with_config(argv, configuration.path())
+            .expect_err("a malformed configuration aborts the command");
 
         assert!(
             error.to_string().contains("workspace"),
@@ -896,7 +907,7 @@ fn every_migration_command_validates_the_project_configuration() {
         );
     }
 
-    let error = run_cli(vec![
+    let argv = vec![
         "rurqe".to_owned(),
         "stage".to_owned(),
         "init".to_owned(),
@@ -904,8 +915,9 @@ fn every_migration_command_validates_the_project_configuration() {
         "1".to_owned(),
         "--database-url".to_owned(),
         ":memory:".to_owned(),
-    ])
-    .expect_err("a malformed configuration aborts the cold start");
+    ];
+    let error = run_cli_with_config(argv, configuration.path())
+        .expect_err("a malformed configuration aborts the cold start");
 
     assert!(error.to_string().contains("workspace"), "stage init: {error}");
 }

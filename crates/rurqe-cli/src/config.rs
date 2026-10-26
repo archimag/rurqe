@@ -1,8 +1,9 @@
 //! Project configuration for the code generation toolchain.
 //!
 //! `cargo db-codegen` reads the optional `[codegen]` table and its
-//! `[codegen.type_overrides]` sub-table from the `rurqe.toml` file in the working
-//! directory. Every override entry maps a
+//! `[codegen.type_overrides]` sub-table from the `rurqe.toml` file the command is
+//! pointed at — the working directory of the process by default. Every override
+//! entry maps a
 //! `table.column` schema path onto the Rust type generated for that column, so
 //! domain newtypes (`uuid::Uuid`, `chrono::NaiveDateTime`, money wrappers)
 //! survive code generation instead of degrading to the engine-neutral fallback.

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::codegen::CodegenOptions;
-use crate::config::{CodegenConfig, DEFAULT_CONFIG_PATH};
+use crate::config::CodegenConfig;
 use crate::introspect::DEFAULT_SCHEMA;
 
 use super::args::CliError;
@@ -34,25 +34,30 @@ pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
     CliError(err.to_string())
 }
 
-/// Loads the project configuration from `rurqe.toml`.
+/// Loads the project configuration from the file at `path`.
 ///
-/// The file is optional: a project without it keeps the engine-neutral types and
-/// the default schema, while a malformed file aborts the command instead of
-/// silently emitting wrong types for overridden columns or describing the wrong
+/// The path comes from the caller instead of being read from the working
+/// directory here, so a command resolves the configuration of the project it was
+/// pointed at. The file is optional: a project without it keeps the engine-neutral
+/// types and the default schema, while a malformed file aborts the command instead
+/// of silently emitting wrong types for overridden columns or describing the wrong
 /// schema.
-pub(super) fn load_config() -> Result<CodegenConfig, CliError> {
-    CodegenConfig::load(Path::new(DEFAULT_CONFIG_PATH)).map_err(cli_error)
+pub(super) fn load_config(path: &Path) -> Result<CodegenConfig, CliError> {
+    CodegenConfig::load(path).map_err(cli_error)
 }
 
 /// Resolves the schema a command's catalog digests describe.
 ///
-/// The `--schema` argument wins over the `schema` key of `rurqe.toml`, and the
-/// libpq default `public` applies when neither names a schema. The single
-/// resolved value reaches the codegen snapshot, the drift gate, the cold-start
-/// marker, and the checkpoint guard, so those digests always describe the same
-/// schema.
-pub(super) fn resolve_schema(explicit: Option<&str>) -> Result<String, CliError> {
-    Ok(schema_of(explicit, &load_config()?))
+/// The `--schema` argument wins over the `schema` key of the configuration file at
+/// `config_path`, and the libpq default `public` applies when neither names a
+/// schema. The single resolved value reaches the codegen snapshot, the drift gate,
+/// the cold-start marker, and the checkpoint guard, so those digests always
+/// describe the same schema.
+pub(super) fn resolve_schema(
+    explicit: Option<&str>,
+    config_path: &Path,
+) -> Result<String, CliError> {
+    Ok(schema_of(explicit, &load_config(config_path)?))
 }
 
 /// Picks the schema out of an already loaded configuration.
