@@ -485,6 +485,13 @@ pub(super) fn write_staged_boundary(
 /// restored before the new one is installed. The previous snapshot is discarded
 /// only once the swap succeeded: failing the commit there would leave
 /// `checkpoint.toml` describing a boundary the directory no longer holds.
+///
+/// Every rename of a swap runs inside the directory that holds `dir`: `staged` is
+/// assembled by [`temporary_sibling`], and [`boundary_backup`] names a sibling of
+/// `dir`, so all three moves stay within one directory and cannot cross a
+/// filesystem boundary. A configuration that still reaches a device boundary fails
+/// like any other rename, and [`move_failure`] reports it together with the fate of
+/// the parked boundary.
 pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<Vec<String>, CliError> {
     let backup = boundary_backup(dir);
     let mut notices: Vec<String> = Vec::new();
@@ -510,14 +517,9 @@ pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<Vec<String>, Cl
     };
 
     if let Err(error) = std::fs::rename(staged, dir) {
-        if let Some(previous) = &previous {
-            let _ = std::fs::rename(previous, dir);
-        }
+        let failure = move_failure(dir, staged, &error, previous.as_deref());
         let _ = std::fs::remove_dir_all(staged);
-        return Err(CliError(format!(
-            "failed to move the staged boundary snapshot into `{}`: {error}",
-            dir.display()
-        )));
+        return Err(failure);
     }
 
     if let Some(previous) = previous {
@@ -527,6 +529,41 @@ pub(super) fn swap_snapshot(dir: &Path, staged: &Path) -> Result<Vec<String>, Cl
     notices.extend(flush_boundary_parent(dir));
 
     Ok(notices)
+}
+
+/// Reports a staged snapshot that could not be installed over `dir`.
+///
+/// The parked boundary is the only whole copy of the boundary while the staged one
+/// is not in place, so it is renamed back before the failure is reported. A rollback
+/// that fails as well strands that copy under the parked name, which no other
+/// diagnostic would ever mention, so its error is folded into the same message
+/// instead of being dropped: one report names both paths and the rename that
+/// restores the boundary by hand.
+pub(super) fn move_failure(
+    dir: &Path,
+    staged: &Path,
+    error: &std::io::Error,
+    previous: Option<&Path>,
+) -> CliError {
+    let mut message = format!(
+        "failed to move the staged boundary snapshot `{}` into `{}`: {error}",
+        staged.display(),
+        dir.display()
+    );
+
+    if let Some(previous) = previous {
+        if let Err(rollback) = std::fs::rename(previous, dir) {
+            message.push_str(&format!(
+                "; restoring the previous boundary from `{}` also failed ({rollback}), so that \
+                 copy stays parked there: `mv {} {}` puts it back",
+                previous.display(),
+                previous.display(),
+                dir.display()
+            ));
+        }
+    }
+
+    CliError(message)
 }
 
 /// Puts a boundary an interrupted swap parked back in place.

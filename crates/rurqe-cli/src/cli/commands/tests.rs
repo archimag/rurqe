@@ -14,7 +14,9 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
-use super::stage::{cleanup_scratch_catalog, swap_snapshot, verify_stage, write_staged_boundary};
+use super::stage::{
+    cleanup_scratch_catalog, move_failure, swap_snapshot, verify_stage, write_staged_boundary,
+};
 use super::{
     commit_stage, initialise_stage, prune_migrations, schema_of, sweep_stale_temporaries, write_file,
     STALE_TEMPORARY_AGE,
@@ -526,6 +528,92 @@ fn an_interrupted_snapshot_swap_restores_the_committed_boundary() {
     entries.sort();
 
     assert_eq!(entries, vec!["checkpoint-stage".to_owned()]);
+}
+
+#[test]
+fn a_failed_rollback_names_the_parked_boundary_it_strands() {
+    let dir = workspace("snapshot-stranded");
+    let boundary = dir.join("checkpoint-stage");
+    let staged = dir.join(".checkpoint-stage.4242.4.tmp");
+    // The parked boundary is gone by the time the rollback runs, so putting it
+    // back fails exactly like the installation did.
+    let parked = dir.join(".checkpoint-stage.previous");
+    let failure = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+
+    let message = move_failure(&boundary, &staged, &failure, Some(&parked)).to_string();
+
+    assert!(
+        message.contains(&staged.display().to_string()),
+        "the diagnostic names the snapshot that could not be installed, got {message}"
+    );
+    assert!(
+        message.contains(&parked.display().to_string()),
+        "the diagnostic names the copy that stays parked, got {message}"
+    );
+    assert!(
+        message.contains("also failed"),
+        "the diagnostic reports the failed rollback, got {message}"
+    );
+    assert!(
+        message.contains("mv "),
+        "the diagnostic names the rename that restores the boundary, got {message}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_installation_that_rolls_back_reports_only_the_staged_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = workspace("snapshot-rollback");
+    let boundary = dir.join("checkpoint-stage");
+    std::fs::create_dir_all(&boundary).expect("create the committed boundary");
+    std::fs::write(
+        boundary.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the committed snapshot");
+
+    // The staged replacement lives in a directory of its own, so withdrawing the
+    // write permission of that directory fails the installation while the
+    // directory holding the boundary stays writable and the rollback succeeds.
+    let staging = dir.join("staging");
+    std::fs::create_dir_all(&staging).expect("create the staging directory");
+    let staged = staging.join(".checkpoint-stage.4242.5.tmp");
+    std::fs::create_dir_all(&staged).expect("stage the replacement boundary");
+    std::fs::write(
+        staged.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the staged snapshot");
+
+    if !permissions_are_enforced(&staging) {
+        // A superuser renames through the withdrawn permission, so the
+        // installation cannot be made to fail and the rollback is not reached.
+        return;
+    }
+
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o500))
+        .expect("withdraw the write permission of the staging directory");
+
+    let swapped = swap_snapshot(&boundary, &staged);
+
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))
+        .expect("restore the permissions of the staging directory");
+
+    let error = swapped
+        .expect_err("the staged snapshot cannot leave its directory")
+        .to_string();
+
+    assert!(
+        error.contains(&staged.display().to_string()),
+        "the diagnostic names the snapshot that could not be installed, got {error}"
+    );
+    assert!(
+        !error.contains("also failed"),
+        "the rollback succeeded, so the diagnostic reports no stranding, got {error}"
+    );
+    assert_eq!(directory_names(&boundary), vec!["users.sql".to_owned()]);
 }
 
 #[test]
