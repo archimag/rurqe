@@ -150,17 +150,51 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
         self.retype()
     }
 
-    /// Restricts the deletion to rows matching `predicate` when one is given.
+    /// Restricts the deletion to rows matching `predicate` when one is given,
+    /// keeping the filtering typestate unchanged.
     ///
-    /// An absent predicate leaves every row untouched, yet the statement still
-    /// moves into [`Filtered`], so a filter assembled from optional caller input
-    /// keeps [`DeleteQuery::build`] reachable:
+    /// **An absent predicate does not grant permission to empty the table:** the
+    /// statement keeps the filtering typestate it arrived with, exactly like
+    /// [`where_if`](DeleteQuery::where_if), so a query that is still
+    /// [`Unfiltered`] after the call cannot be built. Deleting every row therefore
+    /// stays behind an explicit [`allow_all`](DeleteQuery::allow_all):
     ///
     /// ```text
     /// let query = delete_from(Users)
-    ///     .where_opt(target.map(|target| UsersId.eq(target)));
+    ///     .where_opt(target.map(|target| UsersId.eq(target)))
+    ///     .allow_all();
     /// ```
+    ///
+    /// [`where_opt_or_all`](DeleteQuery::where_opt_or_all) is the spelling for a
+    /// caller who means the opposite: there, an absent predicate is an explicit
+    /// permission to delete every row.
     pub fn where_opt<PredicateScope, P, PredD>(
+        self,
+        predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
+    ) -> DeleteQuery<D, T, State, Returning, Scope>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
+    {
+        self.where_if(predicate)
+    }
+
+    /// Restricts the deletion to rows matching `predicate` when one is given, and
+    /// otherwise allows the deletion to remove every row.
+    ///
+    /// **An absent predicate is an implicit
+    /// [`allow_all`](DeleteQuery::allow_all):** the statement moves into
+    /// [`Filtered`] without recording a condition, so `where_opt_or_all(None)`
+    /// renders a `DELETE` that empties the whole table. Keep
+    /// [`where_opt`](DeleteQuery::where_opt) or
+    /// [`where_if`](DeleteQuery::where_if) when an absent predicate has to leave
+    /// the statement unbuildable.
+    ///
+    /// ```text
+    /// let query = delete_from(Users)
+    ///     .where_opt_or_all(target.map(|target| UsersId.eq(target)));
+    /// ```
+    pub fn where_opt_or_all<PredicateScope, P, PredD>(
         self,
         predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> DeleteQuery<D, T, Filtered, Returning, Scope>
@@ -171,6 +205,38 @@ impl<D: Dialect, T: Table, State, Returning, Scope> DeleteQuery<D, T, State, Ret
         match predicate {
             Some(predicate) => self.where_(predicate),
             None => self.retype(),
+        }
+    }
+
+    /// Restricts the deletion to rows matching `predicate` when one is given,
+    /// keeping the filtering typestate unchanged.
+    ///
+    /// An absent predicate does not grant permission to empty the table: unlike
+    /// [`where_opt_or_all`](DeleteQuery::where_opt_or_all), a statement that is
+    /// still [`Unfiltered`] after the call cannot be built, so a filter assembled
+    /// from optional caller input never widens into a full-table deletion by
+    /// accident. The caller either supplies the missing predicate or opts in
+    /// explicitly through [`allow_all`](DeleteQuery::allow_all):
+    ///
+    /// ```text
+    /// let query = delete_from(Users)
+    ///     .where_if(target.map(|target| UsersId.eq(target)))
+    ///     .allow_all();
+    /// ```
+    pub fn where_if<PredicateScope, P, PredD>(
+        self,
+        predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
+    ) -> DeleteQuery<D, T, State, Returning, Scope>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
+    {
+        match predicate {
+            // A recorded predicate moves the statement into `Filtered`; the
+            // typestate is restored so the permission to build the statement
+            // still depends only on the state the caller established.
+            Some(predicate) => self.where_(predicate).retype(),
+            None => self,
         }
     }
 
@@ -361,6 +427,72 @@ mod tests {
 
         assert_eq!(built.sql, "DELETE FROM \"users\"");
         assert!(built.params.is_empty());
+    }
+
+    #[test]
+    fn where_if_keeps_the_filtering_typestate() {
+        fn assert_unfiltered(_query: &DeleteQuery<MockDialect, User, Unfiltered, (), User>) {}
+
+        // An absent optional predicate leaves the statement unfiltered, so the
+        // typestate still refuses to build it until the caller opts in.
+        let pending = DeleteQuery::<MockDialect, User>::new().where_if(None::<Expr<bool, User>>);
+        assert_unfiltered(&pending);
+
+        let explicit = pending.allow_all().build().expect("valid query");
+        assert_eq!(explicit.sql, "DELETE FROM \"users\"");
+        assert!(explicit.params.is_empty());
+
+        let filtered = DeleteQuery::<MockDialect, User>::new()
+            .where_if(Some(Expr::column::<UserId>().eq(5i64)))
+            .allow_all()
+            .build()
+            .expect("valid query");
+
+        assert_eq!(filtered.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+        assert_eq!(filtered.params, vec![SqlVal::I64(5)]);
+    }
+
+    #[test]
+    fn where_opt_keeps_the_filtering_typestate_and_where_opt_or_all_grants_it() {
+        fn assert_unfiltered(_query: &DeleteQuery<MockDialect, User, Unfiltered, (), User>) {}
+
+        // An absent optional predicate records no condition and grants no
+        // permission, exactly like `where_if`.
+        let pending = DeleteQuery::<MockDialect, User>::new().where_opt(None::<Expr<bool, User>>);
+        assert_unfiltered(&pending);
+
+        let explicit = pending.allow_all().build().expect("valid query");
+        assert_eq!(explicit.sql, "DELETE FROM \"users\"");
+        assert!(explicit.params.is_empty());
+
+        // A present predicate is recorded, while the permission to build the
+        // statement still has to be granted by the caller.
+        let recorded = DeleteQuery::<MockDialect, User>::new()
+            .where_opt(Some(Expr::column::<UserId>().eq(5i64)))
+            .allow_all()
+            .build()
+            .expect("valid query");
+
+        assert_eq!(recorded.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+        assert_eq!(recorded.params, vec![SqlVal::I64(5)]);
+
+        // The granting spelling turns an absent predicate into an explicit
+        // permission to delete every row.
+        let granting = DeleteQuery::<MockDialect, User>::new()
+            .where_opt_or_all(None::<Expr<bool, User>>)
+            .build()
+            .expect("valid query");
+
+        assert_eq!(granting.sql, "DELETE FROM \"users\"");
+        assert!(granting.params.is_empty());
+
+        let narrowed = DeleteQuery::<MockDialect, User>::new()
+            .where_opt_or_all(Some(Expr::column::<UserId>().eq(5i64)))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(narrowed.sql, "DELETE FROM \"users\" WHERE (\"id\" = $1)");
+        assert_eq!(narrowed.params, vec![SqlVal::I64(5)]);
     }
 
     #[test]

@@ -1155,9 +1155,11 @@ fn an_absent_optional_select_predicate_leaves_the_query_unfiltered() {
 
 #[test]
 fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
+    // The granting spelling treats an absent predicate as an explicit permission
+    // to update every row, so the statement stays renderable throughout.
     let updated = update::<Postgres<Pg16>, User>()
         .set(UserName::set("root"))
-        .where_opt(None::<Expr<bool, User>>)
+        .where_opt_or_all(None::<Expr<bool, User>>)
         .build()
         .expect("valid query");
 
@@ -1166,7 +1168,7 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
 
     let filtered = update::<Postgres<Pg16>, User>()
         .set(UserName::set("root"))
-        .where_opt(Some(Expr::column::<UserId>().eq(1i64)))
+        .where_opt_or_all(Some(Expr::column::<UserId>().eq(1i64)))
         .build()
         .expect("valid query");
 
@@ -1180,7 +1182,48 @@ fn an_optional_mutation_predicate_keeps_the_statement_renderable() {
     );
 
     let deleted = delete_from::<Postgres<Pg16>, User>()
+        .where_opt_or_all(None::<Expr<bool, User>>)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(deleted.sql, "DELETE FROM \"users\"");
+    assert!(deleted.params.is_empty());
+}
+
+#[test]
+fn an_absent_optional_filter_keeps_the_mutation_guarded() {
+    // `where_opt` and `where_if` keep the typestate, so an absent predicate
+    // records no condition and grants no permission: the caller confirms the
+    // scope explicitly before the statement becomes renderable.
+    let updated = update::<Postgres<Pg16>, User>()
+        .set(UserName::set("root"))
         .where_opt(None::<Expr<bool, User>>)
+        .allow_all()
+        .build()
+        .expect("valid query");
+
+    assert_eq!(updated.sql, "UPDATE \"users\" SET \"name\" = $1");
+    assert_eq!(updated.params, vec![SqlVal::Text("root".to_owned())]);
+
+    let narrowed = update::<Postgres<Pg16>, User>()
+        .set(UserName::set("root"))
+        .where_opt(Some(Expr::column::<UserId>().eq(1i64)))
+        .allow_all()
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        narrowed.sql,
+        "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+    );
+    assert_eq!(
+        narrowed.params,
+        vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
+    );
+
+    let deleted = delete_from::<Postgres<Pg16>, User>()
+        .where_if(None::<Expr<bool, User>>)
+        .allow_all()
         .build()
         .expect("valid query");
 

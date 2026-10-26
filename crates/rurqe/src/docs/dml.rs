@@ -163,6 +163,77 @@
 //!     .build();
 //! ```
 //!
+//! An optional filter does not weaken that guard: `where_opt` and `where_if` keep
+//! the filtering typestate, so a chain whose predicate is absent stays unbuildable
+//! until the caller records a predicate or opts into modifying every row through
+//! `allow_all`:
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!         UserName => "name": String,
+//!     }
+//! }
+//!
+//! // Fails to compile: an absent optional filter grants no permission to rewrite
+//! // every row.
+//! let _ = update::<Postgres, User>()
+//!     .set(UserName::set("root"))
+//!     .where_opt(None::<Expr<bool, User>>)
+//!     .build();
+//! ```
+//!
+//! ```compile_fail
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!     }
+//! }
+//!
+//! // Fails to compile: an absent optional filter grants no permission to empty
+//! // every row.
+//! let _ = delete_from::<Postgres, User>()
+//!     .where_opt(None::<Expr<bool, User>>)
+//!     .build();
+//! ```
+//!
+//! The same statements stay renderable once the caller confirms the scope, and
+//! `where_opt_or_all` is the spelling that turns an absent predicate into that
+//! confirmation on purpose:
+//!
+//! ```
+//! use rurqe::prelude::*;
+//!
+//! table! {
+//!     /// The `users` table.
+//!     User => "users" {
+//!         UserId => "id": i64,
+//!         UserName => "name": String,
+//!     }
+//! }
+//!
+//! let confirmed = update::<Postgres, User>()
+//!     .set(UserName::set("root"))
+//!     .where_if(None::<Expr<bool, User>>)
+//!     .allow_all()
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(confirmed.sql, "UPDATE \"users\" SET \"name\" = $1");
+//!
+//! let granted = delete_from::<Postgres, User>()
+//!     .where_opt_or_all(None::<Expr<bool, User>>)
+//!     .build()
+//!     .expect("valid query");
+//! assert_eq!(granted.sql, "DELETE FROM \"users\"");
+//! ```
+//!
 //! The `delete_from` builder starts in the unfiltered typestate as well, so an
 //! accidental full-table deletion cannot be rendered before the affected rows
 //! are restricted with `where_` or confirmed with `allow_all`:

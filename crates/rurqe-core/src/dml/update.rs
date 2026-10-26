@@ -220,18 +220,53 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
         self.retype()
     }
 
-    /// Restricts the update to rows matching `predicate` when one is given.
+    /// Restricts the update to rows matching `predicate` when one is given,
+    /// keeping the filtering typestate unchanged.
     ///
-    /// An absent predicate leaves the matching rows untouched, yet the statement
-    /// still moves into [`Filtered`], so a filter assembled from optional caller
-    /// input keeps [`UpdateQuery::build`] reachable:
+    /// An absent predicate does not grant permission to update every row: the
+    /// statement keeps the filtering typestate it arrived with, exactly like
+    /// [`where_if`](UpdateQuery::where_if), so a query that is still
+    /// [`Unfiltered`] after the call cannot be built. Modifying every row
+    /// therefore stays behind an explicit [`allow_all`](UpdateQuery::allow_all):
     ///
     /// ```text
     /// let query = update(Users)
     ///     .set(UsersName::set("root"))
-    ///     .where_opt(target.map(|target| UsersId.eq(target)));
+    ///     .where_opt(target.map(|target| UsersId.eq(target)))
+    ///     .allow_all();
     /// ```
+    ///
+    /// [`where_opt_or_all`](UpdateQuery::where_opt_or_all) is the spelling for a
+    /// caller who means the opposite: there, an absent predicate is an explicit
+    /// permission to update every row.
     pub fn where_opt<PredicateScope, P, PredD>(
+        self,
+        predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
+    ) -> UpdateQuery<D, T, State, Returning, Scope, Assignments>
+    where
+        PredicateScope: ExprInScope<Scope, P> + ScopePositions<P>,
+        PredD: DialectInScope<D>,
+    {
+        self.where_if(predicate)
+    }
+
+    /// Restricts the update to rows matching `predicate` when one is given, and
+    /// otherwise allows the update to affect every row.
+    ///
+    /// **An absent predicate is an implicit
+    /// [`allow_all`](UpdateQuery::allow_all):** the statement moves into
+    /// [`Filtered`] without recording a condition, so `where_opt_or_all(None)`
+    /// renders an `UPDATE` that rewrites the whole table. Keep
+    /// [`where_opt`](UpdateQuery::where_opt) or
+    /// [`where_if`](UpdateQuery::where_if) when an absent predicate has to leave
+    /// the statement unbuildable.
+    ///
+    /// ```text
+    /// let query = update(Users)
+    ///     .set(UsersName::set("root"))
+    ///     .where_opt_or_all(target.map(|target| UsersId.eq(target)));
+    /// ```
+    pub fn where_opt_or_all<PredicateScope, P, PredD>(
         self,
         predicate: Option<Expr<bool, PredicateScope, NonAggregate, PredD>>,
     ) -> UpdateQuery<D, T, Filtered, Returning, Scope, Assignments>
@@ -248,12 +283,12 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     /// Restricts the update to rows matching `predicate` when one is given,
     /// keeping the filtering typestate unchanged.
     ///
-    /// Unlike [`where_opt`](UpdateQuery::where_opt), an absent predicate does not
-    /// grant permission to update every row: a statement that is still
-    /// [`Unfiltered`] after the call cannot be built, so a filter assembled from
-    /// optional caller input never widens into a full-table mutation by
+    /// An absent predicate does not grant permission to update every row: unlike
+    /// [`where_opt_or_all`](UpdateQuery::where_opt_or_all), a statement that is
+    /// still [`Unfiltered`] after the call cannot be built, so a filter assembled
+    /// from optional caller input never widens into a full-table mutation by
     /// accident. The caller either supplies the missing predicate or opts in
-    /// explicitly:
+    /// explicitly through [`allow_all`](UpdateQuery::allow_all):
     ///
     /// ```text
     /// let query = update(Users)
@@ -631,6 +666,69 @@ mod tests {
         );
         assert_eq!(
             filtered.params,
+            vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
+        );
+    }
+
+    #[test]
+    fn where_opt_keeps_the_filtering_typestate_and_where_opt_or_all_grants_it() {
+        fn assert_unfiltered(
+            _query: &UpdateQuery<MockDialect, User, Unfiltered, (), User, HasAssignments>,
+        ) {
+        }
+
+        // An absent optional predicate records no condition and grants no
+        // permission, exactly like `where_if`.
+        let pending = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_opt(None::<Expr<bool, User>>);
+        assert_unfiltered(&pending);
+
+        let explicit = pending.allow_all().build().expect("valid query");
+        assert_eq!(explicit.sql, "UPDATE \"users\" SET \"name\" = $1");
+        assert_eq!(explicit.params, vec![SqlVal::Text("root".to_owned())]);
+
+        // A present predicate is recorded, while the permission to build the
+        // statement still has to be granted by the caller.
+        let recorded = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_opt(Some(Expr::column::<UserId>().eq(1i64)))
+            .allow_all()
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            recorded.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(
+            recorded.params,
+            vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
+        );
+
+        // The granting spelling turns an absent predicate into an explicit
+        // permission to update every row.
+        let granting = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_opt_or_all(None::<Expr<bool, User>>)
+            .build()
+            .expect("valid query");
+
+        assert_eq!(granting.sql, "UPDATE \"users\" SET \"name\" = $1");
+        assert_eq!(granting.params, vec![SqlVal::Text("root".to_owned())]);
+
+        let narrowed = UpdateQuery::<MockDialect, User>::new()
+            .set(UserName::set("root"))
+            .where_opt_or_all(Some(Expr::column::<UserId>().eq(1i64)))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            narrowed.sql,
+            "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+        assert_eq!(
+            narrowed.params,
             vec![SqlVal::Text("root".to_owned()), SqlVal::I64(1)]
         );
     }
