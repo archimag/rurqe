@@ -23,7 +23,8 @@ use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::expr::{
-    render_expr, DialectInScope, Expr, ExprKind, NonAggregate, RawSqlError, SqlVal, Unscoped,
+    render_expr, BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate, RawSqlError, SqlVal,
+    Unscoped,
 };
 use crate::query::{
     reject_unresolved_qualifiers, validate_expr, validate_row_clause, BuildError, RowClause,
@@ -269,6 +270,25 @@ impl<T: Table> ConflictUpdateScope<T> for (T, Excluded<T>, T) {}
 
 impl<T: Table> ConflictUpdateScope<T> for (Excluded<T>, T, T) {}
 
+/// Folds `incoming` into the predicate a clause already recorded.
+///
+/// Every predicate-recording builder of the crate accumulates its criteria —
+/// [`SelectQuery::where_`](crate::query::SelectQuery::where_),
+/// [`UpdateQuery::where_`](crate::dml::UpdateQuery::where_), and
+/// [`Expr::filter_where`](crate::expr::Expr::filter_where) among them — so the
+/// `ON CONFLICT` predicates follow the same rule: a repeated call narrows the
+/// clause it was given instead of loosening what an earlier call stated.
+fn and_recorded(recorded: Option<ExprKind>, incoming: ExprKind) -> ExprKind {
+    match recorded {
+        Some(existing) => ExprKind::Binary {
+            op: BinaryOp::And,
+            lhs: Box::new(existing),
+            rhs: Box::new(incoming),
+        },
+        None => incoming,
+    }
+}
+
 /// Marker of an `ON CONFLICT` clause that records no update predicate yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoUpdatePredicate;
@@ -288,9 +308,11 @@ type ConflictMarker<Predicate> = PhantomData<fn() -> Predicate>;
 ///
 /// The conflict target is fixed by [`InsertQuery::on_conflict`], while the
 /// optional predicates are added through [`OnConflict::target_where`] and
-/// [`OnConflict::update_where`]. [`OnConflict::do_nothing`] and
-/// [`OnConflict::do_update`] then choose the action and hand the statement back
-/// for rendering.
+/// [`OnConflict::update_where`]. Both accumulate: a repeated call folds its
+/// criterion into the recorded one with the SQL `AND` operator, so no
+/// restriction is dropped when a conditional upsert chains them.
+/// [`OnConflict::do_nothing`] and [`OnConflict::do_update`] then choose the
+/// action and hand the statement back for rendering.
 pub struct OnConflict<D: Dialect, T: Table, Values, Returning, Predicate = NoUpdatePredicate> {
     query: InsertQuery<D, T, Values, Returning>,
     target: Vec<&'static str>,
@@ -314,35 +336,6 @@ where
             target,
             target_predicate: None,
             update_predicate: None,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Restricts the rows the `DO UPDATE` branch rewrites.
-    ///
-    /// The predicate is rendered after the assignments of the branch, so it may
-    /// compare the stored row with the one the statement proposed:
-    ///
-    /// ```text
-    /// DO UPDATE SET "name" = EXCLUDED."name" WHERE ("name" <> EXCLUDED."name")
-    /// ```
-    ///
-    /// Recording a predicate moves the clause into [`HasUpdatePredicate`], where
-    /// [`do_nothing`](OnConflict::do_nothing) is no longer reachable, so the
-    /// predicate cannot be dropped silently.
-    pub fn update_where<S, PredD>(
-        self,
-        predicate: Expr<bool, S, NonAggregate, PredD>,
-    ) -> OnConflict<D, T, Values, Returning, HasUpdatePredicate>
-    where
-        S: ConflictUpdateScope<T>,
-        PredD: DialectInScope<D>,
-    {
-        OnConflict {
-            query: self.query,
-            target: self.target,
-            target_predicate: self.target_predicate,
-            update_predicate: Some(predicate.into_kind()),
             _marker: PhantomData,
         }
     }
@@ -407,13 +400,70 @@ where
     /// ```text
     /// ON CONFLICT ("id") WHERE ("id" > $1) DO UPDATE SET ...
     /// ```
+    ///
+    /// Repeated calls accumulate instead of replacing the recorded criterion: each
+    /// predicate is folded into the previous one with the SQL `AND` operator, the
+    /// same rule [`SelectQuery::where_`](crate::query::SelectQuery::where_) and
+    /// [`Expr::filter_where`](crate::expr::Expr::filter_where) follow. Targeting
+    /// several partial indexes therefore keeps every condition in force, and the
+    /// rendered clause names all of them:
+    ///
+    /// ```text
+    /// ON CONFLICT ("id") WHERE (("id" > $1) AND ("tenant_id" = $2)) DO UPDATE ...
+    /// ```
     pub fn target_where<S, PredD>(mut self, predicate: Expr<bool, S, NonAggregate, PredD>) -> Self
     where
         S: ConflictTargetScope<T>,
         PredD: DialectInScope<D>,
     {
-        self.target_predicate = Some(predicate.into_kind());
+        self.target_predicate = Some(and_recorded(
+            self.target_predicate.take(),
+            predicate.into_kind(),
+        ));
         self
+    }
+
+    /// Restricts the rows the `DO UPDATE` branch rewrites.
+    ///
+    /// The predicate is rendered after the assignments of the branch, so it may
+    /// compare the stored row with the one the statement proposed:
+    ///
+    /// ```text
+    /// DO UPDATE SET "name" = EXCLUDED."name" WHERE ("name" <> EXCLUDED."name")
+    /// ```
+    ///
+    /// Repeated calls accumulate instead of replacing the recorded criterion: each
+    /// predicate is folded into the previous one with the SQL `AND` operator, so a
+    /// tenant restriction followed by a staleness check stays in force rather than
+    /// being overwritten by the later call:
+    ///
+    /// ```text
+    /// ... DO UPDATE SET "name" = $3
+    ///     WHERE (("tenant_id" = $4) AND ("updated_at" < $5))
+    /// ```
+    ///
+    /// Recording a predicate moves the clause into [`HasUpdatePredicate`], where
+    /// [`do_nothing`](OnConflict::do_nothing) is no longer reachable, so the
+    /// predicate cannot be dropped silently.
+    pub fn update_where<S, PredD>(
+        mut self,
+        predicate: Expr<bool, S, NonAggregate, PredD>,
+    ) -> OnConflict<D, T, Values, Returning, HasUpdatePredicate>
+    where
+        S: ConflictUpdateScope<T>,
+        PredD: DialectInScope<D>,
+    {
+        self.update_predicate = Some(and_recorded(
+            self.update_predicate.take(),
+            predicate.into_kind(),
+        ));
+        OnConflict {
+            query: self.query,
+            target: self.target,
+            target_predicate: self.target_predicate,
+            update_predicate: self.update_predicate,
+            _marker: PhantomData,
+        }
     }
 
     /// Completes the clause as `DO UPDATE SET ...` using `assignments`.
@@ -607,6 +657,92 @@ mod tests {
                 SqlVal::Text("upserted".to_owned()),
                 SqlVal::Text("stored".to_owned()),
                 SqlVal::Text("proposed".to_owned()),
+                SqlVal::Text("root".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_target_predicate_calls_are_combined_with_and() {
+        // Targeting two partial indexes narrows the conflict target instead of
+        // replacing the criterion the first call recorded.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .target_where(UserId.gt(0i64))
+            .target_where(UserName.ne("blocked"))
+            .do_update(UserName::set("upserted"))
+            .build().expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") WHERE ((\"id\" > $3) AND (\"name\" <> $4)) DO UPDATE SET \"name\" = $5"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::I64(0),
+                SqlVal::Text("blocked".to_owned()),
+                SqlVal::Text("upserted".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_update_predicate_calls_are_combined_with_and() {
+        // The second guard restricts the rows the branch rewrites further, so the
+        // first guard survives as the left-hand operand of the conjunction.
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .update_where(UserId.gt(0i64))
+            .update_where(UserName.ne("root"))
+            .do_update(UserName::set("upserted"))
+            .build().expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO UPDATE SET \"name\" = $3 WHERE ((\"id\" > $4) AND (\"name\" <> $5))"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::Text("upserted".to_owned()),
+                SqlVal::I64(0),
+                SqlVal::Text("root".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn both_predicate_kinds_accumulate_independently() {
+        let built = InsertQuery::<MockDialect, User>::new()
+            .values((UserId::set(1i64), UserName::set("root")))
+            .on_conflict((UserId,))
+            .target_where(UserId.gt(0i64))
+            .target_where(UserId.lt(1_000i64))
+            .update_where(UserName.ne("stored"))
+            .update_where(UserName.ne("root"))
+            .do_update(UserName::set("upserted"))
+            .build().expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") WHERE ((\"id\" > $3) AND (\"id\" < $4)) DO UPDATE SET \"name\" = $5 WHERE ((\"name\" <> $6) AND (\"name\" <> $7))"
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                SqlVal::I64(1),
+                SqlVal::Text("root".to_owned()),
+                SqlVal::I64(0),
+                SqlVal::I64(1_000),
+                SqlVal::Text("upserted".to_owned()),
+                SqlVal::Text("stored".to_owned()),
                 SqlVal::Text("root".to_owned()),
             ]
         );
