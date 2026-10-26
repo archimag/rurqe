@@ -6,7 +6,7 @@
 //! in [`swap`], so the artifact protocol stays auditable in one place.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rurqe_migrate::checkpoint::Checkpoint;
@@ -25,21 +25,28 @@ use crate::stage::postgres::{
 use crate::stage::{compare_stage_with_live, GoldenEquation};
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
-use super::{cli_error, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
+use super::{
+    cli_error, sweep_stale_temporaries, sync_directory, write_file, STALE_TEMPORARY_AGE,
+};
 
 pub(super) mod lock;
 mod swap;
 
 pub(crate) use self::swap::recover_interrupted_commit;
 
-// The artifact protocol is driven directly by the unit tests of this module tree,
+// The staged boundary snapshot is assembled by the preparation phase of a commit,
+// which lives in this module, so the writer is published to the module tree rather
+// than to the crate; the unit tests of the tree reach it the same way.
+pub(super) use self::swap::write_staged_boundary;
+
+// The rollback helpers are driven directly by the unit tests of this module tree,
 // so the entry points they exercise are re-exported for them alone: a build
 // without tests reaches the protocol through the commit that owns it.
 #[cfg(test)]
-pub(crate) use self::swap::{flush_boundary_parent, move_failure, write_staged_boundary};
+pub(crate) use self::swap::{flush_boundary_parent, move_failure};
 
 use self::lock::CheckpointLock;
-use self::swap::{boundary_dir, path_exists, seal_commit};
+use self::swap::{boundary_dir, create_staging_dir, path_exists, seal_commit};
 
 /// Drops the PostgreSQL scratch databases earlier verifications abandoned.
 ///
@@ -377,10 +384,23 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 /// of a fresh boundary described by a stale marker. The lock is not parked, because
 /// it describes the live catalog the commit read and the next commit recomputes it.
 ///
-/// The whole commit — the debris sweep, the repair, the rewind guard, the parity
-/// gate, the `schema.lock` write, and the swap itself — runs inside the exclusive
-/// `checkpoint.lock` section [`CheckpointLock`] guards, so a second writer either
-/// waits for this one or fails naming it, and never interleaves with the
+/// The commit is split into a preparation phase and a minimal critical section,
+/// because the section is bounded by the liveness budget of the checkpoint lock
+/// while the preparation is not. Loading the stage, reading the live catalog over
+/// the network, materialising the stage in a parity scratch database, rendering
+/// the lock and the marker, and staging the boundary snapshot all take as long as a
+/// remote server, a large stage, and slow storage take, and none of them mutates a
+/// workspace artifact; they therefore run before the section is taken, so two
+/// writers may prepare at once and the section covers local filesystem work alone.
+/// The staged snapshot stays invisible under the live path until the swap renames it
+/// into place, and [`StagedCleanup`] discards it on every failure in between.
+///
+/// The preparation observed the marker before it began, so the section re-observes
+/// it: the debris sweep, the repair, the rewind guard, the `schema.lock`
+/// publication, and the swap itself run inside the exclusive `checkpoint.lock`
+/// section [`CheckpointLock`] guards, so a writer that committed while this one
+/// prepared cannot have its boundary rewound by this commit, and a second writer
+/// either waits for the section or fails naming it, never interleaving with the
 /// artifacts below.
 pub(crate) fn commit_stage(
     version: MigrationVersion,
@@ -392,70 +412,89 @@ pub(crate) fn commit_stage(
 ) -> Result<CommandOutput, CliError> {
     let boundary = boundary_dir(checkpoint_path);
 
-    // The section is held across the whole commit: the sweep, the repair, the
-    // rewind guard, the parity gate, the `schema.lock` write, and the swap
-    // never interleave with another writer, which either waits for this one
-    // or fails naming it.
-    let _section = CheckpointLock::acquire(checkpoint_path)?;
+    // Preparation runs outside the section: it reads the stage and the database
+    // but writes no workspace artifact, and it takes as long as the server and the
+    // disk take.
+    let stage = load_stage(stage_dir)?;
+    let (catalog, notice) = introspect_database_schema_notice(database_url, schema)?;
+
+    // The parity gate runs before the section is ever taken: the lock and the
+    // marker describe the live database while the boundary snapshot replays the
+    // declarative stage, so a stage that drifted from the database would seal a
+    // triple that contradicts itself and make `stage verify` fail on a checkpoint
+    // no later commit could repair.
+    // The live catalog was read over the selected schema, so the stage has to be
+    // materialised and introspected over the very same one: comparing a stage
+    // built in `public` against a catalog read elsewhere would reject a
+    // consistent non-public project for a drift it never had.
+    let diff = compare_stage_with_live(&stage, &catalog, parity_scratch_url(database_url), schema)
+        .map_err(cli_error)?;
+    if !diff.is_empty() {
+        return Err(stage_parity_failure(stage_dir, &diff));
+    }
+
+    let lock = catalog.to_lock();
+    let checkpoint = Checkpoint::new(version, catalog.checksum());
+    let marker = checkpoint.render();
+
+    // The staged boundary is assembled here, beside the artifact it replaces, so
+    // the section below only has to rename it into place.
+    let staged = create_staging_dir(&boundary)?;
+    if let Err(error) = write_staged_boundary(&stage, &staged) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
+    }
+
+    // Flushing the staging directory makes the staged names durable before the
+    // swap publishes them, so the installed boundary survives a power loss.
+    if let Err(error) = sync_directory(&staged) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(error);
+    }
+
+    // From here on every failure discards the staged sibling: the swap renames it
+    // away on success, so the guard is a no-op there.
+    let _staged = StagedCleanup(staged.clone());
+
+    // The section is bounded by local filesystem work alone: the sweep, the
+    // repair, the rewind guard, the `schema.lock` publication, and the swap.
+    let section = CheckpointLock::acquire(checkpoint_path)?;
 
     // Debris of an interrupted commit is discarded first, so the artifacts
     // written below never share a directory with the staged siblings a killed
     // process left behind for good.
     sweep_commit_debris(&[lock_path, checkpoint_path, boundary.as_path()]);
 
-    // A commit an earlier process left halfway is repaired before the boundary is
-    // read, so the rewind guard and the artifacts below operate on a
-    // self-consistent marker/boundary pair.
+    // A commit an earlier process left halfway is repaired before the marker is
+    // read, so the rewind guard below compares against the boundary that really
+    // stands.
     //
     // The repair has already renamed artifacts into place by the time the rewind
-    // guard, the stage load, the introspection, the parity gate, the lock write,
-    // or the swap can fail, so every one of them folds its report into the
-    // failure it returns: the failure channel is the only output a failing
-    // command guarantees.
+    // guard, the lock write, or the swap can fail, so every one of them folds its
+    // report into the failure it returns: the failure channel is the only output a
+    // failing command guarantees.
     let recovery = recover_interrupted_commit(checkpoint_path)?;
     let fail = |error: CliError| carry_recovery(recovery.as_deref(), error);
 
+    // The marker is re-read inside the section, so a writer that committed while
+    // this one prepared cannot have its boundary rewound here.
     if let Some(existing) = Checkpoint::load(checkpoint_path)
         .map_err(cli_error)
         .map_err(fail)?
     {
-        if existing.pruned_up_to_version() > &version {
+        // The version this commit anchors is the one the rendered checkpoint
+        // already carries, so the guard reads it from there instead of holding a
+        // second copy the preparation phase would have to keep alive across the move.
+        if existing.pruned_up_to_version() > checkpoint.pruned_up_to_version() {
             return Err(fail(CliError(format!(
-                "`{}` already anchors the history up to version {}; rewinding it to {version} \
+                "`{}` already anchors the history up to version {}; rewinding it to {} \
                  would re-open pruned migrations",
                 checkpoint_path.display(),
-                existing.pruned_up_to_version()
+                existing.pruned_up_to_version(),
+                checkpoint.pruned_up_to_version()
             ))));
         }
     }
-
-    let stage = load_stage(stage_dir).map_err(fail)?;
-    let (catalog, notice) =
-        introspect_database_schema_notice(database_url, schema).map_err(fail)?;
-
-    // The parity gate runs before the first artifact is rendered: the lock and
-    // the marker describe the live database while the boundary snapshot replays
-    // the declarative stage, so a stage that drifted from the database would seal
-    // a triple that contradicts itself and make `stage verify` fail on a
-    // checkpoint no later commit could repair.
-    // The live catalog was read over the selected schema, so the stage has to be
-    // materialised and introspected over the very same one: comparing a stage
-    // built in `public` against a catalog read elsewhere would reject a
-    // consistent non-public project for a drift it never had.
-    let diff = compare_stage_with_live(
-        &stage,
-        &catalog,
-        parity_scratch_url(database_url),
-        schema,
-    )
-    .map_err(cli_error)
-    .map_err(fail)?;
-    if !diff.is_empty() {
-        return Err(fail(stage_parity_failure(stage_dir, &diff)));
-    }
-
-    let lock = catalog.to_lock();
-    let checkpoint = Checkpoint::new(version, catalog.checksum());
 
     // The lock describes the live catalog the commit seals and is written first;
     // the marker and boundary are then swapped as one pair, with the marker
@@ -463,13 +502,8 @@ pub(crate) fn commit_stage(
     write_file(lock_path, &lock).map_err(fail)?;
     // The parked pair this commit writes carries the scope of the section it
     // holds, so a copy it leaves behind stays attributable to this writer.
-    let swap_notices = seal_commit(
-        &stage,
-        checkpoint_path,
-        &checkpoint.render(),
-        _section.writer(),
-    )
-    .map_err(fail)?;
+    let swap_notices = seal_commit(&staged, checkpoint_path, &marker, section.writer())
+        .map_err(fail)?;
 
     // The notices travel in the report of the command, so a selection that
     // describes nothing, a repaired commit, and a boundary whose directory could
@@ -488,6 +522,30 @@ pub(crate) fn commit_stage(
         catalog.schema_hash()
     ));
     Ok(output)
+}
+
+/// Discards a staged boundary snapshot a commit never installed.
+///
+/// The snapshot is assembled beside the boundary it replaces, so it stays invisible
+/// under the live path until [`seal_commit`] renames it into place; a commit that
+/// fails between the staging and the swap would otherwise leave a whole directory of
+/// declarative DDL behind that no command would ever read. The guard removes it on
+/// every failure path and is a no-op on success, where the rename has already moved
+/// the directory away.
+struct StagedCleanup(PathBuf);
+
+impl Drop for StagedCleanup {
+    fn drop(&mut self) {
+        match std::fs::remove_dir_all(&self.0) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                staged = %self.0.display(),
+                %error,
+                "failed to discard the staged boundary snapshot"
+            ),
+        }
+    }
 }
 
 /// The disposable state the declarative stage is materialised in before a commit.
@@ -534,17 +592,18 @@ fn carry_recovery(recovery: Option<&str>, error: CliError) -> CliError {
 ///
 /// The findings are rendered with the wording of a commit — the stage against the
 /// database — and the remedy names both descriptions, because re-running the very
-/// same commit is exactly what a bare failure would invite. The claim that nothing
-/// was written is narrowed to the artifacts this commit writes: the repair of an
-/// interrupted commit that precedes it may already have restored the previous pair,
-/// and that report travels in the same failure.
+/// same commit is exactly what a bare failure would invite. The gate runs during the
+/// preparation of the commit, before the checkpoint section is taken, so nothing was
+/// written and nothing was repaired: the artifacts of this commit and the parked
+/// copies of an interrupted one are all untouched.
 fn stage_parity_failure(stage_dir: &Path, diff: &SchemaDiff) -> CliError {
     CliError(format!(
         "the declarative stage `{}` does not describe the database this commit would anchor:\n{}Hint: \
          bring `schema/` and the database back into agreement — apply the migration that closes \
          the gap, or re-init the stage from the live catalog — then re-run `stage commit`. The gate \
-         stands in front of every artifact this commit writes, so it wrote none of them: \
-         `schema.lock`, `checkpoint.toml`, and the boundary snapshot are untouched by it",
+         runs before the commit enters its checkpoint section, so it wrote no artifact and repaired \
+         none: `schema.lock`, `checkpoint.toml`, the boundary snapshot, and the parked copies of an \
+         interrupted commit are untouched by it",
         stage_dir.display(),
         StageFindings(diff)
     ))

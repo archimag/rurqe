@@ -66,7 +66,13 @@
 //! ## Critical sections
 //!
 //! * `stage commit` holds the section across the sweep of staging debris, the
-//!   recovery pass, the parity gate, the `schema.lock` write, and `seal_commit`.
+//!   recovery pass, the rewind guard, the `schema.lock` publication, and
+//!   `seal_commit`. The stage load, the live-catalog introspection, the parity
+//!   scratch materialisation, the rendering of the lock and the marker, and the
+//!   staging of the boundary snapshot are preparation outside the section: none of
+//!   them mutates a workspace artifact, so one writer's preparation may overlap
+//!   another writer's section, and the rewind guard and the recovery inside the
+//!   section re-observe whatever the intervening writer committed.
 //! * `stage verify` holds it across the recovery pass and the reads of the marker,
 //!   the base boundary, and the tail. The scratch databases stay outside it: each is
 //!   per-verification and the catalog work on it is serially safe on its own.
@@ -78,26 +84,30 @@
 //!
 //! ## Commit transitions
 //!
-//! `seal_commit` walks the sequence below while it holds the section; the right
-//! column is the resulting state of the marker/boundary pair.
+//! A commit walks the sequence below; the right column is the resulting state of the
+//! marker/boundary pair. Step 0 is preparation and runs outside the section, while
+//! every later step runs inside it and is bounded by local filesystem work alone.
 //!
-//! | Step | Action | State after the step |
-//! | --- | --- | --- |
-//! | 0 | the section is taken, `schema.lock` is written | live(prev) / live(prev) |
-//! | 1 | the new boundary is assembled into the staging directory and flushed | live(prev) / live(prev), staged(new) |
-//! | 2 | the previous marker is parked | parked(prev) / live(prev) |
-//! | 3 | the previous boundary is parked | parked(prev) / parked(prev) |
-//! | 4 | the staged boundary is renamed into place and the directory flushed | parked(prev) / live(new) |
-//! | 5 | the new marker is written and the directory flushed — the commit point | live(new) / live(new) |
-//! | 6 | the parked pair is discarded | live(new) / live(new), no recoverable copy left |
+//! | Step | Section | Action | State after the step |
+//! | --- | --- | --- | --- |
+//! | 0 | outside | the new boundary is assembled into the staging directory and flushed | live(prev) / live(prev), staged(new) |
+//! | 1 | inside | the previous marker is parked | parked(prev) / live(prev), staged(new) |
+//! | 2 | inside | the previous boundary is parked | parked(prev) / parked(prev), staged(new) |
+//! | 3 | inside | the staged boundary is renamed into place and the directory flushed | parked(prev) / live(new) |
+//! | 4 | inside | the new marker is written and the directory flushed — the commit point | live(new) / live(new) |
+//! | 5 | inside | the parked pair is discarded | live(new) / live(new), no recoverable copy left |
 //!
-//! Every failure before step 5 is rolled back inside `seal_commit`: the staging
-//! directory is removed and whatever was already parked is renamed back, so the
-//! command reports a failure with the previous pair untouched. From step 5 on the
-//! commit has happened, so a parked pair that cannot be removed is reported as a
-//! warning and swept by a later writer, never rolled back.
+//! The section itself is taken, the debris swept, the interrupted pair repaired, and
+//! `schema.lock` written between step 0 and step 1.
 //!
-//! The order of steps 2 and 3 is what makes the sequence recoverable: parking the
+//! Every failure inside the section before step 4 is rolled back: whatever was
+//! already parked is renamed back and the staged directory is discarded, so the
+//! command reports a failure with the previous pair untouched. A failure between step
+//! 0 and the section discards the staged directory alone. From step 4 on the commit
+//! has happened, so a parked pair that cannot be removed is reported as a warning and
+//! swept by a later writer, never rolled back.
+//!
+//! The order of steps 1 and 2 is what makes the sequence recoverable: parking the
 //! marker first leaves the boundary the parked marker describes still live, so a
 //! kill between the two parks needs only the marker put back, while parking the
 //! boundary first would leave a live marker describing a boundary that is gone.
@@ -126,10 +136,10 @@
 //! ### commit × commit
 //!
 //! Two commits over fixed `.previous` names break the pair in two ways. A second
-//! writer that enters recovery while the first is between steps 4 and 5 sees a live
+//! writer that enters recovery while the first is between steps 3 and 4 sees a live
 //! marker beside a live boundary, concludes that the pair reached its commit point,
 //! and discards the parked pair the first writer still needs — invariant I2 broken. A
-//! second writer that starts while the first is between steps 3 and 5 renames the
+//! second writer that starts while the first is between steps 2 and 4 renames the
 //! previous boundary back over the boundary the first writer just installed, so the
 //! marker the first writer goes on to write describes a boundary it no longer sits
 //! beside — invariants I1 and I2 broken at once.
@@ -147,9 +157,9 @@
 //!
 //! A verification mutates the artifacts too: it repairs an interrupted commit before it
 //! reads anything, and then reads the marker, the base boundary, and the tail. Unlocked,
-//! its repair can restore a parked boundary underneath a commit that is between steps 4
-//! and 5, so the commit publishes a marker describing a boundary another writer
-//! replaced. Its reads are no safer: between steps 3 and 5 the boundary is absent under
+//! its repair can restore a parked boundary underneath a commit that is between steps 3
+//! and 4, so the commit publishes a marker describing a boundary another writer
+//! replaced. Its reads are no safer: between steps 2 and 4 the boundary is absent under
 //! its live path, so a verification would replay the tail over no base at all and reject
 //! a project whose commit is perfectly healthy. Holding the section across the repair
 //! and the reads means a verification that overlaps a commit waits, and one that runs
@@ -157,7 +167,7 @@
 //!
 //! ### commit × prune
 //!
-//! Between steps 2 and 5 the marker does not exist under its live path: it sits parked,
+//! Between steps 1 and 4 the marker does not exist under its live path: it sits parked,
 //! waiting for the commit point. A prune that reads the marker in that window sees a
 //! project without a checkpoint and refuses, so a healthy project reports the "commit the
 //! stage before pruning" failure; a prune that repairs the pair first instead decides from
@@ -517,17 +527,17 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
 /// Installs the new boundary and marker as one commit, keeping the previous pair
 /// parked until the marker is durable.
 ///
-/// The new boundary is assembled and flushed first, so a failure up to there
-/// leaves the committed pair exactly as it was. The previous marker and boundary
-/// are then parked under `scope` — the identity the writer holding the section
-/// installed when it entered it — the staged boundary is installed, and the marker
-/// is written last as the commit point. Only once the marker is durable are the parked
-/// artifacts discarded. A process killed before the commit point leaves the
-/// previous pair parked for [`recover_interrupted_commit`] to restore; one killed
-/// after it leaves the committed pair live with the previous pair parked as
-/// debris.
+/// The staged boundary is assembled and flushed by the caller, so no external work
+/// happens here: a failure before the first rename leaves the committed pair
+/// exactly as it was. The previous marker and boundary are parked under `scope` —
+/// the identity the writer holding the section installed when it entered it — the
+/// staged boundary is renamed into place, and the marker is written last as the
+/// commit point. Only once the marker is durable are the parked artifacts
+/// discarded. A process killed before the commit point leaves the previous pair
+/// parked for [`recover_interrupted_commit`] to restore; one killed after it leaves
+/// the committed pair live with the previous pair parked as debris.
 pub(super) fn seal_commit(
-    stage: &DeclarativeStage,
+    staged: &Path,
     checkpoint_path: &Path,
     marker: &str,
     scope: WriterId,
@@ -536,27 +546,13 @@ pub(super) fn seal_commit(
     let marker_backup = parked_sibling(checkpoint_path, scope);
     let boundary_backup = parked_sibling(&dir, scope);
 
-    let staged = create_staging_dir(&dir)?;
-
-    if let Err(error) = write_staged_boundary(stage, &staged) {
-        let _ = std::fs::remove_dir_all(&staged);
-        return Err(error);
-    }
-
-    // Flushing the staging directory makes the staged names durable before the
-    // swap publishes them, so the installed boundary survives a power loss.
-    if let Err(error) = sync_directory(&staged) {
-        let _ = std::fs::remove_dir_all(&staged);
-        return Err(error);
-    }
-
     // The marker is parked before the boundary: a kill between the two parks
     // leaves the boundary the parked marker describes still live, so the recovery
     // only has to put the marker back.
     let parked_marker = match park(checkpoint_path, &marker_backup) {
         Ok(parked) => parked,
         Err(error) => {
-            let _ = std::fs::remove_dir_all(&staged);
+            let _ = std::fs::remove_dir_all(staged);
             return Err(error);
         }
     };
@@ -564,7 +560,7 @@ pub(super) fn seal_commit(
     let parked_boundary = match park(&dir, &boundary_backup) {
         Ok(parked) => parked,
         Err(error) => {
-            let _ = std::fs::remove_dir_all(&staged);
+            let _ = std::fs::remove_dir_all(staged);
             let mut failure = error;
             if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
                 failure.0.push_str(&format!("; {notice}"));
@@ -573,12 +569,12 @@ pub(super) fn seal_commit(
         }
     };
 
-    if let Err(error) = std::fs::rename(&staged, &dir) {
-        let mut failure = move_failure(&dir, &staged, &error, parked_boundary.as_deref());
+    if let Err(error) = std::fs::rename(staged, &dir) {
+        let mut failure = move_failure(&dir, staged, &error, parked_boundary.as_deref());
         if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
             failure.0.push_str(&format!("; {notice}"));
         }
-        let _ = std::fs::remove_dir_all(&staged);
+        let _ = std::fs::remove_dir_all(staged);
         return Err(failure);
     }
 
@@ -686,10 +682,13 @@ fn discard_parked(parked: &Path) -> Option<String> {
 
 /// Creates the empty staging directory the new snapshot is assembled in.
 ///
+/// The commit preparation calls this outside its critical section, so the staging
+/// directory is complete on disk before the section is entered.
+///
 /// A directory left behind by an interrupted attempt of a recycled process is
 /// discarded instead of merged into, so two commits can never end up in one
 /// snapshot.
-fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
+pub(super) fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
     let staged = temporary_sibling(dir);
 
     match std::fs::remove_dir_all(&staged) {

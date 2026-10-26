@@ -282,6 +282,15 @@ fn the_committed_boundary_is_never_rewound() {
     .expect_err("the boundary cannot move backwards");
 
     assert!(error.to_string().contains("re-open"));
+
+    // The refusal happens before the swap, so the staged snapshot the preparation
+    // assembled is discarded instead of lingering beside the boundary it never
+    // became.
+    let leftovers: Vec<String> = directory_names(&dir)
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
 }
 
 #[test]
@@ -1373,12 +1382,13 @@ fn two_sequential_commits_converge_to_the_last_one() {
 }
 
 #[test]
-fn a_failed_commit_reports_the_interrupted_commit_it_repaired() {
+fn a_stage_rejected_by_the_parity_gate_leaves_an_interrupted_commit_parked() {
     let dir = workspace("commit-recovery-failure");
     let stage_dir = dir.join("schema");
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
     // The declarative stage declares a column the live database never received,
-    // so the commit fails after its repair and before any of its own artifacts.
+    // so the parity gate rejects the commit during its preparation, before the
+    // section is taken and before any repair could run.
     std::fs::write(
         stage_dir.join("users.sql"),
         "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
@@ -1390,9 +1400,9 @@ fn a_failed_commit_reports_the_interrupted_commit_it_repaired() {
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // A killed commit left the previous marker and boundary parked, so the commit
-    // restores the pair and the parity gate then rejects the drifted stage: the
-    // failure has to say that the workspace already changed underneath it.
+    // A killed commit left the previous marker and boundary parked. The gate runs
+    // outside the section, so the commit neither restores nor discards the pair:
+    // the only copy of the previous state stays exactly where it was parked.
     let marker_backup = dir.join(".checkpoint.toml.4242.7.previous");
     std::fs::write(
         &marker_backup,
@@ -1420,15 +1430,31 @@ fn a_failed_commit_reports_the_interrupted_commit_it_repaired() {
     let message = error.to_string();
     assert!(
         message.contains("does not describe the database"),
-        "the diagnostic still names the violated parity, got {message}"
+        "the diagnostic names the violated parity, got {message}"
     );
     assert!(
-        message.contains("Restored the checkpoint marker"),
-        "the failure names the repair that already moved artifacts, got {message}"
+        message.contains("email"),
+        "the diagnostic names the drifted column, got {message}"
     );
     assert!(
-        checkpoint_path.exists(),
-        "the repair really restored the marker the failure reports"
+        !message.contains("repaired an interrupted commit"),
+        "the gate runs before any repair, so the diagnostic carries no repair note, got {message}"
+    );
+
+    // The gate wrote nothing and repaired nothing: the parked pair is the only
+    // copy of the previous state and stays parked, and no artifact of the commit
+    // stands beside it.
+    assert!(marker_backup.exists(), "the parked marker is untouched");
+    assert!(boundary_backup.exists(), "the parked boundary is untouched");
+    assert!(!checkpoint_path.exists(), "no marker was written");
+    assert!(
+        !dir.join("checkpoint-stage").exists(),
+        "no boundary snapshot was written"
+    );
+    assert!(!lock_path.exists(), "no lock was written");
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "the commit never entered its section"
     );
 }
 
