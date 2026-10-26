@@ -214,8 +214,13 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
 /// The repair and the artifact reads run inside the exclusive `checkpoint.lock`
 /// section [`CheckpointLock`] guards, so a verification that overlaps a commit
 /// waits for it and reads exactly the committed pair instead of a half-swapped
-/// one; the scratch materialisation stays outside the section, because each
-/// scratch database is per-verification and serially safe on its own.
+/// one; a lock a provably live writer holds is never taken over, so the
+/// verification refuses with a diagnostic naming that owner instead of repairing
+/// a commit still in flight, while a lock whose owner is gone is taken over and
+/// the commit it interrupted is repaired here. The section is released as soon as
+/// the artifacts are read, because the scratch materialisation below writes no
+/// workspace artifact: each scratch database is per-verification and serially
+/// safe on its own.
 pub(crate) fn verify_stage(
     stage_dir: &Path,
     base_stage_dir: Option<&Path>,
@@ -224,31 +229,35 @@ pub(crate) fn verify_stage(
     schema: &str,
     scratch_url: &str,
 ) -> Result<CommandOutput, CliError> {
-    // The section is held across the repair and the reads of the marker, the
-    // boundary, and the tail; the scratch materialisation below runs outside it.
-    let (recovery, stage, tail, checkpoint, base) = {
-        // A commit an interrupted process left halfway is repaired before the
-        // boundary is read, so the snapshot loaded below is the one the live
-        // marker describes.
-        let _section = CheckpointLock::acquire(checkpoint_path)?;
-        let recovery = recover_interrupted_commit(checkpoint_path)?;
+    // The section guards the repair and the reads of the marker, the boundary,
+    // and the tail; it is released below, before the equation materialises
+    // anything, because a verification writes no workspace artifact beyond the
+    // repair itself.
+    let section = CheckpointLock::acquire(checkpoint_path)?;
 
-        let stage = load_stage(stage_dir)?;
-        let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
-        let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
+    // A commit an interrupted process left halfway is repaired before the
+    // boundary is read, so the snapshot loaded below is the one the live marker
+    // describes. The repair never classifies a parked pair while a provably live
+    // writer holds the section, so a commit still in flight is not undone here.
+    let recovery = recover_interrupted_commit(checkpoint_path)?;
 
-        // An explicit `--base-stage-dir` overrides the recorded snapshot;
-        // without one, the boundary snapshot `stage commit` wrote next to the
-        // marker is loaded, and an absent snapshot leaves the base unset so the
-        // golden equation itself rejects a checkpoint that cannot be replayed
-        // from nothing.
-        let base = match base_stage_dir {
-            Some(dir) => Some(load_stage(dir)?),
-            None => load_recorded_boundary(&boundary_dir(checkpoint_path))?,
-        };
+    let stage = load_stage(stage_dir)?;
+    let tail = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    let checkpoint = Checkpoint::load(checkpoint_path).map_err(cli_error)?;
 
-        (recovery, stage, tail, checkpoint, base)
+    // An explicit `--base-stage-dir` overrides the recorded snapshot; without
+    // one, the boundary snapshot `stage commit` wrote next to the marker is
+    // loaded, and an absent snapshot leaves the base unset so the golden equation
+    // itself rejects a checkpoint that cannot be replayed from nothing.
+    let base = match base_stage_dir {
+        Some(dir) => Some(load_stage(dir)?),
+        None => load_recorded_boundary(&boundary_dir(checkpoint_path))?,
     };
+
+    // The section ends here: the artifacts are read, and the equation below only
+    // materialises scratch databases over files nobody writes, so the lock is not
+    // held while it runs.
+    drop(section);
 
     let mut equation = match &base {
         Some(base) => GoldenEquation::new(&stage, &tail)
