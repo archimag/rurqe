@@ -16,7 +16,6 @@ use crate::schema::{ExprInScope, Table};
 use super::SelectQuery;
 
 impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output, Projected, Lock> {
-    /// Joins the table `T` to the query with an `INNER JOIN` restricted by `on`.
     /// Joins `table` to the query with an `INNER JOIN` restricted by `on`.
     ///
     /// Taking the table marker lets the compiler infer `T`, the joined scope, and
