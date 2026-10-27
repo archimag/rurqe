@@ -1,78 +1,98 @@
 # Summary
 
-# Часть I. Введение
+# Part I. Introduction
 
-- [Философия RURQE](intro/philosophy.md)
-- [Архитектурный тетраэдр](intro/tetrad.md)
+- [Philosophy of RURQE](intro/philosophy.md)
+- [The architectural tetrad](intro/tetrad.md)
 - [Two-Tier SQL Correctness](intro/two_tier.md)
-- [Quickstart за 5 минут](intro/quickstart.md)
+- [Quickstart in five minutes](intro/quickstart.md)
 
-# Часть II. Реляционная теория в типах Rust
+# Part II. Relational theory in Rust types
 
-- [Обзор части](theory/overview.md)
-- [От реляционной алгебры Кодда к системе типов Rust](theory/codd_to_rust.md)
-- [Области видимости: TableScope и ExprScope](theory/scopes.md)
-- [Nullability: внешние соединения как изменение типа](theory/nullability.md)
-- [Disjointness: уникальность имён отношений](theory/disjointness.md)
-- [NF² и MULTISET: вложенные отношения](theory/nf2_multiset.md)
+- [Part overview](theory/overview.md)
+- [From Codd's relational algebra to the Rust type system](theory/codd_to_rust.md)
+- [Scopes: `TableScope` and `ExprScope`](theory/scopes.md)
+- [Nullability: outer joins as a type change](theory/nullability.md)
+- [Disjointness: unique relation names](theory/disjointness.md)
+- [NF² and MULTISET: nested relations](theory/nf2_multiset.md)
 
-# Часть III. Диалекты
+# Part III. The portable SQL core
 
-- [Обзор диалектов](dialects/overview.md)
-- [Философия: native or nothing](dialects/philosophy.md)
+- [The portable SQL core](core/overview.md)
+- [Schema: ZST markers](core/schema.md)
+- [Projections and `SELECT`](core/select.md)
+- [Predicates and `WHERE`](core/filtering.md)
+- [Ordering and pagination](core/ordering.md)
+- [`GROUP BY` and `HAVING`](core/group_by.md)
+- [Window functions](core/window.md)
+- [Joins](core/joins.md)
+- [Aliases](core/aliasing.md)
+- [Subqueries](core/subqueries.md)
+- [Common table expressions (`WITH`)](core/cte.md)
+- [Set operations](core/set_ops.md)
+- [DML: `INSERT`, `UPDATE`, `DELETE`](core/dml.md)
+
+# Part IV. Dialects
+
+- [Dialects overview](dialects/overview.md)
+- [Philosophy: native or nothing](dialects/philosophy.md)
 - [Capability markers](dialects/capabilities.md)
-- [Версии движков](dialects/versions.md)
+- [Engine versions](dialects/versions.md)
 - [Preludes](dialects/preludes.md)
 - [PostgreSQL](dialects/postgres/overview.md)
   - [Capabilities](dialects/postgres/capabilities.md)
   - [DML: RETURNING, ON CONFLICT](dialects/postgres/dml.md)
-  - [Блокировки строк](dialects/postgres/locking.md)
+  - [Row locking](dialects/postgres/locking.md)
   - [LATERAL joins](dialects/postgres/lateral.md)
-  - [JSON и JSONB](dialects/postgres/json.md)
-  - [Массивы](dialects/postgres/arrays.md)
+  - [JSON and JSONB](dialects/postgres/json.md)
+  - [Arrays](dialects/postgres/arrays.md)
   - [Full-text search](dialects/postgres/fts.md)
-  - [Регулярные выражения](dialects/postgres/regex.md)
+  - [Regular expressions](dialects/postgres/regex.md)
   - [Enums](dialects/postgres/enums.md)
-  - [Драйверы](dialects/postgres/drivers.md)
+  - [Drivers](dialects/postgres/drivers.md)
 - [SQLite](dialects/sqlite/overview.md)
-  - [Capabilities и версионные пороги](dialects/sqlite/capabilities.md)
+  - [Capabilities and version thresholds](dialects/sqlite/capabilities.md)
   - [Upsert: ON CONFLICT](dialects/sqlite/upsert.md)
-  - [Агрегаты, окна, сортировка](dialects/sqlite/filter.md)
-  - [RETURNING и UPDATE … FROM](dialects/sqlite/returning.md)
-  - [Ограничения без эмуляции](dialects/sqlite/limitations.md)
-  - [JSON и вложенные коллекции](dialects/sqlite/json.md)
-  - [Enums через CHECK](dialects/sqlite/enums.md)
-  - [Драйвер rusqlite](dialects/sqlite/driver.md)
-- [Конкурентность миграций](dialects/sqlite/concurrency.md)
+  - [Aggregates, windows, ordering](dialects/sqlite/filter.md)
+  - [RETURNING and UPDATE … FROM](dialects/sqlite/returning.md)
+  - [Limitations without emulation](dialects/sqlite/limitations.md)
+  - [JSON and nested collections](dialects/sqlite/json.md)
+  - [Enums through CHECK](dialects/sqlite/enums.md)
+  - [The rusqlite driver](dialects/sqlite/driver.md)
+- [Migration concurrency](dialects/sqlite/concurrency.md)
 
-# Часть IV. Вложенные результаты и MULTISET (NF²)
+# Part V. Nested results and MULTISET (NF²)
 
-- [Вложенные результаты: `nest_many` и `nest_one`](features/nested.md)
-- [MULTISET: как вложенность превращается в SQL](features/multiset.md)
-- [Движки, capability-гейты и декодирование](features/multiset_engines.md)
+- [Nested results: `nest_many` and `nest_one`](features/nested.md)
+- [MULTISET: how nesting becomes SQL](features/multiset.md)
+- [Engines, capability gates, and decoding](features/multiset_engines.md)
 
-# Часть V. Эволюция схемы и миграции
+# Part VI. Schema evolution and migrations
 
-- [Эволюция схемы: обзор](migrations/overview.md)
-- [Кризис традиционных миграций в эпоху AI](migrations/problem.md)
-- [Два режима и критерии выбора](migrations/modes.md)
-- [Традиционный путь: `V...` и `R...`](migrations/traditional.md)
-- [Stage + Tail: декларативный stage и cold start](migrations/stage_tail.md)
+- [Schema evolution: overview](migrations/overview.md)
+- [The crisis of traditional migrations in the AI era](migrations/problem.md)
+- [Two modes and how to choose](migrations/modes.md)
+- [The traditional path: `V...` and `R...`](migrations/traditional.md)
+- [Stage + Tail: the declarative stage and cold start](migrations/stage_tail.md)
 - [The Golden Equation](migrations/golden_equation.md)
-- [Безопасный прунинг истории](migrations/pruning.md)
-- [Протокол чекпоинтов](migrations/checkpoint_protocol.md)
+- [Safe history pruning](migrations/pruning.md)
+- [The checkpoint protocol](migrations/checkpoint_protocol.md)
 
-# Часть VI. Рантайм и типы
+# Part VII. Runtime and types
 
-- [Рантайм: обзор](runtime/overview.md)
-- [Транзакции и savepoints](runtime/transactions.md)
-- [Пулы соединений](runtime/pools.md)
-- [Экосистемные типы, значения и декодирование](runtime/types.md)
-- [Пользовательские типы](runtime/custom_types.md)
+- [Runtime: overview](runtime/overview.md)
+- [Transactions and savepoints](runtime/transactions.md)
+- [Connection pools](runtime/pools.md)
+- [Ecosystem types, values, and decoding](runtime/types.md)
+- [Custom types](runtime/custom_types.md)
 
-# Приложения
+# Part VIII. The `rurqe` toolchain
 
-- [Приложения](appendix/overview.md)
-- [LLM Cheatsheet / Prompt Pack](appendix/llm_cheatsheet.md)
-- [Справочник ошибок](appendix/compiler_errors.md)
-- [Матрица возможностей](appendix/matrix.md)
+- [The `rurqe` toolchain](toolchain/overview.md)
+
+# Appendices
+
+- [Appendices](appendix/overview.md)
+- [LLM cheatsheet / prompt pack](appendix/llm_cheatsheet.md)
+- [Compiler error reference](appendix/compiler_errors.md)
+- [Capability matrix](appendix/matrix.md)
