@@ -90,4 +90,12 @@
 * **Conventional Commits:**
   * Format: `<type>(<scope>): <short description>`.
   * Header: imperative mood, lowercase, no trailing period, maximum 72 characters.
-  * Message body is separated by a blank line and hard-wrapped at 72 characters per line.
+kRmr | * **Conventional Commits:**
+RgEr |   * Format: `<type>(<scope>): <short description>`.
+RcR7 |   * Header: imperative mood, lowercase, no trailing period, maximum 72 characters.
+kcR7 |   * Message body is separated by a blank line and hard-wrapped at 72 characters per line.
+RcR8 | * **Documentation Obligation (Code as SSOT):**
+kcR8 |   * Any change to the public API, the query DSL, a macro contract, a generated code shape, or a CLI command must ship with the synchronously updated mdBook sources in the same commit; a feature is not complete until its documentation section reflects it.
+kcR9 |   * Every documented signature, flag, predicate, migration algorithm, or lock protocol is derived exclusively from the actual workspace sources and tests. Documentation written from memory, approximated, or describing a capability absent from the code is a defect, not a wording issue.
+kcRA |   * A statement about a compile-time guarantee or a runtime behavior is valid only when a concrete code location or an existing test backs it.
+kcRB |   * The book is built with `just doc-build` (rendered into `target/book`) and previewed locally with `just doc-serve`; a broken book build is a failing check, not a documentation nit.

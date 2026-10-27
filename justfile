@@ -23,3 +23,15 @@ clippy:
 test:
     cargo test --workspace
     cargo test -p rurqe-sqlite --features r2d2 --doc
+
+# Build the mdBook documentation into target/book
+[group('tauqe')]
+[doc('Build the mdBook documentation into target/book')]
+doc-build:
+    mdbook build docs --dest-dir ../target/book
+
+# Serve the mdBook documentation locally with live reload
+[group('tauqe')]
+[doc('Serve the mdBook documentation locally with live reload')]
+doc-serve:
+    mdbook serve docs --dest-dir ../target/book --open
