@@ -21,3 +21,6 @@ toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 url = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

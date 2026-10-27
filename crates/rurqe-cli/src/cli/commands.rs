@@ -166,7 +166,9 @@ const TEMPORARY_SUFFIX: &str = ".tmp";
 ///
 /// A staged artifact only lives for the duration of one file write or one
 /// directory swap, so anything this old belongs to a process that was killed
-/// before it could rename or remove it.
+/// before it could rename or remove it — once that writer no longer provably
+/// lives, which the sweep establishes separately because this age measures
+/// wall-clock time a forward clock correction can inflate.
 pub(super) const STALE_TEMPORARY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The directory an artifact and the staged siblings it is written through live in.
@@ -197,6 +199,64 @@ fn staged_owner(name: &str, prefix: &str) -> Option<u32> {
     owner.parse().ok()
 }
 
+/// Whether the staged sibling `name` belongs to a writer that no longer lives.
+///
+/// The sweep discards a foreign sibling only when the process id recorded in
+/// its name no longer exists: a sibling of this process may still be renamed
+/// into place by a later call, and a sibling of another live process belongs
+/// to a concurrent writer — a commit stages its boundary outside the
+/// checkpoint section, so a writer holding the section can meet a sibling
+/// another writer is preparing right now. The modification age the sweep
+/// measures afterwards is wall-clock time, which a forward clock correction
+/// (an NTP step, a VM resume) can inflate until a live writer's in-flight
+/// sibling looks a day old, so it is never the only grounds for discarding a
+/// foreign sibling. A name that carries no parsable owner stays kept, because
+/// a sweep that guessed would delete a staging path a live writer is still
+/// filling.
+fn staged_owner_is_dead(name: &str, prefix: &str) -> bool {
+    match staged_owner(name, prefix) {
+        Some(owner) if owner != std::process::id() => !pid_is_alive(owner),
+        _ => false,
+    }
+}
+
+/// Whether the process `pid` provably lives.
+///
+/// The sweep asks strictly in the negative — whether the writer is gone —
+/// because the worst a kept sibling does is outlive the debris it is, while a
+/// sibling discarded under its writer deletes that writer's in-flight staging
+/// path. On Unix the probe is `kill(pid, 0)`, which the kernel answers
+/// without delivering a signal: success and `EPERM` — the process exists,
+/// this one may not signal it — both name a live writer, while `ESRCH` is the
+/// kernel's proof that no process carries the pid. Pid `0` and pids beyond
+/// `pid_t` would address a process group or leave the argument's domain, so
+/// they count as living as well.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return true;
+    }
+
+    // SAFETY: `kill` with signal `0` probes existence without delivering a
+    // signal, and `pid` is a non-zero value inside `pid_t` by the guard above.
+    match unsafe { libc::kill(pid as libc::pid_t, 0) } {
+        0 => true,
+        _ => std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH),
+    }
+}
+
+/// Whether the process `pid` provably lives.
+///
+/// This platform exposes no probe, so every writer counts as living: the
+/// sweep keeps every foreign sibling rather than guessing a writer dead from
+/// a modification time alone, and the debris a crashed writer leaves then
+/// stays beside its artifact as the price of never discarding under a live
+/// writer.
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    true
+}
+
 /// The temporary file an artifact is staged in before it is renamed.
 ///
 /// The name stays a hidden sibling of the artifact, and the process id together
@@ -219,9 +279,15 @@ fn temporary_sibling(path: &Path) -> PathBuf {
 /// `.<basename>.<pid>.<sequence>.tmp` and renamed into place, so a process killed
 /// in between strands that sibling for good: the next run derives a fresh
 /// sequence and never touches the old one again. The debris is swept here —
-/// every sibling last touched longer than `older_than` ago is discarded, while a
-/// name this process could still own is kept, so a sweep never deletes a staging
-/// path another call of this process is using right now.
+/// every sibling whose writer no longer provably lives and that was last
+/// touched longer than `older_than` ago is discarded. The writer is half of
+/// that decision because the age alone measures wall-clock time, which a
+/// forward clock correction (an NTP step, a VM resume) can inflate until a
+/// live concurrent writer's in-flight sibling looks a day old: the owner
+/// recorded in the name decides whether the writer still exists, and the age
+/// only chooses when the debris of a writer that is already gone is worth
+/// sweeping. A name this process could still own is kept, so a sweep never
+/// deletes a staging path another call of this process is using right now.
 ///
 /// A directory that cannot be scanned is reported, while a single sibling that
 /// cannot be removed only leaves the artifact it was staged for untouched: the
@@ -254,12 +320,11 @@ pub(super) fn sweep_stale_temporaries(
         })?;
         let name = entry.file_name().to_string_lossy().into_owned();
 
-        // A sibling this process could still own is kept: its writer is alive and
-        // may rename it into place at any moment.
-        if !matches!(
-            staged_owner(&name, &prefix),
-            Some(owner) if owner != std::process::id()
-        ) {
+        // A sibling whose writer provably lives is kept — one this process
+        // could still own included — because its writer may rename it into
+        // place at any moment; the wall-clock age measured below only refines
+        // when the debris of a writer that is already gone is swept.
+        if !staged_owner_is_dead(&name, &prefix) {
             continue;
         }
 
@@ -273,8 +338,10 @@ pub(super) fn sweep_stale_temporaries(
 
 /// Discards `entry` when an interrupted write abandoned it, returning its path.
 ///
-/// A sibling that cannot be dated is kept, because a sweep that guessed would
-/// delete a staging path a live writer is still filling.
+/// The caller has already proven the writer recorded in the sibling's name
+/// gone, so the age measured here only chooses when that dead writer's debris
+/// is worth sweeping. A sibling that cannot be dated is kept, because a sweep
+/// that guessed would delete a staging path a live writer is still filling.
 fn discard_if_abandoned(entry: &std::fs::DirEntry, older_than: Duration) -> Option<PathBuf> {
     let metadata = entry.metadata().ok()?;
     let modified = metadata.modified().ok()?;

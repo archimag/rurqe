@@ -998,6 +998,7 @@ name = "rurqe-cli"
 version = "0.1.0"
 dependencies = [
  "fs4",
+ "libc",
  "postgres",
  "rurqe-migrate",
  "rusqlite",

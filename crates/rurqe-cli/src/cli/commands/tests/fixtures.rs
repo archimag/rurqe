@@ -7,6 +7,14 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::version::MigrationVersion;
 use rurqe_migrate::Checksum;
 
+/// A process id no process can carry.
+///
+/// Unix caps process ids well below this value — Linux below 4_194_304, macOS
+/// below 100_000 — so the liveness probe of a sweep answers `ESRCH` for a
+/// sibling recorded under it, and a platform without a probe keeps such a
+/// sibling anyway.
+pub(super) const DEAD_PID: u32 = 2_000_000_000;
+
 pub(super) fn workspace(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("rurqe-commands-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -64,7 +72,24 @@ pub(super) fn backdate(path: &Path, age: Duration) {
     let modified = std::time::SystemTime::now()
         .checked_sub(age)
         .expect("a representable modification time");
-    // A directory rejects a write handle but accepts the timestamp update.
+    stamp_modified(path, modified);
+}
+
+/// Postdates `path` by `ahead`, so a sweep of staged artifacts sees a
+/// modification time the wall clock has not reached yet — the shape a
+/// backward clock correction leaves behind.
+pub(super) fn futuredate(path: &Path, ahead: Duration) {
+    let modified = std::time::SystemTime::now()
+        .checked_add(ahead)
+        .expect("a representable modification time");
+    stamp_modified(path, modified);
+}
+
+/// Stamps `path` with `modified`, a file or a directory alike.
+///
+/// A directory rejects a write handle but accepts the timestamp update, so
+/// the handle falls back to read-only before the times are set.
+fn stamp_modified(path: &Path, modified: std::time::SystemTime) {
     let handle = std::fs::File::options()
         .write(true)
         .open(path)
@@ -73,7 +98,7 @@ pub(super) fn backdate(path: &Path, age: Duration) {
 
     handle
         .set_times(std::fs::FileTimes::new().set_modified(modified))
-        .expect("backdate the planted artifact");
+        .expect("stamp the planted artifact");
 }
 
 /// Plants the lock owner record naming `pid`/`nonce` with a heartbeat `age` old.
