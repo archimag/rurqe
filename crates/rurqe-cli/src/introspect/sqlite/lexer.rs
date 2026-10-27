@@ -201,15 +201,20 @@ fn record_lex_pass() {}
 ///
 /// Whitespace, single-line comments (`-- ...\n`), and block comments
 /// (`/* ... */`) are skipped and not emitted as tokens.
+///
+/// Every byte offset the scan advances is read back through the checked
+/// [`str::get`] — the same discipline [`span_text`] follows — instead of
+/// being sliced directly: an offset that is not a character boundary, or
+/// one that lies past the end of the input, reads as `None` and ends the
+/// scan, so a future edit that advances by a non-character amount degrades
+/// gracefully on untrusted `sqlite_master` DDL instead of panicking.
 pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
     record_lex_pass();
 
     let mut tokens = Vec::new();
     let mut i = 0;
 
-    while i < sql.len() {
-        let rem = &sql[i..];
-
+    while let Some(rem) = sql.get(i..) {
         // 1. Skip whitespace
         if let Some(ch) = rem.chars().next() {
             if ch.is_whitespace() {
@@ -221,7 +226,7 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
         // 2. Skip line comments: -- ...
         if rem.starts_with("--") {
             i += 2;
-            if let Some(pos) = sql[i..].find('\n') {
+            if let Some(pos) = sql.get(i..).and_then(|rest| rest.find('\n')) {
                 i += pos + 1;
             } else {
                 i = sql.len();
@@ -232,7 +237,7 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
         // 3. Skip block comments: /* ... */
         if rem.starts_with("/*") {
             i += 2;
-            if let Some(pos) = sql[i..].find("*/") {
+            if let Some(pos) = sql.get(i..).and_then(|rest| rest.find("*/")) {
                 i += pos + 2;
             } else {
                 i = sql.len();
@@ -249,8 +254,7 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
         match ch {
             '\'' => {
                 i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
+                while let Some(r) = sql.get(i..) {
                     if r.starts_with("''") {
                         i += 2;
                     } else if r.starts_with('\'') {
@@ -262,16 +266,11 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
                         break;
                     }
                 }
-                tokens.push(Token {
-                    kind: TokenKind::StringLiteral,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::StringLiteral, start, i);
             }
             '"' => {
                 i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
+                while let Some(r) = sql.get(i..) {
                     if r.starts_with("\"\"") {
                         i += 2;
                     } else if r.starts_with('"') {
@@ -283,16 +282,17 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
                         break;
                     }
                 }
-                tokens.push(Token {
-                    kind: TokenKind::QuotedIdent(QuoteStyle::DoubleQuote),
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(
+                    &mut tokens,
+                    sql,
+                    TokenKind::QuotedIdent(QuoteStyle::DoubleQuote),
+                    start,
+                    i,
+                );
             }
             '`' => {
                 i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
+                while let Some(r) = sql.get(i..) {
                     if r.starts_with("``") {
                         i += 2;
                     } else if r.starts_with('`') {
@@ -304,16 +304,17 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
                         break;
                     }
                 }
-                tokens.push(Token {
-                    kind: TokenKind::QuotedIdent(QuoteStyle::Backtick),
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(
+                    &mut tokens,
+                    sql,
+                    TokenKind::QuotedIdent(QuoteStyle::Backtick),
+                    start,
+                    i,
+                );
             }
             '[' => {
                 i += 1;
-                while i < sql.len() {
-                    let r = &sql[i..];
+                while let Some(r) = sql.get(i..) {
                     if r.starts_with("]]") {
                         i += 2;
                     } else if r.starts_with(']') {
@@ -325,85 +326,62 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
                         break;
                     }
                 }
-                tokens.push(Token {
-                    kind: TokenKind::QuotedIdent(QuoteStyle::SquareBracket),
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(
+                    &mut tokens,
+                    sql,
+                    TokenKind::QuotedIdent(QuoteStyle::SquareBracket),
+                    start,
+                    i,
+                );
             }
             '(' => {
                 i += 1;
-                tokens.push(Token {
-                    kind: TokenKind::OpenParen,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::OpenParen, start, i);
             }
             ')' => {
                 i += 1;
-                tokens.push(Token {
-                    kind: TokenKind::CloseParen,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::CloseParen, start, i);
             }
             ',' => {
                 i += 1;
-                tokens.push(Token {
-                    kind: TokenKind::Comma,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::Comma, start, i);
             }
             ';' => {
                 i += 1;
-                tokens.push(Token {
-                    kind: TokenKind::Semicolon,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::Semicolon, start, i);
             }
             '.' => {
                 i += 1;
-                tokens.push(Token {
-                    kind: TokenKind::Dot,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::Dot, start, i);
             }
             c if c.is_alphabetic() || c == '_' => {
                 i += c.len_utf8();
-                while i < sql.len() {
-                    if let Some(next_ch) = sql[i..].chars().next() {
-                        if next_ch.is_alphanumeric() || next_ch == '_' || next_ch == '$' {
-                            i += next_ch.len_utf8();
-                        } else {
-                            break;
-                        }
+                while let Some(next_ch) = sql.get(i..).and_then(|rest| rest.chars().next()) {
+                    if next_ch.is_alphanumeric() || next_ch == '_' || next_ch == '$' {
+                        i += next_ch.len_utf8();
                     } else {
                         break;
                     }
                 }
-                let text = &sql[start..i];
-                let kind = match SqlKeyword::parse(text) {
-                    Some(kw) => TokenKind::Keyword(kw),
-                    None => TokenKind::Ident,
-                };
-                tokens.push(Token {
-                    kind,
-                    text,
-                    span: (start, i),
-                });
+                // The token kind is classified from the scanned text itself,
+                // so this branch reads the span through `get` inline.
+                if let Some(text) = sql.get(start..i) {
+                    let kind = match SqlKeyword::parse(text) {
+                        Some(kw) => TokenKind::Keyword(kw),
+                        None => TokenKind::Ident,
+                    };
+                    tokens.push(Token {
+                        kind,
+                        text,
+                        span: (start, i),
+                    });
+                }
             }
             c if c.is_ascii_digit() => {
                 i += 1;
-                while i < sql.len() {
-                    if let Some(next_ch) = sql[i..].chars().next() {
-                        if next_ch.is_ascii_digit() {
-                            i += 1;
-                        } else {
-                            break;
-                        }
+                while let Some(next_ch) = sql.get(i..).and_then(|rest| rest.chars().next()) {
+                    if next_ch.is_ascii_digit() {
+                        i += 1;
                     } else {
                         break;
                     }
@@ -414,36 +392,49 @@ pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
                     .is_some_and(|after_dot| after_dot.starts_with(|d: char| d.is_ascii_digit()))
                 {
                     i += 1;
-                    while i < sql.len() {
-                        if let Some(next_ch) = sql[i..].chars().next() {
-                            if next_ch.is_ascii_digit() {
-                                i += 1;
-                            } else {
-                                break;
-                            }
+                    while let Some(next_ch) = sql.get(i..).and_then(|rest| rest.chars().next()) {
+                        if next_ch.is_ascii_digit() {
+                            i += 1;
                         } else {
                             break;
                         }
                     }
                 }
-                tokens.push(Token {
-                    kind: TokenKind::Number,
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::Number, start, i);
             }
             c => {
                 i += c.len_utf8();
-                tokens.push(Token {
-                    kind: TokenKind::Other(c),
-                    text: &sql[start..i],
-                    span: (start, i),
-                });
+                push_scanned(&mut tokens, sql, TokenKind::Other(c), start, i);
             }
         }
     }
 
     tokens
+}
+
+/// Pushes the token covering `start..end` of `sql`, reading the token text
+/// through the checked [`str::get`] instead of slicing the offsets directly.
+///
+/// The span addresses a slice of the scanned statement by construction, but
+/// nothing in the type system proves that: `None` here reports a broken scan
+/// invariant — a future edit advancing the scan by a non-character amount —
+/// and the token is then skipped instead of panicking on untrusted
+/// `sqlite_master` DDL, matching the [`span_text`] discipline consumers
+/// already follow.
+fn push_scanned<'a>(
+    tokens: &mut Vec<Token<'a>>,
+    sql: &'a str,
+    kind: TokenKind,
+    start: usize,
+    end: usize,
+) {
+    if let Some(text) = sql.get(start..end) {
+        tokens.push(Token {
+            kind,
+            text,
+            span: (start, end),
+        });
+    }
 }
 
 /// The token index of the parenthesis closing the one at `open`.
