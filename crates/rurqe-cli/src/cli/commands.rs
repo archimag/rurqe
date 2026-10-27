@@ -159,6 +159,26 @@ fn rename_durable(temporary: &Path, path: &Path) -> Result<(), CliError> {
     })
 }
 
+/// Runs one best-effort cleanup step, reporting a failure instead of discarding it.
+///
+/// Cleanup runs after the outcome of the surrounding work is already decided —
+/// a staged snapshot is abandoned, a statement timeout is disarmed, a scratch
+/// connection is closed — so its failure can neither be undone nor propagated
+/// to the caller. Discarding it silently would leave stranded debris, or a
+/// session still carrying an armed timeout, with no trace at all, so every
+/// discarded cleanup result is routed through this helper instead: the failure
+/// reaches the `tracing` facade together with `context`, which names the
+/// artifact or statement the step concerned, keeping the policy one decision
+/// instead of one per call site.
+pub(crate) fn best_effort<T, E>(result: Result<T, E>, context: impl std::fmt::Display)
+where
+    E: std::fmt::Display,
+{
+    if let Err(error) = result {
+        tracing::warn!(%error, %context, "best-effort cleanup step failed");
+    }
+}
+
 /// The suffix every artifact is staged under before it is renamed into place.
 const TEMPORARY_SUFFIX: &str = ".tmp";
 

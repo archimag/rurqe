@@ -23,6 +23,7 @@ mod tests;
 
 pub use args::{parse_args, CliCommand, CliError};
 pub(crate) use args::{resolve_cleanup_url, resolve_equation_url};
+pub(crate) use commands::best_effort;
 pub(crate) use connection::{connect, Connection};
 pub use redact::redact_database_url;
 pub use report::CommandOutput;

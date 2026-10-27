@@ -10,12 +10,13 @@ use std::path::{Path, PathBuf};
 use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::commands::artifact_directory;
-use crate::cli::commands::stage::lock::WriterId;
+use crate::cli::commands::best_effort;
 use crate::cli::commands::sync_directory;
 use crate::cli::commands::temporary_sibling;
 use crate::cli::commands::write_file;
 use crate::cli::CliError;
 
+use super::super::lock::WriterId;
 use super::park::{discard_parked, park, parked_sibling, restore};
 
 /// The directory holding the verbatim DDL of a committed stage boundary.
@@ -54,7 +55,10 @@ pub(crate) fn seal_commit(
     let parked_marker = match park(checkpoint_path, &marker_backup) {
         Ok(parked) => parked,
         Err(error) => {
-            let _ = std::fs::remove_dir_all(staged);
+            best_effort(
+                std::fs::remove_dir_all(staged),
+                format!("discarding the staged boundary snapshot `{}`", staged.display()),
+            );
             return Err(error);
         }
     };
@@ -62,7 +66,10 @@ pub(crate) fn seal_commit(
     let parked_boundary = match park(&dir, &boundary_backup) {
         Ok(parked) => parked,
         Err(error) => {
-            let _ = std::fs::remove_dir_all(staged);
+            best_effort(
+                std::fs::remove_dir_all(staged),
+                format!("discarding the staged boundary snapshot `{}`", staged.display()),
+            );
             let mut failure = error;
             if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
                 failure.0.push_str(&format!("; {notice}"));
@@ -76,7 +83,10 @@ pub(crate) fn seal_commit(
         if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
             failure.0.push_str(&format!("; {notice}"));
         }
-        let _ = std::fs::remove_dir_all(staged);
+        best_effort(
+            std::fs::remove_dir_all(staged),
+            format!("discarding the staged boundary snapshot `{}`", staged.display()),
+        );
         return Err(failure);
     }
 
@@ -84,7 +94,14 @@ pub(crate) fn seal_commit(
     // pair once this file is durable, and a kill before it leaves the parked pair
     // for the recovery to restore.
     if let Err(error) = write_file(checkpoint_path, marker) {
-        let _ = std::fs::remove_dir_all(&dir);
+        best_effort(
+            std::fs::remove_dir_all(&dir),
+            format!(
+                "discarding the newly installed boundary snapshot `{}` after the \
+                 marker write failed",
+                dir.display()
+            ),
+        );
         let mut failure = error;
         if let Some(notice) = restore(&dir, parked_boundary.as_deref()) {
             failure.0.push_str(&format!("\n{notice}"));

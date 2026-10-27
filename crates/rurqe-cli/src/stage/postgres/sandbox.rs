@@ -10,7 +10,7 @@
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
-use crate::cli::{connect, redact_database_url, Connection};
+use crate::cli::{best_effort, connect, redact_database_url, Connection};
 use crate::introspect::{introspect_postgres_schema, report_vacuous_postgres_schema};
 
 use super::naming::{current_owner_tag, scratch_database_name};
@@ -83,7 +83,14 @@ impl PostgresSandbox {
                 redacted_url,
             }),
             Err(message) => {
-                let _ = drop_scratch_database(&mut admin, &database, true);
+                if !drop_scratch_database(&mut admin, &database, true) {
+                    tracing::warn!(
+                        url = %redacted_url,
+                        database = %database,
+                        "failed to drop the scratch database whose replay connection \
+                         could not be opened"
+                    );
+                }
                 Err(message)
             }
         }
@@ -412,24 +419,36 @@ pub(super) fn drop_scratch_database(
     let plain = format!("DROP DATABASE IF EXISTS \"{quoted}\"");
 
     // Guard drop from blocking indefinitely on catalog or lock contention.
-    let _ = admin.batch_execute(DROP_TIMEOUT_SQL);
+    best_effort(
+        admin.batch_execute(DROP_TIMEOUT_SQL),
+        format!("arming the drop timeouts for the scratch database `{database}`"),
+    );
 
     if !force {
         let ok = admin.batch_execute(&plain).is_ok();
-        let _ = admin.batch_execute(RESET_TIMEOUT_SQL);
+        best_effort(
+            admin.batch_execute(RESET_TIMEOUT_SQL),
+            format!("resetting the drop timeouts for the scratch database `{database}`"),
+        );
         return ok;
     }
 
     // A database this process created for its own verification first attempts a graceful drop.
     if admin.batch_execute(&plain).is_ok() {
-        let _ = admin.batch_execute(RESET_TIMEOUT_SQL);
+        best_effort(
+            admin.batch_execute(RESET_TIMEOUT_SQL),
+            format!("resetting the drop timeouts for the scratch database `{database}`"),
+        );
         return true;
     }
 
     // Only when graceful drop fails do we attempt WITH (FORCE), still bounded by the timeout.
     let forced = format!("DROP DATABASE IF EXISTS \"{quoted}\" WITH (FORCE)");
     let ok = admin.batch_execute(&forced).is_ok();
-    let _ = admin.batch_execute(RESET_TIMEOUT_SQL);
+    best_effort(
+        admin.batch_execute(RESET_TIMEOUT_SQL),
+        format!("resetting the drop timeouts for the scratch database `{database}`"),
+    );
     ok
 }
 
@@ -439,7 +458,13 @@ impl Drop for PostgresSandbox {
         // transaction open cannot keep the database alive on servers without the
         // `WITH (FORCE)` clause.
         if let Some(client) = self.client.take() {
-            let _ = client.close();
+            best_effort(
+                client.close(),
+                format!(
+                    "closing the replay connection of the scratch database `{}`",
+                    self.database
+                ),
+            );
         }
 
         tracing::debug!(

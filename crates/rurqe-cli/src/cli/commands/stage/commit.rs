@@ -13,7 +13,8 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::commands::{
-    cli_error, sweep_stale_temporaries, sync_directory, write_file, STALE_TEMPORARY_AGE,
+    best_effort, cli_error, sweep_stale_temporaries, sync_directory, write_file,
+    STALE_TEMPORARY_AGE,
 };
 use crate::cli::{CliError, CommandOutput};
 use crate::drift::{DiffWording, SchemaDiff};
@@ -109,14 +110,20 @@ pub(crate) fn commit_stage(
     // the section below only has to rename it into place.
     let staged = create_staging_dir(&boundary)?;
     if let Err(error) = write_staged_boundary(&stage, &staged) {
-        let _ = std::fs::remove_dir_all(&staged);
+        best_effort(
+            std::fs::remove_dir_all(&staged),
+            format!("discarding the staged boundary snapshot `{}`", staged.display()),
+        );
         return Err(error);
     }
 
     // Flushing the staging directory makes the staged names durable before the
     // swap publishes them, so the installed boundary survives a power loss.
     if let Err(error) = sync_directory(&staged) {
-        let _ = std::fs::remove_dir_all(&staged);
+        best_effort(
+            std::fs::remove_dir_all(&staged),
+            format!("discarding the staged boundary snapshot `{}`", staged.display()),
+        );
         return Err(error);
     }
 
