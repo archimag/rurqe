@@ -228,8 +228,12 @@ impl Drop for StagedCleanup {
 /// replayed over it.
 fn parity_scratch_url(database_url: &str) -> &str {
     match DatabaseTarget::parse(database_url) {
-        DatabaseTarget::Postgres => database_url,
-        DatabaseTarget::SqliteMemory | DatabaseTarget::SqliteFile(_) => ":memory:",
+        Ok(DatabaseTarget::Postgres) => database_url,
+        Ok(DatabaseTarget::SqliteMemory | DatabaseTarget::SqliteFile(_)) => ":memory:",
+        // Unreachable through `commit_stage`, which introspected the very URL
+        // before this helper runs; passing the URL through keeps the helper
+        // total for a value the classifier rejects.
+        Err(_) => database_url,
     }
 }
 

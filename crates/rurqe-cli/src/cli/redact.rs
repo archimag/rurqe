@@ -36,18 +36,28 @@ use crate::target::DatabaseTarget;
 /// it is echoed.
 const UNPARSEABLE_POSTGRES: &str = "<unparseable PostgreSQL connection string>";
 
+/// The diagnostic reported for a connection string that names no engine this
+/// build connects to.
+///
+/// The target classifier rejects such a value instead of guessing an engine,
+/// and the string may carry the credentials of the engine it addresses, so the
+/// redaction replaces it wholesale: no byte of the input reaches a log.
+const UNRECOGNISED_TARGET: &str = "<unrecognised database URL>";
+
 /// Replaces every credential a connection string carries.
 ///
 /// The returned diagnostic is reconstructed from typed fields, so the original
 /// string is never echoed. A PostgreSQL string the driver refuses — an unknown
 /// parameter, a malformed URL, an unsupported `sslmode` — yields the fixed
-/// placeholder above, and a bare SQLite file name is echoed verbatim because it
-/// holds no credential.
+/// placeholder above, a connection string the target classifier rejects yields
+/// the unrecognised-target placeholder, and a bare SQLite file name is echoed
+/// verbatim because it holds no credential.
 pub fn redact_database_url(url: &str) -> String {
     match DatabaseTarget::parse(url) {
-        DatabaseTarget::Postgres => redact_postgres(url),
-        DatabaseTarget::SqliteMemory => ":memory:".to_owned(),
-        DatabaseTarget::SqliteFile(path) => redact_sqlite(url, &path),
+        Ok(DatabaseTarget::Postgres) => redact_postgres(url),
+        Ok(DatabaseTarget::SqliteMemory) => ":memory:".to_owned(),
+        Ok(DatabaseTarget::SqliteFile(path)) => redact_sqlite(url, &path),
+        Err(_) => UNRECOGNISED_TARGET.to_owned(),
     }
 }
 
@@ -155,7 +165,7 @@ mod tests {
             "app.sqlite",
         ] {
             let opened = match DatabaseTarget::parse(url) {
-                DatabaseTarget::SqliteFile(path) => path,
+                Ok(DatabaseTarget::SqliteFile(path)) => path,
                 other => panic!("{url} did not name a file: {other:?}"),
             };
 
@@ -175,7 +185,7 @@ mod tests {
         ] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::SqliteFile(opened.to_owned()),
+                Ok(DatabaseTarget::SqliteFile(opened.to_owned())),
                 "{url}"
             );
 
@@ -189,6 +199,16 @@ mod tests {
                     "{url} leaked {credential} into {redacted}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_target_the_classifier_rejects_renders_as_a_placeholder() {
+        for url in ["mysql://app:s3cret@db.internal:3306/app", "app", ""] {
+            let redacted = redact_database_url(url);
+
+            assert_eq!(redacted, UNRECOGNISED_TARGET, "{url}");
+            assert!(!redacted.contains("s3cret"), "{url}");
         }
     }
 

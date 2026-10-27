@@ -30,7 +30,7 @@
 use postgres::config::SslMode;
 use postgres::error::SqlState;
 
-use crate::target::DatabaseTarget;
+use crate::target::{DatabaseTarget, TargetError};
 
 use super::args::CliError;
 use super::redact::{host_name, redact_database_url};
@@ -61,15 +61,40 @@ pub(crate) enum Connection {
 ///
 /// This is the single entry point for scheme stripping, `:memory:` handling and
 /// connection error wording, so the CLI commands and catalog introspection can
-/// never drift apart.
+/// never drift apart. A value that names no engine this build connects to is
+/// rejected here, at the gate, so no unrecognised target is ever handed to a
+/// driver that could only misread it.
 pub(crate) fn connect(url: &str) -> Result<Connection, CliError> {
     match DatabaseTarget::parse(url) {
-        DatabaseTarget::Postgres => Ok(Connection::Postgres(connect_postgres(url)?)),
-        DatabaseTarget::SqliteMemory => open_sqlite(None, url).map(Connection::Sqlite),
-        DatabaseTarget::SqliteFile(path) => {
+        Ok(DatabaseTarget::Postgres) => Ok(Connection::Postgres(connect_postgres(url)?)),
+        Ok(DatabaseTarget::SqliteMemory) => open_sqlite(None, url).map(Connection::Sqlite),
+        Ok(DatabaseTarget::SqliteFile(path)) => {
             open_sqlite(Some(path.as_str()), url).map(Connection::Sqlite)
         }
+        Err(error) => Err(unrecognised_target(error, url)),
     }
+}
+
+/// Reports a connection string that names no engine this build connects to.
+///
+/// The message names the scheme where the string spells one, renders the string
+/// redacted, and states both engines' addressing forms once, so an unrecognised
+/// target is rejected at the connection gate with one wording instead of being
+/// handed to a driver that can only misread it.
+fn unrecognised_target(error: TargetError, url: &str) -> CliError {
+    let reason = match error {
+        TargetError::UnrecognisedScheme { scheme } => format!(
+            "names the URL scheme `{scheme}`, which this build of rurqe-cli connects to neither"
+        ),
+        TargetError::Unrecognised => "names no database engine".to_owned(),
+    };
+
+    CliError(format!(
+        "`{}` {reason}: PostgreSQL is addressed by a `postgres://` or `postgresql://` URL or a \
+         libpq keyword/value string such as `host=db.internal dbname=app`, and SQLite by a \
+         `sqlite:` URL, `:memory:`, or a path ending in `.db`, `.sqlite`, or `.sqlite3`",
+        redact_database_url(url)
+    ))
 }
 
 /// Opens a SQLite connection, in memory when the target names no file.
@@ -253,13 +278,36 @@ fn tls_unavailable(ssl_mode: &str, url: &str) -> CliError {
     ))
 }
 
-/// The TLS-demanding spellings libpq defines for the `sslmode` parameter.
+/// The `sslmode` modes libpq defines that demand TLS.
 ///
-/// A spelling the linked driver does not model never reaches the typed `SslMode`,
-/// which is exactly why it has to be recognised here: the connection string fails
-/// parsing otherwise, and the operator would be told the string is malformed instead
-/// of being told that the encryption it demands is unavailable.
-const TLS_DEMANDING_SPELLINGS: [&str; 3] = ["require", "verify-ca", "verify-full"];
+/// One source names every mode and its libpq spelling: a mode the linked driver
+/// does not model never reaches the typed `SslMode`, which is exactly why it
+/// has to be recognised here — the connection string fails parsing otherwise,
+/// and the operator would be told the string is malformed instead of being
+/// told that the encryption it demands is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TlsDemandingMode {
+    /// `sslmode=require`.
+    Require,
+    /// `sslmode=verify-ca`.
+    VerifyCa,
+    /// `sslmode=verify-full`.
+    VerifyFull,
+}
+
+impl TlsDemandingMode {
+    /// Every mode libpq defines that demands TLS.
+    const ALL: [Self; 3] = [Self::Require, Self::VerifyCa, Self::VerifyFull];
+
+    /// The spelling of the mode in a libpq connection string.
+    fn libpq_spelling(self) -> &'static str {
+        match self {
+            Self::Require => "require",
+            Self::VerifyCa => "verify-ca",
+            Self::VerifyFull => "verify-full",
+        }
+    }
+}
 
 /// The name libpq gives the transport-mode parameter of a connection string.
 const SSLMODE_PARAMETER: &str = "sslmode";
@@ -277,9 +325,11 @@ const SSLMODE_PARAMETER: &str = "sslmode";
 fn unmodelled_tls_demand(url: &str) -> Option<&'static str> {
     let spelling = sslmode_parameter(url)?;
 
-    TLS_DEMANDING_SPELLINGS
+    TlsDemandingMode::ALL
         .into_iter()
-        .find(|candidate| *candidate == spelling.as_str() && !driver_models_sslmode(candidate))
+        .find(|mode| mode.libpq_spelling() == spelling.as_str())
+        .filter(|mode| !driver_models_sslmode(mode.libpq_spelling()))
+        .map(TlsDemandingMode::libpq_spelling)
 }
 
 /// Reads the `sslmode` parameter out of either documented libpq connection-string form.
@@ -740,5 +790,47 @@ mod tests {
         ] {
             assert_eq!(unmodelled_tls_demand(url), None, "`{url}`");
         }
+    }
+
+    #[test]
+    fn the_tls_demanding_modes_render_their_libpq_spellings() {
+        assert_eq!(TlsDemandingMode::Require.libpq_spelling(), "require");
+        assert_eq!(TlsDemandingMode::VerifyCa.libpq_spelling(), "verify-ca");
+        assert_eq!(
+            TlsDemandingMode::VerifyFull.libpq_spelling(),
+            "verify-full"
+        );
+        assert_eq!(
+            TlsDemandingMode::ALL,
+            [
+                TlsDemandingMode::Require,
+                TlsDemandingMode::VerifyCa,
+                TlsDemandingMode::VerifyFull
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_target_is_rejected_at_the_connection_gate() {
+        let bare = connect("app")
+            .err()
+            .expect("a bare name opens no database");
+        assert!(
+            bare.to_string().contains("names no database engine"),
+            "got {bare}"
+        );
+
+        let schemed = connect("mysql://app@db.internal:3306/app")
+            .err()
+            .expect("a scheme this build connects to neither opens no database");
+        let message = schemed.to_string();
+        assert!(
+            message.contains("names the URL scheme `mysql`"),
+            "got {message}"
+        );
+        assert!(
+            message.contains("PostgreSQL is addressed by"),
+            "got {message}"
+        );
     }
 }

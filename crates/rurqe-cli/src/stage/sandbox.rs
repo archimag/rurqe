@@ -57,12 +57,22 @@ impl SandboxKind {
     /// `--scratch-url` never replays schema DDL on top of somebody's data.
     pub(super) fn open(scratch_url: &str, schema: &str) -> Result<Self, StageError> {
         match DatabaseTarget::parse(scratch_url) {
-            DatabaseTarget::Postgres => PostgresSandbox::connect(scratch_url, schema)
+            Ok(DatabaseTarget::Postgres) => PostgresSandbox::connect(scratch_url, schema)
                 .map(Box::new)
                 .map(SandboxKind::Postgres)
                 .map_err(|message| StageError::Sandbox { message }),
-            DatabaseTarget::SqliteMemory => open_sqlite_memory(scratch_url),
-            DatabaseTarget::SqliteFile(path) => open_sqlite_file(&path, scratch_url),
+            Ok(DatabaseTarget::SqliteMemory) => open_sqlite_memory(scratch_url),
+            Ok(DatabaseTarget::SqliteFile(path)) => open_sqlite_file(&path, scratch_url),
+            // A scratch URL naming no engine this build connects to is refused
+            // redacted: the string may carry the credentials of the engine it
+            // addresses, so the failure must not echo them.
+            Err(_) => Err(StageError::Sandbox {
+                message: format!(
+                    "the scratch URL `{}` names no database engine this build connects to; \
+                     point `--scratch-url` at a `postgres://` URL or at a SQLite target",
+                    redact_database_url(scratch_url)
+                ),
+            }),
         }
     }
 

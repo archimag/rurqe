@@ -2,10 +2,14 @@
 //!
 //! Commands open either a live database or a disposable scratch state from a
 //! URL, so the rules that decide which engine a string addresses live in one
-//! place. A scheme (`postgres://`, `postgresql://`, `sqlite:`) settles the
-//! question on its own, and only a scheme-less value — a bare SQLite path —
-//! falls back to the file extensions: a connection string that names its engine
-//! must never be reclassified by the shape of the database name it ends with.
+//! place. A URL form is classified by its scheme as the standard `url` parser
+//! reports it — `postgres` / `postgresql` address PostgreSQL and `sqlite`
+//! addresses SQLite — and a value that parser rejects is classified by the
+//! libpq keyword/value shape, `:memory:`, or its file extension, so a
+//! connection string that names its engine is never reclassified by the shape
+//! of the database name it ends with. A value that names no engine this build
+//! connects to is rejected with a [`TargetError`] instead of being guessed to
+//! be PostgreSQL.
 
 use std::fmt;
 
@@ -39,28 +43,68 @@ pub enum DatabaseTarget {
     SqliteFile(String),
 }
 
+/// The reason a connection string names no database this build connects to.
+///
+/// The error names the scheme where the string spells one and never carries the
+/// string itself: a value that reaches this error may hold credentials, so the
+/// caller renders it redacted instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetError {
+    /// The URL scheme names no engine this build connects to.
+    UnrecognisedScheme {
+        /// The scheme as the standard `url` parser reports it.
+        scheme: String,
+    },
+    /// The scheme-less value names neither a libpq keyword/value string,
+    /// `:memory:`, nor a SQLite file path.
+    Unrecognised,
+}
+
 impl DatabaseTarget {
-    /// Classifies the connection string `url`.
-    pub fn parse(url: &str) -> Self {
+    /// Classifies the connection string `url`, rejecting a value that names no
+    /// engine this build connects to.
+    ///
+    /// A URL form is classified by its scheme as the standard `url` parser
+    /// reports it: `postgres` and `postgresql` address PostgreSQL, `sqlite`
+    /// addresses SQLite through the location [`sqlite_url_path`] reads, and any
+    /// other scheme is rejected with its name instead of being guessed to be
+    /// PostgreSQL. A value that parser rejects is no URL this build can classify
+    /// by scheme: it is a libpq keyword/value string, `:memory:`, a SQLite file
+    /// path — or a malformed URL of a supported engine, whose own driver has to
+    /// report the defect, which is why the scheme prefixes keep routing to their
+    /// engine ahead of the rejection.
+    pub fn parse(url: &str) -> Result<Self, TargetError> {
         let url = url.trim();
 
+        if let Ok(parsed) = url::Url::parse(url) {
+            return match parsed.scheme() {
+                "postgres" | "postgresql" => Ok(DatabaseTarget::Postgres),
+                "sqlite" => Ok(sqlite_target(sqlite_url_path(url).unwrap_or_default())),
+                scheme => Err(TargetError::UnrecognisedScheme {
+                    scheme: scheme.to_owned(),
+                }),
+            };
+        }
+
         if names_postgres(url) {
-            return DatabaseTarget::Postgres;
+            return Ok(DatabaseTarget::Postgres);
         }
 
         if let Some(path) = sqlite_url_path(url) {
-            return sqlite_target(path);
+            return Ok(sqlite_target(path));
         }
 
         if url == ":memory:" {
-            return DatabaseTarget::SqliteMemory;
+            return Ok(DatabaseTarget::SqliteMemory);
         }
 
-        if names_sqlite_file(url) {
-            return DatabaseTarget::SqliteFile(url.to_owned());
+        // A libpq keyword/value string carries a `key=value` pair; the driver
+        // validates the keywords once the target opens.
+        if url.contains('=') {
+            return Ok(DatabaseTarget::Postgres);
         }
 
-        DatabaseTarget::Postgres
+        sqlite_file_target(url).ok_or(TargetError::Unrecognised)
     }
 
     /// The engine this target addresses.
@@ -75,15 +119,23 @@ impl DatabaseTarget {
 /// Detects the target [`DatabaseDialect`] from a connection string.
 ///
 /// Absent URLs default to [`DatabaseDialect::Postgres`], preserving the
-/// historical behavior for callers that rely on the default.
+/// historical behavior for callers that rely on the default, and a value
+/// [`DatabaseTarget::parse`] rejects keeps that default: this helper only
+/// picks a flavour for a value the caller supplied on its own, while every
+/// connection passes through the strict gate of [`DatabaseTarget::parse`] and
+/// is rejected there instead of being misread.
 pub fn detect_dialect(database_url: Option<&str>) -> DatabaseDialect {
     match database_url {
-        Some(url) => DatabaseTarget::parse(url).dialect(),
+        Some(url) => DatabaseTarget::parse(url)
+            .map_or(DatabaseDialect::Postgres, |target| target.dialect()),
         None => DatabaseDialect::Postgres,
     }
 }
 
 /// Whether `url` opens with a PostgreSQL URL scheme.
+///
+/// Reached only for a string the standard `url` parser rejects, so a malformed
+/// PostgreSQL URL is still routed to the driver that reports the defect.
 fn names_postgres(url: &str) -> bool {
     ["postgres", "postgresql"]
         .into_iter()
@@ -180,23 +232,24 @@ fn location_without_query(path: &str) -> &str {
     }
 }
 
-/// Whether a scheme-less value names a SQLite database file.
+/// The file extensions SQLite projects use for their databases.
+const SQLITE_FILE_EXTENSIONS: [&str; 3] = ["db", "sqlite", "sqlite3"];
+
+/// Classifies a scheme-less value as a SQLite database file.
 ///
-/// Only values that look like a file path are classified: a libpq keyword/value
-/// string such as `host=db dbname=app.db` carries an `=`, and the database name
-/// it ends with must not reclassify the connection string.
-fn names_sqlite_file(url: &str) -> bool {
-    // The file extensions SQLite projects use for their databases.
-    const EXTENSIONS: [&str; 3] = [".db", ".sqlite", ".sqlite3"];
+/// The extension is read with [`std::path::Path::extension`], so the value is a
+/// file path exactly the way the platform spells one, and a value whose final
+/// component carries no extension — a bare name such as `app`, or a dotfile —
+/// classifies as nothing instead of being guessed to be PostgreSQL. A libpq
+/// keyword/value string never reaches here: it carries a `key=value` pair, and
+/// the database name it ends with must not reclassify the connection string.
+fn sqlite_file_target(url: &str) -> Option<DatabaseTarget> {
+    let extension = std::path::Path::new(url).extension()?.to_str()?;
 
-    if url.is_empty() || url.contains('=') {
-        return false;
-    }
-
-    let lowered = url.to_ascii_lowercase();
-    EXTENSIONS
+    SQLITE_FILE_EXTENSIONS
         .into_iter()
-        .any(|extension| lowered.ends_with(extension))
+        .any(|known| extension.eq_ignore_ascii_case(known))
+        .then(|| DatabaseTarget::SqliteFile(url.to_owned()))
 }
 
 #[cfg(test)]
@@ -212,7 +265,7 @@ mod tests {
         ] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::Postgres,
+                Ok(DatabaseTarget::Postgres),
                 "{url}"
             );
             assert_eq!(
@@ -228,7 +281,7 @@ mod tests {
         for url in ["host=db.internal dbname=app.db", "dbname=app.db user=app"] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::Postgres,
+                Ok(DatabaseTarget::Postgres),
                 "{url}"
             );
         }
@@ -238,11 +291,11 @@ mod tests {
     fn a_sqlite_url_names_the_file_it_opens() {
         assert_eq!(
             DatabaseTarget::parse("sqlite:///var/lib/app.db"),
-            DatabaseTarget::SqliteFile("/var/lib/app.db".to_owned())
+            Ok(DatabaseTarget::SqliteFile("/var/lib/app.db".to_owned()))
         );
         assert_eq!(
             DatabaseTarget::parse("sqlite:data/app.sqlite3"),
-            DatabaseTarget::SqliteFile("data/app.sqlite3".to_owned())
+            Ok(DatabaseTarget::SqliteFile("data/app.sqlite3".to_owned()))
         );
     }
 
@@ -256,7 +309,7 @@ mod tests {
         ] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::SqliteFile(expected.to_owned()),
+                Ok(DatabaseTarget::SqliteFile(expected.to_owned())),
                 "{url}"
             );
         }
@@ -271,7 +324,7 @@ mod tests {
         ] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::SqliteFile("host/db".to_owned()),
+                Ok(DatabaseTarget::SqliteFile("host/db".to_owned())),
                 "{url}"
             );
         }
@@ -282,7 +335,7 @@ mod tests {
         for url in ["sqlite:/var/lib/app@2.db", "sqlite:///var/lib/app@2.db"] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::SqliteFile("/var/lib/app@2.db".to_owned()),
+                Ok(DatabaseTarget::SqliteFile("/var/lib/app@2.db".to_owned())),
                 "{url}"
             );
         }
@@ -292,7 +345,7 @@ mod tests {
     fn the_in_memory_spelling_survives_a_query_string() {
         assert_eq!(
             DatabaseTarget::parse("sqlite::memory:?cache=shared"),
-            DatabaseTarget::SqliteMemory
+            Ok(DatabaseTarget::SqliteMemory)
         );
     }
 
@@ -300,7 +353,7 @@ mod tests {
     fn a_scheme_less_file_name_keeps_the_literal_question_mark_it_spells() {
         assert_eq!(
             DatabaseTarget::parse("data/app?.db"),
-            DatabaseTarget::SqliteFile("data/app?.db".to_owned())
+            Ok(DatabaseTarget::SqliteFile("data/app?.db".to_owned()))
         );
     }
 
@@ -309,7 +362,7 @@ mod tests {
         for url in [":memory:", "sqlite::memory:", "sqlite:", "sqlite://"] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::SqliteMemory,
+                Ok(DatabaseTarget::SqliteMemory),
                 "{url}"
             );
         }
@@ -320,7 +373,7 @@ mod tests {
         for url in ["app.db", "data/app.sqlite", "data/app.sqlite3"] {
             assert_eq!(
                 DatabaseTarget::parse(url),
-                DatabaseTarget::SqliteFile(url.to_owned()),
+                Ok(DatabaseTarget::SqliteFile(url.to_owned())),
                 "{url}"
             );
             assert_eq!(detect_dialect(Some(url)), DatabaseDialect::Sqlite, "{url}");
@@ -328,10 +381,31 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_value_falls_back_to_postgres() {
-        assert_eq!(DatabaseTarget::parse("app"), DatabaseTarget::Postgres);
-        assert_eq!(DatabaseTarget::parse(""), DatabaseTarget::Postgres);
+    fn an_unrecognised_value_is_rejected_instead_of_defaulting_to_postgres() {
+        assert_eq!(DatabaseTarget::parse("app"), Err(TargetError::Unrecognised));
+        assert_eq!(DatabaseTarget::parse(""), Err(TargetError::Unrecognised));
         assert_eq!(detect_dialect(None), DatabaseDialect::Postgres);
+        // The defaulting helper keeps its Postgres default for a value the
+        // connection gate rejects: picking a flavour opens nothing, and every
+        // connection still passes through the gate.
+        assert_eq!(detect_dialect(Some("app")), DatabaseDialect::Postgres);
+    }
+
+    #[test]
+    fn an_unknown_url_scheme_is_rejected_with_its_name() {
+        for (url, scheme) in [
+            ("mysql://app@db.internal:3306/app", "mysql"),
+            ("MYSQL://app@db.internal/app", "mysql"),
+            ("app:memory", "app"),
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                Err(TargetError::UnrecognisedScheme {
+                    scheme: scheme.to_owned()
+                }),
+                "{url}"
+            );
+        }
     }
 
     #[test]

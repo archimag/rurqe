@@ -27,7 +27,12 @@ pub(crate) fn cleanup_stage(
     older_than: Duration,
     force: bool,
 ) -> Result<CommandOutput, CliError> {
-    if DatabaseTarget::parse(scratch_url).dialect() != DatabaseDialect::Postgres {
+    // A SQLite scratch is opened fresh by every verification, so the catalog
+    // holds nothing to sweep; a URL the classifier rejects names no engine at
+    // all and reaches `connect` below, which reports it at the connection gate.
+    if DatabaseTarget::parse(scratch_url)
+        .is_ok_and(|target| target.dialect() != DatabaseDialect::Postgres)
+    {
         return Ok(CommandOutput::single(format!(
             "Nothing to sweep: `{}` addresses a SQLite scratch database, which a verification \
              opens in memory or in the file it is pointed at",
