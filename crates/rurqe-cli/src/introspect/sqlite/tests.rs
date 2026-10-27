@@ -4,7 +4,7 @@ use rurqe_migrate::catalog::{CheckDef, EnumDef, ForeignKeyAction, TypeKind};
 
 use super::check_enums::parse_sqlite_check_enums;
 use super::checks::{parse_sqlite_checks, scan_check_constraints};
-use super::indexes::{column_list_of, predicate_of};
+use super::indexes::{indexed_terms, predicate_of};
 use super::lexer::{lex_passes, reset_lex_passes, tokenize};
 use super::{
     catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
@@ -407,11 +407,27 @@ fn a_where_inside_a_comment_is_never_an_index_predicate() {
 }
 
 #[test]
+fn an_index_term_is_never_split_inside_a_quoted_identifier() {
+    let sql =
+        r#"CREATE INDEX users_idx ON users ([weird, name], `other, name`, lower(x), "third, name");"#;
+
+    assert_eq!(
+        indexed_terms(sql, &tokenize(sql)),
+        Some(vec![
+            "[weird, name]",
+            "`other, name`",
+            "lower(x)",
+            "\"third, name\""
+        ])
+    );
+}
+
+#[test]
 fn a_column_list_ignores_a_commented_parenthesis() {
     let sql = "CREATE INDEX users_idx ON users /* (fake) */ (email, name);";
     assert_eq!(
-        column_list_of(sql, &tokenize(sql)),
-        Some("email, name".to_owned())
+        indexed_terms(sql, &tokenize(sql)),
+        Some(vec!["email", "name"])
     );
 }
 
@@ -507,4 +523,66 @@ fn one_catalog_build_lexes_each_index_ddl_once() {
         3,
         "the table DDL and both index definitions are lexed exactly once"
     );
+}
+
+#[test]
+fn an_index_over_a_comma_bearing_name_keeps_its_terms_intact() {
+    let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+    conn.execute_batch(
+        "CREATE TABLE users (
+             id INTEGER PRIMARY KEY,
+             [weird, name] TEXT NOT NULL,
+             email TEXT NOT NULL
+         );
+         CREATE INDEX users_bracket_idx ON users ([weird, name], lower(email));
+         CREATE UNIQUE INDEX users_backtick_idx ON users (`weird, name`, upper(email));",
+    )
+    .expect("create the schema");
+
+    let catalog = introspect_sqlite(&conn).expect("the catalog is introspected");
+    let table = catalog
+        .tables
+        .iter()
+        .find(|table| table.name == "users")
+        .expect("the table is assembled");
+    let index = |name: &str| {
+        table
+            .indexes
+            .iter()
+            .find(|index| index.name == name)
+            .expect("the index is introspected")
+    };
+
+    // A comma inside the quoted identifier never ends the term, so the column
+    // stays a column of the index and only the computed term becomes the
+    // recorded expression.
+    let bracket = index("users_bracket_idx");
+    assert_eq!(bracket.columns, vec!["weird, name"]);
+    assert_eq!(bracket.expression.as_deref(), Some("lower(email)"));
+
+    let backtick = index("users_backtick_idx");
+    assert!(backtick.unique);
+    assert_eq!(backtick.columns, vec!["weird, name"]);
+    assert_eq!(backtick.expression.as_deref(), Some("upper(email)"));
+}
+
+#[test]
+fn repeated_introspection_of_a_comma_bearing_index_is_bit_stable() {
+    let conn = rusqlite::Connection::open_in_memory().expect("open the scratch database");
+    conn.execute_batch(
+        "CREATE TABLE users (
+             id INTEGER PRIMARY KEY,
+             [weird, name] TEXT NOT NULL,
+             email TEXT NOT NULL
+         );
+         CREATE INDEX users_bracket_idx ON users ([weird, name], lower(email));",
+    )
+    .expect("create the schema");
+
+    let first = introspect_sqlite(&conn).expect("the catalog is introspected");
+    let second = introspect_sqlite(&conn).expect("the catalog is introspected again");
+
+    assert_eq!(first, second);
+    assert_eq!(first.to_lock(), second.to_lock());
+    assert_eq!(first.schema_hash(), second.schema_hash());
 }

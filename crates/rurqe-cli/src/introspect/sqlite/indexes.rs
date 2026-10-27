@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use crate::cli::CliError;
-use crate::introspect::types::split_top_level_terms;
 use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
 use super::lexer::{matching_close, span_text, tokenize, SqlKeyword, Token, TokenKind};
@@ -156,22 +155,47 @@ fn sqlite_index_columns(
     Ok(columns)
 }
 
-/// The parenthesised column list of an index DDL.
+/// The comma-separated terms of the parenthesised list of an index DDL.
 ///
 /// The first opening parenthesis of an index statement introduces the list of
-/// indexed terms, so everything inside it is what the index searches. The caller
-/// hands over the statement together with the token stream it already lexed, so
-/// the list is never recovered by lexing the statement again. The token stream
-/// already splits quoted and commented spans apart, so a parenthesis written
-/// inside a comment never opens the list.
-pub(super) fn column_list_of(sql: &str, tokens: &[Token<'_>]) -> Option<String> {
+/// indexed terms, and the caller hands over the statement together with the
+/// token stream it already lexed, so the list is never recovered by lexing the
+/// statement again. The terms are cut at the `Comma` tokens written at the top
+/// level of that list: a comma inside a string literal, inside a quoted
+/// identifier of any of the three SQLite styles, inside a comment, or inside a
+/// nested parenthesis belongs to the term it is written in and never ends one.
+/// That is precisely what a hand-rolled text splitter gets wrong on an index
+/// such as `ON users ([weird, name], lower(email))`, whose recorded expression
+/// then reached `schema.lock` as a fragment of the identifier.
+///
+/// Every term is the exact source span of what the index declares, so the text
+/// kept in the snapshot is the text the DDL carries.
+///
+/// An unbalanced list, or a statement without one, reports `None`.
+pub(super) fn indexed_terms<'a>(sql: &'a str, tokens: &[Token<'_>]) -> Option<Vec<&'a str>> {
     let open = tokens
         .iter()
         .position(|token| token.kind == TokenKind::OpenParen)?;
     let close = matching_close(tokens, open)?;
-    let start = tokens[open].span.1;
-    let end = tokens[close].span.0;
-    Some(span_text(sql, start, end)?.trim().to_owned())
+
+    let mut terms = Vec::new();
+    let mut depth = 0usize;
+    let mut start = tokens.get(open)?.span.1;
+
+    for token in tokens.get(open + 1..close)? {
+        match token.kind {
+            TokenKind::OpenParen => depth = depth.checked_add(1)?,
+            TokenKind::CloseParen => depth = depth.checked_sub(1)?,
+            TokenKind::Comma if depth == 0 => {
+                terms.push(span_text(sql, start, token.span.0)?.trim());
+                start = token.span.1;
+            }
+            _ => {}
+        }
+    }
+
+    terms.push(span_text(sql, start, tokens.get(close)?.span.0)?.trim());
+    Some(terms)
 }
 
 /// The functional expressions of an index, without the columns it also indexes.
@@ -186,9 +210,9 @@ fn sqlite_index_expressions(
     tokens: &[Token<'_>],
     columns: &[Option<String>],
 ) -> Option<String> {
-    let list = column_list_of(sql, tokens)?;
+    let terms = indexed_terms(sql, tokens)?;
 
-    let expressions: Vec<&str> = split_top_level_terms(&list)
+    let expressions: Vec<&str> = terms
         .into_iter()
         .zip(columns.iter())
         .filter_map(|(term, column)| column.is_none().then_some(term))
