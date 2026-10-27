@@ -1,21 +1,21 @@
 # Two-Tier SQL Correctness
 
-Гарантия «валидный SQL или ошибка компиляции» не может быть целиком выражена в открытой системе типов стабильного Rust. RURQE разделяет её на два уровня, каждый со своим механизмом.
+The guarantee "valid SQL or a compile error" cannot be expressed entirely inside the open type system of stable Rust. RURQE splits it into two levels, each with its own mechanism.
 
-## Tier 1 — типовая система (стабильный Rust)
+## Tier 1 — the type system (stable Rust)
 
-Всё, что формулируется как положительное утверждение «существует», проверяется компилятором прямо в точке вызова.
+Everything that can be stated as a positive assertion ("the relation exists") is checked by the compiler at the call site.
 
-| Класс инварианта | Трейты | Что отклоняется |
+| Invariant class | Traits | What is rejected |
 |---|---|---|
-| Реляционная область видимости | `TableInScope`, `ExprInScope`, `ExprScope`, `ScopePositions`, `ColumnInScope`, `SelectTargetInScope`, `SelectionFor`, `SelectionInScope`, `GroupByInScope`, `TableSelection`, `ColumnBelongsTo` | проекция, фильтр, группировка, сортировка, `ON` соединения, `SET` или `RETURNING` колонки отношения, которого нет в `FROM` / `JOIN`; сравнение колонок несвязанных отношений |
-| Nullability внешних соединений | `TableNullabilityInScope`, `MakeNullable`, `ApplyNullability` | чтение колонки `LEFT JOIN` / `LEFT JOIN LATERAL` / `FULL OUTER JOIN` как `T` вместо `Option<T>` |
-| Тип-состояния | `ProjectionPresent`, `ExecutableMutation`, `AssignmentsPresent`, `InsertSource`, `EmptyRows`, `NoBranches` | `SELECT` без проекции; `UPDATE` / `DELETE` без `WHERE` и без явного `.allow_all()`; `UPDATE` без `SET`; `INSERT` без источника строк; `CASE` без ветви `WHEN` |
-| Возможности диалекта | `SupportsReturning`, `SupportsOnConflict`, `SupportsLateralJoin`, `SupportsFullOuterJoin`, `SupportsRowLocking`, `SupportsDistinctOn`, `SupportsAggregateFilter`, `SupportsWindowFunctions`, `SupportsNullsOrdering`, `SupportsGreatest`, `SupportsDistinctFrom`, `SupportsUpdateFrom`, `SupportsDeleteUsing`, `SupportsJsonAggregation` | `RETURNING` ниже порога версии SQLite, `ON CONFLICT` ниже порога, `LATERAL` и `DELETE ... USING` на SQLite вообще, `FOR UPDATE` на SQLite |
-| Типизация подзапросов в `IN` | `InSubquery<Row>`, `AnySubquery` | подзапрос с другой арностью или другими типами проекции, чем ожидает предикат |
-| Согласованность агрегации | `GroupedSelectTarget`, `ColumnInGroupBy`, `AggregateInDialect`, `FunctionOperand` / `CombineAggr` | проекция негруппированной колонки, в том числе спрятанной внутри `coalesce`, `nullif`, `greatest`, `least`, `CASE` |
+| Relational scope | `TableInScope`, `ExprInScope`, `ExprScope`, `ScopePositions`, `ColumnInScope`, `SelectTargetInScope`, `SelectionFor`, `SelectionInScope`, `GroupByInScope`, `TableSelection`, `ColumnBelongsTo` | projecting, filtering, grouping, ordering, joining, assigning, or returning a column of a relation absent from `FROM` / `JOIN`; comparing columns of unrelated relations |
+| Outer-join nullability | `TableNullabilityInScope`, `MakeNullable`, `ApplyNullability` | reading a `LEFT JOIN` / `LEFT JOIN LATERAL` / `FULL OUTER JOIN` column as `T` instead of `Option<T>` |
+| Typestates | `ProjectionPresent`, `ExecutableMutation`, `AssignmentsPresent`, `InsertSource`, `EmptyRows`, `NoBranches` | a `SELECT` without a projection; an `UPDATE` / `DELETE` without `WHERE` and without an explicit `.allow_all()`; an `UPDATE` without `SET`; an `INSERT` without a row source; a `CASE` without a `WHEN` branch |
+| Dialect capabilities | `SupportsReturning`, `SupportsOnConflict`, `SupportsLateralJoin`, `SupportsFullOuterJoin`, `SupportsRowLocking`, `SupportsDistinctOn`, `SupportsAggregateFilter`, `SupportsWindowFunctions`, `SupportsNullsOrdering`, `SupportsGreatest`, `SupportsDistinctFrom`, `SupportsUpdateFrom`, `SupportsDeleteUsing`, `SupportsJsonAggregation` | `RETURNING` below the SQLite version threshold, `ON CONFLICT` below the threshold, `LATERAL` and `DELETE ... USING` on SQLite at all, `FOR UPDATE` on SQLite |
+| Subquery typing in `IN` | `InSubquery<Row>`, `AnySubquery` | a subquery whose arity or projection types differ from what the predicate expects |
+| Aggregation soundness | `GroupedSelectTarget`, `ColumnInGroupBy`, `AggregateInDialect`, `FunctionOperand` / `CombineAggr` | projecting an ungrouped column, including one hidden inside `coalesce`, `nullif`, `greatest`, `least`, or `CASE` |
 
-Диагностика формулируется в терминах SQL, а не трейтов:
+The diagnostic is formulated in SQL terms rather than trait terms:
 
 ```rust
 // rurqe::prelude
@@ -27,32 +27,32 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
   = note: introduce the column's table with `from` or a join before projecting it
 ```
 
-## Tier 2 — предполётная валидация AST в `.build()`
+## Tier 2 — pre-flight AST validation in `.build()`
 
-Часть правил требует **негативного утверждения** («такого отношения в области видимости нет») либо согласования одной клаузы с другой, написанной позже в динамической цепочке. На стабильном Rust это выражается только через `#![feature(negative_impls)]`, который проектом запрещён. Такие правила проверяются детерминированно в `.build()` — до любого сетевого ввода-вывода.
+Some rules require a **negative assertion** ("no such relation exists in scope") or the alignment of one clause with another clause written later in a dynamic chain. On stable Rust this can only be expressed through `#![feature(negative_impls)]`, which the project forbids. Such rules are checked deterministically in `.build()`, before any network I/O.
 
-- Проверка идёт по заимствованному представлению `StatementRef`, то есть по векторам клауз, которыми построитель уже владеет. Глубокого копирования AST нет.
-- `SelectAst::validate` делегирует тому же представлению, поэтому вложенные утверждения внутри выражений тоже проверяются.
-- Ошибка возвращается типизированно, как вариант `BuildError`, и печатается как локализованное диагностическое сообщение с указанием конкретного места.
+- The check runs over the borrowed `StatementRef` representation, that is, over the clause vectors the builder already owns. No deep AST copy is performed.
+- `SelectAst::validate` delegates to the same representation, so nested statements inside expressions are checked too.
+- A failure is returned as a typed `BuildError` variant and printed as a localized diagnostic that names the exact position.
 
-### Классы ошибок `BuildError`
+### `BuildError` classes
 
-| Группа | Варианты | Суть |
+| Group | Variants | Meaning |
 |---|---|---|
-| Отношения | `DuplicateRelation`, `DuplicateCte`, `AliasedDerivedRelation` | одно и то же имя отношения (или CTE) встречается дважды; производное отношение адресовано не тем именем, под которым зарегистрирован его подзапрос |
-| Ссылки на колонки | `ColumnWithoutRelation`, `UnresolvedColumn`, `UnresolvedQualifier` | ссылка на колонку в клаузе без пространства имён (`VALUES`, `ORDER BY` составного запроса), вне области видимости и вне корреляции, либо квалификатор, который не объявляет ни одно отношение запроса |
-| Дублирование и блокировки | `DistinctOnOrderMismatch`, `DistinctOrderNotProjected`, `DistinctOnWithLock`, `DistinctWithLock`, `NestedLock` | префикс `ORDER BY` не совпадает с `DISTINCT ON`; `ORDER BY` при `DISTINCT` не проецируется; `DISTINCT` / `DISTINCT ON` вместе с блокировкой строк; блокировка внутри вложенного запроса |
-| Составные запросы | `CompoundOrderIndex`, `CompoundOrderColumn`, `CompoundOrderExpression`, `SetOperandArity` | сортировка комбинированных строк по позиции вне списка проекций, по не проецируемому имени, по выражению; операнд с другой арностью |
-| Строки `INSERT` | `InconsistentRows`, `MismatchedRowColumns`, `EmptyInsertRow` | строка несёт иное число значений или иную колонку в позиции; строка без назначений |
-| Проекция и агрегация | `EmptyProjection`, `UngroupedColumnWithAggregate`, `UngroupedHavingColumn`, `UngroupedColumn`, `AggregateInRowClause` | пустой список проекций; негруппированная колонка рядом с агрегатом, в `HAVING` или в любой клаузе сгруппированного запроса; агрегат в клаузе, вычисляемой построчно |
-| Raw SQL | `RawSql(RawSqlError)` | несовпадение числа фрагментов и параметров (`MixedPlaceholders`, `PlaceholderCount`) |
+| Relations | `DuplicateRelation`, `DuplicateCte`, `AliasedDerivedRelation` | the same relation (or CTE) name occurs twice; a derived relation is addressed under a name other than the one its subquery was registered with |
+| Column references | `ColumnWithoutRelation`, `UnresolvedColumn`, `UnresolvedQualifier` | a column reference in a clause without a namespace (`VALUES`, `ORDER BY` of a compound query), outside the scope and outside the correlation, or a qualifier that no relation of the query declares |
+| Duplication and locking | `DistinctOnOrderMismatch`, `DistinctOrderNotProjected`, `DistinctOnWithLock`, `DistinctWithLock`, `NestedLock` | the `ORDER BY` prefix does not match `DISTINCT ON`; an `ORDER BY` item is not projected under `DISTINCT`; `DISTINCT` / `DISTINCT ON` combined with row locking; a row lock inside a nested statement |
+| Compound queries | `CompoundOrderIndex`, `CompoundOrderColumn`, `CompoundOrderExpression`, `SetOperandArity` | ordering the combined rows by a position outside the projection list, by a name the projection does not produce, or by an expression; an operand with a different arity |
+| `INSERT` rows | `InconsistentRows`, `MismatchedRowColumns`, `EmptyInsertRow` | a row carries a different number of values or a different column at a position; a row without assignments |
+| Projection and aggregation | `EmptyProjection`, `UngroupedColumnWithAggregate`, `UngroupedHavingColumn`, `UngroupedColumn`, `AggregateInRowClause` | an empty projection list; an ungrouped column next to an aggregate, in `HAVING`, or in any clause of a grouped query; an aggregate in a clause evaluated per row |
+| Raw SQL | `RawSql(RawSqlError)` | a mismatch between the fragment count and the parameter count (`MixedPlaceholders`, `PlaceholderCount`) |
 
-Позиция агрегата описывается перечислением `RowClause`: `Where`, `GroupBy`, `JoinOn`, `Assignment`, `ConflictTarget`, `ConflictUpdate` — каждая из этих клауз вычисляется до свёртки строк, поэтому агрегат в них семантически невозможен.
+The aggregate position is described by the `RowClause` enumeration: `Where`, `GroupBy`, `JoinOn`, `Assignment`, `ConflictTarget`, `ConflictUpdate`. Each of these clauses is evaluated before rows are folded, so an aggregate in them is semantically impossible.
 
-### Пример
+### Example
 
 ```rust
-// Два отношения с одним эффективным именем в области видимости.
+// Two relations share one effective name in scope.
 let err = select_from(Users)
     .inner_join_table(Users, Expr::column::<UserId>().eq(1i64))
     .select((UserId,))
@@ -62,20 +62,20 @@ let err = select_from(Users)
 assert!(matches!(err, BuildError::DuplicateRelation { name: "users" }));
 ```
 
-Лечение — alias: `let u2 = Users.as_alias("u2");` или `table_alias!`. Причина, по которой правило живёт во втором уровне, разобрана в главе [Disjointness](../theory/disjointness.md).
+The remedy is an alias: `let u2 = Users.as_alias("u2");` or `table_alias!`. Why the rule lives on the second level is explained in [Disjointness](../theory/disjointness.md).
 
-## Граница между уровнями
+## The boundary between the levels
 
 ```text
-валидный запрос ──► Tier 1 (rustc) ──► Tier 2 (.build()) ──► SQL ──► движок БД
-                       │                     │
-                       └── ошибка компиляции └── BuildError
+valid query ──► Tier 1 (rustc) ──► Tier 2 (.build()) ──► SQL ──► database engine
+                     │                     │
+                     └── compile error     └── BuildError
 ```
 
-- **Tier 1 не ослабляется ради удобства.** Если инвариант можно выразить положительно, он обязан жить в типах.
-- **Tier 2 не дублирует Tier 1.** Он покрывает ровно те правила, для которых нужна негативная проверка или согласование клауз, написанных в разное время.
-- **Паники запрещены на обоих уровнях.** Любая проблема — это `BuildError`, `ExecutionError` или отказ компиляции, но не `panic!` / `unwrap()` в продакшн-коде.
+- **Tier 1 is not relaxed for convenience.** If an invariant can be expressed positively, it must live in the types.
+- **Tier 2 does not duplicate Tier 1.** It covers exactly those rules that need a negative check or the alignment of clauses written at different times.
+- **Panics are forbidden on both levels.** Any problem is a `BuildError`, an `ExecutionError`, or a compilation refusal, never a `panic!` / `unwrap()` in production code.
 
-## Что не покрывается
+## What is not covered
 
-Ошибки самого движка на валидном запросе (нарушение constraint, отсутствие прав, несовпадение типов значения в параметре) допустимы и возвращаются как `ExecutionError` с сохранением драйверной ошибки — её можно получить через `as_backend()` / `into_backend()` и различить типизированно через `is_not_found()`, `is_multiple_rows()`, `is_row_decode()`, `is_build()`.
+Errors coming from the engine itself on a valid query (a constraint violation, missing privileges, a value type mismatch in a parameter) are admissible and are returned as `ExecutionError`, preserving the driver error, which is reachable through `as_backend()` / `into_backend()` and distinguishable through `is_not_found()`, `is_multiple_rows()`, `is_row_decode()`, and `is_build()`.

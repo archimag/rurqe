@@ -1,69 +1,73 @@
-# Архитектурный тетраэдр
+# The architectural tetrad
 
-RURQE собран из четырёх индустриальных идей, каждая из которых закрывает слабость остальных.
+RURQE is assembled from four industrial ideas, each of which closes a weakness of the others.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                          АРХИТЕКТУРНЫЙ ТЕТРАЭДР                              │
+│                            THE ARCHITECTURAL TETRAD                          │
 ├───────────────────────┬────────────────────────┬───────────────────┬─────────┤
-│ Эргономика Kysely     │ Выразительность jOOQ   │ Жизненный цикл    │ Типовая │
-│        (DX)           │ и реляционная глубина  │ Flyway            │ система │
+│ Kysely ergonomics     │ jOOQ expressiveness    │ Flyway lifecycle  │ Rust    │
+│        (DX)           │ and relational depth   │                   │ types   │
 ├───────────────────────┼────────────────────────┼───────────────────┼─────────┤
-│ • fluent-синтаксис    │ • схема как SSOT       │ • версионные V... │ • гейты │
-│ • именованные поля    │ • сложные join и CTE   │ • повторяемые R...│ • zero  │
-│ • ноль boilerplate    │ • строгая nullability  │ • SHA-256         │   cost  │
-│ • автодополнение      │ • интроспекция каталога│ • baseline/repair │ • ясные │
-│                       │                        │ • pruning         │  ошибки │
+│ • fluent syntax       │ • schema as SSOT       │ • versioned V...  │ • gates │
+│ • named fields        │ • complex joins, CTEs  │ • repeatable R... │ • zero  │
+│ • zero boilerplate    │ • strict nullability   │ • SHA-256         │   cost  │
+│ • autocompletion      │ • catalog introspection│ • baseline/repair │ • clear │
+│                       │                        │ • pruning         │  errors │
 └───────────────────────┴────────────────────────┴───────────────────┴─────────┘
 ```
 
-## 1. Эргономика Kysely (developer experience)
+## 1. Kysely ergonomics (developer experience)
 
-- Запрос читается как SQL и не требует turbofish на каждом шаге: диалект зафиксирован прелюдией (`rurqe::postgres::prelude::*`), таблица передаётся значением (`.from(Users)`), колонки — это ZST-значения.
-- Именованные проекции: `select!` синтезирует локальную структуру строки, `dto!` — переиспользуемую, вместо индексов кортежа `row.0` / `row.1`.
-- `rust-analyzer` работает без подключения к базе: вся информация о схеме закодирована в типах.
+- A query reads like SQL and needs no turbofish at every step: the dialect is pinned by a prelude (`rurqe::postgres::prelude::*`), a table is passed by value (`select_from(Users)`), and columns are ZST values.
+- Named projections: `select!` synthesizes a local row struct, `dto!` synthesizes a reusable one, instead of tuple indices `row.0` / `row.1`.
+- `rust-analyzer` works without a database connection: all schema information is encoded in types.
 
-Пример формы (проверяется на реальном коде в [Quickstart](quickstart.md)):
+An example of the shape (verified against real code in the [Quickstart](quickstart.md)):
 
 ```text
-select_from(Users).select(cols!(UserId))
+use rurqe::postgres::prelude::*;
+
+select_from(Users)
+    .select(cols!(UserId, UserName))
+    .where_(UserId.gt(10i64))
 ```
 
-## 2. Выразительность jOOQ и реляционная глубина
+## 2. jOOQ expressiveness and relational depth
 
-- **Схема — первоисточник.** Каталог базы интроспектируется, из него генерируются маркеры и снимок `schema.lock`; дублирование схемы руками отсутствует.
-- **Реляционная выразительность.** Многотабличные `JOIN`, подзапросы, CTE (`WITH`), оконные функции, агрегации, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, операции над множествами `UNION` / `INTERSECT` / `EXCEPT`.
-- **Реляционные инварианты в типах.** Внешние соединения автоматически поднимают колонки в `Option<T>` (см. [Nullability](../theory/nullability.md)).
+- **The schema is the primary source.** The database catalog is introspected, markers and the `schema.lock` snapshot are generated from it, and the schema is never duplicated by hand.
+- **Relational expressiveness.** Multi-table `JOIN`s, subqueries, CTEs (`WITH`), window functions, aggregations, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, and the set operations `UNION` / `INTERSECT` / `EXCEPT`.
+- **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically (see [Nullability](../theory/nullability.md)).
 
-## 3. Жизненный цикл Flyway (целостность эволюции схемы)
+## 3. Flyway lifecycle (schema evolution integrity)
 
-- **Две модели одновременно.** Классические последовательные миграции (`V...`, `R...` с SHA-256 контрольными суммами, `baseline`, `repair`) и AI-first модель **Stage + Tail**: декларативное состояние `schema/` как SSOT для людей и LLM плюс активный хвост `migrations/` как дельта для уже развёрнутых баз.
-- **Cold start.** Чистое окружение (CI, контейнер, локальная машина) инициализируется прямо из `schema/` без проигрывания истории миграций.
-- **Checkpoint и pruning.** Маркер `checkpoint.toml` фиксирует границу `pruned_up_to_version` и базовый хеш стадии; исторические файлы до этой границы удаляются без squash и без переписывания baseline.
-- **The Golden Equation.** Непрерывная верификация: `State(schema/) ≡ State(Checkpoint + migrations/)` — сравнение каталогов двух эфемерных баз. Расхождение ловится в CI, а не на проде.
-- **Fail-safe для отставших баз.** Если целевая база старше границы обрезанного checkpoint, раннер останавливается с диагностикой и инструкцией, а не портит состояние.
+- **Two models at once.** Classic sequential migrations (`V...`, `R...` with SHA-256 checksums, `baseline`, `repair`) and the AI-first **Stage + Tail** model: the declarative state under `schema/` as the SSOT for humans and LLMs, plus the active tail under `migrations/` as a delta for already deployed databases.
+- **Cold start.** A clean environment (CI, container, local machine) is initialized directly from `schema/` without replaying the migration history.
+- **Checkpoint and pruning.** The `checkpoint.toml` marker records the `pruned_up_to_version` boundary and the base stage hash; historical files below that boundary are deleted without a squash and without rewriting the baseline.
+- **The Golden Equation.** Continuous verification: `State(schema/) == State(Checkpoint + migrations/)`, compared as the catalogs of two ephemeral databases. A divergence is caught in CI rather than in production.
+- **Fail-safe for lagging databases.** If the target database is older than the pruned checkpoint boundary, the runner stops with a diagnostic and an instruction instead of corrupting the state.
 
-## 4. Типовая система Rust и zero-cost
+## 4. The Rust type system and zero-cost
 
-- **Zero-cost абстракции.** Мономорфизация построителей и фантомных маркеров сворачивается в статический буфер SQL и прямые десериализаторы.
-- **Capability-гейты во время компиляции.** `RETURNING`, `ON CONFLICT`, `DISTINCT ON`, `LATERAL`, `FULL OUTER JOIN`, `UPDATE ... FROM`, `DELETE ... USING`, `FOR UPDATE` — это маркерные трейты (`SupportsReturning`, `SupportsOnConflict`, `SupportsDistinctOn`, `SupportsLateralJoin`, `SupportsFullOuterJoin`, `SupportsUpdateFrom`, `SupportsDeleteUsing`, `SupportsRowLocking`, …). Нет реализации трейта — нет метода.
-- **Диагностика для человека и для LLM.** `#[diagnostic::on_unimplemented]` превращает каскад трейтов в одно короткое сообщение с подсказкой.
+- **Zero-cost abstractions.** Monomorphized builders and phantom markers collapse into a static SQL buffer and direct deserializers.
+- **Compile-time capability gates.** `RETURNING`, `ON CONFLICT`, `DISTINCT ON`, `LATERAL`, `FULL OUTER JOIN`, `UPDATE ... FROM`, `DELETE ... USING`, and `FOR UPDATE` are marker traits (`SupportsReturning`, `SupportsOnConflict`, `SupportsDistinctOn`, `SupportsLateralJoin`, `SupportsFullOuterJoin`, `SupportsUpdateFrom`, `SupportsDeleteUsing`, `SupportsRowLocking`, ...). No trait implementation means no method.
+- **Diagnostics for humans and for LLMs.** `#[diagnostic::on_unimplemented]` turns a trait cascade into one short message with a hint.
 
-## Карта воркспейса
+## Workspace map
 
-| Крейт | Ответственность |
+| Crate | Responsibility |
 |---|---|
-| `rurqe` | Фасад: прелюдии, диалект-прелюдии, точки входа `select_from` / `insert_into` / `update` / `delete_from` |
-| `rurqe-core` | AST, маркеры схемы (`Table`, `Column`), трейты диалектов и capability-маркеры, выражения, DML, валидация |
-| `rurqe-macros` | Процедурные макросы `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
-| `rurqe-postgres` | Диалект PostgreSQL (`Postgres<Pg14>`/`Pg15`/`Pg16`), версионные маркеры, адаптеры синхронного и асинхронного драйверов, пулы |
-| `rurqe-sqlite` | Диалект SQLite (`Sqlite<Sqlite3_35>` и др.), адаптер `rusqlite`, пул `r2d2` |
-| `rurqe-migrate` | Движок миграций, каталог схемы, checksum, checkpoint, стадии |
-| `rurqe-cli` | Интроспекция каталога, кодогенерация, drift-верификация, stage/prune-инструменты |
+| `rurqe` | Facade: preludes, dialect preludes, the `select_from` / `insert_into` / `update` / `delete_from` entry points |
+| `rurqe-core` | AST, schema markers (`Table`, `Column`), dialect and capability traits, expressions, DML, validation |
+| `rurqe-macros` | Procedural macros `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
+| `rurqe-postgres` | PostgreSQL dialect (`Postgres<Pg14>` / `Pg15` / `Pg16`), version markers, synchronous and asynchronous driver adapters, pools |
+| `rurqe-sqlite` | SQLite dialect (`Sqlite<Sqlite3_35>` and others), the `rusqlite` adapter, the `r2d2` pool |
+| `rurqe-migrate` | Migration engine, schema catalog, checksums, checkpoints, stages |
+| `rurqe-cli` | Catalog introspection, code generation, drift verification, stage and prune tooling |
 
-## Что из этого следует для чтения книги
+## What this means for reading the book
 
-- Эргономика → [Quickstart](quickstart.md).
-- Корректность → [Two-Tier SQL Correctness](two_tier.md) и вся [часть о теории](../theory/overview.md).
-- Диалекты → главы про PostgreSQL и SQLite (отдельные разделы книги).
-- Миграции → главы про традиционный путь и Stage + Tail (отдельные разделы книги).
+- Ergonomics: [Quickstart](quickstart.md).
+- Correctness: [Two-Tier SQL Correctness](two_tier.md) and the whole [theory part](../theory/overview.md).
+- Dialects: the PostgreSQL and SQLite chapters (separate sections of the book).
+- Migrations: the chapters about the traditional path and Stage + Tail (separate sections of the book).

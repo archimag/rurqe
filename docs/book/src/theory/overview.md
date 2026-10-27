@@ -1,59 +1,59 @@
-# Обзор: реляционная теория в типах Rust
+# Overview: relational theory in Rust types
 
-RURQE — не «склейка строк SQL». Его API устроен как отображение операторов реляционной алгебры Кодда (и её расширения NF² с вложенными отношениями) в систему типов Rust. Каждый оператор даёт три вещи одновременно:
+RURQE is not a "string concatenator for SQL". Its API is designed as a mapping of the operators of Codd's relational algebra (and its NF² extension with nested relations) into the Rust type system. Every operator delivers three things at once:
 
-1. **математический смысл** (что происходит с отношением);
-2. **SQL-рендеринг** (какая клауза появляется в тексте запроса);
-3. **инвариант типа** (что компилятор не даст сделать).
+1. **a mathematical meaning** (what happens to the relation);
+2. **SQL rendering** (which clause appears in the query text);
+3. **a type invariant** (what the compiler will not let you do).
 
-Третья колонка — главная. Именно она превращает «библиотеку для сборки SQL» в инструмент, где корректность запроса доказывается компилятором.
+The third column is the important one. It is what turns "a library that assembles SQL" into a tool where the correctness of a query is proven by the compiler.
 
-## Карта соответствий (краткая)
+## Mapping table (condensed)
 
-| Реляционный оператор | Тип / метод RURQE | SQL |
+| Relational operator | RURQE type / method | SQL |
 |---|---|---|
-| Отношение (relation) | `Table`, `TableScope` | `FROM` / `JOIN` |
-| Атрибут (attribute) | `Column`, `Column::RustType` | имя колонки |
-| Проекция π | `Selection`, `SelectTarget`, `SelectionFor` | список проекций `SELECT` |
-| Селекция σ | `Expr<bool>` в `.where_(...)` | `WHERE` |
-| Тета-соединение ⋈θ | `inner_join_table(t, on)` | `INNER JOIN ... ON` |
-| Левое внешнее ⟕ | `left_join_table(t, on)` | `LEFT JOIN ... ON` |
-| Полное внешнее ⟗ | `full_outer_join_table(t, on)` | `FULL OUTER JOIN ... ON` |
-| Декартово произведение × | `cross_join_table(t)` | `CROSS JOIN` |
-| Коррелированный `LATERAL` | `cross_join_lateral`, `left_join_lateral` | `JOIN LATERAL` |
-| Группировка γ | `.group_by(...)` → `GroupedQuery` | `GROUP BY` / `HAVING` |
-| Сортировка и предел | `.order_by_*`, `.limit`, `.offset` | `ORDER BY` / `LIMIT` / `OFFSET` |
-| Объединение ∪ / разность − / пересечение ∩ | `.union`, `.union_all`, `.intersect`, `.except` | операции над множествами |
-| Полусоединение ⋉ | `exists(...)`, `in_subquery(...)` | `EXISTS` / `IN (SELECT ...)` |
-| Вложенное отношение (NF²) | `nest_many`, `nest_one` | JSON-агрегация |
+| Relation | `Table`, `TableScope` | `FROM` / `JOIN` |
+| Attribute | `Column`, `Column::RustType` | column name |
+| Projection π | `Selection`, `SelectTarget`, `SelectionFor` | the `SELECT` projection list |
+| Selection σ | `Expr<bool>` in `.where_(...)` | `WHERE` |
+| Theta join ⋈θ | `inner_join_table(t, on)` | `INNER JOIN ... ON` |
+| Left outer join ⟕ | `left_join_table(t, on)` | `LEFT JOIN ... ON` |
+| Full outer join ⟗ | `full_outer_join_table(t, on)` | `FULL OUTER JOIN ... ON` |
+| Cartesian product × | `cross_join_table(t)` | `CROSS JOIN` |
+| Correlated `LATERAL` | `cross_join_lateral`, `left_join_lateral` | `JOIN LATERAL` |
+| Grouping γ | `.group_by(...)` → `GroupedQuery` | `GROUP BY` / `HAVING` |
+| Ordering and pagination | `.order_by_*`, `.limit`, `.offset` | `ORDER BY` / `LIMIT` / `OFFSET` |
+| Union ∪ / difference − / intersection ∩ | `.union`, `.union_all`, `.intersect`, `.except` | set operations |
+| Semijoin ⋉ | `exists(...)`, `in_subquery(...)` | `EXISTS` / `IN (SELECT ...)` |
+| Nested relation (NF²) | `nest_many`, `nest_one` | JSON aggregation |
 
-Подробное раскрытие — в [От реляционной алгебры Кодда к системе типов Rust](codd_to_rust.md).
+The full treatment is in [From Codd's relational algebra to the Rust type system](codd_to_rust.md).
 
-## Почему именно типы
+## Why types at all
 
-Реляционная алгебра оперирует множествами кортежей с типизированными атрибутами. Rust даёт ровно те инструменты, которые нужны для статической проверки этих операций:
+Relational algebra operates on sets of tuples with typed attributes. Rust provides exactly the tools a static check of these operations needs:
 
-- **ZST-маркеры** (`Table`, `Column`) фиксируют имена и принадлежность без рантайм-стоимости.
-- **Фантомные параметры** (`SelectQuery<D, Tables, Output, Projected, Lock>`) несут область видимости, тип строки и тип-состояние прямо в типе запроса.
-- **Трейты** выражают положительные утверждения: «колонка принадлежит таблице», «таблица в области», «колонка поднимается в `Option<T>`».
-- **Тип-состояния** исключают недостижимые конструкции: не проецированный `SELECT`, не фильтрованный `UPDATE`, комбинированный запрос, упорядоченный до объединения.
-- **`BuildError`** закрывает остаток: негативные утверждения и согласование клауз, написанных в разное время.
+- **ZST markers** (`Table`, `Column`) record names and ownership with no runtime cost.
+- **Phantom parameters** (`SelectQuery<D, Tables, Output, Projected, Lock>`) carry the scope, the row type, and the typestate inside the query type itself.
+- **Traits** express positive assertions: "the column belongs to the table", "the table is in scope", "the column lifts into `Option<T>`".
+- **Typestates** exclude unreachable constructs: an unprojected `SELECT`, an unfiltered `UPDATE`, a compound query ordered before it was combined.
+- **`BuildError`** closes the remainder: negative assertions and the alignment of clauses written at different times.
 
-## Структура части
+## Structure of this part
 
-| Глава | О чём |
+| Chapter | Subject |
 |---|---|
-| [Кодд → Rust](codd_to_rust.md) | Полная таблица «оператор — тип — SQL — инвариант», включая полу- и антисоединения |
-| [Области видимости](scopes.md) | `TableScope`, `ExprScope`, `TableInScope`, `ExprInScope`, `ScopePositions` и типы соединённых областей |
-| [Nullability](nullability.md) | `NullableRel` / `NonNullableRel`, `MakeNullable`, `ApplyNullability` — внешние соединения как изменение типа |
-| [Disjointness](disjointness.md) | Почему уникальность имён отношений — это Tier 2, и как работает alias |
-| [NF² и MULTISET](nf2_multiset.md) | Вложенные отношения: `nest_many` / `nest_one`, JSON-агрегация, отсутствие N+1 |
+| [Codd → Rust](codd_to_rust.md) | The complete "operator — type — SQL — invariant" table, including semijoins and antijoins |
+| [Scopes](scopes.md) | `TableScope`, `ExprScope`, `TableInScope`, `ExprInScope`, `ScopePositions`, and the types of joined scopes |
+| [Nullability](nullability.md) | `NullableRel` / `NonNullableRel`, `MakeNullable`, `ApplyNullability` — outer joins as a type change |
+| [Disjointness](disjointness.md) | Why relation name uniqueness is Tier 2, and how aliasing works |
+| [NF² and MULTISET](nf2_multiset.md) | Nested relations: `nest_many` / `nest_one`, JSON aggregation, no N+1 |
 
-## Ограничения, зафиксированные явно
+## Limitations stated explicitly
 
-Теория полезна не только тем, что выражает, но и тем, что осознанно оставляет за бортом:
+Theory is useful not only for what it expresses but also for what it deliberately leaves out:
 
-- `ROLLUP`, `CUBE`, `GROUPING SETS` не реализуются: они динамически подставляют `NULL` в ранее non-nullable атрибуты, что разрушает статическую nullability и саму идею `GROUP BY`-soundness.
-- `JOIN ... USING (column)` не реализуется: он сливает две колонки в одно неквалифицированное имя и ломает однозначную квалификацию отношений.
-- Синтетическая эмуляция `MERGE` запрещена: неатомарный `SELECT` + `INSERT/UPDATE` не является `MERGE`.
-- Рекурсивные CTE (`WITH RECURSIVE`), `MERGE`, табличные конструкторы `VALUES` как отношение, диапазонные типы и `INTERVAL` отнесены к горизонту после 0.1.0.
+- `ROLLUP`, `CUBE`, and `GROUPING SETS` are not implemented: they inject `NULL` into previously non-nullable attributes dynamically, which destroys static nullability and the very idea of `GROUP BY` soundness.
+- `JOIN ... USING (column)` is not implemented: it merges two columns into one unqualified name and breaks unambiguous relation qualification.
+- A synthetic `MERGE` emulation is forbidden: a non-atomic `SELECT` + `INSERT/UPDATE` is not `MERGE`.
+- Recursive CTEs (`WITH RECURSIVE`), `MERGE`, table value constructors (`VALUES` as a relation), range types, and `INTERVAL` are assigned to the horizon after 0.1.0.

@@ -1,14 +1,14 @@
-# Disjointness: уникальность имён отношений
+# Disjointness: relation name uniqueness
 
-Запрос адресует отношения через одно пространство имён. Если два отношения получают одно и то же эффективное имя, движок отвергает запрос: PostgreSQL отвечает `table name specified more than once`.
+A query addresses relations through one namespace. If two relations receive the same effective name, the engine rejects the query: PostgreSQL answers `table name specified more than once`.
 
-## Где проходит граница
+## Where the boundary runs
 
-Это правило — **негативное**: «такого имени в области быть не должно». На стабильном Rust его нельзя выразить в типах: для этого нужен `#![feature(negative_impls)]`, запрещённый в проекте. Поэтому правило живёт на втором уровне гарантии — детерминированной проверке в `.build()` (см. [Two-Tier SQL Correctness](../intro/two_tier.md)).
+This rule is **negative**: "no such name may exist in scope". On stable Rust it cannot be expressed in the type system, because that would require `#![feature(negative_impls)]`, which the project forbids. The rule therefore lives on the second level of the guarantee — the deterministic check in `.build()` (see [Two-Tier SQL Correctness](../intro/two_tier.md)).
 
-Это осознанное архитектурное решение, а не упущение: ошибка всё равно возникает до сетевого ввода-вывода, просто её тип — `BuildError`, а не `E0277`.
+This is a deliberate architectural decision rather than an omission: the error still occurs before any network I/O, only its type is `BuildError` instead of `E0277`.
 
-## Эффективное имя
+## The effective name
 
 ```rust
 pub(super) fn effective_relation_name(relation: &TableRef) -> &'static str {
@@ -16,17 +16,17 @@ pub(super) fn effective_relation_name(relation: &TableRef) -> &'static str {
 }
 ```
 
-- Без алиаса эффективное имя — имя таблицы.
-- С алиасом (`TableRef { name, alias: Some(a) }`) — алиас.
+- Without an alias the effective name is the table name.
+- With an alias (`TableRef { name, alias: Some(a) }`) it is the alias.
 
-Отсюда два одинаково запрещённых случая:
+Hence two equally forbidden cases:
 
-| Случай | `FROM` / `JOIN` | Эффективные имена |
+| Case | `FROM` / `JOIN` | Effective names |
 |---|---|---|
-| повтор без алиаса | `FROM "users" JOIN "users"` | `users`, `users` — коллизия |
-| повтор алиаса | `JOIN "users" AS "u"` дважды | `u`, `u` — коллизия |
+| repetition without an alias | `FROM "users" JOIN "users"` | `users`, `users` — collision |
+| repetition of an alias | `JOIN "users" AS "u"` twice | `u`, `u` — collision |
 
-## Регистрация отношений
+## Registering relations
 
 ```rust
 pub(crate) fn register_relation(
@@ -42,19 +42,19 @@ pub(crate) fn register_relation(
 }
 ```
 
-Правило сформулировано один раз и применяется везде, где отношения собираются: построитель `SELECT` регистрирует отношения `FROM` / `JOIN`, а DML-построители — мутируемую таблицу вместе с источниками `FROM` / `USING`. Производные таблицы и `LATERAL`-подзапросы участвуют под именем того маркера, под которым они выставлены.
+The rule is stated once and applied everywhere relations are collected: the `SELECT` builder registers `FROM` / `JOIN` relations, and the DML builders register the mutated table together with the `FROM` / `USING` sources. Derived tables and `LATERAL` subqueries participate under the name of the marker they are exposed as.
 
-## Диагностика
+## Diagnostics
 
 ```text
 duplicate unaliased relation `users` in query scope;
 each occurrence of a table must have a distinct alias via `table_alias!` or `.as_alias(...)`
 ```
 
-## Лечение: alias
+## Remedy: alias
 
 ```rust
-// Компилируется и рендерится как FROM "events" e1 JOIN "events" e2 ...
+// Compiles and renders as FROM "events" e1 JOIN "events" e2 ...
 table_alias!(E1, "e1");
 table_alias!(E2, "e2");
 
@@ -69,35 +69,35 @@ let self_join = select_from::<Postgres, Aliased<Event, E1>>()
     ));
 ```
 
-`Aliased<T, A>` переопределяет `Table::table_ref`, чтобы в SQL появился `AS "alias"`, и `Table::column_expr`, чтобы квалификатор был алиасом. Поэтому самосоединение остаётся однозначным на всех уровнях: в SQL, в области видимости и в проверке уникальности имён.
+`Aliased<T, A>` overrides `Table::table_ref` so that `AS "alias"` appears in the SQL, and `Table::column_expr` so that the qualifier is the alias. A self-join therefore stays unambiguous at every level: in the SQL, in the scope, and in the name uniqueness check.
 
-## Смежные правила того же уровня
+## Neighbouring rules of the same level
 
-| Ошибка | Что означает | Лечение |
+| Error | Meaning | Remedy |
 |---|---|---|
-| `BuildError::DuplicateRelation { name }` | два отношения с одним эффективным именем | alias через `table_alias!` / `.as_alias(...)` |
-| `BuildError::DuplicateCte { name }` | два CTE с одним именем в `WITH` | `cte_named` или разные маркеры в `as_cte` |
-| `BuildError::AliasedDerivedRelation { name }` | производное отношение адресовано алиасом, а подзапрос зарегистрирован под другим именем | регистрировать производное отношение ровно под тем именем, под которым к нему обращаются |
-| `BuildError::ColumnWithoutRelation { table, column }` | ссылка на колонку в клаузе без пространства имён (`VALUES`, `ORDER BY` составного запроса) | вычислять из констант или ссылаться на выходную колонку проекции |
-| `BuildError::UnresolvedQualifier { name }` | квалификатор, которого не объявляет ни одно отрендеренное отношение | рендерить цель через `Table::table_ref`, чтобы алиас попал в `AS` |
-| `BuildError::UnresolvedColumn { table, column }` | ссылка вне `FROM` / `JOIN` и вне корреляции | добавить отношение через `.from(...)` / соединение |
+| `BuildError::DuplicateRelation { name }` | two relations share one effective name | alias through `table_alias!` / `.as_alias(...)` |
+| `BuildError::DuplicateCte { name }` | two CTEs share one name in `WITH` | `cte_named`, or distinct markers in `as_cte` |
+| `BuildError::AliasedDerivedRelation { name }` | a derived relation is addressed by an alias while its subquery is registered under a different name | register the derived relation under exactly the name it is addressed by |
+| `BuildError::ColumnWithoutRelation { table, column }` | a column reference in a clause without a namespace (`VALUES`, `ORDER BY` of a compound query) | compute from constants or reference an output column of the projection |
+| `BuildError::UnresolvedQualifier { name }` | a qualifier that no rendered relation declares | render the target through `Table::table_ref` so the alias reaches the `AS` clause |
+| `BuildError::UnresolvedColumn { table, column }` | a reference outside `FROM` / `JOIN` and outside the correlation | add the relation through `.from(...)` / a join |
 
-## Область `Compound` как предельный случай
+## The `Compound` scope as a limiting case
 
-Комбинированный запрос (`UNION`, `INTERSECT`, `EXCEPT`) вообще не адресует хранимых отношений: его строки — результат первой проекции. Соответственно:
+A compound query (`UNION`, `INTERSECT`, `EXCEPT`) addresses no stored relations at all: its rows are the result of the first projection. Consequently:
 
-- `Compound` реализует `TableScope`, но не добавляет ни одного имени;
-- `TableInScope` для `Compound` не реализован, поэтому табличная ссылка структурно недостижима;
-- сортировка идёт по выходным именам и 1-based позициям: `order_by_output_*`, `order_by_index*`;
-- арность операндов проверяется предполётно: `BuildError::SetOperandArity { operand, expected, actual }`.
+- `Compound` implements `TableScope` but adds no names;
+- `TableInScope` is not implemented for `Compound`, so a table reference is structurally unreachable;
+- ordering goes by output names and 1-based positions: `order_by_output_*`, `order_by_index*`;
+- operand arity is checked pre-flight: `BuildError::SetOperandArity { operand, expected, actual }`.
 
-## Позиция в общей архитектуре
+## Position in the overall architecture
 
-| Правило | Уровень | Почему |
+| Rule | Level | Why |
 |---|---|---|
-| Колонка принадлежит таблице | Tier 1 | положительное утверждение, выражается трейтом |
-| Таблица в области видимости | Tier 1 | то же |
-| Nullability из внешнего соединения | Tier 1 | вычисляется из типа области |
-| Уникальность имён отношений | Tier 2 | требует негативного утверждения |
-| Согласование `DISTINCT ON` / `ORDER BY` | Tier 2 | клаузы пишутся в разное время |
-| Форма сортировки составного запроса | Tier 2 | требует разбора уже собранного AST |
+| A column belongs to a table | Tier 1 | a positive assertion, expressible by a trait |
+| A table is in scope | Tier 1 | the same |
+| Nullability from an outer join | Tier 1 | computed from the type of the scope |
+| Relation name uniqueness | Tier 2 | requires a negative assertion |
+| `DISTINCT ON` / `ORDER BY` alignment | Tier 2 | the clauses are written at different times |
+| Ordering form of a compound query | Tier 2 | requires inspecting an already assembled AST |

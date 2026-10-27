@@ -1,31 +1,31 @@
-# Области видимости: TableScope и ExprScope
+# Scopes: TableScope and ExprScope
 
-Реляционная алгебра требует, чтобы каждый атрибут был привязан к отношению, а каждое отношение — присутствовать в выражении. В RURQE это две независимые системы трейтов: одна описывает отношения запроса, другая — область, на которую имеет право ссылаться выражение.
+Relational algebra requires every attribute to be bound to a relation and every relation to be present in the expression. In RURQE these are two independent trait systems: one describes the relations of the query, the other describes the scope an expression is allowed to reference.
 
-## TableScope — отношения запроса
+## TableScope — the relations of the query
 
 ```rust
 pub trait TableScope {
     fn push_table_names(out: &mut Vec<&'static str>);
-    fn push_table_refs(out: &mut Vec<TableRef>) { /* по умолчанию из имён */ }
+    fn push_table_refs(out: &mut Vec<TableRef>) { /* by default, derived from the names */ }
 }
 ```
 
-- Одиночная таблица реализует `TableScope` тривиально.
-- Каждый тип соединения реализует его, добавляя своё отношение в конец:
+- A single table implements `TableScope` trivially.
+- Every join type implements it by appending its own relation:
   `Joined<Tables, T>`, `LeftJoined<Tables, T>`, `CrossJoined<Tables, T>`, `FullOuterJoined<Tables, T>`, `CrossLateralJoined<Tables, T>`, `LeftLateralJoined<Tables, T>`.
-- `Compound` реализует `TableScope`, не добавляя ни одного отношения: комбинированный запрос адресует только выходные колонки своей проекции, а не хранимые таблицы.
+- `Compound` implements `TableScope` without adding a single relation: a compound query addresses only the output columns of its projection, not stored tables.
 
-Именно поэтому `TableInScope` не имеет реализации для `Compound`: ссылка на таблицу в комбинированном запросе структурно недостижима.
+That is exactly why `TableInScope` has no implementation for `Compound`: a table reference inside a compound query is structurally unreachable.
 
-## TableInScope — позиция отношения
+## TableInScope — the position of a relation
 
 ```rust
 pub trait TableInScope<T: Table, P = At<0>> {}
 ```
 
-- Таблица тривиально находится в области самой себя: `impl<T: Table> TableInScope<T, At<0>> for T`.
-- Соединённая область добавляет новое отношение на позиции `At<0>` и сдвигает все прочие на `Next<P>`:
+- A table is trivially in its own scope: `impl<T: Table> TableInScope<T, At<0>> for T`.
+- A joined scope adds the new relation at position `At<0>` and shifts every other one to `Next<P>`:
 
 ```rust
 impl<Tables, T: Table> TableInScope<T, At<0>> for Joined<Tables, T> {}
@@ -33,47 +33,47 @@ impl<Tables, T: Table, Target: Table, P> TableInScope<Target, Next<P>> for Joine
 where Tables: TableInScope<Target, P> {}
 ```
 
-Позиции `At` / `Next` нужны только для однозначного вывода: одна и та же таблица не может встретиться в области дважды под одним именем, и компилятору нужен маркер, различающий вхождения.
+The `At` / `Next` positions exist only for unambiguous inference: the same table cannot occur twice in a scope under one name, and the compiler needs a marker that distinguishes the occurrences.
 
-## ExprScope и ExprInScope — область выражения
+## ExprScope and ExprInScope — the scope of an expression
 
-Выражение несёт свою область как фантомный параметр: `Expr<T, Scope, Aggr, D>`. `Scope` — это `()` для выражения без колонок, одиночная таблица, кортеж таблиц или тип соединённой области.
+An expression carries its scope as a phantom parameter: `Expr<T, Scope, Aggr, D>`. `Scope` is `()` for an expression without columns, a single table, a tuple of tables, or a joined scope type.
 
 ```rust
 pub trait ExprScope {}
 pub trait ExprInScope<Tables, Positions = At<0>> {}
 ```
 
-Реализации `ExprInScope`:
+The `ExprInScope` implementations are:
 
-| `Self` | Условие |
+| `Self` | Condition |
 |---|---|
-| `()` | всегда — выражение не ссылается на колонки |
-| `Unscoped` | всегда — область снята намеренно, проверку выполняет объемлющий запрос |
+| `()` | always — the expression references no columns |
+| `Unscoped` | always — the scope was lifted deliberately and the enclosing query performs the check |
 | `T: Table` | `Tables: TableInScope<T, P>` |
-| `(T1, T2, ...)` | каждая `Tables: TableInScope<Ti, Pi>` |
+| `(T1, T2, ...)` | every `Tables: TableInScope<Ti, Pi>` |
 
-`Unscoped` отличается от `()` намеренно: он говорит «это выражение ссылается на таблицы, но проверку делает тот, кто его вложил», что нужно для подзапросов и `CAST`-подобных конструкций.
+`Unscoped` differs from `()` deliberately: it says "this expression references tables, but whoever nests it performs the check", which is what subqueries and `CAST`-like constructs need.
 
-## ScopePositions — вывод позиций
+## ScopePositions — inferring positions
 
 ```rust
 pub trait ScopePositions<P = At<0>> {}
 ```
 
-Пустая область всегда стоит на `At<0>`, одиночная таблица — на своей позиции, кортеж — по одной позиции на элемент. Без этого трейта `P` в `ExprInScope<Tables, P>` оставался бы неоднозначным и давал бы `E0282`.
+The empty scope always stands at `At<0>`, a single table stands at its own position, and a tuple contributes one position per element. Without this trait, `P` in `ExprInScope<Tables, P>` would stay ambiguous and produce `E0282`.
 
-## Как это выглядит в использовании
+## How this looks in use
 
 ```rust
-// Компилируется: Order в области после соединения.
+// Compiles: Order is in scope after the join.
 let ok = select_from::<Postgres, User>()
     .inner_join_table(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
     .select((UserId, OrderTotal));
 ```
 
 ```rust
-// Не компилируется: OrderTotal принадлежит Order, которого нет в FROM.
+// Does not compile: OrderTotal belongs to Order, which is absent from FROM.
 let bad = select_from::<Postgres, User>().select((UserId, OrderTotal));
 ```
 
@@ -82,9 +82,9 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
   = note: introduce the column's table with `from` or a join before projecting it
 ```
 
-## Область и внешние соединения
+## Scope and outer joins
 
-Область отвечает не только на вопрос «есть ли отношение», но и на вопрос «какова его nullability». Это делает второй трейт:
+A scope answers not only "does the relation exist" but also "what is its nullability". That is the job of the second trait:
 
 ```rust
 pub trait TableNullabilityInScope<T: Table, P = At<0>> {
@@ -92,23 +92,23 @@ pub trait TableNullabilityInScope<T: Table, P = At<0>> {
 }
 ```
 
-- Базовая таблица и `Joined` / `CrossJoined` / `CrossLateralJoined` → `NonNullableRel`.
-- `LeftJoined` / `LeftLateralJoined` → `NullableRel` для своего отношения, `NonNullableRel`-наследование для внутренних.
-- `FullOuterJoined` → `NullableRel` для **всех** отношений области.
+- A base table, `Joined`, `CrossJoined`, and `CrossLateralJoined` → `NonNullableRel`.
+- `LeftJoined` and `LeftLateralJoined` → `NullableRel` for their own relation, inheriting `NonNullableRel` for the inner ones.
+- `FullOuterJoined` → `NullableRel` for **every** relation of the scope.
 
-Как это превращается в `Option<T>`, разобрано в главе [Nullability](nullability.md).
+How this turns into `Option<T>` is described in [Nullability](nullability.md).
 
-## Область и DML
+## Scope and DML
 
-Для мутаций область задаётся иначе: `UPDATE ... FROM` и `DELETE ... USING` расширяют её через `ExtendScope`, а `RETURNING` ограничен `TableSelection<T>` — можно вернуть только колонки мутируемой таблицы. Сами методы `using` / `from` доступны лишь на диалектах с `SupportsDeleteUsing` / `SupportsUpdateFrom`.
+Mutations define their scope differently: `UPDATE ... FROM` and `DELETE ... USING` extend it through `ExtendScope`, while `RETURNING` is restricted by `TableSelection<T>` — only columns of the mutated table can be returned. The `using` / `from` methods themselves exist only on dialects implementing `SupportsDeleteUsing` / `SupportsUpdateFrom`.
 
-## Итог
+## Summary
 
-| Вопрос | Трейт |
+| Question | Trait |
 |---|---|
-| Какие отношения есть в запросе? | `TableScope` |
-| Присутствует ли конкретное отношение? | `TableInScope<T, P>` |
-| Допустима ли область выражения? | `ExprScope` |
-| Все ли таблицы выражения присутствуют в запросе? | `ExprInScope<Tables, P>`, `ScopePositions<P>` |
-| Какова nullability отношения в этой области? | `TableNullabilityInScope<T, P>` |
-| Какие таблицы добавляет мутация? | `ExtendScope<S>` |
+| Which relations are present in the query? | `TableScope` |
+| Is a specific relation present? | `TableInScope<T, P>` |
+| Is the scope of an expression admissible? | `ExprScope` |
+| Are all tables of the expression present in the query? | `ExprInScope<Tables, P>`, `ScopePositions<P>` |
+| What is the nullability of a relation in this scope? | `TableNullabilityInScope<T, P>` |
+| Which tables does a mutation add? | `ExtendScope<S>` |

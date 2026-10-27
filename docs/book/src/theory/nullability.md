@@ -1,59 +1,59 @@
-# Nullability: внешние соединения как изменение типа
+# Nullability: outer joins as a type change
 
-В реляционной алгебре внешнее соединение — это оператор, добавляющий кортежи с отсутствующими атрибутами. В SQL отсутствие выражается как `NULL`. В RURQE это изменение типа, вычисляемое компилятором.
+In relational algebra an outer join is an operator that adds tuples with missing attributes. In SQL, absence is expressed as `NULL`. In RURQE it is a type change computed by the compiler.
 
-## Три ортогональных трейта
+## Three orthogonal traits
 
 ```rust
-/// Маркер: колонки этого отношения в данной области никогда не NULL.
+/// Marker: the columns of this relation in this scope are never NULL.
 pub struct NonNullableRel;
-/// Маркер: колонки этого отношения в данной области могут быть NULL.
+/// Marker: the columns of this relation in this scope may be NULL.
 pub struct NullableRel;
 
-/// Какова nullability отношения T в области Tables?
+/// What is the nullability of relation T inside the scope Tables?
 pub trait TableNullabilityInScope<T: Table, P = At<0>> { type Nullability; }
 
-/// Как выглядит не-nullable тип T, если его поднять в Option?
+/// How does a non-nullable type T look when lifted into Option?
 pub trait MakeNullable { type Nullable; }
 
-/// Применить маркер nullability N к типу T.
+/// Apply the nullability marker N to the type T.
 pub trait ApplyNullability<N> { type Output; }
 ```
 
-Разделение намеренное: первые два описывают **контекст** (как отношение попало в запрос), третий — **тип значения** (как конкретный Rust-тип поднимается в nullable-форму).
+The separation is deliberate: the first two describe the **context** (how the relation entered the query), the third describes the **value type** (how a concrete Rust type lifts into its nullable form).
 
-## Реализации
+## Implementations
 
 `ApplyNullability`:
 
-| Маркер | Результат |
+| Marker | Result |
 |---|---|
-| `NonNullableRel` | `Output = T` (тождество) |
+| `NonNullableRel` | `Output = T` (identity) |
 | `NullableRel` | `Output = T::Nullable` |
 
-`MakeNullable` реализован для `i16`, `i32`, `u32`, `i64`, `usize`, `f64`, `bool`, `String`, `Vec<u8>`, а также (под фичами) для `uuid::Uuid`, `chrono::NaiveDateTime`, `chrono::DateTime<Utc>`, `chrono::NaiveDate`, `serde_json::Value`, `crate::expr::Json<T>` и для доменных newtype-типов из `#[derive(SqlType)]`.
+`MakeNullable` is implemented for `i16`, `i32`, `u32`, `i64`, `usize`, `f64`, `bool`, `String`, `Vec<u8>`, and (behind features) for `uuid::Uuid`, `chrono::NaiveDateTime`, `chrono::DateTime<Utc>`, `chrono::NaiveDate`, `serde_json::Value`, `crate::expr::Json<T>`, and for domain newtypes from `#[derive(SqlType)]`.
 
-Отдельно и важно:
+Separately and importantly:
 
 ```rust
 impl<T> MakeNullable for Option<T> { type Nullable = Option<T>; }
 ```
 
-Двойного `Option<Option<T>>` не бывает: nullable-колонка остаётся одним слоем `Option`.
+There is never a double `Option<Option<T>>`: a nullable column keeps exactly one layer of `Option`.
 
-`TableNullabilityInScope` по типам областей:
+`TableNullabilityInScope` by scope type:
 
-| Область | Nullability своего отношения | Nullability внутренних отношений |
+| Scope | Nullability of its own relation | Nullability of inner relations |
 |---|---|---|
-| сама таблица `T` | `NonNullableRel` | — |
-| `Joined<Tables, T>` | `NonNullableRel` | наследуется |
-| `CrossJoined<Tables, T>` | `NonNullableRel` | наследуется |
-| `CrossLateralJoined<Tables, T>` | `NonNullableRel` | наследуется |
-| `LeftJoined<Tables, T>` | `NullableRel` | наследуется |
-| `LeftLateralJoined<Tables, T>` | `NullableRel` | наследуется |
-| `FullOuterJoined<Tables, T>` | `NullableRel` | `NullableRel` для всех |
+| the table `T` itself | `NonNullableRel` | — |
+| `Joined<Tables, T>` | `NonNullableRel` | inherited |
+| `CrossJoined<Tables, T>` | `NonNullableRel` | inherited |
+| `CrossLateralJoined<Tables, T>` | `NonNullableRel` | inherited |
+| `LeftJoined<Tables, T>` | `NullableRel` | inherited |
+| `LeftLateralJoined<Tables, T>` | `NullableRel` | inherited |
+| `FullOuterJoined<Tables, T>` | `NullableRel` | `NullableRel` for all |
 
-## Как из этого получается тип строки
+## How the row type follows from this
 
 ```rust
 pub trait ColumnInScope<Tables, P> { type Output; }
@@ -68,9 +68,9 @@ where
 }
 ```
 
-Дальше `SelectionFor<Tables, Positions, D>::Row` собирает кортеж из `Output` каждого элемента проекции. Никакой ручной аннотации не требуется.
+`SelectionFor<Tables, Positions, D>::Row` then assembles a tuple from the `Output` of every projection element. No manual annotation is required.
 
-## Пример
+## Example
 
 ```rust
 let query = SelectQuery::<MockDialect>::new()
@@ -78,20 +78,20 @@ let query = SelectQuery::<MockDialect>::new()
     .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
     .select((UserId, OrderTotal));
 
-// UserId остаётся i64, OrderTotal становится Option<f64>.
+// UserId stays i64, OrderTotal becomes Option<f64>.
 let _: SelectQuery<MockDialect, _, (i64, Option<f64>), HasProjection> = query;
 ```
 
-Чтение той же колонки как `f64` не компилируется:
+Reading the same column as `f64` does not compile:
 
 ```text
 error[E0277]: `{...}` is not a supported selection
 error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 ```
 
-## Ручной маркер `Nullable<C>`
+## The explicit `Nullable<C>` marker
 
-Иногда nullable-форма нужна без внешнего соединения — например, для согласования формы с уже посчитанным результатом. Для этого есть обёртка:
+Sometimes a nullable form is needed without an outer join — for example to align a shape with an already computed result. A wrapper exists for that:
 
 ```rust
 impl<C: Column> Column for Nullable<C> {
@@ -101,16 +101,16 @@ impl<C: Column> Column for Nullable<C> {
 }
 ```
 
-Это тот же столбец, но в типе значения один слой `Option`.
+It is the same column, but with one layer of `Option` in the value type.
 
-## Почему это не может быть рантайм-проверкой
+## Why this cannot be a runtime check
 
-`NULL` из внешнего соединения — не «особый случай данных», а следствие оператора. Если тип утверждает `T`, а значение приходит `NULL`, это дефект программы, который обязан быть замечен до выполнения. Поэтому nullability вычисляется из **типа области**, а не из содержимого строки: маркер `NullableRel` проставляется конструктором соединения и дальше только наследуется.
+A `NULL` from an outer join is not "a special case of data" but a consequence of the operator. If the type claims `T` while the value arrives as `NULL`, that is a program defect which must be noticed before execution. Nullability is therefore computed from the **type of the scope**, not from the content of a row: the `NullableRel` marker is placed by the join constructor and is only inherited afterwards.
 
-Обратное тоже верно: внутренние соединения не поднимают ничего (`NonNullableRel`), поэтому чтение `Option<T>` из `INNER JOIN` — это выбор автора, а не вынужденная мера.
+The converse is true as well: inner joins lift nothing (`NonNullableRel`), so reading `Option<T>` from an `INNER JOIN` is the author's choice rather than a necessity.
 
-## Связанные главы
+## Related chapters
 
-- [Области видимости](scopes.md) — как устроены `Joined` и родственные типы.
-- [Кодд → Rust](codd_to_rust.md) — место внешних соединений в общей таблице операторов.
-- Декодирование строк и `Option<T>` в `FromSqlValue` — глава о рантайме (отдельный раздел книги).
+- [Scopes](scopes.md) — how `Joined` and its relatives are built.
+- [Codd → Rust](codd_to_rust.md) — where outer joins sit in the operator table.
+- Row decoding and `Option<T>` in `FromSqlValue` — the runtime chapter (a separate section of the book).

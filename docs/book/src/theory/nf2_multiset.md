@@ -1,12 +1,12 @@
-# NF² и MULTISET: вложенные отношения
+# NF² and MULTISET: nested relations
 
-Классическая реляционная модель требует первой нормальной формы: значения атрибутов атомарны. Модель NF² (Non-First-Normal-Form) разрешает атрибуту быть вложенным отношением. RURQE реализует это не клиентской склейкой, а одной SQL-агрегацией.
+The classical relational model requires first normal form: attribute values are atomic. The NF² model (Non-First-Normal-Form) allows an attribute to be a nested relation. RURQE implements this through a single SQL aggregation rather than client-side stitching.
 
-## Проблема
+## The problem
 
-Связь «один ко многим» в наивном виде даёт либо N+1 запросов (по запросу на родителя), либо декартово произведение в `JOIN`, из которого клиент вручную собирает вложенные списки. Оба варианта — источник ошибок и лишнего трафика.
+A naive one-to-many relationship produces either N+1 queries (one per parent) or a Cartesian product in a `JOIN` from which the client assembles the nested lists by hand. Both variants are a source of bugs and extra traffic.
 
-## Решение: проекция-мультимножество
+## The solution: a multiset projection
 
 ```rust
 pub fn nest_many<Q>(query: Q) -> NestMany<Q>;
@@ -16,7 +16,7 @@ pub struct NestMany<Q>(pub Q);  // RustType = Vec<Row>
 pub struct NestOne<Q>(pub Q);   // RustType = Option<Row>
 ```
 
-Проекция выглядит как обычный элемент списка проекций:
+The projection looks like an ordinary element of the projection list:
 
 ```rust
 let users_with_orders = select_from(Users)
@@ -34,11 +34,11 @@ let users_with_orders = select_from(Users)
     }));
 ```
 
-Здесь `where_(OrderUserId.eq(UserId))` — корреляция с внешним запросом: вложенное утверждение видит `UserId` благодаря тому, что `ExprInScope` проверяет его против объемлющего запроса, а `Unscoped` внутри подзапроса означает «проверку делает тот, кто вложил».
+Here `where_(OrderUserId.eq(UserId))` is a correlation with the outer query: the nested statement sees `UserId` because `ExprInScope` checks it against the enclosing query, while `Unscoped` inside the subquery means "whoever nests it performs the check".
 
-## Как это рендерится
+## How it renders
 
-Проекция становится узлом AST:
+The projection becomes an AST node:
 
 ```rust
 ExprKind::Multiset {
@@ -58,11 +58,11 @@ SELECT "id",
 FROM "orders"
 ```
 
-Диалект без нативной агрегации строк собирает каждый объект через `json_object` и массив через `json_group_array`. Клиент декодирует один и тот же JSON-документ независимо от движка.
+A dialect without native row aggregation builds every object through `json_object` and the array through `json_group_array`. The client decodes the same JSON document regardless of the engine.
 
-Для SQLite функции JSON доступны начиная с версии, у которой они всегда вкомпилированы: поэтому для вложенных проекций используется прелюдия `sqlite3_38` (`Sqlite<Sqlite3_38>`), а требование выражено трейтом `SupportsJsonAggregation`.
+The SQLite JSON functions are available starting from the version whose build always bundles them: nested projections therefore use the `sqlite3_38` prelude (`Sqlite<Sqlite3_38>`), and the requirement is expressed by the `SupportsJsonAggregation` trait.
 
-## Требования компилятора
+## Compiler requirements
 
 ```rust
 impl<Tables, InnerD, QueryD, S, Row> SelectTargetInScope<Tables, At<0>, QueryD>
@@ -77,60 +77,60 @@ where
 }
 ```
 
-Три инварианта:
+Three invariants:
 
-1. **Один диалект.** Вложенное утверждение принадлежит тому же диалекту, что и объемлющий запрос (`DialectInScope<QueryD>`).
-2. **Нативная агрегация.** Диалект обязан реализовывать `SupportsJsonAggregation`; иначе проекция просто не компилируется, а не падает внутри движка.
-3. **Тип строки.** `Row: MultisetRow` — декларация ключей документа.
+1. **One dialect.** The nested statement belongs to the same dialect as the enclosing query (`DialectInScope<QueryD>`).
+2. **Native aggregation.** The dialect must implement `SupportsJsonAggregation`; otherwise the projection simply does not compile instead of failing inside the engine.
+3. **Row type.** `Row: MultisetRow` declares the keys of the document.
 
-Позиция `At<0>` фиксирована: вложенная проекция читает из собственного утверждения и не ссылается на таблицы внешней области, поэтому нет смысла выводить её позицию.
+The `At<0>` position is fixed: a nested projection reads from its own statement and references no tables of the outer scope, so there is no position to infer.
 
-## `MultisetRow` и документ
+## `MultisetRow` and the document
 
 ```rust
 pub trait MultisetRow: SqlArrayElement + 'static {
-    /// JSON-ключи проецируемых полей в порядке проекции.
+    /// The JSON keys of the projected fields, in projection order.
     const FIELDS: &'static [&'static str];
 }
 ```
 
-`FromSqlValue` реализации получает JSON-объект одной строки — как `SqlVal::Json` из PostgreSQL или как JSON-текст из SQLite — и превращает его в объект через `json_object`. Обратное направление (например, при передаче документа параметром) даёт `multiset_object` / `sql_val_to_json`.
+The `FromSqlValue` implementations receive the JSON object of a single row — as `SqlVal::Json` from PostgreSQL or as JSON text from SQLite — and turn it into an object through `json_object`. The reverse direction (for example when passing a document as a parameter) is provided by `multiset_object` / `sql_val_to_json`.
 
-Соглашение о представлении:
+The representation conventions:
 
-| Тип значения | В JSON |
+| Value type | In JSON |
 |---|---|
-| `i32`, `i64` | число |
-| `f64` | число; `NaN` и бесконечности — `null` |
-| `bool` | булево |
-| `String` | строка |
-| `Vec<u8>` | канонический hex-текст, который `FromSqlValue for Vec<u8>` читает обратно |
-| `Decimal` (фича `decimal`) | число, если все цифры сохраняются, иначе текст |
-| `Uuid`, `NaiveDateTime`, `DateTime<Utc>`, `NaiveDate` | текст `Display`, который `FromSqlValue` парсит обратно |
-| вложенный JSON | как есть |
+| `i32`, `i64` | a number |
+| `f64` | a number; `NaN` and infinities become `null` |
+| `bool` | a boolean |
+| `String` | a string |
+| `Vec<u8>` | the canonical hex text that `FromSqlValue for Vec<u8>` reads back |
+| `Decimal` (the `decimal` feature) | a number when every digit is preserved, otherwise text |
+| `Uuid`, `NaiveDateTime`, `DateTime<Utc>`, `NaiveDate` | the `Display` text that `FromSqlValue` parses back |
+| nested JSON | as is |
 
-Благодаря этому поле вложенной строки декодируется тем же контрактом `FromSqlValue`, что и колонка того же типа.
+Because of this, a field of a nested row is decoded by the same `FromSqlValue` contract as a column of the same type.
 
-## Почему MULTISET, а не множество
+## Why MULTISET and not a set
 
-Реляционная алгебра Кодда работает с множествами: дубликаты невозможны. SQL — с мультимножествами: `SELECT` не удаляет дубликаты без `DISTINCT`. RURQE следует SQL, а не учебнику:
+Codd's relational algebra operates on sets: duplicates are impossible. SQL operates on multisets: `SELECT` does not remove duplicates without `DISTINCT`. RURQE follows SQL rather than the textbook:
 
-- кортеж строк — это мультимножество, порядок определяется `ORDER BY`;
-- `Vec<Row>` во вложенной проекции — это именно мультимножество в порядке, заданном вложенным запросом;
-- `DISTINCT` / `DISTINCT ON` — отдельные операции, меняющие тип-состояние (после них блокировка строки недоступна, что зафиксировано и в типах, и в `BuildError::DistinctWithLock` / `DistinctOnWithLock`).
+- a set of rows is a multiset, ordered by `ORDER BY`;
+- `Vec<Row>` in a nested projection is exactly that multiset, in the order the nested query specifies;
+- `DISTINCT` / `DISTINCT ON` are separate operations that change the typestate (after them row locking is unavailable, recorded both in the types and in `BuildError::DistinctWithLock` / `DistinctOnWithLock`).
 
-`nest_one` отличается от `nest_many` только тем, что агрегация останавливается на первой строке: отсутствие ребёнка даёт `None`, а не пустой вектор, поэтому «нет значения» остаётся явным.
+`nest_one` differs from `nest_many` only in that the aggregation stops at the first row: a missing child yields `None` rather than an empty vector, so "no value" stays explicit.
 
-## Что это даёт
+## What this gives
 
-| Было | Стало |
+| Before | After |
 |---|---|
-| N+1 запросов | один запрос |
-| декартово произведение с клиентской склейкой | нативная агрегация |
-| ручной JSON-парсинг | `Vec<ChildDto>` / `Option<ChildDto>` с декодированием |
-| ошибка «нет функции JSON» в рантайме | ошибка компиляции без `SupportsJsonAggregation` |
+| N+1 queries | one query |
+| a Cartesian product with client-side stitching | native aggregation |
+| manual JSON parsing | `Vec<ChildDto>` / `Option<ChildDto>` with decoding |
+| a "no such JSON function" runtime error | a compile error without `SupportsJsonAggregation` |
 
-## Связанные главы
+## Related chapters
 
-- [Кодд → Rust](codd_to_rust.md) — место NF² в таблице операторов.
-- [Области видимости](scopes.md) — почему корреляция в подзапросе допустима, а ссылка на постороннюю таблицу нет.
+- [Codd → Rust](codd_to_rust.md) — where NF² sits in the operator table.
+- [Scopes](scopes.md) — why a correlation inside a subquery is admissible while a reference to an unrelated table is not.
