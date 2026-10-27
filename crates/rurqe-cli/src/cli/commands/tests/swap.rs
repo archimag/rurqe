@@ -5,6 +5,9 @@ use std::time::Duration;
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::{Checksum, DeclarativeStage, StageScript};
 
+use crate::introspect::DEFAULT_SCHEMA;
+
+use super::super::commit_stage;
 use super::super::stage::lock::{CheckpointLock, WriterId};
 use super::super::stage::{
     flush_boundary_parent, move_failure, recover_interrupted_commit, write_staged_boundary,
@@ -143,6 +146,117 @@ fn a_failed_installation_that_restores_the_boundary_reports_no_stranding() {
         "CREATE TABLE users (id INTEGER);"
     );
     assert!(!parked.exists(), "the parked boundary was renamed back");
+}
+
+#[test]
+fn a_cycle_over_one_marker_leaves_the_parked_pair_of_another_untouched() {
+    let dir = workspace("foreign-parked");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    let lock_path = dir.join("schema.lock");
+
+    // The pair belongs to `prod.toml` and carries the scope of the writer that
+    // parked it. A commit over `checkpoint.toml` scans for the copies of its own
+    // marker and of its own boundary, whose prefixes these names never match.
+    let marker_backup = dir.join(".prod.toml.4242.17.previous");
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the foreign marker");
+    let boundary_backup = dir.join(".prod-stage.4242.17.previous");
+    std::fs::create_dir_all(&boundary_backup).expect("park the foreign boundary");
+    std::fs::write(
+        boundary_backup.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+
+    commit_stage(
+        version("3.2"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect("the commit succeeds");
+
+    // The recovery of the commit runs under the section of `checkpoint.toml`, so
+    // the pair parked beside `prod.toml` is never classified, restored, or
+    // discarded: it stays the only copy of the other marker's previous state.
+    let section = CheckpointLock::acquire(&checkpoint_path).expect("the committed section is free");
+    let notice = recover_interrupted_commit(&checkpoint_path, section.writer())
+        .expect("the repair runs under its section");
+    assert!(
+        notice.is_none(),
+        "no copy of this marker was interrupted, got {notice:?}"
+    );
+
+    assert!(marker_backup.exists(), "the foreign marker copy is untouched");
+    assert!(
+        boundary_backup.exists(),
+        "the foreign boundary copy is untouched"
+    );
+    assert!(
+        !dir.join("prod.toml").exists(),
+        "no foreign marker was restored"
+    );
+    assert!(
+        !dir.join("prod-stage").exists(),
+        "no foreign boundary was restored"
+    );
+}
+
+#[test]
+fn the_parked_pair_of_another_marker_is_repaired_under_its_own_section() {
+    let dir = workspace("foreign-repair");
+    let prod_path = dir.join("prod.toml");
+
+    let section = CheckpointLock::acquire(&prod_path).expect("the free section is taken");
+    let scope = section.writer();
+
+    // The pair is parked under the very scope the section reports, which its own
+    // record echoes back, so the repair of `prod.toml` restores it while the pair
+    // parked beside `checkpoint.toml` is left exactly where it sits.
+    let marker_backup = dir.join(format!(".prod.toml.{}.{}.previous", scope.pid, scope.nonce));
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("2"), Checksum::of(b"prod")).render(),
+    )
+    .expect("park the marker");
+    let boundary_backup = dir.join(format!(".prod-stage.{}.{}.previous", scope.pid, scope.nonce));
+    std::fs::create_dir_all(&boundary_backup).expect("park the boundary");
+    std::fs::write(
+        boundary_backup.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the parked snapshot");
+    let foreign_marker = dir.join(".checkpoint.toml.4242.17.previous");
+    std::fs::write(
+        &foreign_marker,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park another marker");
+
+    let notice = recover_interrupted_commit(&prod_path, scope)
+        .expect("the parked pair is repaired")
+        .expect("the repair is reported");
+
+    assert!(notice.contains("Restored"), "got {notice}");
+    assert!(prod_path.exists(), "the parked marker is restored");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("prod-stage").join("orders.sql"))
+            .expect("read the restored snapshot"),
+        "CREATE TABLE orders (id INTEGER);"
+    );
+    assert!(!marker_backup.exists(), "the parked marker is gone");
+    assert!(!boundary_backup.exists(), "the parked boundary is gone");
+    assert!(
+        foreign_marker.exists(),
+        "the copy of another marker stays untouched"
+    );
 }
 
 #[test]

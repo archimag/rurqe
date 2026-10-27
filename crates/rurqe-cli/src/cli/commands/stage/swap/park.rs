@@ -236,4 +236,33 @@ mod tests {
             assert_eq!(parked_scope(name, MARKER_PREFIX), None, "{name}");
         }
     }
+    #[test]
+    fn copies_of_one_pid_under_different_nonces_never_share_a_name() {
+        let host = WriterId {
+            pid: 4242,
+            nonce: 17,
+        };
+        let other_host = WriterId {
+            pid: 4242,
+            nonce: 18,
+        };
+        let artifact = Path::new("migrations/checkpoint.toml");
+
+        // Two writers that share a process id — a second host staging into one
+        // network directory, a recycled id — are separated by the nonce alone, so
+        // their parked copies never collide and each parses back to its own scope.
+        let parked = parked_sibling(artifact, host);
+        let elsewhere = parked_sibling(artifact, other_host);
+
+        assert_ne!(parked, elsewhere, "the nonce separates the two parkings");
+
+        for (path, scope) in [(parked, host), (elsewhere, other_host)] {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
+            assert_eq!(parked_scope(&name, MARKER_PREFIX), Some(scope), "{name}");
+        }
+    }
 }

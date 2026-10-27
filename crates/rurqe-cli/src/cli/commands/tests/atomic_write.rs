@@ -5,10 +5,8 @@ use std::time::Duration;
 #[cfg(unix)]
 use crate::introspect::DEFAULT_SCHEMA;
 
-use super::super::{sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
-use super::fixtures::{staged_sibling, DEAD_PID, backdate, futuredate, workspace};
-#[cfg(unix)]
-use super::fixtures::current_nonce;
+use super::super::{staged_owner_may_live, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
+use super::fixtures::{staged_sibling, DEAD_PID, backdate, current_nonce, futuredate, workspace};
 
 // The discard regressions and the commit regression are Unix alone — only
 // Unix exposes the liveness probe a sweep discards under — so the imports
@@ -259,4 +257,95 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
         .filter(|name| name.starts_with('.'))
         .collect();
     assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
+
+#[test]
+fn a_sweep_of_one_marker_keeps_the_staged_debris_of_another() {
+    let dir = workspace("sweep-two-markers");
+    let lock_path = dir.join("schema.lock");
+
+    // The debris belongs to `prod.toml`: the sweep matches the staged names of the
+    // artifact it is called for, so a name of another marker is never matched,
+    // whatever the liveness of its owner and whatever its age.
+    let foreign = dir.join(staged_sibling("prod.toml", DEAD_PID, 5, 7));
+    std::fs::write(&foreign, "in flight").expect("plant the foreign staging path");
+    backdate(&foreign, STALE_TEMPORARY_AGE * 2);
+
+    let removed = sweep_stale_temporaries(&lock_path, Duration::ZERO)
+        .expect("the sweep scans the artifact directory");
+
+    assert!(
+        removed.is_empty(),
+        "the sweep matched a foreign artifact: {removed:?}"
+    );
+    assert!(foreign.exists(), "the staging path of another marker is kept");
+}
+
+#[test]
+fn a_staged_path_of_another_host_sharing_this_pid_is_never_this_processes() {
+    let dir = workspace("gate-foreign-nonce");
+    let lock_path = dir.join("schema.lock");
+    let nonce = current_nonce() + 1;
+
+    // A second host staging into the same directory can carry this very process
+    // id; the nonce recorded in the name is what keeps its staging path from being
+    // read as the debris of this process.
+    let path = dir.join(staged_sibling("schema.lock", std::process::id(), nonce, 7));
+    std::fs::write(&path, "in flight").expect("plant the foreign staging path");
+
+    let owner =
+        staged_owner_may_live(&lock_path, &path).expect("the writer of another host may live");
+
+    assert_eq!(owner.pid, std::process::id());
+    assert_eq!(owner.nonce, nonce);
+    assert_ne!(owner.nonce, current_nonce());
+}
+
+#[test]
+fn a_staged_path_of_this_very_scope_is_debris_of_an_earlier_attempt() {
+    let dir = workspace("gate-own-scope");
+    let lock_path = dir.join("schema.lock");
+    let path = dir.join(staged_sibling(
+        "schema.lock",
+        std::process::id(),
+        current_nonce(),
+        3,
+    ));
+    std::fs::write(&path, "abandoned").expect("plant the staging path");
+
+    // The sequence counter is monotonic, so a path this process computes can only
+    // hold the debris of an earlier call of this very process.
+    assert!(
+        staged_owner_may_live(&lock_path, &path).is_none(),
+        "a path of this very scope is never another writer's work"
+    );
+}
+
+#[test]
+fn a_staged_path_of_a_live_foreign_process_is_never_claimed() {
+    let dir = workspace("gate-live-owner");
+    let lock_path = dir.join("schema.lock");
+
+    // Pid 1 is `init`, so the owner provably lives, and a platform without the
+    // liveness probe counts every foreign writer as living: both answer with the
+    // owner instead of authorising a removal.
+    let path = dir.join(staged_sibling("schema.lock", 1, 9, 7));
+    std::fs::write(&path, "in flight").expect("plant the staging path");
+
+    let owner = staged_owner_may_live(&lock_path, &path).expect("the live owner is reported");
+    assert_eq!(owner.pid, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_staged_path_of_a_provably_dead_process_is_claimable() {
+    let dir = workspace("gate-dead-owner");
+    let lock_path = dir.join("schema.lock");
+    let path = dir.join(staged_sibling("schema.lock", DEAD_PID, 5, 7));
+    std::fs::write(&path, "abandoned").expect("plant the staging path");
+
+    assert!(
+        staged_owner_may_live(&lock_path, &path).is_none(),
+        "a writer that provably no longer exists leaves claimable debris"
+    );
 }

@@ -262,8 +262,24 @@
 //! negative pin refuses the repair and leaves the parked pair exactly where its dead
 //! writer left it, and the positive pin converges once the section is taken and the
 //! record rewritten with the caller's own scope — and a prune concurrent with a reader.
-//! They run over the real filesystem in a temporary directory, while the contention they
-//! lean on is observable between two descriptions of one process and needs no second one.
+//! Two markers in one directory pin the artifact identity itself: the disjoint sections
+//! (`two_markers_in_one_directory_hold_their_sections_at_once`), the disjoint boundaries
+//! (`two_markers_commit_independently_in_one_directory`), and the non-interference of a full
+//! cycle over one marker with the parked pair and the staging debris of the other
+//! (`a_cycle_over_one_marker_leaves_the_parked_pair_of_another_untouched`,
+//! `a_sweep_of_one_marker_keeps_the_staged_debris_of_another`), whose pair
+//! `the_parked_pair_of_another_marker_is_repaired_under_its_own_section` then restores under
+//! the section it belongs to. A cross-host pid collision is pinned by the staging gate —
+//! `a_staged_path_of_another_host_sharing_this_pid_is_never_this_processes`,
+//! `a_staged_path_of_this_very_scope_is_debris_of_an_earlier_attempt`,
+//! `a_staged_path_of_a_live_foreign_process_is_never_claimed`, and
+//! `a_staged_path_of_a_provably_dead_process_is_claimable` — together with the name grammar
+//! (`copies_of_one_pid_under_different_nonces_never_share_a_name`), the refusal naming the
+//! owner of an occupied staging path (`a_staging_path_a_live_writer_holds_is_refused_by_name`),
+//! and the discard that tolerates an absent path
+//! (`the_debris_of_a_dead_writer_is_discarded_and_an_absent_path_is_no_error`). They run over
+//! the real filesystem in a temporary directory, while the contention they lean on is
+//! observable between two descriptions of one process and needs no second one.
 
 mod park;
 mod recover;

@@ -323,3 +323,90 @@ pub(crate) fn flush_boundary_parent(dir: &Path) -> Option<String> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory unique to one test, removed however the test ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        /// Prepares the scratch directory of the test named `name`.
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "rurqe-stage-swap-{}-{name}",
+                std::process::id()
+            ));
+
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("a scratch directory");
+
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_boundary_of_a_marker_is_derived_from_its_own_stem() {
+        // The default marker keeps the directory it has always described, while an
+        // arbitrary marker is snapshotted into a boundary of its own: two markers
+        // in one directory never share the snapshot a commit installs.
+        assert_eq!(
+            boundary_dir(Path::new("migrations/checkpoint.toml")),
+            PathBuf::from("migrations/checkpoint-stage")
+        );
+        assert_eq!(
+            boundary_dir(Path::new("migrations/prod.toml")),
+            PathBuf::from("migrations/prod-stage")
+        );
+        assert_eq!(
+            boundary_dir(Path::new("migrations/checkpoint")),
+            PathBuf::from("migrations/checkpoint-stage")
+        );
+    }
+
+    #[test]
+    fn a_staging_path_a_live_writer_holds_is_refused_by_name() {
+        let staged = Path::new("migrations/.checkpoint-stage.4242.17.3.tmp");
+        let owner = WriterId {
+            pid: 4242,
+            nonce: 17,
+        };
+
+        let message = occupied_failure(staged, owner).to_string();
+
+        assert!(
+            message.contains(&staged.display().to_string()),
+            "the diagnostic names the occupied path, got {message}"
+        );
+        assert!(message.contains("pid 4242"), "got {message}");
+        assert!(message.contains("nonce 17"), "got {message}");
+        assert!(
+            message.contains("never removed"),
+            "the diagnostic states that the path is never taken over, got {message}"
+        );
+    }
+
+    #[test]
+    fn the_debris_of_a_dead_writer_is_discarded_and_an_absent_path_is_no_error() {
+        let scratch = Scratch::new("discard-staged");
+        let staged = scratch.0.join(".checkpoint-stage.4242.17.3.tmp");
+        std::fs::create_dir_all(&staged).expect("plant the debris");
+        std::fs::write(
+            staged.join("users.sql"),
+            "CREATE TABLE users (id INTEGER);",
+        )
+        .expect("write the staged snapshot");
+
+        discard_staged_path(&staged).expect("the debris is discarded");
+
+        assert!(!staged.exists(), "the debris path is gone");
+        discard_staged_path(&staged).expect("an absent staging path is not an error");
+    }
+}

@@ -235,3 +235,104 @@ fn a_verification_takes_over_the_section_of_a_crashed_writer() {
     // the reads it guarded, so the next writer acquires it again.
     CheckpointLock::acquire(&checkpoint_path).expect("the verified section is free again");
 }
+
+#[test]
+fn two_markers_in_one_directory_hold_their_sections_at_once() {
+    let dir = workspace("two-markers-sections");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    let prod_path = dir.join("prod.toml");
+
+    // A section is a sibling of the marker named after its own stem, so the two
+    // markers are guarded by two disjoint entries and both writers hold theirs at
+    // the same time instead of queueing behind one another.
+    let checkpoint =
+        CheckpointLock::acquire(&checkpoint_path).expect("the checkpoint section is free");
+    let prod = CheckpointLock::acquire(&prod_path).expect("the production section is free");
+
+    assert!(
+        dir.join("checkpoint.lock").exists(),
+        "the checkpoint marker keeps a lock entry of its own"
+    );
+    assert!(
+        dir.join("prod.lock").exists(),
+        "the second marker keeps a lock entry of its own"
+    );
+    assert!(
+        dir.join("checkpoint.lock.record").exists(),
+        "the held checkpoint section records its owner"
+    );
+    assert!(
+        dir.join("prod.lock.record").exists(),
+        "the held production section records its owner"
+    );
+
+    // Exclusivity holds per marker and never across markers: re-taking the
+    // checkpoint section is refused while the production one stays held.
+    let refused = CheckpointLock::acquire_within(&checkpoint_path, Duration::from_millis(20))
+        .err()
+        .expect("the held checkpoint section is refused");
+    assert!(
+        refused.to_string().contains("is held by pid"),
+        "got {refused}"
+    );
+
+    drop(checkpoint);
+    drop(prod);
+}
+
+#[test]
+fn two_markers_commit_independently_in_one_directory() {
+    let dir = workspace("two-markers-commit");
+    let stage_dir = dir.join("schema");
+    std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    let prod_path = dir.join("prod.toml");
+
+    commit_stage(
+        version("3.2"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &dir.join("schema.lock"),
+        &checkpoint_path,
+    )
+    .expect("the first marker commits");
+    commit_stage(
+        version("4"),
+        ":memory:",
+        DEFAULT_SCHEMA,
+        &stage_dir,
+        &dir.join("prod-schema.lock"),
+        &prod_path,
+    )
+    .expect("the second marker commits over a boundary of its own");
+
+    // Each commit snapshots the stage into the boundary derived from its own
+    // marker, so the second commit never replaces the snapshot of the first.
+    assert!(
+        dir.join("checkpoint-stage").is_dir(),
+        "the first marker keeps its boundary snapshot"
+    );
+    assert!(
+        dir.join("prod-stage").is_dir(),
+        "the second marker keeps a boundary snapshot of its own"
+    );
+
+    let checkpoint = Checkpoint::load(&checkpoint_path)
+        .expect("the marker is readable")
+        .expect("the marker exists");
+    let prod = Checkpoint::load(&prod_path)
+        .expect("the marker is readable")
+        .expect("the marker exists");
+
+    assert_eq!(checkpoint.pruned_up_to_version().to_string(), "3.2");
+    assert_eq!(prod.pruned_up_to_version().to_string(), "4");
+
+    // Neither commit left a staged or a parked copy behind, so the two markers
+    // converged independently of one another.
+    let leftovers: Vec<String> = directory_names(&dir)
+        .into_iter()
+        .filter(|name| name.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover artifacts: {leftovers:?}");
+}
