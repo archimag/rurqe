@@ -1,99 +1,121 @@
 # Predicates and `WHERE`
 
-Selection σ is the subset of tuples satisfying a predicate. A predicate in RURQE has the type `Expr<bool, Scope, Marker, D>`:
+A predicate is a value of its own: it can be returned from a function, stored in a variable, and handed to `.where_(...)` on a `SELECT` or on a mutation. Calling `.where_(...)` twice adds a second condition with `AND` — there is no manual conjunction to build.
 
-- `Scope` — the tables it reads;
-- `Marker` — whether it aggregates rows (`Aggregate`) or is computed per row (`NonAggregate`);
-- `D` — the dialect requirements inherited from its operands.
+## The operators
 
-## Operators
-
-| Method | SQL | Declared in |
-|---|---|---|
-| `.eq(v)`, `.ne(v)`, `.gt(v)`, `.lt(v)` | `=`, `<>`, `>`, `<` | `Expression` (columns) and `Expr` |
-| `.between(low, high)` | `BETWEEN ... AND ...` | `Expression`, `Expr` |
-| `.in_list(values)` / `.not_in_list(values)` | `IN (...)` / `NOT IN (...)` | `Expression`, `Expr` |
-| `.is_null()` / `.is_not_null()` | `IS NULL` / `IS NOT NULL` | `Expr` |
-| `.like(p)` / `.ilike(p)` | `LIKE` / `ILIKE` | `StringExpression` |
-| `.in_subquery(q)` / `.not_in_subquery(q)` | `IN (SELECT ...)` | `Expr` |
-| `.and(p)` / `.or(p)` | `AND` / `OR` | `Expr<bool, _>` |
-
-Scalar comparisons cover only `eq`/`ne`/`gt`/`lt`; `gte`/`lte` exist on tuple comparisons (`RowExpr`, see [Ordering and pagination](ordering.md)).
-
-```rust
-use rurqe::prelude::*;
-
-let built = select_from::<Postgres, User>()
-    .select((UserName,))
-    .where_(UserId.eq(1i64))
-    .build()
-    .expect("valid query");
-```
-
-```text
-SELECT "name" FROM "users" WHERE ("id" = $1)
-```
-
-## A repeated `where_` folds with `AND`
-
-```rust
-use rurqe::prelude::*;
-
-let built = update::<Postgres, User>()
-    .set(UserName::set("dave"))
-    .where_(UserId.gt(1i64))
-    .where_(UserActive.eq(true))
-    .build()
-    .expect("valid query");
-```
-
-```text
-UPDATE "users" SET "name" = $1 WHERE (("id" > $2) AND ("active" = $3))
-```
-
-The parameter order follows the order of appearance: first the `SET` values, then the predicates.
-
-## Dynamic predicates
-
-Queries are also assembled at runtime, without losing typestates:
-
-| Method | What it does |
+| Method | SQL |
 |---|---|
-| `.where_opt(Option<Expr<bool, ..>>)` | records the predicate when it is present |
-| `.when(cond, \|q\| q.where_(...))` | applies the closure when the condition is true |
-| `.if_some(value, \|q, v\| q.where_(...))` | applies the closure on `Some`, passing the value |
+| `.eq(v)` / `.ne(v)` / `.gt(v)` / `.lt(v)` | `=`, `<>`, `>`, `<` |
+| `.between(low, high)` | `BETWEEN ... AND ...` |
+| `.in_list(values)` / `.not_in_list(values)` | `IN (...)` / `NOT IN (...)` |
+| `.is_null()` / `.is_not_null()` | `IS NULL` / `IS NOT NULL` |
+| `.like(pattern)` / `.ilike(pattern)` | `LIKE` / `ILIKE` |
+| `.in_subquery(q)` / `.not_in_subquery(q)` | `IN (SELECT ...)` |
+| `.and(p)` / `.or(p)` | `AND` / `OR` |
 
 ```rust
 use rurqe::postgres::prelude::*;
 
-let filtered = select_from(Users)
-    .select(cols!(UsersId, UsersName))
-    .when(only_active, |q| q.where_(UsersActive.eq(true)))
-    .if_some(search_term, |q, term| q.where_(UsersName.ilike(format!("%{term}%"))))
-    .build()?;
+let rows = select!(UserId, UserName)
+    .from(User)
+    .where_(UserActive.eq(true))
+    .where_(UserName.like("a%"))
+    .order_by_asc(UserId)
+    .fetch_all(&mut conn)?;
 ```
 
-The closure must return the **same** query type — it is bounded by `impl FnOnce(Self) -> Self`. A clause that changes the type (a projection, a join, a lock) does not fit inside `when`/`if_some`; separate forms exist for that (`where_if`, `where_opt_or_all` on mutations).
+The filter renders as `WHERE (("active" = $1) AND ("name" LIKE $2))`: the conditions fold in the order they were added, and the parameters follow the same order.
 
-## An empty `IN` list
+## Predicates travel
 
-`x IN ()` is a syntax error in every dialect, so an empty membership test degenerates into a constant: `IN []` renders as `1 = 0`, and `NOT IN []` as `1 = 1`.
+```rust
+/// Users that may sign in.
+fn active_user() -> Expr<bool, User> {
+    UserActive.eq(true)
+}
 
-## What the compiler checks
+let rows = select_from(User)
+    .select(select!(user_id: UserId))
+    .where_(active_user())
+    .fetch_all(&mut conn)?;
+```
 
-1. **The predicate type.** `.where_(...)` accepts only `Expr<bool, ..>`.
-2. **The scope.** Every table of the predicate must be present in `FROM`/`JOIN` (`ExprInScope`, `ScopePositions`). Comparing columns of two unjoined relations is rejected at the call site.
-3. **Dialect requirements.** `PredD: DialectInScope<D>` — a predicate carrying a dialect operation does not fit into a query of another dialect.
-4. **Aggregate folding.** The comparison marker is computed from both operands: `sum(x).gt(0.0)` stays an aggregate, and `sum(x).gt(col)` becomes per-row.
+A predicate built once is reused wherever the same table is in scope: in a filter, in a join condition, or in the `WHERE` of a mutation.
 
-> **Compiler Guard in Action.** `WHERE ("total" > (SELECT AVG("total") FROM "orders"))` is produced from `Expr::column::<OrderTotal>().gt(average)`, where `average` is a single-column `SelectQuery`. A scalar subquery slots in without `.into()`; a multi-column one is rejected, because `IntoExpr<T>` is implemented only for a `(T,)` projection.
+## Ranges, lists, and NULL
 
-## What `.build()` adds
+```rust
+let rows = select_from(Order)
+    .select(select!(order_id: OrderId, total: OrderTotal))
+    .where_(OrderTotal.between(10.0f64, 100.0f64))
+    .where_(OrderUserId.in_list(vec![1i64, 2i64, 3i64]))
+    .where_(OrderTotal.is_not_null())
+    .fetch_all(&mut conn)?;
+```
 
-A predicate is an operator expression, so the operators nested inside it are checked pre-flight (the structural rules), the resolvability of qualifiers (`BuildError::UnresolvedQualifier`), and the placement of aggregates: an aggregate inside `WHERE` is a `BuildError::AggregateInRowClause` naming the clause `RowClause::Where`.
+SQL has no `= NULL`: an equality against an absent value is never true, which is why the null predicates exist and why they bind no parameter.
+
+An empty membership list is a syntax error in every dialect (`x IN ()`), so the builder degenerates it into a constant: `IN []` renders as `1 = 0`, and `NOT IN []` as `1 = 1`. A statement built from a filter list that happens to be empty therefore stays valid.
+
+## Filters assembled at runtime
+
+Given `only_active: bool` and `name: Option<&str>`, a handler builds the statement without losing the chain:
+
+```rust
+let absent_filter: Option<Expr<bool, User>> = None;
+
+let rows = select_from(User)
+    .select(select!(user_id: UserId, user_name: UserName))
+    .when(only_active, |query| query.where_(UserActive.eq(true)))
+    .if_some(name, |query, name| query.where_(UserName.eq(name)))
+    .where_opt(absent_filter)
+    .fetch_all(&mut conn)?;
+```
+
+With both branches taken the filter renders as `WHERE (("active" = $1) AND ("name" = $2))`; with neither, the statement carries no `WHERE` at all.
+
+| Method | What it does |
+|---|---|
+| `.where_(pred)` | adds the condition with `AND` |
+| `.where_opt(Option<pred>)` | adds it when it is present |
+| `.when(flag, \|q\| ...)` | applies the closure when the flag holds |
+| `.if_some(value, \|q, v\| ...)` | applies the closure on `Some`, handing the value over |
+
+The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()` (see [DML](dml.md)).
+
+## `LIKE`, `ILIKE`, and SQLite
+
+`ILIKE` is a PostgreSQL extension. On SQLite the same call keeps its case-insensitive meaning by folding both operands, so `.ilike("A%")` on the `name` column renders `(LOWER("name") LIKE LOWER(?))` — no unsupported keyword ever reaches the engine. `LOWER` folds ASCII letters, which keeps the fallback independent of the database collation.
+
+## Filters over subqueries
+
+```rust
+let big_spenders = select_from(Order)
+    .select(cols!(OrderUserId))
+    .where_(OrderTotal.gt(100.0f64));
+
+let rows = select_from(User)
+    .select(select!(user_id: UserId, user_name: UserName))
+    .where_(UserId.in_subquery(big_spenders))
+    .fetch_all(&mut conn)?;
+```
+
+`in_subquery` requires the nested statement to project exactly one column of the compared type: SQL compares a value with a set of values, so a two-column projection is refused at the call site. A single-column query is also a scalar operand, so it slots into a comparison directly — `OrderTotal.gt(select_from(Order).select(cols!(...)))`. `EXISTS` and `NOT EXISTS` are covered in [Subqueries](subqueries.md).
+
+## What is refused, and why
+
+| Mistake | What happens |
+|---|---|
+| A column of a table the query does not select from | compile error naming the table; the note says to introduce it with `from` or a join |
+| Comparing columns of two unrelated tables | compile error, the same rule |
+| An aggregate (`SUM`, `COUNT`) in `WHERE` | compile error: a filter runs before groups exist, so aggregates belong in `HAVING` |
+| A comparison against an absent value instead of `IS NULL` | never matches at runtime — use the null predicates |
+
+`COUNT(*) > 1` is therefore written in `.having(...)` on a grouped query, where it is accepted, and not in `WHERE`.
 
 ## Related chapters
 
 - [Subqueries](subqueries.md) — `EXISTS`, `IN`, scalar subqueries.
 - [Ordering and pagination](ordering.md) — tuple comparisons and keyset cursors.
-- [DML](dml.md) — the same predicates in the `WHERE` of mutations, plus `where_if` / `where_opt_or_all`.
+- [DML](dml.md) — the same predicates on the `WHERE` of mutations.

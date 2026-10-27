@@ -1,84 +1,62 @@
-# MULTISET: how nesting turns into SQL
+# MULTISET: how nesting becomes SQL
 
-A nested projection is not stitched together on the client: it becomes an AST node that renders as a single JSON aggregation.
+A nested collection is not stitched together on the client: it becomes one aggregate subquery inside the statement.
 
-## AST node
+## The shape of the statement
 
-```rust
-// crates/rurqe-core/src/nested.rs
-fn nested_kind<D, S, Row>(query: &SelectQuery<D, S, Row, HasProjection>, single: bool) -> ExprKind
-where
-    D: Dialect,
-    S: TableScope,
-    Row: MultisetRow,
-{
-    ExprKind::Multiset {
-        query: Subquery::new(query.to_ast()),
-        fields: Row::FIELDS.to_vec(),
-        single,
-    }
-}
+PostgreSQL aggregates rows natively, so a collection is `jsonb_agg(to_jsonb(...))` over the nested query, with an empty array for a parent that has no children:
+
+```text
+SELECT "id",
+       COALESCE((SELECT jsonb_agg(to_jsonb("__rurqe_sub"))
+                 FROM (SELECT "order_id" AS "order_id", "total" AS "total"
+                       FROM "orders") AS "__rurqe_sub"), '[]'::jsonb)
+FROM "users"
 ```
 
-The node carries three things: the nested statement, the document keys, and the "at most one row" flag.
+Every child row is aggregated by the engine, so the ordering, the filter, and the row limit of the nested query decide the contents. The parameters of the nested query continue the placeholder numbering of the outer statement, which is why a filter in the outer query and one in the inner query never collide.
 
-## Document keys
+## SQLite: the same document, assembled field by field
 
-The renderer (`crates/rurqe-core/src/expr/render/nested.rs`) assigns the nested statement `projection_aliases = Some(fields)`: every projected expression gets the name of the field it feeds. The row document therefore carries exactly the keys `MultisetRow::FIELDS` declares, while the clauses of the nested query — filter, ordering, limit — stay in force and decide the contents of the collection.
+SQLite has no native row aggregation, so a dialect without it builds every object with `json_object` and collects the objects with `json_group_array`:
 
-## Two rendering forms
-
-The form is chosen by the `Dialect::SUPPORTS_JSONB_ROW_AGG` constant. Both forms produce the same JSON document, so the client decodes one representation regardless of the engine that produced it.
-
-### PostgreSQL: native row aggregation
-
-With `SUPPORTS_JSONB_ROW_AGG = true`, a collection renders as `jsonb_agg(to_jsonb(...))`, and an absence of rows is replaced with an empty array:
-
-```sql
-COALESCE((SELECT jsonb_agg(to_jsonb("__rurqe_sub"))
-          FROM (SELECT "order_id" AS "order_id", "total" AS "total" FROM "orders")
-               AS "__rurqe_sub"), '[]'::jsonb)
-```
-
-### SQLite: object per field
-
-A dialect without native row aggregation assembles every object with `json_object` field by field and collects the objects with `json_group_array`; the keys are written as string literals and the values are read through the `__rurqe_sub` alias:
-
-```sql
+```text
 COALESCE((SELECT json_group_array(json_object('order_id', "__rurqe_sub"."order_id",
                                                'total', "__rurqe_sub"."total"))
           FROM (SELECT "order_id" AS "order_id", "total" AS "total" FROM "orders")
                AS "__rurqe_sub"), '[]')
 ```
 
-## `nest_one`: aggregate without `COALESCE` and a limit of 1
+Both forms produce the same JSON document, so the client decodes one representation regardless of the engine that produced it.
 
-For a single row the form differs in two details: the aggregate is not wrapped in `COALESCE`, and the limit of the nested query becomes `1` — either the limit of the compound statement, when a `UNION` is present:
+## `nest_one`: one row, no `COALESCE`
 
-```rust
-if single {
-    if inner.set_operations.is_empty() {
-        inner.limit = Some(1);
-    } else {
-        inner.compound_limit = Some(1);
-    }
-}
+The single-row form differs in two details: the aggregate is not wrapped in `COALESCE`, and the nested statement is limited to one row.
+
+```text
+SELECT "id", (SELECT to_jsonb("__rurqe_sub")
+              FROM (SELECT "total" AS "total" FROM "orders" LIMIT 1) AS "__rurqe_sub")
+FROM "users"
 ```
 
-PostgreSQL: `(SELECT to_jsonb("__rurqe_sub") FROM (...) AS "__rurqe_sub")`. SQLite: `(SELECT json_object(...) FROM (...) AS "__rurqe_sub")`. The ordering and pagination of the nested query decide which row reaches `Option<Row>`, while the absence of a row yields `NULL` — that is, `None` on decoding.
+When the nested statement combines statements (`UNION`, `INTERSECT`, `EXCEPT`), the limit is applied to the combined rows, so the compound statement is the one that is limited.
 
-## Raw fragments and placeholders
+## Multiset, not set
 
-`render_multiset` returns `Result<(), RawSqlError>`: a `sql!` expression inside a nested query may declare a parameter count that disagrees with the actual fragments, and the disagreement is reported as `RawSqlError` instead of sending SQL with a lost or shifted placeholder.
+- `Vec<Row>` keeps the ordering the nested `ORDER BY` asked for and keeps duplicates: SQL without `DISTINCT` does not remove rows.
+- `nest_one` reads as `Option<Row>`: a missing child is `None`, not an empty collection.
+- `DISTINCT` and `DISTINCT ON` belong to the nested statement itself, where they are called on the query before it is nested — they are not a property of the projection.
 
-## A multiset, not a set
+## Raw SQL inside a nested query
 
-- `Vec<Row>` keeps the order set by the `ORDER BY` of the nested query and keeps duplicates: SQL without `DISTINCT` does not remove them.
-- `nest_one` returns `Option<Row>`: an absent child is `None`, not an empty collection.
-- `DISTINCT` and `DISTINCT ON` are a separate operation over a statement with its own typestate, not a property of a nested projection.
+A `sql!` / `raw_sql!` fragment declares how many parameters it binds. Inside a nested query a disagreement between that count and the fragments is reported as an error instead of sending SQL with a lost or shifted placeholder, so a value never binds into the wrong slot.
+
+## Which engines can render it
+
+The projection requires the dialect to declare JSON aggregation. PostgreSQL does; SQLite does from 3.38 (`Sqlite3_38`), because the JSON functions were an opt-in extension before that release. Encodings, decoding, and the capability gate itself are covered in [Engines, capability gates, and decoding](multiset_engines.md).
 
 ## Related chapters
 
-- [Nested results: nest_many and nest_one](nested.md)
+- [Nested results: `nest_many` and `nest_one`](nested.md)
 - [Engines, capability gates, and decoding](multiset_engines.md)
 - [NF² and MULTISET: nested relations](../theory/nf2_multiset.md)

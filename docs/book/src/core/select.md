@@ -1,95 +1,68 @@
 # Projections and `SELECT`
 
-A projection is the relational operator π: selecting a subset of the attributes while preserving their order. In RURQE it is recorded into the AST at the call site and fixes the **row type** of the query.
+A projection decides which attributes travel to the client and in which order. In RURQE it is written once at the call site, and it fixes the row type of the query: decoding, `RETURNING`, a nested collection, and a derived table all read that same shape.
 
-## `.select(...)` and the row type
-
-```rust
-pub trait SelectTarget {
-    type RustType;
-    fn push_column_name(&self, out: &mut Vec<&'static str>) { /* nothing by default */ }
-    fn to_expr_kind(&self) -> ExprKind;
-}
-
-pub trait Selection {
-    type Row;
-    fn push_column_names(&self, out: &mut Vec<&'static str>) { /* nothing by default */ }
-    fn push_projections(&self, out: &mut Vec<ExprKind>);
-}
-
-pub trait SelectionFor<Tables, Positions, D = ()>: Selection {
-    type Row;
-}
-```
-
-`SelectionFor::Row` computes the row type with the scope taken into account: a column of a `LEFT JOIN`-ed table arrives as `Option<T>` (see [Nullability](../theory/nullability.md)).
-
-```rust
-use rurqe::prelude::*;
-
-let built = select_from::<Postgres, User>()
-    .select((UserId, UserName, UserActive))
-    .build()
-    .expect("valid query");
-```
-
-```text
-SELECT "id", "name", "active" FROM "users"
-```
-
-Tuple selections are implemented for arities 1..=8 (`impl_selection!` in `query/selection.rs`).
-
-## The four projection forms
-
-| Form | Row type | Example |
-|---|---|---|
-| tuple | positional tuple | `.select((UserId, UserName))` |
-| `cols!` | positional tuple, with aliases | `.select(cols!(UserId, UserName as contact_email))` |
-| `select!` | anonymous struct with named fields | `.select(select!(UserId, UserName as contact_email))` |
-| `dto!` | named struct, decoding only | `dto! { pub struct UserSummary { UserId, UserName as contact_email } }` |
-
-## `select!`: named projections
-
-`select!` synthesizes, at the call site, an anonymous `__RurqeRecord` record and a `__RurqeSelection` selection, which renders every element through `SelectTarget` and wraps it into an `ExprKind::Aliased` under the **field name**. The output columns of the query are therefore the keys the record is decoded by, and they stay reachable when the query is nested as a derived table or a CTE.
+## `select!`: named fields, no tuple index
 
 ```rust
 use rurqe::postgres::prelude::*;
 
-let built = select!(UserId, UserName as contact_email)
+let active = select!(UserId, UserName as contact_email)
     .from(User)
-    .where_(Expr::column::<UserId>().gt(1i64))
-    .build()
-    .expect("valid query");
+    .where_(UserActive.eq(true))
+    .order_by_asc(UserId)
+    .fetch_all(&mut conn)?;
+
+for row in active {
+    println!("#{} <{}>", row.user_id, row.contact_email);
+}
 ```
+
+The field names come from the markers: `UserId` becomes `user_id`, and `UserName as contact_email` becomes `contact_email`. A marker named after a Rust keyword is written with a raw identifier (`Type` is `r#type`) and still carries the bare keyword as its output column.
+
+`cols!` is the same macro under a second name — the spelling that reads better when the list is handed to `.select(...)`:
+
+```rust
+let rows = select_from(User)
+    .select(cols!(UserId, UserName as contact_email))
+    .fetch_all(&mut conn)?;
+```
+
+Both forms produce the same record and the same SQL, and every element is rendered under its field name. That naming is what keeps the columns reachable when the query becomes a derived table or a CTE.
+
+A positional tuple projection still exists for low-level code; this book does not use it, because a named projection survives a change in the column order.
+
+## Computed projections
+
+Anything that renders as a value can be a field — write the field name yourself:
+
+```rust
+let rows = select_from(Order)
+    .select(select!(
+        order_id: OrderId,
+        total: OrderTotal,
+        billed: coalesce(OrderTotal, 0.0f64),
+    ))
+    .fetch_all(&mut conn)?;
+```
+
+`billed` has the type of the expression (`f64`), not the type of a stored column.
+
+## Two fields, one name
+
+Duplicate field names are refused while the macro expands, and the message carries the remedy:
 
 ```text
-SELECT "id" AS "user_id", "name" AS "contact_email" FROM "users" WHERE ("id" > $1)
+projection field `id` is produced by more than one projection; rename one of them with `as <alias>` or `alias: <expr>`
 ```
 
-The generated record implements `FromRow`, so a row is decoded into its fields by name, not by index:
+## `dto!`: a named row shape
+
+`select!` is anonymous — exactly right inside a query, useless in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them:
 
 ```rust
-let row = UserSummary::from_row(&[
-    SqlVal::I64(7),
-    SqlVal::Text("root".to_owned()),
-])
-.expect("row decodes");
-
-assert_eq!(row.user_id, 7);
-assert_eq!(row.contact_email, "root");
-```
-
-The same record describes the row of a nested collection: `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`, and `MultisetRow` are implemented with the `FIELDS` constant, so a `select!` projection is read as a `Vec<...>` out of `nest_many` (see [NF² and MULTISET](../theory/nf2_multiset.md)).
-
-A `select!` selection is a `TableSelection<T>` **only** when all of its elements are columns of the table `T`: every element asserts `ColumnBelongsTo<T>`, and a list with a computed element produces no implementation at all. That is why `RETURNING` accepts a `select!` of columns and rejects `select!(UserId, doubled: Expr::count_all())`.
-
-## `dto!`: a struct for function boundaries
-
-```rust
-use rurqe::prelude::*;
-
 dto! {
-    /// A user projection returned from a repository.
+    /// A user row crossing a repository boundary.
     pub struct UserSummary {
         UserId,
         UserName as contact_email,
@@ -98,37 +71,90 @@ dto! {
 }
 ```
 
-`dto!` emits a `pub struct` whose field types are inferred from `<Column as Column>::RustType` (no need to repeat the types) and implements `FromRow`, `MultisetRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`. The keys of the JSON document are the field names in declaration order.
-
-`dto!` is **not** a projection: its fields must be column markers (a computed field is rejected with an expansion error), and it produces no projection surface (`Selection`, `push_projections`) at all. The query projects a `select!` with the same field names, and the `dto!` decodes the resulting row.
-
-## The explicit nullable marker
-
-Sometimes the nullable form is needed without an outer join — for example, to align the projection shape with an already computed result:
+The declaration implements `FromRow`, so a row decodes by field name:
 
 ```rust
-impl<C: Column> Column for Nullable<C> {
-    type Table = C::Table;
-    type RustType = Option<C::RustType>;
-    const NAME: &'static str = C::NAME;
-    fn expr_kind() -> ExprKind { C::expr_kind() }
+let row = UserSummary::from_row(&[
+    SqlVal::I64(7),
+    SqlVal::Text("root".to_owned()),
+    SqlVal::Bool(true),
+])
+.expect("row decodes");
+
+assert_eq!(row.user_id, 7);
+assert_eq!(row.contact_email, "root");
+```
+
+It also implements the nested-row contracts, so `Vec<UserSummary>` decodes straight out of a collection document (see [Nested results](../features/nested.md)).
+
+A DTO is a row shape, not a projection: its fields must be column markers, and a computed field is refused during expansion with a message that points at `select!`. The statement projects with `select!`; the DTO names what the row is.
+
+## Nullability comes from the join
+
+Write the left join and keep the same projection:
+
+```rust
+let report = select_from(User)
+    .left_join_table(Order, OrderUserId.eq(UserId))
+    .select(select!(user_id: UserId, order_total: OrderTotal))
+    .fetch_all(&mut conn)?;
+
+for row in report {
+    match row.order_total {
+        Some(total) => println!("#{}: {total}", row.user_id),
+        None => println!("#{}: no orders", row.user_id),
+    }
 }
 ```
 
-Available as `Nullable::<C>::new()` and as the query method `query.nullable::<C>()`: it is the same column, but with one more layer of `Option` in the value type. A double `Option<Option<T>>` never happens — `MakeNullable for Option<T>` returns `Option<T>`.
+```text
+SELECT "users"."id" AS "user_id", "orders"."total" AS "order_total"
+FROM "users" LEFT JOIN "orders" ON ("orders"."user_id" = "users"."id")
+```
 
-## Invariants
+`row.order_total` is `Option<f64>`, and nothing in the projection had to mention it — the type follows from the join, so reading the field as `f64` does not compile. The same lifting applies to `FULL OUTER JOIN` (both sides) and to a left-joined derived table; see [Nullability](../theory/nullability.md).
 
-- **The projection is recorded once.** After `UNION`/`INTERSECT`/`EXCEPT` the output columns are fixed by the first projection list, so `ProjectionOpen` is not implemented for such a query and `.select(...)` is unreachable.
-- **A `SELECT` without a projection does not render.** `.build()` requires `ProjectionPresent`.
-- **An empty projection is rejected pre-flight.** A manual `Selection` implementation recording an empty list yields `BuildError::EmptyProjection` instead of `SELECT  FROM "users"`.
-- **The projection is checked against the scope.** A column of a table absent from `FROM`/`JOIN` is rejected at the call site through `SelectTargetInScope`.
+## Grouped queries project under the same rule
 
-> **Compiler Guard in Action.** `Selection::push_projections` has no default body: an implementation must enumerate the elements, otherwise the query would render `SELECT  FROM ...`.
+```rust
+let rows = select_from(Order)
+    .group_by(OrderUserId)
+    .select(select!(
+        user_id: OrderUserId,
+        orders: count_all(),
+        spend: sum(OrderTotal),
+    ))
+    .fetch_all(&mut conn)?;
+```
+
+After `.group_by(...)` a field is accepted only when it is a grouped column, an aggregate, a constant, or a window over those. A stored column that is neither is refused at the call site, with a message saying the column is neither grouped nor an aggregate. Aggregates inside scalar functions keep that property: `coalesce(sum(OrderTotal), 0.0f64)` is still an aggregate.
+
+## What `RETURNING` accepts
+
+`RETURNING` takes the same named lists:
+
+```rust
+let renamed = update(User)
+    .set(UserName::set("root"))
+    .where_(UserId.eq(1i64))
+    .returning(cols!(UserName));
+```
+
+The clause writes back into the mutated row, so it accepts only a projection of that row: a column of another table names a relation the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.
+
+## The nullable shape, explicitly
+
+Sometimes the nullable form is needed without an outer join — to align a projection with an already computed result. `query.nullable::<OrderTotal>()` is the same column with `Option<f64>` as its value type; a second layer never appears, because `Option<Option<T>>` collapses into `Option<T>`.
+
+## Invariants worth knowing
+
+- A query without a projection does not render: `.build()` and the fetch helpers are not available on it.
+- A projection is recorded once. After `UNION` / `INTERSECT` / `EXCEPT` the output columns are the ones the first list named, so `.select(...)` is unreachable on the combined statement.
+- A hand-written selection that records nothing is rejected while building, instead of rendering `SELECT  FROM "users"`.
 
 ## Related chapters
 
 - [Predicates and `WHERE`](filtering.md)
 - [Ordering and pagination](ordering.md)
-- [`GROUP BY` and `HAVING`](group_by.md) — the same projections under the grouping rule.
+- [`GROUP BY` and `HAVING`](group_by.md)
 - [Aliases](aliasing.md)

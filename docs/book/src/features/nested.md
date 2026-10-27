@@ -1,114 +1,107 @@
 # Nested results: `nest_many` and `nest_one`
 
-A one-to-many relation read naively costs either N+1 statements (one per parent) or a `JOIN` with a Cartesian product that the client folds into lists by hand. RURQE reads such a relation in a single statement: the engine aggregates the child rows of every parent into a JSON document, and the client decodes the document into the row type of the child projection — with no extra statements and no client-side stitching.
+A one-to-many relation is where the ergonomics of a query builder are decided. The naive options cost either N+1 statements (one per parent) or a `JOIN` with a Cartesian product that the client folds into lists by hand.
 
-```rust
-// crates/rurqe-core/src/nested.rs
-pub fn nest_many<Q>(query: Q) -> NestMany<Q>;
-pub fn nest_one<Q>(query: Q) -> NestOne<Q>;
+RURQE reads the relation in one statement: the engine aggregates the child rows of every parent into a JSON document, and the client decodes that document into the row type of the child projection.
 
-pub struct NestMany<Q>(pub Q); // RustType = Vec<Row>
-pub struct NestOne<Q>(pub Q);  // RustType = Option<Row>
-```
-
-## Example: users with their orders
+## One query, typed collections
 
 ```rust
 use rurqe::postgres::prelude::*;
 
-let report = select_from(Users)
+let users = select_from(User)
     .select(select!(
         user_id: UserId,
         user_name: UserName,
         orders: nest_many(
-            select_from(Orders)
+            select_from(Order)
                 .select(select!(order_id: OrderId, total: OrderTotal))
-                .order_by_asc(OrderCreatedAt)
+                .where_(OrderUserId.eq(UserId.without_scope()))
+                .order_by_desc(OrderTotal)
         ),
     ))
+    .where_(UserActive.eq(true))
     .fetch_all(&mut conn)?;
 
-for row in report {
-    println!("{} — {} orders", row.user_name, row.orders.len());
-    for order in row.orders {
+for user in users {
+    println!("{} — {} orders", user.user_name, user.orders.len());
+    for order in user.orders {
         println!("  #{} for {}", order.order_id, order.total);
     }
 }
 ```
 
-The outer projection is `select!`, not `dto!`: `nest_many(...)` is a computed projection, while `dto!` accepts only column markers and rejects a computed field with an expansion error (`use `select!` for computed projections`). For the same reason the nested projection is described with `select!` as well — its declaration becomes the element type of the collection.
+`user.orders` is a `Vec` of a record with `order_id` and `total`; nothing is decoded by index, and no second statement was sent.
 
-## Row type and position
+## `nest_one`: at most one row
 
-The projection implements `SelectTarget` (the value type) and `SelectTargetInScope` (the value type together with its scope):
+The same call for a one-to-one relation stops at the first row and reads as `Option<...>`:
 
 ```rust
-impl<D, S, Row> SelectTarget for NestMany<SelectQuery<D, S, Row, HasProjection>>
-where
-    D: Dialect,
-    S: TableScope,
-    Row: MultisetRow,
-{
-    type RustType = Vec<Row>;
+let users = select_from(User)
+    .select(select!(
+        user_id: UserId,
+        latest: nest_one(
+            select_from(Order)
+                .select(select!(total: OrderTotal))
+                .where_(OrderUserId.eq(UserId.without_scope()))
+                .order_by_desc(OrderId)
+        ),
+    ))
+    .fetch_all(&mut conn)?;
 
-    fn to_expr_kind(&self) -> ExprKind {
-        nested_kind(&self.0, false)
+for user in users {
+    match user.latest {
+        Some(latest) => println!("#{}: {}", user.user_id, latest.total),
+        None => println!("#{}: no orders", user.user_id),
     }
 }
-
-impl<Tables, InnerD, QueryD, S, Row> SelectTargetInScope<Tables, At<0>, QueryD>
-    for NestMany<SelectQuery<InnerD, S, Row, HasProjection>>
-where
-    InnerD: Dialect + DialectInScope<QueryD>,
-    QueryD: SupportsJsonAggregation,
-    S: TableScope,
-    Row: MultisetRow,
-{
-    type Output = Vec<Row>;
-}
 ```
 
-The position is fixed at `At<0>`: a nested projection reads from its own statement and references no table of the enclosing scope, so there is nothing to infer the position from — a fixed position keeps the marker determined instead of leaving inference to pick one of the positions a scope may offer.
+An absent child is `None`, not an empty collection: "no row" and "a row without values" stay distinguishable.
 
-## Correlation with the outer query
+## Correlating the child with the parent
 
-A nested statement is a `SelectQuery` of its own, and its typed scope contains only its own `FROM`. A column of the outer query enters a predicate through `without_scope()`, which replaces the tables of the expression with the `Unscoped` marker: such an expression is accepted in any scope because its tables are checked by the enclosing statement.
+The nested statement is a query of its own, so its scope holds only its own `FROM`. A column of the outer query enters the inner predicate through `.without_scope()`, which marks the expression as resolved by the enclosing statement:
 
 ```rust
-orders: nest_many(
-    select_from(Orders)
-        .select(select!(order_id: OrderId, total: OrderTotal))
-        .where_(OrderUserId.eq(UserId.without_scope()))
-)
+select_from(Order)
+    .select(select!(total: OrderTotal))
+    .where_(OrderUserId.eq(UserId.without_scope()))
 ```
 
-## `nest_one`: an absent child as `None`
+Without it the child query would reference `"users"`, a relation it never declares, and the call is rejected at the call site.
 
-`nest_one` differs from `nest_many` only in that the aggregation stops at the first row: a missing child yields `None` rather than an empty vector, so "no value" stays explicit and is not mixed up with "present but empty".
+## The outer projection is `select!`
 
-## Row type contract
+`nest_many(...)` and `nest_one(...)` are computed projections, so the outer list is a `select!`. `dto!` accepts column markers only, and its message points at `select!` for computed projections.
 
-The element type declares the keys its fields are read from for one row of the document:
+## The keys are the field names
 
-```rust
-pub trait MultisetRow: SqlArrayElement + 'static {
-    /// The JSON keys of the projected fields, in projection order.
-    const FIELDS: &'static [&'static str];
-}
-```
+The nested `select!` names the JSON keys of every child row: `select!(order_id: OrderId, total: OrderTotal)` produces documents of the shape `{"order_id": …, "total": …}`. The declaration and the document cannot drift apart, because both come from the same list.
 
-`select!` synthesizes the record together with the `FromRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`, and `MultisetRow` implementations; `FIELDS` holds the field names in projection order, and the same names become the keys of the JSON document (the field `r#type` is written as `type`).
+## What the child query controls
 
-`dto!` declares the same set of contracts (`MultisetRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`) with the same keys in declaration order, but emits no projection: a DTO is a decoding type and a nested-row type, not a projection list, so `select!` projects a row while the DTO reads it.
+The filter, the ordering, the row limit, and any grouping of the nested statement decide the contents of the collection — not the client. `nest_one` adds a limit of one row on top, so the engine never sends the children of one parent to be trimmed afterwards.
+
+## Which engines
+
+| Engine | Nested collection |
+|---|---|
+| PostgreSQL (`rurqe::postgres::prelude`) | supported |
+| SQLite 3.38+ (`rurqe::sqlite::sqlite3_38::prelude`) | supported, through the JSON functions |
+| SQLite below 3.38 | not available — the projection does not compile |
+
+The gate is the dialect's JSON aggregation capability. SQLite shipped the JSON functions as an opt-in extension until 3.38, so a default build of an older release would reject the statement at runtime; the projection is refused at compile time instead. See [Engines, capability gates, and decoding](multiset_engines.md).
 
 ## Compiler Guard in Action
 
-- **No native JSON aggregation — no projection.** `QueryD: SupportsJsonAggregation` in `SelectTargetInScope` means `nest_many` does not compile for `Sqlite<Sqlite3_35>`: the rejection arrives at the type level, not from the engine.
-- **Projection without rows.** A nested statement must be in the `HasProjection` state; `nest_many(select_from(Orders))` without `.select(...)` cannot be nested.
-- **The row type must declare the keys.** `Row: MultisetRow` ties the document to the field declaration, so an arbitrary element type does not qualify.
+- A nested statement without a projection (`nest_many(select_from(Order))`) does not compile: there is no row type to collect.
+- A dialect without JSON aggregation does not accept the projection at all, so an unsupported engine fails at the type level instead of inside the driver.
+- The element type has to declare its keys, which is what the `select!` record does.
 
 ## Related chapters
 
-- [MULTISET: how nesting turns into SQL](multiset.md)
+- [MULTISET: how nesting becomes SQL](multiset.md)
 - [Engines, capability gates, and decoding](multiset_engines.md)
 - [NF² and MULTISET: nested relations](../theory/nf2_multiset.md)
