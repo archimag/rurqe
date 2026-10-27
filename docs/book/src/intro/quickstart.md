@@ -1,36 +1,29 @@
-# Quickstart in 5 minutes
+# Quickstart in five minutes
 
-The goal of this section is a working query plus an understanding of what exactly the compiler checks. Every fragment below corresponds to real code: the scenario comes from the integration test `crates/rurqe/tests/sqlite_e2e.rs`.
+A working query in three minutes: an in-memory SQLite database, a typed `INSERT ... RETURNING`, a named projection through `select!`, and a `LEFT JOIN` whose nullability the compiler infers on its own. The CRUD half of the scenario mirrors the integration test `crates/rurqe/tests/sqlite_e2e.rs`.
 
-## 1. Dependency and features
+## 1. Dependency
 
 ```toml
 [dependencies]
-rurqe = { version = "0.1", features = ["sqlite"] }
-# or for PostgreSQL:
-# rurqe = { version = "0.1", features = ["postgres"] }
+rurqe = { version = "0.1", features = ["sqlite", "macros"] }
+# for PostgreSQL: features = ["postgres", "macros"]
 ```
-
-Adapters and their features:
 
 | Feature | What it adds |
 |---|---|
+| `sqlite` | `Sqlite<V>`, `SqliteConnection`, the versions `Sqlite3_0` … `Sqlite3_38` |
 | `postgres` | `PgConnection` — the synchronous `postgres` driver |
-| `tokio-postgres` | `PgAsyncConnection` — the asynchronous driver |
-| `deadpool-postgres` | `PgAsyncPool` — the asynchronous pool |
-| `r2d2` | `PgPool` / `SqlitePool` — the synchronous pools |
-| `sqlite` | `Sqlite<V>`, `SqliteConnection`, the versions `Sqlite3_0` ... `Sqlite3_38` |
+| `tokio-postgres`, `deadpool-postgres` | the asynchronous connection and pool |
 | `macros` | `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
-| `migrate` | the embedded migration runner `EmbeddedMigrations` |
-
-Every PostgreSQL adapter feature compiles the dialect surface, so `Postgres`, `Pg14`, `Pg15`, and `Pg16` are available even in a build without the synchronous driver.
+| `migrate` | the embedded migration runner |
+| `uuid`, `chrono`, `serde_json`, `decimal` | ecosystem value types |
 
 ## 2. Schema
 
 ```rust
 use rurqe::prelude::*;
 
-// Manual declaration: one ZST per table and one ZST per column.
 table! {
     /// The `users` table.
     User => "users" {
@@ -40,9 +33,18 @@ table! {
         UserScore => "score": i32,
     }
 }
+
+table! {
+    /// The `orders` table.
+    Order => "orders" {
+        OrderId => "id": i64,
+        OrderUserId => "user_id": i64,
+        OrderTotal => "total": f64,
+    }
+}
 ```
 
-A real project never writes this by hand: `cargo db-codegen` generates it from the live database catalog.
+A real project never writes this by hand: `cargo db-codegen` generates the same zero-sized markers from the live catalog.
 
 ## 3. Connection
 
@@ -55,95 +57,141 @@ connection.execute_batch(
          id INTEGER NOT NULL PRIMARY KEY,\
          name TEXT NOT NULL,\
          active BOOLEAN NOT NULL,\
-         score INTEGER NOT NULL);",
+         score INTEGER NOT NULL);\
+     CREATE TABLE orders (\
+         id INTEGER NOT NULL PRIMARY KEY,\
+         user_id INTEGER NOT NULL,\
+         total REAL NOT NULL);",
 )?;
 let mut db = SqliteConnection::new(connection);
 ```
 
-## 4. Writing and reading
+## 4. Write and read with `select!`
 
 ```rust
 use rurqe::sqlite::sqlite3_35::prelude::*;
 
-// INSERT ... RETURNING: returns the projected row.
-let insert = insert_into(User)
+let inserted = insert_into(User)
     .values((
         UserId::set(1i64),
         UserName::set("root"),
         UserActive::set(true),
         UserScore::set(42i32),
     ))
-    .returning((UserId, UserName, UserActive, UserScore));
+    .returning(cols!(UserId, UserName as contact_email));
 
-let row: (i64, String, bool, i32) = db.fetch_one(&insert)?;
-assert_eq!(row, (1i64, "root".to_owned(), true, 42i32));
+let row = db.fetch_one(&inserted)?;
+println!("#{} {}", row.user_id, row.contact_email);
 
-// SELECT with a typed predicate and ordering.
-let query = select_from(User)
-    .select((UserId, UserName, UserScore))
+let active = select!(UserId, UserName as contact_email, UserScore)
+    .from(User)
     .where_(UserActive.eq(true))
     .order_by_asc(UserId);
 
-let rows: Vec<(i64, String, i32)> = db.fetch_all(&query)?;
+for row in db.fetch_all(&active)? {
+    println!("#{} {} — {}", row.user_id, row.contact_email, row.user_score);
+}
 ```
 
-`values` checks the type of every value against `Column::RustType` at the call site, so `UserId::set("1")` does not compile.
+`values` checks every value against the column's Rust type at the call site, so `UserId::set("1")` does not compile. The field names of the row come from the markers (`UserId` → `user_id`, `UserName as contact_email` → `contact_email`), which is why no tuple index appears anywhere.
 
 ## 5. Mutations
 
 ```rust
-let update = update(User)
+let renamed = update(User)
     .set(UserName::set("bob"))
     .where_(UserId.eq(1i64))
-    .returning((UserName, UserScore));
-let renamed: (String, i32) = db.fetch_one(&update)?;
+    .returning(cols!(UserName, UserScore));
+let row = db.fetch_one(&renamed)?;
 
-let delete = delete_from(User).where_(UserId.eq(1i64));
-let affected: usize = db.execute(&delete)?;
-assert_eq!(affected, 1);
+let removed = db.execute(&delete_from(User).where_(UserId.eq(1i64)))?;
+assert_eq!(removed, 1);
 ```
 
-`update(...)` and `delete_from(...)` start in the unfiltered state: `build()` stays unavailable until `.where_(...)` or an explicit `.allow_all()` is called. An accidental full-table mutation is impossible by construction.
+`update(...)` and `delete_from(...)` start unfiltered: the statement is not buildable until `.where_(...)` or an explicit `.allow_all()` is called, so an accidental full-table mutation is impossible by construction.
 
-## 6. No turbofish: dialect preludes
-
-One import pins the dialect, so table markers are passed by value and no type parameter appears at the call site:
+## 6. Joins lift nullability
 
 ```rust
-use rurqe::sqlite::sqlite3_35::prelude::*;
+let report = select_from(User)
+    .left_join_table(Order, OrderUserId.eq(UserId))
+    .select(select!(
+        user_id: UserId,
+        user_name: UserName,
+        total: OrderTotal,
+    ))
+    .order_by_asc(UserId);
 
-let query = select_from(User).select(cols!(UserId, UserName));
-let rows: Vec<(i64, String)> = db.fetch_all(&query)?;
+for row in db.fetch_all(&report)? {
+    match row.total {
+        Some(total) => println!("{}: {total}", row.user_name),
+        None => println!("{}: no orders", row.user_name),
+    }
+}
 ```
 
-For PostgreSQL the same shape is pinned to a version marker:
+`row.total` is `Option<f64>` because the join may leave the right relation unmatched — and reading it as `f64` does not compile. Nothing in the query mentions a nullable type: the projection is written once and the type follows from the join.
+
+## 7. One query instead of N+1
+
+A one-to-many relation comes back as a typed collection in a single round trip, without a Cartesian product folded on the client. JSON aggregation is required, so this runs on PostgreSQL (or SQLite 3.38 and later):
 
 ```rust
-use rurqe::postgres::pg16::prelude::*;
+use rurqe::postgres::prelude::*;
 
-let built = select_from(Users).select(cols!(UserId)).build()?;
+let users_with_orders = select_from(User)
+    .select(select!(
+        user_id: UserId,
+        user_name: UserName,
+        orders: nest_many(
+            select_from(Order)
+                .select(select!(order_id: OrderId, total: OrderTotal))
+                .where_(OrderUserId.eq(UserId.without_scope()))
+                .order_by_asc(OrderTotal)
+        ),
+    ))
+    .fetch_all(&mut conn)?;
+
+for user in users_with_orders {
+    println!("{} — {} orders", user.user_name, user.orders.len());
+}
 ```
 
-The generated module defines `select_from`, `insert_into`, `update`, and `delete_from`, the `Error` and `Result<T, E = Error>` aliases, the `SelectFrom` extension trait behind `.from(table)`, and a nested `prelude` that re-exports the shared prelude with the pinned entry points taking precedence.
+Details in [Nested results](../features/nested.md).
 
-## 7. Errors are types
+## 8. No turbofish anywhere
+
+One import pins the dialect, so entry points take a table value and no type parameter is ever spelled out:
+
+```rust
+use rurqe::postgres::pg16::prelude::*;   // PostgreSQL 16
+use rurqe::sqlite::sqlite3_35::prelude::*; // SQLite 3.35:
+
+let built = select_from(User).select(cols!(UserId)).build()?;
+```
+
+Version modules (`pg14`, `pg15`, `pg16`, `sqlite3_0` … `sqlite3_38`) also fix the capability set: `RETURNING` needs SQLite 3.35, `ON CONFLICT` needs 3.24, and a clause the pinned version lacks is not a method at all.
+
+## 9. Errors are types
 
 ```rust
 let query = select_from(User)
-    .select((UserName,))
+    .select(cols!(UserName))
     .where_(UserId.eq(1i64));
 
 match db.fetch_one(&query) {
-    Ok((name,)) => println!("{name}"),
+    Ok(row) => println!("{}", row.user_name),
     Err(error) if error.is_not_found() => println!("no such row"),
     Err(error) => return Err(error.into()),
 }
 ```
 
-`ExecutionError<E>` distinguishes query construction (`is_build`), a missing row (`is_not_found`), extra rows (`is_multiple_rows`), a decoding failure (`is_row_decode`), and a driver failure (`as_backend`, `into_backend`).
+`ExecutionError` separates a rejected statement (`is_build`), a missing row (`is_not_found`), extra rows (`is_multiple_rows`), a decoding failure (`is_row_decode`), and a driver failure (`as_backend`, `into_backend`).
 
-## 8. What next
+## 10. What next
 
-- Why `LEFT JOIN` changes a column's type — [Nullability](../theory/nullability.md).
-- Where the boundary between compiler checks and `.build()` runs — [Two-Tier SQL Correctness](two_tier.md).
-- How to get rid of a hand-written `table!` — the code generation chapter (a separate section of the book).
+- [Projections and `SELECT`](../core/select.md) — `select!`, `cols!`, `dto!`, and the row type.
+- [Predicates and `WHERE`](../core/filtering.md) and [ordering](../core/ordering.md).
+- [Joins](../core/joins.md) and [nullability](../theory/nullability.md) — why the type changes.
+- [Nested results](../features/nested.md) — `nest_many` and `nest_one`.
+- [Two-tier SQL correctness](two_tier.md) — which gate catches which mistake.

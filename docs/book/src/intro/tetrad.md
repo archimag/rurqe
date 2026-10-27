@@ -19,55 +19,75 @@ RURQE is assembled from four industrial ideas, each of which closes a weakness o
 
 ## 1. Kysely ergonomics (developer experience)
 
-- A query reads like SQL and needs no turbofish at every step: the dialect is pinned by a prelude (`rurqe::postgres::prelude::*`), a table is passed by value (`select_from(Users)`), and columns are ZST values.
-- Named projections: `select!` synthesizes a local row struct, `dto!` synthesizes a reusable one, instead of tuple indices `row.0` / `row.1`.
-- `rust-analyzer` works without a database connection: all schema information is encoded in types.
+- The dialect is pinned once by a prelude (`use rurqe::postgres::prelude::*;`), a table is passed **by value** (`select_from(User)`), and columns are zero-sized values — so there is no turbofish anywhere in application code.
+- **Named projections.** `select!` synthesizes an anonymous row struct at the call site, `cols!` keeps a positional selection when a tuple is genuinely wanted, and `dto!` produces a reusable struct for results that cross a function boundary. No `row.0`, no manual `FromRow` boilerplate.
+- `rust-analyzer` works without a database connection: the whole schema is encoded in types.
 
-An example of the shape (verified against real code in the [Quickstart](quickstart.md)):
-
-```text
+```rust
 use rurqe::postgres::prelude::*;
 
-select_from(Users)
-    .select(cols!(UserId, UserName))
+let contacts = select_from(User)
+    .select(cols!(UserId, UserName as contact_email))
     .where_(UserId.gt(10i64))
+    .order_by_asc(UserId)
+    .fetch_all(&mut conn)?;
 ```
 
 ## 2. jOOQ expressiveness and relational depth
 
-- **The schema is the primary source.** The database catalog is introspected, markers and the `schema.lock` snapshot are generated from it, and the schema is never duplicated by hand.
-- **Relational expressiveness.** Multi-table `JOIN`s, subqueries, CTEs (`WITH`), window functions, aggregations, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, and the set operations `UNION` / `INTERSECT` / `EXCEPT`.
+- **The schema is the primary source.** The catalog is introspected and the markers are generated from it; the schema is never duplicated by hand.
+- **Relational expressiveness.** Multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, and the set operations `UNION` / `INTERSECT` / `EXCEPT`.
 - **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically (see [Nullability](../theory/nullability.md)).
+
+```rust
+use rurqe::postgres::prelude::*;
+
+let ranked = select_from(Employee)
+    .select(select!(
+        employee_id: EmployeeId,
+        salary: Salary,
+        position: rank().over(Window::partition_by(DepartmentId).order_by_desc(Salary)),
+    ))
+    .fetch_all(&mut conn)?;
+```
 
 ## 3. Flyway lifecycle (schema evolution integrity)
 
 - **Two models at once.** Classic sequential migrations (`V...`, `R...` with SHA-256 checksums, `baseline`, `repair`) and the AI-first **Stage + Tail** model: the declarative state under `schema/` as the SSOT for humans and LLMs, plus the active tail under `migrations/` as a delta for already deployed databases.
-- **Cold start.** A clean environment (CI, container, local machine) is initialized directly from `schema/` without replaying the migration history.
-- **Checkpoint and pruning.** The `checkpoint.toml` marker records the `pruned_up_to_version` boundary and the base stage hash; historical files below that boundary are deleted without a squash and without rewriting the baseline.
-- **The Golden Equation.** Continuous verification: `State(schema/) == State(Checkpoint + migrations/)`, compared as the catalogs of two ephemeral databases. A divergence is caught in CI rather than in production.
-- **Fail-safe for lagging databases.** If the target database is older than the pruned checkpoint boundary, the runner stops with a diagnostic and an instruction instead of corrupting the state.
+- **Cold start.** A clean environment (CI, container, local machine) initializes directly from `schema/`, without replaying the migration history.
+- **Checkpoint and pruning.** `checkpoint.toml` records the pruning boundary and the base stage hash; files below it are deleted without a squash and without rewriting the baseline.
+- **The Golden Equation.** Continuous verification: `State(schema/) == State(Checkpoint + migrations/)`, compared as the catalogs of two ephemeral databases. A divergence fails CI rather than production.
+- **Fail-safe for lagging databases.** A target older than the checkpoint boundary stops the runner with a diagnostic and an instruction instead of corrupting state.
 
-## 4. The Rust type system and zero-cost
+## 4. The Rust type system and zero cost
 
 - **Zero-cost abstractions.** Monomorphized builders and phantom markers collapse into a static SQL buffer and direct deserializers.
-- **Compile-time capability gates.** `RETURNING`, `ON CONFLICT`, `DISTINCT ON`, `LATERAL`, `FULL OUTER JOIN`, `UPDATE ... FROM`, `DELETE ... USING`, and `FOR UPDATE` are marker traits (`SupportsReturning`, `SupportsOnConflict`, `SupportsDistinctOn`, `SupportsLateralJoin`, `SupportsFullOuterJoin`, `SupportsUpdateFrom`, `SupportsDeleteUsing`, `SupportsRowLocking`, ...). No trait implementation means no method.
-- **Diagnostics for humans and for LLMs.** `#[diagnostic::on_unimplemented]` turns a trait cascade into one short message with a hint.
+- **Capability gates.** A clause the engine cannot offer is a method that does not exist: `RETURNING`, `ON CONFLICT`, `DISTINCT ON`, `LATERAL`, `FULL OUTER JOIN`, `UPDATE ... FROM`, `DELETE ... USING`, `FOR UPDATE` are all gated by the dialect and its version.
+- **Diagnostics for humans and LLMs.** The compiler message names the violated SQL rule and the fix, not the trait that failed.
+
+```text
+// SQLite serialises writers through the database file, so a row lock is not a
+// thing it can offer — and the method is absent rather than rejected at runtime:
+//
+//   use rurqe::sqlite::sqlite3_35::prelude::*;
+//   select_from(Job).select(cols!(JobId)).for_update();   // does not compile
+```
 
 ## Workspace map
 
 | Crate | Responsibility |
 |---|---|
-| `rurqe` | Facade: preludes, dialect preludes, the `select_from` / `insert_into` / `update` / `delete_from` entry points |
+| `rurqe` | Facade: preludes, dialect preludes, `select_from` / `insert_into` / `update` / `delete_from` |
 | `rurqe-core` | AST, schema markers (`Table`, `Column`), dialect and capability traits, expressions, DML, validation |
-| `rurqe-macros` | Procedural macros `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
-| `rurqe-postgres` | PostgreSQL dialect (`Postgres<Pg14>` / `Pg15` / `Pg16`), version markers, synchronous and asynchronous driver adapters, pools |
+| `rurqe-macros` | `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
+| `rurqe-postgres` | PostgreSQL dialect (`Postgres<Pg14>` / `Pg15` / `Pg16`), version markers, sync and async adapters, pools |
 | `rurqe-sqlite` | SQLite dialect (`Sqlite<Sqlite3_35>` and others), the `rusqlite` adapter, the `r2d2` pool |
 | `rurqe-migrate` | Migration engine, schema catalog, checksums, checkpoints, stages |
 | `rurqe-cli` | Catalog introspection, code generation, drift verification, stage and prune tooling |
 
 ## What this means for reading the book
 
-- Ergonomics: [Quickstart](quickstart.md).
-- Correctness: [Two-Tier SQL Correctness](two_tier.md) and the whole [theory part](../theory/overview.md).
-- Dialects: the PostgreSQL and SQLite chapters (separate sections of the book).
-- Migrations: the chapters about the traditional path and Stage + Tail (separate sections of the book).
+- Ergonomics first: [Quickstart in five minutes](quickstart.md).
+- Why the guarantees hold: [Two-tier SQL correctness](two_tier.md).
+- Relational depth and theory: [Relational theory overview](../theory/overview.md).
+- Dialects, runtime, migrations and the toolchain each have their own part of the book.

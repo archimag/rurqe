@@ -2,54 +2,100 @@
 
 **RURQE** (**R**ust **U**niversal **R**elational **Q**uery **E**ngine) is a strictly typed SQL query builder, relational execution engine, and database-first code generation toolkit for Rust.
 
-## The problem the project solves
+## The problem
 
-The classic gap between application code and a relational database looks like this:
+The classic gap between application code and a relational database:
 
 1. **The schema lives in two places.** DDL migrations describe one shape, application structs another, and the divergence surfaces at runtime (`column "..." does not exist`) instead of at build time.
 2. **SQL is a string.** A string is not checked by the compiler: a typo in a column name, a reference to a table absent from `FROM`, a `LEFT JOIN` column read as a non-nullable value — every one of them is a runtime error.
-3. **Types are lost at the boundary.** `SELECT` returns a tuple without names, `Option<T>` appears and disappears arbitrarily, and a `NULL` produced by an outer join arrives in a field declared as `T`.
+3. **Types are lost at the boundary.** Rows come back as tuples without names, and a `NULL` produced by an outer join arrives in a field declared as `f64`.
 
-RURQE formulates the answer as a single invariant: **if a query compiles, it is semantically correct for the target dialect and engine version**. An invalid query must not reach the database.
+RURQE answers with one invariant: **if a query compiles, it is semantically correct for the target dialect and engine version**.
+
+## What that looks like
+
+A report over two relations, written once and checked while it is built:
+
+```rust
+use rurqe::postgres::prelude::*;
+
+let feed = select_from(User)
+    .left_join_table(Order, OrderUserId.eq(UserId))
+    .select(select!(
+        user_id: UserId,
+        user_name: UserName,
+        total: OrderTotal,
+    ))
+    .order_by_desc(UserId)
+    .limit(20)
+    .fetch_all(&mut conn)?;
+
+for row in feed {
+    // `row.total` is `Option<f64>`: the LEFT JOIN lifted it, so a missing
+    // relation can never be decoded into a plain `f64`.
+}
+```
+
+No turbofish, no SQL literals, no manual mapping: the dialect is pinned by the prelude, the projection is named by `select!`, and the nullability of `row.total` follows from the join.
+
+The `User` and `Order` markers come from `table!` in tests and small projects, and from `cargo db-codegen` in a real one — in both cases they are zero-sized values, so passing `User` around costs nothing.
+
+A one-to-many relation is one statement as well — no N+1 queries and no Cartesian product folded by hand on the client:
+
+```rust
+let users_with_orders = select_from(User)
+    .select(select!(
+        user_id: UserId,
+        user_name: UserName,
+        orders: nest_many(
+            select_from(Order)
+                .select(select!(order_id: OrderId, total: OrderTotal))
+                .where_(OrderUserId.eq(UserId.without_scope()))
+        ),
+    ))
+    .fetch_all(&mut conn)?;
+```
+
+The engine aggregates the child rows into a JSON document and the client decodes it into a `Vec` whose element type is the nested `select!` record — see [Nested results](../features/nested.md).
 
 ## Five principles
 
-### 1. Code as SSOT (Single Source of Truth)
+### 1. Code as SSOT (single source of truth)
 
-The schema is extracted from the live database catalog (`pg_catalog`, `information_schema`, the SQLite `PRAGMA` tables) instead of being rewritten by hand. Zero-sized table and column markers, DTO structs, and the catalog snapshot `schema.lock` with its `SCHEMA_HASH` checksum are generated from it.
+The schema is extracted from the live database catalog (`pg_catalog`, `information_schema`, the SQLite `PRAGMA` tables) instead of being rewritten by hand. Zero-sized table and column markers, DTO structs, and the catalog snapshot `schema.lock` with its hash are generated from it, so a name in Rust and a name in the database cannot drift apart unnoticed.
 
-The same principle applies to the book you are reading: every statement about a compiler guarantee or a runtime behavior is backed by a concrete location in the code base or by an existing test. Documentation that describes a capability absent from the code is a defect, not a wording issue.
+The same principle governs this book: every claim about a compiler guarantee or a runtime behaviour is backed by a code location or an existing test.
 
-### 2. Zero Database Rejection
+### 2. Zero database rejection
 
-No syntactically or semantically invalid query may reach the database engine. The error is caught either by the compiler (Tier 1) or by a deterministic check performed while the query is built (Tier 2) — see [Two-Tier SQL Correctness](two_tier.md).
+No syntactically or semantically invalid query reaches the engine. The error is caught either by the compiler or by a deterministic check performed while the statement is assembled — see [Two-tier SQL correctness](two_tier.md).
 
-### 3. Native-or-Nothing
+### 3. Native-or-nothing
 
-A capability that cannot be expressed natively on the target engine is not emulated. `FOR UPDATE` on SQLite does not become "roughly the same thing": the method is simply absent from the dialect capability set (`SupportsRowLocking` is not implemented for `Sqlite`), and the code does not compile. `MERGE` follows the same policy: a synthetic emulation through `SELECT` + `INSERT/UPDATE` creates races and is forbidden.
+A capability the target engine cannot express natively is not emulated with client-side workarounds. `FOR UPDATE` on SQLite does not become "roughly the same thing": `.for_update()` simply does not exist there, and the code does not compile. `MERGE` follows the same policy — a synthetic `SELECT` + `INSERT/UPDATE` emulation creates races and is forbidden.
 
-### 4. Zero-Cost
+### 4. Zero-cost
 
-The dialect is a zero-sized phantom type parameter (`SelectQuery<Postgres<Pg16>, ...>`), table and column markers are ZSTs, and query rendering is a single pass over the recorded AST into a `String` plus a parameter vector. No virtual calls, no reflection, no GC.
+The dialect is a zero-sized type parameter, table and column markers are ZSTs, and rendering is a single pass over the recorded statement into a `String` plus a parameter vector. No virtual calls, no reflection, no GC.
 
 ### 5. KISS, YAGNI, DRY
 
-No "just in case" fields. Dead code is deleted immediately. Standard formats (TOML, JSON) and cryptography use mature crates rather than hand-written parsers; exceptions are stated explicitly and justified.
+No "just in case" fields, no dead code kept "for later". Standard formats and cryptography use mature crates rather than hand-written parsers; the few exceptions are stated and justified.
 
 ## What this gives in practice
 
-| Promise | Mechanism in the code |
+| Promise | How it feels |
 |---|---|
-| A column typo is a compile error | `Column`, `TableInScope`, `ExprInScope` |
-| A `NULL` from `LEFT JOIN` cannot be read as `T` | `TableNullabilityInScope`, `MakeNullable`, `ApplyNullability` |
-| An `UPDATE` without `WHERE` cannot run accidentally | the `ExecutableMutation` typestate, `.allow_all()` |
-| A construct the engine does not support does not compile | capability traits (`SupportsReturning`, `SupportsRowLocking`, ...) |
-| An ambiguous `JOIN` is rejected before reaching the database | `BuildError::DuplicateRelation` in `.build()` |
-| The schema does not diverge from the code | `cargo db-codegen`, `schema.lock`, `cargo db-verify` |
+| A column typo is a compile error | the message names the column and the SQL clause, never a trait cascade |
+| A `NULL` from a `LEFT JOIN` cannot be read as `f64` | `Option<T>` appears in the row type on its own |
+| An `UPDATE` without `WHERE` cannot run by accident | the statement does not build until `.where_(...)` or a deliberate `.allow_all()` |
+| A construct the engine lacks does not compile | on SQLite `.for_update()` is not a method at all |
+| An ambiguous `JOIN` never reaches the database | it is refused while building, and the colliding relation is named |
+| The schema never drifts from the code | `cargo db-codegen`, `schema.lock`, `cargo db-verify` |
 
 ## Where to go next
 
-- [The architectural tetrad](tetrad.md) — the four industrial ideas the project is built from.
-- [Two-Tier SQL Correctness](two_tier.md) — where exactly the boundary between the compiler and `.build()` runs.
-- [Quickstart in 5 minutes](quickstart.md) — the first working query.
-- [Relational theory overview](../theory/overview.md) — why all of this is called relational algebra in types.
+- [The architectural tetrad](tetrad.md) — the four industrial ideas the project is assembled from.
+- [Two-tier SQL correctness](two_tier.md) — which gate catches which rule.
+- [Quickstart in five minutes](quickstart.md) — the first working query.
+- [Relational theory overview](../theory/overview.md) — optional reading for the maths behind the types.
