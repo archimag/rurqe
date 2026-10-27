@@ -151,15 +151,24 @@ impl<'a> GoldenEquation<'a> {
 
         // The sandbox is discarded whether or not the replay succeeded: a script
         // that stopped halfway would otherwise leave the part it committed for
-        // the next side to build on.
+        // the next side to build on. A discard that fails in turn is folded into
+        // the replay diagnostic, because the scratch then stays behind and the
+        // next run meets it as an unrelated rejection of the same scratch URL.
         let discard = sandbox.discard();
 
         match (replay, discard) {
             (Ok(materialised), Ok(())) => Ok(materialised),
-            // The replay failed, so its diagnostic describes the real problem and
-            // the discard merely happened on the way out.
-            (Err(error), _) => Err(error),
+            // The replay succeeded, so the discard diagnostic describes the whole
+            // problem that is left.
             (Ok(_), Err(error)) => Err(error),
+            // The replay failed and the half-applied scratch that keeps what it
+            // committed resisted deletion as well, so both diagnostics reach the
+            // operator instead of the replay alone.
+            (Err(error), Err(discard)) => Err(error.with_discard_failure(discard)),
+            // The replay failed and the scratch is gone again, so its diagnostic
+            // describes the real problem and the discard merely happened on the
+            // way out.
+            (Err(error), Ok(())) => Err(error),
         }
     }
 
@@ -334,17 +343,26 @@ fn materialise(
         Err(error) => Err(error),
     };
 
-    // The sandbox is discarded whether or not the replay succeeded: a script that
-    // stopped halfway would otherwise leave the part it committed — a table, a
-    // header `PRAGMA`, a connection setting — for the next side to build on.
+        // The sandbox is discarded whether or not the replay succeeded: a script that
+        // stopped halfway would otherwise leave the part it committed — a table, a
+        // header `PRAGMA`, a connection setting — for the next side to build on. A
+        // discard that fails in turn is folded into the replay diagnostic, because
+        // the scratch then stays behind and the next run meets it as an unrelated
+        // rejection of the same scratch URL.
     let discard = sandbox.discard();
 
     match (replay, discard) {
         (Ok(materialised), Ok(())) => Ok(materialised),
-        // The replay failed, so its diagnostic describes the real problem and the
-        // discard merely happened on the way out.
-        (Err(error), _) => Err(error),
+        // The replay succeeded, so the discard diagnostic describes the whole problem
+        // that is left.
         (Ok(_), Err(error)) => Err(error),
+        // The replay failed and the half-applied scratch that keeps what it committed
+        // resisted deletion as well, so both diagnostics reach the operator instead of
+        // the replay alone.
+        (Err(error), Err(discard)) => Err(error.with_discard_failure(discard)),
+        // The replay failed and the scratch is gone again, so its diagnostic describes
+        // the real problem and the discard merely happened on the way out.
+        (Err(error), Ok(())) => Err(error),
     }
 }
 

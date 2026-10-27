@@ -37,7 +37,20 @@ pub enum StageError {
         actual: String,
     },
     /// Both sides of the equation describe different schemas.
+    /// Both sides of the equation describe different schemas.
     Diverged(Box<GoldenReport>),
+    /// A failed replay could not be discarded from the scratch database.
+    ///
+    /// The scratch keeps whatever the failed replay committed, so reporting the
+    /// replay alone hides the second failure: the leftover state stays behind and
+    /// every later verification pointed at the same `--scratch-url` rejects it as
+    /// dirty without ever naming the cause.
+    DiscardFailed {
+        /// The diagnostic of the replay that failed.
+        replay: Box<StageError>,
+        /// The diagnostic of the discard that failed.
+        discard: Box<StageError>,
+    },
 }
 
 impl fmt::Display for StageError {
@@ -73,6 +86,29 @@ impl fmt::Display for StageError {
                     "Hint: update `schema/` to match the replayed tail, or add the migration that closes the gap."
                 )
             }
+            StageError::DiscardFailed { replay, discard } => write!(
+                f,
+                "the scratch database could not be discarded after its replay failed, so it \
+                 still holds the statements that replay committed; remove the leftover scratch \
+                 database (or point `--scratch-url` at a fresh target) before the next \
+                 verification; replay failed: {replay}; discard failed: {discard}"
+            ),
+        }
+    }
+}
+
+impl StageError {
+    /// Folds the discard that failed after a replay into the replay diagnostic.
+    ///
+    /// The two failures belong together: the replay already failed, and the
+    /// scratch that keeps what it committed resisted deletion as well. Returning
+    /// the replay alone would strand that half-applied scratch silently, and the
+    /// operator would meet it later as an unrelated "not empty" rejection of the
+    /// very same `--scratch-url`.
+    pub(super) fn with_discard_failure(self, discard: StageError) -> StageError {
+        StageError::DiscardFailed {
+            replay: Box::new(self),
+            discard: Box::new(discard),
         }
     }
 }

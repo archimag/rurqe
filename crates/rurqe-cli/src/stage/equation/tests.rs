@@ -560,3 +560,151 @@ fn a_non_transactional_stage_script_is_materialised() {
     assert_eq!(catalog.tables.len(), 1);
     assert_eq!(catalog.tables[0].name, "users");
 }
+
+/// SQL whose first statement succeeds and whose second one always fails.
+#[cfg(unix)]
+const HALF_BROKEN: &str = "CREATE TABLE users (id INTEGER PRIMARY KEY);\n\
+                           CREATE TABLE users (id INTEGER PRIMARY KEY);";
+
+/// A file-backed scratch database the operating system refuses to remove.
+///
+/// Only a platform with Unix directory permissions can deny the removal of a file
+/// that stays readable and writable itself, so the scratch lives in a directory
+/// that lost the write permission its entries are removed through. The replay of
+/// [`HALF_BROKEN`] fails on its own, and the discard then cannot unlink the file
+/// that replay left behind: exactly the pair of failures a stranded scratch has to
+/// report.
+///
+/// A process that writes through a withdrawn permission — a superuser, and
+/// therefore a container running as root — cannot be made to hit the second
+/// failure, so [`new`](Self::new) reports it and the caller stands down instead of
+/// asserting on an unreachable branch.
+#[cfg(unix)]
+struct LockedScratch {
+    /// The directory holding the scratch database.
+    directory: std::path::PathBuf,
+    /// The database file the verification is pointed at.
+    path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl LockedScratch {
+    /// Creates the empty scratch database, or reports that it cannot be locked.
+    fn new(label: &str) -> Option<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut directory = std::env::temp_dir();
+        directory.push(format!("rurqe-locked-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).expect("create the scratch directory");
+
+        // Opening the file is what creates it, and a zero-length database is a
+        // valid empty one, so the verification still passes its emptiness gate.
+        let path = directory.join("scratch.db");
+        let created = rusqlite::Connection::open(&path).expect("create the empty scratch database");
+        drop(created);
+
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))
+            .expect("withdraw the write permission of the scratch directory");
+
+        let probe = directory.join(".permission-probe");
+        if std::fs::write(&probe, "probe").is_ok() {
+            let _ = std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::remove_dir_all(&directory);
+            return None;
+        }
+
+        Some(Self { directory, path })
+    }
+
+    /// The location of the scratch database, as the URL the verification opens.
+    fn location(&self) -> String {
+        self.path.to_string_lossy().into_owned()
+    }
+
+    /// Restores the directory and removes the scratch it held.
+    fn release(self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _ = std::fs::set_permissions(&self.directory, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stage_side_that_cannot_be_discarded_reports_both_failures() {
+    let scratch = match LockedScratch::new("discard-stage") {
+        Some(scratch) => scratch,
+        // A superuser writes through the withdrawn permission, so the discard
+        // cannot be made to fail and the regression stands down.
+        None => return,
+    };
+    let location = scratch.location();
+
+    let failing = stage(&[("users.sql", HALF_BROKEN)]);
+
+    let error = materialise_stage(&failing, &location, crate::introspect::DEFAULT_SCHEMA)
+        .expect_err("the stage cannot write into a scratch it cannot journal");
+
+    assert!(
+        matches!(error, StageError::DiscardFailed { .. }),
+        "the discard failure has to reach the caller, got {error:?}"
+    );
+
+    let message = error.to_string();
+    assert!(
+        message.contains("users.sql"),
+        "the replay cause is lost: {message}"
+    );
+    assert!(
+        message.contains("failed to delete"),
+        "the discard cause is lost: {message}"
+    );
+    assert!(
+        message.contains("scratch.db"),
+        "the leftover scratch path is lost: {message}"
+    );
+
+    scratch.release();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tail_side_that_cannot_be_discarded_reports_both_failures() {
+    let scratch = match LockedScratch::new("discard-tail") {
+        Some(scratch) => scratch,
+        // A superuser writes through the withdrawn permission, so the discard
+        // cannot be made to fail and the regression stands down.
+        None => return,
+    };
+    let location = scratch.location();
+
+    let declared = stage(&[("users.sql", USERS)]);
+    let broken_tail = tail(&[("V1__users.sql", HALF_BROKEN)]);
+
+    let error = GoldenEquation::new(&declared, &broken_tail)
+        .verify(&location)
+        .expect_err("the tail cannot write into a scratch it cannot journal");
+
+    assert!(
+        matches!(error, StageError::DiscardFailed { .. }),
+        "the discard failure has to reach the caller, got {error:?}"
+    );
+
+    let message = error.to_string();
+    assert!(
+        message.contains("V1__users.sql"),
+        "the replay cause is lost: {message}"
+    );
+    assert!(
+        message.contains("failed to delete"),
+        "the discard cause is lost: {message}"
+    );
+    assert!(
+        message.contains("scratch.db"),
+        "the leftover scratch path is lost: {message}"
+    );
+
+    scratch.release();
+}

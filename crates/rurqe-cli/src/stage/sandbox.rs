@@ -223,7 +223,8 @@ fn ensure_scratch_is_empty(
 
     Err(StageError::Sandbox {
         message: format!(
-            "the SQLite scratch database `{}` is not empty (it holds {}); point \
+            "the SQLite scratch database `{}` is not empty (it holds {}); a previous \
+             verification may have left those objects behind when it failed, so point \
              `--scratch-url` at a fresh file or at `:memory:`",
             redact_database_url(scratch_url),
             names.join(", ")
