@@ -1,8 +1,8 @@
-# Движки, capability-гейты и декодирование
+# Engines, capability gates, and decoding
 
 ## `SupportsJsonAggregation`
 
-Возможность вложенной проекции выражена маркерным трейтом в `crates/rurqe-core/src/dialect.rs`:
+The nested-projection capability is expressed by a marker trait in `crates/rurqe-core/src/dialect.rs`:
 
 ```rust
 #[diagnostic::on_unimplemented(
@@ -13,60 +13,60 @@
 pub trait SupportsJsonAggregation: Dialect {}
 ```
 
-Требование предъявляет сама проекция: `QueryD: SupportsJsonAggregation` в `SelectTargetInScope<Tables, At<0>, QueryD>` для `NestMany` и `NestOne`. Движок без этой возможности не получает SQL, который не сможет разобрать.
+The projection itself states the requirement: `QueryD: SupportsJsonAggregation` in `SelectTargetInScope<Tables, At<0>, QueryD>` for `NestMany` and `NestOne`. A dialect without this capability never receives SQL it cannot parse.
 
-## Форма рендеринга и версии
+## Rendering form and versions
 
-| Диалект | `SUPPORTS_JSONB_ROW_AGG` | Форма |
+| Dialect | `SUPPORTS_JSONB_ROW_AGG` | Form |
 |---|---|---|
 | `Postgres<V>` | `true` | `jsonb_agg(to_jsonb(...))` / `to_jsonb(...)` |
 | `Sqlite<Sqlite3_38>` | `false` | `json_group_array(json_object(...))` / `json_object(...)` |
 
-JSON-функции SQLite были опциональным расширением сборки до 3.38.0, поэтому маркер реализует `Sqlite<Sqlite3_38>`, а `Sqlite<Sqlite3_35>` его не реализует и вложенную проекцию не принимает. Базовое значение `Dialect::SUPPORTS_JSONB_ROW_AGG` равно `false`: нативную агрегацию строки диалект объявляет явно.
+The JSON functions of SQLite were an optional build extension before 3.38.0, so the marker is implemented for `Sqlite<Sqlite3_38>`, while `Sqlite<Sqlite3_35>` does not implement it and does not accept a nested projection. The default of `Dialect::SUPPORTS_JSONB_ROW_AGG` is `false`: a dialect declares native row aggregation explicitly.
 
-## Диалектная привязка
+## Dialect binding
 
 ```rust
 InnerD: Dialect + DialectInScope<QueryD>
 ```
 
-Вложенное утверждение принадлежит тому же диалекту, что и объемлющий запрос (либо диалект-нейтрально), поэтому коллекция PostgreSQL не вкладывается в утверждение SQLite.
+The nested statement belongs to the same dialect as the enclosing query (or is dialect-neutral), so a PostgreSQL collection is not nested into a SQLite statement.
 
-## Декодирование
+## Decoding
 
-PostgreSQL отдаёт документ вложенной строки как JSON-значение (`SqlVal::Json`), SQLite — как текст (`SqlVal::Text`). Обе формы принимает `json_object`; поля читает `nested_field`, декодируя каждое тем же контрактом `FromSqlValue`, что и колонку того же типа. Коллекция собирается через `SqlArrayElement`: `Vec<Row>` и `Option<Row>` декодируются из документа без ручного разбора JSON.
+PostgreSQL reports a nested row document as a JSON value (`SqlVal::Json`), while SQLite reports it as text (`SqlVal::Text`). `json_object` accepts both forms; `nested_field` reads the fields, decoding each one through the same `FromSqlValue` contract a column of the same type uses. The collection is assembled through `SqlArrayElement`: `Vec<Row>` and `Option<Row>` decode from the document without manual JSON parsing.
 
-| Тип значения | Представление в документе |
+| Value type | Representation in the document |
 |---|---|
-| `i32`, `i64` | число |
-| `f64` | число; `NaN` и бесконечности — `null` |
-| `bool` | булево |
-| `String` | строка |
-| `Vec<u8>` | канонический hex-текст, который `FromSqlValue for Vec<u8>` читает обратно |
-| `Decimal` (фича `decimal`) | число, если все цифры сохраняются, иначе текст |
-| `Uuid`, `NaiveDateTime`, `DateTime<Utc>`, `NaiveDate` | текст `Display`, который `FromSqlValue` парсит обратно |
-| вложенный JSON | как есть |
+| `i32`, `i64` | number |
+| `f64` | number; `NaN` and the infinities become `null` |
+| `bool` | boolean |
+| `String` | string |
+| `Vec<u8>` | canonical hex text that `FromSqlValue for Vec<u8>` reads back |
+| `Decimal` (feature `decimal`) | number, when every digit is preserved, otherwise text |
+| `Uuid`, `NaiveDateTime`, `DateTime<Utc>`, `NaiveDate` | `Display` text that `FromSqlValue` parses back |
+| nested JSON | as is |
 
-## Обратное направление
+## Reverse direction
 
-`multiset_object(&[(&str, SqlVal)])` собирает документ строки из значений полей, `sql_val_to_json` переводит SQL-значение в JSON. Этим документ строки привязывается параметром и читается обратно по тем же ключам.
+`multiset_object(&[(&str, SqlVal)])` assembles a row document from the values of its fields, and `sql_val_to_json` converts a SQL value into JSON. This is how a row document is bound as a parameter and read back through the same keys.
 
-## Фича `serde_json`
+## The `serde_json` feature
 
-Без фичи `serde_json` документа нет: `RowObject` вырождается в пустую структуру, `json_object` возвращает `RowDecodeError::InvalidValue` с деталью о недостающей фиче, `multiset_object` — `SqlVal::EncodingError`. Функции при этом остаются вызываемыми — именно это позволяет раскрытиям `dto!` и `select!` компилироваться в любой сборке, а причину сообщить в месте декодирования.
+Without the `serde_json` feature there is no document: `RowObject` collapses into an empty struct, `json_object` returns `RowDecodeError::InvalidValue` with a detail about the missing feature, and `multiset_object` returns `SqlVal::EncodingError`. The functions stay callable — that is what lets the `dto!` and `select!` expansions compile in any build, while the reason is reported at the decode site.
 
-## Итог требований
+## Requirement summary
 
-| Требование | Где проверяется |
+| Requirement | Checked in |
 |---|---|
-| Диалект вложенного запроса совпадает с диалектом запроса | `DialectInScope<QueryD>`, компиляция |
-| Диалект умеет JSON-агрегацию строки | `SupportsJsonAggregation`, компиляция |
-| Тип строки объявляет ключи документа | `MultisetRow::FIELDS`, компиляция |
-| Вложенный запрос проецирует строки | `HasProjection`, компиляция |
-| Параметры сырых фрагментов совпадают с плейсхолдерами | `RawSqlError`, рендеринг |
+| The dialect of the nested query matches the query dialect | `DialectInScope<QueryD>`, compilation |
+| The dialect can aggregate a row set into JSON | `SupportsJsonAggregation`, compilation |
+| The row type declares the document keys | `MultisetRow::FIELDS`, compilation |
+| The nested query projects rows | `HasProjection`, compilation |
+| Raw-fragment parameters match the placeholders | `RawSqlError`, rendering |
 
-## Связанные главы
+## Related chapters
 
-- [Вложенные результаты: nest_many и nest_one](nested.md)
-- [MULTISET: как вложенность превращается в SQL](multiset.md)
-- [JSON и вложенные коллекции (SQLite)](../dialects/sqlite/json.md)
+- [Nested results: nest_many and nest_one](nested.md)
+- [MULTISET: how nesting turns into SQL](multiset.md)
+- [JSON and nested collections (SQLite)](../dialects/sqlite/json.md)

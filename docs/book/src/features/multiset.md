@@ -1,8 +1,8 @@
-# MULTISET: как вложенность превращается в SQL
+# MULTISET: how nesting turns into SQL
 
-Вложенная проекция не склеивается на клиенте: она становится узлом AST, который рендерится одной JSON-агрегацией.
+A nested projection is not stitched together on the client: it becomes an AST node that renders as a single JSON aggregation.
 
-## Узел AST
+## AST node
 
 ```rust
 // crates/rurqe-core/src/nested.rs
@@ -20,19 +20,19 @@ where
 }
 ```
 
-Узел несёт три вещи: вложенное утверждение, ключи документа и признак «не более одной строки».
+The node carries three things: the nested statement, the document keys, and the "at most one row" flag.
 
-## Ключи документа
+## Document keys
 
-Рендерер (`crates/rurqe-core/src/expr/render/nested.rs`) присваивает вложенному утверждению `projection_aliases = Some(fields)`: каждое проецируемое выражение получает имя поля, которое оно питает. Поэтому документ строки несёт ровно те ключи, что объявляет `MultisetRow::FIELDS`, а клаузы вложенного запроса — фильтр, порядок, лимит — остаются в силе и определяют содержимое коллекции.
+The renderer (`crates/rurqe-core/src/expr/render/nested.rs`) assigns the nested statement `projection_aliases = Some(fields)`: every projected expression gets the name of the field it feeds. The row document therefore carries exactly the keys `MultisetRow::FIELDS` declares, while the clauses of the nested query — filter, ordering, limit — stay in force and decide the contents of the collection.
 
-## Две формы рендеринга
+## Two rendering forms
 
-Форму выбирает константа `Dialect::SUPPORTS_JSONB_ROW_AGG`. Обе формы дают один и тот же JSON-документ, поэтому клиент декодирует одно представление независимо от движка, который его произвёл.
+The form is chosen by the `Dialect::SUPPORTS_JSONB_ROW_AGG` constant. Both forms produce the same JSON document, so the client decodes one representation regardless of the engine that produced it.
 
-### PostgreSQL: нативная агрегация строки
+### PostgreSQL: native row aggregation
 
-`SUPPORTS_JSONB_ROW_AGG = true`, поэтому коллекция рендерится как `jsonb_agg(to_jsonb(...))`, а отсутствие строк заменяется пустым массивом:
+With `SUPPORTS_JSONB_ROW_AGG = true`, a collection renders as `jsonb_agg(to_jsonb(...))`, and an absence of rows is replaced with an empty array:
 
 ```sql
 COALESCE((SELECT jsonb_agg(to_jsonb("__rurqe_sub"))
@@ -40,9 +40,9 @@ COALESCE((SELECT jsonb_agg(to_jsonb("__rurqe_sub"))
                AS "__rurqe_sub"), '[]'::jsonb)
 ```
 
-### SQLite: объект по полям
+### SQLite: object per field
 
-Диалект без нативной агрегации строки собирает каждый объект через `json_object` поле за полем и склеивает объекты `json_group_array`; ключи пишутся строковыми литералами, а значения читаются через алиас `__rurqe_sub`:
+A dialect without native row aggregation assembles every object with `json_object` field by field and collects the objects with `json_group_array`; the keys are written as string literals and the values are read through the `__rurqe_sub` alias:
 
 ```sql
 COALESCE((SELECT json_group_array(json_object('order_id', "__rurqe_sub"."order_id",
@@ -51,9 +51,9 @@ COALESCE((SELECT json_group_array(json_object('order_id', "__rurqe_sub"."order_i
                AS "__rurqe_sub"), '[]')
 ```
 
-## `nest_one`: агрегат без `COALESCE` и лимит 1
+## `nest_one`: aggregate without `COALESCE` and a limit of 1
 
-Для одной строки форма отличается двумя деталями: агрегат не оборачивается в `COALESCE`, а лимит вложенного запроса становится `1` — либо лимитом компаундного запроса, если внутри есть `UNION`:
+For a single row the form differs in two details: the aggregate is not wrapped in `COALESCE`, and the limit of the nested query becomes `1` — either the limit of the compound statement, when a `UNION` is present:
 
 ```rust
 if single {
@@ -65,20 +65,20 @@ if single {
 }
 ```
 
-PostgreSQL: `(SELECT to_jsonb("__rurqe_sub") FROM (...) AS "__rurqe_sub")`. SQLite: `(SELECT json_object(...) FROM (...) AS "__rurqe_sub")`. Порядок и пагинация вложенного запроса решают, какая именно строка попадёт в `Option<Row>`, а отсутствие строки даёт `NULL` — то есть `None` при декодировании.
+PostgreSQL: `(SELECT to_jsonb("__rurqe_sub") FROM (...) AS "__rurqe_sub")`. SQLite: `(SELECT json_object(...) FROM (...) AS "__rurqe_sub")`. The ordering and pagination of the nested query decide which row reaches `Option<Row>`, while the absence of a row yields `NULL` — that is, `None` on decoding.
 
-## Сырые фрагменты и плейсхолдеры
+## Raw fragments and placeholders
 
-`render_multiset` возвращает `Result<(), RawSqlError>`: `sql!`-выражение внутри вложенного запроса может объявить число параметров, не совпадающее с фактическими фрагментами, и расхождение сообщается как `RawSqlError` вместо отправки SQL с потерянным или смещённым плейсхолдером.
+`render_multiset` returns `Result<(), RawSqlError>`: a `sql!` expression inside a nested query may declare a parameter count that disagrees with the actual fragments, and the disagreement is reported as `RawSqlError` instead of sending SQL with a lost or shifted placeholder.
 
-## Мультимножество, а не множество
+## A multiset, not a set
 
-- `Vec<Row>` сохраняет порядок, заданный `ORDER BY` вложенного запроса, и сохраняет дубликаты: SQL без `DISTINCT` их не удаляет.
-- `nest_one` возвращает `Option<Row>`: отсутствие ребёнка — это `None`, а не пустая коллекция.
-- `DISTINCT` и `DISTINCT ON` — отдельная операция над утверждением со своим тип-состоянием, а не свойство вложенной проекции.
+- `Vec<Row>` keeps the order set by the `ORDER BY` of the nested query and keeps duplicates: SQL without `DISTINCT` does not remove them.
+- `nest_one` returns `Option<Row>`: an absent child is `None`, not an empty collection.
+- `DISTINCT` and `DISTINCT ON` are a separate operation over a statement with its own typestate, not a property of a nested projection.
 
-## Связанные главы
+## Related chapters
 
-- [Вложенные результаты: nest_many и nest_one](nested.md)
-- [Движки, capability-гейты и декодирование](multiset_engines.md)
-- [NF² и MULTISET: вложенные отношения](../theory/nf2_multiset.md)
+- [Nested results: nest_many and nest_one](nested.md)
+- [Engines, capability gates, and decoding](multiset_engines.md)
+- [NF² and MULTISET: nested relations](../theory/nf2_multiset.md)

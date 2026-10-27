@@ -1,6 +1,6 @@
-# Вложенные результаты: `nest_many` и `nest_one`
+# Nested results: `nest_many` and `nest_one`
 
-Связь «один ко многим» в наивной реализации читается либо N+1 запросами (по одному на родителя), либо `JOIN` с декартовым произведением, который клиент вручную сворачивает в списки. RURQE читает такую связь одним утверждением: движок агрегирует строки детей каждого родителя в JSON-документ, а клиент декодирует документ в тип строки дочерней проекции — без дополнительных запросов и без склейки на стороне клиента.
+A one-to-many relation read naively costs either N+1 statements (one per parent) or a `JOIN` with a Cartesian product that the client folds into lists by hand. RURQE reads such a relation in a single statement: the engine aggregates the child rows of every parent into a JSON document, and the client decodes the document into the row type of the child projection — with no extra statements and no client-side stitching.
 
 ```rust
 // crates/rurqe-core/src/nested.rs
@@ -11,10 +11,10 @@ pub struct NestMany<Q>(pub Q); // RustType = Vec<Row>
 pub struct NestOne<Q>(pub Q);  // RustType = Option<Row>
 ```
 
-## Пример: пользователи со своими заказами
+## Example: users with their orders
 
 ```rust
-use rurqe::prelude::*;
+use rurqe::postgres::prelude::*;
 
 let report = select_from(Users)
     .select(select!(
@@ -29,18 +29,18 @@ let report = select_from(Users)
     .fetch_all(&mut conn)?;
 
 for row in report {
-    println!("{} — {} заказов", row.user_name, row.orders.len());
+    println!("{} — {} orders", row.user_name, row.orders.len());
     for order in row.orders {
-        println!("  #{} на {}", order.order_id, order.total);
+        println!("  #{} for {}", order.order_id, order.total);
     }
 }
 ```
 
-Внешняя проекция — `select!`, а не `dto!`: `nest_many(...)` это вычисляемая проекция, а `dto!` принимает только маркеры колонок и отвергает вычисляемое поле ошибкой расширения (`use `select!` for computed projections`). По той же причине и вложенная проекция описывается `select!` — именно её запись становится типом элемента коллекции.
+The outer projection is `select!`, not `dto!`: `nest_many(...)` is a computed projection, while `dto!` accepts only column markers and rejects a computed field with an expansion error (`use `select!` for computed projections`). For the same reason the nested projection is described with `select!` as well — its declaration becomes the element type of the collection.
 
-## Тип строки и позиция
+## Row type and position
 
-Проекция реализует `SelectTarget` (тип значения) и `SelectTargetInScope` (тип значения с учётом области видимости):
+The projection implements `SelectTarget` (the value type) and `SelectTargetInScope` (the value type together with its scope):
 
 ```rust
 impl<D, S, Row> SelectTarget for NestMany<SelectQuery<D, S, Row, HasProjection>>
@@ -68,27 +68,27 @@ where
 }
 ```
 
-Позиция `At<0>` зафиксирована: вложенная проекция читает из собственного утверждения и не ссылается на таблицы внешней области, поэтому выводить её позицию не из чего — фиксированная позиция делает маркер определённым, вместо того чтобы заставлять вывод выбирать одну из позиций области.
+The position is fixed at `At<0>`: a nested projection reads from its own statement and references no table of the enclosing scope, so there is nothing to infer the position from — a fixed position keeps the marker determined instead of leaving inference to pick one of the positions a scope may offer.
 
-## Корреляция с внешним запросом
+## Correlation with the outer query
 
-Вложенное утверждение — самостоятельный `SelectQuery`, и его типовая область видимости содержит только его собственный `FROM`. Колонка внешнего запроса попадает в предикат через `Expr::without_scope()`, который заменяет таблицы выражения маркером `Unscoped`: такое выражение принимается в любой области, потому что его таблицы проверяет объемлющее утверждение.
+A nested statement is a `SelectQuery` of its own, and its typed scope contains only its own `FROM`. A column of the outer query enters a predicate through `without_scope()`, which replaces the tables of the expression with the `Unscoped` marker: such an expression is accepted in any scope because its tables are checked by the enclosing statement.
 
 ```rust
 orders: nest_many(
     select_from(Orders)
         .select(select!(order_id: OrderId, total: OrderTotal))
-        .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
+        .where_(OrderUserId.eq(UserId.without_scope()))
 )
 ```
 
-## `nest_one`: отсутствие ребёнка как `None`
+## `nest_one`: an absent child as `None`
 
-`nest_one` отличается от `nest_many` только тем, что агрегация останавливается на первой строке: отсутствие ребёнка даёт `None`, а не пустой вектор, поэтому «нет значения» остаётся явным и не смешивается с «есть, но пусто».
+`nest_one` differs from `nest_many` only in that the aggregation stops at the first row: a missing child yields `None` rather than an empty vector, so "no value" stays explicit and is not mixed up with "present but empty".
 
-## Контракт типа строки
+## Row type contract
 
-Тип элемента объявляет, из каких ключей читается документ одной строки:
+The element type declares the keys its fields are read from for one row of the document:
 
 ```rust
 pub trait MultisetRow: SqlArrayElement + 'static {
@@ -97,18 +97,18 @@ pub trait MultisetRow: SqlArrayElement + 'static {
 }
 ```
 
-`select!` синтезирует запись вместе с реализациями `FromRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement` и `MultisetRow`; `FIELDS` — имена полей в порядке проекции, и те же имена становятся ключами JSON-документа (поле `r#type` пишется как `type`).
+`select!` synthesizes the record together with the `FromRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`, and `MultisetRow` implementations; `FIELDS` holds the field names in projection order, and the same names become the keys of the JSON document (the field `r#type` is written as `type`).
 
-`dto!` объявляет тот же набор контрактов (`MultisetRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`) с теми же ключами в порядке объявления, но проекций не порождает: DTO — это тип декодирования и вложенной строки, а не список проекций, поэтому строку проецирует `select!`, а DTO её читает.
+`dto!` declares the same set of contracts (`MultisetRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`) with the same keys in declaration order, but emits no projection: a DTO is a decoding type and a nested-row type, not a projection list, so `select!` projects a row while the DTO reads it.
 
 ## Compiler Guard in Action
 
-- **Нет нативной JSON-агрегации — нет проекции.** `QueryD: SupportsJsonAggregation` в `SelectTargetInScope` означает, что `nest_many` для `Sqlite<Sqlite3_35>` не компилируется: отказ приходит на этапе типов, а не из движка.
-- **Проекция без строк.** Вложенный запрос обязан быть в состоянии `HasProjection`; `nest_many(select_from(Orders))` без `.select(...)` вложить нельзя.
-- **Тип строки обязан объявить ключи.** `Row: MultisetRow` связывает документ с декларацией полей, поэтому произвольный тип элемента не подходит.
+- **No native JSON aggregation — no projection.** `QueryD: SupportsJsonAggregation` in `SelectTargetInScope` means `nest_many` does not compile for `Sqlite<Sqlite3_35>`: the rejection arrives at the type level, not from the engine.
+- **Projection without rows.** A nested statement must be in the `HasProjection` state; `nest_many(select_from(Orders))` without `.select(...)` cannot be nested.
+- **The row type must declare the keys.** `Row: MultisetRow` ties the document to the field declaration, so an arbitrary element type does not qualify.
 
-## Связанные главы
+## Related chapters
 
-- [MULTISET: как вложенность превращается в SQL](multiset.md)
-- [Движки, capability-гейты и декодирование](multiset_engines.md)
-- [NF² и MULTISET: вложенные отношения](../theory/nf2_multiset.md)
+- [MULTISET: how nesting turns into SQL](multiset.md)
+- [Engines, capability gates, and decoding](multiset_engines.md)
+- [NF² and MULTISET: nested relations](../theory/nf2_multiset.md)
