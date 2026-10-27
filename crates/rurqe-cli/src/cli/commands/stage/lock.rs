@@ -71,7 +71,7 @@ use fs4::fs_std::FileExt;
 
 use crate::cli::CliError;
 
-use super::super::{artifact_directory, write_file};
+use super::super::{artifact_directory, marker_stem, write_file};
 
 /// The suffix appended to the marker's stem to name its lock entry.
 const LOCK_SUFFIX: &str = ".lock";
@@ -422,13 +422,10 @@ fn is_contended(error: &std::io::Error) -> bool {
 /// guarded by `checkpoint.lock` — so two markers in one directory never share a
 /// lock.
 fn lock_path_of(checkpoint_path: &Path) -> PathBuf {
-    let stem = checkpoint_path
-        .file_stem()
-        .or_else(|| checkpoint_path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "checkpoint".to_owned());
-
-    artifact_directory(checkpoint_path).join(format!("{stem}{LOCK_SUFFIX}"))
+    artifact_directory(checkpoint_path).join(format!(
+        "{}{LOCK_SUFFIX}",
+        marker_stem(checkpoint_path)
+    ))
 }
 
 /// The owner-record sibling of the lock entry at `lock_path`.

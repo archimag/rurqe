@@ -47,10 +47,17 @@
 //! * marker — live `<dir>/checkpoint.toml`, staged
 //!   `<dir>/.checkpoint.toml.<pid>.<seq>.tmp`, parked
 //!   `<dir>/.checkpoint.toml.<pid>.<nonce>.previous`.
-//! * boundary — live `<dir>/checkpoint-stage`, staged
-//!   `<dir>/.checkpoint-stage.<pid>.<seq>.tmp`, parked
-//!   `<dir>/.checkpoint-stage.<pid>.<nonce>.previous`.
+//! * boundary — live `<dir>/<stem>-stage`, staged
+//!   `<dir>/.<stem>-stage.<pid>.<seq>.tmp`, parked
+//!   `<dir>/.<stem>-stage.<pid>.<nonce>.previous`.
 //!
+//! `<stem>` is the file stem of the marker, so the default `checkpoint.toml` keeps
+//! the `checkpoint-stage` directory it has always described, while any other marker
+//! describes a boundary of its own — `prod.toml` is guarded by `prod.lock` and
+//! snapshotted into `prod-stage`. The stem is derived once, by the single function
+//! both names are built from, so two markers in one directory never share a lock or
+//! a boundary: the isolation follows from the naming scheme instead of from a
+//! convention about one marker per directory.
 //! Two further artifacts take part in the same critical section without taking part
 //! in the swap:
 //!

@@ -11,6 +11,7 @@ use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::commands::artifact_directory;
 use crate::cli::commands::best_effort;
+use crate::cli::commands::marker_stem;
 use crate::cli::commands::sync_directory;
 use crate::cli::commands::temporary_sibling;
 use crate::cli::commands::write_file;
@@ -19,12 +20,20 @@ use crate::cli::CliError;
 use super::super::lock::WriterId;
 use super::park::{discard_parked, park, parked_sibling, restore};
 
-/// The directory holding the verbatim DDL of a committed stage boundary.
-const CHECKPOINT_STAGE_DIR: &str = "checkpoint-stage";
+/// The suffix the boundary directory of a marker carries after its stem.
+///
+/// The boundary is a sibling of the marker named after it, exactly as the lock
+/// entry is: `checkpoint.toml` describes `checkpoint-stage`, while any other
+/// marker describes a boundary of its own, so two markers in one directory
+/// never share the snapshot a commit installs.
+const BOUNDARY_SUFFIX: &str = "-stage";
 
 /// The directory the boundary snapshot of the marker at `checkpoint_path` lives in.
 pub(crate) fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
-    artifact_directory(checkpoint_path).join(CHECKPOINT_STAGE_DIR)
+    artifact_directory(checkpoint_path).join(format!(
+        "{}{BOUNDARY_SUFFIX}",
+        marker_stem(checkpoint_path)
+    ))
 }
 
 /// Installs the new boundary and marker as one commit, keeping the previous pair

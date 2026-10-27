@@ -31,8 +31,9 @@ use super::{
 /// Seals the live database as the new declarative stage anchor.
 ///
 /// The boundary is what the anchored tail replays over, so the declarative stage
-/// is snapshotted verbatim into the `checkpoint-stage/` directory next to the
-/// marker: the scripts keep their names and their comments, which is where the
+/// is snapshotted verbatim into the boundary directory beside the marker —
+/// `<stem>-stage/`, so `checkpoint.toml` keeps its `checkpoint-stage/` — and
+/// the scripts keep their names and their comments, which is where the
 /// replay re-reads their transactionality from. `schema` names the catalog the
 /// committed snapshot and the anchored hash describe, so a project keeping its
 /// relations outside `public` commits the digest of its own tables.

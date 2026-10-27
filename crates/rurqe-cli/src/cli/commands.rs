@@ -191,6 +191,21 @@ const TEMPORARY_SUFFIX: &str = ".tmp";
 /// wall-clock time a forward clock correction can inflate.
 pub(super) const STALE_TEMPORARY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// The stem every artifact of a checkpoint marker is named after.
+///
+/// The lock entry and the boundary snapshot are siblings of the marker named
+/// after it — `checkpoint.toml` is guarded by `checkpoint.lock` and describes
+/// the `checkpoint-stage` directory — so the stem is derived once here and
+/// reused by both naming rules, keeping the two paths from drifting apart in a
+/// later edit. A marker without an extension contributes its whole name, and a
+/// path without one falls back to the conventional `checkpoint`.
+pub(super) fn marker_stem(checkpoint_path: &Path) -> String {
+    checkpoint_path
+        .file_stem()
+        .or_else(|| checkpoint_path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "checkpoint".to_owned())
+}
 /// The directory an artifact and the staged siblings it is written through live in.
 pub(super) fn artifact_directory(path: &Path) -> &Path {
     path.parent()
