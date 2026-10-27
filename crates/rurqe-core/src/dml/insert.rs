@@ -1459,7 +1459,7 @@ mod tests {
         // engine would refuse the `INSERT ... SELECT` after it left the builder.
         let source = SelectQuery::<MockDialect>::new()
             .from::<ArchiveUser>()
-            .inner_join::<ArchiveUser, _, _>(Expr::column::<ArchiveId>().without_scope().eq(1i64))
+            .inner_join(ArchiveUser, Expr::column::<ArchiveId>().without_scope().eq(1i64))
             .select((Expr::count_all(),));
 
         let built = InsertQuery::<MockDialect, User>::new()
@@ -1478,7 +1478,7 @@ mod tests {
 
         let invalid = SelectQuery::<MockDialect>::new()
             .from::<ArchiveUser>()
-            .inner_join::<ArchiveUser, _, _>(Expr::column::<ArchiveId>().without_scope().eq(1i64))
+            .inner_join(ArchiveUser, Expr::column::<ArchiveId>().without_scope().eq(1i64))
             .select((Expr::count_all(),));
 
         let built = InsertQuery::<MockDialect, User>::new()

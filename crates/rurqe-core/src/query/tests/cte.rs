@@ -82,7 +82,8 @@ fn cte_binds_to_table_marker_and_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .with(summary_cte)
         .from::<User>()
-        .inner_join::<ActiveSummary, _, _>(
+        .inner_join(
+            ActiveSummary,
             Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()),
         )
         .select((UserId, UserName, SummaryTotal))

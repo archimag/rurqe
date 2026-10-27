@@ -306,7 +306,7 @@ fn outer_joins_lift_newtype_columns_into_options() {
         HasProjection,
     > = SelectQuery::<MockDialect>::new()
         .from::<Account>()
-        .left_join::<AccountAudit, _, _>(Expr::column::<AuditAccountId>().eq(UserId(7)))
+        .left_join(AccountAudit, Expr::column::<AuditAccountId>().eq(UserId(7)))
         .select((AccountId, AuditAccountId));
 
     let built = query.build().expect("valid query");

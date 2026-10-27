@@ -95,7 +95,7 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
     let selection = cols!(UserId, OrderId, OrderTotal);
 
     let built = select_from::<Postgres<Pg16>, User>()
-        .inner_join_table(Order, Expr::column::<OrderUserId>().eq(7i64))
+        .inner_join(Order, Expr::column::<OrderUserId>().eq(7i64))
         .select(cols!(UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
         .build()
@@ -123,7 +123,7 @@ fn inner_join_spans_multiple_tables_and_decodes_rows() {
 #[test]
 fn cross_join_renders_an_unconditional_cartesian_product() {
     let built = select_from::<Postgres<Pg16>, User>()
-        .cross_join_table(Order)
+        .cross_join(Order)
         .select((UserId, OrderId, OrderTotal))
         .where_(Expr::column::<UserActive>().eq(true))
         .build()
@@ -152,7 +152,7 @@ fn full_outer_join_lifts_both_sides_into_options() {
     type OptionalIds = (Option<i64>, Option<i64>);
 
     let query: Query<_, _, OptionalIds> = select_from::<Postgres<Pg16>, User>()
-        .full_outer_join_table(
+        .full_outer_join(
             Order,
             Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
         )
@@ -187,7 +187,7 @@ fn left_join_lifts_joined_columns_into_options() {
 
     let query = SelectQuery::<Postgres<Pg14>>::new()
         .from::<User>()
-        .left_join_table(Order, Expr::column::<OrderUserId>().eq(3i64));
+        .left_join(Order, Expr::column::<OrderUserId>().eq(3i64));
     let total = query.nullable::<OrderTotal>();
     let built = query.select((UserId, total)).build().expect("valid query");
 
@@ -283,7 +283,7 @@ fn aggregate_functions_cover_avg_min_and_max() {
 fn joined_aggregations_group_rows_by_the_joined_table() {
     let built = SelectQuery::<Postgres<Pg16>>::new()
         .from::<Order>()
-        .inner_join_table(User, Expr::column::<UserId>().eq(7i64))
+        .inner_join(User, Expr::column::<UserId>().eq(7i64))
         .group_by(UserName)
         .select((UserName,))
         .having(Expr::count_all().gt(1i64))
@@ -361,7 +361,7 @@ fn cte_subquery_composes_with_main_query_and_decodes_rows() {
 
     let built = select_from::<Postgres<Pg16>, User>()
         .with(summary_cte)
-        .inner_join_table(
+        .inner_join(
             UserSummary,
             Expr::column::<UserId>().eq(Expr::column::<SummaryUserId>()),
         )
@@ -713,7 +713,8 @@ fn latest_order_per_user() -> Query<Postgres<Pg16>, Order, (f64,)> {
 #[test]
 fn self_join_with_aliases_qualifies_repeated_table_references() {
     let built = select_from::<Postgres<Pg16>, User>()
-        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+        .inner_join(
+            Aliased::<User, ManagerAlias>::new(),
             Expr::column::<UserManagerId>().eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
         )
         .select((
@@ -986,7 +987,7 @@ mod value_based_dsl {
     #[test]
     fn joins_render_without_table_or_dialect_turbofish() {
         let built = select_from(User)
-            .inner_join_table(Order, OrderUserId.eq(Expr::column::<UserId>()))
+            .inner_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
             .select(cols!(UserId, UserName, OrderTotal))
             .where_(UserId.gt(10i64))
             .order_by_asc(UserId)
@@ -1007,7 +1008,7 @@ mod value_based_dsl {
     #[test]
     fn left_joined_columns_lift_into_options_without_explicit_markers() {
         let built = select_from(User)
-            .left_join_table(Order, OrderUserId.eq(Expr::column::<UserId>()))
+            .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
             .select(cols!(UserId, OrderTotal))
             .build()
             .expect("valid query");

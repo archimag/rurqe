@@ -143,7 +143,7 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     ///     // predicate qualifying a table the statement no longer declares.
     ///     let _ = SelectQuery::<MockDialect>::new()
     ///         .from_table(User)
-    ///         .inner_join_table(
+    ///         .inner_join(
     ///             Order,
     ///             Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
     ///         )

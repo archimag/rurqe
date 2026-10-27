@@ -112,7 +112,7 @@ fn a_compound_ordering_reads_the_output_columns_of_the_projection() {
     // error.
     let joined = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .inner_join::<Order, _, _>(Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+        .inner_join(Order, Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
         .select((UserId, OrderTotal));
 
     let plain = SelectQuery::<MockDialect>::new()

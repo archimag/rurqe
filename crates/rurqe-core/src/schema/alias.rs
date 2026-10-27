@@ -102,6 +102,23 @@ macro_rules! table_alias {
 /// ```
 pub struct Aliased<T, A>(PhantomData<fn() -> (T, A)>);
 
+impl<T: Table, A: TableAlias> Aliased<T, A> {
+    /// Creates the marker referencing `T` under the alias `A`.
+    ///
+    /// Both markers are zero-sized, so the constructor carries no data and the
+    /// value compiles away; it exists to hand the aliased table to the
+    /// value-based builders such as `SelectQuery::from_table` and
+    /// `SelectQuery::inner_join`.
+    pub fn new() -> Self {
+        Aliased(PhantomData)
+    }
+}
+
+impl<T: Table, A: TableAlias> Default for Aliased<T, A> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl<T: Table, A: TableAlias> Table for Aliased<T, A> {
     const NAME: &'static str = T::NAME;
 

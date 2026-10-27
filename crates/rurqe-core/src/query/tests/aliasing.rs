@@ -31,7 +31,8 @@ fn aliased_table_renders_as_clause_and_qualifies_columns() {
 fn aliased_table_participates_in_joins() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .inner_join::<Aliased<Order, OrderAlias>, _, _>(
+        .inner_join(
+            Aliased::<Order, OrderAlias>::new(),
             Expr::column::<UserId>().eq(Expr::column::<AliasedCol<OrderAlias, OrderUserId>>()),
         )
         .select((UserId, AliasedCol::<OrderAlias, OrderTotal>::new()))
@@ -50,7 +51,8 @@ fn aliased_table_participates_in_joins() {
 fn left_joined_aliased_table_lifts_columns_into_options() {
     let query = SelectQuery::<MockDialect>::new()
         .from::<User>()
-        .left_join::<Aliased<Order, OrderAlias>, _, _>(
+        .left_join(
+            Aliased::<Order, OrderAlias>::new(),
             Expr::column::<AliasedCol<OrderAlias, OrderUserId>>().eq(Expr::column::<UserId>()),
         );
     let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
@@ -68,7 +70,8 @@ fn left_joined_aliased_table_lifts_columns_into_options() {
 fn order_by_and_group_by_qualify_aliased_columns() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<Aliased<User, UserAlias>>()
-        .inner_join::<Aliased<User, ManagerAlias>, _, _>(
+        .inner_join(
+            Aliased::<User, ManagerAlias>::new(),
             Expr::column::<AliasedCol<UserAlias, UserId>>()
                 .eq(Expr::column::<AliasedCol<ManagerAlias, UserId>>()),
         )
@@ -101,7 +104,8 @@ fn unaliased_table_reference_ignores_a_preceding_aliased_instance_of_the_same_ta
     // because the aliased instance is encountered first.
     let built = SelectQuery::<MockDialect>::new()
         .from::<Aliased<User, ManagerAlias>>()
-        .inner_join::<User, _, _>(
+        .inner_join(
+            User,
             Expr::column::<AliasedCol<ManagerAlias, UserId>>().eq(Expr::column::<UserId>()),
         )
         .select((UserId,))
