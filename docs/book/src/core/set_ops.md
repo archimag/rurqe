@@ -1,0 +1,82 @@
+# Set operations
+
+`UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT` combine the rows of two statements. The operators live on a projected query and consume the other operand entirely.
+
+## The family
+
+| Method | SQL | Rows |
+|---|---|---|
+| `.union(other)` | `UNION` | the distinct rows of both |
+| `.union_all(other)` | `UNION ALL` | all rows of both, duplicates kept |
+| `.intersect(other)` | `INTERSECT` | the rows produced by both |
+| `.except(other)` | `EXCEPT` | the rows of this query absent from `other` |
+
+```rust
+pub fn union<Tables2: TableScope>(
+    self,
+    other: SelectQuery<D, Tables2, Output, HasProjection>,
+) -> SelectQuery<D, Compound, Output, HasProjection, SetOpApplied>;
+```
+
+The two statements must share the dialect `D` and the output type `Output` — the signature fixes both, so a combined statement keeps decoding its rows with the same `FromRow`.
+
+```rust
+use rurqe::postgres::prelude::*;
+
+let combined = select_from(Users)
+    .select(cols!(UserName))
+    .union_all(
+        select_from(ArchivedUsers)
+            .select(cols!(ArchivedUserName)),
+    )
+    .build()?;
+```
+
+```text
+(SELECT "name" FROM "users") UNION ALL (SELECT "name" FROM "archived_users")
+```
+
+## What the combination changes
+
+- The scope becomes `Compound`: the combined rows no longer belong to a table, so every table-qualified method — `.where_` over table columns, `.order_by` with columns, joins — no longer applies.
+- The projection is fixed by the first list: the query carries `SetOpApplied`, `ProjectionOpen` is not implemented for it, and `.select(...)` is unreachable.
+- A combined statement can neither keep the row-level lock of an operand nor accept a new one.
+- `limit` / `offset` apply to the combined rows.
+
+## Ordering the combined rows
+
+Ordering the combined statement goes through the output-oriented forms: `order_by_output*` addresses an output column by name, and `order_by_index*` addresses it by a 1-based position.
+
+```rust
+use rurqe::postgres::prelude::*;
+
+let page = select_from(Users)
+    .select(cols!(UserName))
+    .union_all(select_from(ArchivedUsers).select(cols!(ArchivedUserName)))
+    .order_by_output_asc(UserName)
+    .limit(50)
+    .build()?;
+```
+
+A criterion recorded **before** the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded **after** it applies to the combined rows. The first combined-row criterion moves the query into `TailClosed`, where `SetOperand` has no implementation: no operand can follow the ordering of the combined rows.
+
+## What `.build()` adds
+
+The rules that compare assembled clauses rather than types run pre-flight:
+
+- `BuildError::CompoundOrderIndex` — a 1-based position outside the projection list;
+- `BuildError::CompoundOrderColumn` — an output name the projection list does not produce;
+- `BuildError::SetOperandArity` — an operand disagreeing with the assembled clause; the type signature keeps it out of user code, and the rule guards ASTs assembled without it.
+
+## Where this lives in the code
+
+| Module | Contents |
+|---|---|
+| `rurqe-core/src/query/select/set_ops.rs` | the `union` / `union_all` / `intersect` / `except` builders |
+| `rurqe-core/src/query/select/ordering/compound.rs` | `order_by_output*` / `order_by_index*` |
+| `rurqe-core/src/query/validate.rs` | the compound ordering rules |
+
+## Related chapters
+
+- [Ordering and pagination](ordering.md) — the per-operand ordering.
+- [Projections and `SELECT`](select.md) — how the output columns are fixed.

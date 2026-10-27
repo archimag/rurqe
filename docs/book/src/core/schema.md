@@ -1,6 +1,6 @@
-# Схема: ZST-маркеры таблиц и колонок
+# Schema: ZST table and column markers
 
-Схема в RURQE — это набор **нулевого размера** типов. Таблица и колонка не несут данных: они несут имена, принадлежность и Rust-тип значения, и всё это известно компилятору.
+A schema in RURQE is a set of **zero-sized** types. A table and a column carry no data: they carry names, ownership, and the Rust type of the value — and all of it is known to the compiler.
 
 ## `table!`
 
@@ -8,7 +8,7 @@
 use rurqe::prelude::*;
 
 table! {
-    /// Таблица `users`.
+    /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
@@ -17,9 +17,9 @@ table! {
 }
 ```
 
-Макрос порождает для таблицы unit-структуру и по unit-структуре на колонку. Именно поэтому маркер можно использовать **как значение**: `UserId.eq(1i64)`, `users.name.eq(...)` в духе Kysely достигается тем, что имя unit-структуры в Rust одновременно является конструктором значения.
+The macro emits one unit struct for the table and one unit struct per column. That is exactly why a marker can be used **as a value**: `UserId.eq(1i64)`, and the Kysely-style `users.name.eq(...)` works because the name of a unit struct in Rust is at the same time the constructor of its value.
 
-## Контракты
+## Contracts
 
 ```rust
 pub trait Table {
@@ -39,13 +39,13 @@ pub trait Column {
 pub trait ColumnBelongsTo<T: Table> {}
 ```
 
-`Column::Table` — единственная связь колонки с отношением. Через неё работают все проверки области видимости, а `Column::RustType` — мост между SQL-типом хранения и типом значения: присваивания, сравнения и декодирование строки проверяются против него.
+`Column::Table` is the single link between a column and its relation. Every scope check works through it, and `Column::RustType` is the bridge between the SQL storage type and the value type: assignments, comparisons, and row decoding are all checked against it.
 
-`ColumnBelongsTo<T>` утверждает принадлежность статически и используется там, где колонок много сразу: список колонок `INSERT INTO ... SELECT`, цель `ON CONFLICT`, `RETURNING`.
+`ColumnBelongsTo<T>` asserts ownership statically and is used where many columns appear at once: the column list of an `INSERT INTO ... SELECT`, the target of an `ON CONFLICT`, `RETURNING`.
 
-## Rust-тип → SQL-тип
+## Rust type → SQL type
 
-Отображение зафиксировано в `SqlCastTarget` (`rurqe-core/src/expr/functions.rs`) — это ровно те имена, что попадают в `CAST(...)`:
+The mapping is fixed in `SqlCastTarget` (`rurqe-core/src/expr/functions.rs`) — these are exactly the names that land inside `CAST(...)`:
 
 | Rust | SQL |
 |---|---|
@@ -59,40 +59,40 @@ pub trait ColumnBelongsTo<T: Table> {}
 | `chrono::NaiveDateTime` / `DateTime<Utc>` / `NaiveDate` (feature `chrono`) | `TIMESTAMP` / `TIMESTAMPTZ` / `DATE` |
 | `rust_decimal::Decimal` (feature `decimal`) | `NUMERIC` |
 
-Плюс `Option<T>` — та же колонка, но допускающая `NULL`, и доменные newtype из `#[derive(SqlType)]`, форвардящие тип представления.
+Plus `Option<T>` — the same column, but one admitting `NULL` — and the domain newtypes from `#[derive(SqlType)]`, which forward their representation type.
 
-## Значение против типа
+## Value versus type
 
-Обе формы допустимы и дают один и тот же узел AST:
+Both forms are allowed and produce the same AST node:
 
 ```rust
-use rurqe::prelude::*;
+use rurqe::postgres::prelude::*;
 
-// Через маркер значения (трейт `Expression`).
+// Through the marker value (the `Expression` trait).
 let by_marker = select_from(Users)
     .select(cols!(UsersId))
     .where_(UsersId.eq(1i64));
 
-// Через явную колонку выражения.
+// Through an explicit expression column.
 let by_expr = select_from(Users)
     .select(cols!(UsersId))
     .where_(Expr::column::<UsersId>().eq(1i64));
 ```
 
-Оба запроса рендерятся одинаково:
+Both queries render the same:
 
 ```text
 SELECT "id" FROM "users" WHERE ("id" = $1)
 ```
 
-> **Compiler Guard in Action.** `Column` — unit-структура, поэтому `UsersId.eq(1i64)` не требует ни `Expr::column`, ни turbofish. Методы сравнения приходят из трейта `Expression`, методы `like`/`ilike` — из `StringExpression` (только для `Column<RustType = String>`), то есть `UsersId.like("%a%")` не компилируется.
+> **Compiler Guard in Action.** `Column` is a unit struct, so `UsersId.eq(1i64)` needs neither `Expr::column` nor a turbofish. The comparison methods come from the `Expression` trait, and `like`/`ilike` come from `StringExpression` (only for `Column<RustType = String>`), so `UsersId.like("%a%")` does not compile.
 
-## Кодогенерация вместо ручного `table!`
+## Code generation instead of a hand-written `table!`
 
-В реальном проекте маркеры не пишут руками: `cargo db-codegen` интроспектирует живой каталог базы и генерирует `schema.rs` с теми же unit-структурами, константой `SCHEMA_HASH` и DTO-структурами. Снимок каталога фиксируется в `schema.lock`, а `cargo db-verify` в CI проверяет, что код, миграции и база не разошлись. Ручной `table!` остаётся для тестов и небольших проектов — все примеры этой книги используют именно его.
+In a real project the markers are not written by hand: `cargo db-codegen` introspects the live database catalog and generates a `schema.rs` with the same unit structs, the `SCHEMA_HASH` constant, and DTO structs. The catalog snapshot is fixed in `schema.lock`, and `cargo db-verify` in CI checks that the code, the migrations, and the database have not drifted apart. A hand-written `table!` remains the tool for tests and small projects — every example in this book uses it.
 
-## Связанные главы
+## Related chapters
 
-- [Области видимости: TableScope и ExprScope](../theory/scopes.md) — как маркеры попадают в область запроса.
-- [Алиасы](aliasing.md) — `Aliased<T, A>` и `AliasedCol<A, C>`.
-- [Nullability](../theory/nullability.md) — почему колонка внешнего соединения меняет Rust-тип.
+- [Scopes: `TableScope` and `ExprScope`](../theory/scopes.md) — how the markers enter a query's scope.
+- [Aliases](aliasing.md) — `Aliased<T, A>` and `AliasedCol<A, C>`.
+- [Nullability](../theory/nullability.md) — why the column of an outer join changes its Rust type.

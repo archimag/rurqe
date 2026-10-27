@@ -1,16 +1,16 @@
-# Предикаты и `WHERE`
+# Predicates and `WHERE`
 
-Селекция σ — подмножество кортежей, удовлетворяющих предикату. Предикат в RURQE имеет тип `Expr<bool, Scope, Marker, D>`:
+Selection σ is the subset of tuples satisfying a predicate. A predicate in RURQE has the type `Expr<bool, Scope, Marker, D>`:
 
-- `Scope` — таблицы, которые он читает;
-- `Marker` — агрегирует ли он строки (`Aggregate`) или вычисляется на строку (`NonAggregate`);
-- `D` — требования к диалекту, унаследованные от операндов.
+- `Scope` — the tables it reads;
+- `Marker` — whether it aggregates rows (`Aggregate`) or is computed per row (`NonAggregate`);
+- `D` — the dialect requirements inherited from its operands.
 
-## Операторы
+## Operators
 
-| Метод | SQL | Где объявлен |
+| Method | SQL | Declared in |
 |---|---|---|
-| `.eq(v)`, `.ne(v)`, `.gt(v)`, `.lt(v)` | `=`, `<>`, `>`, `<` | `Expression` (колонки) и `Expr` |
+| `.eq(v)`, `.ne(v)`, `.gt(v)`, `.lt(v)` | `=`, `<>`, `>`, `<` | `Expression` (columns) and `Expr` |
 | `.between(low, high)` | `BETWEEN ... AND ...` | `Expression`, `Expr` |
 | `.in_list(values)` / `.not_in_list(values)` | `IN (...)` / `NOT IN (...)` | `Expression`, `Expr` |
 | `.is_null()` / `.is_not_null()` | `IS NULL` / `IS NOT NULL` | `Expr` |
@@ -18,7 +18,7 @@
 | `.in_subquery(q)` / `.not_in_subquery(q)` | `IN (SELECT ...)` | `Expr` |
 | `.and(p)` / `.or(p)` | `AND` / `OR` | `Expr<bool, _>` |
 
-Скалярные сравнения — только `eq`/`ne`/`gt`/`lt`; `gte`/`lte` есть у кортежных сравнений (`RowExpr`, см. [Сортировка и пагинация](ordering.md)).
+Scalar comparisons cover only `eq`/`ne`/`gt`/`lt`; `gte`/`lte` exist on tuple comparisons (`RowExpr`, see [Ordering and pagination](ordering.md)).
 
 ```rust
 use rurqe::prelude::*;
@@ -34,9 +34,11 @@ let built = select_from::<Postgres, User>()
 SELECT "name" FROM "users" WHERE ("id" = $1)
 ```
 
-## Повторный `where_` складывается через `AND`
+## A repeated `where_` folds with `AND`
 
 ```rust
+use rurqe::prelude::*;
+
 let built = update::<Postgres, User>()
     .set(UserName::set("dave"))
     .where_(UserId.gt(1i64))
@@ -49,47 +51,49 @@ let built = update::<Postgres, User>()
 UPDATE "users" SET "name" = $1 WHERE (("id" > $2) AND ("active" = $3))
 ```
 
-Порядок параметров соответствует порядку появления: сначала значения `SET`, затем предикаты.
+The parameter order follows the order of appearance: first the `SET` values, then the predicates.
 
-## Динамические предикаты
+## Dynamic predicates
 
-Запросы собираются и в рантайме, но без потери тип-состояний:
+Queries are also assembled at runtime, without losing typestates:
 
-| Метод | Что делает |
+| Method | What it does |
 |---|---|
-| `.where_opt(Option<Expr<bool, ..>>)` | записывает предикат, если он есть |
-| `.when(cond, \|q\| q.where_(...))` | применяет замыкание при истинном условии |
-| `.if_some(value, \|q, v\| q.where_(...))` | применяет замыкание при `Some`, передавая значение |
+| `.where_opt(Option<Expr<bool, ..>>)` | records the predicate when it is present |
+| `.when(cond, \|q\| q.where_(...))` | applies the closure when the condition is true |
+| `.if_some(value, \|q, v\| q.where_(...))` | applies the closure on `Some`, passing the value |
 
 ```rust
+use rurqe::postgres::prelude::*;
+
 let filtered = select_from(Users)
     .select(cols!(UsersId, UsersName))
-    .when(only_active, |q| q.where_(IsActive.eq(true)))
+    .when(only_active, |q| q.where_(UsersActive.eq(true)))
     .if_some(search_term, |q, term| q.where_(UsersName.ilike(format!("%{term}%"))))
     .build()?;
 ```
 
-Замыкание обязано вернуть **тот же** тип запроса — оно ограничено `impl FnOnce(Self) -> Self`. Клауза, меняющая тип (проекция, соединение, блокировка), внутрь `when`/`if_some` не помещается; для этого есть отдельные формы (`where_if`, `where_opt_or_all` у мутаций).
+The closure must return the **same** query type — it is bounded by `impl FnOnce(Self) -> Self`. A clause that changes the type (a projection, a join, a lock) does not fit inside `when`/`if_some`; separate forms exist for that (`where_if`, `where_opt_or_all` on mutations).
 
-## Пустой список `IN`
+## An empty `IN` list
 
-`x IN ()` — синтаксическая ошибка во всех диалектах, поэтому пустая проверка на членство вырождается в константу: `IN []` рендерится как `1 = 0`, `NOT IN []` — как `1 = 1`.
+`x IN ()` is a syntax error in every dialect, so an empty membership test degenerates into a constant: `IN []` renders as `1 = 0`, and `NOT IN []` as `1 = 1`.
 
-## Что проверяет компилятор
+## What the compiler checks
 
-1. **Тип предиката.** `.where_(...)` принимает только `Expr<bool, ..>`.
-2. **Область видимости.** Каждая таблица предиката обязана присутствовать в `FROM`/`JOIN` (`ExprInScope`, `ScopePositions`). Сравнение колонок двух несоединённых отношений отвергается в точке вызова.
-3. **Требования диалекта.** `PredD: DialectInScope<D>` — предикат с диалектной операцией не помещается в запрос другого диалекта.
-4. **Свёртка агрегатов.** Маркер сравнения вычисляется из обоих операндов: `sum(x).gt(0.0)` остаётся агрегатом, `sum(x).gt(col)` становится построчным.
+1. **The predicate type.** `.where_(...)` accepts only `Expr<bool, ..>`.
+2. **The scope.** Every table of the predicate must be present in `FROM`/`JOIN` (`ExprInScope`, `ScopePositions`). Comparing columns of two unjoined relations is rejected at the call site.
+3. **Dialect requirements.** `PredD: DialectInScope<D>` — a predicate carrying a dialect operation does not fit into a query of another dialect.
+4. **Aggregate folding.** The comparison marker is computed from both operands: `sum(x).gt(0.0)` stays an aggregate, and `sum(x).gt(col)` becomes per-row.
 
-> **Compiler Guard in Action.** `WHERE ("total" > (SELECT AVG("total") FROM "orders"))` получается из `Expr::column::<OrderTotal>().gt(average)`, где `average` — одноколоночный `SelectQuery`. Скалярный подзапрос подставляется без `.into()`; многоколоночный отвергается, потому что `IntoExpr<T>` реализован только для проекции `(T,)`.
+> **Compiler Guard in Action.** `WHERE ("total" > (SELECT AVG("total") FROM "orders"))` is produced from `Expr::column::<OrderTotal>().gt(average)`, where `average` is a single-column `SelectQuery`. A scalar subquery slots in without `.into()`; a multi-column one is rejected, because `IntoExpr<T>` is implemented only for a `(T,)` projection.
 
-## Что добирает `.build()`
+## What `.build()` adds
 
-Предикат — выражение оператора, поэтому предполётно проверяются вложенные в него операторы (структурные правила), разрешимость квалификаторов (`BuildError::UnresolvedQualifier`) и размещение агрегатов: агрегат в `WHERE` — это `BuildError::AggregateInRowClause` с указанием клаузы `RowClause::Where`.
+A predicate is an operator expression, so the operators nested inside it are checked pre-flight (the structural rules), the resolvability of qualifiers (`BuildError::UnresolvedQualifier`), and the placement of aggregates: an aggregate inside `WHERE` is a `BuildError::AggregateInRowClause` naming the clause `RowClause::Where`.
 
-## Связанные главы
+## Related chapters
 
-- [Подзапросы](subqueries.md) — `EXISTS`, `IN`, скалярные подзапросы.
-- [Сортировка и пагинация](ordering.md) — кортежные сравнения и keyset-курсоры.
-- [DML](dml.md) — те же предикаты в `WHERE` мутаций, плюс `where_if` / `where_opt_or_all`.
+- [Subqueries](subqueries.md) — `EXISTS`, `IN`, scalar subqueries.
+- [Ordering and pagination](ordering.md) — tuple comparisons and keyset cursors.
+- [DML](dml.md) — the same predicates in the `WHERE` of mutations, plus `where_if` / `where_opt_or_all`.

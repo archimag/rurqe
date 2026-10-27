@@ -1,19 +1,19 @@
-# Проекции и `SELECT`
+# Projections and `SELECT`
 
-Проекция — реляционный оператор π: выбор подмножества атрибутов с сохранением порядка. В RURQE она записывается в AST на месте вызова и фиксирует **тип строки** запроса.
+A projection is the relational operator π: selecting a subset of the attributes while preserving their order. In RURQE it is recorded into the AST at the call site and fixes the **row type** of the query.
 
-## `.select(...)` и тип строки
+## `.select(...)` and the row type
 
 ```rust
 pub trait SelectTarget {
     type RustType;
-    fn push_column_name(&self, out: &mut Vec<&'static str>) { /* по умолчанию ничего */ }
+    fn push_column_name(&self, out: &mut Vec<&'static str>) { /* nothing by default */ }
     fn to_expr_kind(&self) -> ExprKind;
 }
 
 pub trait Selection {
     type Row;
-    fn push_column_names(&self, out: &mut Vec<&'static str>) { /* по умолчанию ничего */ }
+    fn push_column_names(&self, out: &mut Vec<&'static str>) { /* nothing by default */ }
     fn push_projections(&self, out: &mut Vec<ExprKind>);
 }
 
@@ -22,7 +22,7 @@ pub trait SelectionFor<Tables, Positions, D = ()>: Selection {
 }
 ```
 
-`SelectionFor::Row` вычисляет тип строки с учётом области видимости: колонка `LEFT JOIN`-нутой таблицы приедет как `Option<T>` (см. [Nullability](../theory/nullability.md)).
+`SelectionFor::Row` computes the row type with the scope taken into account: a column of a `LEFT JOIN`-ed table arrives as `Option<T>` (see [Nullability](../theory/nullability.md)).
 
 ```rust
 use rurqe::prelude::*;
@@ -37,23 +37,23 @@ let built = select_from::<Postgres, User>()
 SELECT "id", "name", "active" FROM "users"
 ```
 
-Кортежные селекции реализованы для арности 1..=8 (`impl_selection!` в `query/selection.rs`).
+Tuple selections are implemented for arities 1..=8 (`impl_selection!` in `query/selection.rs`).
 
-## Четыре формы проекции
+## The four projection forms
 
-| Форма | Тип строки | Пример |
+| Form | Row type | Example |
 |---|---|---|
-| кортеж | позиционный кортеж | `.select((UserId, UserName))` |
-| `cols!` | позиционный кортеж, с алиасами | `.select(cols!(UserId, UserName as contact_email))` |
-| `select!` | анонимная структура с именованными полями | `.select(select!(UserId, UserName as contact_email))` |
-| `dto!` | именованная структура только для декодирования | `dto! { pub struct UserSummary { UserId, UserName as contact_email } }` |
+| tuple | positional tuple | `.select((UserId, UserName))` |
+| `cols!` | positional tuple, with aliases | `.select(cols!(UserId, UserName as contact_email))` |
+| `select!` | anonymous struct with named fields | `.select(select!(UserId, UserName as contact_email))` |
+| `dto!` | named struct, decoding only | `dto! { pub struct UserSummary { UserId, UserName as contact_email } }` |
 
-## `select!`: именованные проекции
+## `select!`: named projections
 
-`select!` синтезирует на месте вызова анонимную запись `__RurqeRecord` и селекцию `__RurqeSelection`, которая рендерит каждый элемент через `SelectTarget` и оборачивает его в `ExprKind::Aliased` под **имя поля**. Поэтому выходные колонки запроса — это ключи, по которым декодируется запись, и они остаются достижимыми, если запрос вложить как производную таблицу или CTE.
+`select!` synthesizes, at the call site, an anonymous `__RurqeRecord` record and a `__RurqeSelection` selection, which renders every element through `SelectTarget` and wraps it into an `ExprKind::Aliased` under the **field name**. The output columns of the query are therefore the keys the record is decoded by, and they stay reachable when the query is nested as a derived table or a CTE.
 
 ```rust
-use rurqe::prelude::*;
+use rurqe::postgres::prelude::*;
 
 let built = select!(UserId, UserName as contact_email)
     .from(User)
@@ -66,7 +66,7 @@ let built = select!(UserId, UserName as contact_email)
 SELECT "id" AS "user_id", "name" AS "contact_email" FROM "users" WHERE ("id" > $1)
 ```
 
-Порождённая запись реализует `FromRow`, так что строка декодируется в поля по имени, а не по индексу:
+The generated record implements `FromRow`, so a row is decoded into its fields by name, not by index:
 
 ```rust
 let row = UserSummary::from_row(&[
@@ -79,17 +79,17 @@ assert_eq!(row.user_id, 7);
 assert_eq!(row.contact_email, "root");
 ```
 
-Та же запись описывает строку вложенной коллекции: реализуются `ToSqlVal`, `FromSqlValue`, `SqlArrayElement` и `MultisetRow` с константой `FIELDS`, поэтому `select!`-проекция читается как `Vec<...>` из `nest_many` (см. [NF² и MULTISET](../theory/nf2_multiset.md)).
+The same record describes the row of a nested collection: `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`, and `MultisetRow` are implemented with the `FIELDS` constant, so a `select!` projection is read as a `Vec<...>` out of `nest_many` (see [NF² and MULTISET](../theory/nf2_multiset.md)).
 
-`select!`-селекция — это `TableSelection<T>` **только** если все её элементы являются колонками таблицы `T`: каждый элемент утверждает `ColumnBelongsTo<T>`, а список с вычисляемым элементом не порождает реализацию вовсе. Именно поэтому `RETURNING` принимает `select!` из колонок и отвергает `select!(UserId, doubled: Expr::count_all())`.
+A `select!` selection is a `TableSelection<T>` **only** when all of its elements are columns of the table `T`: every element asserts `ColumnBelongsTo<T>`, and a list with a computed element produces no implementation at all. That is why `RETURNING` accepts a `select!` of columns and rejects `select!(UserId, doubled: Expr::count_all())`.
 
-## `dto!`: структура для границы функций
+## `dto!`: a struct for function boundaries
 
 ```rust
 use rurqe::prelude::*;
 
 dto! {
-    /// Проекция пользователя, возвращаемая из репозитория.
+    /// A user projection returned from a repository.
     pub struct UserSummary {
         UserId,
         UserName as contact_email,
@@ -98,13 +98,13 @@ dto! {
 }
 ```
 
-`dto!` порождает `pub struct` с полями, типы которых выведены из `<Column as Column>::RustType` (не нужно повторять типы), и реализует `FromRow`, `MultisetRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`. Ключи JSON-документа — имена полей в порядке объявления.
+`dto!` emits a `pub struct` whose field types are inferred from `<Column as Column>::RustType` (no need to repeat the types) and implements `FromRow`, `MultisetRow`, `ToSqlVal`, `FromSqlValue`, `SqlArrayElement`. The keys of the JSON document are the field names in declaration order.
 
-`dto!` **не** является проекцией: поля обязаны быть маркерами колонок (вычисляемое поле отвергается с ошибкой расширения), и никакой проекционной поверхности (`Selection`, `push_projections`) он не порождает. Запрос проецирует `select!` с теми же именами полей, а `dto!` декодирует полученную строку.
+`dto!` is **not** a projection: its fields must be column markers (a computed field is rejected with an expansion error), and it produces no projection surface (`Selection`, `push_projections`) at all. The query projects a `select!` with the same field names, and the `dto!` decodes the resulting row.
 
-## Явный nullable-маркер
+## The explicit nullable marker
 
-Иногда nullable-форма нужна без внешнего соединения — например, чтобы согласовать форму проекции с уже посчитанным результатом:
+Sometimes the nullable form is needed without an outer join — for example, to align the projection shape with an already computed result:
 
 ```rust
 impl<C: Column> Column for Nullable<C> {
@@ -115,20 +115,20 @@ impl<C: Column> Column for Nullable<C> {
 }
 ```
 
-Доступно как `Nullable::<C>::new()` и как метод запроса `query.nullable::<C>()`: это тот же столбец, но в типе значения на один слой `Option` больше. Двойного `Option<Option<T>>` не бывает — `MakeNullable for Option<T>` возвращает `Option<T>`.
+Available as `Nullable::<C>::new()` and as the query method `query.nullable::<C>()`: it is the same column, but with one more layer of `Option` in the value type. A double `Option<Option<T>>` never happens — `MakeNullable for Option<T>` returns `Option<T>`.
 
-## Инварианты
+## Invariants
 
-- **Проекция записывается один раз.** После `UNION`/`INTERSECT`/`EXCEPT` выходные колонки зафиксированы первым списком проекций, поэтому `ProjectionOpen` для такого запроса не реализован и `.select(...)` недостижим.
-- **`SELECT` без проекции не рендерится.** `.build()` требует `ProjectionPresent`.
-- **Пустая проекция отклоняется предполётно.** Ручная реализация `Selection`, записывающая пустой список, даёт `BuildError::EmptyProjection` вместо `SELECT  FROM "users"`.
-- **Проекция проверяется по области.** Колонка таблицы, которой нет в `FROM`/`JOIN`, отвергается в точке вызова через `SelectTargetInScope`.
+- **The projection is recorded once.** After `UNION`/`INTERSECT`/`EXCEPT` the output columns are fixed by the first projection list, so `ProjectionOpen` is not implemented for such a query and `.select(...)` is unreachable.
+- **A `SELECT` without a projection does not render.** `.build()` requires `ProjectionPresent`.
+- **An empty projection is rejected pre-flight.** A manual `Selection` implementation recording an empty list yields `BuildError::EmptyProjection` instead of `SELECT  FROM "users"`.
+- **The projection is checked against the scope.** A column of a table absent from `FROM`/`JOIN` is rejected at the call site through `SelectTargetInScope`.
 
-> **Compiler Guard in Action.** `Selection::push_projections` не имеет тела по умолчанию: реализация обязана перечислить элементы, иначе запрос отрендерил бы `SELECT  FROM ...`.
+> **Compiler Guard in Action.** `Selection::push_projections` has no default body: an implementation must enumerate the elements, otherwise the query would render `SELECT  FROM ...`.
 
-## Связанные главы
+## Related chapters
 
-- [Предикаты и `WHERE`](filtering.md)
-- [Сортировка и пагинация](ordering.md)
-- [`GROUP BY` и `HAVING`](group_by.md) — те же проекции под правилом группировки.
-- [Алиасы](aliasing.md)
+- [Predicates and `WHERE`](filtering.md)
+- [Ordering and pagination](ordering.md)
+- [`GROUP BY` and `HAVING`](group_by.md) — the same projections under the grouping rule.
+- [Aliases](aliasing.md)

@@ -1,6 +1,6 @@
-# `GROUP BY` и `HAVING`
+# `GROUP BY` and `HAVING`
 
-Группировка γ сворачивает строки в группы. `.group_by(...)` доступен только на запросе без проекции и без блокировки и переводит его в **другой тип** — `GroupedQuery`:
+The grouping γ folds rows into groups. `.group_by(...)` is available only on a query without a projection and without a lock, and moves it into a **different type** — `GroupedQuery`:
 
 ```rust
 pub struct GroupedQuery<
@@ -12,7 +12,7 @@ pub struct GroupedQuery<
 > { /* ... */ }
 ```
 
-Смысл перехода: правило «колонка либо сгруппирована, либо агрегирована» требует знания группировки, а после `.select(...)` набор проекций уже зафиксирован и проверить его было бы нечем.
+The meaning of the transition: the rule "a column is either grouped or aggregated" requires knowledge of the grouping, and after `.select(...)` the set of projections is already fixed, so there would be nothing to check it against.
 
 ```rust
 use rurqe::prelude::*;
@@ -28,32 +28,34 @@ let built = select_from::<Postgres, Order>()
 SELECT "user_id", SUM("total") FROM "orders" GROUP BY "user_id"
 ```
 
-Группировать можно одну колонку или кортеж: `.group_by((UsersId, UsersName))`.
+A single column or a tuple can be grouped: `.group_by((UsersId, UsersName))`.
 
-## Что можно проецировать
+## What can be projected
 
-`GroupedSelectTarget<GroupByCols, P, D>` реализован ровно для четырёх случаев:
+`GroupedSelectTarget<GroupByCols, P, D>` is implemented for exactly four cases:
 
-| Проекция | Условие |
+| Projection | Condition |
 |---|---|
-| колонка | она входит в `GROUP BY` (`ColumnInGroupBy`) |
-| агрегат `Expr<T, Scope, Marker, ..>` | `Marker: AggregateMarker` |
-| константное выражение `Expr<T, (), NonAggregate, ..>` | не читает ни одной таблицы |
-| оконное выражение | колонки окна сгруппированы, операнд агрегирует строки или константен |
+| a column | it is part of `GROUP BY` (`ColumnInGroupBy`) |
+| an aggregate `Expr<T, Scope, Marker, ..>` | `Marker: AggregateMarker` |
+| a constant expression `Expr<T, (), NonAggregate, ..>` | reads no table |
+| a window expression | the window columns are grouped, and the operand aggregates rows or is constant |
 
-Проекция негруппированной колонки отвергается в точке вызова, а `select!`-селекция получает ту же проверку через `GroupedSelection`.
+Projecting an ungrouped column is rejected at the call site, and a `select!` selection receives the same check through `GroupedSelection`.
 
-`schema`-escape hatch `Expr::column::<C>()` правило не обходит: выражение, читающее колонку, сохраняет область этой колонки. `without_scope()` тоже не помогает — он подставляет маркер `Unscoped`, а не пустую область, поэтому выражение не становится константой.
+The `schema` escape hatch `Expr::column::<C>()` does not bypass the rule: an expression reading a column keeps that column's scope. `without_scope()` does not help either — it substitutes the `Unscoped` marker, not an empty scope, so the expression does not become a constant.
 
-## Свёртка агрегатов в скалярных функциях
+## Aggregate folding in scalar functions
 
-`coalesce`, `nullif`, `greatest`, `least` и `CASE` пробрасывают маркер агрегата через `FunctionOperand` / `CombineAggr`, поэтому `coalesce(sum(orders.total), 0.0)` остаётся агрегатом и проецируется из `GroupedQuery`. Ветка `CASE`, читающая голую колонку, делает выражение построчным, и группировка его отвергает.
+`coalesce`, `nullif`, `greatest`, `least`, and `CASE` propagate the aggregate marker through `FunctionOperand` / `CombineAggr`, so `coalesce(sum(orders.total), 0.0)` stays an aggregate and projects from a `GroupedQuery`. A `CASE` branch reading a bare column makes the expression per-row, and the grouping rejects it.
 
 ## `HAVING`
 
-`HAVING` фильтрует уже посчитанные группы, поэтому пишется по агрегату:
+`HAVING` filters the already computed groups, so it is written over an aggregate:
 
 ```rust
+use rurqe::prelude::*;
+
 let built = select_from::<Postgres<Pg16>, Order>()
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
@@ -66,14 +68,16 @@ let built = select_from::<Postgres<Pg16>, Order>()
 SELECT "user_id", COUNT(*) FROM "orders" GROUP BY "user_id" HAVING (SUM("total") > $1)
 ```
 
-Допустимы два вида предиката (`HavingPredicate`):
+Two kinds of predicate are allowed (`HavingPredicate`):
 
-- агрегатный (`Marker: AggregateMarker`) — как выше;
-- константный в пределах группы (`Expr<bool, (), NonAggregate, ..>`) — например `sql!`-фрагмент, сравнивающий два агрегата.
+- an aggregate one (`Marker: AggregateMarker`) — as above;
+- a constant within the group (`Expr<bool, (), NonAggregate, ..>`) — for example a `sql!` fragment comparing two aggregates.
 
-Предикат, читающий голую колонку, отвергается: группировка отбросила построчное значение. Для сравнения **сгруппированной** колонки есть отдельная форма:
+A predicate reading a bare column is rejected: the grouping has discarded the per-row value. A separate form exists for comparing a **grouped** column:
 
 ```rust
+use rurqe::postgres::prelude::*;
+
 let filtered = select_from(Orders)
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
@@ -81,17 +85,19 @@ let filtered = select_from(Orders)
     .build()?;
 ```
 
-`having` доступен только на `GroupedQuery` — у обычного `SelectQuery` клаузы `HAVING` нет.
+`having` is available only on a `GroupedQuery` — a plain `SelectQuery` has no `HAVING` clause.
 
-## Сортировка и пагинация групп
+## Ordering and paginating groups
 
-| Метод | Что сортирует |
+| Method | What it orders |
 |---|---|
-| `order_by` / `order_by_asc` / `order_by_desc` / `order_by_nulls` | сгруппированную колонку (проверяется `ColumnInGroupBy`) |
-| `order_by_expr` / `order_by_expr_asc` / `order_by_expr_desc` / `order_by_expr_*_nulls_*` | агрегат (`Marker: AggregateMarker`) |
-| `limit` / `offset` | число групп |
+| `order_by` / `order_by_asc` / `order_by_desc` / `order_by_nulls` | a grouped column (checked by `ColumnInGroupBy`) |
+| `order_by_expr` / `order_by_expr_asc` / `order_by_expr_desc` / `order_by_expr_*_nulls_*` | an aggregate (`Marker: AggregateMarker`) |
+| `limit` / `offset` | the number of groups |
 
 ```rust
+use rurqe::postgres::prelude::*;
+
 let top = select_from(Orders)
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
@@ -100,22 +106,22 @@ let top = select_from(Orders)
     .build()?;
 ```
 
-## Завершение группированного запроса
+## Finishing a grouped query
 
-- `.build()` — только после `.select(...)` (`ProjectionPresent`);
-- `.as_cte::<T>()` и `.as_table::<T>()` — вложить агрегированный запрос как CTE или производную таблицу;
-- дополнительная группировка `.group_by(...)` возможна только до проекции.
+- `.build()` — only after `.select(...)` (`ProjectionPresent`);
+- `.as_cte::<T>()` and `.as_table::<T>()` — nest the aggregated query as a CTE or a derived table;
+- a further `.group_by(...)` is possible only before the projection.
 
-Сгруппированный запрос не блокируется: `GroupedQuery` не предоставляет `for_update`/`for_share`, потому что PostgreSQL не блокирует строки оператора, выдающего одну строку на группу.
+A grouped query is not locked: `GroupedQuery` provides no `for_update`/`for_share`, because PostgreSQL does not lock the rows of a statement that yields one row per group.
 
-## Что добирает `.build()`
+## What `.build()` adds
 
-Остаточные случаи, которые нельзя выразить положительным утверждением в типах: `BuildError::UngroupedColumn`, `UngroupedHavingColumn`, `UngroupedColumnWithAggregate`.
+The residual cases that cannot be expressed as a positive assertion in types: `BuildError::UngroupedColumn`, `UngroupedHavingColumn`, `UngroupedColumnWithAggregate`.
 
-> **Compiler Guard in Action.** `OrderTotal` не входит в `GROUP BY` и не агрегирован — `select((OrderUserId, OrderTotal))` не компилируется с сообщением о том, что колонка «neither grouped nor an aggregate».
+> **Compiler Guard in Action.** `OrderTotal` is not part of `GROUP BY` and is not aggregated — `select((OrderUserId, OrderTotal))` does not compile, with a message saying the column is "neither grouped nor an aggregate".
 
-## Связанные главы
+## Related chapters
 
-- [Оконные функции](window.md) — окно поверх групп.
-- [Проекции и `SELECT`](select.md)
-- [NF² и MULTISET](../theory/nf2_multiset.md) — агрегированный подзапрос как производная таблица.
+- [Window functions](window.md) — a window over groups.
+- [Projections and `SELECT`](select.md)
+- [NF² and MULTISET](../theory/nf2_multiset.md) — an aggregated subquery as a derived table.

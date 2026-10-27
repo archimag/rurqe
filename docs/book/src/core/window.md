@@ -1,12 +1,12 @@
-# Оконные функции
+# Window functions
 
-Оконное выражение вычисляется движком с клаузой `OVER (...)`. В RURQE каждое окно несёт три вещи, проверяемые компилятором:
+A window expression is computed by the engine with an `OVER (...)` clause. In RURQE every window carries three things the compiler checks:
 
-- `Scope` — таблицы, которые читают выражение и его спецификация;
-- `Cols` — типовой набор колонок, которые окно читает (по нему `GROUP BY` проверяет окно);
-- `D` — требования к диалекту (включая `NULLS FIRST/LAST` в `ORDER BY` окна).
+- `Scope` — the tables the expression and its specification read;
+- `Cols` — the type-level set of columns the window reads (`GROUP BY` checks the window through it);
+- `D` — the dialect requirements (including `NULLS FIRST/LAST` inside the window's `ORDER BY`).
 
-## Спецификация
+## The specification
 
 ```rust
 impl Window {
@@ -22,11 +22,11 @@ impl Window {
 }
 ```
 
-`WindowSpec` расширяется теми же методами (`partition_by`, `order_by*`, `rows_between`, `range_between`), каждый вызов сливает области, наборы колонок и требования диалекта.
+`WindowSpec` is extended by the same methods (`partition_by`, `order_by*`, `rows_between`, `range_between`); every call merges the scopes, the column sets, and the dialect requirements.
 
-## Функции
+## Functions
 
-| Функция | Тип результата |
+| Function | Result type |
 |---|---|
 | `row_number()` | `i64` |
 | `rank()` | `i64` |
@@ -34,19 +34,19 @@ impl Window {
 | `lag(col)` | `Option<col::RustType>` |
 | `lead(col)` | `Option<col::RustType>` |
 
-`LAG`/`LEAD` принимают `.offset(n)`; без него смещение по умолчанию равно 1. Нулевой маркер операнда у окон без операнда — `Aggregate` (идентичность свёртки маркеров), колонка `lag`/`lead` попадает в набор `Cols`.
+`LAG`/`LEAD` take an `.offset(n)`; without it the offset defaults to 1. The zero-marker of a window without an operand is `Aggregate` (the identity of the marker fold), and the `lag`/`lead` column lands in the `Cols` set.
 
-Окно получается вызовом `.over(spec)`:
+The window is obtained by calling `.over(spec)`:
 
 ```rust
 pub fn over<WinScope, WinCols, WinD>(self, window: WindowSpec<WinScope, WinCols, WinD>)
     -> WindowExpr<T, WinScope, WinCols, WinD, /* operand markers */>;
 ```
 
-## Пример
+## Example
 
 ```rust
-use rurqe::prelude::*;
+use rurqe::postgres::prelude::*;
 
 let ranked = select_from(Employees)
     .select((
@@ -60,9 +60,11 @@ let ranked = select_from(Employees)
 SELECT "id", ROW_NUMBER() OVER (PARTITION BY "department_id" ORDER BY "salary" DESC) FROM "employees"
 ```
 
-Окно поверх групп:
+A window over groups:
 
 ```rust
+use rurqe::postgres::prelude::*;
+
 let aggregated = select_from(Orders)
     .group_by(OrderUserId)
     .select((
@@ -77,7 +79,7 @@ let aggregated = select_from(Orders)
 SELECT "user_id", SUM("user_id") OVER (PARTITION BY "user_id") FROM "orders" GROUP BY "user_id"
 ```
 
-## Рамки окна
+## Window frames
 
 ```rust
 pub enum WindowFrameKind { Rows, Range }
@@ -91,9 +93,11 @@ pub enum WindowFrameBound {
 }
 ```
 
-`WindowFrameBound::preceding(n)` / `::following(n)` — конструкторы, остальное — варианты перечисления.
+`WindowFrameBound::preceding(n)` / `::following(n)` are constructors; the rest are enum variants.
 
 ```rust
+use rurqe::postgres::prelude::*;
+
 let moving = select_from(Orders)
     .select((
         OrderId,
@@ -107,11 +111,11 @@ let moving = select_from(Orders)
     .build()?;
 ```
 
-`ROWS` считает границы в физических строках, `RANGE` — в значениях колонки сортировки (устойчивее при совпадающих метках времени). `GROUPS` не реализован: он не поддерживается SQLite и покрывается `ROWS`/`RANGE`.
+`ROWS` counts the bounds in physical rows, `RANGE` — in values of the ordering column (steadier with coinciding timestamps). `GROUPS` is not implemented: it is not supported by SQLite and is covered by `ROWS`/`RANGE`.
 
-## Инварианты
+## Invariants
 
-1. **Capability.** Оператор, проецирующий окно, компилируется только если диалект реализует `SupportsWindowFunctions`.
-2. **Область.** `PARTITION BY`, `ORDER BY` окна и колонка `lag`/`lead` обязаны принадлежать таблицам запроса — иначе ошибка в точке вызова.
-3. **`NULLS FIRST/LAST` внутри окна** требует `SupportsNullsOrdering`; требование едет вместе с оконным выражением до оператора.
-4. **Группировка.** Колонки окна проверяются через `WindowColsInGroupBy`, а операнд — через маркер агрегата: `SUM(
+1. **Capability.** A statement projecting a window compiles only if the dialect implements `SupportsWindowFunctions`.
+2. **Scope.** The `PARTITION BY`, the window's `ORDER BY`, and the `lag`/`lead` column must belong to the query's tables — otherwise the error lands at the call site.
+3. **`NULLS FIRST/LAST` inside a window** requires `SupportsNullsOrdering`; the requirement travels with the window expression up to the statement.
+4. **Grouping.** The window columns are checked through `WindowColsInGroupBy`, and the operand through the aggregate marker: `SUM("user_id")` folds one value per group, so a window over an aggregate stays projectable from a `GroupedQuery` — the example above.
