@@ -4,33 +4,36 @@
 
 - [Philosophy of RURQE](intro/philosophy.md)
 - [The architectural tetrad](intro/tetrad.md)
-- [Two-Tier SQL Correctness](intro/two_tier.md)
+- [Two-tier SQL correctness](intro/two_tier.md)
 - [Quickstart in five minutes](intro/quickstart.md)
 
-# Part II. Relational theory in Rust types
+# Part II. Ergonomics and Kysely DX
 
-- [Part overview](theory/overview.md)
-- [From Codd's relational algebra to the Rust type system](theory/codd_to_rust.md)
-- [Scopes: `TableScope` and `ExprScope`](theory/scopes.md)
-- [Nullability: outer joins as a type change](theory/nullability.md)
-- [Disjointness: unique relation names](theory/disjointness.md)
-- [NF² and MULTISET: nested relations](theory/nf2_multiset.md)
-
-# Part III. The portable SQL core
-
-- [The portable SQL core](core/overview.md)
-- [Schema: ZST markers](core/schema.md)
+- [Everyday queries: the portable core](core/overview.md)
+- [Schema: tables and columns](core/schema.md)
 - [Projections and `SELECT`](core/select.md)
 - [Predicates and `WHERE`](core/filtering.md)
 - [Ordering and pagination](core/ordering.md)
-- [`GROUP BY` and `HAVING`](core/group_by.md)
-- [Window functions](core/window.md)
+- [DML: `INSERT`, `UPDATE`, `DELETE`](core/dml.md)
+- [Nested results: `nest_many` and `nest_one`](features/nested.md)
+- [MULTISET: how nesting becomes SQL](features/multiset.md)
+- [Engines, capability gates, and decoding](features/multiset_engines.md)
+- [NF² and MULTISET: nested relations](theory/nf2_multiset.md)
+
+# Part III. Relational power
+
 - [Joins](core/joins.md)
 - [Aliases](core/aliasing.md)
 - [Subqueries](core/subqueries.md)
 - [Common table expressions (`WITH`)](core/cte.md)
+- [`GROUP BY` and `HAVING`](core/group_by.md)
+- [Window functions](core/window.md)
 - [Set operations](core/set_ops.md)
-- [DML: `INSERT`, `UPDATE`, `DELETE`](core/dml.md)
+- [Relational theory: an overview](theory/overview.md)
+- [From Codd's relational algebra to the Rust type system](theory/codd_to_rust.md)
+- [Scopes: `TableScope` and `ExprScope`](theory/scopes.md)
+- [Nullability: outer joins as a type change](theory/nullability.md)
+- [Disjointness: unique relation names](theory/disjointness.md)
 
 # Part IV. Dialects
 
@@ -59,15 +62,13 @@
   - [JSON and nested collections](dialects/sqlite/json.md)
   - [Enums through CHECK](dialects/sqlite/enums.md)
   - [The rusqlite driver](dialects/sqlite/driver.md)
-- [Migration concurrency](dialects/sqlite/concurrency.md)
+- [Runtime: overview](runtime/overview.md)
+  - [Transactions and savepoints](runtime/transactions.md)
+  - [Connection pools](runtime/pools.md)
+  - [Ecosystem types, values, and decoding](runtime/types.md)
+  - [Custom types](runtime/custom_types.md)
 
-# Part V. Nested results and MULTISET (NF²)
-
-- [Nested results: `nest_many` and `nest_one`](features/nested.md)
-- [MULTISET: how nesting becomes SQL](features/multiset.md)
-- [Engines, capability gates, and decoding](features/multiset_engines.md)
-
-# Part VI. Schema evolution and migrations
+# Part V. Lifecycle and migrations
 
 - [Schema evolution: overview](migrations/overview.md)
 - [The crisis of traditional migrations in the AI era](migrations/problem.md)
@@ -77,16 +78,9 @@
 - [The Golden Equation](migrations/golden_equation.md)
 - [Safe history pruning](migrations/pruning.md)
 - [The checkpoint protocol](migrations/checkpoint_protocol.md)
+- [Migration concurrency](dialects/sqlite/concurrency.md)
 
-# Part VII. Runtime and types
-
-- [Runtime: overview](runtime/overview.md)
-- [Transactions and savepoints](runtime/transactions.md)
-- [Connection pools](runtime/pools.md)
-- [Ecosystem types, values, and decoding](runtime/types.md)
-- [Custom types](runtime/custom_types.md)
-
-# Part VIII. The `rurqe` toolchain
+# Part VI. The `rurqe` toolchain
 
 - [The `rurqe` toolchain](toolchain/overview.md)
 
