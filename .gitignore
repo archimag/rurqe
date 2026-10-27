@@ -1,13 +1,36 @@
 /target
 
 # Runtime artifacts of the stage lifecycle. `stage commit`, `stage verify`, and
-# `prune` write the advisory-lock entry, the boundary snapshot, and the staged /
-# parked staging siblings beside the marker, and the lock entry is deliberately
-# never removed, so none of them may enter version control.
+# `prune` write the advisory-lock entry together with its owner record, the
+# boundary snapshot, and the staged and parked siblings of both beside the marker
+# they guard, and the lock entry and its record are deliberately never removed,
+# so none of them may enter version control.
+#
+# Every name is derived from three coordinates — the marker that guards the
+# artifact, the writer that created it, and the per-process nonce that keeps a
+# recycled process id (or a second host sharing the id) from being read as the
+# same writer — by the naming rules in `crates/rurqe-cli/src/cli/commands` and
+# `crates/rurqe-cli/src/cli/commands/stage/swap`. A marker `checkpoint.toml` is
+# guarded by `checkpoint.lock`, whose owner record is `checkpoint.lock.record`,
+# and is snapshotted into the `<stem>-stage/` directory beside it. A staged
+# sibling is `.{basename}.{pid}.{nonce}.{sequence}.tmp` and a parked copy is
+# `.{basename}.{pid}.{nonce}.previous`, so the patterns below pin all three
+# fields instead of letting one wildcard swallow the writer scope.
+#
+# The boundary pattern is anchored to the `-stage` suffix every boundary
+# directory carries after the stem of its marker, so it describes the snapshot
+# of whatever marker a project keeps — `checkpoint.toml` keeps
+# `checkpoint-stage/`, `prod.toml` keeps `prod-stage/` — and it matches at any
+# depth, because the marker may sit in a subdirectory such as `migrations/`.
+# The remaining patterns name the artifacts of the conventional `checkpoint.toml`
+# marker: a project that points the toolchain at a differently named marker
+# ignores its artefacts by adding that stem alongside them.
+*-stage/
 checkpoint.lock
-checkpoint-stage/
-.checkpoint.toml.*.tmp
-.checkpoint-stage.*.tmp
-.schema.lock.*.tmp
-.checkpoint.toml.*.previous
-.checkpoint-stage.*.previous
+checkpoint.lock.record
+.checkpoint.toml.*.*.*.tmp
+.checkpoint-stage.*.*.*.tmp
+.checkpoint.lock.record.*.*.*.tmp
+.schema.lock.*.*.*.tmp
+.checkpoint.toml.*.*.previous
+.checkpoint-stage.*.*.previous

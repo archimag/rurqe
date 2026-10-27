@@ -217,6 +217,13 @@ pub(super) fn artifact_directory(path: &Path) -> &Path {
 }
 
 /// The prefix every staged sibling of `artifact` starts with.
+///
+/// The staged-name grammar has exactly one home: the branch below names the
+/// prefix, [`temporary_sibling`] appends the writer scope and the sequence to
+/// it, and [`staged_owner`] strips the very same prefix before it reads those
+/// fields back. The sweep, the staging gate, and the lock refusal therefore
+/// decide on one grammar, so construction cannot drift from parsing in a later
+/// edit and a name one of them accepts is never a name another one refuses.
 fn temporary_prefix(artifact: &Path) -> String {
     let name = artifact
         .file_name()
