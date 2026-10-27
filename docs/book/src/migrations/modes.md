@@ -1,61 +1,61 @@
-# Два режима и критерии выбора
+# Two modes and how to choose
 
-У обеих моделей один и тот же раннер, одна таблица истории и один формат контрольной суммы. Отличается только источник истины и способ инициализации.
+Both models share the same runner, the same history table and the same checksum format. Only the source of truth and the initialisation path differ.
 
-## Общая часть
+## The shared part
 
-| Что | Общее для режимов |
+| What | Shared across modes |
 |---|---|
-| Раннер | `Migrator` (`migrate`, `status`, `repair`, `baseline`) |
-| Таблица истории | `__rurqe_schema_history` |
-| Формат имён | `V<version>__<description>.sql`, `R__<description>.sql` |
-| Контрольная сумма | SHA-256 содержимого скрипта |
-| Транзакционность | имя `*.notx.sql` или директива в комментарии |
-| Блокировка прогона | `LockGuard` → `MigrationBackend::acquire_lock` |
-| Продвижение живой базы | `cargo db-migrate up` (или `cargo rurqe migrate up`) |
+| Runner | `Migrator` (`migrate`, `status`, `repair`, `baseline`) |
+| History table | `__rurqe_schema_history` |
+| Naming format | `V<version>__<description>.sql`, `R__<description>.sql` |
+| Checksum | SHA-256 of the script contents |
+| Transactionality | the `*.notx.sql` name or a directive in a comment |
+| Run lock | `LockGuard` → `MigrationBackend::acquire_lock` |
+| Advancing a live database | `cargo db-migrate up` (or `cargo rurqe migrate up`) |
 
-Различия начинаются там, где у проекта появляется декларативный `schema/` и маркер `checkpoint.toml`.
+The differences start where a project acquires a declarative `schema/` and a `checkpoint.toml` marker.
 
-## Сравнение
+## Comparison
 
-| Аспект | Традиционный | Stage + Tail |
+| Aspect | Traditional | Stage + Tail |
 |---|---|---|
-| Каталоги | `migrations/` | `schema/` + `migrations/` + `schema.lock` + `checkpoint.toml` + `<stem>-stage/` |
-| Инициализация чистой базы | `migrate up` применяет всё | `stage init --version X` → `cold_start` |
-| Мгновенность инициализации | O(число миграций) | O(текущая схема) |
-| Источник истины | порядок скриптов | содержимое `schema/` |
-| Контроль расхождения | `db-verify` против `schema.lock` | `stage verify` (Golden Equation) |
-| Сокращение истории | `baseline` (сквош) | `prune --before` |
-| Защита старой базы | нет | `Checkpoint::validate_history` (`OutdatedCheckpoint`) |
-| Артефакты в git | `migrations/*.sql` | `schema/*.sql`, `migrations/*.sql`, `schema.lock`, `checkpoint.toml`, `<stem>-stage/*.sql` |
+| Directories | `migrations/` | `schema/` + `migrations/` + `schema.lock` + `checkpoint.toml` + `<stem>-stage/` |
+| Initialising a clean database | `migrate up` applies everything | `stage init --version X` → `cold_start` |
+| Initialisation cost | O(number of migrations) | O(current schema) |
+| Source of truth | script order | contents of `schema/` |
+| Divergence control | `db-verify` against `schema.lock` | `stage verify` (Golden Equation) |
+| Shortening the history | `baseline` (squash) | `prune --before` |
+| Protection of an old database | none | `Checkpoint::validate_history` (`OutdatedCheckpoint`) |
+| Artifacts in git | `migrations/*.sql` | `schema/*.sql`, `migrations/*.sql`, `schema.lock`, `checkpoint.toml`, `<stem>-stage/*.sql` |
 
-## Режим — это не ключ конфигурации
+## The mode is not a configuration key
 
-`rurqe.toml` не содержит переключателя режима: парсер `CodegenConfig::parse` принимает только ключ `schema` и секцию `[codegen]`, а любую другую секцию или ключ отвергает как ошибку. Режим задаётся фактическим составом проекта и набором команд:
+`rurqe.toml` carries no mode switch: the `CodegenConfig::parse` parser accepts only the `schema` key and the `[codegen]` section, and rejects any other section or key as an error. The mode is defined by the actual composition of the project and by the set of commands:
 
-- есть только `migrations/` → работает традиционный цикл `migrate up` / `baseline` / `repair`;
-- есть `schema/` → доступны `stage init`, `stage commit`, `stage verify`, `stage cleanup`;
-- есть `migrations/checkpoint.toml` → `migrate up --checkpoint-path …` включает защиту от устаревшей цели, а `prune` получает право удалять скрипты.
+- only `migrations/` present → the traditional cycle `migrate up` / `baseline` / `repair` works;
+- `schema/` present → `stage init`, `stage commit`, `stage verify`, `stage cleanup` are available;
+- `migrations/checkpoint.toml` present → `migrate up --checkpoint-path …` enables the outdated-target guard, and `prune` is allowed to delete scripts.
 
-Ничто не мешает включить второй режим позже: `stage init` на существующей базе отвергается (`Error::BaselineAlreadyExists` либо `Error::InvalidStage` при расхождении дайджеста), поэтому переход выполняется через `stage commit` — он фиксирует живой каталог как границу, не выполняя историю.
+Nothing prevents enabling the second mode later: `stage init` on an existing database is rejected (`Error::BaselineAlreadyExists`, or `Error::InvalidStage` when the digest diverges), so the migration between modes goes through `stage commit`, which records the live catalog as the boundary without replaying the history.
 
-## Смешанный переход
+## The mixed transition
 
-После `stage init` (cold start) в истории остаётся одна запись `<< Stage >>` kind `Baseline` с версией `X`. Раннер трактует это так:
+After `stage init` (a cold start) the history keeps a single `<< Stage >>` entry of kind `Baseline` with version `X`. The runner treats it as follows:
 
-- все `V...` с версией `<= X` считаются пройденными, в `status` они показываются как `IgnoredBaseline`;
-- все `V...` с версией `> X` применяются обычным образом;
-- `R...` скрипты применяются всегда, когда их контрольная сумма отличается от записанной.
+- every `V...` with a version `<= X` counts as already passed and is reported as `IgnoredBaseline` in `status`;
+- every `V...` with a version `> X` is applied in the ordinary way;
+- `R...` scripts are applied whenever their checksum differs from the recorded one.
 
-Именно эта семантика позволяет проекту с историей продолжать пользоваться прежними файлами `migrations/`, не переписывая их.
+This is exactly the semantics that lets a project with a history keep using its existing `migrations/` files without rewriting them.
 
-## Как выбрать
+## How to choose
 
-| Ситуация | Рекомендация |
+| Situation | Recommendation |
 |---|---|
-| Историческая база, менять процесс нельзя | традиционный режим |
-| Новый проект, частые чистящие инициализации в CI | Stage + Tail |
-| Много DML-миграций с данными | Stage + Tail: `schema/` для структуры, хвост для данных |
-| Нужна проверка «схема == чекпоинт + хвост» в CI | Stage + Tail + `stage verify` |
+| A historical database whose process cannot change | traditional mode |
+| A new project with frequent clean initialisations in CI | Stage + Tail |
+| Many DML migrations carrying data | Stage + Tail: `schema/` for structure, the tail for data |
+| A CI check that "schema == checkpoint + tail" | Stage + Tail plus `stage verify` |
 
-Далее: [Традиционный путь](traditional.md) и [Stage + Tail](stage_tail.md).
+Next: [The traditional path](traditional.md) and [Stage + Tail](stage_tail.md).

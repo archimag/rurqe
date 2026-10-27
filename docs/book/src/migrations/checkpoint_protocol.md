@@ -1,77 +1,77 @@
-# Протокол чекпоинтов
+# The checkpoint protocol
 
-Пара «маркер `checkpoint.toml` + снимок границы» описывает одно состояние. Её замена обязана быть атомарной для читателя и безопасной при убийстве процесса в любой момент, а параллельные писатели (`stage commit`, `stage verify`, `prune`) не должны мешать друг другу. Этим требованиям отвечает один модуль — `crates/rurqe-cli/src/cli/commands/stage/{lock,swap}.rs`.
+The pair "marker `checkpoint.toml` + boundary snapshot" describes one state. Replacing it must be atomic for a reader and safe when the process is killed at any moment, and concurrent writers (`stage commit`, `stage verify`, `prune`) must not interfere with each other. One module answers these requirements — `crates/rurqe-cli/src/cli/commands/stage/{lock,swap}.rs`.
 
-## Артефакты и состояния
+## Artifacts and states
 
-Каждый артефакт в любой момент находится ровно в одном из состояний: **live** (по обычному пути), **staged** (собран рядом, под живым путём не виден), **parked** (переименован в сторону и является единственной восстановимой копией предыдущего состояния), **absent**.
+At any moment every artifact is in exactly one of the states: **live** (at its usual path), **staged** (assembled alongside, invisible under the live path), **parked** (renamed aside and the only recoverable copy of the previous state), **absent**.
 
-Имена строятся из stem маркера (`marker_stem`), поэтому два маркера в одном каталоге никогда не делят ни лок, ни границу:
+Names are derived from the marker stem (`marker_stem`), so two markers in one directory never share a lock or a boundary:
 
-| Артефакт | live | staged | parked |
+| Artifact | live | staged | parked |
 |---|---|---|---|
-| маркер | `<dir>/checkpoint.toml` | `<dir>/.checkpoint.toml.<pid>.<seq>.tmp` | `<dir>/.checkpoint.toml.<pid>.<nonce>.previous` |
-| граница | `<dir>/checkpoint-stage` | `<dir>/.checkpoint-stage.<pid>.<seq>.tmp` | `<dir>/.checkpoint-stage.<pid>.<nonce>.previous` |
-| снимок каталога | `<dir>/schema.lock` | через тот же staged-механизм | не паркуется никогда |
-| секция | `<dir>/checkpoint.lock` | не стадится | не паркуется и не удаляется |
-| owner-запись | `<dir>/checkpoint.lock.record` | публикуется атомарным переименованием | удаляется при отпускании |
+| marker | `<dir>/checkpoint.toml` | `<dir>/.checkpoint.toml.<pid>.<seq>.tmp` | `<dir>/.checkpoint.toml.<pid>.<nonce>.previous` |
+| boundary | `<dir>/checkpoint-stage` | `<dir>/.checkpoint-stage.<pid>.<seq>.tmp` | `<dir>/.checkpoint-stage.<pid>.<nonce>.previous` |
+| catalog snapshot | `<dir>/schema.lock` | through the same staged mechanism | never parked |
+| section | `<dir>/checkpoint.lock` | not staged | never parked or deleted |
+| owner record | `<dir>/checkpoint.lock.record` | published by an atomic rename | deleted on release |
 
-`<pid>.<nonce>` — область писателя: pid разделяет живые процессы, nonce не даёт переиспользованному pid унаследовать парковку предыдущего.
+`<pid>.<nonce>` is the writer's area: the pid separates live processes, the nonce prevents a reused pid from inheriting the parking of a previous one.
 
-## `checkpoint.lock`: секция одного писателя
+## `checkpoint.lock`: the single-writer section
 
-- Файл открывается `read+write+create`, без `truncate`, и берётся неблокирующим эксклюзивным advisory-локом через `fs4` (`flock` на Unix, `LockFileEx` на Windows).
-- В сам файл никто никогда не пишет: ядро арбитрует секцию по идентичности файла. Файл никогда не удаляется — иначе следующий писатель взял бы лок на свежем файле, пока предыдущий держатель владеет старым.
-- Владелец публикуется в соседний `checkpoint.lock.record` уже после захвата секции: `pid`, `nonce`, `heartbeat` (наносекунды на входе в секцию). Тело стадится во временный сосед и переименовывается только целиком, поэтому конкурентный читатель видит либо полностью предыдущую запись, либо полностью новую — никогда обрезанную. Переименование здесь звуково, потому что на файле записи нет advisory-лока.
-- Живость определяет ядро, не запись: advisory-лок принадлежит открытому file description и снимается в момент его закрытия, что ОС делает для любого завершившегося процесса. Поэтому зависание, долгий сетевой round-trip или длинный scratch не могут объявить живого держателя мёртвым — heartbeat для этого не нужен.
-- Захват ждёт `ACQUIRE_WAIT` (10 с в продакшене, 200 мс в тестах), опрашивая каждые `ACQUIRE_POLL` (100 мс), и затем отказывает, называя владельца из записи: «the checkpoint lock `…` is held by pid N (nonce M), in its section for K second(s); …». Перехвата нет и быть не может.
-- `Drop` удаляет опубликованную запись (пока секция ещё удерживается), затем закрывается дескриптор, и ядро освобождает лок. Отпущенный писатель не оставляет личности, которую мог бы унаследовать переиспользованный pid.
+- The file is opened `read+write+create`, without `truncate`, and a non-blocking exclusive advisory lock is taken through `fs4` (`flock` on Unix, `LockFileEx` on Windows).
+- Nobody ever writes into the file itself: the kernel arbitrates the section by the identity of the file. The file is never deleted — otherwise the next writer would take a lock on a fresh file while the previous holder still owns the old one.
+- The owner is published into the neighbouring `checkpoint.lock.record` after the section has been acquired: `pid`, `nonce`, `heartbeat` (nanoseconds at the moment the section was entered). The body is staged into a temporary neighbour and renamed as a whole, so a concurrent reader sees either a complete previous record or a complete new one — never a truncated one. The rename here is atomic, because the record file carries no advisory lock.
+- Liveness is determined by the kernel, not by the record: an advisory lock belongs to an open file description and is released the moment it is closed, which the OS does for any terminated process. Therefore a hang, a long network round-trip or a long scratch can never declare a live holder dead — the heartbeat is not needed for that.
+- The acquisition waits `ACQUIRE_WAIT` (10 s in production, 200 ms in tests), polling every `ACQUIRE_POLL` (100 ms), and then refuses, naming the owner from the record: "the checkpoint lock `…` is held by pid N (nonce M), in its section for K second(s); …". There is no preemption and there cannot be one.
+- `Drop` deletes the published record (while the section is still held), then the descriptor is closed and the kernel releases the lock. A released writer leaves no identity behind for a reused pid to inherit.
 
-## Коммит: последовательность
+## Commit: the sequence
 
-Подготовка идёт вне секции (загрузка stage, интроспекция живой базы, паритетный scratch, рендер lock и маркера, сборка staged-границы) — она не мутирует ни один артефакт рабочей копии и может занимать сколько угодно времени.
+Preparation happens outside the section (loading the stage, introspecting the live database, the parity scratch, rendering the lock and the marker, assembling the staged boundary) — it mutates no artifact of the working copy and may take as long as needed.
 
-| Шаг | Где | Действие | Состояние после |
+| Step | Where | Action | State afterwards |
 |---|---|---|---|
-| 0 | вне секции | собрать и сбросить на диск staged-границу | live(prev)/live(prev), staged(new) |
-| 1 | в секции | запарковать предыдущий маркер | parked(prev)/live(prev), staged(new) |
-| 2 | в секции | запарковать предыдущую границу | parked(prev)/parked(prev), staged(new) |
-| 3 | в секции | переименовать staged-границу на место и сбросить каталог | parked(prev)/live(new) |
-| 4 | в секции | записать новый маркер и сбросить каталог — точка коммита | live(new)/live(new) |
-| 5 | в секции | удалить запаркованную пару | live(new)/live(new), восстановимой копии нет |
+| 0 | outside the section | assemble and flush the staged boundary | live(prev)/live(prev), staged(new) |
+| 1 | in the section | park the previous marker | parked(prev)/live(prev), staged(new) |
+| 2 | in the section | park the previous boundary | parked(prev)/parked(prev), staged(new) |
+| 3 | in the section | rename the staged boundary into place and flush the directory | parked(prev)/live(new) |
+| 4 | in the section | write the new marker and flush the directory — the commit point | live(new)/live(new) |
+| 5 | in the section | delete the parked pair | live(new)/live(new), no recoverable copy |
 
-Между шагами 0 и 1 (уже внутри секции) выполняются: выметание staged-мусора прошлых попыток, восстановление прерванного коммита, запрет отката версии, запись `schema.lock`.
+Between steps 0 and 1 (already inside the section) the following happen: sweeping the staged garbage of previous attempts, recovery of an interrupted commit, the no-version-rollback rule, and writing `schema.lock`.
 
-Порядок шагов 1 и 2 и есть то, что делает последовательность восстановимой: маркер паркуется первым, поэтому граница, на которую он указывал, остаётся живой, и убийство между парковками требует лишь вернуть маркер. Обратный порядок оставил бы живой маркер, описывающий отсутствующую границу.
+The order of steps 1 and 2 is what makes the sequence recoverable: the marker is parked first, so the boundary it pointed at stays live, and a kill between the two parkings only requires putting the marker back. The reverse order would leave a live marker describing a missing boundary.
 
-Любой сбой в секции до шага 4 откатывается: запаркованное возвращается, staged-каталог удаляется (`StagedCleanup`), команда падает, не тронув прежнюю пару. С шага 4 коммит состоялся, поэтому неудалённая запаркованная пара — предупреждение, а не откат.
+Any failure inside the section before step 4 is rolled back: what was parked is returned, the staged directory is deleted (`StagedCleanup`), the command fails without touching the previous pair. From step 4 the commit has happened, so an undeleted parked pair is a warning, not a rollback.
 
-## Восстановление прерванного коммита
+## Recovering an interrupted commit
 
-`recover_interrupted_commit` работает под секцией, поэтому видит только пару, оставленную умершим писателем. Запись в `checkpoint.lock.record` обязана совпасть с областью вызывающего — иначе пара принадлежит другому писателю (в том числе переиспользованный pid), и восстановление отказывает, называя записанного владельца.
+`recover_interrupted_commit` works under the section, so it only sees a pair left behind by a dead writer. The entry in `checkpoint.lock.record` must match the caller's area — otherwise the pair belongs to another writer (including a reused pid) and the recovery refuses, naming the recorded owner.
 
-| Наблюдение | Вердикт | Действие |
+| Observation | Verdict | Action |
 |---|---|---|
-| запаркованных имён нет | ничего не прерывалось | ничего |
-| маркер live и граница live | коммит дошёл до точки коммита | удалить все запаркованные копии, сбросить каталог |
-| граница live, её маркер запаркован | граница установлена без точки коммита | удалить установленную границу, вернуть запаркованную |
-| маркер live, его граница запаркована | маркер установлен без границы | удалить установленный маркер, вернуть запаркованный |
-| обе запаркованы | коммит остановился между парковками | вернуть сначала границу, затем маркер |
-| запись называет другого писателя | это не мусор вызывающего | отказ с диагностикой |
+| no parked names | nothing was interrupted | nothing |
+| marker live and boundary live | the commit reached its commit point | delete all parked copies, flush the directory |
+| boundary live, its marker parked | the boundary was installed without the commit point | delete the installed boundary, return the parked one |
+| marker live, its boundary parked | the marker was installed without the boundary | delete the installed marker, return the parked one |
+| both parked | the commit stopped between the parkings | return the boundary first, then the marker |
+| the record names another writer | this is not the caller's garbage | refuse with a diagnostic |
 
-Если восстановление уже переименовало артефакты, а последующий шаг упал, отчёт о починке прикладывается к ошибке (`carry_recovery`) с явной пометкой, что рабочая копия уже изменилась.
+If the recovery has already renamed the artifacts and a subsequent step failed, the recovery report is attached to the error (`carry_recovery`) with an explicit note that the working copy has already changed.
 
-## Инварианты
+## Invariants
 
-- **I1 (маркер ↔ граница).** Живой маркер всегда описывает границу рядом с собой. Маркер пишется только после установки границы и возвращается только после возврата границы.
-- **I2 (одна восстановимая копия).** Не более одной копии предыдущей пары существует в любой момент; она принадлежит запарковавшему писателю и удаляется только после того, как его точка коммита стала долговечной.
-- **I3 (изоляция писателей).** Никто не переименовывает, не возвращает и не удаляет запаркованную копию другого живого писателя.
-- **I4 (один писатель).** Не более одного писателя мутирует артефакты одновременно; второй либо ждёт секцию, либо падает с диагностикой, называющей владельца.
-- **I5 (владение локом).** Секцию освобождает только её держатель, ядро делает это при его смерти; никто не удаляет запись, принадлежащую другому.
-- **I6 (нет чтения через swap).** Любое чтение пары происходит внутри секции, поэтому наблюдение никогда не охватывает своп.
+- **I1 (marker ↔ boundary).** A live marker always describes the boundary next to it. The marker is written only after the boundary is installed and returned only after the boundary is returned.
+- **I2 (one recoverable copy).** At most one copy of the previous pair exists at any moment; it belongs to the writer that parked it and is deleted only after that writer's commit point has become durable.
+- **I3 (writer isolation).** Nobody renames, returns or deletes a parked copy of another live writer.
+- **I4 (one writer).** At most one writer mutates the artifacts at a time; a second one either waits for the section or fails with a diagnostic naming the owner.
+- **I5 (lock ownership).** Only its holder releases the section, the kernel does it on its death, and nobody deletes a record belonging to another.
+- **I6 (no read across a swap).** Every read of the pair happens inside the section, so an observation never spans a swap.
 
-## Что закреплено тестами
+## What the tests pin down
 
-Регрессионный набор парный: негативная половина проверяет диагностику и отсутствие ущерба для чужих артефактов, позитивная — что последовательные операции сходятся к согласованному состоянию, а восстановление после упавшего держателя возвращает пару и оставляет секцию свободной. Покрыты: два перемежающихся коммита, инъецированный сбой на каждом шаге `seal_commit`, верификация во время in-flight коммита, переиспользованный pid со устаревшей записью, два маркера в одном каталоге (раздельные секции, раздельные границы, невмешательство в чужую запаркованную пару) и грамматика staged-имён, включая случай чужого хоста с тем же pid. Конкуренция проверяется между двумя дескрипторами одного процесса, поэтому второй процесс не нужен.
+The regression suite is paired: the negative half checks the diagnostics and the absence of damage to foreign artifacts, the positive half checks that consecutive operations converge to a consistent state and that recovery after a crashed holder returns the pair and leaves the section free. Covered: two interleaved commits, an injected failure at every step of `seal_commit`, a verification during an in-flight commit, a reused pid with a stale record, two markers in one directory (separate sections, separate boundaries, no interference with a foreign parked pair) and the grammar of staged names, including the case of a foreign host with the same pid. Contention is exercised between two descriptors of one process, so a second process is not needed.
 
-Смотрите также: [Безопасный прунинг истории](pruning.md) и [The Golden Equation](golden_equation.md).
+See also: [Safe history pruning](pruning.md) and [The Golden Equation](golden_equation.md).

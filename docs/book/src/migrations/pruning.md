@@ -1,8 +1,8 @@
-# Безопасный прунинг истории
+# Safe history pruning
 
-Прунинг — замена сквошу. Скрипты, которые чекпоинт уже вобрал в себя, можно удалить из `migrations/`, не переписывая ни одной контрольной суммы и не двигая `baseline`. Границей служит `checkpoint.toml`.
+Pruning is the replacement for squashing. Scripts the checkpoint has already absorbed can be deleted from `migrations/` without rewriting a single checksum and without moving `baseline`. The boundary is `checkpoint.toml`.
 
-## Маркер
+## The marker
 
 ```toml
 [checkpoint]
@@ -10,57 +10,57 @@ pruned_up_to_version = "3.2"
 schema_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 ```
 
-- `pruned_up_to_version` — версия, ниже которой история уже свёрнута;
-- `schema_hash` — SHA-256 каталога на этой границе.
+- `pruned_up_to_version` — the version below which the history has already been folded;
+- `schema_hash` — the SHA-256 of the catalog at that boundary.
 
-`Checkpoint` читается через `toml` с `#[serde(deny_unknown_fields)]`, поэтому опечатка в ключе или лишняя секция — это ошибка, а не тихо проигнорированное поле. `Checkpoint::load` возвращает `Ok(None)` для отсутствующего файла и для пути, который не может существовать (например, ниже обычного файла), но любую другую ошибку чтения считает ошибкой: молча проигнорированный сломанный маркер разрешил бы хвосту работать по базе, которую уже нельзя продвинуть.
+`Checkpoint` is read through `toml` with `#[serde(deny_unknown_fields)]`, so a typo in a key or an extra section is an error rather than a silently ignored field. `Checkpoint::load` returns `Ok(None)` for a missing file and for a path that cannot exist (for example one below an ordinary file), but treats any other read error as an error: a silently ignored broken marker would let the tail run against a database that can no longer be advanced.
 
-## Защита устаревшей цели
+## The outdated-target guard
 
-Когда `migrate up` получает `--checkpoint-path`, раннер создаётся через `Migrator::with_checkpoint`. Дальше на каждом прогоне:
+When `migrate up` receives `--checkpoint-path`, the runner is constructed through `Migrator::with_checkpoint`. Then, on every run:
 
-1. `Checkpoint::validate_history` находит максимальную успешно записанную версию:
-   - если найдена запись `<< Stage >>` с версией границы, её контрольная сумма дополнительно сверяется с `schema_hash` → при расхождении `Error::CheckpointHashMismatch { pruned_up_to_version, recorded_hash, expected_hash }`;
-   - если максимальная версия ниже границы (или версий нет вовсе) → `Error::OutdatedCheckpoint { database_version, pruned_up_to_version, schema_hash }`, текст которого прямо предлагает сначала довести базу до границы или пересобрать её из `schema/`.
-2. Дополнительно, если записанная версия *ровно* совпадает с границей, `validate_catalog_hash` сверяет живой каталог (через `MigrationBackend::catalog_checksum`) с `schema_hash`. База, уехавшая от своего снимка, сохраняет старый дайджест в истории, поэтому проверяется именно живой каталог; backend, который не умеет интроспектировать себя, оставляет авторитетным дайджест из маркера.
+1. `Checkpoint::validate_history` finds the highest successfully recorded version:
+   - if a `<< Stage >>` entry with the boundary version is found, its checksum is additionally compared against `schema_hash` → on mismatch `Error::CheckpointHashMismatch { pruned_up_to_version, recorded_hash, expected_hash }`;
+   - if the highest version is below the boundary (or there are no versions at all) → `Error::OutdatedCheckpoint { database_version, pruned_up_to_version, schema_hash }`, whose text directly suggests bringing the database up to the boundary first or rebuilding it from `schema/`.
+2. Additionally, if the recorded version is *exactly* the boundary, `validate_catalog_hash` compares the live catalog (through `MigrationBackend::catalog_checksum`) against `schema_hash`. A database that drifted from its snapshot keeps the old digest in the history, so the live catalog is what gets checked; a backend that cannot introspect itself leaves the digest from the marker authoritative.
 
-Проверка «ровно на границе» — намеренное ограничение: ниже границы база отвергается как устаревшая, а выше границы stage уже перекрыт хвостом, и чекпоинт перестаёт описывать схему.
+The "exactly at the boundary" check is a deliberate restriction: below the boundary the database is rejected as outdated, and above it the stage is already covered by the tail, so the checkpoint stops describing the schema.
 
-## Команда
+## The command
 
 ```bash
 cargo rurqe prune --before <version> [--migrations-dir <dir>] [--checkpoint-path <path>] [--dry-run]
 ```
 
-Что делает `prune_migrations`:
+What `prune_migrations` does:
 
-1. Входит в секцию `checkpoint.lock` (`CheckpointLock::acquire`) — до чтения маркера и до первого удаления. Весь прунинг для остальных писателей артефактов выглядит как одно наблюдение.
-2. Читает маркер. Нет маркера → ошибка «`…` is missing; commit the stage with `cargo rurqe stage commit --version <before>` before pruning the history».
-3. Сверяет границы: если `checkpoint.pruned_up_to_version() < before` → ошибка «anchors the history up to version X only; pruning below Y would drop scripts the active tail still needs».
-4. Сканирует `migrations/` (`sql_scripts`) и разбирает каждое имя через `Migration::parse(name, "")`: удаляются только скрипты с версией `< before`; repeatable-скрипты не удаляются никогда.
-5. Удаляет (или, при `--dry-run`, печатает «would prune») и завершает отчёт «Pruned N migration(s) below version X».
+1. Enters the `checkpoint.lock` section (`CheckpointLock::acquire`) — before reading the marker and before the first deletion. To every other writer of the artifacts the whole pruning looks like a single observation.
+2. Reads the marker. No marker → an error: "`…` is missing; commit the stage with `cargo rurqe stage commit --version <before>` before pruning the history".
+3. Checks the boundaries: if `checkpoint.pruned_up_to_version() < before` → an error: "anchors the history up to version X only; pruning below Y would drop scripts the active tail still needs".
+4. Scans `migrations/` (`sql_scripts`) and parses every name through `Migration::parse(name, "")`: only scripts with a version `< before` are deleted; repeatable scripts are never deleted.
+5. Deletes them (or, with `--dry-run`, prints "would prune") and finishes with the report "Pruned N migration(s) below version X".
 
-Отсутствующий каталог миграций — не ошибка, а вежливое «No migration directory … to prune».
+A missing migrations directory is not an error but a polite "No migration directory … to prune".
 
-### Почему удаления под секцией
+### Why the deletions happen under the section
 
-Удаление скрипта — единственная мутация в этом протоколе, которую нельзя отменить: ни открытая, ни запаркованная копия не вернёт удалённый файл. Поэтому прунинг не имеет права пересечься ни с коммитом (который между шагами парковки не имеет живого маркера), ни с проверкой (которая как раз воспроизводит хвост). Под секцией прунинг либо целиком идёт до коммита и читает уже зафиксированный маркер, либо целиком после — и тогда продвинутый маркер исключает не меньше.
+Deleting a script is the only mutation in this protocol that cannot be undone: neither an open nor a parked copy brings a deleted file back. Pruning therefore has no right to interleave with a commit (which has no live marker between its parking steps) or with a verification (which is precisely replaying the tail). Under the section, pruning either happens entirely before the commit and reads an already sealed marker, or entirely after it — and then the advanced marker excludes no fewer scripts.
 
-| Пересечение | Что снимает секция |
+| Interleaving | What the section removes |
 |---|---|
-| prune × commit | чтение маркера в окне, когда он запаркован; откат границы под уже принятым решением |
-| prune × verify | удаление скриптов, которые проверка в этот момент воспроизводит |
-| prune × prune | два удаления, идущих сквозь чтения друг друга |
+| prune × commit | reading the marker inside the window where it is parked; rolling the boundary back under an already accepted decision |
+| prune × verify | deleting scripts the verification is replaying at that moment |
+| prune × prune | two deletions passing through each other's reads |
 
-## Чек-лист прунинга
+## Pruning checklist
 
-1. Убедиться, что все среды прошли версию, ниже которой режем.
-2. `cargo rurqe stage commit --version <boundary>` — зафиксировать границу (и снимок stage рядом с маркером).
-3. `cargo rurqe stage verify` — убедиться, что уравнение держится.
-4. `cargo rurqe prune --before <boundary> --dry-run` — посмотреть список.
-5. `cargo rurqe prune --before <boundary>` — удалить.
-6. Закоммитить удаление файлов вместе с `checkpoint.toml` и `<stem>-stage/`.
+1. Make sure every environment has passed the version below which you cut.
+2. `cargo rurqe stage commit --version <boundary>` — fix the boundary (and the stage snapshot next to the marker).
+3. `cargo rurqe stage verify` — make sure the equation holds.
+4. `cargo rurqe prune --before <boundary> --dry-run` — inspect the list.
+5. `cargo rurqe prune --before <boundary>` — delete.
+6. Commit the file deletions together with `checkpoint.toml` and `<stem>-stage/`.
 
-После этого `migrate up` на базе ниже границы завершится `OutdatedCheckpoint` — это и есть защита, а не регресс.
+After that, `migrate up` on a database below the boundary fails with `OutdatedCheckpoint` — that is the protection working, not a regression.
 
-Далее: [Протокол чекпоинтов](checkpoint_protocol.md).
+Next: [The checkpoint protocol](checkpoint_protocol.md).

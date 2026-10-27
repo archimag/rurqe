@@ -1,12 +1,12 @@
 # The Golden Equation
 
-Утверждение, которое проверяет `stage verify`, записывается одним равенством:
+The claim `stage verify` checks is written as a single equality:
 
 ```text
 State(schema/)  ==  State(Checkpoint + migrations/)
 ```
 
-Слева — декларация, справа — то, что реально получится, если взять зафиксированную границу и накатить на неё активный хвост. Проверка материализует обе стороны в отдельных scratch-базах и сравнивает каталоги бит-в-бит.
+On the left is the declaration, on the right what actually results from taking the recorded boundary and replaying the active tail onto it. The check materialises both sides in separate scratch databases and compares the catalogs bit-for-bit.
 
 ## API
 
@@ -19,35 +19,35 @@ let report = GoldenEquation::new(&stage, &tail)
     .verify(scratch_url)?;
 ```
 
-| Метод | Смысл |
+| Method | Meaning |
 |---|---|
-| `new(stage, tail)` | уравнение без базы: обе стороны replay целиком |
-| `with_base(base)` | replay начинается со снимка границы (`<stem>-stage/`) |
-| `with_checkpoint(&checkpoint)` | версии `<= pruned_up_to_version` пропускаются; хеш границы сверяется с маркером |
-| `with_schema(name)` | PostgreSQL-схема, в которой материализуются и интроспектируются обе стороны |
-| `verify(scratch_url)` | выполнить и вернуть `GoldenReport` либо `StageError` |
+| `new(stage, tail)` | the equation with no base: both sides are replayed in full |
+| `with_base(base)` | the replay starts from the boundary snapshot (`<stem>-stage/`) |
+| `with_checkpoint(&checkpoint)` | versions `<= pruned_up_to_version` are skipped; the boundary hash is verified against the marker |
+| `with_schema(name)` | the PostgreSQL schema both sides are materialised and introspected in |
+| `verify(scratch_url)` | run it and return `GoldenReport` or `StageError` |
 
-`GoldenReport` содержит `stage_catalog`, `tail_catalog`, `diff` (`SchemaDiff`) и `schema_notices`. `is_equivalent()` — это `diff.is_empty()`; `stage_hash()` и `tail_hash()` возвращают хеши `schema.lock` каждой стороны.
+`GoldenReport` carries `stage_catalog`, `tail_catalog`, `diff` (`SchemaDiff`) and `schema_notices`. `is_equivalent()` is `diff.is_empty()`; `stage_hash()` and `tail_hash()` return the `schema.lock` hash of each side.
 
-## Порядок проверок
+## Order of checks
 
-1. **Пустая граница без базы.** Если чекпоинт задан, базы нет, а `checkpoint.schema_hash()` не равен дайджесту пустого каталога, уравнение отвергается с `StageError::BaseStageMissing`: иначе отфильтрованный хвост прогонялся бы по пустой scratch-базе и объявлял корректный проект разошедшимся.
-2. **Сторона хвоста.** Сначала материализуется привязанная сторона, чтобы хеш чекпоинта был проверен ещё до того, как тронут декларативный stage:
-   - если задана база, её скрипты применяются; затем, при заданном чекпоинте, каталог границы сверяется с `schema_hash` → при расхождении `StageError::BaseStageHashMismatch { expected, actual }` (снимок разъехался со своим маркером, и это ошибка *до* отчёта о расхождении);
-   - затем применяется хвост в том же порядке, что и в продакшен-раннере (`Migrator::sort_migrations`), с пропуском версий `<= pruned_up_to_version`;
-   - ошибка скрипта оборачивается в `StageError::Script { script, message }`.
-3. **Сторона stage.** Декларативные скрипты применяются в порядке объявления.
-4. **Сравнение.** `compute_catalog_diff(&tail_catalog, &stage_catalog)`; пустой diff → `Ok(report)`, иначе `Err(StageError::Diverged(Box<GoldenReport>))`.
+1. **Empty boundary without a base.** If a checkpoint is given, no base is given, and `checkpoint.schema_hash()` is not the digest of the empty catalog, the equation is rejected with `StageError::BaseStageMissing`: otherwise the filtered tail would be replayed over an empty scratch database and a correct project would be declared diverged.
+2. **The tail side.** The anchored side is materialised first, so the checkpoint hash is verified before the declarative stage is touched:
+   - if a base is given, its scripts are applied; then, if a checkpoint is given, the boundary catalog is compared against `schema_hash` → on mismatch `StageError::BaseStageHashMismatch { expected, actual }` (the snapshot drifted from its own marker, and this is an error *before* any divergence report);
+   - the tail is then applied in the same order as in the production runner (`Migrator::sort_migrations`), skipping versions `<= pruned_up_to_version`;
+   - a script failure is wrapped into `StageError::Script { script, message }`.
+3. **The stage side.** The declarative scripts are applied in declaration order.
+4. **Comparison.** `compute_catalog_diff(&tail_catalog, &stage_catalog)`; an empty diff → `Ok(report)`, otherwise `Err(StageError::Diverged(Box<GoldenReport>))`.
 
-Sandbox в обоих случаях удаляется, даже если replay упал: половина применённого скрипта не должна достаться следующей стороне. Если удаление тоже не удалось, диагностика удаления сворачивается в диагностику replay — scratch остался, и следующая попытка встретит его как чужой.
+The sandbox is discarded in both cases, even if the replay failed: half of an applied script must not be inherited by the next side. If the discard fails too, its diagnostic is folded into the replay diagnostic — the scratch stayed behind, and the next attempt will meet it as a foreign one.
 
-## Пустая выборка — не доказательство
+## An empty selection is not a proof
 
-Уравнение «ничего против ничего» формально сходится. Чтобы это не превращалось в ложный успех, каждая материализованная сторона опрашивает свой sandbox (`vacuous_schema_notice()`): если выбранная PostgreSQL-схема не содержит ни одного отношения, а в базе есть пользовательские схемы с отношениями, в `GoldenReport::schema_notices` попадает предупреждение с перечнем таких схем и подсказкой `--schema`. Одинаковые предупреждения обеих сторон схлопываются в одно.
+The equation "nothing against nothing" formally holds. So that this does not turn into a false success, each materialised side interrogates its sandbox (`vacuous_schema_notice()`): if the selected PostgreSQL schema contains no relation while the database has user schemas with relations, `GoldenReport::schema_notices` receives a warning listing those schemas and the `--schema` hint. Identical warnings from both sides collapse into one.
 
-## Рендер находок
+## Rendering the findings
 
-Расхождения печатаются в терминах «stage против базы» для коммита (`DiffWording::COMMIT`) и в терминах уравнения для верификации (`DiffWording::GOLDEN`). Формат один и тот же — `SchemaDiff::write_details`.
+Divergences are printed in "stage versus database" wording for the commit (`DiffWording::COMMIT`) and in equation wording for the verification (`DiffWording::GOLDEN`). The format is the same — `SchemaDiff::write_details`.
 
 ## CLI
 
@@ -57,15 +57,15 @@ cargo rurqe stage verify [--stage-dir <dir>] [--base-stage-dir <dir>] \
                          [--scratch-url <url>] [--schema <name>]
 ```
 
-Порядок работы команды:
+The command proceeds as follows:
 
-1. берёт секцию `checkpoint.lock` (§ [Протокол чекпоинтов](checkpoint_protocol.md));
-2. восстанавливает прерванный коммит — под секцией это безопасно, а живой писатель просто откажет в захвате;
-3. читает stage, хвост и маркер;
-4. загружает базу: явный `--base-stage-dir` либо снимок `<stem>-stage/` рядом с маркером. Если снимка нет, база остаётся незаданной — и уравнение само отвергнет чекпоинт, который нельзя воспроизвести из ничего;
-5. отпускает секцию: дальше идёт только работа со scratch-базами;
-6. выполняет уравнение и печатает либо «Golden equation holds: State(...) == State(Checkpoint + ...)», либо расхождения.
+1. takes the `checkpoint.lock` section (§ [The checkpoint protocol](checkpoint_protocol.md));
+2. recovers an interrupted commit — safe under the section, while a live writer simply refuses the acquisition;
+3. reads the stage, the tail and the marker;
+4. loads the base: an explicit `--base-stage-dir`, or the `<stem>-stage/` snapshot next to the marker. If there is no snapshot the base stays undefined — and the equation itself rejects a checkpoint it cannot reproduce from nothing;
+5. releases the section: only scratch-database work remains;
+6. runs the equation and prints either "Golden equation holds: State(...) == State(Checkpoint + ...)" or the divergences.
 
-Если починка уже переименовала артефакты, а последующее чтение или само уравнение упало, отчёт о починке прикладывается к ошибке (`carry_recovery`): канал ошибки — единственный вывод, который команда гарантирует.
+If the recovery already renamed the artifacts and a subsequent read or the equation itself failed, the recovery report is attached to the error (`carry_recovery`): the error channel is the only output the command guarantees.
 
-Смотрите также: [Безопасный прунинг истории](pruning.md).
+See also: [Safe history pruning](pruning.md).

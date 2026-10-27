@@ -1,71 +1,71 @@
-# Традиционный путь: `V...` и `R...`
+# The traditional path: `V...` and `R...`
 
-Классический Flyway-совместимый цикл полностью реализован в `rurqe-migrate` и доступен как через CLI, так и как встроенный раннер.
+The classic Flyway-compatible cycle is fully implemented in `rurqe-migrate` and is available both through the CLI and as an embedded runner.
 
-## Именование скриптов
+## Script naming
 
-`Migration::parse(script, sql)` разбирает имя и сразу считает `Checksum::of(sql.as_bytes())`.
+`Migration::parse(script, sql)` parses the name and immediately computes `Checksum::of(sql.as_bytes())`.
 
-| Имя | Разбор |
+| Name | Parsed as |
 |---|---|
-| `V2_1__add_orders.sql` | `Versioned`, версия `2.1`, описание `add orders` |
-| `V1.0.0__init.sql` | `Versioned`, версия `1.0.0` (точки и подчёркивания равнозначны) |
-| `R__views_and_funcs.sql` | `Repeatable`, версии нет, описание `views and funcs` |
+| `V2_1__add_orders.sql` | `Versioned`, version `2.1`, description `add orders` |
+| `V1.0.0__init.sql` | `Versioned`, version `1.0.0` (dots and underscores are equivalent) |
+| `R__views_and_funcs.sql` | `Repeatable`, no version, description `views and funcs` |
 
-Правила, которые проверяет парсер:
+Rules the parser enforces:
 
-- расширение обязано быть `.sql`;
-- для версии — префикс `V`, затем непустая версия, затем `__`;
-- для repeatable — префикс `R`, затем сразу `__`;
-- подчёркивания в описании заменяются пробелами (так они попадают в историю);
-- версия — numeric parts через `.` или `_`; порядок числовой, поэтому `1.2 < 1.10`, а `1 < 1.0`.
+- the extension must be `.sql`;
+- a versioned name is the `V` prefix, then a non-empty version, then `__`;
+- a repeatable name is the `R` prefix followed immediately by `__`;
+- underscores in the description are replaced by spaces (that is how they reach the history);
+- a version is a sequence of numeric parts separated by `.` or `_`; the order is numeric, so `1.2 < 1.10` and `1 < 1.0`.
 
-Нарушение даёт `Error::InvalidScriptName` или `Error::InvalidVersion` — конкретно то, что нужно исправить.
+A violation yields `Error::InvalidScriptName` or `Error::InvalidVersion` — exactly what has to be fixed.
 
-## Транзакционность
+## Transactionality
 
-Скрипт транзакционен, пока не сказано обратное. Отключение — двумя равнозначными способами:
+A script is transactional unless stated otherwise. Opting out has two equivalent forms:
 
-1. Имя: `V50__rebuild_index.notx.sql` или `V50__rebuild_index__notx.sql` (суффикс `notx.sql`, регистр не важен).
-2. Директива в комментарии, занимающая целую строку:
+1. The name: `V50__rebuild_index.notx.sql` or `V50__rebuild_index__notx.sql` (the `notx.sql` suffix, case-insensitive).
+2. A directive in a comment occupying a whole line:
 
 ```sql
 -- executeInTransaction = false
 CREATE INDEX CONCURRENTLY users_email_idx ON users (email);
 ```
 
-Поддерживаемые написания ключа: `executeInTransaction`, `execute_in_transaction`, `transactional`; значение `false`. Сканер комментариев (`comment_text`) отслеживает строковые литералы, кавычки-идентификаторы, dollar-quoted тела `$$ … $$` и вложенные блочные комментарии, поэтому:
+Supported spellings of the key are `executeInTransaction`, `execute_in_transaction` and `transactional`; the value is `false`. The comment scanner (`comment_text`) tracks string literals, quoted identifiers, `$$ … $$` dollar-quoted bodies and nested block comments, therefore:
 
-- `-- transactional = false` внутри тела `plpgsql`-функции — это данные, а не директива;
-- директива во вложенном комментарии игнорируется, а во внешнем — работает;
-- упоминание переключателя в прозе («set transactional = false here when…») не отключает транзакцию: строка должна быть только директивой;
-- незакрытый литерал или комментарий не приводит к панике — сканер остаётся в устойчивом состоянии.
+- `-- transactional = false` inside a `plpgsql` function body is data, not a directive;
+- a directive inside a nested comment is ignored, while one in the outer comment works;
+- mentioning the switch in prose ("set transactional = false here when…") does not disable the transaction: the line must be a directive and nothing else;
+- an unterminated literal or comment does not panic — the scanner stays in a consistent state.
 
-## Применение
+## Applying
 
-`Migrator::migrate` работает так:
+`Migrator::migrate` works as follows:
 
-1. Берёт run-лок (`LockGuard::acquire`) и гарантирует существование таблицы истории.
-2. Проверяет уникальность версий (`DuplicateMigrationVersion`).
-3. Читает историю и валидирует её: провалившаяся запись → `FailedMigrationAlreadyApplied`; изменённый версионированный скрипт → `ChecksumMismatch`.
-4. Сортирует скрипты: версионированные по возрастанию версии, затем repeatable по имени.
-5. Для каждого решает, надо ли применять: версия ниже или равная `baseline` — пропуск; уже записанная — пропуск; repeatable — применять, если контрольная сумма отличается от последней записанной.
-6. Применяет и пишет строку истории (`SchemaHistoryEntry::applied`) в той же транзакции.
+1. Acquire the run lock (`LockGuard::acquire`) and ensure the history table exists.
+2. Validate version uniqueness (`DuplicateMigrationVersion`).
+3. Read and validate the history: a failed entry → `FailedMigrationAlreadyApplied`; a modified versioned script → `ChecksumMismatch`.
+4. Sort the scripts: versioned ones by ascending version, then repeatable ones by name.
+5. Decide per script whether to apply it: a version below or equal to `baseline` is skipped; an already recorded one is skipped; a repeatable script is applied when its checksum differs from the last recorded one.
+6. Apply it and write the history row (`SchemaHistoryEntry::applied`) in the same transaction.
 
-Порядок деталей применения (`runner/apply.rs`):
+The order of the application details (`runner/apply.rs`):
 
-| Вид скрипта | Что происходит |
+| Script kind | What happens |
 |---|---|
-| транзакционный | `begin` → выполнить SQL → записать applied-строку → `commit`; при ошибке `rollback`, best-effort запись failed-строки, `MigrationExecutionFailed` |
-| нетранзакционный | сначала коммитится in-progress строка (`success = false`), затем скрипт выполняется вне транзакции |
+| transactional | `begin` → execute the SQL → write the applied row → `commit`; on error `rollback`, best-effort write of a failed row, `MigrationExecutionFailed` |
+| non-transactional | first the in-progress row is committed (`success = false`), then the script runs outside a transaction |
 
-Нетранзакционный путь имеет три исхода помимо успеха:
+The non-transactional path has three outcomes besides success:
 
-- backend отказал до выполнения (`NonTransactionalUnsupported`) → in-progress строка отзывается, в истории ничего не остаётся;
-- скрипт упал → in-progress строка остаётся маркером попытки, следующая попытка требует `repair`;
-- скрипт применился, но applied-строку записать не удалось → `HistoryNotRecorded`: схема уже изменена, история отстала, нужен `repair` или `baseline`.
+- the backend refused before execution (`NonTransactionalUnsupported`) → the in-progress row is revoked and nothing remains in the history;
+- the script failed → the in-progress row stays as a marker of the attempt, and the next attempt requires `repair`;
+- the script applied but the applied row could not be written → `HistoryNotRecorded`: the schema has already changed and the history lags behind, so `repair` or `baseline` is required.
 
-## Команды
+## Commands
 
 ```bash
 cargo db-migrate up       [--migrations-dir <dir>] [--checkpoint-path <path>] \
@@ -75,14 +75,14 @@ cargo db-migrate repair   [--migrations-dir <dir>] [--database-url <url>] [--sch
 cargo db-baseline --version <version> [--description <desc>]
 ```
 
-- `up` — по умолчанию, если действие не указано. Только эта команда принимает `--checkpoint-path`: она вооружает защиту от устаревшей цели.
-- `status` читает историю и печатает таблицу `SCRIPT | KIND | VERSION | STATUS`; `status` на неинициализированной базе сам создаёт таблицу истории, поэтому проверка таблицы и чтение идут под тем же run-локом, что и прогон.
-- `repair` удаляет провалившиеся записи и переписывает контрольные суммы изменённых версионированных скриптов.
-- `baseline` записывает `SchemaHistoryEntry::baseline` (kind `Baseline`, без контрольной суммы) и отказывается работать, если история уже непуста (`BaselineAlreadyExists`).
+- `up` — the default when no action is given. Only this command accepts `--checkpoint-path`: it arms the outdated-target guard.
+- `status` reads the history and prints a `SCRIPT | KIND | VERSION | STATUS` table; `status` on an uninitialised database creates the history table itself, so the table check and the read happen under the same run lock as the run.
+- `repair` deletes failed entries and rewrites the checksums of modified versioned scripts.
+- `baseline` writes a `SchemaHistoryEntry::baseline` row (kind `Baseline`, no checksum) and refuses to work if the history is already non-empty (`BaselineAlreadyExists`).
 
-## Встроенный раннер
+## The embedded runner
 
-Для запуска из приложения без CLI:
+To run from an application without the CLI:
 
 ```rust
 use rurqe_migrate::{embed_migrations, InMemoryBackend};
@@ -97,16 +97,16 @@ let report = embedded.migrate(&mut backend).expect("migration succeeds");
 assert_eq!(report.applied_count, 2);
 ```
 
-`EmbeddedMigrations::new` сортирует скрипты тем же `Migrator::sort_migrations`, поэтому встроенный путь и CLI видят одинаковый порядок. Синхронные методы блокируют поток и потому проверяют контекст исполнения через `guard_blocking_entry`: по умолчанию предупреждают, а при фиче `strict-async` отказываются работать на потоке Tokio. Асинхронные обёртки (`migrate_async`, `status_async`, `repair_async`, `baseline_async`, при фиче `tokio`) выполняют ту же работу на `spawn_blocking` и возвращают backend обратно вызывающему.
+`EmbeddedMigrations::new` sorts the scripts with the same `Migrator::sort_migrations`, so the embedded path and the CLI see the same order. The synchronous methods block the thread and therefore check the execution context through `guard_blocking_entry`: by default they warn, and under the `strict-async` feature they refuse to run on a Tokio thread. The asynchronous wrappers (`migrate_async`, `status_async`, `repair_async`, `baseline_async`, under the `tokio` feature) perform the same work on `spawn_blocking` and hand the backend back to the caller.
 
-## Подключение CLI
+## CLI connectivity
 
-Эта сборка `rurqe-cli` не линкует TLS-бэкенд, поэтому политика транспорта проверяется до драйвера (`enforce_transport_policy`):
+This build of `rurqe-cli` does not link a TLS backend, so the transport policy is enforced before the driver (`enforce_transport_policy`):
 
-- `sslmode=require` и `verify-ca`/`verify-full` отклоняются на любом хосте;
-- удалённый хост принимается только при явном `sslmode=disable`;
-- loopback и Unix-сокет принимаются без указания режима.
+- `sslmode=require` and `verify-ca`/`verify-full` are rejected on any host;
+- a remote host is accepted only with an explicit `sslmode=disable`;
+- loopback and Unix sockets are accepted without specifying a mode.
 
-Это важно для `migrate`, потому что пароль от базы передаётся именно в строке подключения.
+This matters for `migrate`, because the database password is passed in the connection string itself.
 
-Далее: [Stage + Tail](stage_tail.md).
+Next: [Stage + Tail](stage_tail.md).

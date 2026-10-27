@@ -1,48 +1,48 @@
-# Кризис традиционных миграций в эпоху AI
+# The crisis of traditional migrations in the AI era
 
-Традиционная модель (Flyway, Liquibase) строилась вокруг человека, который помнит историю проекта. Скрипт `V051__add_credits.sql` — это дельта, смысл которой восстанавливается только вместе с предыдущими пятьюдесятью. Пока историю читает человек, который сам её писал, это работает. Как только историю читает LLM или новый инженер, модель ломается по четырём независимым причинам.
+The traditional model (Flyway, Liquibase) was built around a human who remembers the history of the project. A script `V051__add_credits.sql` is a delta whose meaning is only recoverable together with the previous fifty. While the history is read by the person who wrote it, this works. As soon as the history is read by an LLM or by a new engineer, the model breaks for four independent reasons.
 
-## 1. Контекст вместо состояния
+## 1. Context instead of state
 
-Агенту, чтобы понять «как сейчас выглядит таблица `users`», нужно прочитать и удержать в контексте всю цепочку `V001 … V050`: каждое `ALTER TABLE`, каждый `DROP COLUMN`, каждый переименованный тип. Это тысячи строк, из которых актуальны единицы. Ошибка в таком чтении не диагностируется: неверно восстановленная схема выглядит так же правдоподобно, как верная.
+To understand "what table `users` looks like right now", an agent has to read and hold the whole `V001 … V050` chain in context: every `ALTER TABLE`, every `DROP COLUMN`, every renamed type. That is thousands of lines of which only a handful are current. A mistake in such reading is not diagnosed: a wrongly reconstructed schema looks exactly as plausible as a correct one.
 
-Декларативный stage (`schema/users.sql`) превращает задачу из «восстанови состояние по дельтам» в «прочитай состояние». Токен-бюджет перестаёт зависеть от возраста проекта.
+The declarative stage (`schema/users.sql`) turns the task from "reconstruct the state from deltas" into "read the state". The token budget stops depending on the age of the project.
 
-## 2. Время инициализации
+## 2. Initialisation time
 
-Чистая база (CI-раннер, локальная разработка, контейнер) в традиционной модели обязана прогнать весь исторический хвост: N скриптов, N транзакций, N записей в истории. Время растёт линейно с возрастом проекта и не имеет отношения к его текущей сложности.
+In the traditional model a clean database (CI runner, local development, container) is obliged to replay the entire historical tail: N scripts, N transactions, N history rows. The time grows linearly with the age of the project and has no relation to its current complexity.
 
-Cold start из stage применяет только актуальные DDL-файлы, в одной транзакции (`cold_start` собирает подряд идущие транзакционные скрипты в одну транзакцию). Стоимость инициализации пропорциональна текущей схеме, а не её истории.
+A cold start from the stage applies only the current DDL files, in a single transaction (`cold_start` batches consecutive transactional scripts into one transaction). The cost of initialisation is proportional to the current schema, not to its history.
 
-## 3. Сквошинг как операция с риском
+## 3. Squashing as a risky operation
 
-Единственный способ сократить историю в традиционной модели — сквош: переписать старые миграции в одну новую и переставить `baseline`. Это опасная операция:
+The only way to shorten history in the traditional model is a squash: rewrite the old migrations into one new one and move `baseline`. This is a dangerous operation:
 
-- уже развёрнутые базы помнят старые контрольные суммы, поэтому сквош требует внешней координации по всем средам;
-- `baseline` двигает версию, ниже которой миграции игнорируются, и ошибка в этой границе молча пропускает необходимые скрипты;
-- откат сквоша — это ещё один сквош.
+- already deployed databases remember the old checksums, so a squash requires external coordination across all environments;
+- `baseline` moves the version below which migrations are ignored, and an error at that boundary silently skips required scripts;
+- rolling a squash back is another squash.
 
-RURQE заменяет сквош прунингом: `prune --before <version>` удаляет файлы, которые чекпоинт уже вобрал в себя, не переписывая ни одной контрольной суммы и не трогая записи истории.
+RURQE replaces the squash with pruning: `prune --before <version>` deletes files the checkpoint has already absorbed, without rewriting a single checksum and without touching history rows.
 
-## 4. Расхождение декларации и исполнения
+## 4. Divergence between declaration and execution
 
-Даже аккуратно ведущаяся история не гарантирует, что `schema/` (или кодогенерированный `schema.rs`) совпадает с тем, что реально получится после прогона хвоста. Классические инструменты такой проверки не дают вовсе.
+Even a carefully maintained history does not guarantee that `schema/` (or the code-generated `schema.rs`) matches what actually results from replaying the tail. Classic tools offer no such check at all.
 
-Два механизма RURQE закрывают этот разрыв:
+Two RURQE mechanisms close this gap:
 
-- `cargo db-verify` сравнивает живой каталог с `schema.lock` (drift-проверка кодогенерации);
-- `cargo rurqe stage verify` материализует обе стороны уравнения в отдельных scratch-базах и сравнивает их каталоги бит-в-бит (Golden Equation).
+- `cargo db-verify` compares the live catalog against `schema.lock` (the codegen drift check);
+- `cargo rurqe stage verify` materialises both sides of the equation in separate scratch databases and compares their catalogs bit-for-bit (the Golden Equation).
 
-## Что при этом не потеряно
+## What is not lost
 
-Отказ от линейной истории как *единственного* источника истины не означает отказа от последовательных миграций. Мирная база всё равно продвигается только вперёд скриптами `V...`, потому что данные нельзя «объявить» — их можно только преобразовать. Stage отвечает на вопрос «что должно быть», хвост — на вопрос «как перевести живое состояние в это».
+Giving up the linear history as the *only* source of truth does not mean giving up sequential migrations. A live database is still advanced forward only by `V...` scripts, because data cannot be "declared" — it can only be transformed. The stage answers "what should be", the tail answers "how to move the live state into it".
 
-| Вопрос | Традиционная модель | Stage + Tail |
+| Question | Traditional model | Stage + Tail |
 |---|---|---|
-| Что должно быть в схеме? | выводится из истории | `schema/*.sql` |
-| Как поднять чистую базу? | прогнать историю | применить stage |
-| Как продвинуть живую базу? | применить хвост | применить хвост |
-| Как сократить историю? | сквош | `prune` |
-| Как убедиться, что всё сходится? | вручную | `stage verify` |
+| What should the schema contain? | derived from the history | `schema/*.sql` |
+| How to raise a clean database? | replay the history | apply the stage |
+| How to advance a live database? | apply the tail | apply the tail |
+| How to shorten the history? | squash | `prune` |
+| How to make sure everything agrees? | manually | `stage verify` |
 
-Следующая страница — [Два режима и критерии выбора](modes.md).
+The next page is [Two modes and how to choose](modes.md).

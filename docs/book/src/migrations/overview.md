@@ -1,55 +1,55 @@
-# Эволюция схемы: обзор
+# Schema Evolution: Overview
 
-Сопровождение схемы — отдельный жизненный цикл, не привязанный к остальной библиотеке: код запросов (крейты `rurqe-core`, `rurqe-postgres`, `rurqe-sqlite`) не знает о миграциях и не импортирует их. Реализация жизни схемы собрана в двух местах:
+Schema maintenance is a lifecycle of its own, decoupled from the rest of the library: query code (`rurqe-core`, `rurqe-postgres`, `rurqe-sqlite`) knows nothing about migrations and never imports them. The implementation of the schema lifecycle is collected in two places:
 
-- `rurqe-migrate` — модель скриптов (`Migration`, `MigrationKind`, `MigrationVersion`, `Checksum`), таблица истории (`SchemaHistoryEntry`, `SCHEMA_HISTORY_TABLE`), раннер (`Migrator`, `MigrationBackend`, `MigrationTransaction`, `LockGuard`), декларативный stage (`DeclarativeStage`, `StageScript`, `StageMarker`, `cold_start`) и маркер границы (Checkpoint`).
-- `rurqe-cli` — команды (`migrate`, `baseline`, `codegen`, `verify`, `stage init|verify|commit|cleanup`, `prune`) и протокол артефактов чекпоинта: сериализующая секция `checkpoint.lock`, аварийно-безопасная установка пары «маркер + снимок границы» и восстановление прерванного коммита.
+- `rurqe-migrate` — the script model (`Migration`, `MigrationKind`, `MigrationVersion`, `Checksum`), the history table (`SchemaHistoryEntry`, `SCHEMA_HISTORY_TABLE`), the runner (`Migrator`, `MigrationBackend`, `MigrationTransaction`, `LockGuard`), the declarative stage (`DeclarativeStage`, `StageScript`, `StageMarker`, `cold_start`) and the boundary marker (`Checkpoint`).
+- `rurqe-cli` — the commands (`migrate`, `baseline`, `codegen`, `verify`, `stage init|verify|commit|cleanup`, `prune`) and the checkpoint artifact protocol: the serialising `checkpoint.lock` section, the crash-safe installation of the "marker + boundary snapshot" pair, and the recovery of an interrupted commit.
 
-Эти два слоя связаны единственным форматом — снимком каталога (`SchemaCatalog` → `schema.lock` и `checkpoint.toml`), а не общим кодом.
+These two layers are joined by a single format — the catalog snapshot (`SchemaCatalog` → `schema.lock` and `checkpoint.toml`) — not by shared code.
 
-## Два режима одного раннера
+## Two modes of one runner
 
-Раннер истории один и тот же: `Migrator` читает `__rurqe_schema_history`, валидирует контрольные суммы и применяет хвост. Второй режим — не другой раннер, а другой способ создать базу, которую этот раннер затем продвигает.
+The history runner is the same in both modes: `Migrator` reads `__rurqe_schema_history`, validates checksums and applies the tail. The second mode is not a different runner but a different way of creating the database that this runner then advances.
 
-| Свойство | Традиционный (`migrations/`) | Stage + Tail (`schema/` + `migrations/`) |
+| Property | Traditional (`migrations/`) | Stage + Tail (`schema/` + `migrations/`) |
 |---|---|---|
-| Источник истины | упорядоченный набор скриптов | декларативный stage, плюс активный хвост |
-| Инициализация чистой базы | прогон всех `V...` | `stage init` → `cold_start` из `schema/` |
-| Продвижение живой базы | `migrate up` | `migrate up --checkpoint-path checkpoint.toml` |
-| Удаление старых миграций | сквош через `baseline` | `prune --before <version>` без сквоша |
-| Проверка целостности | `db-verify` (drift к `schema.lock`) | `stage verify` (Golden Equation) |
-| След в истории | одна строка на скрипт | одна запись `<< Stage >>` + строки хвоста |
+| Source of truth | an ordered set of scripts | the declarative stage plus the active tail |
+| Initialising a clean database | replay every `V...` | `stage init` → `cold_start` from `schema/` |
+| Advancing a live database | `migrate up` | `migrate up --checkpoint-path checkpoint.toml` |
+| Removing old migrations | squash via `baseline` | `prune --before <version>` without a squash |
+| Integrity check | `db-verify` (drift against `schema.lock`) | `stage verify` (Golden Equation) |
+| History footprint | one row per script | one `<< Stage >>` entry plus the tail rows |
 
-Обе модели могут сосуществовать в одном проекте: `cold_start` записывает маркер kind `Baseline`, поэтому все версии `V...` не выше версии маркера считаются уже применёнными (в `status` — `IgnoredBaseline`), а активный хвост выше маркера продолжает применяться обычным `migrate up`.
+Both models can coexist in one project: `cold_start` records a marker of kind `Baseline`, so every `V...` version at or below the marker version counts as already applied (reported as `IgnoredBaseline` in `status`), while the active tail above the marker keeps being applied by the ordinary `migrate up`.
 
-## Состав раздела
+## Section contents
 
-- [Кризис традиционных миграций в эпоху AI](problem.md) — почему линейная история скриптов перестала масштабироваться.
-- [Два режима и критерии выбора](modes.md) — что общего и чем именно режимы отличаются.
-- [Традиционный путь: `V...` и `R...`](traditional.md) — именование, контрольные суммы, транзакционность, `migrate`/`baseline`/`repair`.
-- [Stage + Tail: декларативный stage и cold start](stage_tail.md) — `schema/*.sql`, `StageMarker`, мгновенная инициализация, коммит границы.
-- [The Golden Equation](golden_equation.md) — сверка `State(schema/)` и `State(Checkpoint + tail)`.
-- [Безопасный прунинг истории](pruning.md) — `prune --before`, защита от устаревшей цели.
-- [Протокол чекпоинтов](checkpoint_protocol.md) — `checkpoint.toml`, `checkpoint.lock`, owner-запись, восстановление.
+- [The crisis of traditional migrations in the AI era](problem.md) — why a linear script history stopped scaling.
+- [Two modes and how to choose](modes.md) — what the modes share and where exactly they differ.
+- [The traditional path: `V...` and `R...`](traditional.md) — naming, checksums, transactionality, `migrate`/`baseline`/`repair`.
+- [Stage + Tail: declarative stage and cold start](stage_tail.md) — `schema/*.sql`, `StageMarker`, instant initialisation, boundary commit.
+- [The Golden Equation](golden_equation.md) — reconciling `State(schema/)` against `State(Checkpoint + tail)`.
+- [Safe history pruning](pruning.md) — `prune --before` and the outdated-target guard.
+- [The checkpoint protocol](checkpoint_protocol.md) — `checkpoint.toml`, `checkpoint.lock`, the owner record, recovery.
 
-## Общие примитивы
+## Shared primitives
 
-| Примитив | Где объявлен | Роль |
+| Primitive | Declared in | Role |
 |---|---|---|
-| `Migration` | `rurqe-migrate/src/migration.rs` | разобранный скрипт: вид, версия, описание, SHA-256, признак транзакционности |
-| `MigrationVersion` | `rurqe-migrate/src/version.rs` | версия как `Vec<u64>`, тотальный числовой порядок |
-| `Checksum` | `rurqe-migrate/src/checksum.rs` | SHA-256 в hex, сравнение записанного и фактического |
-| `SchemaHistoryEntry` | `rurqe-migrate/src/history.rs` | строка `__rurqe_schema_history` |
-| `MigrationBackend` / `MigrationTransaction` | `rurqe-migrate/src/runner/backend.rs` | контракты драйвера: история, лок, транзакции |
-| `LockGuard` | `rurqe-migrate/src/runner/guard.rs` | RAII-удержание run-лока |
-| `DeclarativeStage` / `StageScript` | `rurqe-migrate/src/stage/script.rs` | декларативный `schema/` |
-| `StageMarker` | `rurqe-migrate/src/stage/marker.rs` | синтетическая запись маркера stage |
-| `Checkpoint` | `rurqe-migrate/src/checkpoint.rs` | граница прунинга и хеш stage на ней |
-| `GoldenEquation` / `GoldenReport` | `rurqe-cli/src/stage/equation.rs` | сверка stage против чекпоинта и хвоста |
+| `Migration` | `rurqe-migrate/src/migration.rs` | a parsed script: kind, version, description, SHA-256, transactionality flag |
+| `MigrationVersion` | `rurqe-migrate/src/version.rs` | the version as `Vec<u64>`, with a total numeric order |
+| `Checksum` | `rurqe-migrate/src/checksum.rs` | SHA-256 in hex, comparing the recorded value against the actual one |
+| `SchemaHistoryEntry` | `rurqe-migrate/src/history.rs` | one `__rurqe_schema_history` row |
+| `MigrationBackend` / `MigrationTransaction` | `rurqe-migrate/src/runner/backend.rs` | driver contracts: history, lock, transactions |
+| `LockGuard` | `rurqe-migrate/src/runner/guard.rs` | RAII holding of the run lock |
+| `DeclarativeStage` / `StageScript` | `rurqe-migrate/src/stage/script.rs` | the declarative `schema/` |
+| `StageMarker` | `rurqe-migrate/src/stage/marker.rs` | the synthetic stage marker entry |
+| `Checkpoint` | `rurqe-migrate/src/checkpoint.rs` | the pruning boundary and the stage hash at that boundary |
+| `GoldenEquation` / `GoldenReport` | `rurqe-cli/src/stage/equation.rs` | reconciling the stage against the checkpoint and the tail |
 
-## Таблица истории
+## The history table
 
-Обе модели пишут в одну таблицу, создаваемую `create_schema_history_table_sql()`:
+Both models write into one table, created by `create_schema_history_table_sql()`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS __rurqe_schema_history (
@@ -65,8 +65,8 @@ CREATE TABLE IF NOT EXISTS __rurqe_schema_history (
 );
 ```
 
-Поле `type` хранит текст `MigrationKind::as_str()`: `VERSIONED`, `REPEATABLE` или `BASELINE`. Поле `success` отличает применённую запись от маркера начатой или провалившейся попытки, а отсутствие `checksum` (`baseline`-запись) означает, что сверять нечего и запись никогда не считается изменённой (`SchemaHistoryEntry::is_modified`).
+The `type` column holds the text of `MigrationKind::as_str()`: `VERSIONED`, `REPEATABLE` or `BASELINE`. The `success` column distinguishes an applied entry from the marker of a started or failed attempt, and a missing `checksum` (a `baseline` entry) means there is nothing to compare, so the entry is never considered modified (`SchemaHistoryEntry::is_modified`).
 
-## Как читать раздел
+## How to read this section
 
-Все утверждения раздела выведены из исходников `crates/rurqe-migrate` и `crates/rurqe-cli/src/{cli,stage}` и из их модульных тестов. Отдельного ключа, включающего режим, в `rurqe.toml` нет: `CodegenConfig::parse` отклоняет любую неизвестную секцию и любой неизвестный ключ, а знает ровно `schema`, `[codegen]`, `[codegen].domain_types` и `[codegen].type_overrides`. Режим определяется составом каталогов и набором команд, а не флагом конфигурации.
+Every statement in this section is derived from the sources of `crates/rurqe-migrate` and `crates/rurqe-cli/src/{cli,stage}` and from their unit tests. `rurqe.toml` carries no key that enables a mode: `CodegenConfig::parse` rejects any unknown section and any unknown key, and it knows exactly `schema`, `[codegen]`, `[codegen].domain_types` and `[codegen].type_overrides`. The mode is determined by the set of directories and by the set of commands, not by a configuration flag.
