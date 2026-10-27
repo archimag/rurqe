@@ -1,44 +1,44 @@
-# Справочник ошибок
+# Error reference
 
-Ошибка может возникнуть на трёх рубежах, и каждый рубеж говорит на своём языке.
+An error can arise at three gates, and each gate speaks its own language.
 
-| Рубеж | Тип | Когда |
+| Gate | Type | When |
 |---|---|---|
-| компиляция | `#[diagnostic::on_unimplemented]` | на месте вызова метода |
-| сборка AST | `BuildError` | в `.build()`, до сети |
-| исполнение | `ExecutionError<E>` | после отправки в БД |
+| compilation | `#[diagnostic::on_unimplemented]` | at the method call site |
+| AST assembly | `BuildError` | in `.build()`, before the network |
+| execution | `ExecutionError<E>` | after the statement reached the database |
 
-## 1. Компилятор: `#[diagnostic::on_unimplemented]`
+## 1. The compiler: `#[diagnostic::on_unimplemented]`
 
-Атрибуты заданы на трейтах, поэтому `rustc` печатает доменное сообщение вместо
-каскада трейтов. Ниже — дословные сообщения из исходников.
+The attributes sit on the traits, so `rustc` prints a domain message instead of
+a trait cascade. Below are the verbatim messages from the sources.
 
-### Значения и строки
+### Values and rows
 
-| Трейт | Сообщение |
+| Trait | Message |
 |---|---|
 | `ToSqlVal` (`expr/val.rs`) | `` `{Self}` cannot be bound as a SQL parameter `` |
 | `FromSqlValue` (`row.rs`) | `` `{Self}` cannot be decoded from a SQL value `` |
 | `FromRow` (`row.rs`) | `` `{Self}` cannot be decoded from a query row `` |
 
-Примечание к `ToSqlVal` перечисляет допустимые типы: `i16`, `i32`, `u32`, `i64`,
+The note on `ToSqlVal` lists the accepted types: `i16`, `i32`, `u32`, `i64`,
 `usize`, `f64`, `bool`, `String`, `&str`, `Vec<u8>`, `&[u8]`, `Option<T>`.
 
-### Области видимости и принадлежность
+### Scopes and ownership
 
-| Трейт | Сообщение |
+| Trait | Message |
 |---|---|
 | `TableInScope` (`schema/scope.rs`) | `` table `{T}` is not part of this query's scope `` |
 | `ExprScope` (`schema/scope.rs`) | `` `{Self}` is not a valid expression scope `` |
 | `ExprInScope` (`schema/scope.rs`) | `` expression references table `{Self}`, which is not part of this query's scope `` |
 | `ColumnBelongsTo` (`schema/table.rs`) | `` column `{Self}` does not belong to table `{T}` `` |
 
-Сообщения подсказывают лечение: «add `{Self}` to the query via `from`, `inner_join`,
-or `left_join` before referencing its columns».
+The messages suggest the remedy: "add `{Self}` to the query via `from`, `inner_join`,
+or `left_join` before referencing its columns".
 
-### Исполнение и транзакции
+### Execution and transactions
 
-| Трейт | Сообщение |
+| Trait | Message |
 |---|---|
 | `ExecutableQuery` | `` `{Self}` cannot be executed as a query `` |
 | `QueryBackend` | `` `{Self}` cannot execute RURQE queries `` |
@@ -47,9 +47,9 @@ or `left_join` before referencing its columns».
 | `TransactionBackend` | `` `{Self}` cannot run RURQE transactions `` |
 | `TransactionalConnection` | `` `{Self}` cannot open a RURQE transaction scope `` |
 
-### Возможности диалектов (все 14)
+### Dialect capabilities (all 14)
 
-| Трейт | Сообщение |
+| Trait | Message |
 |---|---|
 | `SupportsReturning` | `` dialect `{Self}` does not support the RETURNING clause `` |
 | `SupportsDistinctOn` | `` dialect `{Self}` does not support DISTINCT ON `` |
@@ -66,131 +66,134 @@ or `left_join` before referencing its columns».
 | `SupportsJsonAggregation` | `` dialect `{Self}` does not support JSON aggregation of a row set `` |
 | `SupportsDistinctFrom` | `` dialect `{Self}` does not support IS DISTINCT FROM and IS NOT DISTINCT FROM `` |
 
-### Типстейты, группировка и выражения
+### Typestates, grouping, and expressions
 
-Эти трейты также несут `#[diagnostic::on_unimplemented]`, и сообщение называет
-нарушенное правило SQL, а не внутреннее имя типа:
+These traits also carry `#[diagnostic::on_unimplemented]`, and the message names
+the violated SQL rule rather than an internal type name:
 
-| Область | Трейты-стражи | Что отвергается |
+| Area | Guard traits | What is rejected |
 |---|---|---|
-| проекция | `ProjectionPresent`, `SelectTarget`, `SelectTargetInScope`, `ColumnInScope` | проекция отсутствует; цель проекции вне области видимости |
-| мутации | `ExecutableMutation`, `AssignmentsPresent` | `UPDATE`/`DELETE` без фильтра; `UPDATE` без `SET` |
-| вставка | `InsertSource`, `EmptyRows` | нет источника строк; источник пуст |
-| группировка | `GroupedSelectTarget`, `ColumnInGroupBy`, `GroupedSelection`, `GroupedSelection` | колонка не сгруппирована и не агрегирована |
-| выражения | `SqlCompatible`, `IntoExpr`, `FunctionOperand`, `NumericOperand`, `InSubquery`, `RowExpr` | несовместимый тип операнда; несовпадение арности `IN` |
-| соединения | `AssignmentScope`, `ValuesScope`, `TableNullabilityInScope`, `ApplyNullability` | присваивание вне области; чтение nullable-колонки как `T` |
-| окна | `PartitionBy`, `OrderBy`, `OrderExprTarget` | выражение вне области видимости окна |
-| вложенность | `MultisetRow`, `AnySubquery` | строка не является элементом множества; не-подзапрос |
-| диалектные расширения | трейты из `rurqe-postgres::expressions` | `PgTextValue`, `PgJsonValue`, `PgArrayElements` не выполнены |
+| projection | `ProjectionPresent`, `SelectTarget`, `SelectTargetInScope`, `ColumnInScope` | the projection is missing; a projection target is out of scope |
+| mutations | `ExecutableMutation`, `AssignmentsPresent` | `UPDATE`/`DELETE` without a filter; `UPDATE` without `SET` |
+| insertion | `InsertSource`, `EmptyRows` | no row source; an empty source |
+| grouping | `GroupedSelectTarget`, `ColumnInGroupBy`, `GroupedSelection` | a column is neither grouped nor aggregated |
+| expressions | `SqlCompatible`, `IntoExpr`, `FunctionOperand`, `NumericOperand`, `InSubquery`, `RowExpr` | an incompatible operand type; an `IN` arity mismatch |
+| joins | `AssignmentScope`, `ValuesScope`, `TableNullabilityInScope`, `ApplyNullability` | an assignment out of scope; a nullable column read as `T` |
+| windows | `PartitionBy`, `OrderBy`, `OrderExprTarget` | an expression outside the window scope |
+| nesting | `MultisetRow`, `AnySubquery` | a row is not a multiset element; the value is not a subquery |
+| dialect extensions | traits from `rurqe-postgres::expressions` | `PgTextValue`, `PgJsonValue`, `PgArrayElements` are not satisfied |
 
-## 2. `compile_fail`-каталог
+## 2. The `compile_fail` catalogue
 
-Книга гарантий проверяется `cargo test --doc`. Кейсы распределены по хостам API.
+The book of guarantees is checked by `cargo test --doc`. The cases are
+distributed over the API hosts.
 
-| Хост | Проверяемый инвариант |
+| Host | Invariant under test |
 |---|---|
-| `crates/rurqe/src/lib.rs` | `distinct_on` + `for_update` в обе стороны; `FILTER (WHERE)` на составном выражении (`sum(x) + 1.0`) |
-| `crates/rurqe-core/src/schema/scope.rs` | `TableInScope`: чужая таблица; `ExprInScope`: выражение ссылается на таблицу вне области |
-| `crates/rurqe-sqlite/src/dialect.rs` | `SupportsOnConflict` до 3.24; `SupportsReturning` до 3.35; `SupportsDeleteUsing` всегда; `SupportsUpdateFrom` до 3.35; `SupportsLateralJoin` всегда; `SupportsJsonAggregation` до 3.38 |
-| `rurqe-core` (selection / group_by / select / dml / insert / update / delete / expr::ast) | типыстейты проекции и мутаций, nullability внешних соединений, `CASE` без `WHEN` |
+| `crates/rurqe/src/lib.rs` | `distinct_on` + `for_update` in both orders; `FILTER (WHERE)` on a composite expression (`sum(x) + 1.0`) |
+| `crates/rurqe-core/src/schema/scope.rs` | `TableInScope`: a foreign table; `ExprInScope`: an expression referencing a table outside the scope |
+| `crates/rurqe-sqlite/src/dialect.rs` | `SupportsOnConflict` before 3.24; `SupportsReturning` before 3.35; `SupportsDeleteUsing` always; `SupportsUpdateFrom` before 3.35; `SupportsLateralJoin` always; `SupportsJsonAggregation` before 3.38 |
+| `rurqe-core` (selection / group_by / select / dml / insert / update / delete / expr::ast) | projection and mutation typestates, outer-join nullability, `CASE` without `WHEN` |
 
-Практический смысл: ослабление инварианта ломает `cargo test --doc`, а не доходит
-до базы данных.
+The practical meaning: weakening an invariant breaks `cargo test --doc`
+instead of reaching a database.
 
-## 3. `BuildError` — пре-флайт валидация AST
+## 3. `BuildError` — AST pre-flight validation
 
-Все варианты возвращаются из `.build()` **до** сетевого ввода-вывода.
+Every variant is returned from `.build()` **before** any network I/O.
 
-| Вариант | Нарушенное правило |
+| Variant | Violated rule |
 |---|---|
-| `DuplicateRelation { name }` | два отношения под одним эффективным именем (`FROM users JOIN users`) |
-| `DuplicateCte { name }` | два CTE с одним именем |
-| `DistinctOnOrderMismatch { position }` | `ORDER BY` не начинается с выражений `DISTINCT ON` |
-| `DistinctOnWithLock` | `DISTINCT ON` вместе с блокировкой |
-| `DistinctWithLock` | `DISTINCT` вместе с блокировкой |
-| `NestedLock` | блокировка во вложенном запросе |
-| `DistinctOrderNotProjected { position }` | `ORDER BY` выражения нет в проекции `DISTINCT` |
-| `CompoundOrderIndex { index, columns }` | позиция сортировки составного запроса вне проекции |
-| `CompoundOrderColumn { column }` | имя выходной колонки не проецируется |
-| `CompoundOrderExpression` | сортировка составного запроса задана выражением |
-| `SetOperandArity { operand, expected, actual }` | операнды `UNION`/`INTERSECT`/`EXCEPT` разной арности |
-| `AliasedDerivedRelation { name }` | производное отношение адресуется не тем именем, под которым зарегистрировано |
-| `ColumnWithoutRelation { table, column }` | ссылка на колонку в клаузе без пространства отношений (`VALUES`, `ORDER BY` составного запроса) |
-| `UnresolvedColumn { table, column }` | ссылка на отношение, которого нет ни в запросе, ни в объемлющем запросе |
-| `UnresolvedQualifier { name }` | квалификатор не объявлен ни одним рендерящимся отношением |
-| `InconsistentRows { row, expected, actual }` | строка `INSERT` несёт другое число значений |
-| `MismatchedRowColumns { row, position, expected, actual }` | строка `INSERT` присваивает другую колонку на той же позиции |
-| `EmptyInsertRow { row }` | строка `INSERT` не присваивает ничего |
-| `EmptyProjection` | список проекции пуст |
-| `UngroupedColumnWithAggregate { table, column }` | колонка рядом с агрегатом без `GROUP BY` |
-| `UngroupedHavingColumn { table, column }` | `HAVING` читает негруппированную колонку |
-| `UngroupedColumn { table, column }` | выражение читает колонку, выброшенную `GROUP BY` |
-| `AggregateInRowClause { clause, aggregate }` | агрегат в `WHERE`/`GROUP BY`/`ON`/присваивании/`ON CONFLICT` |
-| `RawSql(RawSqlError)` | число фрагментов и параметров сырого SQL не согласовано |
+| `DuplicateRelation { name }` | two relations under one effective name (`FROM users JOIN users`) |
+| `DuplicateCte { name }` | two CTEs with one name |
+| `DistinctOnOrderMismatch { position }` | `ORDER BY` does not start with the `DISTINCT ON` expressions |
+| `DistinctOnWithLock` | `DISTINCT ON` together with locking |
+| `DistinctWithLock` | `DISTINCT` together with locking |
+| `NestedLock` | locking inside a nested statement |
+| `DistinctOrderNotProjected { position }` | an `ORDER BY` expression is absent from the `DISTINCT` projection |
+| `CompoundOrderIndex { index, columns }` | the ordering position of a compound statement is outside the projection |
+| `CompoundOrderColumn { column }` | the output column name is not projected |
+| `CompoundOrderExpression` | the ordering of a compound statement is given by an expression |
+| `SetOperandArity { operand, expected, actual }` | `UNION`/`INTERSECT`/`EXCEPT` operands differ in arity |
+| `AliasedDerivedRelation { name }` | a derived relation is addressed by a name other than the one it was registered under |
+| `ColumnWithoutRelation { table, column }` | a column is referenced in a clause with no relation space (`VALUES`, the `ORDER BY` of a compound statement) |
+| `UnresolvedColumn { table, column }` | a reference to a relation present in neither the statement nor an enclosing statement |
+| `UnresolvedQualifier { name }` | a qualifier declared by no rendered relation |
+| `InconsistentRows { row, expected, actual }` | an `INSERT` row carries a different number of values |
+| `MismatchedRowColumns { row, position, expected, actual }` | an `INSERT` row assigns a different column at the same position |
+| `EmptyInsertRow { row }` | an `INSERT` row assigns nothing |
+| `EmptyProjection` | the projection list is empty |
+| `UngroupedColumnWithAggregate { table, column }` | a column stands next to an aggregate without `GROUP BY` |
+| `UngroupedHavingColumn { table, column }` | `HAVING` reads an ungrouped column |
+| `UngroupedColumn { table, column }` | an expression reads a column dropped by `GROUP BY` |
+| `AggregateInRowClause { clause, aggregate }` | an aggregate in `WHERE`/`GROUP BY`/`ON`/an assignment/`ON CONFLICT` |
+| `RawSql(RawSqlError)` | the fragment count and the parameters of a raw SQL statement disagree |
 
-`AggregateInRowClause` несёт `RowClause`, который печатается как «the `WHERE`
-predicate», «the `GROUP BY` clause», «the `ON` condition of a join», «a column
-assignment», «the conflict target predicate of an `ON CONFLICT` clause», «the update
-predicate of an `ON CONFLICT` clause».
+`AggregateInRowClause` carries a `RowClause`, rendered as "the `WHERE`
+predicate", "the `GROUP BY` clause", "the `ON` condition of a join", "a column
+assignment", "the conflict target predicate of an `ON CONFLICT` clause", "the
+update predicate of an `ON CONFLICT` clause".
 
-`RawSqlError` различает `MixedPlaceholders` (смешаны `?` и `{}`) и
+`RawSqlError` distinguishes `MixedPlaceholders` (`?` and `{}` mixed) from
 `PlaceholderCount { expected, provided }`.
 
 ## 4. `RowDecodeError`
 
-| Вариант | Пример сообщения |
+| Variant | Sample message |
 |---|---|
-| `TypeMismatch { target, found }` | `cannot decode a SQL `text` value into `i64`` |
-| `InvalidValue { target, found, detail }` | `cannot decode a SQL `int64` value into `i32`: value does not fit into a 32-bit integer` |
+| `TypeMismatch { target, found }` | ``cannot decode a SQL `text` value into `i64` `` |
+| `InvalidValue { target, found, detail }` | ``cannot decode a SQL `int64` value into `i32`: value does not fit into a 32-bit integer `` |
 | `ArityMismatch { expected, actual }` | `cannot decode a row of 1 values into a row type of 2 values` |
 
-Частые причины `InvalidValue`: `bool` из целого, отличного от `0`/`1`; `i64` из
-`F64` с дробной частью, `NaN`, бесконечности или вне диапазона; `Vec<u8>` из текста,
-не являющегося шестнадцатеричным; доменный newtype с неверной длиной или
-неудачным парсингом.
+Frequent `InvalidValue` causes: a `bool` from an integer other than `0`/`1`; an
+`i64` from an `F64` with a fractional part, `NaN`, infinity, or out of range; a
+`Vec<u8>` from text that is not hexadecimal; a domain newtype with a wrong
+length or a failed parse.
 
 ## 5. `ExecutionError<E>`
 
-| Вариант | Значение |
+| Variant | Meaning |
 |---|---|
-| `Build(BuildError)` | отказ пре-флайта; сети не было |
-| `Backend(E)` | ошибка драйвера/пула |
-| `RowDecode { row_index, source }` | строка не декодировалась |
-| `NoRows` | `fetch_one` по пустому результату |
-| `MultipleRows { count }` | `fetch_optional`/`fetch_one` получили больше строки |
+| `Build(BuildError)` | a pre-flight rejection; the network was never used |
+| `Backend(E)` | a driver or pool error |
+| `RowDecode { row_index, source }` | a row failed to decode |
+| `NoRows` | `fetch_one` over an empty result |
+| `MultipleRows { count }` | `fetch_optional`/`fetch_one` received more than one row |
 
-## 6. Ошибки драйверов
+## 6. Driver errors
 
 `PgError`:
 
-| Вариант | Когда |
+| Variant | When |
 |---|---|
-| `Driver(DriverError)` | ошибка `postgres` / `tokio-postgres` |
-| `UnsupportedType(String)` | колонка не имеет известного бинарного представления |
-| `InvalidValue { column_type, reason }` | payload не декодируется как объявленный тип |
-| `Pool(deadpool_postgres::PoolError)` | только с фичей `deadpool-postgres` |
+| `Driver(DriverError)` | an error of `postgres` / `tokio-postgres` |
+| `UnsupportedType(String)` | the column has no known binary representation |
+| `InvalidValue { column_type, reason }` | a payload does not decode as the declared type |
+| `Pool(deadpool_postgres::PoolError)` | only with the `deadpool-postgres` feature |
 
 `PgPoolError` (`r2d2`): `Pool(r2d2::Error)` | `Query(PgError)`.
 
 `SqlitePoolError` (`r2d2`): `Pool(r2d2::Error)` | `Query(rusqlite::Error)`.
 
-`rusqlite` также отдаёт ошибку конвертации для колонки, текст которой не является
-валидным UTF-8 — значение не подменяется символами замены.
+`rusqlite` also returns a conversion error for a column whose text is not valid
+UTF-8 — the value is never replaced with replacement characters.
 
-## 7. Ошибки миграций и стадий
+## 7. Migration and stage errors
 
-`StageError` покрывает песочницу, скрипт, отсутствие базовой стадии
-(`BaseStageMissing`), несовпадение её хэша (`BaseStageHashMismatch`), расхождение
-(`Diverged`) и неудачное удаление (`DiscardFailed`). `DriftError` — `Drift`,
-`HashMismatch`, `MissingSchemaHash`, `InvalidLock`, `Io`. Подробности — в главах
-[The Golden Equation](../migrations/golden_equation.md) и
-[CLI и drift](../toolchain/overview.md).
+`StageError` covers the sandbox, a script, a missing base stage
+(`BaseStageMissing`), a base stage hash mismatch (`BaseStageHashMismatch`),
+divergence (`Diverged`), and a failed discard (`DiscardFailed`). `DriftError`
+is `Drift`, `HashMismatch`, `MissingSchemaHash`, `InvalidLock`, or `Io`. For
+details see [The Golden Equation](../migrations/golden_equation.md) and
+[CLI and drift](../toolchain/overview.md).
 
-## 8. Как читать диагностику
+## 8. How to read a diagnostic
 
-1. Если сообщение начинается с `cannot …` или `dialect … does not support …` — это
-   компилятор, и код даже не собрался.
-2. Если ошибка пришла из `.build()` — это `BuildError`; сеть не использовалась.
-3. Если ошибка несёт `row_index` — запрос выполнился, проблема в типах строки.
-4. Если ошибка несёт `column_type` — сервер вернул тип, который адаптер не смог
-   прочитать; смотрите матрицу типов в [Экосистемные типы](../runtime/types.md).
+1. If the message starts with `cannot …` or `dialect … does not support …` — it
+   is the compiler, and the code did not even build.
+2. If the error came from `.build()` — it is a `BuildError`; the network was not
+   used.
+3. If the error carries a `row_index` — the statement executed, and the problem
+   is in the row types.
+4. If the error carries a `column_type` — the server returned a type the adapter
+   could not read; see the type matrix in [Ecosystem types](../runtime/types.md).

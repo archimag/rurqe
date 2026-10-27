@@ -1,13 +1,14 @@
-# Пользовательские типы: newtype-макросы и `#[derive(SqlType)]`
+# Custom types: newtype macros and `#[derive(SqlType)]`
 
-Доменный тип (хэш, адрес, идентификатор предметной области) должен вести себя как
-встроенный скаляр: биндиться параметром, декодироваться из строки, участвовать в
-сравнениях, попадать в аргументы скалярных функций и подниматься в `Option<Self>`
-при внешнем соединении. Есть два пути — декларативные макросы и proc-macro derive.
+A domain type (a hash, an address, a subject-area identifier) has to behave like
+a built-in scalar: bind as a parameter, decode from a row, take part in
+comparisons, appear in scalar-function arguments, and lift into `Option<Self>`
+under an outer join. Two routes exist — declarative macros and a proc-macro
+derive.
 
-## Декларативные макросы
+## Declarative macros
 
-`crates/rurqe-core/src/expr/val/newtype.rs` экспортирует три макроса:
+`crates/rurqe-core/src/expr/val/newtype.rs` exports three macros:
 
 ```rust
 rurqe::impl_sql_binary_newtype!(Txid, 32); // with exact length validation
@@ -15,31 +16,32 @@ rurqe::impl_sql_binary_newtype!(Digest);   // any length
 rurqe::impl_sql_text_newtype!(Address);    // via Display + FromStr
 ```
 
-Бинарный вариант требует `AsRef<[u8]>` и `TryFrom<&[u8]>`; текстовый — `Display` и
-`FromStr`. Оба пути не заглядывают внутрь типа.
+The binary form requires `AsRef<[u8]>` and `TryFrom<&[u8]>`; the text form
+requires `Display` and `FromStr`. Neither route looks inside the type.
 
-### Что генерируется
+### What is generated
 
-Обе формы раскрываются в общий `impl_sql_newtype!`, который выдаёт:
+Both forms expand into the shared `impl_sql_newtype!`, which emits:
 
-- `ToSqlVal` для `Ty` и для `&Ty`;
+- `ToSqlVal` for `Ty` and for `&Ty`;
 - `From<Ty> for SqlVal`;
-- `MakeNullable` с `Nullable = Option<Ty>`;
-- `FromSqlValue` с проверкой длины (для `impl_sql_binary_newtype!(Ty, N)`);
-- `IntoExpr<Ty>` для `Ty` и `&Ty`;
+- `MakeNullable` with `Nullable = Option<Ty>`;
+- `FromSqlValue` with length validation (for `impl_sql_binary_newtype!(Ty, N)`);
+- `IntoExpr<Ty>` for `Ty` and `&Ty`;
 - `SqlCompatible<Ty, &Ty> for &Ty`;
-- `FunctionOperand<Ty>` для `Ty` и `&Ty`;
-- текстовый вариант дополнительно даёт `SqlCompatible<Ty, &str>`, `IntoExpr<Ty>`
-  для `&str` и `String` — так предикат можно писать прямо против литерала.
+- `FunctionOperand<Ty>` for `Ty` and `&Ty`;
+- the text form additionally provides `SqlCompatible<Ty, &str>` and
+  `IntoExpr<Ty>` for `&str` and `String`, so a predicate can be written against a
+  literal directly.
 
-### Ошибки вместо паники
+### Errors instead of panics
 
-- неверная длина: `RowDecodeError::InvalidValue { found: "bytes", detail: "expected 32 bytes, got 31" }`;
-- отказ `TryFrom`: `InvalidValue` с текстом ошибки конверсии;
-- отказ `FromStr`: `InvalidValue` с текстом парсера;
-- чуждый вариант `SqlVal`: `TypeMismatch`.
+- wrong length: `RowDecodeError::InvalidValue { found: "bytes", detail: "expected 32 bytes, got 31" }`;
+- a `TryFrom` refusal: `InvalidValue` carrying the conversion error text;
+- a `FromStr` refusal: `InvalidValue` carrying the parser error text;
+- a foreign `SqlVal` variant: `TypeMismatch`.
 
-Пример из тестов крейта:
+An example from the crate tests:
 
 ```rust
 crate::impl_sql_text_newtype!(MockAddress);
@@ -51,27 +53,27 @@ assert!(MockAddress::from_sql_value(&SqlVal::Text("invalid".to_owned())).is_err(
 
 ## `#[derive(SqlType)]`
 
-`crates/rurqe-macros/src/sql_type.rs` добавляет к тем же контрактам режим
-делегирования и поддержку перечислений.
+`crates/rurqe-macros/src/sql_type.rs` adds a delegation mode on top of the same
+contracts, together with enum support.
 
-| Атрибут | Смысл |
+| Attribute | Meaning |
 |---|---|
-| `#[sql(transparent)]` | делегировать обёрнутому значению (`struct UserId(i64)` ведёт себя как `i64`) |
-| `#[sql(as = Bytes)]` | кодировать через `AsRef<[u8]>`, декодировать через `TryFrom<&[u8]>` |
-| `#[sql(as = Bytes, len = 32)]` | то же плюс проверка длины блоба |
-| `#[sql(as = Text)]` | кодировать через `Display`, декодировать через `FromStr` |
-| `#[sql(rename = "...")]` | (на варианте enum) SQL-метка, отличная от имени варианта |
+| `#[sql(transparent)]` | delegate to the wrapped value (`struct UserId(i64)` behaves like `i64`) |
+| `#[sql(as = Bytes)]` | encode through `AsRef<[u8]>`, decode through `TryFrom<&[u8]>` |
+| `#[sql(as = Bytes, len = 32)]` | the same plus blob length validation |
+| `#[sql(as = Text)]` | encode through `Display`, decode through `FromStr` |
+| `#[sql(rename = "...")]` | (on an enum variant) a SQL label different from the variant name |
 
-Применяется к newtype-структуре ровно с одним полем (кортежным или именованным) и к
-перечислению из unit-вариантов.
+It applies to a newtype struct with exactly one field (tuple or named) and to an
+enum of unit variants.
 
-### Перечисления как типы БД
+### Enums as database types
 
-Перечисление хранится метками вариантов. Derive выдаёт `Display` (рендерит метку)
-и `FromStr` (разбирает метку обратно), а неизвестная метка становится
-`RowDecodeError::InvalidValue` с перечислением допустимых значений. `#[sql(as = Text)]`
-разрешён как явное указание режима по умолчанию; любой другой режим для enum
-отвергается.
+An enum is stored as its variant labels. The derive emits `Display` (rendering
+the label) and `FromStr` (parsing the label back), and an unknown label becomes a
+`RowDecodeError::InvalidValue` that lists the accepted values.
+`#[sql(as = Text)]` is accepted as an explicit statement of the default mode; any
+other mode on an enum is rejected.
 
 ```rust
 #[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,39 +84,40 @@ pub enum Status {
 }
 ```
 
-### Что генерируется
+### What is generated
 
-Каждый режим выдаёт `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`,
-`MakeNullable`, `SqlArrayElement` (тип можно использовать как элемент массива
-`Vec<Self>`), совместимость с выражениями (`IntoExpr`) и с аргументами скалярных
-функций (`FunctionOperand`). Для режима `Bytes` и `Text` добавляются заимствованные
-реализации.
+Each mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`,
+`MakeNullable`, `SqlArrayElement` (the type can be used as an array element
+`Vec<Self>`), expression compatibility (`IntoExpr`), and scalar-function argument
+compatibility (`FunctionOperand`). The `Bytes` and `Text` modes additionally get
+borrowed implementations.
 
-### Пути и зависимости
+### Paths and dependencies
 
-Каждый путь в раскрытии привязан к `::rurqe::core` — ре-экспорту фасада. Крейт,
-зависящий только от `rurqe`, компилирует `#[derive(SqlType)]`, `select!`, `dto!`,
-`sql!`/`raw_sql!` без добавления `rurqe-core` в свой манифест.
+Every path in the expansion is anchored at `::rurqe::core` — a re-export of the
+facade. A crate that depends only on `rurqe` therefore compiles
+`#[derive(SqlType)]`, `select!`, `dto!`, and `sql!`/`raw_sql!` without adding
+`rurqe-core` to its manifest.
 
-### Диагностика derive
+### Derive diagnostics
 
-| Ситуация | Сообщение |
+| Situation | Message |
 |---|---|
 | union | `SqlType` derives only on a newtype struct or on an enum of unit variants |
-| структура не с одним полем | `SqlType` derives only on a newtype struct with exactly one field |
-| нет ни одного режима | `SqlType` needs a storage option: `#[sql(transparent)]`, `#[sql(as = Bytes)]`, or `#[sql(as = Text)]` |
-| `transparent` вместе с `as` | `transparent` cannot be combined with `as = …` |
-| `len` без `Bytes` | `len` requires `as = Bytes` |
-| неизвестный `as` | unsupported `sql` storage; expected `Bytes` or `Text` |
-| повтор атрибута | `as` is given more than once / `len` is given more than once / `rename` is given more than once |
-| `transparent` на enum | `transparent` is not supported on an enum; an enum is stored as its label |
-| пустой enum | `SqlType` derives on an enum with at least one variant |
-| enum с полями у варианта | `SqlType` derives only on an enum of unit variants |
+| a struct with more than one field | `SqlType` derives only on a newtype struct with exactly one field |
+| no mode at all | `SqlType` needs a storage option: `#[sql(transparent)]`, `#[sql(as = Bytes)]`, or `#[sql(as = Text)]` |
+| `transparent` together with `as` | `transparent` cannot be combined with `as = …` |
+| `len` without `Bytes` | `len` requires `as = Bytes` |
+| an unknown `as` | unsupported `sql` storage; expected `Bytes` or `Text` |
+| a repeated attribute | `as` is given more than once / `len` is given more than once / `rename` is given more than once |
+| `transparent` on an enum | `transparent` is not supported on an enum; an enum is stored as its label |
+| an empty enum | `SqlType` derives on an enum with at least one variant |
+| an enum whose variant carries fields | `SqlType` derives only on an enum of unit variants |
 
-## Кодогенерация доменных типов
+## Code generation of domain types
 
-`rurqe.toml` позволяет закрепить доменный тип за колонкой, чтобы он пережил
-кодогенерацию, а не деградировал до `String`/`Vec<u8>`:
+`rurqe.toml` pins a domain type to a column so that it survives code generation
+instead of degrading to `String`/`Vec<u8>`:
 
 ```toml
 [codegen.type_overrides]
@@ -122,14 +125,15 @@ pub enum Status {
 users.created_at = "chrono::NaiveDateTime"
 ```
 
-Override попадает в маркер колонки и в поле записи дословно; если значение уже
-содержит `Option<…>`, повторная обёртка не добавляется. Подробнее — в главе
-[CLI, кодогенерация и drift](../toolchain/overview.md).
+The override reaches the column marker and the record field verbatim; when the
+value already contains `Option<…>`, it is not wrapped a second time. See
+[CLI, codegen, and drift](../toolchain/overview.md) for details.
 
-## Итог
+## Summary
 
-- Два пути, один контракт: и макрос, и derive дают полный набор реализаций.
-- Валидация (длина, парсинг) всегда возвращает типизированную ошибку
-  декодирования, а не паникует.
-- Доменный тип участвует в выражениях, функциях, массивах и внешних соединениях
-  на равных со встроенными скалярами.
+- Two routes, one contract: both the macro and the derive produce the full set
+  of implementations.
+- Validation (length, parsing) always returns a typed decode error instead of
+  panicking.
+- A domain type participates in expressions, functions, arrays, and outer joins
+  on equal terms with the built-in scalars.

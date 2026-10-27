@@ -1,9 +1,9 @@
-# Экосистемные типы, значения и декодирование
+# Ecosystem types, values, and decoding
 
-Все значения проходят через один тип — `SqlVal` из
-`crates/rurqe-core/src/expr/val.rs`. Он же — единица обмена между ядром и
-драйверами: параметры уходят в адаптер как `Vec<SqlVal>`, строки возвращаются как
-`Vec<Vec<SqlVal>>`.
+Every value passes through one type — `SqlVal` from
+`crates/rurqe-core/src/expr/val.rs`. It is also the exchange unit between the
+core and the drivers: parameters reach an adapter as `Vec<SqlVal>`, rows come
+back as `Vec<Vec<SqlVal>>`.
 
 ## `SqlVal`
 
@@ -27,63 +27,65 @@ pub enum SqlVal {
 }
 ```
 
-Перечисление помечено `#[non_exhaustive]`, потому что часть вариантов существует
-только при включённой Cargo-фиче. Следствие для прикладного кода: `match` по
-`SqlVal` вне крейта обязан иметь ветку с подстановочным шаблоном — она остаётся
-корректной при любом наборе фич.
+The enum is marked `#[non_exhaustive]`, because some variants exist only with
+the corresponding Cargo feature enabled. Consequence for application code: a
+`match` on `SqlVal` outside the crate must carry a wildcard arm — it stays
+correct under any feature set.
 
-`SqlVal::EncodingError` появился не для красоты: если значение нельзя закодировать
-(например, `usize`, не влезающий в `i64`), параметр не подменяется на `NULL`, а
-несёт причину отказа — драйвер вернёт её вызывающему коду.
+`SqlVal::EncodingError` is not cosmetic: when a value cannot be encoded (for
+instance a `usize` that does not fit into an `i64`), the parameter is not
+replaced by `NULL` — it carries the reason for the refusal, and the driver
+returns it to the caller.
 
-## Кодирование параметров: `ToSqlVal`
+## Encoding parameters: `ToSqlVal`
 
-Реализации предоставлены для `i16`, `i32`, `u32`, `i64`, `usize`, `f64`, `bool`,
-`String`, `&str`, `&String`, `Vec<u8>`, `&[u8]`, `SqlVal`, `Option<T>`, а также для
-гейтед-семейств: `rust_decimal::Decimal` и `&Decimal`, `uuid::Uuid` и `&Uuid`,
-`chrono::NaiveDateTime`, `chrono::DateTime<Utc>`, `chrono::NaiveDate`,
-`serde_json::Value`, `Json<T>` и `&Json<T>`.
+Implementations are provided for `i16`, `i32`, `u32`, `i64`, `usize`, `f64`,
+`bool`, `String`, `&str`, `&String`, `Vec<u8>`, `&[u8]`, `SqlVal`, `Option<T>`,
+and for the gated families: `rust_decimal::Decimal` and `&Decimal`, `uuid::Uuid`
+and `&Uuid`, `chrono::NaiveDateTime`, `chrono::DateTime<Utc>`,
+`chrono::NaiveDate`, `serde_json::Value`, `Json<T>` and `&Json<T>`.
 
-Особенности, зафиксированные кодом:
+Details fixed by the code:
 
-- `i16` кодируется как `SqlVal::I32`, `u32` — как `SqlVal::I64`;
-- `usize` пытается стать `i64`, иначе даёт `EncodingError` с текстом
-  «the value … cannot be represented as a 64-bit signed integer»;
-- `Option<T>::None` — это `SqlVal::Null`;
-- `Json<T>` сериализуется через `serde`; отказ сериализации превращается в
-  `EncodingError`, а не в панику.
+- `i16` encodes as `SqlVal::I32`, `u32` as `SqlVal::I64`;
+- `usize` tries to become an `i64`, otherwise it yields an `EncodingError` with
+  the text "the value … cannot be represented as a 64-bit signed integer";
+- `Option<T>::None` is `SqlVal::Null`;
+- `Json<T>` is serialized through `serde`; a serialization failure becomes an
+  `EncodingError`, never a panic.
 
-## Декодирование значений: `FromSqlValue`
+## Decoding values: `FromSqlValue`
 
-Каждая реализация `FromSqlValue` парная к `ToSqlVal`, поэтому значение
-round-trip’ится из параметра в строку результата без промежуточного текста.
+Every `FromSqlValue` implementation is paired with a `ToSqlVal` one, so a value
+round-trips from a parameter into a result row without an intermediate text
+form.
 
-Декодирование намеренно терпимо там, где движок не имеет отдельного класса
-хранения:
+Decoding is deliberately tolerant where the engine has no separate storage
+class:
 
-| Целевой тип | Принимает |
+| Target type | Accepts |
 |---|---|
-| `i16`, `i32`, `u32`, `usize` | `I32` и `I64` в пределах диапазона |
-| `i64` | `I64`; `Decimal` (если влезает); `F64` без дробной части |
+| `i16`, `i32`, `u32`, `usize` | `I32` and `I64` within range |
+| `i64` | `I64`; `Decimal` (if it fits); `F64` without a fractional part |
 | `f64` | `F64`, `I32`, `I64`, `Decimal` |
-| `bool` | `Bool`, а также целые `0` / `1` |
-| `String` | `Text`, а также текстовые формы `Uuid`, временных типов, `Json`, `Decimal` |
-| `Vec<u8>` | `Bytes`, а также `Text` в шестнадцатеричном виде (префикс `\x` допускается, регистр не важен) |
+| `bool` | `Bool`, and the integers `0` / `1` |
+| `String` | `Text`, and the textual forms of `Uuid`, temporal types, `Json`, `Decimal` |
+| `Vec<u8>` | `Bytes`, and `Text` in hexadecimal form (an `\x` prefix is allowed, case is irrelevant) |
 | `Decimal` | `Decimal`, `I32`, `I64`, `F64`, `Text` |
 | `uuid::Uuid` | `Uuid`, `Text`, `Bytes` |
 | `serde_json::Value`, `Json<T>` | `Json`, `Text`, `Bytes` |
-| `Option<T>` | `Null` → `None`, иначе `T::from_sql_value` |
+| `Option<T>` | `Null` → `None`, otherwise `T::from_sql_value` |
 
-Выход за диапазон — это `RowDecodeError::InvalidValue`, а не тихое усечение: `i64`
-не примет `F64(0.5)`, `NaN`, бесконечность или `1e30`. `String` принимает текстовую
-форму «доменного» значения именно потому, что кодогенератор по умолчанию
-отображает такие колонки на `String`.
+An out-of-range value is a `RowDecodeError::InvalidValue`, not a silent
+truncation: `i64` refuses `F64(0.5)`, `NaN`, infinity, or `1e30`. `String`
+accepts the textual form of a "domain" value exactly because the code generator
+maps such columns to `String` by default.
 
-Шестнадцатеричный обмен для бинарных значений (`hex_encode` / `hex_decode`)
-существует ради вложенных JSON-документов: бинарное поле вложенной строки
-приходит текстом и декодируется обратно в байты.
+The hexadecimal exchange for binary values (`hex_encode` / `hex_decode`) exists
+for nested JSON documents: a binary field of a nested row arrives as text and
+is decoded back into bytes.
 
-## Ошибка декодирования
+## The decode error
 
 ```rust
 pub enum RowDecodeError {
@@ -93,15 +95,16 @@ pub enum RowDecodeError {
 }
 ```
 
-`target` — `std::any::type_name` целевого типа, `found` — `SqlVal::variant_name()`.
-Отображение даёт читаемые сообщения: «cannot decode a SQL `text` value into `i64`»,
-«cannot decode a row of 1 values into a row type of 2 values».
+`target` is the `std::any::type_name` of the target type, `found` is
+`SqlVal::variant_name()`. The rendering produces readable messages: "cannot
+decode a SQL `text` value into `i64`", "cannot decode a row of 1 values into a
+row type of 2 values".
 
-## Строки: `FromRow`
+## Rows: `FromRow`
 
-`FromRow` реализован для кортежей от 1 до 12 элементов. `try_from_row` проверяет
-арность **до** декодирования значений, поэтому несоответствие числа колонок не
-маскируется ошибкой типа. `from_row` — сокращение, возвращающее `Option`.
+`FromRow` is implemented for tuples of 1 to 12 elements. `try_from_row` checks
+the arity **before** decoding values, so a column-count mismatch is never masked
+by a type error. `from_row` is a shorthand returning `Option`.
 
 ```rust
 let row = <(i64, String)>::try_from_row(&[
@@ -111,41 +114,43 @@ let row = <(i64, String)>::try_from_row(&[
 assert_eq!(row, Ok((1, "root".to_owned())));
 ```
 
-Сгенерированный `FromRow` в `schema.rs` никогда не индексирует срез напрямую:
-он читает через `values.get(i)` и сообщает `RowDecodeError::ArityMismatch` на
-короткий ответ.
+The generated `FromRow` in `schema.rs` never indexes the slice directly: it
+reads through `values.get(i)` and reports `RowDecodeError::ArityMismatch` on a
+short response.
 
-## Подстановка ошибки декодирования в исполнение
+## Feeding a decode error into execution
 
-`ExecutionError::RowDecode { row_index, source }` несёт индекс первой строки,
-которая не декодировалась. Индекс нулевой, если запрос запрашивал одну строку
-через `fetch_optional`/`fetch_one`: там декодируется максимум одна строка.
+`ExecutionError::RowDecode { row_index, source }` carries the index of the first
+row that failed to decode. The index is zero when the query requested a single
+row through `fetch_optional`/`fetch_one`: at most one row is decoded there.
 
-## Что происходит на стороне PostgreSQL
+## What happens on the PostgreSQL side
 
-Адаптер кодирует параметр в бинарное представление **типа колонки**, а не типа
-значения:
+The adapter encodes a parameter into the binary representation of the **column
+type**, not of the value type:
 
-- цепочка доменов раскрывается (`base_type`), поэтому домен-колонка получает ту же
-  раскладку, что и тип, над которым он объявлен;
-- целочисленные значения сужаются до `INT2`/`INT4`, если колонка такой ширины;
-  выход за диапазон — ошибка кодирования;
-- `NUMERIC` кодируется точно, через текстовую форму десятичного значения, а не
-  через `f64`;
-- массивы кодируются поэлементно кодеком элемента, `NULL`-элемент остаётся
-  `NULL`;
-- колонки без отдельного варианта `SqlVal` (UUID, JSON/JSONB, временные типы при
-  выключенных фичах) получают текстовую форму, которую сервер разбирает сам;
-- `NULL` биндится для колонки любого типа.
+- the domain chain is expanded (`base_type`), so a domain column receives the
+  same layout as the type it is declared over;
+- integer values are narrowed to `INT2`/`INT4` when the column has that width;
+  an out-of-range value is an encoding error;
+- `NUMERIC` is encoded exactly, through the textual form of the decimal value
+  rather than through `f64`;
+- arrays are encoded element by element with the element codec, and a `NULL`
+  element stays `NULL`;
+- columns without a separate `SqlVal` variant (UUID, JSON/JSONB, temporal types
+  with the features off) receive the textual form, which the server parses
+  itself;
+- `NULL` binds for a column of any type.
 
-При декодировании набор правил классифицируется один раз на колонку и
-переиспользуется для всех строк результата; полезная нагрузка читается из
-заимствованного буфера строки без промежуточной копии.
+During decoding the rule set is classified once per column and reused for every
+row of the result; the payload is read from the borrowed row buffer without an
+intermediate copy.
 
-## Что происходит на стороне SQLite
+## What happens on the SQLite side
 
-`rusqlite` не имеет отдельного класса для boolean и узких целых: значения
-приходят как `I64`/`F64`/`Text`/`Blob`/`Null`. Поэтому `bool` принимает `0`/`1`, а
-`Vec<T>` кодируется как JSON-документ (см. [Массивы в SQLite](../dialects/sqlite/overview.md)).
-Текстовая колонка обязана быть валидным UTF-8: иначе возвращается ошибка
-конвертации для конкретной колонки, и значение не подменяется символами замены.
+`rusqlite` has no separate class for boolean and narrow integers: values arrive
+as `I64`/`F64`/`Text`/`Blob`/`Null`. That is why `bool` accepts `0`/`1` and why
+`Vec<T>` is encoded as a JSON document (see
+[Arrays in SQLite](../dialects/sqlite/overview.md)). A text column must be valid
+UTF-8: otherwise the conversion error of that column is returned, and the value
+is never replaced with replacement characters.

@@ -1,24 +1,24 @@
-# Матрица возможностей
+# Capability matrix
 
-Сводка того, что доступно в каком диалекте, с какой версии движка и при какой
-Cargo-фиче. Источник — реализации capability-трейтов в
-`crates/rurqe-postgres/src/dialect.rs` и `crates/rurqe-sqlite/src/dialect.rs`.
+A summary of what is available in which dialect, from which engine version, and
+under which Cargo feature. The source is the capability-trait implementations in
+`crates/rurqe-postgres/src/dialect.rs` and `crates/rurqe-sqlite/src/dialect.rs`.
 
-## 1. Маркеры версий
+## 1. Version markers
 
-| Диалект | Маркеры | По умолчанию |
+| Dialect | Markers | Default |
 |---|---|---|
 | PostgreSQL | `Pg14`, `Pg15`, `Pg16` | `Pg16` |
 | SQLite | `Sqlite3_0`, `Sqlite3_24`, `Sqlite3_25`, `Sqlite3_30`, `Sqlite3_35`, `Sqlite3_38` | `Sqlite3_35` |
 
-`Postgres<V: PgVersion = Pg16>` и `Sqlite<V: SqliteVersion = Sqlite3_35>` —
-zero-sized параметризованные типы диалекта.
+`Postgres<V: PgVersion = Pg16>` and `Sqlite<V: SqliteVersion = Sqlite3_35>` are
+zero-sized parameterized dialect types.
 
-## 2. Capability-трейты
+## 2. Capability traits
 
-`✓` — трейт реализован, `—` — не реализован (использование не компилируется).
+`✓` — the trait is implemented, `—` — it is not (using it does not compile).
 
-| Трейт | PG 14/15/16 | SQLite 3.0 | 3.24 | 3.25 | 3.30 | 3.35 | 3.38 |
+| Trait | PG 14/15/16 | SQLite 3.0 | 3.24 | 3.25 | 3.30 | 3.35 | 3.38 |
 |---|---|---|---|---|---|---|---|
 | `SupportsReturning` | ✓ | — | — | — | — | ✓ | ✓ |
 | `SupportsOnConflict` | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -35,75 +35,75 @@ zero-sized параметризованные типы диалекта.
 | `SupportsGreatest` | ✓ | — | — | — | — | — | — |
 | `SupportsDistinctFrom` | ✓ | — | — | — | — | — | — |
 
-Комментарии в коде фиксируют причины: `FULL OUTER JOIN` появился в SQLite 3.39.0
-(за пределом самого свежего маркера), `GREATEST`/`LEAST` в SQLite не появились
-вообще (их роль играют скалярные `max`/`min`), `IS DISTINCT FROM` — 3.39.0.
+Code comments record the reasons: `FULL OUTER JOIN` arrived in SQLite 3.39.0
+(beyond the newest marker), `GREATEST`/`LEAST` never arrived in SQLite (the
+scalar `max`/`min` play their role), and `IS DISTINCT FROM` — 3.39.0.
 
-## 3. Поведенческие константы диалекта
+## 3. Dialect behaviour constants
 
-| Константа | PostgreSQL | SQLite | Следствие |
+| Constant | PostgreSQL | SQLite | Consequence |
 |---|---|---|---|
-| `SUPPORTS_ILIKE` | `true` (по умолчанию) | `false` | SQLite рендерит `LOWER(x) LIKE LOWER(?)`, а не `ILIKE` |
-| `SUPPORTS_JSONB_ROW_AGG` | `true` | `false` | PostgreSQL делает `jsonb_agg(to_jsonb(...))`, SQLite собирает `json_group_array(json_object(...))` |
+| `SUPPORTS_ILIKE` | `true` (default) | `false` | SQLite renders `LOWER(x) LIKE LOWER(?)` instead of `ILIKE` |
+| `SUPPORTS_JSONB_ROW_AGG` | `true` | `false` | PostgreSQL emits `jsonb_agg(to_jsonb(...))`, SQLite assembles `json_group_array(json_object(...))` |
 
-Капability `SupportsJsonAggregation` для SQLite начинается с 3.38.0 именно
-потому, что до этого JSON1 был опциональной сборочной опцией: гейт по порогу
-upsert’а компилировал бы оператор, который дефолтная сборка отвергает с
-«no such function».
+The `SupportsJsonAggregation` capability for SQLite starts at 3.38.0 precisely
+because before that JSON1 was an optional build-time option: a gate at the
+upsert threshold would compile a statement that a default build rejects with
+"no such function".
 
-## 4. SQL ↔ диалект: что где рендерится
+## 4. SQL ↔ dialect: what renders where
 
-| Возможность | PostgreSQL | SQLite |
+| Capability | PostgreSQL | SQLite |
 |---|---|---|
-| Плейсхолдеры | `$1`, `$2`, … | `?` |
-| Кавычки идентификаторов | `"x"`, `""` внутри | `"x"`, `""` внутри |
-| `RETURNING` | всегда | с 3.35 |
-| `ON CONFLICT` | всегда | с 3.24 |
-| `UPDATE … FROM` | всегда | с 3.35 |
-| `DELETE … USING` | всегда | нет |
-| `LATERAL` | всегда | нет |
-| `FULL OUTER JOIN` | всегда | нет |
-| `FOR UPDATE` / `FOR SHARE` / `SKIP LOCKED` / `NOWAIT` | всегда | нет |
-| `DISTINCT ON` | всегда | нет |
-| `FILTER (WHERE …)` | всегда | с 3.30 |
-| Оконные функции | всегда | с 3.25 |
-| `NULLS FIRST/LAST` | всегда | с 3.30 |
-| `GREATEST` / `LEAST` | всегда | нет |
-| `IS [NOT] DISTINCT FROM` | всегда | нет |
-| `ILIKE` | нативно | через `LOWER` |
-| Вложенные коллекции (`nest_many`/`nest_one`) | `jsonb_agg` | `json_group_array` (с 3.38) |
-| Массивы `T[]` | нативно | `Vec<T>` как JSON-документ |
+| Placeholders | `$1`, `$2`, … | `?` |
+| Identifier quotes | `"x"`, with `""` inside | `"x"`, with `""` inside |
+| `RETURNING` | always | from 3.35 |
+| `ON CONFLICT` | always | from 3.24 |
+| `UPDATE … FROM` | always | from 3.35 |
+| `DELETE … USING` | always | never |
+| `LATERAL` | always | never |
+| `FULL OUTER JOIN` | always | never |
+| `FOR UPDATE` / `FOR SHARE` / `SKIP LOCKED` / `NOWAIT` | always | never |
+| `DISTINCT ON` | always | never |
+| `FILTER (WHERE …)` | always | from 3.30 |
+| Window functions | always | from 3.25 |
+| `NULLS FIRST/LAST` | always | from 3.30 |
+| `GREATEST` / `LEAST` | always | never |
+| `IS [NOT] DISTINCT FROM` | always | never |
+| `ILIKE` | native | through `LOWER` |
+| Nested collections (`nest_many`/`nest_one`) | `jsonb_agg` | `json_group_array` (from 3.38) |
+| Arrays `T[]` | native | `Vec<T>` as a JSON document |
 
-## 5. Cargo-фичи фасада
+## 5. Facade Cargo features
 
-| Фича | Что добавляет в `rurqe` |
+| Feature | What it adds to `rurqe` |
 |---|---|
-| `postgres` | `PgConnection`, `PgError`; включает диалектную часть |
-| `tokio-postgres` | `PgAsyncConnection`; включает диалектную часть |
-| `deadpool-postgres` | `PgAsyncPool`; включает диалектную часть |
+| `postgres` | `PgConnection`, `PgError`; enables the dialect part |
+| `tokio-postgres` | `PgAsyncConnection`; enables the dialect part |
+| `deadpool-postgres` | `PgAsyncPool`; enables the dialect part |
 | `r2d2` | `PgPool`, `PgPoolError`, `SqlitePool`, `SqlitePoolError`, `PgConnection` |
 | `sqlite` | `Sqlite`, `Sqlite3_*`, `SqliteConnection` |
 | `macros` | `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `SqlType` |
 | `migrate` | `rurqe::migrate` |
-| `decimal` | `SqlVal::Decimal`, `MakeNullable` для `Decimal` |
+| `decimal` | `SqlVal::Decimal`, `MakeNullable` for `Decimal` |
 | `uuid` | `SqlVal::Uuid` |
 | `chrono` | `SqlVal::NaiveDateTime` / `DateTimeUtc` / `NaiveDate` |
 | `serde_json` | `SqlVal::Json`, `Json<T>` |
 
-Диалектная часть компилируется при **любом** PostgreSQL-адаптерном feature,
-поэтому типизированный запрос можно собрать и отрендерить, не подключая драйвер:
+The dialect part compiles under **any** PostgreSQL adapter feature, so a typed
+query can be composed and rendered without pulling a driver:
 
 ```text
 cargo build -p rurqe --no-default-features --features tokio-postgres
 ```
 
-## 6. Значения ↔ Rust
+## 6. Values ↔ Rust
 
-| `SqlVal` | Rust | Фича |
+| `SqlVal` | Rust | Feature |
 |---|---|---|
 | `Null` | `Option<T>::None` | — |
 | `I32` | `i16`, `i32`, `u32`, `usize`, `bool`(0/1) | — |
-| `I64` | `i64`, `u64`/`usize` в диапазоне | — |
+| `I64` | `i64`, `u64`/`usize` within range | — |
 | `F64` | `f64` | — |
 | `Bool` | `bool` | — |
 | `Text` | `String`, `&str` | — |
@@ -116,35 +116,35 @@ cargo build -p rurqe --no-default-features --features tokio-postgres
 | `NaiveDate` | `chrono::NaiveDate` | `chrono` |
 | `Json` | `serde_json::Value`, `Json<T>` | `serde_json` |
 
-`SqlVal` помечен `#[non_exhaustive]`: набор вариантов зависит от фич, поэтому
-`match` вне крейта обязан иметь wildcard-ветку.
+`SqlVal` is marked `#[non_exhaustive]`: the set of variants depends on the
+features, so a `match` outside the crate must carry a wildcard arm.
 
-## 7. Адаптеры и трейты исполнения
+## 7. Adapters and execution traits
 
-| Адаптер | Фича | Синхронный/асинхронный | Дополнительно |
+| Adapter | Feature | Sync/async | Additional traits |
 |---|---|---|---|
 | `PgConnection` | `postgres` / `r2d2` | sync | `TransactionBackend`, `TransactionalConnection` |
 | `PgPool<M>` | `r2d2` | sync | — |
 | `PgAsyncConnection` | `tokio-postgres` | async | `transaction()` → `PgAsyncTransaction` |
 | `PgAsyncTransaction` | `tokio-postgres` | async | `commit()`, `rollback()` |
 | `PgAsyncPool` | `deadpool-postgres` | async | — |
-| `SqliteConnection` | `sqlite` | sync | `TransactionBackend`, `TransactionalConnection`, `Deref` к `rusqlite::Connection` |
+| `SqliteConnection` | `sqlite` | sync | `TransactionBackend`, `TransactionalConnection`, `Deref` to `rusqlite::Connection` |
 | `SqlitePool<M>` | `r2d2` | sync | — |
 
-## 8. Матрица «фича движка → доступный API»
+## 8. Matrix: engine feature → available API
 
-| Нужно | PostgreSQL | SQLite |
+| Need | PostgreSQL | SQLite |
 |---|---|---|
-| вернуть строки из `INSERT`/`UPDATE`/`DELETE` | `.returning(...)` | `.returning(...)` с `Sqlite3_35` |
-| upsert | `.on_conflict(...)` | с `Sqlite3_24` |
-| обновить из другой таблицы | `.from_table(...)` в `UPDATE` | с `Sqlite3_35` |
-| удалить через другую таблицу | `.using(...)` | невозможно |
-| блокировка строк | `.for_update()`, `.for_share()`, `.skip_locked()`, `.nowait()` | невозможно |
-| оконные функции | `row_number()`, `rank()`, `lag`, `lead`, `… .over(spec)` | с `Sqlite3_25` |
-| `FILTER (WHERE …)` на агрегате | да | с `Sqlite3_30` |
-| `NULLS FIRST/LAST` | да | с `Sqlite3_30` |
-| вложенные коллекции | `nest_many` / `nest_one` | с `Sqlite3_38` |
-| массивы | `Vec<T>` нативно | `Vec<T>` как JSON |
+| return rows from `INSERT`/`UPDATE`/`DELETE` | `.returning(...)` | `.returning(...)` from `Sqlite3_35` |
+| upsert | `.on_conflict(...)` | from `Sqlite3_24` |
+| update from another table | `.from_table(...)` in `UPDATE` | from `Sqlite3_35` |
+| delete through another table | `.using(...)` | impossible |
+| row locking | `.for_update()`, `.for_share()`, `.skip_locked()`, `.nowait()` | impossible |
+| window functions | `row_number()`, `rank()`, `lag`, `lead`, `… .over(spec)` | from `Sqlite3_25` |
+| `FILTER (WHERE …)` on an aggregate | yes | from `Sqlite3_30` |
+| `NULLS FIRST/LAST` | yes | from `Sqlite3_30` |
+| nested collections | `nest_many` / `nest_one` | from `Sqlite3_38` |
+| arrays | `Vec<T>` natively | `Vec<T>` as JSON |
 
-Подробности по каждой возможности — в разделе
-[Диалекты](../dialects/overview.md) и подглавах PostgreSQL и SQLite.
+Details on each capability live in the [Dialects](../dialects/overview.md)
+section and its PostgreSQL and SQLite chapters.

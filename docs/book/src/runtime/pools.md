@@ -1,12 +1,13 @@
-# Пулы соединений
+# Connection pools
 
-Пул — это тоже бэкенд. Прикладной код не отличает пул от соединения: как только
-тип реализует `QueryBackend` или `AsyncQueryBackend`, на нём бесплатно появляются
-`fetch_all`, `fetch_optional`, `fetch_one` и `execute` из `*Ext`.
+A pool is a backend too. Application code does not distinguish a pool from a
+connection: as soon as a type implements `QueryBackend` or `AsyncQueryBackend`,
+the `fetch_all`, `fetch_optional`, `fetch_one`, and `execute` helpers of the
+`*Ext` traits appear on it for free.
 
-## Асинхронный пул: `PgAsyncPool` (deadpool-postgres)
+## The asynchronous pool: `PgAsyncPool` (deadpool-postgres)
 
-Feature: `deadpool-postgres`. Является `Clone` и реализует `AsyncQueryBackend`.
+Feature: `deadpool-postgres`. It is `Clone` and implements `AsyncQueryBackend`.
 
 ```rust
 pub struct PgAsyncPool {
@@ -19,9 +20,9 @@ impl PgAsyncPool {
 }
 ```
 
-Каждый вызов проверяет соединение из пула, ждёт выполнения и возвращает
-соединение обратно. `fetch_raw_limited` передаёт лимит в поток строк
-`tokio_postgres`, поэтому поиск одной строки останавливается на второй.
+Every call checks a connection out of the pool, awaits execution, and returns
+the connection. `fetch_raw_limited` passes the limit into the `tokio_postgres`
+row stream, so a single-row lookup stops at the second row.
 
 ```rust
 use rurqe::postgres::prelude::*;
@@ -30,7 +31,7 @@ let rows = pool
     .fetch_all(&select_from(Users).select(cols!(UsersId)))?;
 ```
 
-Ошибка пула входит в `PgError::Pool`:
+A pool error lands in `PgError::Pool`:
 
 ```rust
 impl From<deadpool_postgres::PoolError> for PgError {
@@ -40,12 +41,12 @@ impl From<deadpool_postgres::PoolError> for PgError {
 }
 ```
 
-поэтому `?` в асинхронном коде пробрасывает и ошибку пула, и ошибку драйвера в
-один тип.
+so `?` in asynchronous code propagates both a pool error and a driver error into
+one type.
 
-## Синхронный пул PostgreSQL: `PgPool<M>` (r2d2)
+## The synchronous PostgreSQL pool: `PgPool<M>` (r2d2)
 
-Feature: `r2d2`. Пул параметризован менеджером соединений `r2d2`.
+Feature: `r2d2`. The pool is parameterized by an `r2d2` connection manager.
 
 ```rust
 pub struct PgPool<M: ManageConnection> {
@@ -58,7 +59,7 @@ impl<M: ManageConnection<Connection = postgres::Client>> PgPool<M> {
 }
 ```
 
-Ошибки разделены явно:
+The errors are kept apart explicitly:
 
 ```rust
 pub enum PgPoolError {
@@ -67,12 +68,12 @@ pub enum PgPoolError {
 }
 ```
 
-`fetch_raw_limited` передаёт лимит в итератор строк `postgres`
-(`query_raw(...).take(limit)`), поэтому семантика та же, что и у `PgConnection`.
+`fetch_raw_limited` passes the limit into the `postgres` row iterator
+(`query_raw(...).take(limit)`), so the semantics match `PgConnection`.
 
-## Синхронный пул SQLite: `SqlitePool<M>` (r2d2)
+## The synchronous SQLite pool: `SqlitePool<M>` (r2d2)
 
-Feature: `r2d2`. Менеджер — любой `r2d2` менеджер над `rusqlite::Connection`.
+Feature: `r2d2`. The manager is any `r2d2` manager over `rusqlite::Connection`.
 
 ```rust
 pub struct SqlitePool<M: ManageConnection> {
@@ -92,8 +93,8 @@ pub enum SqlitePoolError {
 }
 ```
 
-Документационный пример крейта собирается и исполняется как doctest при включённой
-фиче `r2d2`:
+The crate documentation example builds and runs as a doctest with the `r2d2`
+feature enabled:
 
 ```rust
 use r2d2_sqlite::SqliteConnectionManager;
@@ -103,22 +104,22 @@ let pool = r2d2::Pool::builder().max_size(4).build(manager)?;
 let _pool = rurqe_sqlite::SqlitePool::new(pool);
 ```
 
-## Правила выбора
+## Choosing an adapter
 
-| Сценарий | Адаптер |
+| Scenario | Adapter |
 |---|---|
-| асинхронный сервис на `tokio` | `PgAsyncPool` (`deadpool-postgres`) |
-| синхронный воркер / CLI на `postgres` | `PgPool<M>` (`r2d2`) |
-| синхронный сервис на SQLite | `SqlitePool<M>` (`r2d2`) |
-| одна долгоживущая сессия | `PgConnection` / `PgAsyncConnection` / `SqliteConnection` |
+| an asynchronous service on `tokio` | `PgAsyncPool` (`deadpool-postgres`) |
+| a synchronous worker / CLI on `postgres` | `PgPool<M>` (`r2d2`) |
+| a synchronous service on SQLite | `SqlitePool<M>` (`r2d2`) |
+| one long-lived session | `PgConnection` / `PgAsyncConnection` / `SqliteConnection` |
 
-Транзакции оформляются на конкретном соединении (`PgConnection::transaction`),
-а не на пуле: пул выдаёт соединение на время вызова, а `TransactionGuard`
-удерживает `&mut` на всё время блока.
+Transactions are arranged on a concrete connection (`PgConnection::transaction`),
+not on a pool: a pool hands out a connection for the duration of a call, while
+`TransactionGuard` holds `&mut` for the whole block.
 
-## Итог
+## Summary
 
-- Пул реализует тот же трейт, что и соединение, — переключение не меняет
-  прикладной код.
-- Лимит строк доходит до драйвера во всех встроенных адаптерах.
-- Ошибки пула и ошибки запроса — разные варианты одного перечисления.
+- A pool implements the same trait as a connection, so switching does not change
+  application code.
+- The row limit reaches the driver in every built-in adapter.
+- Pool errors and query errors are separate variants of one enum.

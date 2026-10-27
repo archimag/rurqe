@@ -1,27 +1,28 @@
-# Приложения
+# Appendices
 
-Приложения — это справочная часть книги: то, что нужно не читать подряд, а
-открывать в момент, когда уже что-то сломалось или когда нужно быстро получить
-точный ответ.
+The appendices are the reference part of the book: material to open at the
+moment something has broken or when an exact answer is needed quickly, rather
+than to read end to end.
 
-- [LLM Cheatsheet / Prompt Pack](llm_cheatsheet.md) — концентрированные правила и
-  таблицы сопоставления SQL ↔ DSL. Формат рассчитан на загрузку в контекст
-  модели: минимум прозы, максимум детерминированных соответствий.
-- [Справочник ошибок](compiler_errors.md) — каталог того, что может сообщить
-  компилятор и рантайм: `#[diagnostic::on_unimplemented]`, `compile_fail`-кейсы,
-  `BuildError`, `RowDecodeError`, `ExecutionError` и ошибки драйверов.
-- [Матрица возможностей](matrix.md) — что доступно в каком диалекте и с какой
-  версии движка, какие Cargo-фичи что включают.
+- [LLM Cheatsheet / Prompt Pack](llm_cheatsheet.md) — condensed rules and
+  SQL ↔ DSL mapping tables. Formatted for loading into a model context: minimal
+  prose, maximum deterministic correspondence.
+- [Error reference](compiler_errors.md) — a catalogue of what the compiler and
+  the runtime can report: `#[diagnostic::on_unimplemented]`, `compile_fail`
+  cases, `BuildError`, `RowDecodeError`, `ExecutionError`, and driver errors.
+- [Capability matrix](matrix.md) — what is available in which dialect and from
+  which engine version, and what each Cargo feature enables.
 
-## Принцип, по которому собраны приложения
+## The principle behind the appendices
 
-Каждый оператор в этих таблицах подтверждён конкретным местом в кодовой базе:
+Every statement in these tables is backed by a concrete location in the code
+base:
 
-| Приложение | Источник истины |
+| Appendix | Source of truth |
 |---|---|
-| Cheatsheet | doc-тесты `crates/rurqe/src/lib.rs`, сигнатуры билдеров, `rurqe::postlude`/`prelude` |
-| Справочник ошибок | атрибуты `#[diagnostic::on_unimplemented]`, `compile_fail`-доктесты, `BuildError`, `RowDecodeError` |
-| Матрица возможностей | реализации capability-трейтов в `rurqe-postgres/src/dialect.rs` и `rurqe-sqlite/src/dialect.rs`, `cfg`-гейты фасада |
+| Cheatsheet | the doc-tests of `crates/rurqe/src/lib.rs`, builder signatures, the `rurqe::prelude` re-exports |
+| Error reference | `#[diagnostic::on_unimplemented]` attributes, `compile_fail` doc-tests, `BuildError`, `RowDecodeError` |
+| Capability matrix | the capability-trait implementations in `rurqe-postgres/src/dialect.rs` and `rurqe-sqlite/src/dialect.rs`, the `cfg` gates of the facade |
 
-Если документация и код расходятся — прав код, а расхождение считается дефектом
-документации.
+When documentation and code disagree, the code is right and the divergence is a
+documentation defect.

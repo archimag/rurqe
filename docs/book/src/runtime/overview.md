@@ -1,29 +1,29 @@
-# Рантайм: обзор
+# Runtime: overview
 
-Ядро `rurqe-core` не знает ни одного драйвера. Оно описывает, *что* именно надо
-выполнить, а адаптеры крейтов `rurqe-postgres` и `rurqe-sqlite` отвечают за *как*.
-Граница между ними зафиксирована набором трейтов в
-`crates/rurqe-core/src/query/execution.rs`, и ни один адаптер не переписывает этот
-контракт заново.
+`rurqe-core` knows no driver. It describes *what* has to be executed, while
+the adapter crates `rurqe-postgres` and `rurqe-sqlite` own *how*. The boundary
+between the two is fixed by the trait set in
+`crates/rurqe-core/src/query/execution.rs`, and no adapter rewrites that
+contract on its own.
 
-## Пять трейтов контракта исполнения
+## The five traits of the execution contract
 
-| Трейт | Роль | Кто реализует |
+| Trait | Role | Implemented by |
 |---|---|---|
-| `ExecutableQuery` | превращает построенный запрос в `BuiltQuery` (SQL + параметры) | `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `GroupedQuery` |
-| `QueryBackend` | синхронное исполнение готового SQL | `PgConnection`, `PgPool`, `SqliteConnection`, `SqlitePool` |
-| `QueryBackendExt` | декодирование строк (`fetch_all`, `fetch_optional`, `fetch_one`, `execute`) | автоматически для любого `QueryBackend` |
-| `AsyncQueryBackend` | асинхронное исполнение готового SQL | `PgAsyncConnection`, `PgAsyncTransaction`, `PgAsyncPool` |
-| `AsyncQueryBackendExt` | те же хелперы для асинхронных бэкендов | автоматически для любого `AsyncQueryBackend` |
+| `ExecutableQuery` | turns a built query into a `BuiltQuery` (SQL + parameters) | `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `GroupedQuery` |
+| `QueryBackend` | synchronous execution of a ready statement | `PgConnection`, `PgPool`, `SqliteConnection`, `SqlitePool` |
+| `QueryBackendExt` | row decoding (`fetch_all`, `fetch_optional`, `fetch_one`, `execute`) | automatically for every `QueryBackend` |
+| `AsyncQueryBackend` | asynchronous execution of a ready statement | `PgAsyncConnection`, `PgAsyncTransaction`, `PgAsyncPool` |
+| `AsyncQueryBackendExt` | the same helpers for asynchronous backends | automatically for every `AsyncQueryBackend` |
 
-`ExecutableQuery` реализован ровно для тех состояний билдера, которые можно
-отрендерить: `SelectQuery<…, HasProjection, Lock>` — для любого состояния
-блокировки, `InsertQuery` с непустым источником строк (`Values: InsertSource<T>`),
-`UpdateQuery` только при `Assignments: AssignmentsPresent` и
-`State: ExecutableMutation`, `DeleteQuery` при `State: ExecutableMutation`, и
-`GroupedQuery`. Всё, что не проходит эти границы, не компилируется.
+`ExecutableQuery` is implemented exactly for the builder states that can be
+rendered: `SelectQuery<…, HasProjection, Lock>` for every lock state,
+`InsertQuery` with a non-empty row source (`Values: InsertSource<T>`),
+`UpdateQuery` only when `Assignments: AssignmentsPresent` and
+`State: ExecutableMutation`, `DeleteQuery` when `State: ExecutableMutation`,
+and `GroupedQuery`. Everything outside those boundaries does not compile.
 
-## Синхронный бэкенд
+## The synchronous backend
 
 ```rust
 pub trait QueryBackend {
@@ -41,13 +41,13 @@ pub trait QueryBackend {
 }
 ```
 
-`fetch_raw_limited` имеет реализацию по умолчанию: она вызывает `fetch_raw` и
-обрезает результат. Все три встроенных синхронных адаптера переопределяют метод и
-передают лимит в сам драйвер — `postgres` через `query_raw(...).take(limit)`,
-`rusqlite` через остановку цикла `rows.next()` — поэтому запрос, от которого нужна
-одна строка, не материализует весь набор.
+`fetch_raw_limited` has a default implementation: it calls `fetch_raw` and
+truncates the result. All three built-in synchronous adapters override the
+method and hand the limit to the driver itself — `postgres` through
+`query_raw(...).take(limit)`, `rusqlite` by stopping the `rows.next()` loop — so
+a query that needs one row never materializes the whole set.
 
-## Асинхронный бэкенд
+## The asynchronous backend
 
 ```rust
 pub trait AsyncQueryBackend: Sync {
@@ -71,31 +71,30 @@ pub trait AsyncQueryBackend: Sync {
 }
 ```
 
-Бэкенд принимается по `&self` и требует `Sync`: соединение разделяется между
-задачами, а возвращаемые future имеют явный `+ Send`, поэтому запрос можно
-переместить в `tokio::spawn`. Ограничение по лимиту уходит в
-`tokio_postgres::RowStream`, который опрашивается построчно и останавливается на
-нужном количестве строк.
+The backend is taken by `&self` and requires `Sync`: a connection is shared
+between tasks, and the returned futures are explicitly `+ Send`, so a query can
+move into `tokio::spawn`. The limit travels into `tokio_postgres::RowStream`,
+which is polled row by row and stops at the requested count.
 
-## Декодирование строк
+## Row decoding
 
-Хелперы `QueryBackendExt` / `AsyncQueryBackendExt` выполняют одну и ту же политику:
+The `QueryBackendExt` / `AsyncQueryBackendExt` helpers apply one policy:
 
-- `fetch_all` — читает все строки и декодирует каждую через
-  `FromRow::try_from_row`; ошибка декодирования несёт индекс строки в
+- `fetch_all` — reads every row and decodes each through
+  `FromRow::try_from_row`; a decode failure carries the row index in
   `ExecutionError::RowDecode { row_index, source }`.
-- `fetch_optional` — запрашивает **не более двух** строк
-  (`fetch_raw_limited(&built, Some(2))`). Ноль строк — `Ok(None)`, одна —
-  декодирование, больше — `ExecutionError::MultipleRows { count }` *до* попытки
-  декодировать строку.
+- `fetch_optional` — requests **at most two** rows
+  (`fetch_raw_limited(&built, Some(2))`). Zero rows — `Ok(None)`, one — decoding,
+  more — `ExecutionError::MultipleRows { count }` *before* any attempt to decode
+  a row.
 - `fetch_one` — `fetch_optional(..)?.ok_or(ExecutionError::NoRows)`.
-- `execute` — рендер и `execute_raw`, возвращает число затронутых строк.
+- `execute` — renders and calls `execute_raw`, returning the affected row count.
 
-Таким образом, запрос, который по контракту возвращает одну строку, физически не
-может вытянуть весь набор из сети, и ошибка «слишком много строк» возникает без
-декодирования лишней строки.
+A query that by contract returns one row therefore cannot physically pull the
+whole set from the network, and the "too many rows" error arises without
+decoding the extra row.
 
-## Ошибка исполнения
+## The execution error
 
 ```rust
 pub enum ExecutionError<E> {
@@ -107,20 +106,20 @@ pub enum ExecutionError<E> {
 }
 ```
 
-Практическое следствие двухуровневой архитектуры: `ExecutionError::Build`
-возникает **до** любого сетевого ввода-вывода — это отказ пре-флайт валидации AST
-(`BuildError`), а не ответ сервера. Реализация `From<E> for ExecutionError<E>`
-упаковывает драйверную ошибку в `Backend`, поэтому `?` в прикладном коде работает
-без ручного маппинга.
+The practical consequence of the two-tier architecture: `ExecutionError::Build`
+arises **before** any network I/O — it is the rejection of the AST pre-flight
+validation (`BuildError`), not a server answer. The `From<E> for ExecutionError<E>`
+implementation wraps a driver error in `Backend`, so `?` works in application
+code without manual mapping.
 
-Хелперы проверки: `is_build` / `as_build`, `is_not_found`, `is_multiple_rows`,
+Inspection helpers: `is_build` / `as_build`, `is_not_found`, `is_multiple_rows`,
 `is_row_decode` / `as_row_decode`, `as_backend` / `into_backend`.
 
-## Адаптеры
+## Adapters
 
-| Адаптер | Крейт | Cargo feature | Контракт |
+| Adapter | Crate | Cargo feature | Contract |
 |---|---|---|---|
-| `PgConnection` | `rurqe-postgres` | `postgres` (или `r2d2`) | `QueryBackend`, `TransactionBackend`, `TransactionalConnection` |
+| `PgConnection` | `rurqe-postgres` | `postgres` (or `r2d2`) | `QueryBackend`, `TransactionBackend`, `TransactionalConnection` |
 | `PgAsyncConnection` | `rurqe-postgres` | `tokio-postgres` | `AsyncQueryBackend` |
 | `PgAsyncTransaction` | `rurqe-postgres` | `tokio-postgres` | `AsyncQueryBackend` |
 | `PgAsyncPool` | `rurqe-postgres` | `deadpool-postgres` | `AsyncQueryBackend` |
@@ -128,13 +127,13 @@ pub enum ExecutionError<E> {
 | `SqliteConnection` | `rurqe-sqlite` | `sqlite` | `QueryBackend`, `TransactionBackend`, `TransactionalConnection` |
 | `SqlitePool<M>` | `rurqe-sqlite` | `r2d2` | `QueryBackend` |
 
-Диалектная часть (`Postgres`, `Pg14/15/16`, `Sqlite`, `Sqlite3_0 … Sqlite3_38`)
-компилируется при любом адаптерном feature, поэтому типизированный запрос можно
-собрать и отрендерить, не подключая драйвер.
+The dialect part (`Postgres`, `Pg14/15/16`, `Sqlite`, `Sqlite3_0 … Sqlite3_38`)
+compiles under any adapter feature, so a typed query can be composed and
+rendered without pulling a driver.
 
-## Дальше
+## Next
 
-- [Транзакции и savepoints](transactions.md)
-- [Пулы соединений](pools.md)
-- [Экосистемные типы](types.md)
-- [Пользовательские типы](custom_types.md)
+- [Transactions and savepoints](transactions.md)
+- [Connection pools](pools.md)
+- [Ecosystem types](types.md)
+- [Custom types](custom_types.md)
