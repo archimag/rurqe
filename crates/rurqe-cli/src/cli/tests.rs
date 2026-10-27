@@ -4,7 +4,7 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::Checksum;
 
 use super::*;
-use crate::{install_diagnostics, write_message, MessageClass};
+use crate::{install_diagnostics, try_install_default_subscriber, write_message, MessageClass};
 
 #[test]
 fn the_binary_entry_point_installs_a_diagnostic_sink() {
@@ -1000,68 +1000,33 @@ fn a_repeated_installation_neither_fails_nor_replaces_the_sink() {
 }
 
 #[test]
-fn a_refused_sink_installation_is_reported_instead_of_discarded() {
-    // A test cannot install a second global sink without disturbing the
-    // process-wide dispatcher this binary shares, so the refusal path is pinned
-    // where it is written: the installation keeps a sink an embedding
-    // application put in place first, and the refusal reaches the operator
-    // through that sink instead of being dropped with the result.
-    let root = include_str!("../lib.rs");
+fn a_refused_sink_installation_reports_what_did_not_take_effect() {
+    // The dispatcher a sink is installed into is process-global, so this test
+    // binary shares one. Installing first makes a global default certain —
+    // either this call installed the toolchain sink, or a sink an embedding
+    // application put in place first was kept — and the next attempt then takes
+    // exactly the refusal path a binary reaches inside such an application.
+    install_diagnostics();
 
-    assert!(root.contains("set_global_default"), "the sink is installed");
-    assert!(
-        root.contains("tracing::warn!"),
-        "a refused installation is reported through the sink already in place"
-    );
-    assert!(
-        root.contains("toolchain diagnostic sink not installed"),
-        "the refusal names what did not take effect"
-    );
-    assert!(
-        !root.contains("let _ = tracing::subscriber::set_global_default"),
-        "the result of the installation is never discarded silently"
-    );
-}
+    let refusal = try_install_default_subscriber()
+        .expect_err("a global sink already in place is never replaced");
 
-#[test]
-fn the_operator_channel_is_the_single_place_that_formats_output() {
-    let root = include_str!("../lib.rs");
-    let report = include_str!("report.rs");
-
-    // The destination is declared once, and both a report line and a failure are
-    // shaped by the helper that writes into it.
+    // The refusal is a value rather than a `tracing` event a test cannot
+    // inspect, so the reason the sink never took effect is asserted directly.
     assert!(
-        root.contains("pub fn operator_channel"),
-        "the destination of the operator output is declared in one place"
-    );
-    assert!(
-        root.contains("pub fn write_message"),
-        "the shape of an operator line is declared in one place"
-    );
-    assert!(
-        root.contains("MessageClass::Failure"),
-        "a failure that ended the process travels the helper"
+        !refusal.detail().is_empty(),
+        "the dispatcher's own reason travels with the refusal"
     );
 
-    // The report of a command reaches the helper instead of opening a stream of
-    // its own, so the two classes of operator output share one write path.
+    let notice = refusal.to_string();
     assert!(
-        report.contains("crate::write_message"),
-        "a report line travels the helper"
+        notice.contains("toolchain diagnostic sink not installed"),
+        "the notice names what did not take effect: {notice}"
     );
     assert!(
-        !report.contains("std::io::stderr"),
-        "the report opens no stream of its own"
+        notice.contains(refusal.detail()),
+        "the notice carries the reason the dispatcher gave: {notice}"
     );
-
-    for (name, source) in [("lib.rs", root), ("report.rs", report)] {
-        for direct in ["println!", "eprintln!", "eprint!", "print!"] {
-            assert!(
-                !source.contains(direct),
-                "`{name}` writes through `{direct}` instead of the channel"
-            );
-        }
-    }
 }
 
 #[test]

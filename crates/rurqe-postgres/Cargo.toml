@@ -52,3 +52,6 @@ uuid = [
     "postgres?/with-uuid-1",
     "tokio-postgres?/with-uuid-1",
 ]
+
+[lints]
+workspace = true

@@ -42,3 +42,6 @@ serde_json = ["rurqe-core/serde_json", "rurqe-postgres?/serde_json"]
 # The facade tests name `serde_json::Value` as a column type, which a feature
 # forwarding the family to the drivers cannot provide on its own.
 serde_json = "1"
+
+[lints]
+workspace = true

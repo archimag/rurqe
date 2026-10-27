@@ -17,3 +17,13 @@ edition = "2021"
 rust-version = "1.78"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/archimag/rurqe"
+
+[workspace.lints.clippy]
+# Direct printing is the operator channel's job alone: this workspace declares
+# one destination (`operator_channel`) and one formatter (`write_message`), so a
+# `println!` or `eprintln!` anywhere in it is a regression against a single write
+# path rather than a matter of style. A test harness that prints the reason it
+# skipped a scenario to the operator running the tests allows the lints locally,
+# which keeps the exception visible at the file that needs it.
+print_stdout = "deny"
+print_stderr = "deny"

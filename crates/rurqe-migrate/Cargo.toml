@@ -24,3 +24,6 @@ tokio = ["dep:tokio"]
 # lifecycle entry points: a synchronous call that would block a Tokio-managed
 # thread is refused instead of merely reported (Conventions.md §3).
 strict-async = ["tokio"]
+
+[lints]
+workspace = true

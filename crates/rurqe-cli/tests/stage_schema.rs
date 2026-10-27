@@ -12,6 +12,11 @@
 //! with an `eprintln!` reason when either is missing. Scratch databases are
 //! dropped by the sandbox itself; the live fixture schema is dropped by its guard.
 
+// The scenarios print the reason they were skipped for the operator running the
+// tests, which is test output rather than the toolchain's operator channel, so
+// the workspace-wide restriction on direct printing does not apply here.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

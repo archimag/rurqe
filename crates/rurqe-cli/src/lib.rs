@@ -72,6 +72,65 @@ pub fn write_message(writer: &mut impl Write, class: MessageClass, line: &str) -
     }
 }
 
+/// The reason the toolchain sink never took effect in this process.
+///
+/// A process installs exactly one global dispatcher, so a sink offered to one
+/// that already holds a subscriber is refused instead of replacing it. The
+/// refusal is a value of its own — it carries the wording the dispatcher
+/// reported — so the decision [`install_diagnostics`] acts on stays observable
+/// instead of being reduced to a `tracing` event nothing can inspect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallRefusal {
+    /// The reason the dispatcher reported for keeping the sink already in place.
+    detail: String,
+}
+
+impl InstallRefusal {
+    /// The reason the dispatcher gave for keeping the sink already in place.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl std::fmt::Display for InstallRefusal {
+    /// The notice a refused installation reports through the sink in place.
+    ///
+    /// The sink already installed is the only channel this crate can still
+    /// reach at that point, so this text is what the operator is left with: it
+    /// names what did not take effect and carries the dispatcher's own reason.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "toolchain diagnostic sink not installed; the process keeps the sink already in \
+             place: {}",
+            self.detail
+        )
+    }
+}
+
+/// Offers the toolchain sink to the process-global dispatcher.
+///
+/// This is the decision [`install_diagnostics`] acts on, exposed as a value so
+/// the refusal and the installation are testable without contending for the
+/// process-wide dispatcher: the caller learns whether this call installed the
+/// sink, or whether a subscriber an embedding application installed first was
+/// kept in place.
+pub fn try_install_default_subscriber() -> Result<(), InstallRefusal> {
+    // The sink and every report share one destination: the channel is declared
+    // once, so a `tracing` event cannot diverge from the operator output the
+    // commands return.
+    let sink = tracing_subscriber::fmt::Subscriber::builder()
+        .compact()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(operator_channel as fn() -> io::Stderr)
+        .with_target(false)
+        .finish();
+
+    tracing::subscriber::set_global_default(sink).map_err(|refusal| InstallRefusal {
+        detail: refusal.to_string(),
+    })
+}
+
 /// Installs the diagnostic sink the shipped binaries report their notices through.
 ///
 /// Every environment diagnostic of this crate — a schema selection that describes
@@ -93,31 +152,20 @@ pub fn write_message(writer: &mut impl Write, class: MessageClass, line: &str) -
 /// the process then routes its events into a sink whose destination this crate
 /// does not own, so the toolchain sink never taking effect is itself reported as a
 /// `WARN` event through the sink already in place — the only channel left at that
-/// point — instead of being dropped.
+/// point — instead of being dropped. The decision itself is
+/// [`try_install_default_subscriber`], so an embedding application can make the
+/// same call and learn its outcome.
 pub fn install_diagnostics() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
 
     INSTALLED.call_once(|| {
-        // The sink and every report share one destination: the channel is
-        // declared once, so a `tracing` event cannot diverge from the operator
-        // output the commands return.
-        let sink = tracing_subscriber::fmt::Subscriber::builder()
-            .compact()
-            .with_max_level(tracing::Level::WARN)
-            .with_writer(operator_channel as fn() -> io::Stderr)
-            .with_target(false)
-            .finish();
-
         // An embedding application that installed its own sink keeps it: its
         // notices are already routed where it wants them. The refusal stays
         // observable, because the sink already in place is the only channel this
         // crate can still reach — the toolchain sink never taking effect is
         // reported through it rather than swallowed.
-        if let Err(refusal) = tracing::subscriber::set_global_default(sink) {
-            tracing::warn!(
-                "toolchain diagnostic sink not installed; the process keeps the \
-                 sink already in place: {refusal}"
-            );
+        if let Err(refusal) = try_install_default_subscriber() {
+            tracing::warn!("{}", refusal);
         }
     });
 }

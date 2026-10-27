@@ -22,3 +22,6 @@ serde = ["dep:serde"]
 serde_json = ["dep:serde_json", "dep:serde"]
 tracing = ["dep:tracing"]
 uuid = ["dep:uuid"]
+
+[lints]
+workspace = true

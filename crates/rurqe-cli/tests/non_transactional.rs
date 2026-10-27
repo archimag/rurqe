@@ -12,6 +12,11 @@
 //! role to hold the `CREATEDB` privilege — the golden equation builds its replay
 //! in a scratch database — and are skipped when the privilege is absent.
 
+// The scenarios print the reason they were skipped for the operator running the
+// tests, which is test output rather than the toolchain's operator channel, so
+// the workspace-wide restriction on direct printing does not apply here.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

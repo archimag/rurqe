@@ -24,3 +24,6 @@ rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
 # itself stays generic over any `r2d2::ManageConnection`.
 [dev-dependencies]
 r2d2_sqlite = "0.24"
+
+[lints]
+workspace = true
