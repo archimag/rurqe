@@ -14,7 +14,18 @@ use rurqe_migrate::Checksum;
 /// sibling recorded under it, and a platform without a probe keeps such a
 /// sibling anyway.
 pub(super) const DEAD_PID: u32 = 2_000_000_000;
+/// The nonce the staged siblings of this process carry in their names.
+///
+/// It is the very entropy `temporary_sibling` derives, so a fixture that plants
+/// a sibling under it plants one this process may still rename into place.
+pub(super) fn current_nonce() -> u128 {
+    u128::from(crate::stage::postgres::process_nonce())
+}
 
+/// The name a staged sibling of `artifact` carries under a writer scope.
+pub(super) fn staged_sibling(artifact: &str, pid: u32, nonce: u128, sequence: u64) -> String {
+    format!(".{artifact}.{pid}.{nonce}.{sequence}.tmp")
+}
 pub(super) fn workspace(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("rurqe-commands-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);

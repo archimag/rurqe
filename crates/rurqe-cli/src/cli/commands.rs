@@ -13,8 +13,11 @@ use std::time::Duration;
 use crate::codegen::CodegenOptions;
 use crate::config::CodegenConfig;
 use crate::introspect::DEFAULT_SCHEMA;
+use crate::stage::postgres::process_nonce;
 
 use super::args::CliError;
+
+use self::stage::lock::WriterId;
 
 mod migrate;
 mod prune;
@@ -223,34 +226,60 @@ fn temporary_prefix(artifact: &Path) -> String {
     format!(".{name}.")
 }
 
-/// The process id embedded in the name of a staged sibling of `prefix`.
+/// The writer a staged sibling of `prefix` records in its name.
 ///
-/// A staged sibling is named `.<basename>.<pid>.<sequence>.tmp`, so its owner is
-/// the segment right after the prefix once the suffix is stripped.
-fn staged_owner(name: &str, prefix: &str) -> Option<u32> {
+/// A staged sibling is named `.<basename>.<pid>.<nonce>.<sequence>.tmp`: the
+/// process id names the writer, the per-process nonce keeps two writers that
+/// share a process id — a second host staging into the same network directory,
+/// a recycled id — from sharing one staging space, and the sequence separates
+/// the siblings of one writer. A name that does not carry exactly those fields
+/// is refused instead of being attributed to a guessed owner.
+fn staged_owner(name: &str, prefix: &str) -> Option<WriterId> {
     let rest = name.strip_prefix(prefix)?.strip_suffix(TEMPORARY_SUFFIX)?;
-    let (owner, _) = rest.rsplit_once('.')?;
+    let mut fields = rest.split('.');
 
-    owner.parse().ok()
+    let pid = fields.next()?.parse().ok()?;
+    let nonce = fields.next()?.parse().ok()?;
+    fields.next()?.parse::<u64>().ok()?;
+
+    if fields.next().is_some() {
+        return None;
+    }
+
+    Some(WriterId { pid, nonce })
+}
+
+/// The writer scope this process stages its siblings under.
+///
+/// The scope is the process id together with the per-process nonce, so a name
+/// this process stages never shares a path with the staging of another process
+/// that happens to carry the same id.
+fn current_writer() -> WriterId {
+    WriterId {
+        pid: std::process::id(),
+        nonce: u128::from(process_nonce()),
+    }
 }
 
 /// Whether the staged sibling `name` belongs to a writer that no longer lives.
 ///
-/// The sweep discards a foreign sibling only when the process id recorded in
-/// its name no longer exists: a sibling of this process may still be renamed
-/// into place by a later call, and a sibling of another live process belongs
-/// to a concurrent writer — a commit stages its boundary outside the
-/// checkpoint section, so a writer holding the section can meet a sibling
-/// another writer is preparing right now. The modification age the sweep
-/// measures afterwards is wall-clock time, which a forward clock correction
-/// (an NTP step, a VM resume) can inflate until a live writer's in-flight
-/// sibling looks a day old, so it is never the only grounds for discarding a
-/// foreign sibling. A name that carries no parsable owner stays kept, because
-/// a sweep that guessed would delete a staging path a live writer is still
-/// filling.
+/// The sweep discards a foreign sibling only when the writer scope recorded in
+/// its name no longer exists: a sibling this process stages may still be renamed
+/// into place by a later call, and a sibling of another live process belongs to
+/// a concurrent writer — a commit stages its boundary outside the checkpoint
+/// section, so a writer holding the section can meet a sibling another writer is
+/// preparing right now. The scope is the process id together with the per-process
+/// nonce, so a writer that shares this process id — a second host staging into
+/// the same network directory, a recycled id — is never read as this process
+/// even though its pid matches. The modification age the sweep measures
+/// afterwards is wall-clock time, which a forward clock correction (an NTP step,
+/// a VM resume) can inflate until a live writer's in-flight sibling looks a day
+/// old, so it is never the only grounds for discarding a foreign sibling. A name
+/// that carries no parsable owner stays kept, because a sweep that guessed would
+/// delete a staging path a live writer is still filling.
 fn staged_owner_is_dead(name: &str, prefix: &str) -> bool {
     match staged_owner(name, prefix) {
-        Some(owner) if owner != std::process::id() => !pid_is_alive(owner),
+        Some(owner) if owner != current_writer() => !pid_is_alive(owner.pid),
         _ => false,
     }
 }
@@ -294,24 +323,29 @@ fn pid_is_alive(_pid: u32) -> bool {
 
 /// The temporary file an artifact is staged in before it is renamed.
 ///
-/// The name stays a hidden sibling of the artifact, and the process id together
-/// with a monotonic counter keeps two writers of one path apart.
+/// The name stays a hidden sibling of the artifact, named
+/// `.<basename>.<pid>.<nonce>.<sequence>.tmp`: the writer scope — the process id
+/// together with the per-process nonce, the entropy a PostgreSQL scratch name
+/// already carries — keeps two writers that share a process id apart, and the
+/// monotonic counter separates the staged siblings of one writer.
 fn temporary_sibling(path: &Path) -> PathBuf {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let writer = current_writer();
 
     artifact_directory(path).join(format!(
-        "{}{}.{sequence}{TEMPORARY_SUFFIX}",
+        "{}{}.{}.{sequence}{TEMPORARY_SUFFIX}",
         temporary_prefix(path),
-        std::process::id()
+        writer.pid,
+        writer.nonce
     ))
 }
 
 /// Removes the staged siblings an earlier process abandoned next to `artifact`.
 ///
 /// Every artifact is written through a hidden sibling named
-/// `.<basename>.<pid>.<sequence>.tmp` and renamed into place, so a process killed
+/// `.<basename>.<pid>.<nonce>.<sequence>.tmp` and renamed into place, so a process killed
 /// in between strands that sibling for good: the next run derives a fresh
 /// sequence and never touches the old one again. The debris is swept here —
 /// every sibling whose writer no longer provably lives and that was last

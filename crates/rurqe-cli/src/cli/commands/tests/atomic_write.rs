@@ -6,7 +6,9 @@ use std::time::Duration;
 use crate::introspect::DEFAULT_SCHEMA;
 
 use super::super::{sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
-use super::fixtures::{DEAD_PID, backdate, futuredate, workspace};
+use super::fixtures::{staged_sibling, DEAD_PID, backdate, futuredate, workspace};
+#[cfg(unix)]
+use super::fixtures::current_nonce;
 
 // The discard regressions and the commit regression are Unix alone — only
 // Unix exposes the liveness probe a sweep discards under — so the imports
@@ -110,11 +112,16 @@ fn a_sweep_discards_the_staged_artifacts_a_killed_process_left_behind() {
     // owner provably names no process, so the liveness gate of the sweep cannot
     // keep the debris on a machine that happens to run a writer under the
     // number.
-    let stale_lock = dir.join(format!(".schema.lock.{DEAD_PID}.7.tmp"));
+    let stale_lock = dir.join(staged_sibling("schema.lock", DEAD_PID, 5, 7));
     std::fs::write(&stale_lock, "snapshot").expect("plant a staged lock");
-    let stale_boundary = dir.join(format!(".checkpoint-stage.{DEAD_PID}.9.tmp"));
+    let stale_boundary = dir.join(staged_sibling("checkpoint-stage", DEAD_PID, 5, 9));
     std::fs::create_dir_all(stale_boundary.join("users.sql")).expect("plant a staged boundary");
-    let owned_lock = dir.join(format!(".schema.lock.{}.3.tmp", std::process::id()));
+    let owned_lock = dir.join(staged_sibling(
+        "schema.lock",
+        std::process::id(),
+        current_nonce(),
+        3,
+    ));
     std::fs::write(&owned_lock, "in flight").expect("plant a staged lock of this process");
 
     let removed = sweep_stale_temporaries(&lock_path, Duration::ZERO)
@@ -138,7 +145,7 @@ fn a_sweep_discards_the_staged_artifacts_a_killed_process_left_behind() {
 fn a_sweep_keeps_a_staged_artifact_younger_than_the_threshold() {
     let dir = workspace("sweep-age");
     let lock_path = dir.join("schema.lock");
-    let young = dir.join(format!(".schema.lock.{DEAD_PID}.1.tmp"));
+    let young = dir.join(staged_sibling("schema.lock", DEAD_PID, 5, 1));
     std::fs::write(&young, "snapshot").expect("plant a staged lock");
 
     let removed = sweep_stale_temporaries(&lock_path, STALE_TEMPORARY_AGE)
@@ -155,7 +162,7 @@ fn a_sweep_keeps_a_staged_artifact_whose_writer_still_lives() {
 
     // Pid 1 is `init`, so the owner provably lives on every Unix, and a
     // platform without the probe counts every foreign writer as living.
-    let in_flight = dir.join(".schema.lock.1.7.tmp");
+    let in_flight = dir.join(staged_sibling("schema.lock", 1, 9, 7));
     std::fs::write(&in_flight, "snapshot").expect("plant a staged lock");
 
     // The modification time looks twice as old as the sweep threshold — the
@@ -181,7 +188,7 @@ fn a_sweep_keeps_a_staged_artifact_dated_ahead_of_the_clock() {
     // A backward clock correction leaves a modification time ahead of the
     // clock, and the sweep measures age forwards only: a negative age is not
     // one, so the sibling is kept until the wall clock passes it.
-    let ahead = dir.join(format!(".schema.lock.{DEAD_PID}.7.tmp"));
+    let ahead = dir.join(staged_sibling("schema.lock", DEAD_PID, 5, 7));
     std::fs::write(&ahead, "snapshot").expect("plant a staged lock");
     futuredate(&ahead, STALE_TEMPORARY_AGE);
 
@@ -208,15 +215,15 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
     // liveness gate of the sweep cannot keep it on a machine that happens to
     // run a process under the recycled number.
     let abandoned = Duration::from_secs(48 * 60 * 60);
-    let stale_lock = dir.join(format!(".schema.lock.{DEAD_PID}.1.tmp"));
+    let stale_lock = dir.join(staged_sibling("schema.lock", DEAD_PID, 5, 1));
     std::fs::write(&stale_lock, "snapshot").expect("plant a staged lock");
     backdate(&stale_lock, abandoned);
 
-    let stale_marker = dir.join(format!(".checkpoint.toml.{DEAD_PID}.2.tmp"));
+    let stale_marker = dir.join(staged_sibling("checkpoint.toml", DEAD_PID, 5, 2));
     std::fs::write(&stale_marker, "marker").expect("plant a staged marker");
     backdate(&stale_marker, abandoned);
 
-    let stale_boundary = dir.join(format!(".checkpoint-stage.{DEAD_PID}.3.tmp"));
+    let stale_boundary = dir.join(staged_sibling("checkpoint-stage", DEAD_PID, 5, 3));
     std::fs::create_dir_all(stale_boundary.join("users.sql")).expect("plant a staged boundary");
     backdate(&stale_boundary, abandoned);
 

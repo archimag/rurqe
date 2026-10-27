@@ -34,7 +34,7 @@ mod sweep;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use self::naming::{current_owner_tag, process_may_be_alive};
+pub(crate) use self::naming::{current_owner_tag, process_may_be_alive, process_nonce};
 // The naming helpers below describe how a scratch database is dated and how its
 // owner is recognised, so nothing outside this module links them into its own
 // logic yet; the re-exports keep each name addressable at the very path it had

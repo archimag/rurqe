@@ -141,7 +141,7 @@ pub(super) fn scratch_database_name() -> String {
 /// The standard library seeds its hasher from the operating system, so hashing the
 /// process id together with the current instant yields a value two hosts do not
 /// share, without pulling an entropy crate into the toolchain.
-fn process_nonce() -> u64 {
+pub(crate) fn process_nonce() -> u64 {
     static NONCE: OnceLock<u64> = OnceLock::new();
 
     *NONCE.get_or_init(|| {
