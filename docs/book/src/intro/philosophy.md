@@ -20,7 +20,7 @@ A report over two relations, written once and checked while it is built:
 use rurqe::postgres::prelude::*;
 
 let feed = select_from(User)
-    .left_join_table(Order, OrderUserId.eq(UserId))
+    .left_join(Order, OrderUserId.eq(UserId))
     .select(select!(
         user_id: UserId,
         user_name: UserName,

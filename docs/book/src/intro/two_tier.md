@@ -32,7 +32,7 @@ Two classes of rule are out of reach of a positive assertion on stable Rust: one
 // Rejected while building, before the statement reaches the engine: the same
 // relation is addressed twice under one name.
 let error = select_from(Users)
-    .inner_join_table(Users, Expr::column::<UserId>().eq(1i64))
+    .inner_join(Users, Expr::column::<UserId>().eq(1i64))
     .select(cols!(UserId))
     .build()
     .unwrap_err();

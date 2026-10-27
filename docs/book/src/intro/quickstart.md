@@ -114,7 +114,7 @@ assert_eq!(removed, 1);
 
 ```rust
 let report = select_from(User)
-    .left_join_table(Order, OrderUserId.eq(UserId))
+    .left_join(Order, OrderUserId.eq(UserId))
     .select(select!(
         user_id: UserId,
         user_name: UserName,
