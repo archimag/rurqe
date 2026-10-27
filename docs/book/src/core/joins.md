@@ -6,22 +6,22 @@ A join adds a relation to the `FROM` clause and reinterprets the query under the
 
 | Method | SQL | Gated by |
 |---|---|---|
-| `.inner_join_table(table, on)` | `INNER JOIN "table" ON (...)` | — |
-| `.left_join_table(table, on)` | `LEFT JOIN "table" ON (...)` | — |
-| `.cross_join_table(table)` | `CROSS JOIN "table"` | — |
-| `.full_outer_join_table(table, on)` | `FULL OUTER JOIN "table" ON (...)` | `SupportsFullOuterJoin` |
+| `.inner_join(table, on)` | `INNER JOIN "table" ON (...)` | — |
+| `.left_join(table, on)` | `LEFT JOIN "table" ON (...)` | — |
+| `.cross_join(table)` | `CROSS JOIN "table"` | — |
+| `.full_outer_join(table, on)` | `FULL OUTER JOIN "table" ON (...)` | `SupportsFullOuterJoin` |
 | `.inner_join_subquery(derived, on)` | `INNER JOIN (SELECT ...) AS "name" ON (...)` | — |
 | `.left_join_subquery(derived, on)` | `LEFT JOIN (SELECT ...) AS "name" ON (...)` | — |
 | `.cross_join_lateral(lateral)` | `CROSS JOIN LATERAL (SELECT ...)` | `SupportsLateralJoin` |
 | `.left_join_lateral(lateral)` | `LEFT JOIN LATERAL (SELECT ...) ON true` | `SupportsLateralJoin` |
 
-The older turbofish forms `inner_join` / `left_join` / `cross_join` / `full_outer_join` still exist as `#[doc(hidden)]` aliases; the `*_table` entry points are preferred, because passing the table value lets the compiler infer `T`, the joined scope, and the position marker without a turbofish.
+The join builders take the table marker as a value and read the joined type `T` from it, so the compiler infers `T`, the joined scope, and the position marker at the call site: no turbofish is written and no runtime cost is paid, because the marker is zero-sized.
 
 ```rust
 use rurqe::postgres::prelude::*;
 
 let built = select_from(Users)
-    .inner_join_table(
+    .inner_join(
         Orders,
         OrderUserId.eq(UserId),
     )
@@ -37,7 +37,7 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 ## The `ON` predicate and the scope
 
 ```rust
-pub fn inner_join_table<T: Table, Scope, P>(
+pub fn inner_join<T: Table, Scope, P>(
     self,
     _table: T,
     on: Expr<bool, Scope>,
@@ -58,7 +58,7 @@ use rurqe::postgres::prelude::*;
 
 let built = select_from(Users)
     .left_join_table(Orders, OrderUserId.eq(UserId))
-    .select(cols!(UserId, OrderTotal))
+    .left_join(Orders, OrderUserId.eq(UserId))
     .build()?;
 // Row: (i64, Option<f64>) — `orders.total` lifts automatically.
 ```
@@ -74,7 +74,7 @@ use rurqe::postgres::prelude::*;
 
 // Rejected while building: two relations share the effective name "users".
 let error = select_from(User)
-    .inner_join_table(User, UserManagerId.eq(UserId))
+    .inner_join(User, UserManagerId.eq(UserId))
     .select((UserId,))
     .build()
     .unwrap_err();

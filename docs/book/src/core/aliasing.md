@@ -89,7 +89,8 @@ table_alias! {
 }
 
 let built = select_from::<Postgres, Aliased<User, Manager>>()
-    .inner_join::<Aliased<User, Employee>, _, _>(
+    .inner_join(
+        Aliased::<User, Employee>::new(),
         Employee.col(UserManagerId).eq(Manager.col(UserId)),
     )
     .select((

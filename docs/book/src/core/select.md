@@ -95,7 +95,7 @@ Write the left join and keep the same projection:
 
 ```rust
 let report = select_from(User)
-    .left_join_table(Order, OrderUserId.eq(UserId))
+    .left_join(Order, OrderUserId.eq(UserId))
     .select(select!(user_id: UserId, order_total: OrderTotal))
     .fetch_all(&mut conn)?;
 

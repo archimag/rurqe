@@ -47,7 +47,7 @@ let rows = select!(
     total: OrderTotal,
 )
 .from(User)
-.inner_join_table(Order, OrderUserId.eq(UserId))
+.inner_join(Order, OrderUserId.eq(UserId))
 .where_(UserActive.eq(true))
 .order_by_asc(UserId)
 .limit(20)
@@ -59,7 +59,7 @@ for row in rows {
 ```
 
 No column type is repeated, no dialect is named, no tuple is indexed. `total` arrives as `f64`; replace `inner_join_table` with `left_join_table` and the same line yields `Option<f64>`, because the join may leave the order unmatched.
-
+No column type is repeated, no dialect is named, no tuple is indexed. `total` arrives as `f64`; replace `inner_join` with `left_join` and the same line yields `Option<f64>`, because the join may leave the order unmatched.
 ## The same query, assembled at runtime
 
 ```rust
