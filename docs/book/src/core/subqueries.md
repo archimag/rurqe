@@ -85,10 +85,10 @@ A projected query can also become a relation of the outer statement: `as_table` 
 |---|---|
 | `rurqe-core/src/expr/ops/subquery.rs` | `AnySubquery`, `InSubquery` |
 | `rurqe-core/src/expr/ops/conversion.rs` | `IntoExpr<T>` for a single-column `SelectQuery` |
-| `rurqe-core/src/expr/predicates.rs` | `in_subquery` / `not_in_subquery` |
+| `rurqe-core/src/expr/builder/predicates.rs` | `in_subquery` / `not_in_subquery` |
 | `rurqe-core/src/expr/row.rs` | `RowExpr::in_subquery` / `not_in_subquery` |
-| `rurqe-core/src/expr/ast/statement.rs` | `Expr::exists` / `Expr::not_exists` |
-| `rurqe-core/src/query/select/render.rs` | `.exists()`, `.into_subquery()`, `.into_exists()` |
+| `rurqe-core/src/expr/ast.rs` | `Expr::exists` / `Expr::not_exists` |
+| `rurqe-core/src/query/select/render.rs` | `.exists()`, `.into_subquery()` |
 
 ## Related chapters
 
