@@ -190,3 +190,42 @@ fn a_row_predicate_filters_a_query() {
         "SELECT \"id\" FROM \"users\" WHERE ((\"id\", \"name\") > ($1, $2))"
     );
 }
+
+/// Asserts both row traits of one arity: the row of columns it compares and the
+/// tuple of values it is compared with.
+///
+/// The assertion costs nothing at run time and is what makes a missing
+/// `impl_row_traits!` invocation fail loudly: without the invocation the arity
+/// implements neither trait, so the call stops compiling instead of leaving one
+/// row width silently unimplemented.
+fn assert_row_arity<Row, Lhs, Rhs>(_: Lhs, _: Rhs)
+where
+    Lhs: RowExpr<Row>,
+    Rhs: RowValues<Row>,
+{
+}
+
+#[test]
+fn every_row_width_from_two_to_eight_implements_both_row_traits() {
+    assert_row_arity((UserId, UserName), (1i64, "a"));
+    assert_row_arity((UserId, UserName, UserId), (1i64, "a", 2i64));
+    assert_row_arity((UserId, UserName, UserId, UserName), (1i64, "a", 2i64, "b"));
+    assert_row_arity(
+        (UserId, UserName, UserId, UserName, UserId),
+        (1i64, "a", 2i64, "b", 3i64),
+    );
+    assert_row_arity(
+        (UserId, UserName, UserId, UserName, UserId, UserName),
+        (1i64, "a", 2i64, "b", 3i64, "c"),
+    );
+    assert_row_arity(
+        (UserId, UserName, UserId, UserName, UserId, UserName, UserId),
+        (1i64, "a", 2i64, "b", 3i64, "c", 4i64),
+    );
+    assert_row_arity(
+        (
+            UserId, UserName, UserId, UserName, UserId, UserName, UserId, UserName,
+        ),
+        (1i64, "a", 2i64, "b", 3i64, "c", 4i64, "d"),
+    );
+}
