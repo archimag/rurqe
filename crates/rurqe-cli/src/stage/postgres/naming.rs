@@ -206,9 +206,13 @@ pub(super) fn recorded_process_id(name: &str) -> Option<u32> {
 /// it — both leave the process live, and `ESRCH` is the kernel's proof that no
 /// process carries the pid. Any other answer is unknown, and a pid outside the
 /// `pid_t` range would address a process group or leave the argument's domain,
-/// so both report "may exist" as well: the sweep asks strictly in the negative —
-/// whether the creator is gone — and an unknown answer keeps a database
-/// instead of dropping it on a guess.
+/// so both report "may exist" as well. Every caller asks strictly in the
+/// negative — whether the recorded process is gone — because that single answer
+/// decides whether work named after it may be destroyed: an unknown answer keeps
+/// a scratch database instead of dropping it on a guess, and keeps a staging
+/// path instead of emptying the in-flight staging of a writer that may still
+/// live, so a recycled pid never resurrects a writer the protocol would then
+/// overwrite.
 #[cfg(unix)]
 pub(crate) fn process_may_be_alive(pid: u32) -> bool {
     if pid == 0 || pid > i32::MAX as u32 {
@@ -225,9 +229,10 @@ pub(crate) fn process_may_be_alive(pid: u32) -> bool {
 
 /// Whether the process `pid` may still exist on this host.
 ///
-/// This platform exposes no probe, so every pid reports "may exist": the sweep
-/// keeps every scratch database whose name records a process, which is the
-/// price of never destroying in-flight work that cannot be proven abandoned.
+/// This platform exposes no probe, so every pid reports "may exist": the scratch
+/// sweep keeps every database whose name records a process and the staging gate
+/// keeps every staging path that records one, which is the price of never
+/// destroying in-flight work that cannot be proven abandoned.
 #[cfg(not(unix))]
 pub(crate) fn process_may_be_alive(_pid: u32) -> bool {
     true

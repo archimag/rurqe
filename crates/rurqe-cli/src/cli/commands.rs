@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::codegen::CodegenOptions;
 use crate::config::CodegenConfig;
 use crate::introspect::DEFAULT_SCHEMA;
-use crate::stage::postgres::process_nonce;
+use crate::stage::postgres::{process_may_be_alive, process_nonce};
 
 use super::args::CliError;
 
@@ -279,47 +279,37 @@ fn current_writer() -> WriterId {
 /// delete a staging path a live writer is still filling.
 fn staged_owner_is_dead(name: &str, prefix: &str) -> bool {
     match staged_owner(name, prefix) {
-        Some(owner) if owner != current_writer() => !pid_is_alive(owner.pid),
+        Some(owner) if owner != current_writer() => !process_may_be_alive(owner.pid),
         _ => false,
     }
 }
 
-/// Whether the process `pid` provably lives.
+/// The writer recorded in the name of the staged sibling `staged`, when that
+/// writer may still live.
 ///
-/// The sweep asks strictly in the negative — whether the writer is gone —
-/// because the worst a kept sibling does is outlive the debris it is, while a
-/// sibling discarded under its writer deletes that writer's in-flight staging
-/// path. On Unix the probe is `kill(pid, 0)`, which the kernel answers
-/// without delivering a signal: success and `EPERM` — the process exists,
-/// this one may not signal it — both name a live writer, while `ESRCH` is the
-/// kernel's proof that no process carries the pid. Pid `0` and pids beyond
-/// `pid_t` would address a process group or leave the argument's domain, so
-/// they count as living as well.
-#[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
-    if pid == 0 || pid > i32::MAX as u32 {
-        return true;
+/// A staged sibling is the one artifact class a writer creates before it enters
+/// the checkpoint section, so an occupied staging path is not debris by
+/// definition: it can be the in-flight staging of a concurrent writer — a writer
+/// on another host whose process id collides with this one included, which the
+/// per-process nonce of the name keeps from sharing this very path. `None` is
+/// what authorises a removal, and it states one of two facts: the name records a
+/// writer that provably no longer exists, or it records no writer at all. Either
+/// way nothing can be filling the path, so a caller may claim it.
+pub(super) fn staged_owner_may_live(artifact: &Path, staged: &Path) -> Option<WriterId> {
+    let prefix = temporary_prefix(artifact);
+    let name = staged.file_name()?.to_string_lossy();
+    let owner = staged_owner(&name, &prefix)?;
+
+    // A path this process computes is unique per call — the sequence counter is
+    // monotonic — so an entry under its own scope is debris of an interrupted
+    // earlier call rather than work still in flight.
+    if owner == current_writer() {
+        return None;
     }
 
-    // SAFETY: `kill` with signal `0` probes existence without delivering a
-    // signal, and `pid` is a non-zero value inside `pid_t` by the guard above.
-    match unsafe { libc::kill(pid as libc::pid_t, 0) } {
-        0 => true,
-        _ => std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH),
-    }
+    process_may_be_alive(owner.pid).then_some(owner)
 }
 
-/// Whether the process `pid` provably lives.
-///
-/// This platform exposes no probe, so every writer counts as living: the
-/// sweep keeps every foreign sibling rather than guessing a writer dead from
-/// a modification time alone, and the debris a crashed writer leaves then
-/// stays beside its artifact as the price of never discarding under a live
-/// writer.
-#[cfg(not(unix))]
-fn pid_is_alive(_pid: u32) -> bool {
-    true
-}
 
 /// The temporary file an artifact is staged in before it is renamed.
 ///

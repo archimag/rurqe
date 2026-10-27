@@ -12,6 +12,7 @@ use rurqe_migrate::stage::DeclarativeStage;
 use crate::cli::commands::artifact_directory;
 use crate::cli::commands::best_effort;
 use crate::cli::commands::marker_stem;
+use crate::cli::commands::staged_owner_may_live;
 use crate::cli::commands::sync_directory;
 use crate::cli::commands::temporary_sibling;
 use crate::cli::commands::write_file;
@@ -27,6 +28,15 @@ use super::park::{discard_parked, park, parked_sibling, restore};
 /// marker describes a boundary of its own, so two markers in one directory
 /// never share the snapshot a commit installs.
 const BOUNDARY_SUFFIX: &str = "-stage";
+
+/// The number of fresh sibling names one staging attempt may try.
+///
+/// A name carries this process's own scope, so a collision can only be a foreign
+/// artifact that landed on the very same process id, nonce, and sequence — one
+/// retry already resolves it — and the bound keeps a directory nothing can stage
+/// in from looping forever. An attempt that exhausts its names fails naming the
+/// writer of the last occupied path it met.
+const STAGING_ATTEMPTS: usize = 8;
 
 /// The directory the boundary snapshot of the marker at `checkpoint_path` lives in.
 pub(crate) fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
@@ -134,33 +144,112 @@ pub(crate) fn seal_commit(
 /// Creates the empty staging directory the new snapshot is assembled in.
 ///
 /// The commit preparation calls this outside its critical section, so the staging
-/// directory is complete on disk before the section is entered.
+/// directory is complete on disk before the section is entered — and being
+/// outside the section is exactly why an occupied staging path is never removed
+/// on sight: staging is the one artifact class a writer creates without holding
+/// the section, so a path that already exists may be the in-flight work of a
+/// concurrent writer rather than the debris of a killed one.
 ///
-/// A directory left behind by an interrupted attempt of a recycled process is
-/// discarded instead of merged into, so two commits can never end up in one
-/// snapshot.
+/// The claim is therefore the directory creation itself, which succeeds for
+/// exactly one writer, so a second one learns from `AlreadyExists` that the name
+/// is taken instead of merging its snapshot into somebody else's staging. Such an
+/// answer is classified through the same kernel liveness probe the staged-sibling
+/// sweep and the lock refusal use: a path whose writer may still live is left
+/// untouched and the attempt moves on to a fresh name, while only a path whose
+/// writer provably no longer exists — or whose name records no writer at all — is
+/// discarded. An attempt that exhausts its fresh names fails naming the writer of
+/// the last occupied path it met, symmetrically with the lock refusal.
 pub(crate) fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
-    let staged = temporary_sibling(dir);
-
-    match std::fs::remove_dir_all(&staged) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(CliError(format!(
-                "failed to replace the staging directory `{}`: {error}",
-                staged.display()
-            )))
-        }
-    }
-
-    std::fs::create_dir_all(&staged).map_err(|error| {
+    let parent = artifact_directory(dir);
+    std::fs::create_dir_all(parent).map_err(|error| {
         CliError(format!(
-            "failed to prepare the staging directory `{}`: {error}",
-            staged.display()
+            "failed to prepare the directory `{}` holding the staging directory: {error}",
+            parent.display()
         ))
     })?;
 
-    Ok(staged)
+    let mut occupied = None;
+
+    for _ in 0..STAGING_ATTEMPTS {
+        let staged = temporary_sibling(dir);
+
+        match std::fs::create_dir(&staged) {
+            Ok(()) => return Ok(staged),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                match staged_owner_may_live(dir, &staged) {
+                    // The path is the in-flight staging of a writer that may
+                    // still live: it is never removed, and the attempt retries
+                    // under a fresh name of its own instead.
+                    Some(owner) => occupied = Some(occupied_failure(&staged, owner)),
+                    // Nothing can be filling the path, so the debris an earlier
+                    // attempt left there is discarded and the attempt continues.
+                    None => discard_staged_path(&staged)?,
+                }
+            }
+            Err(error) => {
+                return Err(CliError(format!(
+                    "failed to prepare the staging directory `{}`: {error}",
+                    staged.display()
+                )))
+            }
+        }
+    }
+
+    match occupied {
+        Some(error) => Err(error),
+        None => Err(CliError(format!(
+            "failed to prepare a staging directory for `{}`: no candidate staging path stayed free",
+            dir.display()
+        ))),
+    }
+}
+
+/// Writes the refusal of a staging path that a writer which may still live holds.
+///
+/// The diagnostic is the staging counterpart of the lock refusal: it names the
+/// writer whose in-flight staging occupies the path and states why nothing is
+/// taken over, because the protocol never destroys the work of a writer that may
+/// still be running — a foreign host whose process id collides with this one
+/// included.
+fn occupied_failure(staged: &Path, owner: WriterId) -> CliError {
+    CliError(format!(
+        "the staging path `{}` belongs to the in-flight staging of writer pid {} (nonce {}), \
+         which may still be alive; staging happens outside the checkpoint section, so another \
+         writer can be filling that path right now and it is never removed",
+        staged.display(),
+        owner.pid,
+        owner.nonce
+    ))
+}
+
+/// Discards the debris occupying the staging path `staged`.
+///
+/// The caller has already proven the writer recorded in the name gone — or that
+/// the name records none — so nothing can be filling the path and a crash of an
+/// earlier attempt is the only way it came to exist. An entry that cannot be
+/// removed fails the attempt instead of leaving a snapshot to be assembled over
+/// it.
+fn discard_staged_path(staged: &Path) -> Result<(), CliError> {
+    let removal = match std::fs::symlink_metadata(staged) {
+        Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(staged),
+        Ok(_) => std::fs::remove_file(staged),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(CliError(format!(
+                "failed to inspect the staging path `{}`: {error}",
+                staged.display()
+            )))
+        }
+    };
+
+    match removal {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(CliError(format!(
+            "failed to discard the abandoned staging path `{}`: {error}",
+            staged.display()
+        ))),
+    }
 }
 
 /// Writes every script of `stage` into the staging directory `staged`.
