@@ -75,7 +75,7 @@ where
 ```rust
 let query = SelectQuery::<MockDialect>::new()
     .from::<User>()
-    .left_join::<Order, _, _>(Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+    .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
     .select((UserId, OrderTotal));
 
 // UserId stays i64, OrderTotal becomes Option<f64>.

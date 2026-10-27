@@ -59,7 +59,7 @@ table_alias!(E1, "e1");
 table_alias!(E2, "e2");
 
 let self_join = select_from::<Postgres, Aliased<Event, E1>>()
-    .inner_join_table(
+    .inner_join(
         aliased::<Event, E2>(),
         AliasedCol::<E1, EventParentId>::new().eq(AliasedCol::<E2, EventId>::new()),
     )

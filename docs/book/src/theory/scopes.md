@@ -68,7 +68,7 @@ The empty scope always stands at `At<0>`, a single table stands at its own posit
 ```rust
 // Compiles: Order is in scope after the join.
 let ok = select_from::<Postgres, User>()
-    .inner_join_table(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+    .inner_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
     .select((UserId, OrderTotal));
 ```
 

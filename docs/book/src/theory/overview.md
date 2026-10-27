@@ -16,10 +16,10 @@ The third column is the important one. It is what turns "a library that assemble
 | Attribute | `Column`, `Column::RustType` | column name |
 | Projection π | `Selection`, `SelectTarget`, `SelectionFor` | the `SELECT` projection list |
 | Selection σ | `Expr<bool>` in `.where_(...)` | `WHERE` |
-| Theta join ⋈θ | `inner_join_table(t, on)` | `INNER JOIN ... ON` |
-| Left outer join ⟕ | `left_join_table(t, on)` | `LEFT JOIN ... ON` |
-| Full outer join ⟗ | `full_outer_join_table(t, on)` | `FULL OUTER JOIN ... ON` |
-| Cartesian product × | `cross_join_table(t)` | `CROSS JOIN` |
+| Theta join ⋈θ | `inner_join(t, on)` | `INNER JOIN ... ON` |
+| Left outer join ⟕ | `left_join(t, on)` | `LEFT JOIN ... ON` |
+| Full outer join ⟗ | `full_outer_join(t, on)` | `FULL OUTER JOIN ... ON` |
+| Cartesian product × | `cross_join(t)` | `CROSS JOIN` |
 | Correlated `LATERAL` | `cross_join_lateral`, `left_join_lateral` | `JOIN LATERAL` |
 | Grouping γ | `.group_by(...)` → `GroupedQuery` | `GROUP BY` / `HAVING` |
 | Ordering and pagination | `.order_by_*`, `.limit`, `.offset` | `ORDER BY` / `LIMIT` / `OFFSET` |

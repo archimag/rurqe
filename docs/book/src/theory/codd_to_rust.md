@@ -62,7 +62,7 @@ pub trait Selection { type Row; fn push_projections(&self, out: &mut Vec<ExprKin
 ### Theta join ⋈θ
 
 ```rust
-select_from(Users).inner_join_table(Orders, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+select_from(Users).inner_join(Orders, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
 ```
 
 - Result type: `SelectQuery<D, Joined<Tables, T>, ...>`.
@@ -83,7 +83,7 @@ select_from(Users).inner_join_table(Orders, Expr::column::<OrderUserId>().eq(Exp
 
 ### Cartesian product ×
 
-- `cross_join_table(T)` → `CrossJoined<Tables, T>`; `Nullability = NonNullableRel`.
+- `cross_join(T)` → `CrossJoined<Tables, T>`; `Nullability = NonNullableRel`.
 - SQL: `CROSS JOIN`.
 
 ### Correlated join (LATERAL)
