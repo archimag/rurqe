@@ -4,8 +4,11 @@
 //! hard timeout — leaves the scratch behind, so every name records the second it
 //! was created, and the first sandbox connection of an interval sweeps away the
 //! databases abandoned for longer than [`DEFAULT_SCRATCH_MAX_AGE`]. A sweep only
-//! reaps databases this host tagged as its own, so a shared server never loses
-//! another host's in-flight work.
+//! reaps databases this host tagged as its own, and it refuses a candidate whose
+//! name records a creating process that may still be live, so two hosts that
+//! share one marker keep each other's in-flight work whenever their recorded
+//! process ids coincide. The sweep drops without an operator confirming it, so
+//! the candidate list is written on the `WARN` channel ahead of the first drop.
 //!
 //! `stage cleanup` runs the very candidate selection the sweep runs, so the list
 //! it asks the operator to confirm is exactly the list the sweep would drop.
@@ -15,7 +18,9 @@ use std::time::{Duration, SystemTime};
 
 use crate::cli::redact_database_url;
 
-use super::naming::{current_owner_tag, epoch_seconds, is_scratch_database_candidate};
+use super::naming::{
+    current_owner_tag, epoch_seconds, is_scratch_database_candidate, process_may_be_alive,
+};
 use super::sandbox::drop_scratch_database;
 
 /// The age after which an abandoned scratch database is swept away.
@@ -155,10 +160,16 @@ impl ScratchAdminSession for postgres::Client {
 }
 
 /// Lists the scratch databases matching the owner marker and abandoned for longer than `max_age`.
+///
+/// A database whose name records a creating process that `creator_may_be_alive`
+/// reports live is left out, so the sweep never reaps the in-flight work of
+/// another process — including another host sharing this owner tag, whenever
+/// the recorded process ids coincide.
 pub(crate) fn find_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
     session: &mut S,
     max_age: Duration,
     expected_owner: &str,
+    creator_may_be_alive: &dyn Fn(u32) -> bool,
 ) -> Result<Vec<String>, String> {
     let now = SystemTime::now();
     let mut candidates = Vec::new();
@@ -170,6 +181,7 @@ pub(crate) fn find_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
             expected_owner,
             max_age,
             now,
+            creator_may_be_alive,
         ) {
             continue;
         }
@@ -224,13 +236,18 @@ fn sweep_stale_scratch_databases<S: ScratchAdminSession + ?Sized>(
     source: &str,
 ) -> Result<Vec<String>, String> {
     let owner_tag = current_owner_tag();
-    let candidates = find_stale_scratch_databases(session, max_age, &owner_tag)?;
+    let candidates =
+        find_stale_scratch_databases(session, max_age, &owner_tag, &process_may_be_alive)?;
 
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
 
-    tracing::debug!(
+    // The list travels at `WARN` because the compact sink the binaries install
+    // drops everything below it, and this sweep removes databases without an
+    // operator confirming them: the names below are the record an operator
+    // has of what is being removed from the server.
+    tracing::warn!(
         url = %redact_database_url(source),
         count = candidates.len(),
         databases = ?candidates,

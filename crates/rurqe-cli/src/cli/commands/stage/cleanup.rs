@@ -3,7 +3,9 @@
 //! The sweep is the one lifecycle command that mutates nothing in the workspace: it
 //! enumerates the abandoned PostgreSQL scratch databases of a server and drops the
 //! ones an operator confirmed, so the catalog is read exactly once and the list the
-//! confirmation names is the very list `--yes` drops.
+//! confirmation names is the very list `--yes` drops. A database whose name
+//! records a creating process that may still be live never reaches the list, so
+//! a confirmed `--yes` confirms databases whose recorded creators are gone.
 
 use std::time::Duration;
 
@@ -11,7 +13,7 @@ use crate::cli::commands::cli_error;
 use crate::cli::{connect, redact_database_url, CliError, CommandOutput, Connection};
 use crate::stage::postgres::{
     current_owner_tag, drop_stale_scratch_databases, find_stale_scratch_databases,
-    ScratchAdminSession,
+    process_may_be_alive, ScratchAdminSession,
 };
 use crate::target::{DatabaseDialect, DatabaseTarget};
 
@@ -50,7 +52,7 @@ pub(crate) fn cleanup_stage(
         }
     };
 
-    cleanup_scratch_catalog(&mut admin, older_than, force, scratch_url)
+    cleanup_scratch_catalog(&mut admin, older_than, force, scratch_url, &process_may_be_alive)
 }
 
 /// Sweeps the stale scratch databases of the catalog `session` administers.
@@ -58,16 +60,21 @@ pub(crate) fn cleanup_stage(
 /// The catalog is scanned exactly once: the candidate list the confirmation
 /// names is the very list `--yes` drops, so a catalog that changed between two
 /// reads can no longer make the sweep drop something the operator never
-/// confirmed.
+/// confirmed. A database whose name records a creating process that
+/// `creator_may_be_alive` reports live is never a candidate — not even under a
+/// confirmed `--yes` — so the operator confirms databases whose recorded
+/// creators are gone.
 pub(crate) fn cleanup_scratch_catalog<S: ScratchAdminSession + ?Sized>(
     session: &mut S,
     older_than: Duration,
     force: bool,
     scratch_url: &str,
+    creator_may_be_alive: &dyn Fn(u32) -> bool,
 ) -> Result<CommandOutput, CliError> {
     let owner_tag = current_owner_tag();
     let candidates =
-        find_stale_scratch_databases(session, older_than, &owner_tag).map_err(cli_error)?;
+        find_stale_scratch_databases(session, older_than, &owner_tag, creator_may_be_alive)
+            .map_err(cli_error)?;
 
     if candidates.is_empty() {
         return Ok(CommandOutput::single(format!(

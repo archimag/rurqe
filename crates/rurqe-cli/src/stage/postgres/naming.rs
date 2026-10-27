@@ -7,8 +7,12 @@
 //! same name and two hosts practically never collide.
 //!
 //! The owner identity is the marker the sweep matches before it drops anything: a
-//! scratch database is only reaped by the host that created it, so a shared
-//! server never loses another host's in-flight work.
+//! scratch database is only reaped by the host that created it. The marker is
+//! derived, though, so two hosts can share it — the same `RURQE_HOST_ID`, the
+//! same container hostname — and the sweep therefore also reads the process a
+//! name records: a database whose recorded creator may still be live never
+//! becomes a candidate, so a host sharing this marker keeps its in-flight work
+//! as long as the two recorded process ids differ.
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
@@ -181,6 +185,54 @@ pub(crate) fn parse_scratch_database_timestamp(name: &str) -> Option<SystemTime>
     UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }
 
+/// The process id a scratch database name records, if it records one.
+///
+/// The id occupies the field after the recorded second — a name generated
+/// while the clock predates the epoch still carries it — so the id reads back
+/// whatever the leading field spells. `None` names a name that carries no
+/// parsable id; the staleness gate that runs first has already refused a name
+/// that is not shaped like one this module generates, so a candidate that
+/// reaches this reading records the process that proposed it.
+pub(super) fn recorded_process_id(name: &str) -> Option<u32> {
+    let mut fields = name.strip_prefix(SCRATCH_PREFIX)?.split('_');
+    let _recorded_second = fields.next()?;
+    fields.next()?.parse::<u32>().ok()
+}
+
+/// Whether the process `pid` may still exist on this host.
+///
+/// The probe is `kill(pid, 0)`, which the kernel answers without delivering a
+/// signal: success and `EPERM` — the process exists, this one may not signal
+/// it — both leave the process live, and `ESRCH` is the kernel's proof that no
+/// process carries the pid. Any other answer is unknown, and a pid outside the
+/// `pid_t` range would address a process group or leave the argument's domain,
+/// so both report "may exist" as well: the sweep asks strictly in the negative —
+/// whether the creator is gone — and an unknown answer keeps a database
+/// instead of dropping it on a guess.
+#[cfg(unix)]
+pub(crate) fn process_may_be_alive(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return true;
+    }
+
+    // SAFETY: `kill` with signal `0` probes existence without delivering a
+    // signal, and `pid` is a non-zero value inside `pid_t` by the guard above.
+    match unsafe { libc::kill(pid as libc::pid_t, 0) } {
+        0 => true,
+        _ => std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH),
+    }
+}
+
+/// Whether the process `pid` may still exist on this host.
+///
+/// This platform exposes no probe, so every pid reports "may exist": the sweep
+/// keeps every scratch database whose name records a process, which is the
+/// price of never destroying in-flight work that cannot be proven abandoned.
+#[cfg(not(unix))]
+pub(crate) fn process_may_be_alive(_pid: u32) -> bool {
+    true
+}
+
 /// Whether a scratch database was abandoned longer than `max_age` ago.
 ///
 /// A name without a recorded instant is never stale, and neither is one dated
@@ -197,16 +249,35 @@ pub(crate) fn is_scratch_database_stale(name: &str, max_age: Duration, now: Syst
     }
 }
 
-/// Checks whether a scratch database is eligible for sweep by matching owner and staleness.
+/// Checks whether a scratch database is eligible for the sweep.
+///
+/// Eligibility is the owner marker, the age of the recorded creation second,
+/// and the liveness of the recorded creating process: a database whose name
+/// records a process that `creator_may_be_alive` reports live is never a
+/// candidate, so two hosts that share one marker keep each other's in-flight
+/// work whenever the recorded process ids coincide. A name recording no
+/// parsable id stays decided by the marker and the age, which the staleness
+/// gate has already tied to a parsable id field.
 pub(crate) fn is_scratch_database_candidate(
     name: &str,
     comment: Option<&str>,
     expected_owner: &str,
     max_age: Duration,
     now: SystemTime,
+    creator_may_be_alive: &dyn Fn(u32) -> bool,
 ) -> bool {
     if !is_matching_owner(comment, expected_owner) {
         return false;
     }
-    is_scratch_database_stale(name, max_age, now)
+    if !is_scratch_database_stale(name, max_age, now) {
+        return false;
+    }
+
+    // A name that records its creating process refuses the sweep while that
+    // process may still be live.
+    if recorded_process_id(name).is_some_and(creator_may_be_alive) {
+        return false;
+    }
+
+    true
 }

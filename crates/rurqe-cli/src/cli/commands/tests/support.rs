@@ -69,6 +69,7 @@ fn a_confirmed_cleanup_scans_the_catalog_once() {
         Duration::from_secs(600),
         true,
         "postgres://db.internal/scratch",
+        &|_pid| false,
     )
     .expect("the confirmed cleanup drops the stale scratch databases");
 
@@ -104,6 +105,7 @@ fn an_unconfirmed_cleanup_names_the_candidates_without_dropping() {
         Duration::from_secs(600),
         false,
         "postgres://db.internal/scratch",
+        &|_pid| false,
     )
     .expect_err("the cleanup demands confirmation");
 
@@ -121,5 +123,37 @@ fn an_unconfirmed_cleanup_names_the_candidates_without_dropping() {
     assert!(
         message.contains("rurqe_scratch_1699999000_4321_0"),
         "got {message}"
+    );
+}
+
+#[test]
+fn a_live_creator_keeps_its_database_off_the_candidate_list() {
+    let mut session = CountingSession {
+        catalog: scratch_catalog(),
+        scans: 0,
+        drops: Vec::new(),
+    };
+
+    // The stale scratch database records pid 4321, and the checker answers
+    // that it may still be live, so the candidate list stays empty: the
+    // confirmation has nothing to name and `--yes` confirms nothing.
+    let output = cleanup_scratch_catalog(
+        &mut session,
+        Duration::from_secs(600),
+        true,
+        "postgres://db.internal/scratch",
+        &|pid| pid == 4321,
+    )
+    .expect("a live creator is refused instead of failing the cleanup");
+
+    assert_eq!(session.scans, 1);
+    assert!(session.drops.is_empty());
+    assert!(
+        output
+            .lines()
+            .iter()
+            .any(|line| line.contains("No PostgreSQL scratch database")),
+        "unexpected report: {:?}",
+        output.lines()
     );
 }

@@ -4,8 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::stage::postgres::naming::{
     current_owner_tag, is_matching_owner, is_scratch_database_candidate, is_scratch_database_stale,
-    parse_scratch_database_timestamp, sanitize_owner_id, scratch_database_name, OWNER_PREFIX,
-    SCRATCH_PREFIX, UNCLOCKED_NAME_FIELD,
+    parse_scratch_database_timestamp, process_may_be_alive, recorded_process_id,
+    sanitize_owner_id, scratch_database_name, OWNER_PREFIX, SCRATCH_PREFIX,
+    UNCLOCKED_NAME_FIELD,
 };
 use crate::stage::postgres::sandbox::{
     creation_failure_message, escape_sql_literal, owner_comment_sql, propose_scratch_database,
@@ -216,7 +217,8 @@ fn candidate_selection_requires_matching_owner_and_age() {
         Some(owner),
         owner,
         max_age,
-        now()
+        now(),
+        &|_pid| false
     ));
 
     // Stale but mismatched owner -> NOT candidate
@@ -225,7 +227,8 @@ fn candidate_selection_requires_matching_owner_and_age() {
         Some("rurqe:owner=other-host"),
         owner,
         max_age,
-        now()
+        now(),
+        &|_pid| false
     ));
 
     // Stale but no owner comment -> NOT candidate
@@ -234,7 +237,8 @@ fn candidate_selection_requires_matching_owner_and_age() {
         None,
         owner,
         max_age,
-        now()
+        now(),
+        &|_pid| false
     ));
 
     // Matching owner but fresh -> NOT candidate
@@ -243,8 +247,81 @@ fn candidate_selection_requires_matching_owner_and_age() {
         Some(owner),
         owner,
         max_age,
-        now()
+        now(),
+        &|_pid| false
     ));
+}
+
+#[test]
+fn a_name_whose_creator_may_still_live_is_never_a_candidate() {
+    let owner = "rurqe:owner=test-host";
+    let name = "rurqe_scratch_1699999000_4321_0";
+    let max_age = Duration::from_secs(600);
+
+    // Stale and matching owner, but a recorded creator that may still be
+    // live: the candidate list keeps the database instead of dropping it on
+    // a guess.
+    assert!(!is_scratch_database_candidate(
+        name,
+        Some(owner),
+        owner,
+        max_age,
+        now(),
+        &|pid| pid == 4321
+    ));
+
+    // The same name with a creator that is provably gone stays a candidate.
+    assert!(is_scratch_database_candidate(
+        name,
+        Some(owner),
+        owner,
+        max_age,
+        now(),
+        &|_pid| false
+    ));
+}
+
+#[test]
+fn a_name_records_the_process_that_proposed_it() {
+    assert_eq!(
+        recorded_process_id("rurqe_scratch_1700000025_4321_7"),
+        Some(4321)
+    );
+
+    // A name generated while the clock predates the epoch still carries its
+    // creating process, so the guard reads it back whatever the leading
+    // field spells.
+    assert_eq!(
+        recorded_process_id("rurqe_scratch_unclocked_4321_7_0"),
+        Some(4321)
+    );
+
+    // A truncated or foreign name records nothing the guard could probe.
+    for name in [
+        "app",
+        "rurqe_scratch_",
+        "rurqe_scratch_1700000025",
+        "rurqe_scratch_1700000025_",
+    ] {
+        assert_eq!(recorded_process_id(name), None, "{name}");
+    }
+}
+
+#[test]
+fn a_generated_name_records_this_process() {
+    assert_eq!(
+        recorded_process_id(&scratch_database_name()),
+        Some(std::process::id())
+    );
+}
+
+#[test]
+fn the_liveness_probe_never_reports_this_process_gone() {
+    // The probing process provably lives, and the out-of-range pids are
+    // answered conservatively instead of reaching the kernel.
+    assert!(process_may_be_alive(std::process::id()));
+    assert!(process_may_be_alive(0));
+    assert!(process_may_be_alive(u32::MAX));
 }
 
 #[test]

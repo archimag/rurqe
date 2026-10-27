@@ -476,6 +476,17 @@ NOTES:
     when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has
     no base stage is rejected instead of replaying the tail over an empty database.
 
+    `stage cleanup` drops only a scratch database the connecting host tagged as
+    its own, whose recorded creation second aged past `--older-than`, and whose
+    name records no process that may still be alive on this host; the
+    opportunistic sweep ahead of a scratch connection applies the same
+    selection and names its candidates on the `WARN` channel before dropping
+    them. Give every host that shares a PostgreSQL server its own
+    `RURQE_HOST_ID`: the process guard keeps a database whose recorded process
+    is live here, while a scratch database created under a duplicated host id
+    by another machine is swept by age alone, and one that is genuinely
+    abandoned is removed manually with `DROP DATABASE`.
+
 SCHEMA SELECTION:
     --schema <name>  PostgreSQL schema every catalog digest describes. A command line
                      selection wins over the `schema` key of `rurqe.toml`, which wins
