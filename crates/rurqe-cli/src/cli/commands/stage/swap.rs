@@ -40,9 +40,8 @@
 //! The writer scope of a name is `<pid>.<nonce>`: the process id keeps two live
 //! processes apart, and the nonce keeps a recycled id from inheriting the parking of
 //! an earlier one. A commit takes that scope from the owner record the section
-//! installed when it was acquired, never from a later re-read of the lock entry, so
-//! an entry another writer rewrote later cannot make the writer park under an
-//! identity that is not its own.
+//! installed when it was acquired, never from a later re-read of the record, so a
+//! record another writer rewrote later cannot make the writer park under an
 //!
 //! * marker — live `<dir>/checkpoint.toml`, staged
 //!   `<dir>/.checkpoint.toml.<pid>.<seq>.tmp`, parked
@@ -69,10 +68,11 @@
 //!   the entry is never staged. It is never parked and never removed either, since it
 //!   describes the section and not a state a reader restores: an unlinked entry would
 //!   let the next writer lock a fresh file while the previous holder still owns the old
-//!   one. Its states are free (no description holds the advisory lock, and the entry
-//!   carries no owner record, because the released guard cleared it) and held (the
-//!   kernel holds the section for one description, whose owner record names the pid and
-//!   the nonce).
+//!   one. The entry itself carries no content: the owner record of the holder lives
+//!   in a `checkpoint.lock.record` sibling, published once the section is held and
+//!   removed when the guard drops. Its states are free (no description holds the
+//!   advisory lock) and held (the kernel holds the section for one description, whose
+//!   owner record names the pid and the nonce).
 //!
 //! ## Critical sections
 //!
@@ -127,7 +127,7 @@
 //!
 //! `recover_interrupted_commit` runs under the section, so it observes only a pair a
 //! writer left behind when it died — never a pair a live writer is between two steps
-//! of. The entry has to echo the scope its caller reports before a copy is classified:
+//! of. The record has to echo the scope its caller reports before a copy is classified:
 //! a record naming any other writer — a stale record whose pid recycled into the caller
 //! included — marks a repair running outside the section that owns the pair and is
 //! refused. A caller whose record echoes classifies what it finds and takes exactly one
@@ -140,10 +140,10 @@
 //! | boundary live, its marker parked | a boundary installed without its commit point | drop the installed boundary, restore the parked one | I1 |
 //! | marker live, its boundary parked | a marker installed without its boundary | drop the installed marker, restore the parked one | I1 |
 //! | both parked | the commit stopped between the two parks | restore the boundary, then the marker | I1, I2 |
-//! | the entry names a writer other than the caller's scope | not this caller's debris and not recoverable here | refuse with a diagnostic naming the recorded writer and the reported scope | I3, I5 |
+//! | the record names a writer other than the caller's scope | not this caller's debris and not recoverable here | refuse with a diagnostic naming the recorded writer and the reported scope | I3, I5 |
 //!
 //! The last row is the rule the writer scopes carry: a parked copy belongs to the
-//! writer whose scope its name carries, and a caller whose entry does not echo its own
+//! writer whose scope its name carries, and a caller whose record does not echo its own
 //! scope — a stale record whose pid recycled into it included — repairs nothing, so no
 //! writer touches another writer's copy even when the protocol went wrong around it.
 //!
@@ -203,16 +203,24 @@
 //! ## The lock itself
 //!
 //! `checkpoint.lock` is a sibling of the marker, opened read+write+create so the entry
-//! persists, and taken with a non-blocking exclusive advisory lock (`flock` on Unix,
-//! `LockFileEx` on Windows) through the `fs4` crate. Once the lock is held, the entry is
-//! truncated and rewritten with the owner record of the writer (pid, nonce, and the
-//! instant it entered the section), which names that owner in a refusal and scopes the
-//! copies a commit parks. Acquisition polls the lock for a bounded time and then fails
+//! `LockFileEx` on Windows) through the `fs4` crate. The entry itself carries no
+//! content and is never written into, because the kernel arbitrates the section on
+//! the identity of the file alone; the owner record of the writer (pid, nonce, and
+//! the instant it entered the section) lives in a `checkpoint.lock.record` sibling,
+//! published once the section is held and removed when the guard drops. The record
+//! publishes atomically — its body staged in a hidden sibling and renamed over the
+//! record file only once complete, sound because nothing holds an advisory lock on
+//! the record file — so a concurrent reader meets either the whole previous record
+//! or the whole fresh one, never a torn body. The record names that owner in a
+//! refusal and scopes the copies a commit parks. Acquisition polls the lock for a
+//! bounded time and then fails naming that owner — or stating that the holder cannot
+//! be identified, when no record can be read from it; it never takes a section
+//! over, because it cannot: the kernel
 //! naming that owner; it never takes a section over, because it cannot: the kernel
 //! releases the advisory lock when its holder's file description closes, which happens for
 //! every process that exits however it dies, so a section held by a live writer is never
 //! preempted and a section held by a crashed writer is simply free. Release is RAII:
-//! dropping the guard clears the owner record it wrote and closes the description, and
+//! RAII: dropping the guard removes the record it published and closes the
 //! the kernel releases the section, so a released writer leaves no identity behind — a
 //! recycled pid inherits none — and no writer ever removes an entry another writer owns.
 //! Contention is observable between two
