@@ -76,21 +76,15 @@ pub(super) fn backdate(path: &Path, age: Duration) {
         .expect("backdate the planted artifact");
 }
 
-/// Writes the lock entry naming `pid`/`nonce` with a heartbeat `age` old.
+/// Plants the lock owner record naming `pid`/`nonce` with a heartbeat `age` old.
+///
+/// The record is planted beside the lock entry of the marker in `dir`, without
+/// taking the section, exactly as a writer that entered it and died would
+/// leave it behind, so a test prepares the stale record of a crashed writer.
 pub(super) fn lock_entry(dir: &Path, pid: u32, nonce: u128, age: Duration) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("a clock after the epoch")
-        .as_nanos();
-
-    std::fs::write(
-        dir.join("checkpoint.lock"),
-        format!(
-            "pid={pid}\nnonce={nonce}\nheartbeat={}\n",
-            now.saturating_sub(age.as_nanos())
-        ),
-    )
-    .expect("write the lock entry");
+    let checkpoint_path = dir.join("checkpoint.toml");
+    super::super::stage::lock::plant_record(&checkpoint_path, pid, nonce, age)
+        .expect("plant the owner record");
 }
 
 /// Whether the operating system enforces directory permissions for this process.

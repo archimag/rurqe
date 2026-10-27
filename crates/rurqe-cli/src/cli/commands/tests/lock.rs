@@ -9,9 +9,9 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 
 use super::super::commit_stage;
-use super::super::stage::lock::{CheckpointLock, WriterId};
+use super::super::stage::lock::{plant_record, CheckpointLock, WriterId};
 use super::super::stage::{recover_interrupted_commit, verify_stage};
-use super::fixtures::{directory_names, lock_entry, version, workspace};
+use super::fixtures::{directory_names, version, workspace};
 
 #[test]
 fn a_commit_that_cannot_take_the_section_writes_no_artifact() {
@@ -57,10 +57,10 @@ fn the_parked_copies_of_a_live_foreign_writer_are_never_repaired() {
     let dir = workspace("commit-foreign");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The entry records the writer pid 1, so these artifacts belong to a section
-    // this process does not hold: the pair that writer parked may still be the only
-    // recoverable copy of its state.
-    lock_entry(&dir, 1, 2, Duration::ZERO);
+    // The record names the writer pid 1, so these artifacts belong to a
+    // section this process does not hold: the pair that writer parked may
+    // still be the only recoverable copy of its state.
+    plant_record(&checkpoint_path, 1, 2, Duration::ZERO).expect("plant the foreign record");
     let marker_backup = dir.join(".checkpoint.toml.1.2.previous");
     std::fs::write(
         &marker_backup,
@@ -107,11 +107,12 @@ fn the_parked_copies_of_a_crashed_writer_are_repaired() {
     let dir = workspace("commit-dead-owner");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The entry names this process, which acquired the section after the writer that
-    // parked this pair died: the kernel released that writer's advisory lock when its
-    // process exited, so the copies it left behind carry a foreign scope and are
-    // debris this run repairs.
-    lock_entry(&dir, std::process::id(), 1, Duration::ZERO);
+    // The record names this process, which acquired the section after the
+    // writer that parked this pair died: the kernel released that writer's
+    // advisory lock when its process exited, so the copies it left behind
+    // carry a foreign scope and are debris this run repairs.
+    plant_record(&checkpoint_path, std::process::id(), 1, Duration::ZERO)
+        .expect("plant the crashed writer's record");
     let marker_backup = dir.join(".checkpoint.toml.1.2.previous");
     std::fs::write(
         &marker_backup,
@@ -156,12 +157,13 @@ fn a_commit_takes_over_the_section_of_a_crashed_writer() {
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    // The entry names a writer that died holding the section. Its record is old
-    // because that writer entered the section long before it crashed, and the age
-    // keeps it dead: the kernel released the writer's advisory lock when its process
-    // exited, so the commit acquires the section at once instead of waiting for an
-    // owner that no longer exists.
-    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+    // The record names a writer that died holding the section. Its heartbeat
+    // is old because that writer entered the section long before it crashed,
+    // and the kernel released the writer's advisory lock when its process
+    // exited, so the commit acquires the section at once instead of waiting for
+    // an owner that no longer exists.
+    plant_record(&checkpoint_path, 1, 2, Duration::from_secs(120))
+        .expect("plant the crashed writer's record");
 
     commit_stage(
         version("3.2"),
@@ -216,7 +218,8 @@ fn a_verification_takes_over_the_section_of_a_crashed_writer() {
     std::fs::create_dir_all(&boundary).expect("install the boundary");
     std::fs::write(boundary.join("users.sql"), users).expect("write the boundary snapshot");
 
-    lock_entry(&dir, 1, 2, Duration::from_secs(120));
+    plant_record(&checkpoint_path, 1, 2, Duration::from_secs(120))
+        .expect("plant the crashed writer's record");
 
     verify_stage(
         &stage_dir,
