@@ -96,7 +96,3 @@
   * Every documented signature, flag, predicate, migration algorithm, or lock protocol is derived exclusively from the actual workspace sources and tests. Documentation written from memory, approximated, or describing a capability absent from the code is a defect, not a wording issue.
   * A statement about a compile-time guarantee or a runtime behavior is valid only when a concrete code location or an existing test backs it.
   * The book is built with `just doc-build` (rendered into `target/book`) and previewed locally with `just doc-serve`; a broken book build is a failing check, not a documentation nit.
-* **Documentation Style & High-Level API Priority:**
-  * **Plain Technical English:** All documentation must be written strictly in clear, simple, and unambiguous technical English without unnecessary prose, filler, or linguistic ornamentation.
-  * **High-Level Dialect API First:** When presenting library features, user guides, and query examples, always prioritize the high-level API with a bound dialect prelude (`use rurqe::postgres::prelude::*;`, `use rurqe::sqlite::prelude::*;`) and value-based table markers (`select_from(User)`, `insert_into(User)`, `update(User)`, `delete_from(User)`). Readers and LLMs must see clean, idiomatic SQL-like Rust code rather than generic machinery.
-  * **Low-Level Generics Scoping:** Low-level unpinned turbofish generics (`select_from::<Postgres, User>()`, generic dialect abstractions) must be strictly relegated to architectural, internal, or dialect-agnostic extension sections.
