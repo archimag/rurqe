@@ -2,102 +2,146 @@
 
 RURQE renders one typed query core into several SQL dialects. Two engines are
 supported today — PostgreSQL through `rurqe-postgres` and SQLite through
-`rurqe-sqlite` — and both are driven by the same builder types. What differs
-between them splits into two dimensions that the API keeps separate:
+`rurqe-sqlite` — and both are driven by the same builders, so the query you
+already wrote targets the other engine as soon as the import changes.
 
-* **Rendering rules** — how identifiers are quoted and how parameter
-  placeholders are numbered — live in the `Dialect` trait and never change
-  the meaning of a query.
-* **Capabilities** — which clauses and operators an engine understands at
-  a given version — live in marker traits such as `SupportsReturning`,
-  proven per dialect *and per engine version*.
+```rust
+use rurqe::prelude::*;
+
+table! {
+    /// The `users` table.
+    User => "users" {
+        UserId => "id": i64,
+        UserName => "name": String,
+        UserActive => "active": bool,
+    }
+}
+```
+
+## The same query, both engines
+
+```rust
+use rurqe::postgres::prelude::*;
+
+let query = select_from(User)
+    .select(select!(user_id: UserId, user_name: UserName))
+    .where_(UserActive.eq(true))
+    .order_by_asc(UserId);
+```
+
+```sql
+SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
+WHERE ("active" = $1)
+ORDER BY "id" ASC
+```
+
+The identical lines under `use rurqe::sqlite::prelude::*;` render the same
+statement against SQLite:
+
+```sql
+SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
+WHERE ("active" = ?)
+ORDER BY "id" ASC
+```
+
+Only spelling changed: identifiers are quoted the way the engine quotes them,
+and parameters are numbered the way it numbers them — `$1` for PostgreSQL, `?`
+for SQLite. Spelling never changes what a query means, and it is the whole job
+of the `Dialect` trait.
+
+## Two things are not spelling
+
+### Case-insensitive search works on both
+
+`ILIKE` is a PostgreSQL extension; SQLite knows only the case-sensitive `LIKE`.
+The same predicate keeps its meaning on both engines:
+
+```rust
+.where_(UserName.ilike("%ali%"))
+```
+
+```sql
+-- PostgreSQL
+("name" ILIKE $1)
+
+-- SQLite
+(LOWER("name") LIKE LOWER(?))
+```
+
+`LOWER` folds ASCII letters only, which keeps the fallback independent of the
+database collation.
+
+### Nested collections work on both
+
+A `nest_many` / `nest_one` projection stays one statement on either engine, but
+the SQL differs. PostgreSQL aggregates natively with `jsonb_agg(to_jsonb(…))`,
+so the ordering and row limit of the nested statement shape the document;
+SQLite assembles every object with `json_object` and collects them with
+`json_group_array`. Both produce the same JSON document, so the client decodes
+one shape whichever engine produced it.
+
+SQLite shipped the JSON functions as an opt-in build option until 3.38, so the
+projection is reachable from `sqlite3_38` only — see
+[Nested results](../features/nested.md).
+
+## Capabilities are proven per version
+
+A clause is reachable only when the pinned engine version really runs it, so
+`RETURNING` compiles against SQLite 3.35:
+
+```rust
+use rurqe::sqlite::sqlite3_35::prelude::*;
+
+let row = db.fetch_one(&insert_into(User)
+    .values((UserId::set(1i64), UserName::set("alice")))
+    .returning(cols!(UserId, UserName)))?;
+```
+
+and against 3.24 it is not a method at all:
+
+```rust
+use rurqe::sqlite::sqlite3_24::prelude::*;
+
+// The pinned version has no `RETURNING`: the call does not exist.
+let inserted = insert_into(User)
+    .values((UserId::set(1i64), UserName::set("alice")));
+```
+
+Version pins are listed in [Versions](versions.md), the gates themselves in
+[Capabilities](capabilities.md), and the way to bind one per module in
+[Preludes](preludes.md).
 
 ## Native or nothing
 
 A query either renders as SQL the target engine runs natively, or it does not
 exist for that dialect. The refusal happens at three well-defined points:
 
-1. **Compile time.** Everything the type system can prove is rejected by
-   `rustc`: a column whose table is not in scope, a bare column projected out
-   of a `GROUP BY`, `.for_update()` on a dialect without
-   `SupportsRowLocking`. The unsupported method does not exist for that
-   dialect, so the mistake is a type error at the call site.
+1. **Compile time.** A clause the pinned version lacks is not a method, a
+   column whose table is not in scope is not projectable, and `.for_update()`
+   on a dialect without row locking cannot be named. The diagnostic speaks in
+   SQL terms — it names the capability the dialect is missing.
 2. **`.build()`.** Rules that must inspect the assembled statement run
-   deterministically before any network I/O: two relations sharing one
-   effective name in `FROM`/`JOIN` fail with `BuildError::DuplicateRelation`,
-   a `DISTINCT ON` whose leading `ORDER BY` expressions do not match the
-   `distinct_on` prefix fails with `BuildError::DistinctOnOrderMismatch`, and
-   a `DISTINCT` query whose ordering names no projected expression fails
-   with `BuildError::DistinctOrderNotProjected`.
+   deterministically before any I/O: two relations sharing one effective name
+   fail with `BuildError::DuplicateRelation`, a `DISTINCT ON` whose leading
+   `ORDER BY` expressions do not match the `distinct_on` prefix fails with
+   `BuildError::DistinctOnOrderMismatch`, and a `DISTINCT` query whose ordering
+   names no projected expression fails with
+   `BuildError::DistinctOrderNotProjected`.
 3. **Runtime, as data.** What only the engine can decide — a syntax error
    inside `sql!`, a constraint violation, a decode mismatch — surfaces as a
-   typed error through `Result`. Panics are forbidden on every path,
-   including malformed raw SQL.
+   typed error through `Result`. Panics are forbidden on every path, including
+   malformed raw SQL.
 
 Nothing in between synthesizes a missing server feature: no `MERGE` assembled
-from `INSERT` plus `UPDATE`, no `FOR UPDATE` emulated over SQLite's
-database-level lock, no `FULL OUTER JOIN` stitched together from outer joins.
-
-## The `Dialect` contract
-
-```rust
-pub trait Dialect: 'static + Send + Sync {
-    /// Whether the dialect renders `ILIKE` directly.
-    const SUPPORTS_ILIKE: bool = true;
-    /// Whether the dialect aggregates a nested row set into native JSON.
-    const SUPPORTS_JSONB_ROW_AGG: bool = false;
-
-    /// Appends a quoted identifier to the output SQL buffer.
-    fn push_quoted_identifier(out: &mut String, ident: &str);
-
-    /// Appends a parameter placeholder for a 1-based parameter index.
-    fn push_placeholder(out: &mut String, index: usize);
-
-    /// Returns a newly allocated quoted identifier string.
-    fn quote_identifier(ident: &str) -> String { /* … */ }
-
-    /// Returns a newly allocated placeholder string for `index`.
-    fn placeholder(index: usize) -> String { /* … */ }
-}
-```
-
-Two associated constants are the only rendering decisions that change SQL
-*semantics*, so they are named rather than hidden in method bodies:
-
-* `SUPPORTS_ILIKE` — `ILIKE` is a PostgreSQL extension; SQLite only knows the
-  case-sensitive `LIKE`. A dialect without `ILIKE` keeps the same
-  case-insensitive semantics by folding both operands with `LOWER` when the
-  predicate renders. `LOWER` folds ASCII letters only, which keeps the
-  fallback independent of the database collation.
-* `SUPPORTS_JSONB_ROW_AGG` — a dialect with native row aggregation renders a
-  nested collection as `jsonb_agg(to_jsonb(…))`, keeping the clauses of the
-  nested statement in charge of the produced document. A dialect without it
-  assembles every object field by field with `json_object` and collects the
-  objects with `json_group_array`. Both forms produce the same JSON document,
-  so a client decodes one representation whichever engine produced it.
-
-Everything else a dialect decides is spelling: `push_quoted_identifier`
-renders `"users"` under PostgreSQL, and `push_placeholder` renders `$1` under
-PostgreSQL and `?` under SQLite.
-
-## Capabilities are traits, not flags
-
-Each clause with engine-dependent availability gets its own marker trait —
-`SupportsReturning`, `SupportsOnConflict`, `SupportsWindowFunctions`, and
-eleven more — and the builder methods that would emit the clause are bounded
-by that trait. A method that does not apply to a dialect cannot be called on
-it, and `#[diagnostic::on_unimplemented]` turns the violation into a short
-SQL-level message instead of a trait-solver cascade.
-
-A dialect additionally carries an *engine version* type parameter, so a
-capability is proven for the exact version range the application targets —
-see [Versions](versions.md) and the catalogue in
-[Capabilities](capabilities.md).
+from `INSERT` plus `UPDATE`, no `FOR UPDATE` emulated over a whole-database
+lock, no `FULL OUTER JOIN` stitched together from outer joins.
 
 ## In this chapter
 
-* [Philosophy](philosophy.md) — why a dialect is a type and not a runtime flag.
-* [Capabilities](capabilities.md) — the full marker catalogue and the `.build()` rules.
-* [Versions](versions.md) — `Pg14`…`Pg16`, `Sqlite3_0`…`Sqlite3_38`, and capability thresholds.
-* [Preludes](preludes.md) — binding a dialect without turbofish.
-* [PostgreSQL](postgres/overview.md) — the PostgreSQL dialect, its extensions, and its drivers.
+* [Philosophy: native or nothing](philosophy.md)
+* [Capability markers](capabilities.md)
+* [Engine versions](versions.md)
+* [Preludes](preludes.md)
+* [PostgreSQL](postgres/overview.md) — the dialect, its extensions, its drivers.
+* [SQLite](sqlite/overview.md) — the dialect, its version thresholds, the
+  `rusqlite` driver.

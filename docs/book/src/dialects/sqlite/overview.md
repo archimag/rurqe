@@ -1,83 +1,114 @@
 # SQLite
 
-`rurqe-sqlite` — диалект SQLite, маркеры версий движка и рантайм-адаптеры
-поверх `rusqlite`. Крейт устроен так же, как `rurqe-postgres`: `dialect`
-описывает рендеринг и версионные пороги, а `backend` — слой значений,
-соединение и пул.
+`rurqe-sqlite` is the SQLite dialect, its engine-version markers, and the
+`srusqlite` execution adapters. The crate is layered like `rurqe-postgres`: the
+dialect decides rendering and version thresholds, and the backend holds the
+value layer, the connection, and the pool.
 
-## Тип диалекта
+One import pins the dialect and the version:
 
 ```rust
-pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
+use rurqe::sqlite::sqlite3_35::prelude::*;
+// or the default pin, which is 3.35 as well:
+// use rurqe::sqlite::prelude::*;
 ```
 
-Параметр версии по умолчанию — `Sqlite3_35`; объявлены маркеры `Sqlite3_0`,
-`Sqlite3_24`, `Sqlite3_25`, `Sqlite3_30`, `Sqlite3_35`, `Sqlite3_38`. Версия
-доказывает возможности, а не меняет рендеринг — см.
-[capabilities](capabilities.md) и [versions](../versions.md).
+## A working session
 
-## Правила рендеринга
+```rust
+use rurqe::sqlite::rusqlite::Connection;
 
-Идентификаторы заключаются в двойные кавычки, внутренняя кавычка удваивается:
+let connection = Connection::open_in_memory()?;
+connection.execute_batch(
+    "CREATE TABLE users (\
+         id INTEGER NOT NULL PRIMARY KEY,\
+         name TEXT NOT NULL,\
+         active BOOLEAN NOT NULL);",
+)?;
+let mut db = SqliteConnection::new(connection);
 
-```text
-users        →  "users"
-user"name    →  "user""name"
+// 3.35 has RETURNING, so the write answers with the row it produced.
+let row = db.fetch_one(&insert_into(User)
+    .values((
+        UserId::set(1i64),
+        UserName::set("alice"),
+        UserActive::set(true),
+    ))
+    .returning(cols!(UserId, UserName)))?;
+println!("#{} {}", row.user_id, row.user_name);
+
+// Case-insensitive search, without an ILIKE keyword the engine never had.
+let found = db.fetch_all(&select_from(User)
+    .select(select!(user_id: UserId, user_name: UserName))
+    .where_(UserName.ilike("%ali%"))
+    .order_by_asc(UserId))?;
+
+for user in found {
+    println!("#{} {}", user.user_id, user.user_name);
+}
 ```
 
-Плейсхолдеры анонимные: индекс параметра игнорируется, потому что SQLite
-нумерует параметры позиционно.
+The `.ilike(...)` predicate renders as
+`(LOWER("name") LIKE LOWER(?))`: SQLite only knows the case-sensitive `LIKE`,
+so the predicate keeps its meaning by folding both operands. `LOWER` folds
+ASCII letters only, which keeps the behaviour independent of the database
+collation.
 
-```text
-параметр 1   →  ?
-параметр 42  →  ?
-```
+An in-memory database is the whole of it — no server, no daemon — which is why
+the integration suite of the workspace runs on it.
 
-Два флага `Dialect` меняют не написание, а семантику SQL, поэтому они
-объявлены константами, а не спрятаны в телах методов:
+## The pin decides which SQL exists
 
-* `SUPPORTS_ILIKE = false` — у SQLite нет `ILIKE`, есть только регистрозависимый
-  `LIKE`. Предикат `ilike` сохраняет регистронезависимую семантику, складывая
-  оба операнда через `LOWER`, то есть рендерится как
-  `(LOWER("name") LIKE LOWER(?))`. `LOWER` складывает только ASCII-буквы, что
-  делает обход независимым от коллации базы.
-* `SUPPORTS_JSONB_ROW_AGG = false` — у SQLite нет агрегации строки в JSON,
-  поэтому вложенная коллекция собирается поле за полем через `json_object` и
-  склеивается `json_group_array` — см. [json](json.md).
+Each release added its own SQL, and the dialect proves every capability for a
+concrete version rather than for “SQLite in general”:
 
-## Возможности и ограничения
-
-Каждая возможность движка вынесена в маркерный трейт ядра и доказана для
-конкретного диапазона версий: `ON CONFLICT` с 3.24, окна с 3.25, `FILTER
-(WHERE …)` и явная сортировка NULL с 3.30, `RETURNING` и `UPDATE … FROM` с
-3.35, JSON-агрегация с 3.38.
-
-| Класс | Глава |
+| SQL | Needs at least |
 |---|---|
-| версионные пороги и полная таблица маркеров | [capabilities](capabilities.md) |
-| `ON CONFLICT`, `EXCLUDED`, условные предикаты | [upsert](upsert.md) |
-| `FILTER (WHERE …)`, окна, `NULLS FIRST/LAST` | [filter](filter.md) |
+| `ON CONFLICT` upsert | 3.24.0 |
+| `OVER (…)` window functions | 3.25.0 |
+| `FILTER (WHERE …)`, `NULLS FIRST` / `NULLS LAST` | 3.30.0 |
+| `RETURNING`, `UPDATE … FROM` | 3.35.0 |
+| JSON aggregation of a row set | 3.38.0 |
+
+Pin 3.24 and `.returning(...)` is not a method; pin 3.38 and `nest_many` becomes
+reachable. [Capabilities and version thresholds](capabilities.md) has the full
+matrix and the honest refusals; [Versions](../versions.md) explains how a pin is
+spelled.
+
+## What SQLite does not have
+
+`DISTINCT ON`, `LATERAL`, `DELETE … USING`, row-level locking, and
+`FULL OUTER JOIN` do not exist for any declared version, so no method emits
+them and nothing emulates them on the client. See
+[Limitations without emulation](limitations.md).
+
+## In this chapter
+
+| Topic | Chapter |
+|---|---|
+| version thresholds and the gate matrix | [capabilities](capabilities.md) |
+| `ON CONFLICT`, `EXCLUDED`, conditional updates | [upsert](upsert.md) |
+| `FILTER (WHERE …)`, windows, `NULLS FIRST/LAST` | [filter](filter.md) |
 | `RETURNING`, `UPDATE … FROM` | [returning](returning.md) |
-| чего нет и почему нет эмуляции | [limitations](limitations.md) |
-| вложенные коллекции и привязка массивов | [json](json.md) |
-| перечисления через `CHECK (col IN (…))` | [enums](enums.md) |
+| what is absent and why nothing is emulated | [limitations](limitations.md) |
+| nested collections and array binding | [json](json.md) |
+| enums through `CHECK (col IN (…))` | [enums](enums.md) |
 
-## Драйверы
+## The driver
 
-Адаптеры повторяют слоение PostgreSQL-крейта: слой значений (`backend/types`),
-соединение `rusqlite` (`backend/rusqlite`) и пул `r2d2` (`backend/pools`).
-Каждый слой закрыт фичей собственной зависимости, поэтому сборка без драйвера
-компилирует пустой модуль.
+The adapters repeat the layering of the PostgreSQL crate: the value layer
+(`backend/types`), the `rusqlite` connection (`backend/rusqlite`), and the
+`r2d2` pool (`backend/pools`). Each layer sits behind the feature of its own
+dependency, so a build without the driver compiles an empty module.
 
 ```rust
 use rurqe::sqlite::prelude::*;
 
 let mut db = SqliteConnection::open_in_memory()?;
-let rows = select_from(users)
-    .select((users.id, users.name))
-    .where_(users.is_active.eq(true))
-    .fetch_all(&mut db)?;
+let rows = db.fetch_all(&select_from(User)
+    .select(select!(user_id: UserId, user_name: UserName))
+    .where_(UserActive.eq(true)))?;
 ```
 
-Драйвер и модель конкурентности миграций описаны в [driver](driver.md) и
-[concurrency](concurrency.md).
+The driver and the migration concurrency model are described in
+[driver](driver.md) and [concurrency](concurrency.md).
