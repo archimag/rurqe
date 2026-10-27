@@ -135,13 +135,16 @@ pub(crate) fn commit_stage(
 
     // A commit an earlier process left halfway is repaired before the marker is
     // read, so the rewind guard below compares against the boundary that really
-    // stands.
+    // stands. The repair is authorised by the section this commit holds: it passes
+    // the scope its own acquisition recorded, which the entry echoes back, so a
+    // stale record — a crashed writer's pid recycled into this process included —
+    // is refused instead of being read as this writer's own.
     //
     // The repair has already renamed artifacts into place by the time the rewind
     // guard, the lock write, or the swap can fail, so every one of them folds its
     // report into the failure it returns: the failure channel is the only output a
     // failing command guarantees.
-    let recovery = super::recover_interrupted_commit(checkpoint_path)?;
+    let recovery = super::recover_interrupted_commit(checkpoint_path, section.writer())?;
     let fail = |error: CliError| carry_recovery(recovery.as_deref(), error);
 
     // The marker is re-read inside the section, so a writer that committed while

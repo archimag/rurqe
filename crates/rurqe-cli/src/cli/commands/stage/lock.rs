@@ -13,9 +13,12 @@
 //! The lock entry carries the owner record of the writer: its pid, a nonce taken
 //! with the section that keeps a recycled pid from being read as the writer of a
 //! record an earlier process left behind, and the instant it entered the section.
-//! The record is written once, when the section is taken, and is never refreshed; it
-//! names the writer in the diagnostic of a refused acquisition and scopes the copies
-//! a commit parks.
+//! The record is written once, when the section is taken, and cleared when the guard
+//! drops, so a released section leaves no identity behind that a recycled pid could
+//! inherit; a writer that died holding the section leaves its record until the next
+//! acquisition rewrites it, and the nonce is what keeps that stale record from being
+//! read as the new writer's own. While the section is held the record names the writer
+//! in the diagnostic of a refused acquisition and scopes the copies a commit parks.
 //!
 //! Liveness is the kernel's, not the record's. An advisory lock belongs to the open
 //! file description that took it: it is released the moment that description closes,
@@ -74,9 +77,10 @@ const NANOS_PER_SECOND: u128 = 1_000_000_000;
 /// The exclusive section a command holds while it reads or mutates the artifacts.
 ///
 /// The guard is installed by [`CheckpointLock::acquire`] and released when it is
-/// dropped: closing the file description releases the kernel's advisory lock, so a
-/// command that leaves its scope early — through `?` or through `return` — cannot
-/// leave the section held behind it.
+/// dropped: dropping it clears the owner record the acquisition wrote, closes the file
+/// description, and lets the kernel release its advisory lock, so a command that leaves
+/// its scope early — through `?` or through `return` — can neither leave the section
+/// held behind it nor leave a stale identity in the entry.
 pub(crate) struct CheckpointLock {
     /// The locked description. Holding it open is what holds the section, and
     /// nothing reads it: the kernel arbitrates the lock on the description itself.
@@ -168,10 +172,30 @@ impl CheckpointLock {
     /// one re-read from the entry afterwards: a record another writer rewrote can
     /// never make a commit park under an identity that is not its own, and a copy it
     /// parked stays attributable to the scope that created it.
-    pub(super) fn writer(&self) -> WriterId {
+    pub(crate) fn writer(&self) -> WriterId {
         WriterId {
             pid: self.record.pid,
             nonce: self.record.nonce,
+        }
+    }
+}
+
+/// Clears the owner record so a released section leaves no identity behind.
+///
+/// The kernel releases the advisory lock when the description closes, and truncating
+/// the entry first releases the identity the acquisition wrote with it: a later reader
+/// never mistakes a stale record for a live writer, and a recycled pid inherits no
+/// parking of an earlier one. A truncation that fails leaves a stale record beside a
+/// section the kernel has already released — which the recovery refuses to trust
+/// anyway — so it is reported without failing a command whose section is already gone.
+impl Drop for CheckpointLock {
+    fn drop(&mut self) {
+        let cleared = self._file.set_len(0).and_then(|()| self._file.sync_all());
+        if let Err(error) = cleared {
+            tracing::warn!(
+                %error,
+                "failed to clear the owner record of the released checkpoint lock"
+            );
         }
     }
 }
@@ -246,12 +270,12 @@ impl OwnerRecord {
 /// section-start instant stays out of it: when a writer entered its section says
 /// nothing about who it is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct WriterId {
+pub(crate) struct WriterId {
     /// The process id of the writer.
-    pub(super) pid: u32,
+    pub(crate) pid: u32,
     /// The value taken when the writer entered the section, keeping a recycled
     /// process id from being read as the writer of an earlier record.
-    pub(super) nonce: u128,
+    pub(crate) nonce: u128,
 }
 
 /// The state a lock entry was read in.
@@ -288,10 +312,12 @@ fn read_lock(lock_path: &Path) -> Result<LockEntry, CliError> {
 /// The identity a lock entry records, or `None` when it records no owner.
 ///
 /// The entry is read without taking the section, so a writer already holding it can
-/// ask which section the artifacts beside the marker belong to. The record is an
-/// identity and not a liveness proof: a record naming a foreign writer marks a
-/// repair running outside the section it describes, which the recovery refuses
-/// rather than gate on elapsed time.
+/// ask which section the artifacts beside the marker belong to. A released guard has
+/// already cleared the record it wrote, so a readable one names either the current
+/// holder or a writer that died holding the section. The record is an identity and
+/// not a liveness proof: a record naming a foreign writer marks a repair running
+/// outside the section it describes, which the recovery refuses rather than gate on
+/// elapsed time.
 pub(super) fn recorded_writer(checkpoint_path: &Path) -> Result<Option<WriterId>, CliError> {
     match read_lock(&lock_path_of(checkpoint_path))? {
         LockEntry::Held(owner) => Ok(Some(WriterId {
@@ -551,6 +577,30 @@ mod tests {
         // The entry persists so the kernel keeps arbitrating on one file identity,
         // and the released section accepts the next writer at once.
         assert!(lock.exists(), "the entry is never removed");
+        CheckpointLock::acquire_within(&checkpoint, Duration::from_millis(20))
+            .expect("the released section is free again");
+    }
+
+    #[test]
+    fn a_released_section_clears_the_record_of_its_writer() {
+        let scratch = Scratch::new("released");
+        let checkpoint = scratch.checkpoint();
+        let lock = lock_path_of(&checkpoint);
+
+        let section = CheckpointLock::acquire(&checkpoint).expect("a fresh section");
+        let owner = OwnerRecord::parse(&std::fs::read_to_string(&lock).expect("the entry"))
+            .expect("the owner record of the current writer");
+        assert_eq!(owner.pid, std::process::id());
+
+        drop(section);
+
+        // The released guard cleared the record it wrote, so no stale identity — a
+        // recycled pid included — is left behind for a later reader to trust.
+        assert_eq!(
+            std::fs::read_to_string(&lock).expect("the entry"),
+            "",
+            "the owner record is cleared on release"
+        );
         CheckpointLock::acquire_within(&checkpoint, Duration::from_millis(20))
             .expect("the released section is free again");
     }

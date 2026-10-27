@@ -62,7 +62,8 @@
 //!   the entry is never staged. It is never parked and never removed either, since it
 //!   describes the section and not a state a reader restores: an unlinked entry would
 //!   let the next writer lock a fresh file while the previous holder still owns the old
-//!   one. Its states are free (no description holds the advisory lock) and held (the
+//!   one. Its states are free (no description holds the advisory lock, and the entry
+//!   carries no owner record, because the released guard cleared it) and held (the
 //!   kernel holds the section for one description, whose owner record names the pid and
 //!   the nonce).
 //!
@@ -119,7 +120,11 @@
 //!
 //! `recover_interrupted_commit` runs under the section, so it observes only a pair a
 //! writer left behind when it died — never a pair a live writer is between two steps
-//! of. It classifies what it finds and takes exactly one action:
+//! of. The entry has to echo the scope its caller reports before a copy is classified:
+//! a record naming any other writer — a stale record whose pid recycled into the caller
+//! included — marks a repair running outside the section that owns the pair and is
+//! refused. A caller whose record echoes classifies what it finds and takes exactly one
+//! action:
 //!
 //! | Observation | Verdict | Action | Invariant |
 //! | --- | --- | --- | --- |
@@ -128,11 +133,12 @@
 //! | boundary live, its marker parked | a boundary installed without its commit point | drop the installed boundary, restore the parked one | I1 |
 //! | marker live, its boundary parked | a marker installed without its boundary | drop the installed marker, restore the parked one | I1 |
 //! | both parked | the commit stopped between the two parks | restore the boundary, then the marker | I1, I2 |
-//! | the copy belongs to a live foreign writer | not debris and not recoverable here | refuse with a diagnostic naming the owner | I3, I5 |
+//! | the entry names a writer other than the caller's scope | not this caller's debris and not recoverable here | refuse with a diagnostic naming the recorded writer and the reported scope | I3, I5 |
 //!
-//! The last row is the rule that replaces the fixed `.previous` names: a parked copy
-//! belongs to the writer whose scope its name carries, and no writer touches another
-//! live writer's copy even when the protocol went wrong around it.
+//! The last row is the rule the writer scopes carry: a parked copy belongs to the
+//! writer whose scope its name carries, and a caller whose entry does not echo its own
+//! scope — a stale record whose pid recycled into it included — repairs nothing, so no
+//! writer touches another writer's copy even when the protocol went wrong around it.
 //!
 //! ## Interleavings of two writers
 //!
@@ -199,8 +205,10 @@
 //! releases the advisory lock when its holder's file description closes, which happens for
 //! every process that exits however it dies, so a section held by a live writer is never
 //! preempted and a section held by a crashed writer is simply free. Release is RAII:
-//! dropping the guard closes the description and the kernel releases the section, so no
-//! writer ever removes an entry another writer owns. Contention is observable between two
+//! dropping the guard clears the owner record it wrote and closes the description, and
+//! the kernel releases the section, so a released writer leaves no identity behind — a
+//! recycled pid inherits none — and no writer ever removes an entry another writer owns.
+//! Contention is observable between two
 //! descriptions of one process, so the refusal and the recovery are testable without a
 //! second process. The lock adds one dependency, and is panic-free.
 //!
@@ -235,9 +243,12 @@
 //! swap — where the negative pin refuses with that writer's pid and nonce named and leaves
 //! the pair it parked untouched (I1–I3), and the positive pin converges once the holder is
 //! gone, discarding the parked pair as the debris of a writer whose death the kernel proved
-//! (I2) — and a prune concurrent with a reader. They run over the real filesystem in a
-//! temporary directory, while the contention they lean on is observable between two
-//! descriptions of one process and needs no second one.
+//! (I2) — a recycled pid whose stale record does not echo the caller's scope, where the
+//! negative pin refuses the repair and leaves the parked pair exactly where its dead
+//! writer left it, and the positive pin converges once the section is taken and the
+//! record rewritten with the caller's own scope — and a prune concurrent with a reader.
+//! They run over the real filesystem in a temporary directory, while the contention they
+//! lean on is observable between two descriptions of one process and needs no second one.
 
 mod park;
 mod recover;

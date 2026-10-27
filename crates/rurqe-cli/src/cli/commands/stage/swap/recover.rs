@@ -8,30 +8,37 @@
 
 use std::path::Path;
 
-use crate::cli::commands::stage::lock::recorded_writer;
+use crate::cli::commands::stage::lock::{recorded_writer, WriterId};
 use crate::cli::CliError;
 
 use super::park::{discard_copies, parked_copies};
 use super::seal::{boundary_dir, flush_boundary_parent};
 
-/// Refuses to repair the pair while the entry records another writer.
+/// Refuses to repair the pair while the entry records a writer other than `scope`.
 ///
-/// Under the kernel's advisory lock no foreign writer can be between two steps of its
-/// own commit while this process holds the section: a live holder would have refused
-/// the acquisition, and a holder that died had its section released before the repair
-/// began. A record naming a foreign process therefore marks a caller repairing outside
-/// the section, where the parked pair may still be the only recoverable copy of the
-/// state that section owns. The repair refuses and names the record instead of
-/// mutating anything.
-fn refuse_foreign_record(checkpoint_path: &Path) -> Result<(), CliError> {
+/// `scope` is the identity of the section its caller reports — the scope
+/// `CheckpointLock::writer` returns for a guard the caller holds — and the entry
+/// echoes that same scope back while the section is held, because the acquisition
+/// itself wrote the record and nothing but a holder ever rewrites it. A record
+/// naming any other writer therefore marks a caller repairing outside the section
+/// that owns the artifacts, where the parked pair may still be the only recoverable
+/// copy of that section's state. The pid alone cannot carry that decision — a
+/// crashed writer's pid can recycle into the current process, and its stale record
+/// would then be read as `ours` — so the whole scope, pid and nonce, has to agree.
+/// The repair refuses, names the recorded writer beside the scope the caller
+/// reported, and mutates nothing.
+fn refuse_foreign_record(checkpoint_path: &Path, scope: WriterId) -> Result<(), CliError> {
     match recorded_writer(checkpoint_path)? {
-        Some(owner) if owner.pid != std::process::id() => Err(CliError(format!(
+        Some(owner) if owner != scope => Err(CliError(format!(
             "refusing to repair the checkpoint artifacts beside `{}`: the checkpoint lock records \
-             the writer pid {} (nonce {}), so these artifacts belong to a section this process \
-             does not hold; take the section before repairing them",
+             the writer pid {} (nonce {}), while the caller reports the scope of writer pid {} \
+             (nonce {}), so these artifacts belong to a section this caller does not provably \
+             hold; take the section before repairing them",
             checkpoint_path.display(),
             owner.pid,
-            owner.nonce
+            owner.nonce,
+            scope.pid,
+            scope.nonce
         ))),
         _ => Ok(()),
     }
@@ -77,17 +84,23 @@ fn names_a_directory(path: &Path) -> bool {
 /// marker never describes a boundary another commit replaced.
 ///
 /// The copies are discovered by their writer-scoped names instead of a fixed
-/// `.previous` path, and nothing is classified from a section this process does not
-/// hold: the entry records the writer the artifacts belong to, so a foreign record
-/// marks a caller repairing outside the section that owns the parked pair. A copy
-/// this run may repair belongs to the section it holds — the record names this
-/// process, or names nobody — and the writer that parked it is gone, because the
-/// kernel released its advisory lock when its process exited.
+/// `.previous` path, and nothing is classified from a section the caller does not
+/// provably hold: `scope` names that section, the entry was written by the same
+/// acquisition, and a released guard has already cleared it, so the record has to
+/// echo the reported scope exactly. A record naming any other writer — a stale
+/// record whose pid recycled into the current process with a foreign nonce included
+/// — marks a caller repairing outside the section that owns the parked pair and is
+/// refused before a copy is classified. The copies a caller holding the section does
+/// classify were parked by a writer that is gone, because the kernel released its
+/// advisory lock before that caller could take the section.
 ///
 /// Every removal and rename happens before a command reads the pair, so neither
 /// `stage commit` nor `stage verify` ever observes a self-inconsistent marker and
 /// boundary while a parked copy still holds the previous state.
-pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Option<String>, CliError> {
+pub(crate) fn recover_interrupted_commit(
+    checkpoint_path: &Path,
+    scope: WriterId,
+) -> Result<Option<String>, CliError> {
     let dir = boundary_dir(checkpoint_path);
     let marker_copies = parked_copies(checkpoint_path)?;
     let boundary_copies = parked_copies(&dir)?;
@@ -96,10 +109,11 @@ pub(crate) fn recover_interrupted_commit(checkpoint_path: &Path) -> Result<Optio
         return Ok(None);
     }
 
-    // A copy is never classified from a section this process does not hold: the
-    // repair below would either discard the only recoverable copy of that section's
-    // state or restore that copy underneath the install it is performing.
-    refuse_foreign_record(checkpoint_path)?;
+    // A copy is never classified from a section the caller does not provably
+    // hold: the repair below would either discard the only recoverable copy of
+    // that section's state or restore that copy underneath the install it is
+    // performing.
+    refuse_foreign_record(checkpoint_path, scope)?;
 
     let marker_live = path_exists(checkpoint_path)?;
     let boundary_live = path_exists(&dir)?;

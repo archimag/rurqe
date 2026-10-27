@@ -1,12 +1,15 @@
 //! Regressions for the boundary swap and the parked copies it leaves behind.
 
+use std::time::Duration;
+
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::{Checksum, DeclarativeStage, StageScript};
 
+use super::super::stage::lock::{CheckpointLock, WriterId};
 use super::super::stage::{
     flush_boundary_parent, move_failure, recover_interrupted_commit, write_staged_boundary,
 };
-use super::fixtures::{directory_names, version, workspace};
+use super::fixtures::{directory_names, lock_entry, version, workspace};
 
 #[test]
 fn a_failed_staged_write_keeps_the_committed_boundary() {
@@ -62,7 +65,11 @@ fn an_interrupted_commit_restores_the_parked_pair() {
     )
     .expect("write the parked snapshot");
 
-    let notice = recover_interrupted_commit(&checkpoint_path)
+    // The repair runs under the section its caller holds, whose acquisition
+    // recorded the very scope it reports.
+    let section = CheckpointLock::acquire(&checkpoint_path).expect("the free section is taken");
+
+    let notice = recover_interrupted_commit(&checkpoint_path, section.writer())
         .expect("the interrupted commit is repaired")
         .expect("the repair is reported");
 
@@ -164,7 +171,12 @@ fn an_interrupted_commit_discards_the_boundary_it_installed_without_a_marker() {
     )
     .expect("write the parked snapshot");
 
-    recover_interrupted_commit(&checkpoint_path).expect("the interrupted commit is repaired");
+    // The repair runs under the section its caller holds, whose acquisition
+    // recorded the very scope it reports.
+    let section = CheckpointLock::acquire(&checkpoint_path).expect("the free section is taken");
+
+    recover_interrupted_commit(&checkpoint_path, section.writer())
+        .expect("the interrupted commit is repaired");
 
     assert!(checkpoint_path.exists(), "the parked marker is restored");
     assert_eq!(
@@ -237,7 +249,11 @@ fn a_parked_pair_beside_a_committed_pair_is_discarded() {
     )
     .expect("write the parked snapshot");
 
-    let notice = recover_interrupted_commit(&checkpoint_path)
+    // The repair runs under the section its caller holds, whose acquisition
+    // recorded the very scope it reports.
+    let section = CheckpointLock::acquire(&checkpoint_path).expect("the free section is taken");
+
+    let notice = recover_interrupted_commit(&checkpoint_path, section.writer())
         .expect("the debris is discarded")
         .expect("the discard is reported");
 
@@ -249,4 +265,70 @@ fn a_parked_pair_beside_a_committed_pair_is_discarded() {
         vec!["orders.sql".to_owned()],
         "the committed boundary is untouched"
     );
+}
+
+#[test]
+fn a_recycled_pid_is_refused_until_the_section_is_taken() {
+    let dir = workspace("commit-recycled-pid");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    // A crashed writer left its record behind, and its pid recycled into this
+    // process: the record names the current pid with the nonce of a section this
+    // process never held, while the pair it parked sits under that very scope.
+    lock_entry(&dir, std::process::id(), 4242, Duration::ZERO);
+    let marker_backup = dir.join(format!(
+        ".checkpoint.toml.{}.4242.previous",
+        std::process::id()
+    ));
+    std::fs::write(
+        &marker_backup,
+        Checkpoint::new(version("1"), Checksum::of(b"stage")).render(),
+    )
+    .expect("park the previous marker");
+
+    // Negative half: the caller reports the scope of a section the record does
+    // not echo — the nonce alone disagrees — so the repair refuses instead of
+    // restoring a pair that may still be the only recoverable copy of a foreign
+    // section's state.
+    let scope = WriterId {
+        pid: std::process::id(),
+        nonce: 4243,
+    };
+    let error = recover_interrupted_commit(&checkpoint_path, scope)
+        .expect_err("a record that does not echo the reported scope is refused");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("nonce 4242"),
+        "the diagnostic names the recorded writer, got {message}"
+    );
+    assert!(
+        message.contains("nonce 4243"),
+        "the diagnostic names the reported scope, got {message}"
+    );
+    assert!(
+        message.contains("take the section"),
+        "the diagnostic names the remedy, got {message}"
+    );
+    assert!(marker_backup.exists(), "the parked marker is untouched");
+    assert!(
+        !checkpoint_path.exists(),
+        "no marker was restored over the parked pair"
+    );
+
+    // Positive half: the writer that recorded the stale entry is gone, so the
+    // section is free and acquiring it rewrites the record with this writer's
+    // own scope. The repair then runs under a section this process provably
+    // holds and restores the debris of the dead writer.
+    let section = CheckpointLock::acquire(&checkpoint_path).expect("the free section is taken");
+
+    let notice = recover_interrupted_commit(&checkpoint_path, section.writer())
+        .expect("the provably held section repairs the debris")
+        .expect("the repair is reported");
+
+    drop(section);
+
+    assert!(notice.contains("Restored"), "got {notice}");
+    assert!(checkpoint_path.exists(), "the parked marker is restored");
+    assert!(!marker_backup.exists(), "the parked marker is consumed");
 }

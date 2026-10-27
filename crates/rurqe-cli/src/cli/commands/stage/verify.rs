@@ -60,13 +60,16 @@ pub(crate) fn verify_stage(
     // A commit an interrupted process left halfway is repaired before the
     // boundary is read, so the snapshot loaded below is the one the live marker
     // describes. The section is taken above, so a commit still in flight refuses
-    // the acquisition here instead of having its pair repaired underneath it.
+    // the acquisition here instead of having its pair repaired underneath it,
+    // and the repair itself is authorised by the scope that acquisition recorded:
+    // a stale record from a crashed writer — a recycled pid included — is refused
+    // instead of being read as this caller's own.
     //
     // The repair has already renamed artifacts into place by the time any read
     // below can fail, so every one of them folds its report into the failure it
     // returns: the failure channel is the only output a failing command
     // guarantees.
-    let recovery = super::recover_interrupted_commit(checkpoint_path)?;
+    let recovery = super::recover_interrupted_commit(checkpoint_path, section.writer())?;
     let fail = |error: CliError| carry_recovery(recovery.as_deref(), error);
 
     let stage = load_stage(stage_dir).map_err(fail)?;

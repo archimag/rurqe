@@ -9,7 +9,7 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 
 use super::super::commit_stage;
-use super::super::stage::lock::CheckpointLock;
+use super::super::stage::lock::{CheckpointLock, WriterId};
 use super::super::stage::{recover_interrupted_commit, verify_stage};
 use super::fixtures::{directory_names, lock_entry, version, workspace};
 
@@ -75,7 +75,13 @@ fn the_parked_copies_of_a_live_foreign_writer_are_never_repaired() {
     )
     .expect("write the parked snapshot");
 
-    let error = recover_interrupted_commit(&checkpoint_path)
+    // The caller reports the scope of a section it holds, which the record —
+    // naming the foreign writer — does not echo, so the repair refuses.
+    let scope = WriterId {
+        pid: std::process::id(),
+        nonce: 7,
+    };
+    let error = recover_interrupted_commit(&checkpoint_path, scope)
         .expect_err("a live foreign writer owns the artifacts");
 
     let message = error.to_string();
@@ -120,7 +126,14 @@ fn the_parked_copies_of_a_crashed_writer_are_repaired() {
     )
     .expect("write the parked snapshot");
 
-    let notice = recover_interrupted_commit(&checkpoint_path)
+    // The entry echoes the scope of the section this caller reports — the scope
+    // its own acquisition would have recorded — so the pair the dead writer parked
+    // under its foreign scope is debris the repair restores.
+    let scope = WriterId {
+        pid: std::process::id(),
+        nonce: 1,
+    };
+    let notice = recover_interrupted_commit(&checkpoint_path, scope)
         .expect("the crashed writer's pair is repaired")
         .expect("the repair is reported");
 
