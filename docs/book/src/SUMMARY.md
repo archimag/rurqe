@@ -43,4 +43,10 @@
   - [JSON и вложенные коллекции](dialects/sqlite/json.md)
   - [Enums через CHECK](dialects/sqlite/enums.md)
   - [Драйвер rusqlite](dialects/sqlite/driver.md)
-  - [Конкурентность миграций](dialects/sqlite/concurrency.md)
+- [Конкурентность миграций](dialects/sqlite/concurrency.md)
+
+# Часть IV. Вложенные результаты и MULTISET (NF²)
+
+- [Вложенные результаты: `nest_many` и `nest_one`](features/nested.md)
+- [MULTISET: как вложенность превращается в SQL](features/multiset.md)
+- [Движки, capability-гейты и декодирование](features/multiset_engines.md)
