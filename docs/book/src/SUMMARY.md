@@ -49,7 +49,6 @@
 
 - [Вложенные результаты: `nest_many` и `nest_one`](features/nested.md)
 - [MULTISET: как вложенность превращается в SQL](features/multiset.md)
-- [MULTISET: как вложенность превращается в SQL](features/multiset.md)
 - [Движки, capability-гейты и декодирование](features/multiset_engines.md)
 
 # Часть V. Эволюция схемы и миграции
@@ -62,3 +61,18 @@
 - [The Golden Equation](migrations/golden_equation.md)
 - [Безопасный прунинг истории](migrations/pruning.md)
 - [Протокол чекпоинтов](migrations/checkpoint_protocol.md)
+
+# Часть VI. Рантайм и типы
+
+- [Рантайм: обзор](runtime/overview.md)
+- [Транзакции и savepoints](runtime/transactions.md)
+- [Пулы соединений](runtime/pools.md)
+- [Экосистемные типы, значения и декодирование](runtime/types.md)
+- [Пользовательские типы](runtime/custom_types.md)
+
+# Приложения
+
+- [Приложения](appendix/overview.md)
+- [LLM Cheatsheet / Prompt Pack](appendix/llm_cheatsheet.md)
+- [Справочник ошибок](appendix/compiler_errors.md)
+- [Матрица возможностей](appendix/matrix.md)
