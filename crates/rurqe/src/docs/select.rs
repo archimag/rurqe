@@ -276,9 +276,7 @@
 //!
 //! // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
-//!     .inner_join::<Profile, _, _>(
-//!         Expr::column::<ProfileUserId>().eq(Expr::column::<OrderUserId>()),
-//!     );
+//!     .inner_join(Profile, Expr::column::<ProfileUserId>().eq(Expr::column::<OrderUserId>()));
 //! ```
 //!
 //! Restricting the result with a `HAVING` predicate that references a column of
