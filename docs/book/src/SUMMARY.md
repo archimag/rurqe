@@ -16,9 +16,6 @@
 - [Ordering and pagination](core/ordering.md)
 - [DML: `INSERT`, `UPDATE`, `DELETE`](core/dml.md)
 - [Nested results: `nest_many` and `nest_one`](features/nested.md)
-- [MULTISET: how nesting becomes SQL](features/multiset.md)
-- [Engines, capability gates, and decoding](features/multiset_engines.md)
-- [NF² and MULTISET: nested relations](theory/nf2_multiset.md)
 
 # Part III. Relational power
 
@@ -29,11 +26,6 @@
 - [`GROUP BY` and `HAVING`](core/group_by.md)
 - [Window functions](core/window.md)
 - [Set operations](core/set_ops.md)
-- [Relational theory: an overview](theory/overview.md)
-- [From Codd's relational algebra to the Rust type system](theory/codd_to_rust.md)
-- [Scopes: `TableScope` and `ExprScope`](theory/scopes.md)
-- [Nullability: outer joins as a type change](theory/nullability.md)
-- [Disjointness: unique relation names](theory/disjointness.md)
 
 # Part IV. Dialects
 
