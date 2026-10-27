@@ -49,4 +49,16 @@
 
 - [Вложенные результаты: `nest_many` и `nest_one`](features/nested.md)
 - [MULTISET: как вложенность превращается в SQL](features/multiset.md)
+- [MULTISET: как вложенность превращается в SQL](features/multiset.md)
 - [Движки, capability-гейты и декодирование](features/multiset_engines.md)
+
+# Часть V. Эволюция схемы и миграции
+
+- [Эволюция схемы: обзор](migrations/overview.md)
+- [Кризис традиционных миграций в эпоху AI](migrations/problem.md)
+- [Два режима и критерии выбора](migrations/modes.md)
+- [Традиционный путь: `V...` и `R...`](migrations/traditional.md)
+- [Stage + Tail: декларативный stage и cold start](migrations/stage_tail.md)
+- [The Golden Equation](migrations/golden_equation.md)
+- [Безопасный прунинг истории](migrations/pruning.md)
+- [Протокол чекпоинтов](migrations/checkpoint_protocol.md)
