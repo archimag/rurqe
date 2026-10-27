@@ -1,6 +1,6 @@
 # Safe history pruning
 
-Pruning is the replacement for squashing. Scripts the checkpoint has already absorbed can be deleted from `migrations/` without rewriting a single checksum and without moving `baseline`. The boundary is `checkpoint.toml`.
+Pruning replaces squashing. Scripts the checkpoint already absorbed are deleted from `migrations/` without rewriting a single checksum and without moving `baseline`. The boundary is `checkpoint.toml`.
 
 ## The marker
 
@@ -13,18 +13,16 @@ schema_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 - `pruned_up_to_version` — the version below which the history has already been folded;
 - `schema_hash` — the SHA-256 of the catalog at that boundary.
 
-`Checkpoint` is read through `toml` with `#[serde(deny_unknown_fields)]`, so a typo in a key or an extra section is an error rather than a silently ignored field. `Checkpoint::load` returns `Ok(None)` for a missing file and for a path that cannot exist (for example one below an ordinary file), but treats any other read error as an error: a silently ignored broken marker would let the tail run against a database that can no longer be advanced.
+The file is parsed by `toml` with `#[serde(deny_unknown_fields)]`, so a typo in a key or an extra section is an error rather than a silently ignored field. `Checkpoint::load` returns `Ok(None)` when the file is missing and when the path cannot exist (for example one below an ordinary file), but treats any other read failure as an error: a silently ignored broken marker would let the tail run against a database that can no longer be advanced.
 
-## The outdated-target guard
+## The checklist
 
-When `migrate up` receives `--checkpoint-path`, the runner is constructed through `Migrator::with_checkpoint`. Then, on every run:
-
-1. `Checkpoint::validate_history` finds the highest successfully recorded version:
-   - if a `<< Stage >>` entry with the boundary version is found, its checksum is additionally compared against `schema_hash` → on mismatch `Error::CheckpointHashMismatch { pruned_up_to_version, recorded_hash, expected_hash }`;
-   - if the highest version is below the boundary (or there are no versions at all) → `Error::OutdatedCheckpoint { database_version, pruned_up_to_version, schema_hash }`, whose text directly suggests bringing the database up to the boundary first or rebuilding it from `schema/`.
-2. Additionally, if the recorded version is *exactly* the boundary, `validate_catalog_hash` compares the live catalog (through `MigrationBackend::catalog_checksum`) against `schema_hash`. A database that drifted from its snapshot keeps the old digest in the history, so the live catalog is what gets checked; a backend that cannot introspect itself leaves the digest from the marker authoritative.
-
-The "exactly at the boundary" check is a deliberate restriction: below the boundary the database is rejected as outdated, and above it the stage is already covered by the tail, so the checkpoint stops describing the schema.
+1. Make sure every environment has passed the version below which you cut.
+2. `cargo rurqe stage commit --version <boundary>` — fix the boundary and the stage snapshot next to the marker.
+3. `cargo rurqe stage verify` — make sure the equation still holds.
+4. `cargo rurqe prune --before <boundary> --dry-run` — inspect the list.
+5. `cargo rurqe prune --before <boundary>` — delete.
+6. Commit the file deletions together with `checkpoint.toml` and `<stem>-stage/`.
 
 ## The command
 
@@ -32,35 +30,31 @@ The "exactly at the boundary" check is a deliberate restriction: below the bound
 cargo rurqe prune --before <version> [--migrations-dir <dir>] [--checkpoint-path <path>] [--dry-run]
 ```
 
-What `prune_migrations` does:
+`prune_migrations` refuses to guess:
 
-1. Enters the `checkpoint.lock` section (`CheckpointLock::acquire`) — before reading the marker and before the first deletion. To every other writer of the artifacts the whole pruning looks like a single observation.
-2. Reads the marker. No marker → an error: "`…` is missing; commit the stage with `cargo rurqe stage commit --version <before>` before pruning the history".
-3. Checks the boundaries: if `checkpoint.pruned_up_to_version() < before` → an error: "anchors the history up to version X only; pruning below Y would drop scripts the active tail still needs".
-4. Scans `migrations/` (`sql_scripts`) and parses every name through `Migration::parse(name, "")`: only scripts with a version `< before` are deleted; repeatable scripts are never deleted.
-5. Deletes them (or, with `--dry-run`, prints "would prune") and finishes with the report "Pruned N migration(s) below version X".
+- **No marker** → an error naming the exact command to run first: "`…` is missing; commit the stage with `cargo rurqe stage commit --version <before>` before pruning the history".
+- **`--before` beyond the marker** → an error: the marker anchors the history up to version `X` only, and pruning below a later version would drop scripts the active tail still needs.
+- **Only versioned scripts below `--before` are removed.** Names are parsed with `Migration::parse`, and repeatable `R...` scripts are never deleted — they are meant to be re-applied.
+- **`--dry-run` prints "would prune"** for each file and deletes nothing, and the run still ends with the count.
+- **A missing migrations directory** is not an error, just "No migration directory … to prune".
 
-A missing migrations directory is not an error but a polite "No migration directory … to prune".
+The whole prune — the marker read, the `migrations/` scan and the file removals — runs inside the exclusive `checkpoint.lock` section the other artifact writers take. Deleting a script is the one mutation this protocol cannot undo, so a concurrent `stage commit` or `stage verify` must not interleave: either the pruning happens entirely before a commit and reads an already sealed marker, or entirely after it. A concurrent writer is reported with the pid of its live owner. The section and its recovery rules are described in [The checkpoint protocol](checkpoint_protocol.md).
 
-### Why the deletions happen under the section
+## The outdated-target guard
 
-Deleting a script is the only mutation in this protocol that cannot be undone: neither an open nor a parked copy brings a deleted file back. Pruning therefore has no right to interleave with a commit (which has no live marker between its parking steps) or with a verification (which is precisely replaying the tail). Under the section, pruning either happens entirely before the commit and reads an already sealed marker, or entirely after it — and then the advanced marker excludes no fewer scripts.
+Pruning is only safe because a database that lags behind the boundary is refused instead of being advanced by a partial tail. When `migrate up` receives `--checkpoint-path`, the runner is built through `Migrator::with_checkpoint`, and on every run:
 
-| Interleaving | What the section removes |
-|---|---|
-| prune × commit | reading the marker inside the window where it is parked; rolling the boundary back under an already accepted decision |
-| prune × verify | deleting scripts the verification is replaying at that moment |
-| prune × prune | two deletions passing through each other's reads |
+1. `Checkpoint::validate_history` looks at the highest successfully recorded version:
+   - if a `<< Stage >>` entry carries the boundary version, its checksum is compared against `schema_hash` → `Error::CheckpointHashMismatch { pruned_up_to_version, recorded_hash, expected_hash }`;
+   - if the highest version is below the boundary (or no version was ever recorded) → `Error::OutdatedCheckpoint { database_version, pruned_up_to_version, schema_hash }`, whose text directly suggests bringing the database up to the boundary first or rebuilding it from `schema/`.
+2. If the recorded version is exactly the boundary, `validate_catalog_hash` compares the live catalog against `schema_hash` as well. A backend that cannot introspect itself leaves the digest from the marker authoritative.
 
-## Pruning checklist
+That "exactly at the boundary" restriction is deliberate: below the boundary the database is rejected as outdated, and above it the stage is already covered by the tail, so the checkpoint stops describing the schema.
 
-1. Make sure every environment has passed the version below which you cut.
-2. `cargo rurqe stage commit --version <boundary>` — fix the boundary (and the stage snapshot next to the marker).
-3. `cargo rurqe stage verify` — make sure the equation holds.
-4. `cargo rurqe prune --before <boundary> --dry-run` — inspect the list.
-5. `cargo rurqe prune --before <boundary>` — delete.
-6. Commit the file deletions together with `checkpoint.toml` and `<stem>-stage/`.
+`--checkpoint-path` guards `migrate up` alone: passing it to `migrate status` or `migrate repair` is rejected rather than silently accepted.
 
-After that, `migrate up` on a database below the boundary fails with `OutdatedCheckpoint` — that is the protection working, not a regression.
+## After pruning
+
+`migrate up` on a database below the boundary fails with `OutdatedCheckpoint` — that is the protection working, not a regression. Bring the database up to the boundary first, or rebuild an empty database from `schema/` with `stage init`.
 
 Next: [The checkpoint protocol](checkpoint_protocol.md).

@@ -1,72 +1,89 @@
-# Schema Evolution: Overview
+# Schema evolution: overview
 
-Schema maintenance is a lifecycle of its own, decoupled from the rest of the library: query code (`rurqe-core`, `rurqe-postgres`, `rurqe-sqlite`) knows nothing about migrations and never imports them. The implementation of the schema lifecycle is collected in two places:
+Schema maintenance lives apart from the query code: `rurqe-core`, `rurqe-postgres` and `rurqe-sqlite` never import the migration machinery. The two layers meet at one artifact — the catalog snapshot (`schema.lock`) — not at a dependency.
 
-- `rurqe-migrate` — the script model (`Migration`, `MigrationKind`, `MigrationVersion`, `Checksum`), the history table (`SchemaHistoryEntry`, `SCHEMA_HISTORY_TABLE`), the runner (`Migrator`, `MigrationBackend`, `MigrationTransaction`, `LockGuard`), the declarative stage (`DeclarativeStage`, `StageScript`, `StageMarker`, `cold_start`) and the boundary marker (`Checkpoint`).
-- `rurqe-cli` — the commands (`migrate`, `baseline`, `codegen`, `verify`, `stage init|verify|commit|cleanup`, `prune`) and the checkpoint artifact protocol: the serialising `checkpoint.lock` section, the crash-safe installation of the "marker + boundary snapshot" pair, and the recovery of an interrupted commit.
+Inside the lifecycle the problem splits in two:
 
-These two layers are joined by a single format — the catalog snapshot (`SchemaCatalog` → `schema.lock` and `checkpoint.toml`) — not by shared code.
+- **the structure** of the database, described once in a declarative `schema/` directory;
+- **the journey** of an already deployed database to that structure, described by a short tail in `migrations/`.
 
-## Two modes of one runner
+The second half on its own is the classic Flyway flow: versioned `V...` scripts, repeatable `R...` scripts, SHA-256 checksums, `repair` and `baseline`. It keeps working exactly as before — see [the traditional path](traditional.md).
 
-The history runner is the same in both modes: `Migrator` reads `__rurqe_schema_history`, validates checksums and applies the tail. The second mode is not a different runner but a different way of creating the database that this runner then advances.
+## Three things that make the difference
 
-| Property | Traditional (`migrations/`) | Stage + Tail (`schema/` + `migrations/`) |
-|---|---|---|
-| Source of truth | an ordered set of scripts | the declarative stage plus the active tail |
-| Initialising a clean database | replay every `V...` | `stage init` → `cold_start` from `schema/` |
-| Advancing a live database | `migrate up` | `migrate up --checkpoint-path checkpoint.toml` |
-| Removing old migrations | squash via `baseline` | `prune --before <version>` without a squash |
-| Integrity check | `db-verify` (drift against `schema.lock`) | `stage verify` (Golden Equation) |
-| History footprint | one row per script | one `<< Stage >>` entry plus the tail rows |
+### 1. Instant cold start for CI and tests
 
-Both models can coexist in one project: `cold_start` records a marker of kind `Baseline`, so every `V...` version at or below the marker version counts as already applied (reported as `IgnoredBaseline` in `status`), while the active tail above the marker keeps being applied by the ordinary `migrate up`.
+A clean database never replays history. It is built from the declaration:
+
+```bash
+cargo rurqe stage init --version 1.0
+```
+
+Every `schema/*.sql` is applied in one step and a single `<< Stage >>` marker lands in `__rurqe_schema_history`. The cost is O(current schema) instead of O(number of migrations), so a test container, a CI job or a new laptop is ready in milliseconds no matter how long the project has lived.
+
+### 2. Pruning without squashing
+
+Once every deployment has passed version `3.2`, the scripts below it are dead weight:
+
+```bash
+cargo rurqe prune --before 3.2 --dry-run   # see the list
+cargo rurqe prune --before 3.2             # delete it
+```
+
+No checksum is rewritten, no baseline is re-cut, no history is squashed into one opaque script: the boundary lives in `checkpoint.toml`. A database still below that boundary is rejected with an actionable diagnostic instead of being advanced by a tail that no longer starts at its version.
+
+### 3. An equality you can run in CI
+
+```bash
+cargo rurqe stage verify
+```
+
+materialises the declaration and the checkpoint-plus-tail in separate scratch databases and compares the catalogs:
+
+```text
+State(schema/)  ==  State(Checkpoint + migrations/)
+```
+
+The invariant is checked on every pull request instead of being assumed — see [The Golden Equation](golden_equation.md).
+
+## A five-minute tour
+
+```bash
+# 1. The target schema is written once, as plain DDL
+$EDITOR schema/users.sql
+
+# 2. A clean database is created straight from it
+cargo rurqe stage init --version 1.0 --database-url postgres://localhost/app
+
+# 3. An existing deployment is advanced by the tail only
+cargo db-migrate up
+
+# 4. The current state is sealed as the new boundary
+cargo rurqe stage commit --version 1.1
+
+# 5. Nothing below the boundary is needed any more
+cargo rurqe prune --before 1.1
+```
+
+## Where the pieces live
+
+- `rurqe-migrate` — the script model, the history table, the runner, the declarative stage and the boundary marker. It is joined to the query crates by the catalog format, not by shared code.
+- `rurqe-cli` — the commands (`migrate`, `baseline`, `codegen`, `verify`, `stage init|verify|commit|cleanup`, `prune`) and the artifacts they produce: `schema.lock`, `checkpoint.toml`, `<stem>-stage/`.
 
 ## Section contents
 
 - [The crisis of traditional migrations in the AI era](problem.md) — why a linear script history stopped scaling.
 - [Two modes and how to choose](modes.md) — what the modes share and where exactly they differ.
 - [The traditional path: `V...` and `R...`](traditional.md) — naming, checksums, transactionality, `migrate`/`baseline`/`repair`.
-- [Stage + Tail: declarative stage and cold start](stage_tail.md) — `schema/*.sql`, `StageMarker`, instant initialisation, boundary commit.
+- [Stage + Tail: declarative stage and cold start](stage_tail.md) — `schema/*.sql`, instant initialisation, the boundary commit.
 - [The Golden Equation](golden_equation.md) — reconciling `State(schema/)` against `State(Checkpoint + tail)`.
 - [Safe history pruning](pruning.md) — `prune --before` and the outdated-target guard.
 - [The checkpoint protocol](checkpoint_protocol.md) — `checkpoint.toml`, `checkpoint.lock`, the owner record, recovery.
 
-## Shared primitives
-
-| Primitive | Declared in | Role |
-|---|---|---|
-| `Migration` | `rurqe-migrate/src/migration.rs` | a parsed script: kind, version, description, SHA-256, transactionality flag |
-| `MigrationVersion` | `rurqe-migrate/src/version.rs` | the version as `Vec<u64>`, with a total numeric order |
-| `Checksum` | `rurqe-migrate/src/checksum.rs` | SHA-256 in hex, comparing the recorded value against the actual one |
-| `SchemaHistoryEntry` | `rurqe-migrate/src/history.rs` | one `__rurqe_schema_history` row |
-| `MigrationBackend` / `MigrationTransaction` | `rurqe-migrate/src/runner/backend.rs` | driver contracts: history, lock, transactions |
-| `LockGuard` | `rurqe-migrate/src/runner/guard.rs` | RAII holding of the run lock |
-| `DeclarativeStage` / `StageScript` | `rurqe-migrate/src/stage/script.rs` | the declarative `schema/` |
-| `StageMarker` | `rurqe-migrate/src/stage/marker.rs` | the synthetic stage marker entry |
-| `Checkpoint` | `rurqe-migrate/src/checkpoint.rs` | the pruning boundary and the stage hash at that boundary |
-| `GoldenEquation` / `GoldenReport` | `rurqe-cli/src/stage/equation.rs` | reconciling the stage against the checkpoint and the tail |
-
 ## The history table
 
-Both models write into one table, created by `create_schema_history_table_sql()`:
-
-```sql
-CREATE TABLE IF NOT EXISTS __rurqe_schema_history (
-    installed_rank BIGINT NOT NULL PRIMARY KEY,
-    version VARCHAR(50),
-    description VARCHAR(200) NOT NULL,
-    type VARCHAR(20) NOT NULL,
-    script VARCHAR(1000) NOT NULL,
-    checksum VARCHAR(64),
-    installed_on VARCHAR(50) NOT NULL,
-    execution_time BIGINT NOT NULL,
-    success BOOLEAN NOT NULL
-);
-```
-
-The `type` column holds the text of `MigrationKind::as_str()`: `VERSIONED`, `REPEATABLE` or `BASELINE`. The `success` column distinguishes an applied entry from the marker of a started or failed attempt, and a missing `checksum` (a `baseline` entry) means there is nothing to compare, so the entry is never considered modified (`SchemaHistoryEntry::is_modified`).
+Both models write into one `__rurqe_schema_history` table, so a project can switch between them without losing track. A cold start leaves a single `<< Stage >>` row of kind `Baseline`; the runner treats every version at or below it as already applied and reports those in `status` as `IgnoredBaseline`, while the tail above it keeps being applied by the ordinary `migrate up`.
 
 ## How to read this section
 
-Every statement in this section is derived from the sources of `crates/rurqe-migrate` and `crates/rurqe-cli/src/{cli,stage}` and from their unit tests. `rurqe.toml` carries no key that enables a mode: `CodegenConfig::parse` rejects any unknown section and any unknown key, and it knows exactly `schema`, `[codegen]`, `[codegen].domain_types` and `[codegen].type_overrides`. The mode is determined by the set of directories and by the set of commands, not by a configuration flag.
+Every statement here is derived from the sources of `crates/rurqe-migrate` and `crates/rurqe-cli/src/{cli,stage}` and from their unit tests. `rurqe.toml` carries no key that enables a mode: `CodegenConfig::parse` rejects any unknown section and any unknown key, and it knows exactly `schema`, `[codegen]`, `[codegen].domain_types` and `[codegen].type_overrides`. The mode is determined by the set of directories and the set of commands, not by a configuration flag.
