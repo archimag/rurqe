@@ -7,10 +7,13 @@
 //! addresses SQLite — and a value that parser rejects is classified by the
 //! libpq keyword/value shape, `:memory:`, or its file extension, so a
 //! connection string that names its engine is never reclassified by the shape
-//! of the database name it ends with. A value that names no engine this build
-//! connects to is rejected with a [`TargetError`] instead of being guessed to
-//! be PostgreSQL.
-
+//! of the database name it ends with. An absolute Windows filesystem spelling
+//! — a drive letter followed by `:`, or a leading `\` UNC prefix — names a
+//! file ahead of the URL parser, which would otherwise read `C:/data/app.db`
+//! as the single-letter scheme `c` and reject the most natural target spelling
+//! on a platform this crate carries explicit support branches for. A value
+//! that names no engine this build connects to is rejected with a
+//! [`TargetError`] instead of being guessed to be PostgreSQL.
 use std::fmt;
 
 /// The database engine a connection string targets.
@@ -72,9 +75,19 @@ impl DatabaseTarget {
     /// by scheme: it is a libpq keyword/value string, `:memory:`, a SQLite file
     /// path — or a malformed URL of a supported engine, whose own driver has to
     /// report the defect, which is why the scheme prefixes keep routing to their
-    /// engine ahead of the rejection.
+    /// engine ahead of the rejection. An absolute Windows filesystem spelling
+    /// — a drive letter followed by `:`, or a leading `\` UNC prefix — is
+    /// classified even earlier, as pure string logic, because the URL parser
+    /// reads its drive letter as a single-letter scheme.
     pub fn parse(url: &str) -> Result<Self, TargetError> {
         let url = url.trim();
+
+        // A Windows drive letter or UNC prefix names a file, so it is
+        // classified before the URL parser reads `C:/data/app.db` as the
+        // single-letter scheme `c` and rejects it.
+        if is_windows_filesystem_path(url) {
+            return sqlite_file_target(url).ok_or(TargetError::Unrecognised);
+        }
 
         if let Ok(parsed) = url::Url::parse(url) {
             return match parsed.scheme() {
@@ -235,6 +248,22 @@ fn location_without_query(path: &str) -> &str {
 /// The file extensions SQLite projects use for their databases.
 const SQLITE_FILE_EXTENSIONS: [&str; 3] = ["db", "sqlite", "sqlite3"];
 
+/// Whether `url` opens with an absolute Windows filesystem spelling.
+///
+/// A drive letter — one ASCII letter followed by `:` — or a leading `\`, the
+/// UNC prefix, names a file the platform's own path rules resolve, so the
+/// value classifies as a filesystem target instead of reaching the URL
+/// parser, which reads `C:/data/app.db` as the single-letter scheme `c`. The
+/// check is pure string logic, so a drive-letter target classifies the same
+/// on every platform.
+fn is_windows_filesystem_path(url: &str) -> bool {
+    let mut chars = url.chars();
+    let drive_letter = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && matches!(chars.next(), Some(':'));
+
+    drive_letter || url.starts_with('\\')
+}
+
 /// Classifies a scheme-less value as a SQLite database file.
 ///
 /// The extension is read with [`std::path::Path::extension`], so the value is a
@@ -342,7 +371,43 @@ mod tests {
     }
 
     #[test]
-    fn the_in_memory_spelling_survives_a_query_string() {
+    fn a_windows_drive_letter_path_names_a_sqlite_file() {
+        for url in [
+            "C:/data/app.db",
+            "C:\\data\\app.db",
+            "c:/data/app.sqlite3",
+            "C:app.db",
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                Ok(DatabaseTarget::SqliteFile(url.to_owned())),
+                "{url}"
+            );
+            assert_eq!(detect_dialect(Some(url)), DatabaseDialect::Sqlite, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_unc_path_keeps_naming_a_sqlite_file() {
+        for url in ["\\\\server\\share\\app.db", "\\\\server\\share\\app.sqlite3"] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                Ok(DatabaseTarget::SqliteFile(url.to_owned())),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_letter_without_a_sqlite_extension_still_names_nothing() {
+        assert_eq!(
+            DatabaseTarget::parse("C:/data/app"),
+            Err(TargetError::Unrecognised)
+        );
+    }
+
+    #[test]
+    fn a_memory_url_with_query_parameters_stays_in_memory() {
         assert_eq!(
             DatabaseTarget::parse("sqlite::memory:?cache=shared"),
             Ok(DatabaseTarget::SqliteMemory)
