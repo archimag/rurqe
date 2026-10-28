@@ -1,9 +1,10 @@
 default: verify
 
 # Run full workspace verification (checks, clippy, tests)
+# Run full workspace verification (checks, clippy, tests, doc build)
 [group('tauqe')]
-[doc('Run full workspace verification (checks, clippy, tests)')]
-verify: check clippy test
+[doc('Run full workspace verification (checks, clippy, tests, doc build)')]
+verify: check clippy test doc-build
 
 # Run cargo check across all workspace targets
 [group('tauqe')]
