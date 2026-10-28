@@ -952,8 +952,7 @@ fn the_committed_boundary_snapshot_anchors_the_tail_without_manual_directories()
     // Both descriptions advance past the committed boundary. The stage
     // repeats the default the tail migration adds, so the boundary snapshot
     // plus the filtered tail reproduces it exactly.
-    let advanced =
-        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');";
+    let advanced = "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL DEFAULT '');";
     write_scripts(&stage_dir, &[("users.sql", advanced)]);
     write_scripts(
         &migrations,

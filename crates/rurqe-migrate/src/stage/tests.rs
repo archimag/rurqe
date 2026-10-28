@@ -1,6 +1,8 @@
 #[cfg(feature = "tokio")]
 use super::cold_start_async;
-use super::{cold_start, ColdStartReport, DeclarativeStage, StageMarker, StageScript, STAGE_SCRIPT};
+use super::{
+    cold_start, ColdStartReport, DeclarativeStage, StageMarker, StageScript, STAGE_SCRIPT,
+};
 use crate::catalog::SchemaCatalog;
 use crate::checksum::Checksum;
 use crate::error::Error;
@@ -224,8 +226,8 @@ fn cold_start_acquires_and_releases_the_backend_lock() {
 #[test]
 fn cold_start_outside_a_tokio_runtime_does_not_panic() {
     let mut backend = InMemoryBackend::new();
-    let report =
-        cold_start(&mut backend, &stage(), &marker()).expect("a cold start outside a runtime succeeds");
+    let report = cold_start(&mut backend, &stage(), &marker())
+        .expect("a cold start outside a runtime succeeds");
 
     assert_eq!(report.installed_rank, Some(1));
     assert!(!backend.locked);
@@ -259,7 +261,11 @@ fn cold_start_async_initialises_the_database() {
         .expect("build tokio runtime");
 
     let (report, backend) = runtime
-        .block_on(cold_start_async(InMemoryBackend::new(), &stage(), &marker()))
+        .block_on(cold_start_async(
+            InMemoryBackend::new(),
+            &stage(),
+            &marker(),
+        ))
         .expect("the blocking cold start succeeds");
 
     assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
@@ -267,7 +273,10 @@ fn cold_start_async_initialises_the_database() {
     assert_eq!(backend.history.len(), 1);
     assert!(backend.history[0].success);
     assert_eq!(backend.history[0].script, STAGE_SCRIPT);
-    assert!(!backend.locked, "the lock is released before the task returns");
+    assert!(
+        !backend.locked,
+        "the lock is released before the task returns"
+    );
 }
 
 #[test]

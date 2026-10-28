@@ -430,8 +430,7 @@ mod tests {
     #[test]
     fn keyword_markers_without_a_raw_form_are_rejected() {
         let projections = projection_list("Crate, Super");
-        let error =
-            expand_projections(&projections).expect_err("the marker cannot name a field");
+        let error = expand_projections(&projections).expect_err("the marker cannot name a field");
 
         assert!(error.to_string().contains("raw-identifier form"));
     }

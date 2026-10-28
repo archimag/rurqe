@@ -322,13 +322,7 @@ impl<D: Dialect, Tables, Output, Projected, Lock: ProjectionOpen>
     pub fn select<S, Positions>(
         mut self,
         selection: S,
-    ) -> SelectQuery<
-        D,
-        Tables,
-        <S as SelectionFor<Tables, Positions, D>>::Row,
-        HasProjection,
-        Lock,
-    >
+    ) -> SelectQuery<D, Tables, <S as SelectionFor<Tables, Positions, D>>::Row, HasProjection, Lock>
     where
         Tables: TableScope,
         S: SelectionFor<Tables, Positions, D>,

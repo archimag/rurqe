@@ -470,12 +470,7 @@ pub trait PgArrayExpressions<T> {
     fn array_contains<V>(
         self,
         other: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -487,12 +482,7 @@ pub trait PgArrayExpressions<T> {
     fn array_contained_by<V>(
         self,
         other: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -504,12 +494,7 @@ pub trait PgArrayExpressions<T> {
     fn array_overlaps<V>(
         self,
         other: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -521,12 +506,7 @@ pub trait PgArrayExpressions<T> {
     fn any<V>(
         self,
         value: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -538,12 +518,7 @@ pub trait PgArrayExpressions<T> {
     fn all<V>(
         self,
         value: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -562,12 +537,7 @@ where
     fn array_contains<V>(
         self,
         other: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -581,12 +551,7 @@ where
     fn array_contained_by<V>(
         self,
         other: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -600,12 +565,7 @@ where
     fn array_overlaps<V>(
         self,
         other: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -619,12 +579,7 @@ where
     fn any<V>(
         self,
         value: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -638,12 +593,7 @@ where
     fn all<V>(
         self,
         value: V,
-    ) -> Expr<
-        bool,
-        Merged<Self::Scope, V::Scope>,
-        NonAggregate,
-        MergedDialect<(), V::Dialect>,
-    >
+    ) -> Expr<bool, Merged<Self::Scope, V::Scope>, NonAggregate, MergedDialect<(), V::Dialect>>
     where
         Self: Sized,
         Self::Scope: MergeScope<V::Scope>,
@@ -869,9 +819,8 @@ mod tests {
         let tag = Expr::<String, (), NonAggregate, Postgres>::from_kind(ExprKind::Value(
             SqlVal::Text("rust".to_owned()),
         ));
-        let score = Expr::<i64, (), NonAggregate, Postgres>::from_kind(ExprKind::Value(
-            SqlVal::I64(0),
-        ));
+        let score =
+            Expr::<i64, (), NonAggregate, Postgres>::from_kind(ExprKind::Value(SqlVal::I64(0)));
 
         let any: Expr<bool, Post, NonAggregate, Postgres> = PostTags.any(tag);
         let all: Expr<bool, Post, NonAggregate, Postgres> = PostScores.all(score);

@@ -244,15 +244,11 @@ impl From<&TypeKind> for TypeLock {
             TypeKind::Json => Self::Json,
             TypeKind::Timestamp => Self::Timestamp,
             TypeKind::Date => Self::Date,
-            TypeKind::Enum(name) => Self::Enum {
-                name: name.clone(),
-            },
+            TypeKind::Enum(name) => Self::Enum { name: name.clone() },
             TypeKind::Array(element) => Self::Array {
                 element: Box::new(TypeLock::from(element.as_ref())),
             },
-            TypeKind::Other(name) => Self::Other {
-                name: name.clone(),
-            },
+            TypeKind::Other(name) => Self::Other { name: name.clone() },
         }
     }
 }
@@ -679,8 +675,7 @@ definition = "EXECUTE FUNCTION log_order_update()"
                     false,
                 ),
                 ColumnDef::new("path", TypeKind::Text, true).with_default("C:\\dir"),
-                ColumnDef::new("payload", TypeKind::Text, true)
-                    .with_default("line one\nline two"),
+                ColumnDef::new("payload", TypeKind::Text, true).with_default("line one\nline two"),
                 ColumnDef::new("raw", TypeKind::Other("citext".to_owned()), true),
             ],
             vec!["id".to_owned()],
@@ -826,14 +821,9 @@ definition = "EXECUTE FUNCTION log_order_update()"
                 ColumnDef::new("big", TypeKind::Int64, false),
                 ColumnDef::new("day", TypeKind::Date, false),
                 ColumnDef::new("doc", TypeKind::Bytes, true),
-                ColumnDef::new(
-                    "flags",
-                    TypeKind::Array(Box::new(TypeKind::Boolean)),
-                    true,
-                ),
+                ColumnDef::new("flags", TypeKind::Array(Box::new(TypeKind::Boolean)), true),
                 ColumnDef::new("id", TypeKind::Int32, false),
-                ColumnDef::new("jdoc", TypeKind::Json, true)
-                    .with_default(r#"'{"a": "b"}'"#),
+                ColumnDef::new("jdoc", TypeKind::Json, true).with_default(r#"'{"a": "b"}'"#),
                 ColumnDef::new("mood", TypeKind::Enum("mood".to_owned()), false),
                 ColumnDef::new(
                     "moods",
@@ -845,8 +835,7 @@ definition = "EXECUTE FUNCTION log_order_update()"
                     TypeKind::Array(Box::new(TypeKind::Array(Box::new(TypeKind::Text)))),
                     true,
                 ),
-                ColumnDef::new("notes", TypeKind::Text, true)
-                    .with_default("line one\nline two"),
+                ColumnDef::new("notes", TypeKind::Text, true).with_default("line one\nline two"),
                 ColumnDef::new("path", TypeKind::Text, true).with_default("C:\\dir"),
                 ColumnDef::new("price", TypeKind::Numeric, false),
                 ColumnDef::new("raw", TypeKind::Other("citext".to_owned()), true),
@@ -899,8 +888,7 @@ definition = "EXECUTE FUNCTION log_order_update()"
             true,
         ))
         .with_index(
-            IndexDef::new("idx_expression", Vec::new(), false)
-                .with_expression("lower(notes)"),
+            IndexDef::new("idx_expression", Vec::new(), false).with_expression("lower(notes)"),
         )
         .with_index(
             IndexDef::new("idx_partial", vec!["active".to_owned()], false)

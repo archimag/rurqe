@@ -55,9 +55,9 @@ pub use runner::{
     MigrationStatusKind, MigrationTransaction, Migrator, RepairReport,
 };
 pub use sleeper::{warn_if_in_tokio_runtime, NoopSleeper, Sleeper, ThreadSleeper};
+#[cfg(feature = "tokio")]
+pub use stage::cold_start_async;
 pub use stage::{
     cold_start, ColdStartReport, DeclarativeStage, StageMarker, StageScript, STAGE_SCRIPT,
 };
-#[cfg(feature = "tokio")]
-pub use stage::cold_start_async;
 pub use version::MigrationVersion;

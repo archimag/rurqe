@@ -408,8 +408,7 @@ fn a_where_inside_a_comment_is_never_an_index_predicate() {
 
 #[test]
 fn an_index_term_is_never_split_inside_a_quoted_identifier() {
-    let sql =
-        r#"CREATE INDEX users_idx ON users ([weird, name], `other, name`, lower(x), "third, name");"#;
+    let sql = r#"CREATE INDEX users_idx ON users ([weird, name], `other, name`, lower(x), "third, name");"#;
 
     assert_eq!(
         indexed_terms(sql, &tokenize(sql)),

@@ -223,16 +223,16 @@ mod tests {
             .expect("the blocking baseline succeeds");
 
         assert_eq!(entry.kind, MigrationKind::Baseline);
-        assert_eq!(entry.version.as_ref().map(ToString::to_string), Some(version.to_string()));
+        assert_eq!(
+            entry.version.as_ref().map(ToString::to_string),
+            Some(version.to_string())
+        );
         assert_eq!(backend.history.len(), 1);
         assert_eq!(backend.history[0].kind, MigrationKind::Baseline);
         assert!(backend.history[0].success);
 
-        let refused = runtime.block_on(Migrator::new().baseline_async(
-            backend,
-            version,
-            "too late",
-        ));
+        let refused =
+            runtime.block_on(Migrator::new().baseline_async(backend, version, "too late"));
 
         match refused {
             Err(Error::BaselineAlreadyExists { version }) => assert_eq!(version, "1.0.0"),
@@ -246,9 +246,8 @@ mod tests {
         let runtime = runtime();
         let mut backend = InMemoryBackend::new();
         backend.failure_script = Some("BOOM".to_owned());
-        let broken = vec![
-            Migration::parse("V1__broken.sql", "BOOM;").expect("a valid script name"),
-        ];
+        let broken =
+            vec![Migration::parse("V1__broken.sql", "BOOM;").expect("a valid script name")];
 
         Migrator::new()
             .migrate(&mut backend, &broken)
@@ -257,9 +256,8 @@ mod tests {
         assert!(!backend.history[0].success);
 
         backend.failure_script = None;
-        let fixed = vec![
-            Migration::parse("V1__broken.sql", "SELECT 1;").expect("a valid script name"),
-        ];
+        let fixed =
+            vec![Migration::parse("V1__broken.sql", "SELECT 1;").expect("a valid script name")];
 
         let (report, backend) = runtime
             .block_on(Migrator::new().repair_async(backend, &fixed))
@@ -310,9 +308,8 @@ mod tests {
                 .expect("a valid script name"),
         ];
 
-        let refused = runtime.block_on(
-            Migrator::with_checkpoint(boundary("2")).migrate_async(backend, &tail),
-        );
+        let refused = runtime
+            .block_on(Migrator::with_checkpoint(boundary("2")).migrate_async(backend, &tail));
 
         match refused {
             Err(Error::OutdatedCheckpoint {
@@ -354,7 +351,8 @@ mod tests {
         let migrations = sample();
 
         let mut backend = InMemoryBackend::new();
-        let refused = runtime.block_on(async { Migrator::new().migrate(&mut backend, &migrations) });
+        let refused =
+            runtime.block_on(async { Migrator::new().migrate(&mut backend, &migrations) });
 
         match refused {
             Err(Error::Backend(_)) => {}

@@ -268,7 +268,10 @@ fn inner_joined_columns_keep_their_declared_types() {
     let query: SelectQuery<MockDialect, Joined<User, Order>, (i64, i64, f64), HasProjection> =
         SelectQuery::<MockDialect>::new()
             .from::<User>()
-            .inner_join(Order, Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()))
+            .inner_join(
+                Order,
+                Expr::column::<UserId>().eq(Expr::column::<OrderUserId>()),
+            )
             .select((UserId, OrderId, OrderTotal));
 
     assert_eq!(

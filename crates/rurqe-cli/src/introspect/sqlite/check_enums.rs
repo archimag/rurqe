@@ -281,10 +281,7 @@ mod tests {
 
         assert_eq!(
             parse_sqlite_check_enums(sql, &["state"]),
-            vec![(
-                "state".to_owned(),
-                vec!["a)".to_owned(), "b".to_owned()]
-            )]
+            vec![("state".to_owned(), vec!["a)".to_owned(), "b".to_owned()])]
         );
     }
 }

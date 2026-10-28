@@ -130,10 +130,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!(
-                    "unknown option `{other}` for stage verify"
-                ))
-                .into());
+                return Err(CliError(format!("unknown option `{other}` for stage verify")).into());
             }
         }
     }
@@ -184,10 +181,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!(
-                    "unknown option `{other}` for stage commit"
-                ))
-                .into());
+                return Err(CliError(format!("unknown option `{other}` for stage commit")).into());
             }
         }
     }
@@ -234,10 +228,7 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 idx += 1;
             }
             other => {
-                return Err(CliError(format!(
-                    "unknown option `{other}` for stage cleanup"
-                ))
-                .into());
+                return Err(CliError(format!("unknown option `{other}` for stage cleanup")).into());
             }
         }
     }

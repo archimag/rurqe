@@ -22,9 +22,9 @@
 
 use super::ast::ExprKind;
 use super::builder::{Expr, NonAggregate};
-use super::val::ToSqlVal;
 #[cfg(feature = "serde_json")]
 use super::val::Json;
+use super::val::ToSqlVal;
 use crate::schema::Column;
 
 /// A value a scalar function call accepts as one of its arguments.
@@ -216,10 +216,10 @@ impl<T: serde::Serialize> FunctionOperand<Json<T>> for &Json<T> {
 #[cfg(test)]
 mod tests {
     use super::FunctionOperand;
+    use crate::expr::SqlVal;
     use crate::expr::{
         AggregateFunc, DirectAggregate, Expr, ExprKind, FilteredAggregate, NonAggregate,
     };
-    use crate::expr::SqlVal;
 
     crate::table! {
         User => "users" {
@@ -283,7 +283,10 @@ mod tests {
             Expr::<i64>::sum::<UserId>()
                 .filter_where(Expr::<bool>::literal(true))
                 .into_operand_kind(),
-            ExprKind::Aggregate { filter: Some(_), .. }
+            ExprKind::Aggregate {
+                filter: Some(_),
+                ..
+            }
         ));
     }
 }

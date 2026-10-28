@@ -35,7 +35,10 @@ fn the_dialect_stays_nameable_without_the_synchronous_driver() {
         .build()
         .expect("valid query");
 
-    assert_eq!(built.sql, "SELECT \"id\" FROM \"users\" WHERE (\"id\" = $1)");
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"users\" WHERE (\"id\" = $1)"
+    );
     assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
 

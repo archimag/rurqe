@@ -407,9 +407,7 @@ fn snapshots_round_trip_checks_views_triggers_and_index_attributes() {
             vec!["id".to_owned()],
         )
         .with_check(CheckDef::new("positive_price", "price > 0"))
-        .with_index(
-            IndexDef::new("idx_expr", Vec::new(), false).with_expression("lower(category)"),
-        )
+        .with_index(IndexDef::new("idx_expr", Vec::new(), false).with_expression("lower(category)"))
         .with_index(
             IndexDef::new("idx_prod_cat", vec!["category".to_owned()], false)
                 .with_method("btree")

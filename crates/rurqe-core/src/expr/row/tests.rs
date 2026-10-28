@@ -130,8 +130,7 @@ fn the_row_scope_merges_the_tables_of_its_elements() {
 
 #[test]
 fn row_values_accept_built_expressions() {
-    let predicate =
-        (UserId, UserName).eq((Expr::column::<OrderId>(), Expr::column::<OrderName>()));
+    let predicate = (UserId, UserName).eq((Expr::column::<OrderId>(), Expr::column::<OrderName>()));
 
     let (sql, params) = render_with(
         predicate.kind(),

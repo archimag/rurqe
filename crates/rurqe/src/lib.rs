@@ -568,10 +568,9 @@ pub mod prelude {
         BuildError, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect,
         ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, FunctionOperand,
         GroupBy, IntoExpr, IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend,
-        QueryBackendExt,
-        RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement, SqlCompatible,
-        SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table, TableInScope,
-        ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+        QueryBackendExt, RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement,
+        SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table,
+        TableInScope, ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
     };
 
     pub use rurqe_core::query::NullsOrder;
@@ -642,9 +641,10 @@ pub mod prelude {
         feature = "r2d2"
     ))]
     pub use rurqe_postgres::{
-        JsonKey, Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions, /* PgConnection is imported below */ PgJson,
-        PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
-        PgTextSearchValue, PgTextValue, PgVersion, Postgres,
+        JsonKey, Pg14, Pg15, Pg16, PgArrayElements, PgArrayExpressions,
+        /* PgConnection is imported below */ PgJson, PgJsonExpressions, PgJsonValue,
+        PgRegexExpressions, PgTextSearchExpressions, PgTextSearchValue, PgTextValue, PgVersion,
+        Postgres,
     };
 
     /// The synchronous `postgres` adapter, compiled by the `postgres` feature and

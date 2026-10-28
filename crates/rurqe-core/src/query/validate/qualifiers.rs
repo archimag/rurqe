@@ -339,8 +339,7 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
             // written, so the namespace of this statement becomes its outer
             // scope. It supplies rows to a clause of this statement, so a
             // row-level lock it requests is rejected as well.
-            StatementRef::from(query.ast())
-                .validate_nested_in(scope.map(|scope| scope.enclosing))
+            StatementRef::from(query.ast()).validate_nested_in(scope.map(|scope| scope.enclosing))
         }
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
             validate_expr_tree(operand, scope)
@@ -351,11 +350,7 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
             validate_expr_tree(operand, scope)?;
             validate_expr_tree(pattern, scope)
         }
-        ExprKind::Between {
-            operand,
-            low,
-            high,
-        } => {
+        ExprKind::Between { operand, low, high } => {
             validate_expr_tree(operand, scope)?;
             validate_expr_tree(low, scope)?;
             validate_expr_tree(high, scope)
@@ -409,8 +404,9 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
         // A nested collection embeds a statement reaching the enclosing one by
         // correlating a reference to it, exactly like a subquery — the lock rule
         // applies to it the same way.
-        ExprKind::Multiset { query, .. } => StatementRef::from(query.ast())
-            .validate_nested_in(scope.map(|scope| scope.enclosing)),
+        ExprKind::Multiset { query, .. } => {
+            StatementRef::from(query.ast()).validate_nested_in(scope.map(|scope| scope.enclosing))
+        }
         ExprKind::Aliased { expr, .. } => validate_expr_tree(expr, scope),
     }
 }
@@ -529,7 +525,9 @@ pub(crate) fn reject_unresolved_qualifiers(
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
             reject_unresolved_qualifiers(operand, relations, outer_relations)
         }
-        ExprKind::Like { operand, pattern, .. } => {
+        ExprKind::Like {
+            operand, pattern, ..
+        } => {
             reject_unresolved_qualifiers(operand, relations, outer_relations)?;
             reject_unresolved_qualifiers(pattern, relations, outer_relations)
         }
@@ -545,7 +543,10 @@ pub(crate) fn reject_unresolved_qualifiers(
             reject_unresolved_qualifiers(lhs, relations, outer_relations)?;
             reject_unresolved_qualifiers(rhs, relations, outer_relations)
         }
-        ExprKind::Case { branches, else_branch } => {
+        ExprKind::Case {
+            branches,
+            else_branch,
+        } => {
             for branch in branches {
                 reject_unresolved_qualifiers(&branch.condition, relations, outer_relations)?;
                 reject_unresolved_qualifiers(&branch.result, relations, outer_relations)?;

@@ -159,7 +159,9 @@ impl<D: Dialect, Tables, Output> SelectQuery<D, Tables, Output, HasProjection, L
     ///
     /// SQL refuses `NOWAIT` together with `SKIP LOCKED`, so the modifier moves the
     /// query here, where neither of them is reachable again.
-    pub(super) fn lock_wait_set(self) -> SelectQuery<D, Tables, Output, HasProjection, LockWaitSet> {
+    pub(super) fn lock_wait_set(
+        self,
+    ) -> SelectQuery<D, Tables, Output, HasProjection, LockWaitSet> {
         SelectQuery {
             ctes: self.ctes,
             from: self.from,

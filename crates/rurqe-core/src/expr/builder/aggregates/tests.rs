@@ -88,9 +88,7 @@ fn a_forged_marker_keeps_the_dropped_modifier_visible() {
     assert_eq!(
         forged.distinct().kind(),
         &ExprKind::Raw {
-            fragments: vec![
-                "/* invalid aggregate marker: DISTINCT modifier dropped */".to_owned()
-            ],
+            fragments: vec!["/* invalid aggregate marker: DISTINCT modifier dropped */".to_owned()],
             params: Vec::new(),
         }
     );
@@ -101,20 +99,17 @@ fn a_forged_marker_keeps_the_dropped_filter_visible() {
     // A hand-assembled tree: the marker names an aggregate call while the
     // root is a bare column reference. The guard reports the discarded
     // predicate in the statement instead of hiding it.
-    let forged: Expr<i64, Order, DirectAggregate> =
-        Expr::new(ExprKind::Column {
-            table: "orders",
-            name: "total",
-        });
+    let forged: Expr<i64, Order, DirectAggregate> = Expr::new(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    });
 
     assert_eq!(
         forged
             .filter_where(Expr::column::<OrderId>().gt(10i64))
             .kind(),
         &ExprKind::Raw {
-            fragments: vec![
-                "/* invalid aggregate marker: FILTER predicate dropped */".to_owned()
-            ],
+            fragments: vec!["/* invalid aggregate marker: FILTER predicate dropped */".to_owned()],
             params: Vec::new(),
         }
     );

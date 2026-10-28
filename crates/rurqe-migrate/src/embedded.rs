@@ -502,11 +502,7 @@ mod tests {
         let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
 
         let (entry, backend) = runtime
-            .block_on(embedded().baseline_async(
-                InMemoryBackend::new(),
-                version,
-                "legacy baseline",
-            ))
+            .block_on(embedded().baseline_async(InMemoryBackend::new(), version, "legacy baseline"))
             .expect("the blocking baseline succeeds under `strict-async`");
 
         assert_eq!(entry.kind, MigrationKind::Baseline);

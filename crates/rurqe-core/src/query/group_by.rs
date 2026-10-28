@@ -42,8 +42,8 @@ pub use self::sets::{
 )]
 pub trait HavingPredicate<GroupByCols, Tables, P = At<0>, D = ()> {}
 
-impl<GroupByCols, Tables, Scope, Marker, ExprD, P, D>
-    HavingPredicate<GroupByCols, Tables, P, D> for Expr<bool, Scope, Marker, ExprD>
+impl<GroupByCols, Tables, Scope, Marker, ExprD, P, D> HavingPredicate<GroupByCols, Tables, P, D>
+    for Expr<bool, Scope, Marker, ExprD>
 where
     Scope: ExprInScope<Tables, P> + ScopePositions<P>,
     Marker: AggregateMarker + AggregateInDialect<D>,
@@ -118,8 +118,8 @@ where
 ///
 /// An aggregate collapses the rows of a group into a single value, so it may
 /// reference a column the query does not group by.
-impl<GroupByCols, T, Scope, Marker, ExprD, D>
-    GroupedSelectTarget<GroupByCols, At<0>, D> for Expr<T, Scope, Marker, ExprD>
+impl<GroupByCols, T, Scope, Marker, ExprD, D> GroupedSelectTarget<GroupByCols, At<0>, D>
+    for Expr<T, Scope, Marker, ExprD>
 where
     T: 'static + Send + Sync,
     Scope: 'static + Send + Sync,
@@ -1003,8 +1003,6 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
         self.query = self.query.offset(offset);
         self
     }
-
-
 }
 
 impl<D: Dialect, Tables: TableScope, Output, GroupByCols, P: ProjectionPresent>

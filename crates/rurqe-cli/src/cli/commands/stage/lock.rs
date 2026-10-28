@@ -140,10 +140,7 @@ impl CheckpointLock {
     /// kernel's arbitration sound across writers, while the owner record is
     /// published below into the entry's `.record` sibling, once the section is
     /// already held.
-    pub(crate) fn acquire_within(
-        checkpoint_path: &Path,
-        wait: Duration,
-    ) -> Result<Self, CliError> {
+    pub(crate) fn acquire_within(checkpoint_path: &Path, wait: Duration) -> Result<Self, CliError> {
         let lock_path = lock_path_of(checkpoint_path);
         let record_path = record_path_of(&lock_path);
 
@@ -422,10 +419,8 @@ fn is_contended(error: &std::io::Error) -> bool {
 /// guarded by `checkpoint.lock` — so two markers in one directory never share a
 /// lock.
 fn lock_path_of(checkpoint_path: &Path) -> PathBuf {
-    artifact_directory(checkpoint_path).join(format!(
-        "{}{LOCK_SUFFIX}",
-        marker_stem(checkpoint_path)
-    ))
+    artifact_directory(checkpoint_path)
+        .join(format!("{}{LOCK_SUFFIX}", marker_stem(checkpoint_path)))
 }
 
 /// The owner-record sibling of the lock entry at `lock_path`.
@@ -727,9 +722,8 @@ mod tests {
         let section = CheckpointLock::acquire(&checkpoint).expect("a fresh section");
         assert!(lock.exists(), "the entry guards the section");
 
-        let owner =
-            OwnerRecord::parse(&std::fs::read_to_string(&record_path).expect("the record"))
-                .expect("the owner record of the current writer");
+        let owner = OwnerRecord::parse(&std::fs::read_to_string(&record_path).expect("the record"))
+            .expect("the owner record of the current writer");
         assert_eq!(owner.pid, std::process::id());
 
         // A second acquisition inside this process meets the very refusal a
@@ -847,7 +841,6 @@ mod tests {
         );
 
         drop(holder);
-        FileExt::try_lock_exclusive(&entry)
-            .expect("the released section accepts the next holder");
+        FileExt::try_lock_exclusive(&entry).expect("the released section accepts the next holder");
     }
 }

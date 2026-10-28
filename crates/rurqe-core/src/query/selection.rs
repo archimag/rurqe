@@ -139,7 +139,7 @@ impl<D: SupportsAggregateFilter> AggregateInDialect<D> for FilteredAggregate {}
 /// fn main() {
 ///     let query = SelectQuery::<MockDialect>::new()
 ///         .from::<User>()
- ///         .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+///         .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
 ///         .select((UserId, OrderTotal));
 ///
 ///     // `OrderTotal` is read from the nullable side of the join, so the row
@@ -183,7 +183,7 @@ impl<D: SupportsAggregateFilter> AggregateInDialect<D> for FilteredAggregate {}
 /// fn main() {
 ///     let query = SelectQuery::<MockDialect>::new()
 ///         .from::<User>()
- ///         .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+///         .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
 ///         .select((UserId, OrderTotal));
 ///
 ///     // Fails to compile: the left-joined `OrderTotal` reaches the row as

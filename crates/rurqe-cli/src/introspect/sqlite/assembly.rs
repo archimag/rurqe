@@ -97,10 +97,7 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
         let enum_name = match enums_by_name.get(&candidate) {
             Some(existing_variants) if existing_variants == &variants => candidate,
             None => candidate,
-            Some(_) => format!(
-                "{}_{}_enum",
-                recovered.table_name, recovered.column_name
-            ),
+            Some(_) => format!("{}_{}_enum", recovered.table_name, recovered.column_name),
         };
         enums_by_name
             .entry(enum_name.clone())
@@ -229,9 +226,7 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
     let triggers: Vec<TriggerDef> = sections
         .triggers
         .iter()
-        .map(|trigger| {
-            TriggerDef::new(&trigger.name, &trigger.table_name, &trigger.definition)
-        })
+        .map(|trigger| TriggerDef::new(&trigger.name, &trigger.table_name, &trigger.definition))
         .collect();
 
     SchemaCatalog::new(result_tables)

@@ -728,10 +728,8 @@ fn a_having_predicate_carrying_an_unbalanced_raw_expression_is_rejected() {
 #[test]
 fn an_order_by_criterion_carrying_an_unbalanced_raw_expression_is_rejected() {
     let mut ast = relation_statement("orders", "id");
-    ast.order_by.push(OrderCriterion::new(
-        unbalanced_raw(),
-        OrderDirection::Asc,
-    ));
+    ast.order_by
+        .push(OrderCriterion::new(unbalanced_raw(), OrderDirection::Asc));
 
     assert_eq!(ast.validate(), Err(unbalanced_raw_error()));
 }
@@ -1454,7 +1452,10 @@ fn a_compound_statement_ordering_by_an_unprojected_output_column_is_rejected() {
         .allow_all()
         .build();
 
-    assert_eq!(built, Err(BuildError::CompoundOrderColumn { column: "ghost" }));
+    assert_eq!(
+        built,
+        Err(BuildError::CompoundOrderColumn { column: "ghost" })
+    );
 }
 
 #[test]
@@ -2893,10 +2894,8 @@ fn a_distinct_ordering_matches_a_projected_aggregate() {
     ast.from = Some(TableRef::plain("orders"));
     ast.distinct = true;
     ast.projections.push(count_star());
-    ast.order_by.push(OrderCriterion::new(
-        count_star(),
-        OrderDirection::Desc,
-    ));
+    ast.order_by
+        .push(OrderCriterion::new(count_star(), OrderDirection::Desc));
 
     assert_eq!(ast.validate(), Ok(()));
 }
@@ -2940,13 +2939,11 @@ fn a_plain_column_projection_built_through_the_public_constructor_is_accepted() 
     // A reference assembled through `Expr::from_kind` names the relation the
     // statement introduces, so the membership rule accepts it exactly like the
     // schema-marker shape the fluent builders produce.
-    let ast = orders_statement(vec![
-        Expr::<f64>::from_kind(ExprKind::Column {
-            table: "orders",
-            name: "total",
-        })
-        .into_kind(),
-    ]);
+    let ast = orders_statement(vec![Expr::<f64>::from_kind(ExprKind::Column {
+        table: "orders",
+        name: "total",
+    })
+    .into_kind()]);
 
     assert_eq!(ast.validate(), Ok(()));
 }
@@ -3204,7 +3201,7 @@ fn an_update_assignment_embedding_an_invalid_statement_is_rejected() {
 #[test]
 fn an_insert_row_source_collapsing_to_no_assignment_is_rejected() {
     use crate::dml::insert::InsertSource;
-    use crate::dml::{AssignColumn, AssignmentScope, AssignmentSet, AssignValue, InsertQuery};
+    use crate::dml::{AssignColumn, AssignValue, AssignmentScope, AssignmentSet, InsertQuery};
 
     /// A row source collapsing to no assignment at all.
     ///
@@ -3641,11 +3638,7 @@ fn the_lock_wait_modifiers_cannot_coexist_on_one_clause() {
     // applying both modifiers keeps the last one: the combination the engine
     // refuses stays unrepresentable instead of being rejected after the fact.
     let mut ast = relation_statement("orders", "id");
-    ast.lock = Some(
-        LockClause::new(LockStrength::Update)
-            .nowait()
-            .skip_locked(),
-    );
+    ast.lock = Some(LockClause::new(LockStrength::Update).nowait().skip_locked());
 
     assert_eq!(ast.validate(), Ok(()));
 
@@ -4005,11 +3998,7 @@ fn a_grouped_projection_comparing_two_aggregates_is_accepted() {
 fn a_grouped_projection_comparing_an_aggregate_with_a_bound_value_renders() {
     let ast = grouped_orders(vec![
         orders_user_id(),
-        comparison(
-            BinaryOp::Gt,
-            count_star(),
-            ExprKind::Value(SqlVal::I64(1)),
-        ),
+        comparison(BinaryOp::Gt, count_star(), ExprKind::Value(SqlVal::I64(1))),
     ]);
 
     assert_eq!(ast.validate(), Ok(()));
@@ -4077,4 +4066,3 @@ fn a_window_over_an_aggregate_is_accepted_beside_an_aggregate_trunk() {
 
     assert_eq!(ast.validate(), Ok(()));
 }
-

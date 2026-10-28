@@ -371,10 +371,7 @@ pub(super) fn fold_indexes(indexes: &[RawIndexMetadata]) -> BTreeMap<String, Vec
                 if let Some(predicate) = &row.predicate {
                     index = index.with_predicate(predicate);
                 }
-                if let Some(expression) = row
-                    .expression
-                    .as_deref()
-                    .and_then(functional_expressions)
+                if let Some(expression) = row.expression.as_deref().and_then(functional_expressions)
                 {
                     index = index.with_expression(expression);
                 }

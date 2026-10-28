@@ -49,12 +49,10 @@ fn aliased_table_participates_in_joins() {
 
 #[test]
 fn left_joined_aliased_table_lifts_columns_into_options() {
-    let query = SelectQuery::<MockDialect>::new()
-        .from::<User>()
-        .left_join(
-            Aliased::<Order, OrderAlias>::new(),
-            Expr::column::<AliasedCol<OrderAlias, OrderUserId>>().eq(Expr::column::<UserId>()),
-        );
+    let query = SelectQuery::<MockDialect>::new().from::<User>().left_join(
+        Aliased::<Order, OrderAlias>::new(),
+        Expr::column::<AliasedCol<OrderAlias, OrderUserId>>().eq(Expr::column::<UserId>()),
+    );
     let total = query.nullable::<AliasedCol<OrderAlias, OrderTotal>>();
 
     let built = query.select((UserId, total)).build().expect("valid query");
@@ -221,7 +219,10 @@ fn an_aliased_derived_table_joins_under_its_alias() {
             derived,
             Expr::column::<UserId>().eq(Expr::column::<AliasedCol<OrderAlias, RecentId>>()),
         )
-        .select((UserId, Expr::column::<AliasedCol<OrderAlias, RecentTotal>>()))
+        .select((
+            UserId,
+            Expr::column::<AliasedCol<OrderAlias, RecentTotal>>(),
+        ))
         .build()
         .expect("valid query");
 
@@ -247,7 +248,10 @@ fn an_aliased_marker_declares_the_lateral_relation_under_its_alias() {
     let built = SelectQuery::<MockDialect>::new()
         .from::<User>()
         .cross_join_lateral(latest.as_lateral::<Aliased<RecentOrder, OrderAlias>>())
-        .select((UserId, Expr::column::<AliasedCol<OrderAlias, RecentTotal>>()))
+        .select((
+            UserId,
+            Expr::column::<AliasedCol<OrderAlias, RecentTotal>>(),
+        ))
         .build()
         .expect("valid query");
 

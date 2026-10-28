@@ -286,9 +286,11 @@ fn a_backend_without_non_transactional_support_names_the_refused_script() {
 #[test]
 fn the_in_progress_row_of_a_non_transactional_script_precedes_it() {
     let mut backend = InMemoryBackend::new();
-    let migration =
-        Migration::parse("V1__index.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users;")
-            .expect("a valid script name");
+    let migration = Migration::parse(
+        "V1__index.notx.sql",
+        "CREATE INDEX CONCURRENTLY users_id ON users;",
+    )
+    .expect("a valid script name");
 
     Migrator::new()
         .migrate(&mut backend, std::slice::from_ref(&migration))
@@ -308,9 +310,11 @@ fn the_in_progress_row_of_a_non_transactional_script_precedes_it() {
 fn a_non_transactional_script_whose_applied_row_is_lost_names_the_script() {
     let mut backend = InMemoryBackend::new();
     backend.fail_success_entry = true;
-    let migration =
-        Migration::parse("V1__index.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users;")
-            .expect("a valid script name");
+    let migration = Migration::parse(
+        "V1__index.notx.sql",
+        "CREATE INDEX CONCURRENTLY users_id ON users;",
+    )
+    .expect("a valid script name");
 
     let error = Migrator::new()
         .migrate(&mut backend, std::slice::from_ref(&migration))
@@ -357,9 +361,11 @@ fn a_non_transactional_script_whose_applied_row_is_lost_names_the_script() {
 fn a_non_transactional_script_whose_applied_row_cannot_commit_is_reported() {
     let mut backend = InMemoryBackend::new();
     backend.fail_success_commit = true;
-    let migration =
-        Migration::parse("V1__index.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users;")
-            .expect("a valid script name");
+    let migration = Migration::parse(
+        "V1__index.notx.sql",
+        "CREATE INDEX CONCURRENTLY users_id ON users;",
+    )
+    .expect("a valid script name");
 
     let error = Migrator::new()
         .migrate(&mut backend, std::slice::from_ref(&migration))
@@ -419,11 +425,10 @@ impl MigrationBackend for LockObservingBackend {
 #[test]
 fn status_ensures_the_history_table_under_the_run_lock() {
     let mut backend = LockObservingBackend::default();
-    let migrations = [Migration::parse(
-        "V1__users.sql",
-        "CREATE TABLE users (id INTEGER);",
-    )
-    .expect("a valid script name")];
+    let migrations = [
+        Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+            .expect("a valid script name"),
+    ];
 
     let statuses = Migrator::new()
         .status(&mut backend, &migrations)

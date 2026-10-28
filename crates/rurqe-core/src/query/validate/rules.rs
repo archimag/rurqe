@@ -760,11 +760,7 @@ pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), Bu
             reject_columns_without_relations(operand)?;
             reject_columns_without_relations(pattern)
         }
-        ExprKind::Between {
-            operand,
-            low,
-            high,
-        } => {
+        ExprKind::Between { operand, low, high } => {
             reject_columns_without_relations(operand)?;
             reject_columns_without_relations(low)?;
             reject_columns_without_relations(high)
@@ -811,9 +807,7 @@ pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), Bu
 }
 
 /// Applies `reject_columns_without_relations` to every expression of a list.
-fn reject_columns_without_relations_each(
-    expressions: &[ExprKind],
-) -> Result<(), BuildError> {
+fn reject_columns_without_relations_each(expressions: &[ExprKind]) -> Result<(), BuildError> {
     for expression in expressions {
         reject_columns_without_relations(expression)?;
     }

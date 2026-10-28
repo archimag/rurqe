@@ -480,7 +480,10 @@ mod tests {
     fn a_blank_or_non_string_schema_is_rejected() {
         let blank = CodegenConfig::parse("schema = \"   \"\n")
             .expect_err("a blank schema name selects nothing");
-        assert!(matches!(&blank, ConfigError::Syntax { line: 1, .. }), "{blank}");
+        assert!(
+            matches!(&blank, ConfigError::Syntax { line: 1, .. }),
+            "{blank}"
+        );
         assert!(blank.to_string().contains("schema"), "{blank}");
 
         let numeric =
@@ -539,7 +542,9 @@ mod tests {
     fn invalid_domain_types_is_rejected() {
         let err = CodegenConfig::parse("[codegen]\ndomain_types = \"not_a_bool\"\n")
             .expect_err("non-boolean rejected");
-        assert!(err.to_string().contains("domain_types") || err.to_string().contains("invalid type"));
+        assert!(
+            err.to_string().contains("domain_types") || err.to_string().contains("invalid type")
+        );
     }
 
     #[test]
@@ -564,11 +569,17 @@ mod tests {
             "[codegen.type_overrides]\n\"users.id\" = \"a::Type\"\n\"users.id\" = \"b::Type\"\n",
         )
         .expect_err("repeated keys are rejected");
-        assert!(duplicate.to_string().contains("duplicate") || duplicate.to_string().contains("more than once"));
+        assert!(
+            duplicate.to_string().contains("duplicate")
+                || duplicate.to_string().contains("more than once")
+        );
 
         let bad_section = CodegenConfig::parse("[codegen.type_overrides\n")
             .expect_err("an unterminated section header is rejected");
-        assert!(bad_section.to_string().contains("section") || bad_section.to_string().contains("expected"));
+        assert!(
+            bad_section.to_string().contains("section")
+                || bad_section.to_string().contains("expected")
+        );
     }
 
     #[test]
@@ -689,7 +700,9 @@ mod tests {
         .expect_err("both spellings name the same entry");
 
         assert!(matches!(&err, ConfigError::Syntax { line: 3, .. }), "{err}");
-        assert!(err.to_string().contains("duplicate type override `users.id`"));
+        assert!(err
+            .to_string()
+            .contains("duplicate type override `users.id`"));
     }
 
     #[test]
@@ -701,7 +714,14 @@ mod tests {
         .expect_err("an empty type is rejected");
 
         assert!(
-            matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+            matches!(
+                &err,
+                ConfigError::Syntax {
+                    line: 2,
+                    column: 1,
+                    ..
+                }
+            ),
             "{err}"
         );
         assert!(err.to_string().contains("line 2, column 1"), "{err}");
@@ -722,7 +742,14 @@ mod tests {
         .expect_err("an empty type is rejected");
 
         assert!(
-            matches!(&err, ConfigError::Syntax { line: 5, column: 1, .. }),
+            matches!(
+                &err,
+                ConfigError::Syntax {
+                    line: 5,
+                    column: 1,
+                    ..
+                }
+            ),
             "{err}"
         );
         assert!(err.to_string().contains("cannot be empty"));

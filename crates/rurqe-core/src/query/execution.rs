@@ -283,9 +283,12 @@ pub trait QueryBackendExt: QueryBackend {
             0 => Ok(None),
             1 => {
                 let values = rows.into_iter().next().ok_or(ExecutionError::NoRows)?;
-                Q::Row::try_from_row(&values)
-                    .map(Some)
-                    .map_err(|source| ExecutionError::RowDecode { row_index: 0, source })
+                Q::Row::try_from_row(&values).map(Some).map_err(|source| {
+                    ExecutionError::RowDecode {
+                        row_index: 0,
+                        source,
+                    }
+                })
             }
             count => Err(ExecutionError::MultipleRows { count }),
         }
@@ -428,9 +431,12 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
                 0 => Ok(None),
                 1 => {
                     let values = rows.into_iter().next().ok_or(ExecutionError::NoRows)?;
-                    Q::Row::try_from_row(&values)
-                        .map(Some)
-                        .map_err(|source| ExecutionError::RowDecode { row_index: 0, source })
+                    Q::Row::try_from_row(&values).map(Some).map_err(|source| {
+                        ExecutionError::RowDecode {
+                            row_index: 0,
+                            source,
+                        }
+                    })
                 }
                 count => Err(ExecutionError::MultipleRows { count }),
             }

@@ -287,7 +287,7 @@ mod seal;
 
 pub(super) use self::recover::path_exists;
 pub(crate) use self::recover::recover_interrupted_commit;
-pub(super) use self::seal::{boundary_dir, create_staging_dir, seal_commit};
 pub(crate) use self::seal::write_staged_boundary;
+pub(super) use self::seal::{boundary_dir, create_staging_dir, seal_commit};
 #[cfg(test)]
 pub(crate) use self::seal::{flush_boundary_parent, move_failure};

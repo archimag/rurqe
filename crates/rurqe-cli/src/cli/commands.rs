@@ -317,7 +317,6 @@ pub(super) fn staged_owner_may_live(artifact: &Path, staged: &Path) -> Option<Wr
     process_may_be_alive(owner.pid).then_some(owner)
 }
 
-
 /// The temporary file an artifact is staged in before it is renamed.
 ///
 /// The name stays a hidden sibling of the artifact, named

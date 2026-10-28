@@ -266,7 +266,10 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         TypeKind::Timestamp if domain_types => "chrono::NaiveDateTime".to_owned(),
         TypeKind::Date if domain_types => "chrono::NaiveDate".to_owned(),
         TypeKind::Numeric if domain_types => "rust_decimal::Decimal".to_owned(),
-        TypeKind::Uuid | TypeKind::Json | TypeKind::Timestamp | TypeKind::Date
+        TypeKind::Uuid
+        | TypeKind::Json
+        | TypeKind::Timestamp
+        | TypeKind::Date
         | TypeKind::Numeric => "String".to_owned(),
         TypeKind::Enum(name) => table_type_ident(name),
         TypeKind::Other(_) => "String".to_owned(),
@@ -274,7 +277,10 @@ fn type_kind_to_rust_type(kind: &TypeKind, nullable: bool, domain_types: bool) -
         // column wraps the vector, never its elements, so the element is mapped as
         // non-nullable and only the shared trailing wrapper below applies.
         TypeKind::Array(inner) => {
-            format!("Vec<{}>", type_kind_to_rust_type(inner, false, domain_types))
+            format!(
+                "Vec<{}>",
+                type_kind_to_rust_type(inner, false, domain_types)
+            )
         }
     };
 
@@ -480,7 +486,10 @@ mod tests {
             "rust_decimal::Decimal"
         );
         assert_eq!(
-            rust_type_of(&ColumnDef::new("discount", TypeKind::Numeric, true), &options),
+            rust_type_of(
+                &ColumnDef::new("discount", TypeKind::Numeric, true),
+                &options
+            ),
             "Option<rust_decimal::Decimal>"
         );
     }

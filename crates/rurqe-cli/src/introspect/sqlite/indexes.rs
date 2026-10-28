@@ -6,7 +6,9 @@ use crate::cli::CliError;
 use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
 use super::lexer::{matching_close, span_text, tokenize, SqlKeyword, Token, TokenKind};
-use super::{sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGGERS, SQLITE_VIEWS};
+use super::{
+    sqlite_index_info, sqlite_index_list, SQLITE_INDEX_DDL, SQLITE_TRIGGERS, SQLITE_VIEWS,
+};
 
 /// Collects the secondary indexes declared on `table`.
 ///
@@ -130,9 +132,17 @@ fn sqlite_index_definitions(
         .query_map([table], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })
-        .map_err(|e| CliError(format!("failed to inspect index definitions for `{table}`: {e}")))?
+        .map_err(|e| {
+            CliError(format!(
+                "failed to inspect index definitions for `{table}`: {e}"
+            ))
+        })?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| CliError(format!("failed to read index definition for `{table}`: {e}")))?;
+        .map_err(|e| {
+            CliError(format!(
+                "failed to read index definition for `{table}`: {e}"
+            ))
+        })?;
 
     Ok(definitions.into_iter().collect())
 }
@@ -239,11 +249,7 @@ pub(super) fn predicate_of(sql: &str, tokens: &[Token<'_>]) -> Option<String> {
             TokenKind::OpenParen => depth = depth.saturating_add(1),
             TokenKind::CloseParen => depth = depth.saturating_sub(1),
             TokenKind::Keyword(SqlKeyword::Where) if depth == 0 => {
-                let predicate = sql
-                    .get(token.span.1..)?
-                    .trim()
-                    .trim_end_matches(';')
-                    .trim();
+                let predicate = sql.get(token.span.1..)?.trim().trim_end_matches(';').trim();
                 return if predicate.is_empty() {
                     None
                 } else {

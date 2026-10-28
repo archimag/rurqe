@@ -88,7 +88,11 @@ mod tests {
                 (1..=31).contains(&day),
                 "day {day} out of range for day count {days}"
             );
-            assert_eq!(date, civil_from_days(days), "day count {days} is not stable");
+            assert_eq!(
+                date,
+                civil_from_days(days),
+                "day count {days} is not stable"
+            );
         }
 
         assert!(civil_from_days(i64::MAX).0 > 0);

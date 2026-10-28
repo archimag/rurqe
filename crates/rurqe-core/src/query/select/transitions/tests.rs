@@ -95,8 +95,7 @@ fn lock_unavailable_restates_only_the_lock_state() {
 
 #[test]
 fn locked_and_lock_wait_set_restate_only_the_lock_state() {
-    let locked: SelectQuery<MockDialect, User, (i64,), HasProjection, Locked> =
-        user_ids().locked();
+    let locked: SelectQuery<MockDialect, User, (i64,), HasProjection, Locked> = user_ids().locked();
     let waiting: SelectQuery<MockDialect, User, (i64,), HasProjection, LockWaitSet> =
         locked.lock_wait_set();
 

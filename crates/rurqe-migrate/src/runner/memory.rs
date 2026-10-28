@@ -135,8 +135,7 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
     }
 
     fn commit(self) -> Result<(), Error> {
-        if self.backend.fail_success_commit
-            && self.staged_history.iter().any(|entry| entry.success)
+        if self.backend.fail_success_commit && self.staged_history.iter().any(|entry| entry.success)
         {
             return Err(Error::Backend(
                 "simulated failure committing an applied history entry".to_owned(),

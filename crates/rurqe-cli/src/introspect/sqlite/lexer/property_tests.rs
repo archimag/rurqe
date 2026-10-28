@@ -49,9 +49,41 @@ impl SplitMix64 {
 
 /// Fragments concatenated arbitrarily to build hostile statements.
 const ADVERSARIAL_PIECES: &[&str] = &[
-    "'", "\"", "`", "[", "]", "(", ")", ",", ".", "=", "-", "/", "*", "--", "/*", "*/", "?", "$",
-    "0", "7", "42", "3.14", "a", "Z", "_", "select", "CHECK", "in", "where", "constraint",
-    "статус", "🚀", " ", "\n", "\t",
+    "'",
+    "\"",
+    "`",
+    "[",
+    "]",
+    "(",
+    ")",
+    ",",
+    ".",
+    "=",
+    "-",
+    "/",
+    "*",
+    "--",
+    "/*",
+    "*/",
+    "?",
+    "$",
+    "0",
+    "7",
+    "42",
+    "3.14",
+    "a",
+    "Z",
+    "_",
+    "select",
+    "CHECK",
+    "in",
+    "where",
+    "constraint",
+    "статус",
+    "🚀",
+    " ",
+    "\n",
+    "\t",
 ];
 
 /// Body characters of a double-quoted identifier, embedding its escape character.
@@ -69,7 +101,9 @@ const IDENT_REST_CHARS: &[char] = &['a', 'b', 'C', 'z', 'Q', '0', '7', '_', '$']
 /// Digits a generated number is built from.
 const NUMBER_DIGITS: &[char] = &['0', '1', '7', '9'];
 /// Single-character operators, which the scanner reports as `Other` tokens.
-const OPERATORS: &[char] = &['=', '<', '>', '+', '-', '*', '/', '%', '?', '|', '&', '^', '~', '!'];
+const OPERATORS: &[char] = &[
+    '=', '<', '>', '+', '-', '*', '/', '%', '?', '|', '&', '^', '~', '!',
+];
 
 /// Concatenates a seeded number of adversarial fragments into one statement.
 fn adversarial_sql(rng: &mut SplitMix64, limit: usize) -> String {
@@ -88,7 +122,10 @@ fn assert_span_soundness(sql: &str, tokens: &[Token<'_>]) {
         let (start, end) = token.span;
         assert!(start >= previous_end, "overlapping token in {sql:?}");
         assert!(end > start, "empty token in {sql:?}");
-        assert!(end <= sql.len(), "token past the end of the input in {sql:?}");
+        assert!(
+            end <= sql.len(),
+            "token past the end of the input in {sql:?}"
+        );
         assert_eq!(
             sql.get(start..end),
             Some(token.text),

@@ -666,7 +666,10 @@ fn active_customers() -> Query<Postgres<Pg16>, User, (i64, String)> {
 
 #[test]
 fn set_operations_combine_case_and_exists_queries() {
-    let built = active_customers().union_all(active_customers()).build().expect("valid query");
+    let built = active_customers()
+        .union_all(active_customers())
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -1063,7 +1066,11 @@ mod value_based_dsl {
         }
 
         assert_eq!(
-            active().union_all(active()).build().expect("valid query").sql,
+            active()
+                .union_all(active())
+                .build()
+                .expect("valid query")
+                .sql,
             "SELECT \"id\" FROM \"users\" WHERE (\"active\" = $1) \
              UNION ALL SELECT \"id\" FROM \"users\" WHERE (\"active\" = $2)"
         );
@@ -1073,7 +1080,8 @@ mod value_based_dsl {
     fn dml_entrypoints_take_table_values() {
         let inserted = insert_into(User)
             .values((UserId::set(1i64), UserName::set("root")))
-            .build().expect("valid query");
+            .build()
+            .expect("valid query");
 
         assert_eq!(
             inserted.sql,
@@ -1694,9 +1702,8 @@ fn an_ordering_can_fix_where_nulls_sort() {
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((
             OrderId,
-            row_number().over(
-                Window::partition_by(OrderUserId).order_by_desc_nulls_last(OrderTotal),
-            ),
+            row_number()
+                .over(Window::partition_by(OrderUserId).order_by_desc_nulls_last(OrderTotal)),
         ))
         .order_by_desc_nulls_last(OrderTotal)
         .limit(3)

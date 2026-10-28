@@ -24,9 +24,9 @@
 use core::fmt;
 use core::marker::PhantomData;
 
-use crate::dialect::SupportsWindowFunctions;
 #[cfg(test)]
 use crate::dialect::Dialect;
+use crate::dialect::SupportsWindowFunctions;
 #[cfg(test)]
 use crate::expr::render_expr;
 use crate::expr::{

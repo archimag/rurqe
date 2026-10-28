@@ -52,8 +52,8 @@ fn the_stage_marker_carries_the_canonical_catalog_hash() {
     let stage = DeclarativeStage::load(&stage_dir)
         .expect("the stage is readable")
         .expect("the stage directory exists");
-    let catalog = materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA)
-        .expect("the stage materialises");
+    let catalog =
+        materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA).expect("the stage materialises");
 
     // The marker anchors the canonical catalog digest the checkpoint compares
     // against, not the raw DDL digest of the stage directory.
@@ -128,9 +128,15 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     // dropped never lingers next to the marker. The live database follows the
     // stage, which keeps the parity gate satisfied.
     std::fs::remove_file(stage_dir.join("users.sql")).expect("drop the script");
-    std::fs::write(stage_dir.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
-        .expect("write the new script");
-    apply_live_ddl(&database, "DROP TABLE users; CREATE TABLE orders (id INTEGER);");
+    std::fs::write(
+        stage_dir.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the new script");
+    apply_live_ddl(
+        &database,
+        "DROP TABLE users; CREATE TABLE orders (id INTEGER);",
+    );
 
     commit_stage(
         version("4"),

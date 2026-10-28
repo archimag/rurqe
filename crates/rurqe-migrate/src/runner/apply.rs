@@ -196,7 +196,8 @@ fn record_failure<B: MigrationBackend>(
     installed_rank: i64,
     elapsed_ms: i64,
 ) {
-    let entry = SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), elapsed_ms);
+    let entry =
+        SchemaHistoryEntry::failed(installed_rank, migration, current_timestamp(), elapsed_ms);
 
     match guard.begin() {
         Ok(mut tx) => {

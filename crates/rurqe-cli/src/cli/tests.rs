@@ -666,8 +666,13 @@ fn parses_stage_cleanup_with_a_single_url_flag() {
 #[test]
 fn parses_stage_cleanup_with_confirmation_flags() {
     for flag in ["--yes", "-y", "--force"] {
-        let cmd =
-            parse_args(&["rurqe".into(), "stage".into(), "cleanup".into(), flag.into()]).unwrap();
+        let cmd = parse_args(&[
+            "rurqe".into(),
+            "stage".into(),
+            "cleanup".into(),
+            flag.into(),
+        ])
+        .unwrap();
 
         assert_eq!(
             cmd,
@@ -972,7 +977,10 @@ fn every_migration_command_validates_the_project_configuration() {
     let error = run_cli_with_config(argv, configuration.path())
         .expect_err("a malformed configuration aborts the cold start");
 
-    assert!(error.to_string().contains("workspace"), "stage init: {error}");
+    assert!(
+        error.to_string().contains("workspace"),
+        "stage init: {error}"
+    );
 }
 
 /// A directory of its own for a test that needs files on disk.
@@ -1038,7 +1046,11 @@ fn a_command_report_reaches_the_shared_channel() {
     // predictable line.
     std::fs::write(
         dir.join("checkpoint.toml"),
-        Checkpoint::new("1".parse().expect("a valid version"), Checksum::of(b"stage")).render(),
+        Checkpoint::new(
+            "1".parse().expect("a valid version"),
+            Checksum::of(b"stage"),
+        )
+        .render(),
     )
     .expect("write the checkpoint");
 

@@ -139,8 +139,9 @@ impl DatabaseTarget {
 /// is rejected there instead of being misread.
 pub fn detect_dialect(database_url: Option<&str>) -> DatabaseDialect {
     match database_url {
-        Some(url) => DatabaseTarget::parse(url)
-            .map_or(DatabaseDialect::Postgres, |target| target.dialect()),
+        Some(url) => {
+            DatabaseTarget::parse(url).map_or(DatabaseDialect::Postgres, |target| target.dialect())
+        }
         None => DatabaseDialect::Postgres,
     }
 }
@@ -220,9 +221,7 @@ fn after_userinfo(authority_and_path: &str) -> &str {
     let authority_end = authority_and_path
         .find('/')
         .unwrap_or(authority_and_path.len());
-    let authority = authority_and_path
-        .get(..authority_end)
-        .unwrap_or_default();
+    let authority = authority_and_path.get(..authority_end).unwrap_or_default();
 
     match authority.rfind('@') {
         // `@` is an ASCII character, so the index after it always falls on a
@@ -389,7 +388,10 @@ mod tests {
 
     #[test]
     fn a_unc_path_keeps_naming_a_sqlite_file() {
-        for url in ["\\\\server\\share\\app.db", "\\\\server\\share\\app.sqlite3"] {
+        for url in [
+            "\\\\server\\share\\app.db",
+            "\\\\server\\share\\app.sqlite3",
+        ] {
             assert_eq!(
                 DatabaseTarget::parse(url),
                 Ok(DatabaseTarget::SqliteFile(url.to_owned())),

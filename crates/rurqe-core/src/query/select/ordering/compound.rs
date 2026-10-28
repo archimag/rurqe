@@ -66,7 +66,10 @@ macro_rules! impl_compound_ordering {
                 index: u32,
                 direction: OrderDirection,
             ) -> SelectQuery<D, Compound, Output, HasProjection, TailClosed> {
-                self.push_ordering(OrderCriterion::new(compound_order_position(index), direction));
+                self.push_ordering(OrderCriterion::new(
+                    compound_order_position(index),
+                    direction,
+                ));
                 self.tail_closed()
             }
 

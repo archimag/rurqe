@@ -104,7 +104,8 @@ fn a_three_term_update_predicate_renders_both_relations() {
                 .and(UserName.ne("root")),
         )
         .do_update(UserName::set("upserted"))
-        .build().expect("valid query");
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -133,7 +134,8 @@ fn two_target_predicate_calls_are_combined_with_and() {
         .target_where(UserId.gt(0i64))
         .target_where(UserName.ne("blocked"))
         .do_update(UserName::set("upserted"))
-        .build().expect("valid query");
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -161,7 +163,8 @@ fn two_update_predicate_calls_are_combined_with_and() {
         .update_where(UserId.gt(0i64))
         .update_where(UserName.ne("root"))
         .do_update(UserName::set("upserted"))
-        .build().expect("valid query");
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -189,7 +192,8 @@ fn both_predicate_kinds_accumulate_independently() {
         .update_where(UserName.ne("stored"))
         .update_where(UserName.ne("root"))
         .do_update(UserName::set("upserted"))
-        .build().expect("valid query");
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -215,7 +219,8 @@ fn empty_assignment_set_degrades_to_do_nothing() {
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .do_update(EmptyAssignments)
-        .build().expect("valid query");
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
@@ -231,7 +236,8 @@ fn empty_assignment_set_with_predicates_degrades_to_do_nothing() {
         .target_where(UserId.gt(0i64))
         .update_where(UserName.ne("root"))
         .do_update(EmptyAssignments)
-        .build().expect("valid query");
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,

@@ -113,7 +113,10 @@ pub(crate) fn commit_stage(
     if let Err(error) = write_staged_boundary(&stage, &staged) {
         best_effort(
             std::fs::remove_dir_all(&staged),
-            format!("discarding the staged boundary snapshot `{}`", staged.display()),
+            format!(
+                "discarding the staged boundary snapshot `{}`",
+                staged.display()
+            ),
         );
         return Err(error);
     }
@@ -123,7 +126,10 @@ pub(crate) fn commit_stage(
     if let Err(error) = sync_directory(&staged) {
         best_effort(
             std::fs::remove_dir_all(&staged),
-            format!("discarding the staged boundary snapshot `{}`", staged.display()),
+            format!(
+                "discarding the staged boundary snapshot `{}`",
+                staged.display()
+            ),
         );
         return Err(error);
     }
@@ -181,8 +187,8 @@ pub(crate) fn commit_stage(
     write_file(lock_path, &lock).map_err(fail)?;
     // The parked pair this commit writes carries the scope of the section it
     // holds, so a copy it leaves behind stays attributable to this writer.
-    let swap_notices = seal_commit(&staged, checkpoint_path, &marker, section.writer())
-        .map_err(fail)?;
+    let swap_notices =
+        seal_commit(&staged, checkpoint_path, &marker, section.writer()).map_err(fail)?;
 
     // The notices travel in the report of the command, so a selection that
     // describes nothing, a repaired commit, and a boundary whose directory could

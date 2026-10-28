@@ -4,9 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::stage::postgres::naming::{
     current_owner_tag, is_matching_owner, is_scratch_database_candidate, is_scratch_database_stale,
-    parse_scratch_database_timestamp, process_may_be_alive, recorded_process_id,
-    sanitize_owner_id, scratch_database_name, OWNER_PREFIX, SCRATCH_PREFIX,
-    UNCLOCKED_NAME_FIELD,
+    parse_scratch_database_timestamp, process_may_be_alive, recorded_process_id, sanitize_owner_id,
+    scratch_database_name, OWNER_PREFIX, SCRATCH_PREFIX, UNCLOCKED_NAME_FIELD,
 };
 use crate::stage::postgres::sandbox::{
     creation_failure_message, escape_sql_literal, owner_comment_sql, propose_scratch_database,
@@ -371,7 +370,10 @@ fn a_quote_bearing_owner_tag_renders_one_statement() {
     // The literal is the only place an odd quote may terminate the statement,
     // so the escaped tag keeps the statement a single one.
     let escaped = escape_sql_literal(hostile);
-    assert_eq!(sql, format!("COMMENT ON DATABASE \"{database}\" IS '{escaped}'"));
+    assert_eq!(
+        sql,
+        format!("COMMENT ON DATABASE \"{database}\" IS '{escaped}'")
+    );
     assert_eq!(sql.matches(';').count(), 2, "unexpected statements: {sql}");
     assert!(sql.ends_with('\''), "unterminated literal: {sql}");
 
@@ -386,7 +388,10 @@ fn a_quote_bearing_owner_tag_renders_one_statement() {
 fn a_quote_bearing_database_name_renders_one_identifier() {
     let sql = owner_comment_sql("probe\"name", "rurqe:owner=host");
 
-    assert_eq!(sql, "COMMENT ON DATABASE \"probe\"\"name\" IS 'rurqe:owner=host'");
+    assert_eq!(
+        sql,
+        "COMMENT ON DATABASE \"probe\"\"name\" IS 'rurqe:owner=host'"
+    );
 }
 
 #[test]

@@ -40,10 +40,8 @@ const STAGING_ATTEMPTS: usize = 8;
 
 /// The directory the boundary snapshot of the marker at `checkpoint_path` lives in.
 pub(crate) fn boundary_dir(checkpoint_path: &Path) -> PathBuf {
-    artifact_directory(checkpoint_path).join(format!(
-        "{}{BOUNDARY_SUFFIX}",
-        marker_stem(checkpoint_path)
-    ))
+    artifact_directory(checkpoint_path)
+        .join(format!("{}{BOUNDARY_SUFFIX}", marker_stem(checkpoint_path)))
 }
 
 /// Installs the new boundary and marker as one commit, keeping the previous pair
@@ -76,7 +74,10 @@ pub(crate) fn seal_commit(
         Err(error) => {
             best_effort(
                 std::fs::remove_dir_all(staged),
-                format!("discarding the staged boundary snapshot `{}`", staged.display()),
+                format!(
+                    "discarding the staged boundary snapshot `{}`",
+                    staged.display()
+                ),
             );
             return Err(error);
         }
@@ -87,7 +88,10 @@ pub(crate) fn seal_commit(
         Err(error) => {
             best_effort(
                 std::fs::remove_dir_all(staged),
-                format!("discarding the staged boundary snapshot `{}`", staged.display()),
+                format!(
+                    "discarding the staged boundary snapshot `{}`",
+                    staged.display()
+                ),
             );
             let mut failure = error;
             if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
@@ -104,7 +108,10 @@ pub(crate) fn seal_commit(
         }
         best_effort(
             std::fs::remove_dir_all(staged),
-            format!("discarding the staged boundary snapshot `{}`", staged.display()),
+            format!(
+                "discarding the staged boundary snapshot `{}`",
+                staged.display()
+            ),
         );
         return Err(failure);
     }
@@ -334,10 +341,8 @@ mod tests {
     impl Scratch {
         /// Prepares the scratch directory of the test named `name`.
         fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "rurqe-stage-swap-{}-{name}",
-                std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("rurqe-stage-swap-{}-{name}", std::process::id()));
 
             let _ = std::fs::remove_dir_all(&path);
             std::fs::create_dir_all(&path).expect("a scratch directory");
@@ -398,11 +403,8 @@ mod tests {
         let scratch = Scratch::new("discard-staged");
         let staged = scratch.0.join(".checkpoint-stage.4242.17.3.tmp");
         std::fs::create_dir_all(&staged).expect("plant the debris");
-        std::fs::write(
-            staged.join("users.sql"),
-            "CREATE TABLE users (id INTEGER);",
-        )
-        .expect("write the staged snapshot");
+        std::fs::write(staged.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+            .expect("write the staged snapshot");
 
         discard_staged_path(&staged).expect("the debris is discarded");
 

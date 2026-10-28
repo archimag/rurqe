@@ -6,8 +6,8 @@ use crate::config::CodegenConfig;
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
-use super::super::stage::cleanup_scratch_catalog;
 use super::super::schema_of;
+use super::super::stage::cleanup_scratch_catalog;
 
 #[test]
 fn the_command_line_schema_wins_over_the_configured_one() {
@@ -83,10 +83,7 @@ fn a_confirmed_cleanup_scans_the_catalog_once() {
         "the sweep drops exactly the candidates the confirmation listed"
     );
     assert!(
-        output
-            .lines()
-            .iter()
-            .any(|line| line.contains("Dropped 1")),
+        output.lines().iter().any(|line| line.contains("Dropped 1")),
         "unexpected report: {:?}",
         output.lines()
     );

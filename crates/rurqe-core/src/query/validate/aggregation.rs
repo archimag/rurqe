@@ -312,7 +312,10 @@ pub(crate) fn has_aggregate(expr: &ExprKind) -> bool {
 /// descent, and an aggregate nested inside the operand — `SUM(SUM("total")) OVER
 /// (...)` — still stops the walk, because the inner call is a statement aggregate
 /// whose own clause governs the columns it reads.
-pub(crate) fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static str, &'static str)>) {
+pub(crate) fn collect_bare_columns(
+    expr: &ExprKind,
+    columns: &mut Vec<(&'static str, &'static str)>,
+) {
     match expr {
         ExprKind::Column { table, name } => columns.push((table, name)),
         ExprKind::QualifiedColumn { table, column } => columns.push((table, column)),
@@ -327,7 +330,9 @@ pub(crate) fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static 
                 collect_bare_columns(value, columns);
             }
         }
-        ExprKind::InList { operand, values, .. } => {
+        ExprKind::InList {
+            operand, values, ..
+        } => {
             collect_bare_columns(operand, columns);
             for value in values {
                 collect_bare_columns(value, columns);
@@ -350,11 +355,7 @@ pub(crate) fn collect_bare_columns(expr: &ExprKind, columns: &mut Vec<(&'static 
             collect_bare_columns(operand, columns);
             collect_bare_columns(pattern, columns);
         }
-        ExprKind::Between {
-            operand,
-            low,
-            high,
-        } => {
+        ExprKind::Between { operand, low, high } => {
             collect_bare_columns(operand, columns);
             collect_bare_columns(low, columns);
             collect_bare_columns(high, columns);

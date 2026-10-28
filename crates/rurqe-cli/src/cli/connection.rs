@@ -129,15 +129,15 @@ fn open_sqlite(path: Option<&str>, url: &str) -> Result<rusqlite::Connection, Cl
 /// refuses the session before authentication is reported with a remediation hint
 /// keyed on its typed `SqlState`, never on the wording of the driver message.
 fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
-    let config = url.parse::<postgres::Config>().map_err(|error| {
-        match unmodelled_tls_demand(url) {
-            Some(spelling) => tls_unavailable(spelling, url),
-            None => CliError(format!(
-                "invalid PostgreSQL connection string `{}`: {error}",
-                redact_database_url(url)
-            )),
-        }
-    })?;
+    let config =
+        url.parse::<postgres::Config>()
+            .map_err(|error| match unmodelled_tls_demand(url) {
+                Some(spelling) => tls_unavailable(spelling, url),
+                None => CliError(format!(
+                    "invalid PostgreSQL connection string `{}`: {error}",
+                    redact_database_url(url)
+                )),
+            })?;
 
     enforce_transport_policy(&config, url)?;
     announce_cleartext(config.get_ssl_mode(), remote_host(&config).as_deref());
@@ -379,8 +379,7 @@ fn keyword_parameter(url: &str, parameter: &str) -> Option<String> {
     url.split_ascii_whitespace().find_map(|token| {
         let (key, value) = token.split_once('=')?;
 
-        key.eq_ignore_ascii_case(parameter)
-            .then(|| unquoted(value))
+        key.eq_ignore_ascii_case(parameter).then(|| unquoted(value))
     })
 }
 
@@ -724,11 +723,11 @@ mod tests {
         // The same connection written both ways has to yield the same value, so the
         // fallback never depends on which form the operator happened to write.
         for (url, expected) in [
+            ("postgres://app@db.internal/app?sslmode=require", "require"),
             (
-                "postgres://app@db.internal/app?sslmode=require",
+                "host=db.internal user=app dbname=app sslmode=require",
                 "require",
             ),
-            ("host=db.internal user=app dbname=app sslmode=require", "require"),
             (
                 "postgresql://app@db.internal/app?sslmode=verify-full",
                 "verify-full",
@@ -738,11 +737,7 @@ mod tests {
                 "verify-full",
             ),
         ] {
-            assert_eq!(
-                sslmode_parameter(url).as_deref(),
-                Some(expected),
-                "`{url}`"
-            );
+            assert_eq!(sslmode_parameter(url).as_deref(), Some(expected), "`{url}`");
         }
     }
 
@@ -796,10 +791,7 @@ mod tests {
     fn the_tls_demanding_modes_render_their_libpq_spellings() {
         assert_eq!(TlsDemandingMode::Require.libpq_spelling(), "require");
         assert_eq!(TlsDemandingMode::VerifyCa.libpq_spelling(), "verify-ca");
-        assert_eq!(
-            TlsDemandingMode::VerifyFull.libpq_spelling(),
-            "verify-full"
-        );
+        assert_eq!(TlsDemandingMode::VerifyFull.libpq_spelling(), "verify-full");
         assert_eq!(
             TlsDemandingMode::ALL,
             [
@@ -812,9 +804,7 @@ mod tests {
 
     #[test]
     fn an_unrecognised_target_is_rejected_at_the_connection_gate() {
-        let bare = connect("app")
-            .err()
-            .expect("a bare name opens no database");
+        let bare = connect("app").err().expect("a bare name opens no database");
         assert!(
             bare.to_string().contains("names no database engine"),
             "got {bare}"

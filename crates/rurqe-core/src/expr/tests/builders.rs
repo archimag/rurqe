@@ -1044,11 +1044,7 @@ fn balanced_raw_fragments_bind_their_parameters_in_order() {
     // bound values, which is the shape `parse_raw_sql` splits a template into
     // and the shape the renderer binds correctly.
     let expr = Expr::<i64>::raw_fragments(
-        vec![
-            "qty + ".to_owned(),
-            " AND tax > ".to_owned(),
-            String::new(),
-        ],
+        vec!["qty + ".to_owned(), " AND tax > ".to_owned(), String::new()],
         vec![SqlVal::I64(1), SqlVal::I64(10)],
     );
 
@@ -1121,7 +1117,10 @@ fn dialect_operators_keep_the_dialect_marker_of_their_operands() {
     // one, so the operator still requires the dialect its left operand does.
     let appended: Expr<i64, User, NonAggregate, MockDialect> =
         pinned.dialect_op::<i64, i64, _>("%", 2i64);
-    assert!(matches!(appended.kind(), ExprKind::DialectOp { op: "%", .. }));
+    assert!(matches!(
+        appended.kind(),
+        ExprKind::DialectOp { op: "%", .. }
+    ));
 
     // A dialect-neutral left operand keeps the marker of its right-hand side.
     let prepended: Expr<i64, User, NonAggregate, MockDialect> =
@@ -1198,10 +1197,11 @@ fn without_scope_qualifies_every_operand_of_a_window_expression() {
             offset: Some(2),
         }),
         partition_by: vec![Expr::column::<UserActive>().into_kind()],
-        order_by: vec![
-            OrderCriterion::new(Expr::column::<UserName>().into_kind(), OrderDirection::Desc)
-                .nulls(NullsOrder::Last),
-        ],
+        order_by: vec![OrderCriterion::new(
+            Expr::column::<UserName>().into_kind(),
+            OrderDirection::Desc,
+        )
+        .nulls(NullsOrder::Last)],
         frame: None,
     };
 
@@ -1354,10 +1354,7 @@ fn the_aggregate_clauses_stay_on_the_call_that_recorded_them() {
     let distinct: Expr<f64, Order, DirectAggregate> = call.distinct();
     assert!(matches!(
         distinct.kind(),
-        ExprKind::Aggregate {
-            distinct: true,
-            ..
-        }
+        ExprKind::Aggregate { distinct: true, .. }
     ));
 
     let filtered: Expr<i64, (Order, Order), FilteredAggregate> =

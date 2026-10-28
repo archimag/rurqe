@@ -658,10 +658,7 @@ mod tests {
     fn escaped_braces_bind_around_a_brace_style_parameter() {
         assert_eq!(
             parse_raw_sql("payload @> '{{\"role\": {}}}'", 1),
-            Ok(vec![
-                "payload @> '{\"role\": ".to_owned(),
-                "}'".to_owned(),
-            ])
+            Ok(vec!["payload @> '{\"role\": ".to_owned(), "}'".to_owned(),])
         );
     }
 

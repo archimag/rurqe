@@ -353,7 +353,8 @@ mod tests {
         }
 
         fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-            self.statements.push(format!("ROLLBACK TO SAVEPOINT {name}"));
+            self.statements
+                .push(format!("ROLLBACK TO SAVEPOINT {name}"));
             if self.fail_savepoint_rollback {
                 Err(String::from("savepoint rollback refused"))
             } else {

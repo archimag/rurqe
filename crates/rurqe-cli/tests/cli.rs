@@ -609,17 +609,13 @@ fn run_cli_codegen_with_domain_types_maps_decimal_columns_and_verifies_cleanly()
     let columns = &parsed.tables[0].columns;
     assert!(
         columns.iter().any(|column| {
-            column.name == "total"
-                && column.type_kind == TypeKind::Numeric
-                && !column.nullable
+            column.name == "total" && column.type_kind == TypeKind::Numeric && !column.nullable
         }),
         "the total column survives the snapshot: {columns:?}"
     );
     assert!(
         columns.iter().any(|column| {
-            column.name == "discount"
-                && column.type_kind == TypeKind::Numeric
-                && column.nullable
+            column.name == "discount" && column.type_kind == TypeKind::Numeric && column.nullable
         }),
         "the discount column survives the snapshot: {columns:?}"
     );

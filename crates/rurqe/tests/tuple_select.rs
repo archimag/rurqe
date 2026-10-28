@@ -48,7 +48,10 @@ fn selection_determines_row_type() {
             .from::<User>()
             .select((UserId, UserName));
 
-    assert_eq!(query.build().expect("valid query").sql, "SELECT \"id\", \"name\" FROM \"users\"");
+    assert_eq!(
+        query.build().expect("valid query").sql,
+        "SELECT \"id\", \"name\" FROM \"users\""
+    );
 }
 
 #[test]
@@ -57,7 +60,10 @@ fn single_column_selection_yields_one_element_tuple() {
         .from::<User>()
         .select((UserId,));
 
-    assert_eq!(query.build().expect("valid query").sql, "SELECT \"id\" FROM \"users\"");
+    assert_eq!(
+        query.build().expect("valid query").sql,
+        "SELECT \"id\" FROM \"users\""
+    );
 }
 
 #[test]

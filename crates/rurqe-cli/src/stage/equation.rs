@@ -12,7 +12,7 @@ use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
 use crate::introspect::DEFAULT_SCHEMA;
 
 use super::error::StageError;
-use super::sandbox::{Script, SandboxKind};
+use super::sandbox::{SandboxKind, Script};
 
 #[cfg(test)]
 mod tests;
@@ -211,9 +211,7 @@ impl<'a> GoldenEquation<'a> {
 
         for migration in &replayed {
             let outdated = match (&self.checkpoint, &migration.version) {
-                (Some(checkpoint), Some(version)) => {
-                    version <= checkpoint.pruned_up_to_version()
-                }
+                (Some(checkpoint), Some(version)) => version <= checkpoint.pruned_up_to_version(),
                 _ => false,
             };
 
@@ -343,12 +341,12 @@ fn materialise(
         Err(error) => Err(error),
     };
 
-        // The sandbox is discarded whether or not the replay succeeded: a script that
-        // stopped halfway would otherwise leave the part it committed — a table, a
-        // header `PRAGMA`, a connection setting — for the next side to build on. A
-        // discard that fails in turn is folded into the replay diagnostic, because
-        // the scratch then stays behind and the next run meets it as an unrelated
-        // rejection of the same scratch URL.
+    // The sandbox is discarded whether or not the replay succeeded: a script that
+    // stopped halfway would otherwise leave the part it committed — a table, a
+    // header `PRAGMA`, a connection setting — for the next side to build on. A
+    // discard that fails in turn is folded into the replay diagnostic, because
+    // the scratch then stays behind and the next run meets it as an unrelated
+    // rejection of the same scratch URL.
     let discard = sandbox.discard();
 
     match (replay, discard) {

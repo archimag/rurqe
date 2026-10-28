@@ -63,7 +63,9 @@ impl fmt::Display for StageError {
                 f,
                 "failed to apply `{script}` in the scratch database: {message}"
             ),
-            StageError::BaseStageMissing { pruned_up_to_version } => write!(
+            StageError::BaseStageMissing {
+                pruned_up_to_version,
+            } => write!(
                 f,
                 "checkpoint pruned up to version {pruned_up_to_version} requires a base stage \
                  to reproduce the boundary, but none was supplied; re-run `stage commit` to \

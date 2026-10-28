@@ -52,7 +52,13 @@ pub(crate) fn cleanup_stage(
         }
     };
 
-    cleanup_scratch_catalog(&mut admin, older_than, force, scratch_url, &process_may_be_alive)
+    cleanup_scratch_catalog(
+        &mut admin,
+        older_than,
+        force,
+        scratch_url,
+        &process_may_be_alive,
+    )
 }
 
 /// Sweeps the stale scratch databases of the catalog `session` administers.

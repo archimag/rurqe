@@ -126,10 +126,7 @@ fn sql_macro_binds_borrowed_values_without_moving_them() {
         expr.kind(),
         &ExprKind::Raw {
             fragments: vec!["name = ".into(), " AND parent = ".into(), "".into()],
-            params: vec![
-                SqlVal::Text("root".into()),
-                SqlVal::Text("root".into()),
-            ],
+            params: vec![SqlVal::Text("root".into()), SqlVal::Text("root".into()),],
         }
     );
     assert_eq!(name, "root");
@@ -153,10 +150,7 @@ fn sql_macro_unescapes_braces_around_parameters() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec![
-                "payload @> '{\"role\": ".into(),
-                "}'::jsonb".into(),
-            ],
+            fragments: vec!["payload @> '{\"role\": ".into(), "}'::jsonb".into(),],
             params: vec![SqlVal::Text("admin".into())],
         }
     );

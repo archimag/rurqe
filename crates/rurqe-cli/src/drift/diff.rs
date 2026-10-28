@@ -403,10 +403,8 @@ fn compare_named_entries<'a, V>(
 ) -> NamedEntries<'a, V> {
     let live_by_name: BTreeMap<&'a str, &'a V> =
         live.iter().map(|entry| (name(entry), entry)).collect();
-    let expected_by_name: BTreeMap<&'a str, &'a V> = expected
-        .iter()
-        .map(|entry| (name(entry), entry))
-        .collect();
+    let expected_by_name: BTreeMap<&'a str, &'a V> =
+        expected.iter().map(|entry| (name(entry), entry)).collect();
 
     let names: BTreeSet<&'a str> = live_by_name
         .keys()
@@ -443,34 +441,31 @@ fn compare_named_entries<'a, V>(
 pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
 
-    let (missing, extra, altered) = compare_named_entries(
-        &live.enums,
-        &expected.enums,
-        |entry: &EnumDef| entry.name.as_str(),
-    )
-    .into_states(|live, expected| live.variants != expected.variants);
+    let (missing, extra, altered) =
+        compare_named_entries(&live.enums, &expected.enums, |entry: &EnumDef| {
+            entry.name.as_str()
+        })
+        .into_states(|live, expected| live.variants != expected.variants);
     diff.missing_enums = missing;
     diff.extra_enums = extra;
     diff.altered_enums = altered;
 
-    let (missing, extra, altered) = compare_named_entries(
-        &live.views,
-        &expected.views,
-        |entry: &ViewDef| entry.name.as_str(),
-    )
-    .into_states(|live, expected| live.definition != expected.definition);
+    let (missing, extra, altered) =
+        compare_named_entries(&live.views, &expected.views, |entry: &ViewDef| {
+            entry.name.as_str()
+        })
+        .into_states(|live, expected| live.definition != expected.definition);
     diff.missing_views = missing;
     diff.extra_views = extra;
     diff.altered_views = altered;
 
-    let (missing, extra, altered) = compare_named_entries(
-        &live.triggers,
-        &expected.triggers,
-        |entry: &TriggerDef| entry.name.as_str(),
-    )
-    .into_states(|live, expected| {
-        live.table_name != expected.table_name || live.definition != expected.definition
-    });
+    let (missing, extra, altered) =
+        compare_named_entries(&live.triggers, &expected.triggers, |entry: &TriggerDef| {
+            entry.name.as_str()
+        })
+        .into_states(|live, expected| {
+            live.table_name != expected.table_name || live.definition != expected.definition
+        });
     diff.missing_triggers = missing;
     diff.extra_triggers = extra;
     diff.altered_triggers = altered;
@@ -505,16 +500,15 @@ fn normalize_expression(expression: &str) -> String {
 fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
     let mut diff = TableDiff::default();
 
-    let (missing, extra, altered) = compare_named_entries(
-        &live.columns,
-        &expected.columns,
-        |entry: &ColumnDef| entry.name.as_str(),
-    )
-    .into_states(|live, expected| {
-        live.type_kind != expected.type_kind
-            || live.nullable != expected.nullable
-            || live.default != expected.default
-    });
+    let (missing, extra, altered) =
+        compare_named_entries(&live.columns, &expected.columns, |entry: &ColumnDef| {
+            entry.name.as_str()
+        })
+        .into_states(|live, expected| {
+            live.type_kind != expected.type_kind
+                || live.nullable != expected.nullable
+                || live.default != expected.default
+        });
     diff.missing_columns = missing;
     diff.extra_columns = extra;
     diff.altered_columns = altered;
@@ -523,14 +517,13 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
         diff.primary_key_mismatch = true;
     }
 
-    let (missing, extra, altered) = compare_named_entries(
-        &live.checks,
-        &expected.checks,
-        |entry: &CheckDef| entry.name.as_str(),
-    )
-    .into_states(|live, expected| {
-        normalize_expression(&live.expression) != normalize_expression(&expected.expression)
-    });
+    let (missing, extra, altered) =
+        compare_named_entries(&live.checks, &expected.checks, |entry: &CheckDef| {
+            entry.name.as_str()
+        })
+        .into_states(|live, expected| {
+            normalize_expression(&live.expression) != normalize_expression(&expected.expression)
+        });
     diff.missing_checks = missing;
     diff.extra_checks = extra;
     diff.altered_checks = altered;
@@ -549,18 +542,17 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
         diff.foreign_key_mismatch = true;
     }
 
-    let (missing, extra, altered) = compare_named_entries(
-        &live.indexes,
-        &expected.indexes,
-        |entry: &IndexDef| entry.name.as_str(),
-    )
-    .into_states(|live, expected| {
-        live.unique != expected.unique
-            || live.columns != expected.columns
-            || live.method != expected.method
-            || live.predicate != expected.predicate
-            || live.expression != expected.expression
-    });
+    let (missing, extra, altered) =
+        compare_named_entries(&live.indexes, &expected.indexes, |entry: &IndexDef| {
+            entry.name.as_str()
+        })
+        .into_states(|live, expected| {
+            live.unique != expected.unique
+                || live.columns != expected.columns
+                || live.method != expected.method
+                || live.predicate != expected.predicate
+                || live.expression != expected.expression
+        });
     diff.missing_indexes = missing;
     diff.extra_indexes = extra;
     diff.altered_indexes = altered;

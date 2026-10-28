@@ -90,7 +90,10 @@ fn the_parked_copies_of_a_live_foreign_writer_are_never_repaired() {
 
     // Nothing is renamed, restored, or discarded while the writer lives: the pair
     // it parked is left exactly where it parked it.
-    assert!(marker_backup.exists(), "the foreign marker copy is untouched");
+    assert!(
+        marker_backup.exists(),
+        "the foreign marker copy is untouched"
+    );
     assert!(
         boundary_backup.exists(),
         "the foreign boundary copy is untouched"

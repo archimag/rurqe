@@ -4,7 +4,9 @@
 //! would be invalid in that state simply is not available: the property is checked
 //! while the query is typed instead of while the rendered SQL reaches the engine.
 
-use super::{HasProjection, LockUnavailable, LockWaitSet, Locked, NoLock, SetOpApplied, TailClosed};
+use super::{
+    HasProjection, LockUnavailable, LockWaitSet, Locked, NoLock, SetOpApplied, TailClosed,
+};
 
 /// Statically asserts that a `SELECT` query records the rows it projects.
 ///

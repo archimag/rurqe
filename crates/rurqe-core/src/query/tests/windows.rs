@@ -90,9 +90,8 @@ fn a_window_ordering_can_fix_where_nulls_sort() {
         .from::<Order>()
         .select((
             OrderId,
-            row_number().over(
-                Window::partition_by(OrderUserId).order_by_desc_nulls_last(OrderTotal),
-            ),
+            row_number()
+                .over(Window::partition_by(OrderUserId).order_by_desc_nulls_last(OrderTotal)),
         ))
         .build()
         .expect("valid query");

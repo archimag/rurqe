@@ -49,8 +49,8 @@ pub use ops::{
     AnySubquery, CombineAggr, CombinedAggr, Expression, InSubquery, IntoExpr, IntoExprList,
     Numeric, NumericOperand, SqlCompatible, StringExpression,
 };
-pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub(crate) use render::StatementRef;
+pub use render::{parse_raw_sql, render_expr, RawSqlError};
 pub use row::{RowExpr, RowValues};
 pub use scope::{MergeScope, Merged, Unscoped};
 #[cfg(feature = "serde_json")]

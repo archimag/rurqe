@@ -5,8 +5,10 @@ use std::time::Duration;
 #[cfg(unix)]
 use crate::introspect::DEFAULT_SCHEMA;
 
-use super::super::{staged_owner_may_live, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE};
-use super::fixtures::{staged_sibling, DEAD_PID, backdate, current_nonce, futuredate, workspace};
+use super::super::{
+    staged_owner_may_live, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE,
+};
+use super::fixtures::{backdate, current_nonce, futuredate, staged_sibling, workspace, DEAD_PID};
 
 // The discard regressions and the commit regression are Unix alone — only
 // Unix exposes the liveness probe a sweep discards under — so the imports
@@ -73,7 +75,9 @@ fn a_failed_flush_after_the_rename_fails_the_write() {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
         .expect("restore the permissions of the directory");
 
-    let message = result.expect_err("the flush cannot be completed").to_string();
+    let message = result
+        .expect_err("the flush cannot be completed")
+        .to_string();
     assert!(message.contains("failed to flush"), "{message}");
     assert!(message.contains("checkpoint.toml"), "{message}");
 
@@ -127,7 +131,10 @@ fn a_sweep_discards_the_staged_artifacts_a_killed_process_left_behind() {
 
     assert_eq!(removed, vec![stale_lock.clone()]);
     assert!(!stale_lock.exists(), "the abandoned staged lock is gone");
-    assert!(owned_lock.exists(), "a staged path this process owns is kept");
+    assert!(
+        owned_lock.exists(),
+        "a staged path this process owns is kept"
+    );
 
     let removed = sweep_stale_temporaries(&boundary, Duration::ZERO)
         .expect("the sweep scans the boundary directory");
@@ -278,7 +285,10 @@ fn a_sweep_of_one_marker_keeps_the_staged_debris_of_another() {
         removed.is_empty(),
         "the sweep matched a foreign artifact: {removed:?}"
     );
-    assert!(foreign.exists(), "the staging path of another marker is kept");
+    assert!(
+        foreign.exists(),
+        "the staging path of another marker is kept"
+    );
 }
 
 #[test]

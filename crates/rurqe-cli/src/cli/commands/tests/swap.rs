@@ -19,8 +19,11 @@ fn a_failed_staged_write_keeps_the_committed_boundary() {
     let dir = workspace("snapshot-staged-write");
     let boundary = dir.join("checkpoint-stage");
     std::fs::create_dir_all(&boundary).expect("create the committed boundary");
-    std::fs::write(boundary.join("users.sql"), "CREATE TABLE users (id INTEGER);")
-        .expect("write the committed snapshot");
+    std::fs::write(
+        boundary.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the committed snapshot");
 
     // `orders.sql` lands, and `users.sql` collides with a directory, so the
     // staging fails after one script has already been written.
@@ -127,11 +130,8 @@ fn a_failed_installation_that_restores_the_boundary_reports_no_stranding() {
     // The parked boundary is a real directory, so the rollback inside
     // `move_failure` restores it successfully and reports no stranding.
     std::fs::create_dir_all(&parked).expect("park the committed boundary");
-    std::fs::write(
-        parked.join("users.sql"),
-        "CREATE TABLE users (id INTEGER);",
-    )
-    .expect("write the parked snapshot");
+    std::fs::write(parked.join("users.sql"), "CREATE TABLE users (id INTEGER);")
+        .expect("write the parked snapshot");
 
     let failure = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
     let message = move_failure(&boundary, &staged, &failure, Some(&parked)).to_string();
@@ -194,7 +194,10 @@ fn a_cycle_over_one_marker_leaves_the_parked_pair_of_another_untouched() {
         "no copy of this marker was interrupted, got {notice:?}"
     );
 
-    assert!(marker_backup.exists(), "the foreign marker copy is untouched");
+    assert!(
+        marker_backup.exists(),
+        "the foreign marker copy is untouched"
+    );
     assert!(
         boundary_backup.exists(),
         "the foreign boundary copy is untouched"
@@ -226,7 +229,10 @@ fn the_parked_pair_of_another_marker_is_repaired_under_its_own_section() {
         Checkpoint::new(version("2"), Checksum::of(b"prod")).render(),
     )
     .expect("park the marker");
-    let boundary_backup = dir.join(format!(".prod-stage.{}.{}.previous", scope.pid, scope.nonce));
+    let boundary_backup = dir.join(format!(
+        ".prod-stage.{}.{}.previous",
+        scope.pid, scope.nonce
+    ));
     std::fs::create_dir_all(&boundary_backup).expect("park the boundary");
     std::fs::write(
         boundary_backup.join("orders.sql"),
@@ -269,8 +275,11 @@ fn an_interrupted_commit_discards_the_boundary_it_installed_without_a_marker() {
     // installed boundary is live without a marker.
     let boundary = dir.join("checkpoint-stage");
     std::fs::create_dir_all(&boundary).expect("install the uncommitted boundary");
-    std::fs::write(boundary.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
-        .expect("write the installed snapshot");
+    std::fs::write(
+        boundary.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the installed snapshot");
     let marker_backup = dir.join(".checkpoint.toml.4242.8.previous");
     std::fs::write(
         &marker_backup,
@@ -346,8 +355,11 @@ fn a_parked_pair_beside_a_committed_pair_is_discarded() {
     .expect("write the committed marker");
     let boundary = dir.join("checkpoint-stage");
     std::fs::create_dir_all(&boundary).expect("install the committed boundary");
-    std::fs::write(boundary.join("orders.sql"), "CREATE TABLE orders (id INTEGER);")
-        .expect("write the committed snapshot");
+    std::fs::write(
+        boundary.join("orders.sql"),
+        "CREATE TABLE orders (id INTEGER);",
+    )
+    .expect("write the committed snapshot");
 
     let marker_backup = dir.join(".checkpoint.toml.4242.9.previous");
     std::fs::write(
@@ -373,7 +385,10 @@ fn a_parked_pair_beside_a_committed_pair_is_discarded() {
 
     assert!(notice.contains("Discarded"), "got {notice}");
     assert!(!marker_backup.exists(), "the parked marker is discarded");
-    assert!(!boundary_backup.exists(), "the parked boundary is discarded");
+    assert!(
+        !boundary_backup.exists(),
+        "the parked boundary is discarded"
+    );
     assert_eq!(
         directory_names(&boundary),
         vec!["orders.sql".to_owned()],

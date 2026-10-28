@@ -113,8 +113,8 @@ fn select_expands_through_the_facade() {
 
 #[test]
 fn dto_expands_through_the_facade() {
-    let row = UserRow::from_row(&[SqlVal::I64(1), SqlVal::Text("root".to_owned())])
-        .expect("row decodes");
+    let row =
+        UserRow::from_row(&[SqlVal::I64(1), SqlVal::Text("root".to_owned())]).expect("row decodes");
 
     assert_eq!(row.user_id, 1);
     assert_eq!(row.contact_email, "root");

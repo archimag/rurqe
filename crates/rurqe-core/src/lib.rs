@@ -23,8 +23,7 @@ pub use dml::{
 pub use expr::{
     greatest, is_distinct_from, is_not_distinct_from, least, nullif, Aggregate, AggregateFunc,
     BinaryOp, Expr, ExprKind, FunctionOperand, IntoExpr, NonAggregate, NullsOrder, SqlArrayElement,
-    SqlCastTarget,
-    SqlCompatible, SqlVal, ToSqlVal,
+    SqlCastTarget, SqlCompatible, SqlVal, ToSqlVal,
 };
 pub use nested::{nest_many, nest_one, MultisetRow, NestMany, NestOne};
 pub use query::{
@@ -32,9 +31,8 @@ pub use query::{
     DerivedTable, ExecutableQuery, ExecutionError, GroupBy, GroupByInScope, IsolationLevel,
     LagLeadFn, LockUnavailable, Locked, LockedQuery, NoLock, OrderDirection, PartitionBy, Query,
     QueryBackend, QueryBackendExt, RowClause, SelectQuery, SelectTarget, SelectTargetInScope,
-    Selection,
-    SelectionInScope, TailClosed, TransactionBackend, TransactionContext, Window, WindowExpr,
-    WindowExprKind, WindowFn, WindowSpec,
+    Selection, SelectionInScope, TailClosed, TransactionBackend, TransactionContext, Window,
+    WindowExpr, WindowExprKind, WindowFn, WindowSpec,
 };
 pub use row::{FromRow, FromSqlValue, RowDecodeError};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

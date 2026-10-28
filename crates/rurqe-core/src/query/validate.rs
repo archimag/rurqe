@@ -34,9 +34,9 @@ use core::fmt;
 use crate::expr::RawSqlError;
 use crate::schema::TableRef;
 
+pub(crate) use self::aggregation::validate_row_clause;
 #[cfg(test)]
 pub(crate) use self::aggregation::{collect_bare_columns, contains_bare_column, has_aggregate};
-pub(crate) use self::aggregation::validate_row_clause;
 pub(crate) use self::qualifiers::{reject_unresolved_qualifiers, validate_expr};
 pub(crate) use self::rules::reject_columns_without_relations;
 #[cfg(test)]

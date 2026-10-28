@@ -333,10 +333,7 @@ fn take_schema(tokens: &[&str], idx: &mut usize, flag: &str) -> Result<String, I
     let name = value.trim();
 
     if name.is_empty() {
-        return Err(CliError(format!(
-            "option `{flag}` requires a database schema name"
-        ))
-        .into());
+        return Err(CliError(format!("option `{flag}` requires a database schema name")).into());
     }
 
     Ok(name.to_owned())

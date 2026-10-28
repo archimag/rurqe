@@ -38,9 +38,9 @@ fn enum_drift_is_detected_and_reported() {
     match err {
         DriftError::Drift(report) => {
             assert_eq!(report.diff.extra_enums, vec!["task_state".to_owned()]);
-            assert!(report.to_string().contains(
-                "Enum `task_state` exists in database but is missing from snapshot."
-            ));
+            assert!(report
+                .to_string()
+                .contains("Enum `task_state` exists in database but is missing from snapshot."));
         }
         other => panic!("expected Drift, got {other:?}"),
     }
@@ -56,9 +56,9 @@ fn enum_drift_is_detected_and_reported() {
     match err2 {
         DriftError::Drift(report) => {
             assert_eq!(report.diff.altered_enums, vec!["user_role".to_owned()]);
-            assert!(report.to_string().contains(
-                "Enum `user_role` definition differs between database and snapshot."
-            ));
+            assert!(report
+                .to_string()
+                .contains("Enum `user_role` definition differs between database and snapshot."));
         }
         other => panic!("expected Drift, got {other:?}"),
     }
@@ -567,8 +567,9 @@ fn whitespace_differences_in_check_expressions_are_ignored() {
     ]);
     let lock = baseline.to_lock();
 
-    let live = SchemaCatalog::new(vec![users_table(Vec::new())
-        .with_check(CheckDef::new("users_age_check", "age   >=    0"))]);
+    let live = SchemaCatalog::new(vec![
+        users_table(Vec::new()).with_check(CheckDef::new("users_age_check", "age   >=    0"))
+    ]);
     assert!(verify_drift(&live, &lock, None).is_ok());
 }
 

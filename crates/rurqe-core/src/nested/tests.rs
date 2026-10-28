@@ -57,10 +57,7 @@ type OrderLine = (String, i64);
 
 impl ToSqlVal for OrderLine {
     fn to_sql_val(self) -> SqlVal {
-        multiset_object(&[
-            ("sku", SqlVal::Text(self.0)),
-            ("qty", SqlVal::I64(self.1)),
-        ])
+        multiset_object(&[("sku", SqlVal::Text(self.0)), ("qty", SqlVal::I64(self.1))])
     }
 }
 
@@ -154,18 +151,12 @@ fn a_nested_projection_carries_the_json_aggregation_requirement() {
     {
     }
 
-    assert_projectable::<
-        NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>,
-        PgMock,
-    >();
+    assert_projectable::<NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>, PgMock>();
     assert_projectable::<
         NestOne<SelectQuery<SqliteMock, Line, OrderLine, HasProjection>>,
         SqliteMock,
     >();
-    assert_projectable::<
-        NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>,
-        PgMock,
-    >();
+    assert_projectable::<NestMany<SelectQuery<PgMock, Line, OrderLine, HasProjection>>, PgMock>();
 
     // The wrapped statement keeps rendering the rows it projects.
     let built = lines::<PgMock>().build().expect("valid lines query");
@@ -198,10 +189,9 @@ fn a_nested_collection_decodes_into_its_rows() {
 
 #[test]
 fn a_nested_collection_decodes_from_json_text() {
-    let rows = Vec::<OrderLine>::from_sql_value(&SqlVal::Text(
-        "[{\"sku\":\"a\",\"qty\":2}]".to_owned(),
-    ))
-    .expect("the JSON text of a nested collection decodes");
+    let rows =
+        Vec::<OrderLine>::from_sql_value(&SqlVal::Text("[{\"sku\":\"a\",\"qty\":2}]".to_owned()))
+            .expect("the JSON text of a nested collection decodes");
 
     assert_eq!(rows, vec![("a".to_owned(), 2)]);
 }
@@ -248,8 +238,7 @@ fn a_nested_blob_field_decodes_the_bytea_text_postgres_reports() {
 #[test]
 fn a_nested_collection_with_blobs_decodes_the_json_text_sqlite_reports() {
     let rows = Vec::<Document>::from_sql_value(&SqlVal::Text(
-        r#"[{"name":"avatar","blob":"000102feff"},{"name":"logo","blob":"ff"}]"#
-            .to_owned(),
+        r#"[{"name":"avatar","blob":"000102feff"},{"name":"logo","blob":"ff"}]"#.to_owned(),
     ))
     .expect("the JSON text of a nested collection decodes");
 
@@ -278,9 +267,7 @@ fn a_single_nested_row_decodes_into_an_option() {
     assert_eq!(present, Some(("a".to_owned(), 2)));
     assert_eq!(Option::<OrderLine>::from_sql_value(&SqlVal::Null), Ok(None));
     assert_eq!(
-        Option::<OrderLine>::from_sql_value(&SqlVal::Text(
-            "{\"sku\":\"b\",\"qty\":3}".to_owned()
-        )),
+        Option::<OrderLine>::from_sql_value(&SqlVal::Text("{\"sku\":\"b\",\"qty\":3}".to_owned())),
         Ok(Some(("b".to_owned(), 3)))
     );
 }
@@ -377,7 +364,11 @@ fn a_scalar_keeps_its_json_form_across_the_helpers() {
     ] {
         let value = json_to_sql_value(&document);
 
-        assert_eq!(sql_val_to_json(&value), document, "round trip of {document}");
+        assert_eq!(
+            sql_val_to_json(&value),
+            document,
+            "round trip of {document}"
+        );
     }
 }
 
@@ -437,8 +428,8 @@ fn a_row_object_carries_one_key_per_field() {
 fn an_integer_wider_than_the_signed_range_keeps_every_digit() {
     use rust_decimal::Decimal;
 
-    let document: serde_json::Value = serde_json::from_str(r#"{"id":18446744073709551615}"#)
-        .expect("the document is valid JSON");
+    let document: serde_json::Value =
+        serde_json::from_str(r#"{"id":18446744073709551615}"#).expect("the document is valid JSON");
     let object = json_object(&json_to_sql_value(&document)).expect("the object decodes");
 
     let id: Decimal = nested_field(&object, "id").expect("the wide number decodes");

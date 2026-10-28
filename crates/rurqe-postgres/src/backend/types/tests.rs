@@ -375,7 +375,10 @@ fn arrays_of_enums_and_domains_decode_their_elements() {
         SqlVal::Array(vec![SqlVal::Decimal(rust_decimal::Decimal::new(125, 1))])
     );
     #[cfg(not(feature = "decimal"))]
-    assert_eq!(decoded, SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())]));
+    assert_eq!(
+        decoded,
+        SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())])
+    );
 }
 
 #[test]

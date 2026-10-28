@@ -24,8 +24,8 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
     let stage = DeclarativeStage::load(&stage_dir)
         .expect("the stage is readable")
         .expect("the stage directory exists");
-    let catalog = materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA)
-        .expect("the stage materialises");
+    let catalog =
+        materialise_stage(&stage, ":memory:", DEFAULT_SCHEMA).expect("the stage materialises");
     let checkpoint_path = dir.join("checkpoint.toml");
     std::fs::write(
         &checkpoint_path,
@@ -54,7 +54,10 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
         std::fs::read_to_string(boundary.join("users.sql")).expect("read the restored snapshot"),
         users
     );
-    assert!(!backup.exists(), "the parked snapshot was renamed into place");
+    assert!(
+        !backup.exists(),
+        "the parked snapshot was renamed into place"
+    );
 }
 
 #[test]
@@ -127,10 +130,7 @@ fn a_concurrent_command_never_preempts_a_live_writer() {
     // The in-flight writer's parked pair is the only copy of the state its
     // section owns, and no verification touches it while that writer lives.
     assert!(marker_backup.exists(), "the parked marker is untouched");
-    assert!(
-        boundary_backup.exists(),
-        "the parked boundary is untouched"
-    );
+    assert!(boundary_backup.exists(), "the parked boundary is untouched");
     assert_eq!(
         std::fs::read_to_string(&checkpoint_path).expect("read the live marker"),
         marker,
@@ -179,8 +179,11 @@ fn a_failed_verification_reports_the_interrupted_commit_it_repaired() {
     let dir = workspace("verify-recovery-failure");
     let stage_dir = dir.join("schema");
     std::fs::create_dir_all(&stage_dir).expect("create the stage directory");
-    std::fs::write(stage_dir.join("users.sql"), "CREATE TABLE users (id INTEGER);")
-        .expect("write the stage script");
+    std::fs::write(
+        stage_dir.join("users.sql"),
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("write the stage script");
     let migrations_dir = dir.join("migrations");
     std::fs::create_dir_all(&migrations_dir).expect("create the migrations directory");
     let checkpoint_path = dir.join("checkpoint.toml");

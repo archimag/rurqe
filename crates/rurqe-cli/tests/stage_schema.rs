@@ -363,13 +363,7 @@ fn stage_verify_reports_a_vacuous_selection_and_accepts_the_matching_one() {
     write_scripts(&stage_dir, &[("users.sql", ddl.as_str())]);
     write_scripts(&migrations_dir, &[("V1__users.sql", ddl.as_str())]);
 
-    let output = match stage_verify(
-        &url,
-        &stage_dir,
-        &migrations_dir,
-        &checkpoint_path,
-        None,
-    ) {
+    let output = match stage_verify(&url, &stage_dir, &migrations_dir, &checkpoint_path, None) {
         Ok(output) => output,
         Err(error) if is_createdb_missing(&error.to_string()) => {
             eprintln!("skipping the PostgreSQL scenario: {error}");
@@ -454,9 +448,7 @@ fn stage_commit_and_verify_agree_over_the_selected_schema() {
             eprintln!("skipping the PostgreSQL scenario: {error}");
             return;
         }
-        Err(error) => panic!(
-            "the parity gate compares catalogs read over `{schema}`: {error}"
-        ),
+        Err(error) => panic!("the parity gate compares catalogs read over `{schema}`: {error}"),
     };
 
     let report = report_text(&output);

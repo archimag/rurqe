@@ -744,7 +744,10 @@ mod tests {
         let error = i64::from_sql_value(&SqlVal::F64(0.5)).expect_err("a fraction is rejected");
         assert!(matches!(
             error,
-            RowDecodeError::InvalidValue { found: "float64", .. }
+            RowDecodeError::InvalidValue {
+                found: "float64",
+                ..
+            }
         ));
 
         assert!(i64::from_sql_value(&SqlVal::F64(f64::NAN)).is_err());
@@ -1020,7 +1023,10 @@ mod tests {
             .expect_err("the value exceeds the 64-bit integer range");
         assert!(matches!(
             error,
-            RowDecodeError::InvalidValue { found: "decimal", .. }
+            RowDecodeError::InvalidValue {
+                found: "decimal",
+                ..
+            }
         ));
     }
 

@@ -20,8 +20,7 @@ use crate::expr::Expr;
 /// branch must neither unwind nor silently drop the predicate the return type
 /// keeps promising: the placeholder keeps the fault visible in every build
 /// profile, and a release build shows the discarded clause instead of hiding it.
-const DROPPED_FILTER_PLACEHOLDER: &str =
-    "/* invalid aggregate marker: FILTER predicate dropped */";
+const DROPPED_FILTER_PLACEHOLDER: &str = "/* invalid aggregate marker: FILTER predicate dropped */";
 
 /// Text rendered in place of the `DISTINCT` modifier attached to an expression
 /// that is not an aggregate call.

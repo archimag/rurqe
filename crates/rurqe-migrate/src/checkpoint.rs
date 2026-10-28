@@ -109,7 +109,8 @@ impl Checkpoint {
 
     /// Parses the `[checkpoint]` table out of `contents`.
     pub fn parse(contents: &str) -> Result<Self, Error> {
-        let file: CheckpointFile = toml::from_str(contents).map_err(|err| invalid(err.to_string()))?;
+        let file: CheckpointFile =
+            toml::from_str(contents).map_err(|err| invalid(err.to_string()))?;
 
         let pruned_up_to_version = file
             .checkpoint
@@ -266,7 +267,10 @@ mod tests {
              schema_hash = \"{HASH}\"\n"
         ))
         .expect_err("unknown sections are rejected");
-        assert!(err.to_string().contains("unknown field") || err.to_string().contains("unknown_section"));
+        assert!(
+            err.to_string().contains("unknown field")
+                || err.to_string().contains("unknown_section")
+        );
 
         let err = Checkpoint::parse(&format!(
             "[checkpoint]\n\
