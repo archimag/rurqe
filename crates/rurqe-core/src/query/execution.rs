@@ -463,13 +463,21 @@ pub trait AsyncQueryBackend: Sync {
 /// awaiting it inside a task spawned on a multithreaded runtime stays sound.
 pub trait AsyncQueryBackendExt: AsyncQueryBackend {
     /// Executes `query` and decodes every produced row.
-    fn fetch_all<Q>(
+    /// Executes `query` and collects the decoded rows into `C`.
+    ///
+    /// The collection type is chosen by the caller, so `HashMap`, `HashSet`,
+    /// `BTreeSet`, `VecDeque`, or any other `FromIterator<Q::Row>` receives the
+    /// rows directly, without an intermediate `Vec` allocation. The returned
+    /// future is `Send`, so the whole read-decode-collect pipeline stays inside
+    /// a task spawned on a multithreaded runtime.
+    fn fetch_collect<C, Q>(
         &self,
         query: &Q,
-    ) -> impl Future<Output = Result<Vec<Q::Row>, ExecutionError<Self::Error>>> + Send
+    ) -> impl Future<Output = Result<C, ExecutionError<Self::Error>>> + Send
     where
         Q: ExecutableQuery + Sync,
         Q::Row: FromRow + Send,
+        C: FromIterator<Q::Row>,
     {
         async move {
             let built = query.build_query().map_err(ExecutionError::Build)?;
@@ -485,6 +493,18 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
                 })
                 .collect()
         }
+    }
+
+    /// Executes `query` and decodes every produced row into a `Vec`.
+    fn fetch_all<Q>(
+        &self,
+        query: &Q,
+    ) -> impl Future<Output = Result<Vec<Q::Row>, ExecutionError<Self::Error>>> + Send
+    where
+        Q: ExecutableQuery + Sync,
+        Q::Row: FromRow + Send,
+    {
+        self.fetch_collect::<Vec<Q::Row>, Q>(query)
     }
 
     /// Executes `query` and decodes at most one row.
