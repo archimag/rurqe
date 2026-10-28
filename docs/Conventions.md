@@ -40,7 +40,7 @@
 Every executable walkthrough — a query, a mutation, a relation, a transaction — is a real Rust file in the root `examples/` crate. A chapter includes the relevant fragment of that file instead of restating the code inline, so a chapter cannot drift from the API it documents: when the fragment stops compiling, `just check` fails.
 
 * **The crate:** `examples/` is a non-published workspace member (`rurqe-examples`) listed in `[workspace].members`, with its own `examples/Cargo.toml`. It depends on the `rurqe` facade, so an example exercises the same public surface a reader does. The package deliberately does not opt into `[lints] workspace = true`, because the workspace denies direct printing while printing the produced SQL or row is exactly what an example does.
-* **Functional taxonomy:** the crate root holds one file per domain — `quickstart.rs`, `crud.rs`, `joins.rs`, `aggregates.rs`, `nested.rs`, `dialects.rs`, `transactions.rs`. A new domain is a new file, never a new inline snippet.
+* **Functional taxonomy:** the crate root holds one file per domain — `quickstart.rs`, `crud.rs`, `joins.rs`, `aggregates.rs`, `cte.rs`, `nested.rs`, `dialects.rs`, `transactions.rs`. A new domain is a new file, never a new inline snippet.
 * **Explicit targets:** Cargo discovers example targets only under `<package>/examples/`, and the documentary files sit at the package root so that chapter includes stay short. Every file is therefore registered in `examples/Cargo.toml` as an explicit target:
 
   ```toml

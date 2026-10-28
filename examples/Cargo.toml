@@ -58,3 +58,7 @@ path = "dialects.rs"
 [[example]]
 name = "transactions"
 path = "transactions.rs"
+
+[[example]]
+name = "cte"
+path = "cte.rs"
