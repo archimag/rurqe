@@ -2,6 +2,7 @@
 
 use core::fmt;
 use core::future::Future;
+use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
 use crate::dml::insert::InsertSource;
@@ -237,6 +238,56 @@ impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
     }
 }
 
+/// Lazily decoded rows of a statement the backend has already executed.
+///
+/// The iterator owns the raw value buffer of a statement that has already
+/// finished, so the connection is released before a single row is decoded, and
+/// [`FromRow`] runs only when [`next`](Iterator::next) asks for the row.
+pub struct QueryRowIter<Q, E> {
+    rows: std::vec::IntoIter<Vec<SqlVal>>,
+    decoded: usize,
+    marker: PhantomData<fn() -> (Q, E)>,
+}
+
+impl<Q, E> QueryRowIter<Q, E> {
+    /// Wraps the raw rows of an executed statement.
+    fn new(rows: Vec<Vec<SqlVal>>) -> Self {
+        QueryRowIter {
+            rows: rows.into_iter(),
+            decoded: 0,
+            marker: PhantomData,
+        }
+    }
+
+    /// The number of rows this iterator has decoded so far.
+    pub fn decoded(&self) -> usize {
+        self.decoded
+    }
+}
+
+impl<Q, E> Iterator for QueryRowIter<Q, E>
+where
+    Q: ExecutableQuery,
+    Q::Row: FromRow,
+{
+    type Item = Result<Q::Row, ExecutionError<E>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let values = self.rows.next()?;
+        let row_index = self.decoded;
+        self.decoded += 1;
+
+        Some(
+            Q::Row::try_from_row(&values)
+                .map_err(|source| ExecutionError::RowDecode { row_index, source }),
+        )
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.rows.size_hint()
+    }
+}
+
 /// Execution helpers decoding query rows through [`FromRow`].
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a RURQE query backend",
@@ -244,21 +295,50 @@ impl<E: std::error::Error + 'static> std::error::Error for ExecutionError<E> {
     note = "implement `QueryBackend` for the driver; `QueryBackendExt` is then available for free"
 )]
 pub trait QueryBackendExt: QueryBackend {
-    /// Executes `query` and decodes every produced row.
-    fn fetch_all<Q>(&mut self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<Self::Error>>
+    /// Executes `query` and collects the decoded rows into `C`.
+    ///
+    /// The collection type is chosen by the caller, so `HashMap`, `HashSet`,
+    /// `BTreeMap`, `VecDeque`, or any other `FromIterator<Q::Row>` receives the
+    /// rows directly, without an intermediate `Vec` allocation.
+    fn fetch_collect<C, Q>(&mut self, query: &Q) -> Result<C, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+        C: FromIterator<Q::Row>,
+    {
+        let built = query.build_query().map_err(ExecutionError::Build)?;
+        let rows = self.fetch_raw(&built).map_err(ExecutionError::Backend)?;
+
+        QueryRowIter::<Q, Self::Error>::new(rows).collect()
+    }
+
+    /// Executes `query` and returns a lazy iterator over its decoded rows.
+    ///
+    /// The raw values are read from the backend before the iterator is
+    /// returned, so the connection is released immediately and every row is
+    /// decoded by [`FromRow`] only when it is consumed. A streaming fold, map,
+    /// or filter therefore never materialises a collection of rows.
+    fn fetch_iter<Q>(
+        &mut self,
+        query: &Q,
+    ) -> Result<QueryRowIter<Q, Self::Error>, ExecutionError<Self::Error>>
     where
         Q: ExecutableQuery,
         Q::Row: FromRow,
     {
         let built = query.build_query().map_err(ExecutionError::Build)?;
         let rows = self.fetch_raw(&built).map_err(ExecutionError::Backend)?;
-        rows.iter()
-            .enumerate()
-            .map(|(row_index, values)| {
-                Q::Row::try_from_row(values)
-                    .map_err(|source| ExecutionError::RowDecode { row_index, source })
-            })
-            .collect()
+
+        Ok(QueryRowIter::new(rows))
+    }
+
+    /// Executes `query` and decodes every produced row into a `Vec`.
+    fn fetch_all<Q>(&mut self, query: &Q) -> Result<Vec<Q::Row>, ExecutionError<Self::Error>>
+    where
+        Q: ExecutableQuery,
+        Q::Row: FromRow,
+    {
+        self.fetch_collect::<Vec<Q::Row>, Q>(query)
     }
 
     /// Executes `query` and decodes at most one row.
