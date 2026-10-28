@@ -16,11 +16,15 @@ RURQE answers with one invariant: **if a query compiles, it is semantically corr
 
 A report over two relations, written once and checked while it is built:
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let feed = select_from(User)
-    .left_join(Order, OrderUserId.eq(UserId))
+    .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
     .select(select!(
         user_id: UserId,
         user_name: UserName,
@@ -34,6 +38,8 @@ for row in feed {
     // `row.total` is `Option<f64>`: the LEFT JOIN lifted it, so a missing
     // relation can never be decoded into a plain `f64`.
 }
+# Ok(())
+# }
 ```
 
 No turbofish, no SQL literals, no manual mapping: the dialect is pinned by the prelude, the projection is named by `select!`, and the nullability of `row.total` follows from the join.
@@ -42,7 +48,13 @@ The `User` and `Order` markers come from `table!` in tests and small projects, a
 
 A one-to-many relation is one statement as well — no N+1 queries and no Cartesian product folded by hand on the client:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let users_with_orders = select_from(User)
     .select(select!(
         user_id: UserId,
@@ -54,6 +66,8 @@ let users_with_orders = select_from(User)
         ),
     ))
     .fetch_all(&mut conn)?;
+# Ok(())
+# }
 ```
 
 The engine aggregates the child rows into a JSON document and the client decodes it into a `Vec` whose element type is the nested `select!` record — see [Nested results](../features/nested.md).
@@ -90,7 +104,7 @@ No "just in case" fields, no dead code kept "for later". Standard formats and cr
 | A `NULL` from a `LEFT JOIN` cannot be read as `f64` | `Option<T>` appears in the row type on its own |
 | An `UPDATE` without `WHERE` cannot run by accident | the statement does not build until `.where_(...)` or a deliberate `.allow_all()` |
 | A construct the engine lacks does not compile | on SQLite `.for_update()` is not a method at all |
-| An ambiguous `JOIN` never reaches the database | it is refused while building, and the colliding relation is named |
+| An ambiguous `JOIN` never reaches the database | the statement is refused by the compiler, and the colliding relation is named |
 | The schema never drifts from the code | `cargo db-codegen`, `schema.lock`, `cargo db-verify` |
 
 ## Where to go next

@@ -8,21 +8,18 @@ A window expression is computed by the engine with an `OVER (...)` clause. In RU
 
 ## The specification
 
-```rust
-impl Window {
-    pub fn new() -> WindowSpec<()>;
-    pub fn empty() -> WindowSpec<()>;
-    pub fn partition_by<P: PartitionBy>(partition: P) -> WindowSpec<P::Scope, P::Columns>;
-    pub fn order_by<C: Column>(col: C, direction: OrderDirection) -> WindowSpec<C::Table, WindowColumnSet<C>>;
-    pub fn order_by_asc<C: Column>(col: C) -> WindowSpec<C::Table, WindowColumnSet<C>>;
-    pub fn order_by_desc<C: Column>(col: C) -> WindowSpec<C::Table, WindowColumnSet<C>>;
-    pub fn order_by_nulls<C: Column>(col: C, direction: OrderDirection, nulls: NullsOrder) -> /* + RequiresNullsOrdering */;
-    pub fn rows_between(start: WindowFrameBound, end: WindowFrameBound) -> WindowSpec<()>;
-    pub fn range_between(start: WindowFrameBound, end: WindowFrameBound) -> WindowSpec<()>;
-}
-```
+The constructors live on `Window`, and every one of them returns a specification that the same methods extend:
 
-`WindowSpec` is extended by the same methods (`partition_by`, `order_by*`, `rows_between`, `range_between`); every call merges the scopes, the column sets, and the dialect requirements.
+| Builder | Produces |
+|---|---|
+| `Window::new()` / `Window::empty()` | `WindowSpec<()>` — `OVER ()` |
+| `Window::partition_by(partition)` | `WindowSpec<P::Scope, P::Columns>` |
+| `Window::order_by(col, direction)` / `order_by_asc(col)` / `order_by_desc(col)` | `WindowSpec<C::Table, WindowColumnSet<C>>` |
+| `Window::order_by_nulls(col, direction, nulls)` and its four shortcuts | the same, requiring `SupportsNullsOrdering` |
+| `Window::rows_between(start, end)` / `range_between(start, end)` | a framed `WindowSpec<()>` |
+| `.partition_by`, `.order_by*`, `.rows_between`, `.range_between` on a `WindowSpec` | the specification, extended |
+
+Every call merges the scopes, the column sets, and the dialect requirements of the specification it receives.
 
 ## Functions
 
@@ -36,24 +33,24 @@ impl Window {
 
 `LAG`/`LEAD` take an `.offset(n)`; without it the offset defaults to 1. The zero-marker of a window without an operand is `Aggregate` (the identity of the marker fold), and the `lag`/`lead` column lands in the `Cols` set.
 
-The window is obtained by calling `.over(spec)`:
-
-```rust
-pub fn over<WinScope, WinCols, WinD>(self, window: WindowSpec<WinScope, WinCols, WinD>)
-    -> WindowExpr<T, WinScope, WinCols, WinD, /* operand markers */>;
-```
+The window is obtained by calling `.over(spec)`.
 
 ## Example
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let ranked = select_from(Employees)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Employee => "employees" { EmployeeId => "id": i64, DepartmentId => "department_id": i64, Salary => "salary": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let ranked = select_from(Employee)
     .select((
         EmployeeId,
         row_number().over(Window::new().partition_by(DepartmentId).order_by_desc(Salary)),
     ))
     .build()?;
+# let _ = ranked;
+# Ok(())
+# }
 ```
 
 ```text
@@ -62,10 +59,12 @@ SELECT "id", ROW_NUMBER() OVER (PARTITION BY "department_id" ORDER BY "salary" D
 
 A window over groups:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let aggregated = select_from(Orders)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
+# fn main() {
+let aggregated = select_from(Order)
     .group_by(OrderUserId)
     .select((
         OrderUserId,
@@ -73,6 +72,8 @@ let aggregated = select_from(Orders)
     ))
     .build()
     .expect("an aggregate operand keeps one value per group");
+# let _ = aggregated;
+# }
 ```
 
 ```text
@@ -82,6 +83,8 @@ SELECT "user_id", SUM("user_id") OVER (PARTITION BY "user_id") FROM "orders" GRO
 ## Window frames
 
 ```rust
+# extern crate rurqe;
+# use rurqe::core::{WindowFrameBound, WindowFrameKind};
 pub enum WindowFrameKind { Rows, Range }
 
 pub enum WindowFrameBound {
@@ -91,14 +94,17 @@ pub enum WindowFrameBound {
     Following(u32),
     UnboundedFollowing,
 }
+# fn main() {}
 ```
 
 `WindowFrameBound::preceding(n)` / `::following(n)` are constructors; the rest are enum variants.
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let moving = select_from(Orders)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderCreatedAt => "created_at": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let moving = select_from(Order)
     .select((
         OrderId,
         Expr::sum::<OrderTotal>().over(
@@ -109,6 +115,9 @@ let moving = select_from(Orders)
         ),
     ))
     .build()?;
+# let _ = moving;
+# Ok(())
+# }
 ```
 
 `ROWS` counts the bounds in physical rows, `RANGE` — in values of the ordering column (steadier with coinciding timestamps). `GROUPS` is not implemented: it is not supported by SQLite and is covered by `ROWS`/`RANGE`.

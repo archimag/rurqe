@@ -11,3 +11,8 @@ create-missing = true
 
 [output.html]
 no-section-label = false
+
+# Snippet editions: every Rust block is compiled by `mdbook test`, which passes
+# this edition to rustdoc, so the examples use the 2021 prelude resolution.
+[rust]
+edition = "2021"

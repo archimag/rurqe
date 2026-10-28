@@ -22,8 +22,8 @@ rurqe = { version = "0.1", features = ["sqlite", "macros"] }
 ## 2. Schema
 
 ```rust
-use rurqe::prelude::*;
-
+# extern crate rurqe;
+# use rurqe::prelude::*;
 table! {
     /// The `users` table.
     User => "users" {
@@ -42,15 +42,18 @@ table! {
         OrderTotal => "total": f64,
     }
 }
+# fn main() {}
 ```
 
 A real project never writes this by hand: `cargo db-codegen` generates the same zero-sized markers from the live catalog.
 
 ## 3. Connection
 
-```rust
-use rurqe::sqlite::rusqlite::Connection;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::prelude::*;
+# use rurqe::sqlite::rusqlite::Connection;
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let connection = Connection::open_in_memory()?;
 connection.execute_batch(
     "CREATE TABLE users (\
@@ -64,13 +67,20 @@ connection.execute_batch(
          total REAL NOT NULL);",
 )?;
 let mut db = SqliteConnection::new(connection);
+# let _ = &mut db;
+# Ok(())
+# }
 ```
 
 ## 4. Write and read with `select!`
 
-```rust
-use rurqe::sqlite::sqlite3_35::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::sqlite3_35::prelude::*;
+# use rurqe::sqlite::rusqlite::Connection;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, UserScore => "score": i32, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut db = SqliteConnection::new(Connection::open_in_memory()?);
 let inserted = insert_into(User)
     .values((
         UserId::set(1i64),
@@ -91,30 +101,48 @@ let active = select!(UserId, UserName as contact_email, UserScore)
 for row in db.fetch_all(&active)? {
     println!("#{} {} — {}", row.user_id, row.contact_email, row.user_score);
 }
+# Ok(())
+# }
 ```
 
 `values` checks every value against the column's Rust type at the call site, so `UserId::set("1")` does not compile. The field names of the row come from the markers (`UserId` → `user_id`, `UserName as contact_email` → `contact_email`), which is why no tuple index appears anywhere.
 
 ## 5. Mutations
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::sqlite3_35::prelude::*;
+# use rurqe::sqlite::rusqlite::Connection;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserScore => "score": i32, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut db = SqliteConnection::new(Connection::open_in_memory()?);
 let renamed = update(User)
     .set(UserName::set("bob"))
     .where_(UserId.eq(1i64))
     .returning(cols!(UserName, UserScore));
 let row = db.fetch_one(&renamed)?;
+# let _ = row;
 
 let removed = db.execute(&delete_from(User).where_(UserId.eq(1i64)))?;
 assert_eq!(removed, 1);
+# Ok(())
+# }
 ```
 
 `update(...)` and `delete_from(...)` start unfiltered: the statement is not buildable until `.where_(...)` or an explicit `.allow_all()` is called, so an accidental full-table mutation is impossible by construction.
 
 ## 6. Joins lift nullability
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::sqlite3_35::prelude::*;
+# use rurqe::sqlite::rusqlite::Connection;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut db = SqliteConnection::new(Connection::open_in_memory()?);
 let report = select_from(User)
-    .left_join(Order, OrderUserId.eq(UserId))
+    .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
     .select(select!(
         user_id: UserId,
         user_name: UserName,
@@ -128,6 +156,8 @@ for row in db.fetch_all(&report)? {
         None => println!("{}: no orders", row.user_name),
     }
 }
+# Ok(())
+# }
 ```
 
 `row.total` is `Option<f64>` because the join may leave the right relation unmatched — and reading it as `f64` does not compile. Nothing in the query mentions a nullable type: the projection is written once and the type follows from the join.
@@ -136,9 +166,13 @@ for row in db.fetch_all(&report)? {
 
 A one-to-many relation comes back as a typed collection in a single round trip, without a Cartesian product folded on the client. JSON aggregation is required, so this runs on PostgreSQL (or SQLite 3.38 and later):
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let users_with_orders = select_from(User)
     .select(select!(
         user_id: UserId,
@@ -155,6 +189,8 @@ let users_with_orders = select_from(User)
 for user in users_with_orders {
     println!("{} — {} orders", user.user_name, user.orders.len());
 }
+# Ok(())
+# }
 ```
 
 Details in [Nested results](../features/nested.md).
@@ -163,20 +199,32 @@ Details in [Nested results](../features/nested.md).
 
 One import pins the dialect, so entry points take a table value and no type parameter is ever spelled out:
 
-```rust
-use rurqe::postgres::pg16::prelude::*;   // PostgreSQL 16
-use rurqe::sqlite::sqlite3_35::prelude::*; // SQLite 3.35:
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::pg16::prelude::*;
+# // The SQLite text binds the dialect the same way:
+# // use rurqe::sqlite::sqlite3_35::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let built = select_from(User).select(cols!(UserId)).build()?;
+# let _ = built;
+# Ok(())
+# }
 ```
 
 Version modules (`pg14`, `pg15`, `pg16`, `sqlite3_0` … `sqlite3_38`) also fix the capability set: `RETURNING` needs SQLite 3.35, `ON CONFLICT` needs 3.24, and a clause the pinned version lacks is not a method at all.
 
 ## 9. Errors are types
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::sqlite3_35::prelude::*;
+# use rurqe::sqlite::rusqlite::Connection;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut db = SqliteConnection::new(Connection::open_in_memory()?);
 let query = select_from(User)
-    .select(cols!(UserName))
+    .select(select!(UserName))
     .where_(UserId.eq(1i64));
 
 match db.fetch_one(&query) {
@@ -184,6 +232,8 @@ match db.fetch_one(&query) {
     Err(error) if error.is_not_found() => println!("no such row"),
     Err(error) => return Err(error.into()),
 }
+# Ok(())
+# }
 ```
 
 `ExecutionError` separates a rejected statement (`is_build`), a missing row (`is_not_found`), extra rows (`is_multiple_rows`), a decoding failure (`is_row_decode`), and a driver failure (`as_backend`, `into_backend`).

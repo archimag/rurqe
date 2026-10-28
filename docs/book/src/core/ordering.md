@@ -5,16 +5,22 @@ Ordering is described by the `.order_by*` family; pagination by `.limit(u32)` an
 ## Columns and column tuples
 
 ```rust
+# extern crate rurqe;
+# use rurqe::core::schema::At;
+# use rurqe::core::ExprKind;
 pub trait OrderBy<Tables, Positions = At<0>> {
     fn push_orderings(&self, out: &mut Vec<ExprKind>);
 }
+# fn main() {}
 ```
 
 Implemented for a single column and for tuples of up to eight columns: a tuple unfolds into as many criteria as it has elements.
 
-```rust
-use rurqe::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
 let built = select_from::<Postgres<Pg14>, User>()
     .select(select!(UserId, UserName))
     .where_(Expr::column::<UserId>().gt(10i64))
@@ -22,6 +28,8 @@ let built = select_from::<Postgres<Pg14>, User>()
     .limit(5)
     .build()
     .expect("valid query");
+# let _ = built;
+# }
 ```
 
 ```text
@@ -49,14 +57,18 @@ The family:
 - `Expr<T, Scope, NonAggregate, ExprD>` — arithmetic, `CASE`, scalar functions;
 - `WindowExpr<...>` — a whole window, with the `OVER (...)` inside the criterion.
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let built = select_from(Orders)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let built = select_from(Order)
     .select((OrderUserId,))
     .order_by_expr_desc(row_number().over(Window::partition_by(OrderUserId)))
-    .build()
-    .expect("valid query");
+    .build()?;
+# let _ = built;
+# Ok(())
+# }
 ```
 
 > **Compiler Guard in Action.** The aggregate marker of the criterion is fixed as `NonAggregate`: a plain query yields one row per source row and sorts by a per-row value. An aggregate folds the rows of a group, so ordering by an aggregate lives only on `GroupedQuery::order_by_expr*` and is rejected at the call site in a plain query.
@@ -65,15 +77,22 @@ let built = select_from(Orders)
 
 A tuple of columns is a `RowExpr`, and it compares against a tuple of values as a single value (SQL:1992):
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let page = select_from(Events)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Event => "events" { EventId => "id": i64, EventCreatedAt => "created_at": i64, EventData => "data": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let cursor_time = 0i64;
+# let cursor_id = 0i64;
+let page = select_from(Event)
     .select(cols!(EventId, EventCreatedAt, EventData))
     .where_((EventCreatedAt, EventId).lt((cursor_time, cursor_id)))
     .order_by_desc((EventCreatedAt, EventId))
     .limit(50)
     .build()?;
+# let _ = page;
+# Ok(())
+# }
 ```
 
 The `RowExpr` operators: `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in_subquery`, `not_in_subquery`. Rendering the comparison:

@@ -4,9 +4,12 @@ A projection decides which attributes travel to the client and in which order. I
 
 ## `select!`: named fields, no tuple index
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let active = select!(UserId, UserName as contact_email)
     .from(User)
     .where_(UserActive.eq(true))
@@ -16,16 +19,26 @@ let active = select!(UserId, UserName as contact_email)
 for row in active {
     println!("#{} <{}>", row.user_id, row.contact_email);
 }
+# Ok(())
+# }
 ```
 
 The field names come from the markers: `UserId` becomes `user_id`, and `UserName as contact_email` becomes `contact_email`. A marker named after a Rust keyword is written with a raw identifier (`Type` is `r#type`) and still carries the bare keyword as its output column.
 
 `cols!` is the same macro under a second name — the spelling that reads better when the list is handed to `.select(...)`:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let rows = select_from(User)
     .select(cols!(UserId, UserName as contact_email))
     .fetch_all(&mut conn)?;
+# let _ = rows;
+# Ok(())
+# }
 ```
 
 Both forms produce the same record and the same SQL, and every element is rendered under its field name. That naming is what keeps the columns reachable when the query becomes a derived table or a CTE.
@@ -36,7 +49,12 @@ A positional tuple projection still exists for low-level code; this book does no
 
 Anything that renders as a value can be a field — write the field name yourself:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let rows = select_from(Order)
     .select(select!(
         order_id: OrderId,
@@ -44,6 +62,9 @@ let rows = select_from(Order)
         billed: coalesce(OrderTotal, 0.0f64),
     ))
     .fetch_all(&mut conn)?;
+# let _ = rows;
+# Ok(())
+# }
 ```
 
 `billed` has the type of the expression (`f64`), not the type of a stored column.
@@ -61,6 +82,9 @@ projection field `id` is produced by more than one projection; rename one of the
 `select!` is anonymous — exactly right inside a query, useless in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them:
 
 ```rust
+# extern crate rurqe;
+# use rurqe::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
 dto! {
     /// A user row crossing a repository boundary.
     pub struct UserSummary {
@@ -69,11 +93,17 @@ dto! {
         UserActive,
     }
 }
+# fn main() {}
 ```
 
 The declaration implements `FromRow`, so a row decodes by field name:
 
 ```rust
+# extern crate rurqe;
+# use rurqe::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# dto! { pub struct UserSummary { UserId, UserName as contact_email, UserActive, } }
+# fn main() {
 let row = UserSummary::from_row(&[
     SqlVal::I64(7),
     SqlVal::Text("root".to_owned()),
@@ -83,6 +113,7 @@ let row = UserSummary::from_row(&[
 
 assert_eq!(row.user_id, 7);
 assert_eq!(row.contact_email, "root");
+# }
 ```
 
 It also implements the nested-row contracts, so `Vec<UserSummary>` decodes straight out of a collection document (see [Nested results](../features/nested.md)).
@@ -93,9 +124,15 @@ A DTO is a row shape, not a projection: its fields must be column markers, and a
 
 Write the left join and keep the same projection:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let report = select_from(User)
-    .left_join(Order, OrderUserId.eq(UserId))
+    .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
     .select(select!(user_id: UserId, order_total: OrderTotal))
     .fetch_all(&mut conn)?;
 
@@ -105,6 +142,8 @@ for row in report {
         None => println!("#{}: no orders", row.user_id),
     }
 }
+# Ok(())
+# }
 ```
 
 ```text
@@ -116,7 +155,12 @@ FROM "users" LEFT JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 ## Grouped queries project under the same rule
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let rows = select_from(Order)
     .group_by(OrderUserId)
     .select(select!(
@@ -125,6 +169,9 @@ let rows = select_from(Order)
         spend: sum(OrderTotal),
     ))
     .fetch_all(&mut conn)?;
+# let _ = rows;
+# Ok(())
+# }
 ```
 
 After `.group_by(...)` a field is accepted only when it is a grouped column, an aggregate, a constant, or a window over those. A stored column that is neither is refused at the call site, with a message saying the column is neither grouped nor an aggregate. Aggregates inside scalar functions keep that property: `coalesce(sum(OrderTotal), 0.0f64)` is still an aggregate.
@@ -133,11 +180,17 @@ After `.group_by(...)` a field is accepted only when it is a grouped column, an 
 
 `RETURNING` takes the same named lists:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
 let renamed = update(User)
     .set(UserName::set("root"))
     .where_(UserId.eq(1i64))
     .returning(cols!(UserName));
+# let _ = renamed;
+# }
 ```
 
 The clause writes back into the mutated row, so it accepts only a projection of that row: a column of another table names a relation the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.

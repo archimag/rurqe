@@ -5,6 +5,8 @@ The three mutations share one value model: an [`Assignment`] binds a value to a 
 ## Assignments
 
 ```rust
+# extern crate rurqe;
+# use rurqe::core::{ExprKind, SqlVal};
 pub enum AssignValue {
     /// A concrete value bound to a query parameter.
     Value(SqlVal),
@@ -13,6 +15,7 @@ pub enum AssignValue {
     /// A scalar expression rendered into the statement instead of a parameter.
     Expr(ExprKind),
 }
+# fn main() {}
 ```
 
 Every column marker offers three constructors:
@@ -27,13 +30,17 @@ A tuple of assignments is an `AssignmentSet<T>` only when every element targets 
 
 ## `INSERT`
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
 let built = insert_into(User)
     .values((UserId::set(1i64), UserName::set("root")))
     .build()
     .expect("valid query");
+# let _ = built;
+# }
 ```
 
 ```text
@@ -47,13 +54,19 @@ INSERT INTO "users" ("id", "name") VALUES ($1, $2)
 
 An upsert appends an `ON CONFLICT` clause:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
 let upsert = insert_into(User)
     .values((UserId::set(1i64), UserName::set("root")))
-    .on_conflict(UserId)
+    .on_conflict((UserId,))
     .do_update((UserName.set_expr(excluded(UserName)),))
     .build()
     .expect("valid upsert");
+# let _ = upsert;
+# }
 ```
 
 ```text
@@ -68,14 +81,18 @@ ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
 
 ## `UPDATE`
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
 let built = update(User)
     .set(UserName::set("root"))
     .where_(UserId.eq(1i64))
     .build()
     .expect("valid query");
+# let _ = built;
+# }
 ```
 
 ```text
@@ -89,13 +106,17 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 
 ## `DELETE`
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# fn main() {
 let built = delete_from(User)
     .where_(UserId.eq(1i64))
     .build()
     .expect("valid query");
+# let _ = built;
+# }
 ```
 
 ```text
@@ -125,7 +146,7 @@ DELETE FROM "users" WHERE ("id" = $1)
 >
 > refusing to build a mutation without column values
 >     = note: record at least one value with `.set(...)`, `.values(...)`, or `.from_select(...)` before building the statement
-> ```n
+> ```
 
 ## Where this lives in the code
 

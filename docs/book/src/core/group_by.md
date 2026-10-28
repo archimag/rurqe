@@ -3,6 +3,9 @@
 The grouping γ folds rows into groups. `.group_by(...)` is available only on a query without a projection and without a lock, and moves it into a **different type** — `GroupedQuery`:
 
 ```rust
+# extern crate rurqe;
+# use rurqe::core::query::EmptyGroupSet;
+# use rurqe::core::{Dialect, HasProjection};
 pub struct GroupedQuery<
     D: Dialect,
     Tables = (),
@@ -10,18 +13,23 @@ pub struct GroupedQuery<
     GroupByCols = EmptyGroupSet,
     Projected = HasProjection,
 > { /* ... */ }
+# fn main() {}
 ```
 
 The meaning of the transition: the rule "a column is either grouped or aggregated" requires knowledge of the grouping, and after `.select(...)` the set of projections is already fixed, so there would be nothing to check it against.
 
-```rust
-use rurqe::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() {
 let built = select_from::<Postgres, Order>()
     .group_by(OrderUserId)
     .select((OrderUserId, Expr::sum::<OrderTotal>()))
     .build()
     .expect("valid grouped query");
+# let _ = built;
+# }
 ```
 
 ```text
@@ -53,15 +61,19 @@ The `schema` escape hatch `Expr::column::<C>()` does not bypass the rule: an exp
 
 `HAVING` filters the already computed groups, so it is written over an aggregate:
 
-```rust
-use rurqe::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() {
 let built = select_from::<Postgres<Pg16>, Order>()
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
     .having(sum(OrderTotal).gt(0.0f64))
     .build()
     .expect("valid query");
+# let _ = built;
+# }
 ```
 
 ```text
@@ -75,14 +87,19 @@ Two kinds of predicate are allowed (`HavingPredicate`):
 
 A predicate reading a bare column is rejected: the grouping has discarded the per-row value. A separate form exists for comparing a **grouped** column:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let filtered = select_from(Orders)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let filtered = select_from(Order)
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
     .having_col(OrderUserId, Expr::column::<OrderUserId>().gt(10i64))
     .build()?;
+# let _ = filtered;
+# Ok(())
+# }
 ```
 
 `having` is available only on a `GroupedQuery` — a plain `SelectQuery` has no `HAVING` clause.
@@ -95,15 +112,20 @@ let filtered = select_from(Orders)
 | `order_by_expr` / `order_by_expr_asc` / `order_by_expr_desc` / `order_by_expr_*_nulls_*` | an aggregate (`Marker: AggregateMarker`) |
 | `limit` / `offset` | the number of groups |
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let top = select_from(Orders)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let top = select_from(Order)
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
     .order_by_expr_desc(count_all())
     .limit(10)
     .build()?;
+# let _ = top;
+# Ok(())
+# }
 ```
 
 ## Finishing a grouped query

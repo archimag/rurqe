@@ -13,8 +13,8 @@ Three rules hold across every chapter:
 ## The two tables this part uses
 
 ```rust
-use rurqe::prelude::*;
-
+# extern crate rurqe;
+# use rurqe::prelude::*;
 table! {
     /// The `users` table.
     User => "users" {
@@ -32,22 +32,27 @@ table! {
         OrderTotal => "total": f64,
     }
 }
+# fn main() {}
 ```
 
 In a real project these markers are not written by hand: `cargo db-codegen` reads the live catalog and generates the same zero-sized types, together with the catalog snapshot that CI verifies.
 
 ## A query you would actually write
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let rows = select!(
     user_id: UserId,
     user_name: UserName,
     total: OrderTotal,
 )
 .from(User)
-.inner_join(Order, OrderUserId.eq(UserId))
+.inner_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
 .where_(UserActive.eq(true))
 .order_by_asc(UserId)
 .limit(20)
@@ -56,26 +61,43 @@ let rows = select!(
 for row in rows {
     println!("#{} {} — {}", row.user_id, row.user_name, row.total);
 }
+# Ok(())
+# }
 ```
 
-No column type is repeated, no dialect is named, no tuple is indexed. `total` arrives as `f64`; replace `inner_join_table` with `left_join_table` and the same line yields `Option<f64>`, because the join may leave the order unmatched.
 No column type is repeated, no dialect is named, no tuple is indexed. `total` arrives as `f64`; replace `inner_join` with `left_join` and the same line yields `Option<f64>`, because the join may leave the order unmatched.
+
 ## The same query, assembled at runtime
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
+# let only_active = true;
+# let search: Option<&str> = None;
 let rows = select_from(User)
     .select(select!(user_id: UserId, user_name: UserName))
     .when(only_active, |query| query.where_(UserActive.eq(true)))
     .if_some(search, |query, term| query.where_(UserName.ilike(format!("%{term}%"))))
     .order_by_asc(UserId)
     .fetch_all(&mut conn)?;
+# let _ = rows;
+# Ok(())
+# }
 ```
 
 An absent branch adds nothing, and the query keeps its type, so nothing downstream has to be re-typed.
 
 ## Aggregations keep the same ergonomics
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let spend = select_from(Order)
     .group_by(OrderUserId)
     .select(select!(
@@ -87,6 +109,9 @@ let spend = select_from(Order)
     .order_by_expr_desc(count_all())
     .limit(10)
     .fetch_all(&mut conn)?;
+# let _ = spend;
+# Ok(())
+# }
 ```
 
 `count_all()` and `sum(OrderTotal)` are ordinary values, `coalesce` keeps the aggregate property of its argument, and the grouped query accepts exactly the columns it grouped by plus those aggregates — anything else is refused at the call site instead of by the engine.
@@ -95,7 +120,13 @@ let spend = select_from(Order)
 
 A one-to-many relation needs neither a second statement nor a client-side fold: the engine aggregates the child rows into a JSON document, and the client decodes it into a typed collection.
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let users = select_from(User)
     .select(select!(
         user_id: UserId,
@@ -112,6 +143,8 @@ let users = select_from(User)
 for user in users {
     println!("{} — {} orders", user.user_name, user.orders.len());
 }
+# Ok(())
+# }
 ```
 
 [Nested results](../features/nested.md) covers `nest_many` and `nest_one` in full, and [MULTISET](../features/multiset.md) shows the SQL that comes out of it.

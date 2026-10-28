@@ -6,15 +6,20 @@ A subquery is a whole statement nested inside another one. RURQE distinguishes t
 
 A `SelectQuery` projecting exactly one column implements `IntoExpr<T>` for the projected type, so it slots directly into any operator position:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let above_average = select_from(Products)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Product => "products" { ProductId => "id": i64, ProductName => "name": String, ProductPrice => "price": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let above_average = select_from(Product)
     .select(cols!(ProductId, ProductName, ProductPrice))
     .where_(
-        ProductPrice.gt(select_from(Products).select(avg(ProductPrice))),
+        ProductPrice.gt(select_from(Product).select((avg(ProductPrice),))),
     )
     .build()?;
+# let _ = above_average;
+# Ok(())
+# }
 ```
 
 ```text
@@ -29,17 +34,23 @@ A multi-column projection does not implement `IntoExpr<T>` and is rejected by th
 
 An `EXISTS` predicate is built from a projected query:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let buyers = select_from(Users)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let buyers = select_from(User)
     .select(cols!(UserId, UserName))
     .where_(Expr::exists(
-        select_from(Orders)
+        select_from(Order)
             .select((OrderUserId,))
             .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope())),
     ))
     .build()?;
+# let _ = buyers;
+# Ok(())
+# }
 ```
 
 `Expr::exists` and `Expr::not_exists` live on `Expr<bool, ()>`; an unlocked projected query also exposes `.exists()` / `.not_exists()` / `.into_exists()` / `.into_not_exists()` directly (`query/select/render.rs`).
@@ -50,15 +61,21 @@ The reference `Expr::column::<UserId>().without_scope()` is a **correlated** one
 
 `.in_subquery(q)` / `.not_in_subquery(q)` accept a nested statement whose projection matches the outer expression:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let with_orders = select_from(Users)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let with_orders = select_from(User)
     .select(cols!(UserId, UserName))
     .where_(UserId.in_subquery(
-        select_from(Orders).select((OrderUserId,)),
+        select_from(Order).select((OrderUserId,)),
     ))
     .build()?;
+# let _ = with_orders;
+# Ok(())
+# }
 ```
 
 ```text

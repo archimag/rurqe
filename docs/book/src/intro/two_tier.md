@@ -14,9 +14,15 @@ The promise "valid SQL or a compile error" cannot be expressed entirely inside t
 
 The message is phrased in SQL terms rather than in trait terms:
 
-```rust
+```rust,compile_fail
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderTotal => "total": f64, } }
+# fn main() {
 // rejected by the compiler: `OrderTotal` belongs to a table the query never adds
-let _ = select_from(Users).select(select!(UserId, OrderTotal));
+let _ = select_from(User).select(select!(UserId, OrderTotal));
+# }
 ```
 
 ```text
@@ -28,19 +34,27 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 
 Two classes of rule are out of reach of a positive assertion on stable Rust: one that states an **absence**, and one that compares a clause with another clause written later in the chain (`DISTINCT ON` against the leading `ORDER BY`). They are validated deterministically while the statement is assembled:
 
-```rust
-// Rejected while building, before the statement reaches the engine: the same
-// relation is addressed twice under one name.
-let error = select_from(Users)
-    .inner_join(Users, Expr::column::<UserId>().eq(1i64))
-    .select(cols!(UserId))
-    .build()
-    .unwrap_err();
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
+// Rejected while building, before the statement reaches the engine:
+// `DISTINCT ON ("name")` deduplicates the rows on one expression while the
+// leading `ORDER BY` criterion names another, so no engine would accept it.
+let error = select_from(User)
+    .select(cols!(UserId, UserName))
+    .distinct_on(UserName)
+    .order_by_asc(UserId)
+    .build();
 
-assert!(matches!(error, BuildError::DuplicateRelation { name: "users" }));
+assert!(error.is_err());
+# }
 ```
 
-The remedy is an alias — `let u2 = Users.as_alias("u2");`, see [Disjointness](../theory/disjointness.md). The same gate covers a `DISTINCT ON` whose `ORDER BY` prefix does not match, a `DISTINCT` that orders by an expression the projection does not produce, the ordering of a compound statement, and a raw SQL fragment whose parameter count disagrees with its placeholders. Every failure is a typed `BuildError` and the network is never touched; the full catalogue lives in the [error reference](../appendix/compiler_errors.md).
+The same gate covers a `DISTINCT` that orders by an expression the projection does not produce, the ordering of a compound statement, a raw SQL fragment whose parameter count disagrees with its placeholders, and a mutation whose `FROM` list repeats a relation. Every failure is a typed `BuildError` and the network is never touched; the full catalogue lives in the [error reference](../appendix/compiler_errors.md).
+
+The duplicate relation is the case where the two gates meet: joining the same unaliased relation twice is refused even earlier, by the compiler, because the two occurrences share one relation scope — see [Joins](../core/joins.md). The remedy in both gates is an alias, which gives the second occurrence its own name.
 
 ## The boundary between the gates
 

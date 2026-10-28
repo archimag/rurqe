@@ -17,16 +17,22 @@ A join adds a relation to the `FROM` clause and reinterprets the query under the
 
 The join builders take the table marker as a value and read the joined type `T` from it, so the compiler infers `T`, the joined scope, and the position marker at the call site: no turbofish is written and no runtime cost is paid, because the marker is zero-sized.
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let built = select_from(Users)
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let built = select_from(User)
     .inner_join(
-        Orders,
-        OrderUserId.eq(UserId),
+        Order,
+        OrderUserId.eq(Expr::column::<UserId>()),
     )
     .select(cols!(UserId, OrderTotal))
     .build()?;
+# let _ = built;
+# Ok(())
+# }
 ```
 
 ```text
@@ -36,48 +42,47 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 ## The `ON` predicate and the scope
 
-```rust
-pub fn inner_join<T: Table, Scope, P>(
-    self,
-    _table: T,
-    on: Expr<bool, Scope>,
-) -> SelectQuery<D, Joined<Tables, T>, Output, Projected, Lock>
-where
-    Tables: TableScope,
-    Scope: ExprInScope<Joined<Tables, T>, P> + ScopePositions<P>,
-```
-
 The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join appends its scope type to the chain: `Joined<Tables, T>`, `LeftJoined<Tables, T>`, `CrossJoined<Tables, T>`, `FullOuterJoined<Tables, T>`, `CrossLateralJoined<Tables, T>`, `LeftLateralJoined<Tables, T>`. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
+
+A column is compared with another column through `Expr::column::<C>()`, because a column marker is an operand on its own but not a value bound into the statement.
 
 ## Nullability of outer joins
 
 `LEFT JOIN`, `FULL OUTER JOIN`, and `LEFT JOIN LATERAL` may leave the joined relation unmatched, so its columns reach the projected row as `Option<T>`:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let built = select_from(Users)
-    .left_join_table(Orders, OrderUserId.eq(UserId))
-    .left_join(Orders, OrderUserId.eq(UserId))
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let built = select_from(User)
+    .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
+    .select((UserId, OrderTotal))
     .build()?;
 // Row: (i64, Option<f64>) — `orders.total` lifts automatically.
+# let _ = built;
+# Ok(())
+# }
 ```
 
 The lifting is automatic: the outer-join scope types mark the joined relation nullable, and `SelectionFor::Row` computes `Option<T>` for its columns. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
 
 ## Unaliased duplicate relations
 
-Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The same effective name — the alias a relation is referenced under, or its table name when it carries none — collides exactly like two uses of one alias, so `.build()` rejects the statement pre-flight with `BuildError::DuplicateRelation { name }`, pointing at `table_alias!` as the remedy:
+Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The compiler refuses the statement even earlier: the second occurrence would need its own relation scope and position, which the bare marker does not provide.
 
-```rust
-use rurqe::postgres::prelude::*;
-
-// Rejected while building: two relations share the effective name "users".
-let error = select_from(User)
-    .inner_join(User, UserManagerId.eq(UserId))
-    .select((UserId,))
-    .build()
-    .unwrap_err();
+```rust,compile_fail
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserManagerId => "manager_id": i64, } }
+# fn main() {
+// Rejected by the compiler: `users` is already the relation the statement
+// selects from, so the bare marker cannot stand for a second occurrence.
+let _ = select_from(User)
+    .inner_join(User, UserManagerId.eq(Expr::column::<UserId>()))
+    .select(cols!(UserId));
+# }
 ```
 
 The fix is to alias the second occurrence through the alias markers — see [Aliases](aliasing.md).
@@ -90,19 +95,21 @@ The fix is to alias the second occurrence through the alias markers — see [Ali
 
 `LATERAL` joins are gated by `SupportsLateralJoin` — implemented for PostgreSQL, absent for SQLite, so the methods do not exist there at compile time:
 
-```rust
-use rurqe::postgres::prelude::*;
-
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderTotal => "total": f64, OrderUserId => "user_id": i64, OrderCreatedAt => "created_at": i64, } }
 table! {
     /// The `latest_order` lateral relation marker.
     LatestOrder => "latest_order" {
         LatestOrderTotal => "total": f64,
     }
 }
-
-let report = select_from(Users)
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let report = select_from(User)
     .left_join_lateral(lateral::<LatestOrder, _, _, _>(
-        select_from(Orders)
+        select_from(Order)
             .select((OrderTotal,))
             .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
             .order_by_desc(OrderCreatedAt)
@@ -111,6 +118,9 @@ let report = select_from(Users)
     .select(cols!(UserId, LatestOrderTotal))
     .build()?;
 // Row: (i64, Option<f64>) — the lateral projection lifts through the left join.
+# let _ = report;
+# Ok(())
+# }
 ```
 
 A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>`; a correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations (see [Subqueries](subqueries.md)).

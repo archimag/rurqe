@@ -13,14 +13,22 @@ All three carry the row type `Row` and the dialect `D` of the wrapped statement,
 ## `Cte`
 
 ```rust
+# extern crate rurqe;
+# use rurqe::core::query::{HasProjection, TableScope};
+# use rurqe::core::{Cte, Dialect, SelectQuery, Table};
 pub fn cte<T: Table, D: Dialect, S: TableScope, Row>(
     query: SelectQuery<D, S, Row, HasProjection>,
-) -> Cte<T, Row, D>;
+) -> Cte<T, Row, D> {
+#     rurqe::core::cte(query)
+}
 
 pub fn cte_named<D: Dialect, S: TableScope, Row>(
     name: &'static str,
     query: SelectQuery<D, S, Row, HasProjection>,
-) -> Cte<(), Row, D>;
+) -> Cte<(), Row, D> {
+#     rurqe::core::cte_named(name, query)
+}
+# fn main() {}
 ```
 
 `cte::<T, _, _, _>(query)` names the CTE after the table marker `T` — `T::NAME` — while `cte_named(name, query)` takes the name explicitly. A projected query also exposes `as_cte` and `as_named_cte` (`query/select/render.rs`), which wrap it into a `Cte` the same way.
