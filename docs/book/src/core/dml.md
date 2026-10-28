@@ -83,6 +83,7 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 ```
 
 - Two typestates guard the build: `Unfiltered` → `Filtered` through `.where_(...)` or `.allow_all()`, and `NoAssignments` → `HasAssignments` through `.set(...)`.
+- A recorded assignment set that collapses to zero assignments is rejected as `BuildError::EmptyUpdateSet` before any SQL is rendered, so the statement never carries a `SET` clause with nothing to assign.
 - `.from_table(other)` renders `UPDATE ... FROM`, gated by `SupportsUpdateFrom`.
 - `.returning(...)` is gated by `SupportsReturning`.
 

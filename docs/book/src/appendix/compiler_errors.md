@@ -122,6 +122,7 @@ Every variant is returned from `.build()` **before** any network I/O.
 | `InconsistentRows { row, expected, actual }` | an `INSERT` row carries a different number of values |
 | `MismatchedRowColumns { row, position, expected, actual }` | an `INSERT` row assigns a different column at the same position |
 | `EmptyInsertRow { row }` | an `INSERT` row assigns nothing |
+| `EmptyUpdateSet { table }` | the assignment set of an `UPDATE` records no assignment |
 | `EmptyProjection` | the projection list is empty |
 | `UngroupedColumnWithAggregate { table, column }` | a column stands next to an aggregate without `GROUP BY` |
 | `UngroupedHavingColumn { table, column }` | `HAVING` reads an ungrouped column |

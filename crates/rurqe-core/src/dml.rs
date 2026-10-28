@@ -85,6 +85,13 @@ pub struct HasAssignments;
 /// assignment through `.set(...)` transitions the query into [`HasAssignments`],
 /// the only state implementing this trait.
 ///
+/// The state records what the builder did, not what the recorded data contains:
+/// [`AssignmentSet`] is a public trait, so a set declared outside the crate can
+/// collapse to zero assignments after `.set(...)` was called. A statement whose
+/// recorded assignment vector ends up empty is therefore rejected while it is
+/// built — as [`EmptyUpdateSet`](crate::query::BuildError::EmptyUpdateSet) —
+/// instead of rendering a `SET` clause with nothing to assign.
+///
 /// ```compile_fail
 /// use rurqe_core::dml::UpdateQuery;
 /// # use rurqe_core::dialect::Dialect;

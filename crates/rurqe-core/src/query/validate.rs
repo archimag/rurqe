@@ -310,6 +310,24 @@ pub enum BuildError {
         /// The 0-based position of the row that records no assignment.
         row: usize,
     },
+    /// An `UPDATE` records no column assignment.
+    ///
+    /// The `SET` clause sits between the target and the `WHERE` clause, so a
+    /// statement recording no assignment renders `UPDATE "users" SET  WHERE
+    /// ...` — a statement no engine accepts. The builder keeps that shape out of
+    /// reach through the
+    /// [`AssignmentsPresent`](crate::dml::AssignmentsPresent) typestate, which
+    /// [`UpdateQuery::set`](crate::dml::UpdateQuery::set) alone leaves, but the
+    /// vector itself is recorded by
+    /// [`AssignmentSet::into_assignments`](crate::dml::AssignmentSet::into_assignments),
+    /// which an implementation outside the crate states itself, and a statement
+    /// assembled from AST data records exactly what the caller puts into it. The
+    /// recorded assignments are statement data, so the emptiness is rejected here
+    /// instead of by the engine.
+    EmptyUpdateSet {
+        /// The SQL identifier of the relation whose assignment set is empty.
+        table: &'static str,
+    },
     /// A statement records no projected column.
     ///
     /// The projection list sits between the `SELECT` keyword and the `FROM`
@@ -555,6 +573,14 @@ impl fmt::Display for BuildError {
                      the statement would render `INSERT INTO \"...\" () VALUES ()`, which no engine accepts, \
                      so every row has to assign at least one column through `.values(...)` or `.values_many(...)`, \
                      or the statement has to take its rows from a source `SELECT` through `.from_select(...)`"
+                )
+            }
+            BuildError::EmptyUpdateSet { table } => {
+                write!(
+                    f,
+                    "the assignment set of this UPDATE against `{table}` records no column assignment; \
+                     the statement would render `UPDATE \"{table}\" SET  WHERE ...`, which no engine accepts; \
+                     record at least one value through `.set(...)` with an assignment set that yields a column assignment"
                 )
             }
             BuildError::EmptyProjection => {

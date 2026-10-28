@@ -410,7 +410,10 @@ where
     ///
     /// The statement only becomes renderable once a column value was recorded
     /// through [`set`](UpdateQuery::set); the [`AssignmentsPresent`] bound
-    /// enforces that at compile time. The mutated table and every `FROM` source
+    /// enforces that at compile time. A recorded assignment set that yields no
+    /// assignment at all is rejected as [`BuildError::EmptyUpdateSet`] before a
+    /// single character is rendered, so the statement can never carry a `SET`
+    /// clause with nothing to assign. The mutated table and every `FROM` source
     /// share one namespace, so the statement is validated before it is rendered:
     /// a source repeating an effective name already taken — the mutated table
     /// itself or another source — is reported as
@@ -422,6 +425,15 @@ where
     /// a reference qualified through a name the rendered statement does not
     /// declare is reported as [`BuildError::UnresolvedQualifier`].
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
+        // The `AssignmentsPresent` typestate states that the statement recorded
+        // its column values, while the vector itself is filled by
+        // `AssignmentSet::into_assignments`, which a set declared outside the
+        // crate states itself: a set collapsing to zero assignments would render
+        // `UPDATE "users" SET  WHERE ...`, which no engine accepts. The emptiness
+        // is therefore rejected here, before a single character is rendered.
+        if self.assignments.is_empty() {
+            return Err(BuildError::EmptyUpdateSet { table: T::NAME });
+        }
         // The mutated table and every `FROM` source are in scope of the
         // assignments, of the filter, and of the projections, so a column of
         // either one is qualified as soon as the statement addresses more than
@@ -511,7 +523,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dml::ColumnAssign;
+    use crate::dml::{AssignColumn, ColumnAssign};
     use crate::expr::SqlVal;
     use core::fmt::Write;
 
@@ -1048,6 +1060,37 @@ mod tests {
         assert_eq!(
             pending.allow_all().build().expect("valid query").sql,
             "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)"
+        );
+    }
+
+    /// An assignment set that only collapses once it is merged, which the
+    /// assignment set type alone cannot express: this one records no assignment
+    /// at all while still being a valid set for `User`.
+    struct EmptySet;
+
+    impl AssignmentSet<User> for EmptySet {
+        fn extend_assignments<'a>(&'a self, _out: &mut Vec<AssignColumn<'a>>) {}
+
+        fn into_assignments(self, _out: &mut Vec<(&'static str, AssignValue)>) {}
+    }
+
+    impl AssignmentScope for EmptySet {
+        type Scope = ();
+        type Dialect = ();
+    }
+
+    #[test]
+    fn an_empty_assignment_set_is_rejected_before_rendering() {
+        // The typestate records that `.set` was called, not that the set yielded a
+        // value: rendering the statement would leave `SET` without an assignment,
+        // which no engine accepts.
+        let query = UpdateQuery::<MockDialect, User>::new()
+            .set(EmptySet)
+            .allow_all();
+
+        assert_eq!(
+            query.build(),
+            Err(BuildError::EmptyUpdateSet { table: "users" })
         );
     }
 }
