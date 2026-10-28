@@ -1,4 +1,4 @@
-//! Typed nested collections from a single round trip: `select!` with
+//! Typed nested collections from a single round trip: `cols!` with
 //! `nest_many`, so the children of every parent arrive as one JSON document.
 
 use rurqe::postgres::prelude::*;
@@ -27,12 +27,11 @@ fn main() {
     // the record field decodes into a `Vec` of the nested projection, so no
     // second statement is sent and no Cartesian product is folded by hand.
     let users_with_orders = select_from(User)
-        .select(select! {
-            user_id: UserId,
+        .select(cols! {
             user_name: UserName,
             orders: nest_many(
                 select_from(Order)
-                    .select(select! {
+                    .select(cols! {
                         order_id: OrderId,
                         total: OrderTotal,
                     })

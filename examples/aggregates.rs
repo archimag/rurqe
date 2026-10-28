@@ -25,7 +25,7 @@ fn main() {
     let per_user = select_from(User)
         .inner_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
         .group_by(UserId)
-        .select(select! {
+        .select(cols! {
             user_id: UserId,
             orders: count_all(),
         })
