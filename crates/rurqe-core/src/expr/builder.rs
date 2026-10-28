@@ -4,7 +4,7 @@
 //! yields an expression carrying the column's
 //! [`RustType`](crate::schema::Column::RustType), while comparing it with a value
 //! yields a boolean predicate. Operand compatibility is checked at the call site
-//! through [`SqlCompatible`](crate::expr::SqlCompatible), so a comparison between
+//! through [`IntoExpr`](crate::expr::IntoExpr), so a comparison between
 //! unrelated types simply does not compile.
 //!
 //! The fluent surface is split along the concerns it serves: [`predicates`] turns

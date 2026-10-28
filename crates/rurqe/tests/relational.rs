@@ -1431,7 +1431,7 @@ mod phase18_relational {
             .select((PostId, PostTags, PostScores))
             .where_(PostTags.array_contains(vec!["rust".to_owned()]))
             .where_(PostScores.array_overlaps(vec![1i64, 2i64]))
-            .where_(PostMood.eq("very_sad"))
+            .where_(PostMood.eq(Mood::Sad))
             .build()
             .expect("valid query");
 

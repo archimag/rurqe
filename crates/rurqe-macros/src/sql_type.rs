@@ -620,11 +620,11 @@ fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
 fn text_expression_impls(name: &Ident) -> TokenStream {
     let owned = owned_expression_impl(name);
     let borrowed = borrowed_expression_impl(name);
-    let strings = string_expression_impl(name);
+    let assignments = string_assignment_impl(name);
     let owned_operands = function_operand_impl(name);
     let borrowed_operands = borrowed_function_operand_impl(name);
     quote! {
-        #owned #borrowed #strings
+        #owned #borrowed #assignments
         #owned_operands #borrowed_operands
     }
 }
@@ -665,38 +665,20 @@ fn borrowed_expression_impl(name: &Ident) -> TokenStream {
     }
 }
 
-/// Emits the string-literal operand compatibility of a text-stored type.
-fn string_expression_impl(name: &Ident) -> TokenStream {
+/// Emits the string-literal assignment compatibility of a text-stored type.
+///
+/// A text literal is a value such a column stores, so `SqlCompatible` admits it in
+/// an `INSERT` value and in a `SET` assignment. A comparison operand is checked by
+/// `IntoExpr` instead, and the blanket implementation of that contract covers
+/// column markers, so a text-stored newtype is compared with values of its own
+/// type.
+fn string_assignment_impl(name: &Ident) -> TokenStream {
     quote! {
         impl<'a> ::rurqe::core::expr::SqlCompatible<#name, &'a str> for &'a str {}
-
-        impl<'a> ::rurqe::core::expr::IntoExpr<#name> for &'a str {
-            type Scope = ();
-            type Aggr = ::rurqe::core::expr::NonAggregate;
-            type Dialect = ();
-
-            fn into_expr_kind(self) -> ::rurqe::core::expr::ExprKind {
-                ::rurqe::core::expr::ExprKind::Value(
-                    ::rurqe::core::expr::SqlVal::Text(self.to_owned()),
-                )
-            }
-        }
 
         impl ::rurqe::core::expr::SqlCompatible<#name, ::std::string::String>
             for ::std::string::String
         {
-        }
-
-        impl ::rurqe::core::expr::IntoExpr<#name> for ::std::string::String {
-            type Scope = ();
-            type Aggr = ::rurqe::core::expr::NonAggregate;
-            type Dialect = ();
-
-            fn into_expr_kind(self) -> ::rurqe::core::expr::ExprKind {
-                ::rurqe::core::expr::ExprKind::Value(
-                    ::rurqe::core::expr::SqlVal::Text(self),
-                )
-            }
         }
     }
 }
@@ -735,8 +717,9 @@ fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
     }
 }
 
-// A text literal reaches a text-stored newtype through `IntoExpr`, which is what
-// binds it in a comparison or a scalar function argument. The mutable operand
-// impls of the type itself are emitted once, by `function_operand_impl` and
-// `borrowed_function_operand_impl`, so the literal forms are not repeated here:
-// the same implementation cannot be declared twice.
+// A text literal reaches a text-stored newtype as a stored value, through
+// `SqlCompatible`, and never as a comparison operand: `IntoExpr` is what binds an
+// operand, its blanket implementation covers column markers, and a downstream
+// literal impl would collide with it. The operand impls of the type itself are
+// emitted once, by `function_operand_impl` and
+// `borrowed_function_operand_impl`.

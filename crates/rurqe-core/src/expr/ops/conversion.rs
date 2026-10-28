@@ -6,8 +6,7 @@ use crate::query::{HasProjection, SelectQuery, TableScope};
 use crate::expr::ast::{ExprKind, SubqueryOp};
 use crate::expr::builder::{Expr, NonAggregate};
 use crate::expr::val::ToSqlVal;
-
-use super::compat::SqlCompatible;
+use crate::schema::Column;
 
 /// A value or expression that can be compared with an expression of type `T`.
 ///
@@ -16,12 +15,23 @@ use super::compat::SqlCompatible;
 /// standalone query parameters: every literal takes the exact route
 /// [`SqlVal`](crate::expr::SqlVal) construction takes, and an existing [`Expr`]
 /// keeps its own tree instead.
+///
+/// A column marker is an operand of the same standing: `C: Column` converts into
+/// the node [`Expr::column`] builds, so `OrderUserId.eq(UserId)` compares two
+/// columns without an explicit wrapper, and the scope of the conversion is the
+/// table of the column. Correlation stays an explicit operation, because the
+/// marker always claims its table: dropping the scope goes through
+/// [`Expr::without_scope`].
+///
+/// The trait is the single gate of operand-type compatibility, so a value of a
+/// type with no conversion is rejected here with the diagnostic below, at the
+/// call site of the comparison.
 #[diagnostic::on_unimplemented(
     message = "value of type `{Self}` cannot be compared with a column of type `{T}`",
     label = "incompatible operand types",
     note = "convert the value to the column's `Column::RustType` before comparing"
 )]
-pub trait IntoExpr<T>: SqlCompatible<T, Self> + Sized {
+pub trait IntoExpr<T>: Sized {
     /// The scope of the tables the operand references.
     ///
     /// Bound values reference no table and keep the empty scope `()`, while a
@@ -157,6 +167,22 @@ impl<T, Scope, Aggr, D> IntoExpr<T> for Expr<T, Scope, Aggr, D> {
     }
 }
 
+// A column marker is an operand of its own: it converts into the very node
+// `Expr::column::<C>()` builds, so `OrderUserId.eq(UserId)` compares two columns
+// without an explicit wrapper. The marker carries the table of its column as the
+// scope — which is what makes a comparison against a column of a relation the
+// query never introduces fail at the call site — and contributes the per-row
+// `NonAggregate` marker, exactly like the expression it stands for. Columns of
+// an aliased table are covered as well, because `AliasedCol<A, C>` is a column.
+impl<C: Column> IntoExpr<C::RustType> for C {
+    type Scope = C::Table;
+    type Aggr = NonAggregate;
+    type Dialect = ();
+
+    fn into_expr_kind(self) -> ExprKind {
+        C::expr_kind()
+    }
+}
 impl<D, Tables, T> IntoExpr<T> for SelectQuery<D, Tables, (T,), HasProjection>
 where
     D: Dialect,

@@ -1,15 +1,22 @@
-//! Static compatibility between a compared column type and an operand value.
+//! Static compatibility between a column type and a value stored in it.
 
 use crate::dialect::Dialect;
 use crate::query::{HasProjection, SelectQuery, TableScope};
 
 use crate::expr::builder::Expr;
 
-/// Statically asserts that a value of type `ValType` may be compared with a
-/// column whose Rust type is `ColType`.
+/// Statically asserts that a value of type `ValType` may be stored in a column
+/// whose Rust type is `ColType`.
 ///
-/// The trait is satisfied when both types match exactly, and additionally for
-/// string literals compared with string columns.
+/// The trait types the DML assignment contract: `Assignment::set` requires
+/// `V: SqlCompatible<C::RustType, V> + Into<SqlVal>`, so a value of an unrelated
+/// type cannot reach a `SET` clause or an `INSERT` row. Beside the exact type
+/// match it admits the borrowed forms a caller naturally holds — a string literal
+/// for a `String` column, a byte slice for a `Vec<u8>` column — together with the
+/// expressions and single-column subqueries an assignment may store.
+///
+/// Comparison operands are checked by [`IntoExpr`](crate::expr::IntoExpr)
+/// instead, so the two contracts stay orthogonal.
 #[diagnostic::on_unimplemented(
     message = "value of type `{ValType}` cannot be compared with a column of type `{ColType}`",
     label = "incompatible operand types",

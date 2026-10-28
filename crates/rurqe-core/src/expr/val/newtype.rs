@@ -178,11 +178,12 @@ macro_rules! impl_sql_newtype {
 /// parser's own message, which keeps an invalid payload a reported decoding
 /// failure instead of a panic.
 ///
-/// Beyond the value conversions, a text literal is accepted wherever the newtype
-/// is compared: `&str` and `String` implement
-/// [`SqlCompatible`](crate::expr::SqlCompatible) and
-/// [`IntoExpr`](crate::expr::IntoExpr) for the newtype, so a predicate can be
-/// written against a literal directly.
+/// A text literal is a valid *stored* value: `&str` and `String` implement
+/// [`SqlCompatible`](crate::expr::SqlCompatible) for the newtype, so an `INSERT`
+/// value or a `SET` assignment accepts a literal directly. A comparison operand is
+/// a different contract — [`IntoExpr`](crate::expr::IntoExpr) — and its blanket
+/// implementation covers column markers, so a predicate compares the newtype with
+/// values of its own type instead of a bare literal.
 ///
 /// ```
 /// use core::fmt;
@@ -247,30 +248,11 @@ macro_rules! impl_sql_text_newtype {
             comparisons {
                 impl<'a> $crate::expr::SqlCompatible<$ty, &'a str> for &'a str {}
 
-                impl<'a> $crate::expr::IntoExpr<$ty> for &'a str {
-                    type Scope = ();
-                    type Aggr = $crate::expr::NonAggregate;
-                    type Dialect = ();
-
-                    fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                        $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self.to_owned()))
-                    }
-                }
-
                 impl $crate::expr::SqlCompatible<$ty, ::std::string::String>
                     for ::std::string::String
                 {
                 }
 
-                impl $crate::expr::IntoExpr<$ty> for ::std::string::String {
-                    type Scope = ();
-                    type Aggr = $crate::expr::NonAggregate;
-                    type Dialect = ();
-
-                    fn into_expr_kind(self) -> $crate::expr::ExprKind {
-                        $crate::expr::ExprKind::Value($crate::expr::SqlVal::Text(self))
-                    }
-                }
             }
         }
     };

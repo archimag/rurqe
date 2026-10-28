@@ -3,7 +3,7 @@
 //! Expressions are typed by the Rust type of their result: referencing a column
 //! yields an expression carrying the column's [`RustType`](crate::schema::Column::RustType),
 //! while comparing it with a value yields a boolean predicate. Operand
-//! compatibility is checked at the call site through [`SqlCompatible`], so a
+//! compatibility is checked at the call site through [`IntoExpr`], so a
 //! comparison between unrelated types simply does not compile.
 //!
 //! Beside the expression nodes, the module hosts the dialect-neutral statement

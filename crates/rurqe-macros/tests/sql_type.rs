@@ -386,13 +386,29 @@ fn enum_newtypes_compose_with_the_expression_builders() {
         Expr::column::<PostMood>().eq(Mood::Sad)
     );
     assert_eq!(
-        PostMood.eq("very_sad"),
-        Expr::column::<PostMood>().eq("very_sad")
+        PostMood.eq(&Mood::Sad),
+        Expr::column::<PostMood>().eq(&Mood::Sad)
     );
-    assert_eq!(
-        PostMood.eq(String::from("Happy")),
-        Expr::column::<PostMood>().eq(String::from("Happy"))
-    );
+}
+
+#[test]
+fn text_newtypes_accept_literals_as_stored_values() {
+    // A literal is a value the column stores, so `SqlCompatible` admits it where
+    // an assignment is built. A comparison operand is checked by `IntoExpr`
+    // instead, and the blanket implementation of that contract covers column
+    // markers, so a literal is not a comparison operand.
+    fn assert_compatible<C, V>()
+    where
+        V: rurqe_core::expr::SqlCompatible<C, V>,
+    {
+    }
+
+    assert_compatible::<Address, &str>();
+    assert_compatible::<Address, String>();
+    assert_compatible::<Mood, &str>();
+    assert_compatible::<Mood, String>();
+    assert_compatible::<Nonce, &str>();
+    assert_compatible::<Nonce, String>();
 }
 
 #[test]
@@ -499,26 +515,20 @@ fn derived_newtypes_are_per_row_comparison_operands() {
     assert_into_expr::<Txid, Txid>();
     assert_into_expr::<Txid, &Txid>();
 
-    // A text newtype carries the operand impls of its own value, of its
-    // borrowed form, and of the string literals it is compared with.
+    // A text newtype carries the operand impls of its own value and of its
+    // borrowed form.
     assert_into_expr::<Address, Address>();
     assert_into_expr::<Address, &Address>();
-    assert_into_expr::<Address, &str>();
-    assert_into_expr::<Address, String>();
 
-    // An enum is stored as the label of its variant, so it accepts the same
-    // textual operand forms.
+    // An enum is stored as the label of its variant, so the owned and the
+    // borrowed form of a variant are its operands.
     assert_into_expr::<Mood, Mood>();
     assert_into_expr::<Mood, &Mood>();
-    assert_into_expr::<Mood, &str>();
-    assert_into_expr::<Mood, String>();
 
     // The declarative helper macros emit the same operand contracts as the
     // derive.
     assert_into_expr::<Nonce, Nonce>();
     assert_into_expr::<Nonce, &Nonce>();
-    assert_into_expr::<Nonce, &str>();
-    assert_into_expr::<Nonce, String>();
     assert_into_expr::<Digest, Digest>();
     assert_into_expr::<Digest, &Digest>();
 }
