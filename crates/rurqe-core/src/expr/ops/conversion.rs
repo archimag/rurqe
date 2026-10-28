@@ -26,6 +26,51 @@ use crate::schema::Column;
 /// The trait is the single gate of operand-type compatibility, so a value of a
 /// type with no conversion is rejected here with the diagnostic below, at the
 /// call site of the comparison.
+///
+/// A column marker is an operand of the comparison as it stands, and the tree it
+/// produces is the one its explicit expression produces:
+///
+/// ```
+/// use rurqe_core::expr::{Expr, Expression};
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// rurqe_core::table! {
+///     /// The `orders` table.
+///     Order => "orders" {
+///         OrderUserId => "user_id": i64,
+///     }
+/// }
+///
+/// assert_eq!(
+///     OrderUserId.eq(UserId),
+///     Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+/// );
+/// ```
+///
+/// A marker of an unrelated type converts into no operand of the compared type,
+/// so the comparison is rejected at its own call site:
+///
+/// ```compile_fail
+/// use rurqe_core::expr::Expression;
+///
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserName => "name": String,
+///     }
+/// }
+///
+/// // Fails to compile: the compared column holds an `i64`, while the marker
+/// // carries a `String`, so the marker implements no `IntoExpr<i64>`.
+/// let _ = UserId.eq(UserName);
+/// ```
 #[diagnostic::on_unimplemented(
     message = "value of type `{Self}` cannot be compared with a column of type `{T}`",
     label = "incompatible operand types",

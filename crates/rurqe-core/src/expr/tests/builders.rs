@@ -1398,3 +1398,143 @@ fn the_valid_aggregate_forms_render_verbatim() {
     assert_eq!(sql, "(SUM(\"total\") > \"tax\")");
     assert!(params.is_empty());
 }
+
+#[test]
+fn a_column_marker_is_a_right_hand_operand_of_every_comparison() {
+    crate::table! {
+        Order => "orders" {
+            OrderId => "id": i64,
+            OrderUserId => "user_id": i64,
+        }
+    }
+
+    // The marker converts into the very node `Expr::column::<C>()` builds, and
+    // the merged scope claims the tables of both operands, so the shorthand and
+    // the explicit form produce the same expression.
+    let equal: Expr<bool, (Order, User), NonAggregate, ()> = OrderUserId.eq(UserId);
+    assert_eq!(
+        equal,
+        Expr::column::<OrderUserId>().eq(Expr::column::<UserId>())
+    );
+    assert_eq!(
+        equal.kind(),
+        &ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "user_id",
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "users",
+                name: "id",
+            }),
+        }
+    );
+
+    let distinct: Expr<bool, (Order, User), NonAggregate, ()> = OrderUserId.ne(UserId);
+    assert_eq!(
+        distinct,
+        Expr::column::<OrderUserId>().ne(Expr::column::<UserId>())
+    );
+
+    let above: Expr<bool, (Order, User), NonAggregate, ()> = OrderUserId.gt(UserId);
+    assert_eq!(
+        above,
+        Expr::column::<OrderUserId>().gt(Expr::column::<UserId>())
+    );
+
+    let below: Expr<bool, (Order, User), NonAggregate, ()> = OrderUserId.lt(UserId);
+    assert_eq!(
+        below,
+        Expr::column::<OrderUserId>().lt(Expr::column::<UserId>())
+    );
+}
+
+#[test]
+fn a_column_marker_is_a_between_bound_and_a_membership_candidate() {
+    crate::table! {
+        Order => "orders" {
+            OrderId => "id": i64,
+            OrderUserId => "user_id": i64,
+        }
+    }
+
+    // Bounds written as markers claim their table just like the tested column
+    // does, so the range references all three relations of the shown form.
+    let range: Expr<bool, (User, Order, Order), NonAggregate, ()> =
+        UserId.between(OrderId, OrderUserId);
+    assert_eq!(
+        range,
+        Expr::column::<UserId>().between(Expr::column::<OrderId>(), Expr::column::<OrderUserId>())
+    );
+    assert!(matches!(range.kind(), ExprKind::Between { .. }));
+
+    let members: Expr<bool, (User, Order), NonAggregate, ()> = UserId.in_list(vec![OrderUserId]);
+    assert_eq!(
+        members,
+        Expr::column::<UserId>().in_list(vec![Expr::column::<OrderUserId>()])
+    );
+    assert!(matches!(
+        members.kind(),
+        ExprKind::InList {
+            negated: false,
+            ..
+        }
+    ));
+
+    let absent: Expr<bool, (User, Order), NonAggregate, ()> = UserId.not_in_list(vec![OrderId]);
+    assert_eq!(
+        absent,
+        Expr::column::<UserId>().not_in_list(vec![Expr::column::<OrderId>()])
+    );
+    assert!(matches!(
+        absent.kind(),
+        ExprKind::InList { negated: true, .. }
+    ));
+}
+
+#[test]
+fn a_column_marker_folds_the_aggregation_marker_of_the_compared_aggregate() {
+    // A bound operand is the same in every row of the group, so the predicate
+    // built from an aggregate keeps collapsing it.
+    let over_a_value: Expr<bool, Order, Aggregate, ()> = sum(OrderTotal).gt(0.0f64);
+    assert_eq!(
+        over_a_value.kind(),
+        &ExprKind::Binary {
+            op: BinaryOp::Gt,
+            lhs: Box::new(ExprKind::Aggregate {
+                func: AggregateFunc::Sum,
+                distinct: false,
+                arg: Some(Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "total",
+                })),
+                filter: None,
+            }),
+            rhs: Box::new(ExprKind::Value(SqlVal::F64(0.0))),
+        }
+    );
+
+    // A marker reads a column of the group, so the same aggregate compared with
+    // it computes one value per row and the predicate is per-row.
+    let over_a_column: Expr<bool, (Order, Order), NonAggregate, ()> = sum(OrderTotal).gt(OrderTax);
+    assert_eq!(
+        over_a_column.kind(),
+        &ExprKind::Binary {
+            op: BinaryOp::Gt,
+            lhs: Box::new(ExprKind::Aggregate {
+                func: AggregateFunc::Sum,
+                distinct: false,
+                arg: Some(Box::new(ExprKind::Column {
+                    table: "orders",
+                    name: "total",
+                })),
+                filter: None,
+            }),
+            rhs: Box::new(ExprKind::Column {
+                table: "orders",
+                name: "tax",
+            }),
+        }
+    );
+}

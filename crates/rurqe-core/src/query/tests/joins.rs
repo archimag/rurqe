@@ -394,3 +394,59 @@ fn value_left_join_arguments_lift_columns_into_options() {
          ON (\"orders\".\"user_id\" = $1)"
     );
 }
+
+#[test]
+fn a_column_marker_renders_the_same_join_predicate_as_an_expression() {
+    use crate::expr::Expression;
+
+    type InnerQuery = SelectQuery<MockDialect, Joined<User, Order>, (i64, i64), HasProjection>;
+
+    let shorthand: InnerQuery = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .inner_join(Order, OrderUserId.eq(UserId))
+        .select((UserId, OrderId));
+    let explicit: InnerQuery = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .inner_join(
+            Order,
+            Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+        )
+        .select((UserId, OrderId));
+
+    let shorthand = shorthand.build().expect("valid query");
+    let explicit = explicit.build().expect("valid query");
+
+    assert_eq!(shorthand.sql, explicit.sql);
+    assert_eq!(shorthand.params, explicit.params);
+    assert_eq!(
+        shorthand.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" INNER JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\")"
+    );
+    assert!(shorthand.params.is_empty());
+
+    type LeftQuery =
+        SelectQuery<MockDialect, LeftJoined<User, Order>, (i64, Option<i64>), HasProjection>;
+
+    let shorthand: LeftQuery = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .left_join(Order, OrderUserId.eq(UserId))
+        .select((UserId, OrderId));
+    let explicit: LeftQuery = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .left_join(
+            Order,
+            Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()),
+        )
+        .select((UserId, OrderId));
+
+    let shorthand = shorthand.build().expect("valid query");
+    let explicit = explicit.build().expect("valid query");
+
+    assert_eq!(shorthand.sql, explicit.sql);
+    assert_eq!(shorthand.params, explicit.params);
+    assert_eq!(
+        shorthand.sql,
+        "SELECT \"users\".\"id\", \"orders\".\"id\" FROM \"users\" LEFT JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\")"
+    );
+    assert!(shorthand.params.is_empty());
+}
