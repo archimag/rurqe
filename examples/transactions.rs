@@ -20,14 +20,14 @@ table! {
 /// instead of opening a second transaction.
 fn record_opening_balance(conn: &mut SqliteConnection) -> Result<(), Error> {
     conn.transaction(|tx| -> Result<(), Error> {
-        insert_into(Account)
-            .values((AccountId::set(1i64), AccountBalance::set(100i64)))
-            .execute(tx)?;
+        let insert_first = insert_into(Account)
+            .values((AccountId::set(1i64), AccountBalance::set(100i64)));
+        tx.execute(&insert_first)?;
 
         tx.transaction(|nested| -> Result<(), Error> {
-            insert_into(Account)
-                .values((AccountId::set(2i64), AccountBalance::set(200i64)))
-                .execute(nested)?;
+            let insert_second = insert_into(Account)
+                .values((AccountId::set(2i64), AccountBalance::set(200i64)));
+            nested.execute(&insert_second)?;
             Ok(())
         })?;
 

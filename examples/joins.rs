@@ -22,7 +22,7 @@ table! {
 fn main() {
     // ANCHOR: inner
     let inner_join = select_from(User)
-        .inner_join(Order, OrderUserId.eq(UserId))
+        .inner_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
         .select(cols!(UserId, UserName, OrderTotal))
         .build()
         .expect("valid inner join");
@@ -31,7 +31,7 @@ fn main() {
 
     // ANCHOR: outer
     let outer_join = select_from(User)
-        .left_join(Order, OrderUserId.eq(UserId))
+        .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
         .select(cols!(UserName, OrderTotal))
         .build()
         .expect("valid outer join");

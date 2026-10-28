@@ -30,3 +30,31 @@ publish = false
 
 [dependencies]
 rurqe = { path = "../crates/rurqe", version = "0.1.0" }
+
+[[example]]
+name = "quickstart"
+path = "quickstart.rs"
+
+[[example]]
+name = "crud"
+path = "crud.rs"
+
+[[example]]
+name = "joins"
+path = "joins.rs"
+
+[[example]]
+name = "aggregates"
+path = "aggregates.rs"
+
+[[example]]
+name = "nested"
+path = "nested.rs"
+
+[[example]]
+name = "dialects"
+path = "dialects.rs"
+
+[[example]]
+name = "transactions"
+path = "transactions.rs"
