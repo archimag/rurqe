@@ -24,6 +24,13 @@ test:
     cargo test --workspace
     cargo test -p rurqe-sqlite --features r2d2 --doc
 
+# Verify mdBook Rust snippets by compiling them with mdbook test
+[group('tauqe')]
+[doc('Verify mdBook Rust snippets by compiling them with mdbook test')]
+doc-test:
+    cargo test --no-run --workspace
+    mdbook test docs -L target/debug/deps
+
 # Build the mdBook documentation into target/book
 [group('tauqe')]
 [doc('Build the mdBook documentation into target/book')]
