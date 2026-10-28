@@ -20,23 +20,22 @@ The meaning of the transition: the rule "a column is either grouped or aggregate
 
 ```rust,no_run
 # extern crate rurqe;
-# use rurqe::prelude::*;
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
 # fn main() {
-let built = select_from::<Postgres, Order>()
-    .group_by(OrderUserId)
-    .select((OrderUserId, Expr::sum::<OrderTotal>()))
-    .build()
-    .expect("valid grouped query");
-# let _ = built;
+{{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
 # }
 ```
 
 ```text
-SELECT "user_id", SUM("total") FROM "orders" GROUP BY "user_id"
+SELECT "users"."id" AS "user_id", COUNT(*)
+FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
+GROUP BY "users"."id"
+HAVING (COUNT(*) > $1)
 ```
 
-A single column or a tuple can be grouped: `.group_by((UsersId, UsersName))`.
+A single column or a tuple can be grouped: `.group_by((UserId, UserName))`.
 
 ## What can be projected
 
@@ -59,26 +58,7 @@ The `schema` escape hatch `Expr::column::<C>()` does not bypass the rule: an exp
 
 ## `HAVING`
 
-`HAVING` filters the already computed groups, so it is written over an aggregate:
-
-```rust,no_run
-# extern crate rurqe;
-# use rurqe::prelude::*;
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() {
-let built = select_from::<Postgres<Pg16>, Order>()
-    .group_by(OrderUserId)
-    .select((OrderUserId, count_all()))
-    .having(sum(OrderTotal).gt(0.0f64))
-    .build()
-    .expect("valid query");
-# let _ = built;
-# }
-```
-
-```text
-SELECT "user_id", COUNT(*) FROM "orders" GROUP BY "user_id" HAVING (SUM("total") > $1)
-```
+`HAVING` filters the already computed groups, so it is written over an aggregate. The example above already uses `.having(count_all().gt(0i64))`; it renders as `HAVING (COUNT(*) > $1)`.
 
 Two kinds of predicate are allowed (`HavingPredicate`):
 

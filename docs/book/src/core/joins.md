@@ -20,23 +20,15 @@ The join builders take the table marker as a value and read the joined type `T` 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let built = select_from(User)
-    .inner_join(
-        Order,
-        OrderUserId.eq(Expr::column::<UserId>()),
-    )
-    .select(cols!(UserId, OrderTotal))
-    .build()?;
-# let _ = built;
-# Ok(())
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/joins.rs:inner}}
 # }
 ```
 
 ```text
-SELECT "users"."id", "orders"."total"
+SELECT "users"."id", "users"."name", "orders"."total"
 FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 ```
 
@@ -44,7 +36,7 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join appends its scope type to the chain: `Joined<Tables, T>`, `LeftJoined<Tables, T>`, `CrossJoined<Tables, T>`, `FullOuterJoined<Tables, T>`, `CrossLateralJoined<Tables, T>`, `LeftLateralJoined<Tables, T>`. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
 
-A column is compared with another column through `Expr::column::<C>()`, because a column marker is an operand on its own but not a value bound into the statement.
+A column is compared with another column through the column marker itself or `Expr::column::<C>()`, because a column marker is an operand on its own but not a value bound into the statement.
 
 ## Nullability of outer joins
 
@@ -53,20 +45,14 @@ A column is compared with another column through `Expr::column::<C>()`, because 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let built = select_from(User)
-    .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
-    .select((UserId, OrderTotal))
-    .build()?;
-// Row: (i64, Option<f64>) — `orders.total` lifts automatically.
-# let _ = built;
-# Ok(())
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/joins.rs:outer}}
 # }
 ```
 
-The lifting is automatic: the outer-join scope types mark the joined relation nullable, and `SelectionFor::Row` computes `Option<T>` for its columns. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
+The lifting is automatic: the outer-join scope types mark the joined relation nullable, and `SelectionFor::Row` computes `Option<T>` for its columns — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
 
 ## Unaliased duplicate relations
 

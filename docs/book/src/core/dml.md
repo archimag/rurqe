@@ -1,6 +1,6 @@
 # DML: `INSERT`, `UPDATE`, `DELETE`
 
-The three mutations share one value model: an [`Assignment`] binds a value to a single column, and an [`AssignmentSet`] targets a single table with a tuple of assignments. The builders differ only in how they render the set.
+The three mutations share one value model: an `Assignment` binds a value to a single column, and an `AssignmentSet` targets a single table with a tuple of assignments. The builders differ only in how they render the set. Every statement below is included from `examples/crud.rs`.
 
 ## Assignments
 
@@ -33,18 +33,14 @@ A tuple of assignments is an `AssignmentSet<T>` only when every element targets 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
 # fn main() {
-let built = insert_into(User)
-    .values((UserId::set(1i64), UserName::set("root")))
-    .build()
-    .expect("valid query");
-# let _ = built;
+{{#rustdoc_include ../../../../examples/crud.rs:insert}}
 # }
 ```
 
 ```text
-INSERT INTO "users" ("id", "name") VALUES ($1, $2)
+INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3) RETURNING "id"
 ```
 
 - `.values(...)` records one row; `.values_many(...)` records many.
@@ -59,19 +55,12 @@ An upsert appends an `ON CONFLICT` clause:
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # fn main() {
-let upsert = insert_into(User)
-    .values((UserId::set(1i64), UserName::set("root")))
-    .on_conflict((UserId,))
-    .do_update((UserName.set_expr(excluded(UserName)),))
-    .build()
-    .expect("valid upsert");
-# let _ = upsert;
+{{#rustdoc_include ../../../../examples/crud.rs:upsert}}
 # }
 ```
 
 ```text
-INSERT INTO "users" ("id", "name") VALUES ($1, $2)
-ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
+INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT DO NOTHING
 ```
 
 - `.on_conflict(target)` and `.on_conflict_do_nothing(target)` require `SupportsOnConflict`.
@@ -86,12 +75,7 @@ ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # fn main() {
-let built = update(User)
-    .set(UserName::set("root"))
-    .where_(UserId.eq(1i64))
-    .build()
-    .expect("valid query");
-# let _ = built;
+{{#rustdoc_include ../../../../examples/crud.rs:update}}
 # }
 ```
 
@@ -111,11 +95,7 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, } }
 # fn main() {
-let built = delete_from(User)
-    .where_(UserId.eq(1i64))
-    .build()
-    .expect("valid query");
-# let _ = built;
+{{#rustdoc_include ../../../../examples/crud.rs:delete}}
 # }
 ```
 
