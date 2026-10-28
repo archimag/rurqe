@@ -247,3 +247,52 @@ fn a_json_aggregate_decodes_into_the_elements_of_an_array() {
     .expect("a template without placeholders"),));
     assert!(db.fetch_one(&broken).is_err());
 }
+
+/// Collects query rows into the collection type the caller asks for.
+///
+/// `fetch_collect` is generic over `FromIterator<Q::Row>`, so one raw row buffer
+/// feeds a `HashMap` or a `HashSet` without an intermediate `Vec` allocation:
+/// the collection is chosen at the call site and the decoding path stays the
+/// same.
+#[test]
+fn fetch_collect_assembles_the_requested_collection() {
+    use std::collections::{HashMap, HashSet};
+
+    let mut db = database();
+
+    for (id, name, score) in [
+        (1i64, "root", 10i32),
+        (2i64, "guest", 20i32),
+        (3i64, "auditor", 10i32),
+    ] {
+        let insert = insert_into::<Sqlite<Sqlite3_35>, User>().values((
+            UserId::set(id),
+            UserName::set(name),
+            UserActive::set(true),
+            UserScore::set(score),
+        ));
+        db.execute(&insert).expect("insert a user");
+    }
+
+    // A two-column projection is exactly the shape `HashMap` collects: the first
+    // column becomes the key, the second one the value.
+    let directory_query = select_from::<Sqlite<Sqlite3_35>, User>()
+        .select((UserId, UserName))
+        .order_by_asc(UserId);
+    let directory: HashMap<i64, String> = db
+        .fetch_collect(&directory_query)
+        .expect("the rows collect into a map");
+    assert_eq!(directory.len(), 3);
+    assert_eq!(directory.get(&1i64).map(String::as_str), Some("root"));
+    assert_eq!(directory.get(&3i64).map(String::as_str), Some("auditor"));
+
+    // A single-column projection still decodes into a one-element row tuple, so
+    // `HashSet` deduplicates the collected rows: two users share one score.
+    let scores_query = select_from::<Sqlite<Sqlite3_35>, User>().select((UserScore,));
+    let distinct_scores: HashSet<(i32,)> = db
+        .fetch_collect(&scores_query)
+        .expect("the rows collect into a set");
+    assert_eq!(distinct_scores.len(), 2);
+    assert!(distinct_scores.contains(&(10i32,)));
+    assert!(distinct_scores.contains(&(20i32,)));
+}
