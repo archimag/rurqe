@@ -36,7 +36,7 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join appends its scope type to the chain: `Joined<Tables, T>`, `LeftJoined<Tables, T>`, `CrossJoined<Tables, T>`, `FullOuterJoined<Tables, T>`, `CrossLateralJoined<Tables, T>`, `LeftLateralJoined<Tables, T>`. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
 
-A column is compared with another column through the column marker itself or `Expr::column::<C>()`, because a column marker is an operand on its own but not a value bound into the statement.
+A column marker is a complete operand on its own, on either side of the comparison: `OrderUserId.eq(UserId)` compares two columns without any wrapper, exactly as `OrderTotal.gt(0.0f64)` compares a column with a bound value. Both operands declare the tables they reference, so the predicate's scope carries every relation it reads, and the join builder checks the `ON` clause against the relations the statement declares — a column of a relation the query does not introduce is still refused at the call site. `Expr::column::<C>()` stays the constructor for the positions that need an expression value standing on its own, and correlation still goes through `.without_scope()`, because the marker always claims its table.
 
 ## Nullability of outer joins
 
