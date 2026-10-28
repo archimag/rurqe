@@ -35,3 +35,13 @@ doc-build:
 [doc('Serve the mdBook documentation locally with live reload')]
 doc-serve:
     mdbook serve docs --dest-dir ../target/book --open
+
+# Format all workspace code
+[doc('Format all workspace code')]
+fmt:
+    cargo fmt --all
+
+# Check formatting across all workspace targets
+[doc('Check formatting across all workspace targets')]
+fmt-check:
+    cargo fmt --all -- --check
