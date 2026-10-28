@@ -2,9 +2,8 @@
 
 `rurqe-core` knows no driver. It describes *what* has to be executed, while
 the adapter crates `rurqe-postgres` and `rurqe-sqlite` own *how*. The boundary
-between the two is fixed by the trait set in
-`crates/rurqe-core/src/query/execution.rs`, and no adapter rewrites that
-contract on its own.
+between the two is fixed by the execution contract's trait set, and no adapter
+rewrites that contract on its own.
 
 ## The five traits of the execution contract
 
@@ -16,12 +15,11 @@ contract on its own.
 | `AsyncQueryBackend` | asynchronous execution of a ready statement | `PgAsyncConnection`, `PgAsyncTransaction`, `PgAsyncPool` |
 | `AsyncQueryBackendExt` | the same helpers for asynchronous backends | automatically for every `AsyncQueryBackend` |
 
-`ExecutableQuery` is implemented exactly for the builder states that can be
-rendered: `SelectQuery<…, HasProjection, Lock>` for every lock state,
-`InsertQuery` with a non-empty row source (`Values: InsertSource<T>`),
-`UpdateQuery` only when `Assignments: AssignmentsPresent` and
-`State: ExecutableMutation`, `DeleteQuery` when `State: ExecutableMutation`,
-and `GroupedQuery`. Everything outside those boundaries does not compile.
+`ExecutableQuery` is implemented exactly for the statements that can be
+rendered: a `SELECT` with a projection, in any locking form; an `INSERT` with
+a non-empty row source; an `UPDATE` that sets at least one column and carries
+a `WHERE` or an explicit `.allow_all()`; a `DELETE` under the same guard; and
+a grouped query. Everything outside those boundaries does not compile.
 
 ## The synchronous backend
 

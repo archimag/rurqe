@@ -43,7 +43,7 @@ let rows = select_from(User)
 
 Both forms produce the same record and the same SQL, and every element is rendered under its field name. That naming is what keeps the columns reachable when the query becomes a derived table or a CTE.
 
-A positional tuple projection still exists for low-level code; this book does not use it, because a named projection survives a change in the column order.
+A positional tuple projection still exists — for low-level code, and for a row that feeds a typed collection of pairs directly (see [Runtime: overview](../runtime/overview.md)). This chapter does not use it, because a named projection survives a change in the column order.
 
 ## Computed projections
 
@@ -56,7 +56,7 @@ Anything that renders as a value can be a field — write the field name yoursel
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let mut conn: PgConnection = todo!();
 let rows = select_from(Order)
-    .select(select!(
+    .select(cols!(
         order_id: OrderId,
         total: OrderTotal,
         billed: coalesce(OrderTotal, 0.0f64),
@@ -132,8 +132,8 @@ Write the left join and keep the same projection:
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 # let mut conn: PgConnection = todo!();
 let report = select_from(User)
-    .left_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
-    .select(select!(user_id: UserId, order_total: OrderTotal))
+    .left_join(Order, OrderUserId.eq(UserId))
+    .select(cols!(user_id: UserId, order_total: OrderTotal))
     .fetch_all(&mut conn)?;
 
 for row in report {
@@ -163,7 +163,7 @@ FROM "users" LEFT JOIN "orders" ON ("orders"."user_id" = "users"."id")
 # let mut conn: PgConnection = todo!();
 let rows = select_from(Order)
     .group_by(OrderUserId)
-    .select(select!(
+    .select(cols!(
         user_id: OrderUserId,
         orders: count_all(),
         spend: sum(OrderTotal),

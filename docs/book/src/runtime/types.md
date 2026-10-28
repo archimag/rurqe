@@ -1,9 +1,8 @@
 # Ecosystem types, values, and decoding
 
-Every value passes through one type — `SqlVal` from
-`crates/rurqe-core/src/expr/val.rs`. It is also the exchange unit between the
-core and the drivers: parameters reach an adapter as `Vec<SqlVal>`, rows come
-back as `Vec<Vec<SqlVal>>`.
+Every value passes through one type — `SqlVal`. It is also the exchange unit
+between the core and the drivers: parameters reach an adapter as `Vec<SqlVal>`,
+rows come back as `Vec<Vec<SqlVal>>`.
 
 ## `SqlVal`
 
@@ -144,7 +143,7 @@ of the failing row inside the returned buffer and starts at zero.
 The adapter encodes a parameter into the binary representation of the **column
 type**, not of the value type:
 
-- the domain chain is expanded (`base_type`), so a domain column receives the
+- the domain chain is expanded, so a domain column receives the
   same layout as the type it is declared over;
 - integer values are narrowed to `INT2`/`INT4` when the column has that width;
   an out-of-range value is an encoding error;
