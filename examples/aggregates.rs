@@ -23,7 +23,7 @@ table! {
 fn main() {
     // ANCHOR: group_by
     let per_user = select_from(User)
-        .inner_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
+        .inner_join(Order, OrderUserId.eq(UserId))
         .group_by(UserId)
         .select(cols! {
             user_id: UserId,
