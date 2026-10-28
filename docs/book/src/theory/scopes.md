@@ -4,7 +4,8 @@ Relational algebra requires every attribute to be bound to a relation and every 
 
 ## TableScope — the relations of the query
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/query/scope.rs`; `TableRef` is elided.
 pub trait TableScope {
     fn push_table_names(out: &mut Vec<&'static str>);
     fn push_table_refs(out: &mut Vec<TableRef>) { /* by default, derived from the names */ }
@@ -20,14 +21,16 @@ That is exactly why `TableInScope` has no implementation for `Compound`: a table
 
 ## TableInScope — the position of a relation
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/schema/scope.rs`; `Table` and `At` are elided.
 pub trait TableInScope<T: Table, P = At<0>> {}
 ```
 
 - A table is trivially in its own scope: `impl<T: Table> TableInScope<T, At<0>> for T`.
 - A joined scope adds the new relation at position `At<0>` and shifts every other one to `Next<P>`:
 
-```rust
+```rust,ignore
+// Fragments of `rurqe-core/src/query/scope.rs`.
 impl<Tables, T: Table> TableInScope<T, At<0>> for Joined<Tables, T> {}
 impl<Tables, T: Table, Target: Table, P> TableInScope<Target, Next<P>> for Joined<Tables, T>
 where Tables: TableInScope<Target, P> {}
@@ -39,7 +42,8 @@ The `At` / `Next` positions exist only for unambiguous inference: the same table
 
 An expression carries its scope as a phantom parameter: `Expr<T, Scope, Aggr, D>`. `Scope` is `()` for an expression without columns, a single table, a tuple of tables, or a joined scope type.
 
-```rust
+```rust,ignore
+// Fragments of `rurqe-core/src/schema/scope.rs`; `At` is elided.
 pub trait ExprScope {}
 pub trait ExprInScope<Tables, Positions = At<0>> {}
 ```
@@ -57,7 +61,8 @@ The `ExprInScope` implementations are:
 
 ## ScopePositions — inferring positions
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/schema/scope.rs`; `At` is elided.
 pub trait ScopePositions<P = At<0>> {}
 ```
 
@@ -65,14 +70,39 @@ The empty scope always stands at `At<0>`, a single table stands at its own posit
 
 ## How this looks in use
 
-```rust
+```rust,no_run
+# use rurqe::prelude::*;
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+# rurqe::table! {
+#     Order => "orders" {
+#         OrderUserId => "user_id": i64,
+#         OrderTotal => "total": f64,
+#     }
+# }
 // Compiles: Order is in scope after the join.
 let ok = select_from::<Postgres, User>()
     .inner_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
     .select((UserId, OrderTotal));
+# let _ = ok;
 ```
 
-```rust
+```rust,compile_fail
+# use rurqe::prelude::*;
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+# rurqe::table! {
+#     Order => "orders" {
+#         OrderUserId => "user_id": i64,
+#         OrderTotal => "total": f64,
+#     }
+# }
 // Does not compile: OrderTotal belongs to Order, which is absent from FROM.
 let bad = select_from::<Postgres, User>().select((UserId, OrderTotal));
 ```
@@ -86,7 +116,8 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 
 A scope answers not only "does the relation exist" but also "what is its nullability". That is the job of the second trait:
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/query/scope.rs`; `Table` and `At` are elided.
 pub trait TableNullabilityInScope<T: Table, P = At<0>> {
     type Nullability;
 }

@@ -10,7 +10,8 @@ This is a deliberate architectural decision rather than an omission: the error s
 
 ## The effective name
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/query/validate.rs`; `TableRef` is elided.
 pub(super) fn effective_relation_name(relation: &TableRef) -> &'static str {
     relation.alias.unwrap_or(relation.name)
 }
@@ -28,7 +29,9 @@ Hence two equally forbidden cases:
 
 ## Registering relations
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/query/validate.rs`; `TableRef` and `BuildError`
+// are elided.
 pub(crate) fn register_relation(
     relations: &mut Vec<TableRef>,
     relation: TableRef,
@@ -53,20 +56,31 @@ each occurrence of a table must have a distinct alias via `table_alias!` or `.as
 
 ## Remedy: alias
 
-```rust
-// Compiles and renders as FROM "events" e1 JOIN "events" e2 ...
-table_alias!(E1, "e1");
-table_alias!(E2, "e2");
-
+```rust,no_run
+# use rurqe::prelude::*;
+# rurqe::table! {
+#     Event => "events" {
+#         EventId => "id": i64,
+#         EventParentId => "parent_id": i64,
+#     }
+# }
+# rurqe::table_alias! {
+#     E1 => "e1"
+# }
+# rurqe::table_alias! {
+#     E2 => "e2"
+# }
+// Compiles and renders as FROM "events" AS "e1" JOIN "events" AS "e2" ...
 let self_join = select_from::<Postgres, Aliased<Event, E1>>()
     .inner_join(
-        aliased::<Event, E2>(),
+        Aliased::<Event, E2>::new(),
         AliasedCol::<E1, EventParentId>::new().eq(AliasedCol::<E2, EventId>::new()),
     )
     .select((
         AliasedCol::<E1, EventId>::new(),
         AliasedCol::<E2, EventId>::new(),
     ));
+# let _ = self_join;
 ```
 
 `Aliased<T, A>` overrides `Table::table_ref` so that `AS "alias"` appears in the SQL, and `Table::column_expr` so that the qualifier is the alias. A self-join therefore stays unambiguous at every level: in the SQL, in the scope, and in the name uniqueness check.

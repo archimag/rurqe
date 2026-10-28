@@ -17,7 +17,9 @@ This chapter maps every relational algebra operator onto a concrete location in 
 
 ### Attribute
 
-```rust
+```rust,ignore
+// Fragment of `rurqe-core/src/schema/table.rs`; the `alias` member and the
+// `Table` / `ExprKind` contracts it names are elided.
 pub trait Column {
     type Table: Table;
     type RustType;
@@ -39,7 +41,9 @@ pub trait Column {
 
 ### Projection π
 
-```rust
+```rust,ignore
+// Fragments of `rurqe-core/src/query/selection.rs`; `ExprKind` and the
+// remaining members of both traits are elided.
 pub trait SelectTarget { type RustType; fn to_expr_kind(&self) -> ExprKind; }
 pub trait Selection { type Row; fn push_projections(&self, out: &mut Vec<ExprKind>); }
 ```
@@ -61,8 +65,19 @@ pub trait Selection { type Row; fn push_projections(&self, out: &mut Vec<ExprKin
 
 ### Theta join ⋈θ
 
-```rust
-select_from(Users).inner_join(Orders, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+```rust,no_run
+# use rurqe::postgres::prelude::*;
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+# rurqe::table! {
+#     Order => "orders" {
+#         OrderUserId => "user_id": i64,
+#     }
+# }
+select_from(User).inner_join(Order, OrderUserId.eq(UserId));
 ```
 
 - Result type: `SelectQuery<D, Joined<Tables, T>, ...>`.

@@ -4,7 +4,10 @@ In relational algebra an outer join is an operator that adds tuples with missing
 
 ## Three orthogonal traits
 
-```rust
+```rust,ignore
+// Fragments of `rurqe-core/src/query/scope.rs` and
+// `rurqe-core/src/query/selection.rs`; the `Table` / `At` contracts they
+// reference are elided.
 /// Marker: the columns of this relation in this scope are never NULL.
 pub struct NonNullableRel;
 /// Marker: the columns of this relation in this scope may be NULL.
@@ -35,7 +38,9 @@ The separation is deliberate: the first two describe the **context** (how the re
 
 Separately and importantly:
 
-```rust
+```rust,ignore
+// Quoted from `rurqe-core/src/query/selection.rs`; an impl of a foreign
+// trait over `Option<T>` is not reproducible outside the crate (orphan rule).
 impl<T> MakeNullable for Option<T> { type Nullable = Option<T>; }
 ```
 
@@ -55,7 +60,9 @@ There is never a double `Option<Option<T>>`: a nullable column keeps exactly one
 
 ## How the row type follows from this
 
-```rust
+```rust,ignore
+// Fragments of `rurqe-core/src/query/selection.rs`; the trailing `<...>` is
+// an elision, so the fragment is quoted, not compiled.
 pub trait ColumnInScope<Tables, P> { type Output; }
 
 impl<Tables, C, P> ColumnInScope<Tables, P> for C
@@ -72,14 +79,30 @@ where
 
 ## Example
 
-```rust
-let query = SelectQuery::<MockDialect>::new()
-    .from::<User>()
-    .left_join(Order, Expr::column::<OrderUserId>().eq(Expr::column::<UserId>()))
+```rust,no_run
+# use rurqe::postgres::prelude::*;
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+# rurqe::table! {
+#     Order => "orders" {
+#         OrderUserId => "user_id": i64,
+#         OrderTotal => "total": f64,
+#     }
+# }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut conn: PgConnection = todo!();
+let query = select_from(User)
+    .left_join(Order, OrderUserId.eq(UserId))
     .select((UserId, OrderTotal));
 
 // UserId stays i64, OrderTotal becomes Option<f64>.
-let _: SelectQuery<MockDialect, _, (i64, Option<f64>), HasProjection> = query;
+let rows: Vec<(i64, Option<f64>)> = conn.fetch_all(&query)?;
+let _ = rows;
+#     Ok(())
+# }
 ```
 
 Reading the same column as `f64` does not compile:
@@ -93,7 +116,9 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 
 Sometimes a nullable form is needed without an outer join — for example to align a shape with an already computed result. A wrapper exists for that:
 
-```rust
+```rust,ignore
+// Quoted from `rurqe-core/src/query/selection.rs`; the `expr_kind` member is
+// elided, and the impl is not reproducible outside the crate (orphan rule).
 impl<C: Column> Column for Nullable<C> {
     type Table = C::Table;
     type RustType = Option<C::RustType>;

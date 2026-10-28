@@ -6,18 +6,57 @@ doc-tests of `crates/rurqe/src/lib.rs` and the doctests of the dialect crates.
 
 ## 1. Entry point and dialect
 
-```rust
+```rust,no_run
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
 // Best practice: pin the dialect with a prelude — no turbofish anywhere.
-use rurqe::postgres::prelude::*;        // PostgreSQL, default Pg16
-use rurqe::sqlite::prelude::*;          // SQLite, default Sqlite3_35
-use rurqe::postgres::pg16::prelude::*;  // explicit engine version
+use rurqe::postgres::prelude::*; // PostgreSQL, default Pg16
 
-let q = select_from(Users).select(cols!(UsersId));
+let q = select_from(User).select(cols!(UserId));
+# let _ = q;
+```
 
+```rust,no_run
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+// The same query against SQLite:
+use rurqe::sqlite::prelude::*; // SQLite, default Sqlite3_35
+
+let q = select_from(User).select(cols!(UserId));
+# let _ = q;
+```
+
+```rust,no_run
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+// An explicit engine version:
+use rurqe::postgres::pg16::prelude::*; // PostgreSQL 16
+
+let q = select_from(User).select(cols!(UserId));
+# let _ = q;
+```
+
+```rust,no_run
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
 // Dialect-agnostic code (library extension, core chapters) names the dialect
 // explicitly; this is the only place the turbofish form appears:
 use rurqe::prelude::*;
+
 let q = select_from::<Postgres, User>().select(cols!(UserId));
+# let _ = q;
 ```
 
 Version modules: `pg14`, `pg15`, `pg16`, `sqlite3_0`, `sqlite3_24`,
@@ -139,26 +178,53 @@ a column to its table and is checked through `ColumnBelongsTo<T>`.
 
 ## 6. Execution
 
-```rust
-let built = select_from(Users).select(cols!(UsersId)).build()?;
+```rust,no_run
+# use rurqe::postgres::prelude::*;
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut conn: PgConnection = todo!();
+// `.build()` assembles the AST and runs the Tier 2 checks before any I/O:
+let built = select_from(User).select(cols!(UserId)).build()?;
+let query = select_from(User).select(cols!(UserId));
 
-let all  = conn.fetch_all(&q)?;
-let one  = conn.fetch_one(&q)?;        // 0 rows  -> ExecutionError::NoRows
-let opt  = conn.fetch_optional(&q)?;   // >1 rows -> ExecutionError::MultipleRows
-let n    = conn.execute(&q)?;          // affected rows
+let all = conn.fetch_all(&query)?;
+let one = conn.fetch_one(&query)?; // 0 rows  -> ExecutionError::NoRows
+let opt = conn.fetch_optional(&query)?; // >1 rows -> ExecutionError::MultipleRows
+let n = conn.execute(&query)?; // affected rows
+# let _ = (built, all, one, opt, n);
+#     Ok(())
+# }
 ```
 
 `fetch_optional` reads at most two rows, so the whole set is never materialized.
 
 Transactions:
 
-```rust
+```rust,no_run
+# use rurqe::postgres::prelude::*;
+# rurqe::table! {
+#     User => "users" {
+#         UserId => "id": i64,
+#     }
+# }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut conn: PgConnection = todo!();
 let value = conn.transaction(|tx| {
-    tx.execute(&insert_into(Users).values((UserId::set(1i64),)))?;
+    tx.execute(&insert_into(User).values((UserId::set(1i64),)))?;
     Ok(())
 })?;
+# let _ = value;
 
-conn.transaction_with_isolation(IsolationLevel::Serializable, |tx| Ok(()))?;
+conn.transaction_with_isolation(IsolationLevel::Serializable, |tx| {
+    tx.execute(&insert_into(User).values((UserId::set(2i64),)))?;
+    Ok(())
+})?;
+#     Ok(())
+# }
 ```
 
 Rules:
@@ -172,12 +238,40 @@ Rules:
 
 ## 7. Domain types
 
-```rust
+```rust,no_run
+# use rurqe::prelude::*;
+# #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+# pub struct Txid([u8; 32]);
+# impl AsRef<[u8]> for Txid {
+#     fn as_ref(&self) -> &[u8] {
+#         &self.0
+#     }
+# }
+# impl TryFrom<&[u8]> for Txid {
+#     type Error = std::array::TryFromSliceError;
+#     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+#         Ok(Txid(bytes.try_into()?))
+#     }
+# }
+# #[derive(Clone, PartialEq, Eq, Debug)]
+# pub struct Address(String);
+# impl std::fmt::Display for Address {
+#     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+#         f.write_str(&self.0)
+#     }
+# }
+# impl std::str::FromStr for Address {
+#     type Err = std::convert::Infallible;
+#     fn from_str(s: &str) -> Result<Self, Self::Err> {
+#         Ok(Address(s.to_owned()))
+#     }
+# }
 rurqe::impl_sql_binary_newtype!(Txid, 32);
 rurqe::impl_sql_text_newtype!(Address);
 
 #[derive(SqlType, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct UserId(i64); // #[sql(transparent)]
+# let _ = (Txid([0u8; 32]), Address(String::new()), UserId(0));
 ```
 
 Derive modes: `transparent`, `as = Bytes` (+ `len = N`), `as = Text`; for an
