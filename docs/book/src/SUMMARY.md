@@ -1,13 +1,13 @@
 # Summary
 
-# Part I. Introduction
+# Part I: Getting Started
 
 - [Philosophy of RURQE](intro/philosophy.md)
 - [The architectural tetrad](intro/tetrad.md)
 - [Two-tier SQL correctness](intro/two_tier.md)
 - [Quickstart in five minutes](intro/quickstart.md)
 
-# Part II. Ergonomics and Kysely DX
+# Part II: Ergonomics & Execution
 
 - [Everyday queries: the portable core](core/overview.md)
 - [Schema: tables and columns](core/schema.md)
@@ -17,7 +17,7 @@
 - [DML: `INSERT`, `UPDATE`, `DELETE`](core/dml.md)
 - [Nested results: `nest_many` and `nest_one`](features/nested.md)
 
-# Part III. Relational power
+# Part III: Relational Power
 
 - [Joins](core/joins.md)
 - [Aliases](core/aliasing.md)
@@ -27,7 +27,7 @@
 - [Window functions](core/window.md)
 - [Set operations](core/set_ops.md)
 
-# Part IV. Dialects
+# Part IV: Dialects & Runtime
 
 - [Dialects overview](dialects/overview.md)
 - [Philosophy: native or nothing](dialects/philosophy.md)
@@ -60,7 +60,7 @@
   - [Ecosystem types, values, and decoding](runtime/types.md)
   - [Custom types](runtime/custom_types.md)
 
-# Part V. Lifecycle and migrations
+# Part V: Lifecycle and Migrations
 
 - [Schema evolution: overview](migrations/overview.md)
 - [The crisis of traditional migrations in the AI era](migrations/problem.md)
@@ -72,7 +72,7 @@
 - [The checkpoint protocol](migrations/checkpoint_protocol.md)
 - [Migration concurrency](dialects/sqlite/concurrency.md)
 
-# Part VI. The `rurqe` toolchain
+# Part VI: The `rurqe` Toolchain
 
 - [The `rurqe` toolchain](toolchain/overview.md)
 
