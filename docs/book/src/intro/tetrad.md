@@ -2,22 +2,14 @@
 
 RURQE is assembled from four industrial ideas, each of which closes a weakness of the others.
 
-```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                            THE ARCHITECTURAL TETRAD                          │
-├───────────────────────┬────────────────────────┬───────────────────┬─────────┤
-│ Kysely ergonomics     │ jOOQ expressiveness    │ Flyway lifecycle  │ Rust    │
-│        (DX)           │ and relational depth   │                   │ types   │
-├───────────────────────┼────────────────────────┼───────────────────┼─────────┤
-│ • fluent syntax       │ • schema as SSOT       │ • versioned V...  │ • gates │
-│ • named fields        │ • complex joins, CTEs  │ • repeatable R... │ • zero  │
-│ • zero boilerplate    │ • strict nullability   │ • SHA-256         │   cost  │
-│ • autocompletion      │ • catalog introspection│ • baseline/repair │ • clear │
-│                       │                        │ • pruning         │  errors │
-└───────────────────────┴────────────────────────┴───────────────────┴─────────┘
-```
+| Pillar | What it contributes |
+|---|---|
+| **Ergonomics of the query DSL** | fluent syntax, named fields, zero boilerplate, autocompletion |
+| **Relational depth** | the schema as the source of truth, complex joins and CTEs, strict nullability, catalog introspection |
+| **Lifecycle integrity** | versioned `V...` and repeatable `R...` scripts, SHA-256 checksums, baseline and repair, pruning |
+| **Compile-time types** | capability gates, zero cost, actionable messages |
 
-## 1. Kysely ergonomics (developer experience)
+## 1. Ergonomics of the query DSL
 
 - The dialect is pinned once by a prelude (`use rurqe::postgres::prelude::*;`), a table is passed **by value** (`select_from(User)`), and columns are zero-sized values — so there is no turbofish anywhere in application code.
 - **Named projections.** `select!` synthesizes an anonymous row struct at the call site, `cols!` keeps a positional selection when a tuple is genuinely wanted, and `dto!` produces a reusable struct for results that cross a function boundary. No `row.0`, no manual `FromRow` boilerplate.
@@ -33,7 +25,7 @@ let contacts = select_from(User)
     .fetch_all(&mut conn)?;
 ```
 
-## 2. jOOQ expressiveness and relational depth
+## 2. Relational depth
 
 - **The schema is the primary source.** The catalog is introspected and the markers are generated from it; the schema is never duplicated by hand.
 - **Relational expressiveness.** Multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, and the set operations `UNION` / `INTERSECT` / `EXCEPT`.
@@ -51,7 +43,7 @@ let ranked = select_from(Employee)
     .fetch_all(&mut conn)?;
 ```
 
-## 3. Flyway lifecycle (schema evolution integrity)
+## 3. Lifecycle integrity
 
 - **Two models at once.** Classic sequential migrations (`V...`, `R...` with SHA-256 checksums, `baseline`, `repair`) and the AI-first **Stage + Tail** model: the declarative state under `schema/` as the SSOT for humans and LLMs, plus the active tail under `migrations/` as a delta for already deployed databases.
 - **Cold start.** A clean environment (CI, container, local machine) initializes directly from `schema/`, without replaying the migration history.

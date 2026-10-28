@@ -1,8 +1,8 @@
 # Capability matrix
 
 A summary of what is available in which dialect, from which engine version, and
-under which Cargo feature. The source is the capability-trait implementations in
-`crates/rurqe-postgres/src/dialect.rs` and `crates/rurqe-sqlite/src/dialect.rs`.
+under which Cargo feature. Every capability below is a property of the dialect and
+its version: a clause outside it does not exist in the API at all.
 
 ## 1. Version markers
 
@@ -11,8 +11,8 @@ under which Cargo feature. The source is the capability-trait implementations in
 | PostgreSQL | `Pg14`, `Pg15`, `Pg16` | `Pg16` |
 | SQLite | `Sqlite3_0`, `Sqlite3_24`, `Sqlite3_25`, `Sqlite3_30`, `Sqlite3_35`, `Sqlite3_38` | `Sqlite3_35` |
 
-`Postgres<V: PgVersion = Pg16>` and `Sqlite<V: SqliteVersion = Sqlite3_35>` are
-zero-sized parameterized dialect types.
+The markers are zero-sized: a dialect is a type, and the version argument is what
+decides which capabilities that type implements.
 
 ## 2. Capability traits
 
@@ -35,7 +35,7 @@ zero-sized parameterized dialect types.
 | `SupportsGreatest` | ✓ | — | — | — | — | — | — |
 | `SupportsDistinctFrom` | ✓ | — | — | — | — | — | — |
 
-Code comments record the reasons: `FULL OUTER JOIN` arrived in SQLite 3.39.0
+The reasons are engine versions: `FULL OUTER JOIN` arrived in SQLite 3.39.0
 (beyond the newest marker), `GREATEST`/`LEAST` never arrived in SQLite (the
 scalar `max`/`min` play their role), and `IS DISTINCT FROM` — 3.39.0.
 
@@ -99,7 +99,7 @@ cargo build -p rurqe --no-default-features --features tokio-postgres
 
 ## 6. Values ↔ Rust
 
-| `SqlVal` | Rust | Feature |
+| Value | Rust | Feature |
 |---|---|---|
 | `Null` | `Option<T>::None` | — |
 | `I32` | `i16`, `i32`, `u32`, `usize`, `bool`(0/1) | — |
@@ -116,8 +116,8 @@ cargo build -p rurqe --no-default-features --features tokio-postgres
 | `NaiveDate` | `chrono::NaiveDate` | `chrono` |
 | `Json` | `serde_json::Value`, `Json<T>` | `serde_json` |
 
-`SqlVal` is marked `#[non_exhaustive]`: the set of variants depends on the
-features, so a `match` outside the crate must carry a wildcard arm.
+The value type carries no exhaustive set of variants: which kinds exist depends on
+the enabled features, so a `match` over it must carry a wildcard arm.
 
 ## 7. Adapters and execution traits
 

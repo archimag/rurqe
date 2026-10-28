@@ -10,19 +10,18 @@ The second model adds a source of truth describing what the schema should be. A 
 
 ## Layout
 
-```text
-project/
-├── schema/                     # declarative stage (SSOT of the structure)
-│   ├── users.sql
-│   └── billing.sql
-├── migrations/                 # active tail
-│   ├── checkpoint.toml         # pruning boundary
-│   ├── checkpoint-stage/       # verbatim stage snapshot at the boundary
-│   ├── checkpoint.lock         # writer serialisation section
-│   └── V051__add_credits.sql
-├── schema.lock                 # deterministic catalog snapshot
-└── rurqe.toml
-```
+| Path | Purpose |
+|---|---|
+| `schema/` | the declarative stage: the structure as it should be |
+| `schema/users.sql` | one DDL file per domain |
+| `schema/billing.sql` | another domain file |
+| `migrations/` | the active tail |
+| `migrations/checkpoint.toml` | the pruning boundary |
+| `migrations/checkpoint-stage/` | the verbatim stage snapshot at the boundary |
+| `migrations/checkpoint.lock` | the writer serialisation section |
+| `migrations/V051__add_credits.sql` | a delta for an already deployed database |
+| `schema.lock` | the deterministic catalog snapshot |
+| `rurqe.toml` | the project configuration |
 
 ## The stage is a directory of SQL
 

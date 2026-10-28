@@ -64,8 +64,8 @@ users.created_at = "chrono::NaiveDateTime"
 
 Unknown sections and unknown `[codegen]` keys are rejected rather than
 ignored, and every rejected entry is reported at the line and column of its
-own declaration. The positions come from the parsed TOML tree
-(`toml_edit::ImDocument`), not from a scan of the source text, so a path
+own declaration. The positions come from the parsed TOML document rather than from
+a scan of the source text, so a path
 spelled inside a multi-line string literal or after a `#` never displaces a
 diagnostic onto its own line.
 

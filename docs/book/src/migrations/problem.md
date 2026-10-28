@@ -1,6 +1,6 @@
 # The crisis of traditional migrations in the AI era
 
-The traditional model (Flyway, Liquibase) was built around a human who remembers the history of the project. A script `V051__add_credits.sql` is a delta whose meaning is only recoverable together with the previous fifty. While the history is read by the person who wrote it, this works. As soon as the history is read by an LLM or by a new engineer, the model breaks for four independent reasons.
+The traditional model — a linear history of numbered scripts — was built around a human who remembers the history of the project. A script `V051__add_credits.sql` is a delta whose meaning is only recoverable together with the previous fifty. While the history is read by the person who wrote it, this works. As soon as the history is read by an LLM or by a new engineer, the model breaks for four independent reasons.
 
 ## 1. Context instead of state
 
@@ -26,7 +26,7 @@ RURQE replaces the squash with pruning: `prune --before <version>` deletes files
 
 ## 4. Divergence between declaration and execution
 
-Even a carefully maintained history does not guarantee that `schema/` (or the code-generated `schema.rs`) matches what actually results from replaying the tail. Classic tools offer no such check at all.
+Even a carefully maintained history does not guarantee that `schema/` (or the code-generated `schema.rs`) matches what actually results from replaying the tail; a script history on its own offers no such check at all.
 
 Two RURQE mechanisms close this gap:
 

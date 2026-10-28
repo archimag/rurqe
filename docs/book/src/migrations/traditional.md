@@ -1,6 +1,6 @@
 # The traditional path: `V...` and `R...`
 
-The classic Flyway-compatible cycle is fully implemented in `rurqe-migrate` and is available both through the CLI and as an embedded runner.
+The classic sequential migration cycle is fully implemented in `rurqe-migrate` and is available both through the CLI and as an embedded runner.
 
 ## Script naming
 

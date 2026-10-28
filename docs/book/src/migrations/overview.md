@@ -7,7 +7,7 @@ Inside the lifecycle the problem splits in two:
 - **the structure** of the database, described once in a declarative `schema/` directory;
 - **the journey** of an already deployed database to that structure, described by a short tail in `migrations/`.
 
-The second half on its own is the classic Flyway flow: versioned `V...` scripts, repeatable `R...` scripts, SHA-256 checksums, `repair` and `baseline`. It keeps working exactly as before — see [the traditional path](traditional.md).
+The second half on its own is the classic sequential flow: versioned `V...` scripts, repeatable `R...` scripts, SHA-256 checksums, `repair` and `baseline`. It keeps working exactly as before — see [the traditional path](traditional.md).
 
 ## Three things that make the difference
 

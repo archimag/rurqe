@@ -17,7 +17,7 @@ table! {
 }
 ```
 
-The macro emits one unit struct for the table and one unit struct per column. That is exactly why a marker can be used **as a value**: `UserId.eq(1i64)`, and the Kysely-style `users.name.eq(...)` works because the name of a unit struct in Rust is at the same time the constructor of its value.
+The macro emits one unit struct for the table and one unit struct per column. That is exactly why a marker can be used **as a value**: `UserId.eq(1i64)`, and the value-based `users.name.eq(...)` works because the name of a unit struct in Rust is at the same time the constructor of its value.
 
 ## Contracts
 
@@ -45,7 +45,7 @@ pub trait ColumnBelongsTo<T: Table> {}
 
 ## Rust type → SQL type
 
-The mapping is fixed in `SqlCastTarget` (`rurqe-core/src/expr/functions.rs`) — these are exactly the names that land inside `CAST(...)`:
+The mapping is fixed: these are the names that land inside `CAST(...)`:
 
 | Rust | SQL |
 |---|---|
