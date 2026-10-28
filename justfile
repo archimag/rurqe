@@ -9,6 +9,8 @@ verify: check clippy test
 [group('tauqe')]
 [doc('Run cargo check across all workspace targets')]
 check:
+    # `--workspace` includes the root `examples` crate and `--all-targets` its
+    # `[[example]]` targets, so every documented example is compiled here.
     cargo check --workspace --all-targets
 
 # Run cargo clippy with -D warnings across all workspace targets

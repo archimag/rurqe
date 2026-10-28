@@ -1022,6 +1022,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rurqe-examples"
+version = "0.1.0"
+dependencies = [
+ "rurqe",
+]
+
+[[package]]
 name = "rurqe-facade-tests"
 version = "0.1.0"
 dependencies = [

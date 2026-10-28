@@ -8,6 +8,7 @@ members = [
     "crates/rurqe-postgres",
     "crates/rurqe-sqlite",
     "crates/rurqe-cli",
+    "examples",
 ]
 resolver = "2"
 

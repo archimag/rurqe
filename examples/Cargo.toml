@@ -1,0 +1,32 @@
+[package]
+name = "rurqe-examples"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compilable documentation examples for RURQE (living documentation)"
+# The crate is a documentation surface, never a published artifact.
+publish = false
+
+# The workspace denies direct printing because the toolchain writes through a
+# single operator channel. An example is read by a human, and printing the
+# statement or the row it produced is the point of running it, so this package
+# deliberately does not opt into `[lints] workspace = true`.
+
+# Cargo discovers example targets only under `<package>/examples/`, while the
+# documentary files live at the package root, so that a chapter reaches them
+# with the compact `{{#rustdoc_include ../../../..//examples/<file>.rs:<anchor>}}`
+# path. Every file is therefore registered here as an explicit target whose
+# `name` is the file stem and whose `path` is the file name:
+#
+#     [[example]]
+#     name = "quickstart"
+#     path = "quickstart.rs"
+#
+# Registration is what places the file under `cargo check --workspace
+# --all-targets`; an unregistered file is dead documentation. The targets are
+# compiled, never executed, by the verification pipeline.
+
+[dependencies]
+rurqe = { path = "../crates/rurqe", version = "0.1.0" }
