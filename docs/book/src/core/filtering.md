@@ -160,3 +160,4 @@ let rows = select_from(User)
 - [Subqueries](subqueries.md) — `EXISTS`, `IN`, scalar subqueries.
 - [Ordering and pagination](ordering.md) — tuple comparisons and keyset cursors.
 - [DML](dml.md) — the same predicates on the `WHERE` of mutations.
+- [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions.

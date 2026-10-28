@@ -52,6 +52,21 @@ Projecting an ungrouped column is rejected at the call site, and a `select!` sel
 
 The `schema` escape hatch `Expr::column::<C>()` does not bypass the rule: an expression reading a column keeps that column's scope. `without_scope()` does not help either — it substitutes the `Unscoped` marker, not an empty scope, so the expression does not become a constant.
 
+## The aggregate functions
+
+| Call | SQL |
+|---|---|
+| `count_all()` | `COUNT(*)` |
+| `count(col)` | `COUNT(col)` |
+| `count_distinct(col)` | `COUNT(DISTINCT col)` |
+| `sum(col)` / `sum_distinct(col)` | `SUM(col)` / `SUM(DISTINCT col)` |
+| `avg(col)` / `avg_distinct(col)` | `AVG(col)` / `AVG(DISTINCT col)` |
+| `min(col)` / `max(col)` | `MIN(col)` / `MAX(col)` |
+
+`count_all()` counts rows; `count(col)` counts the rows where the column is present — the distinction the two spellings carry.
+
+An aggregate call is an expression like any other: it compares — `.having(count_all().gt(0i64))` above — and it travels through the arithmetic and the scalar functions of [Expressions](expressions.md). The call-attached `DISTINCT` modifier and `FILTER (WHERE ...)` exist on the call alone; an expression built from the call, such as `sum(OrderTotal) + 1.0`, accepts neither.
+
 ## Aggregate folding in scalar functions
 
 `coalesce`, `nullif`, `greatest`, `least`, and `CASE` propagate the aggregate marker through `FunctionOperand` / `CombineAggr`, so `coalesce(sum(orders.total), 0.0)` stays an aggregate and projects from a `GroupedQuery`. A `CASE` branch reading a bare column makes the expression per-row, and the grouping rejects it.
@@ -143,6 +158,7 @@ The residual cases that cannot be expressed as a positive assertion in types: `B
 
 ## Related chapters
 
+- [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions an aggregate folds through.
 - [Window functions](window.md) — a window over groups.
 - [Projections and `SELECT`](select.md)
 - [NF² and MULTISET](../theory/nf2_multiset.md) — an aggregated subquery as a derived table.
