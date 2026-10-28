@@ -705,3 +705,144 @@ fn async_fetch_all_reads_the_unbounded_result_set() {
     );
     assert_eq!(backend.limits(), vec![None]);
 }
+
+#[test]
+fn fetch_collect_decodes_rows_into_a_hash_map() {
+    // The collection is chosen at the call site, so a decoded pair becomes a key
+    // and its value without an intermediate `Vec` of rows.
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .select((UserId, UserName));
+    let mut backend = MockBackend {
+        rows: vec![
+            vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())],
+            vec![SqlVal::I64(2), SqlVal::Text("guest".to_owned())],
+        ],
+        ..MockBackend::default()
+    };
+
+    let map = backend
+        .fetch_collect::<std::collections::HashMap<i64, String>, _>(&query)
+        .expect("rows decode");
+
+    assert_eq!(map.len(), 2);
+    assert_eq!(map.get(&1), Some(&"root".to_owned()));
+    assert_eq!(map.get(&2), Some(&"guest".to_owned()));
+}
+
+#[test]
+fn fetch_collect_decodes_rows_into_a_hash_set_and_a_btree_set() {
+    let mut backend = MockBackend {
+        rows: vec![
+            vec![SqlVal::I64(2)],
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+        ],
+        ..MockBackend::default()
+    };
+
+    let unordered = backend
+        .fetch_collect::<std::collections::HashSet<(i64,)>, _>(&user_id_query())
+        .expect("rows decode");
+    assert_eq!(
+        unordered,
+        std::collections::HashSet::from([(1i64,), (2i64,)])
+    );
+
+    let ordered = backend
+        .fetch_collect::<std::collections::BTreeSet<(i64,)>, _>(&user_id_query())
+        .expect("rows decode");
+    assert_eq!(ordered, std::collections::BTreeSet::from([(1i64,), (2i64,)]));
+}
+
+#[test]
+fn fetch_collect_decodes_rows_into_a_deque_in_result_order() {
+    let mut backend = MockBackend {
+        rows: vec![
+            vec![SqlVal::I64(3)],
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+        ],
+        ..MockBackend::default()
+    };
+
+    let deque = backend
+        .fetch_collect::<std::collections::VecDeque<(i64,)>, _>(&user_id_query())
+        .expect("rows decode");
+
+    assert_eq!(
+        deque.into_iter().collect::<Vec<_>>(),
+        vec![(3i64,), (1i64,), (2i64,)]
+    );
+}
+
+#[test]
+fn fetch_collect_reports_the_row_that_fails_to_decode() {
+    let mut backend = MockBackend {
+        rows: vec![vec![SqlVal::I64(1)], vec![SqlVal::Text("oops".to_owned())]],
+        ..MockBackend::default()
+    };
+
+    let error = backend
+        .fetch_collect::<std::collections::HashSet<(i64,)>, _>(&user_id_query())
+        .expect_err("a text value does not decode as an i64");
+
+    assert!(error.is_row_decode());
+    assert_eq!(
+        error.as_row_decode().map(|(row_index, _)| row_index),
+        Some(1)
+    );
+}
+
+#[test]
+fn fetch_iter_decodes_rows_only_when_they_are_consumed() {
+    let mut backend = MockBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::Text("oops".to_owned())],
+            vec![SqlVal::I64(3)],
+        ],
+        ..MockBackend::default()
+    };
+
+    let mut rows = backend.fetch_iter(&user_id_query()).expect("rows are read");
+
+    // The raw buffer is read up front; decoding waits for `next`.
+    assert_eq!(rows.decoded(), 0);
+    assert_eq!(rows.size_hint(), (3, Some(3)));
+
+    assert_eq!(rows.next(), Some(Ok((1i64,))));
+    assert_eq!(rows.decoded(), 1);
+
+    let error = rows
+        .next()
+        .expect("the second row is present")
+        .expect_err("a text value does not decode as an i64");
+    assert!(error.is_row_decode());
+    assert_eq!(rows.decoded(), 2);
+
+    assert_eq!(rows.next(), Some(Ok((3i64,))));
+    assert_eq!(rows.next(), None);
+    assert_eq!(rows.decoded(), 3);
+}
+
+#[test]
+fn fetch_iter_streams_rows_without_collecting_them() {
+    let mut backend = MockBackend {
+        rows: vec![
+            vec![SqlVal::I64(1)],
+            vec![SqlVal::I64(2)],
+            vec![SqlVal::I64(3)],
+            vec![SqlVal::I64(4)],
+        ],
+        ..MockBackend::default()
+    };
+
+    let total = backend
+        .fetch_iter(&user_id_query())
+        .expect("rows are read")
+        .map(|row| row.expect("every id decodes").0)
+        .sum::<i64>();
+
+    assert_eq!(total, 10);
+}
