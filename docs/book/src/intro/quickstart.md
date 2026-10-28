@@ -1,6 +1,6 @@
 # Quickstart in five minutes
 
-A working query in three minutes: a typed `INSERT ... RETURNING`, a named projection through `select!`, and a `LEFT JOIN` whose nullability the compiler infers on its own. Every fragment below is included from the `examples/` crate, so `cargo check --workspace --all-targets` compiles it and `mdbook test` runs it; no code is written inline.
+A working query in a few minutes: a typed `INSERT ... RETURNING`, a named projection, a `LEFT JOIN` whose nullability the compiler infers, and one statement that returns a nested collection. Building a statement never opens a connection, so everything below compiles without a database — and every fragment is compiled by the workspace build, so a chapter cannot drift from the API it documents.
 
 ## 1. Dependency
 
@@ -35,11 +35,11 @@ table! {
 # fn main() {}
 ```
 
-A real project never writes this by hand: `cargo db-codegen` generates the same zero-sized markers from the live catalog.
+A real project rarely writes this by hand: `cargo db-codegen` generates the same zero-sized markers from the live catalog.
 
 ## 3. A typed read
 
-`examples/quickstart.rs` builds a filtered projection and prints the SQL it produced:
+A filtered projection, built without a connection:
 
 ```rust,no_run
 # extern crate rurqe;
@@ -50,7 +50,7 @@ A real project never writes this by hand: `cargo db-codegen` generates the same 
 # }
 ```
 
-`built` is a `BuiltQuery`: `sql` holds the statement and `params` its parameters. The projection is written once with `cols!`; the field names come from the markers (`UserId` → `user_id`), which is why no tuple index appears anywhere.
+`built` is a `BuiltQuery`: `sql` holds the statement and `params` its parameters. `build()` is the one place that can refuse a syntactically sound but semantically invalid statement, so the refusal arrives before any network I/O. The projection is written once with `cols!`, and the row has one field per projection, named after the marker (`UserId` → `user_id`) — which is why no tuple index appears anywhere.
 
 ## 4. A write that returns the row
 
@@ -63,7 +63,7 @@ A real project never writes this by hand: `cargo db-codegen` generates the same 
 # }
 ```
 
-`values` checks every value against the column's Rust type at the call site, so `UserId::set("1")` does not compile. `returning` is gated by `SupportsReturning`.
+`values` checks every value against the column's Rust type at the call site, so `UserId::set("1")` does not compile. `returning` is gated by the engine: on a version that cannot return a row, the call is not a method at all.
 
 ## 5. Mutations
 
@@ -85,7 +85,7 @@ A real project never writes this by hand: `cargo db-codegen` generates the same 
 # }
 ```
 
-`update(...)` and `delete_from(...)` start unfiltered: the statement is not buildable until `.where_(...)` or an explicit `.allow_all()` is called, so an accidental full-table mutation is impossible by construction. An upsert appends an `ON CONFLICT` clause of its own:
+`update(...)` and `delete_from(...)` start unfiltered: the statement is not buildable until `.where_(...)` or an explicit `.allow_all()` is written, so an accidental full-table mutation is impossible by construction. An upsert appends an `ON CONFLICT` clause of its own:
 
 ```rust,no_run
 # extern crate rurqe;
@@ -152,11 +152,15 @@ The same query on SQLite differs only in the prelude and the placeholder style (
 
 Version modules (`pg14`, `pg15`, `pg16`, `sqlite3_0` … `sqlite3_38`) also fix the capability set: `RETURNING` needs SQLite 3.35, `ON CONFLICT` needs 3.24, and a clause the pinned version lacks is not a method at all.
 
-## 9. Errors are types
+## 9. Building and executing are separate steps
+
+`build()` produces the statement; executing it needs a connection. The execution family covers every shape a query can have: `fetch_one`, `fetch_optional`, `fetch_all`, `fetch_collect`, `fetch_iter`, and `execute` for a mutation, which reads no rows back.
+
+## 10. Errors are types
 
 A statement rejected before it reaches the engine is a typed `BuildError`; a driver failure is an `ExecutionError`, which separates a missing row (`is_not_found`), extra rows (`is_multiple_rows`), a decoding failure (`is_row_decode`), and a driver failure (`as_backend`, `into_backend`). Neither path panics.
 
-## 10. What next
+## 11. What next
 
 - [Projections and `SELECT`](../core/select.md) — `select!`, `cols!`, `dto!`, and the row type.
 - [Predicates and `WHERE`](../core/filtering.md) and [ordering](../core/ordering.md).
