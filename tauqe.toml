@@ -26,7 +26,8 @@ scribe = "Claude Haiku"    # history compaction, git squash commit messages, dif
 # healing stalls or exhausted retries the turn advances to the next coder entry.
 coder = [
   "DeepSeek Flash",
-  { model = "GLM", effort = "high" }
+  { model = "GLM", effort = "high" },
+  "Gemini Flash"
 ]
 
 # Conceptual design, plan refinement, blocked-step replanning.
@@ -58,13 +59,7 @@ max_retries = 5
 # max_replans = 2
 # workflow = "git"   # edit workflow: "git", "naive" (default: "git")
 # protocol = "xml"   # active edit protocol: "xml" (default: "xml")
-
-[toolchain]
-# timeout_secs = 600   # wall-clock timeout in seconds for each verification command (default: 600)
-# max_retries = 5      # maximum retry attempts for compiler/linter self-healing
-# auto_heal = true     # automatically trigger the verification healing loop on check failures (default: true)
-# auto_verify = true   # automatically run toolchain verification on turns with applied edits (default: true)
-# target = "all"       # default verification target when omitted: "all", "check", "clippy", "test" (default: "all")
+patch_strategy = "line_anchor"
 
 [git]
 # upstream = "origin/master"  # base upstream branch for calculating diffs (auto-detected by default)
@@ -82,5 +77,6 @@ repomap_token_budget = 40000 # token budget for the repository map (default: 400
 pinned = [
     "Conventions.md",
     "Vision.md",
-    "ROADMAP.md"
+    "ROADMAP.md",
+    "docs/Conventions.md"
 ]
