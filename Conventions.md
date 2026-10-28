@@ -95,4 +95,4 @@
   * Any change to the public API, the query DSL, a macro contract, a generated code shape, or a CLI command must ship with the synchronously updated mdBook sources in the same commit; a feature is not complete until its documentation section reflects it.
   * Every documented signature, flag, predicate, migration algorithm, or lock protocol is derived exclusively from the actual workspace sources and tests. Documentation written from memory, approximated, or describing a capability absent from the code is a defect, not a wording issue.
   * A statement about a compile-time guarantee or a runtime behavior is valid only when a concrete code location or an existing test backs it.
-  * The book is built with `just doc-build` (rendered into `target/book`) and previewed locally with `just doc-serve`; a broken book build is a failing check, not a documentation nit.
+  * The book is built with `just doc-build` (rendered into `target/book`), previewed with `just doc-serve`, and all Rust code snippets are verified via `just doc-test` (`mdbook test docs -L target/debug/deps`); broken examples or build failures are failing checks, not documentation nits.
