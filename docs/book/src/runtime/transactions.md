@@ -9,11 +9,14 @@ state accounting through `TransactionalConnection`.
 ## State accounting: `TransactionStatus`
 
 ```rust
+# extern crate rurqe;
+# use rurqe::core::query::TransactionContext;
 pub struct TransactionStatus {
     context: TransactionContext,
     open: bool,
     poisoned: bool,
 }
+# fn main() {}
 ```
 
 - `is_open()` — whether an outer transaction is open;
@@ -28,7 +31,7 @@ pub struct TransactionStatus {
 
 ## Opening a block
 
-```rust
+```rust,ignore
 pub fn begin(connection: &'a mut B) -> Result<Self, B::Error>;
 pub fn begin_with(
     connection: &'a mut B,
@@ -64,11 +67,13 @@ The logic of `begin_with`:
 ## The isolation level belongs to the outer transaction only
 
 ```rust
+# extern crate rurqe;
 pub enum IsolationLevel {
     ReadCommitted,
     RepeatableRead,
     Serializable,
 }
+# fn main() {}
 ```
 
 SQL does not define per-savepoint isolation, so `begin_with` called inside an
@@ -109,7 +114,7 @@ after a failed rollback, `error!` on a repeated refusal. With the feature off,
 
 `PgConnection`:
 
-```rust
+```rust,ignore
 pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
 where
     F: FnOnce(&mut PgConnection) -> Result<T, E>,

@@ -6,6 +6,7 @@ supported today — PostgreSQL through `rurqe-postgres` and SQLite through
 already wrote targets the other engine as soon as the import changes.
 
 ```rust
+# extern crate rurqe;
 use rurqe::prelude::*;
 
 table! {
@@ -16,17 +17,22 @@ table! {
         UserActive => "active": bool,
     }
 }
+# fn main() {}
 ```
 
 ## The same query, both engines
 
-```rust
+```rust,no_run
+# extern crate rurqe;
 use rurqe::postgres::prelude::*;
-
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() {
 let query = select_from(User)
     .select(select!(user_id: UserId, user_name: UserName))
     .where_(UserActive.eq(true))
     .order_by_asc(UserId);
+# let _ = query;
+# }
 ```
 
 ```sql
@@ -56,8 +62,16 @@ of the `Dialect` trait.
 `ILIKE` is a PostgreSQL extension; SQLite knows only the case-sensitive `LIKE`.
 The same predicate keeps its meaning on both engines:
 
-```rust
-.where_(UserName.ilike("%ali%"))
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserName => "name": String, } }
+# fn main() {
+# let query = select_from(User)
+#     .select(cols!(UserName))
+.where_(UserName.ilike("%ali%"));
+# let _ = query;
+# }
 ```
 
 ```sql
@@ -89,24 +103,35 @@ projection is reachable from `sqlite3_38` only — see
 A clause is reachable only when the pinned engine version really runs it, so
 `RETURNING` compiles against SQLite 3.35:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
 use rurqe::sqlite::sqlite3_35::prelude::*;
-
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut db: SqliteConnection = todo!();
 let row = db.fetch_one(&insert_into(User)
     .values((UserId::set(1i64), UserName::set("alice")))
     .returning(cols!(UserId, UserName)))?;
+# let _ = row;
+# Ok(())
+# }
 ```
 
 and against 3.24 it is not a method at all:
 
 ```rust
+```rust
+# extern crate rurqe;
 use rurqe::sqlite::sqlite3_24::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
 
 // The pinned version has no `RETURNING`: the call does not exist.
 let inserted = insert_into(User)
     .values((UserId::set(1i64), UserName::set("alice")));
+# let _ = inserted;
+# }
 ```
-
 Version pins are listed in [Versions](versions.md), the gates themselves in
 [Capabilities](capabilities.md), and the way to bind one per module in
 [Preludes](preludes.md).

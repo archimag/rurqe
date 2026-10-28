@@ -8,14 +8,20 @@ value layer, the connection, and the pool.
 One import pins the dialect and the version:
 
 ```rust
+# extern crate rurqe;
 use rurqe::sqlite::sqlite3_35::prelude::*;
 // or the default pin, which is 3.35 as well:
 // use rurqe::sqlite::prelude::*;
+# fn main() {}
 ```
 
 ## A working session
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use rurqe::sqlite::rusqlite::Connection;
 
 let connection = Connection::open_in_memory()?;
@@ -46,6 +52,8 @@ let found = db.fetch_all(&select_from(User)
 for user in found {
     println!("#{} {}", user.user_id, user.user_name);
 }
+# Ok(())
+# }
 ```
 
 The `.ilike(...)` predicate renders as
@@ -101,13 +109,19 @@ The adapters repeat the layering of the PostgreSQL crate: the value layer
 `r2d2` pool (`backend/pools`). Each layer sits behind the feature of its own
 dependency, so a build without the driver compiles an empty module.
 
-```rust
+```rust,no_run
+# extern crate rurqe;
 use rurqe::sqlite::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 let mut db = SqliteConnection::open_in_memory()?;
 let rows = db.fetch_all(&select_from(User)
     .select(select!(user_id: UserId, user_name: UserName))
     .where_(UserActive.eq(true)))?;
+# let _ = rows;
+# Ok(())
+# }
 ```
 
 The driver and the migration concurrency model are described in

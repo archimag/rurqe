@@ -6,8 +6,13 @@ RURQE reads the relation in one statement: the engine aggregates the child rows 
 
 ## One query, typed collections
 
-```rust
+```rust,no_run
+# extern crate rurqe;
 use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 
 let users = select_from(User)
     .select(select!(
@@ -29,6 +34,8 @@ for user in users {
         println!("  #{} for {}", order.order_id, order.total);
     }
 }
+# Ok(())
+# }
 ```
 
 `user.orders` is a `Vec` of a record with `order_id` and `total`; nothing is decoded by index, and no second statement was sent.
@@ -37,7 +44,14 @@ for user in users {
 
 The same call for a one-to-one relation stops at the first row and reads as `Option<...>`:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
+
 let users = select_from(User)
     .select(select!(
         user_id: UserId,
@@ -56,6 +70,8 @@ for user in users {
         None => println!("#{}: no orders", user.user_id),
     }
 }
+# Ok(())
+# }
 ```
 
 An absent child is `None`, not an empty collection: "no row" and "a row without values" stay distinguishable.
@@ -64,10 +80,16 @@ An absent child is `None`, not an empty collection: "no row" and "a row without 
 
 The nested statement is a query of its own, so its scope holds only its own `FROM`. A column of the outer query enters the inner predicate through `.without_scope()`, which marks the expression as resolved by the enclosing statement:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
+# fn main() {
 select_from(Order)
     .select(select!(total: OrderTotal))
-    .where_(OrderUserId.eq(UserId.without_scope()))
+    .where_(OrderUserId.eq(UserId.without_scope()));
+# }
 ```
 
 Without it the child query would reference `"users"`, a relation it never declares, and the call is rejected at the call site.

@@ -4,7 +4,9 @@
 and the execution adapters over the native drivers. One import binds it:
 
 ```rust
+# extern crate rurqe;
 use rurqe::postgres::prelude::*;
+# fn main() {}
 ```
 
 ## What the dialect decides
@@ -25,19 +27,31 @@ charge of the produced document.
 
 ### Write a row and read it back in one statement
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let row = conn.fetch_one(&insert_into(User)
     .values((UserId::set(1i64), UserName::set("alice")))
     .returning(cols!(UserId, UserName)))?;
 
 println!("#{} {}", row.user_id, row.user_name);
+# Ok(())
+# }
 ```
 
 [RETURNING and ON CONFLICT](dml.md)
 
 ### Claim pending jobs without contending with peers
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Job => "jobs" { JobId => "id": i64, JobPayload => "payload": String, JobStatus => "status": String, JobCreatedAt => "created_at": i64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let next_job = conn.fetch_optional(&select_from(Job)
     .select(cols!(JobId, JobPayload))
     .where_(JobStatus.eq("pending"))
@@ -45,6 +59,9 @@ let next_job = conn.fetch_optional(&select_from(Job)
     .limit(1)
     .for_update()
     .skip_locked())?;
+# let _ = next_job;
+# Ok(())
+# }
 ```
 
 ```sql
@@ -59,32 +76,55 @@ FOR UPDATE SKIP LOCKED
 
 ### Query inside a JSON document
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Doc => "docs" { DocId => "id": i64, DocMetadata => "metadata": PgJson, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let drafts = conn.fetch_all(&select_from(Doc)
     .select(cols!(DocId))
     .where_(DocMetadata.json_get_text("status").eq("draft")))?;
+# let _ = drafts;
+# Ok(())
+# }
 ```
 
 [`@>`, `?`, `?|`, `->`, `->>`](json.md)
 
 ### Match elements of an array column
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Post => "posts" { PostId => "id": i64, PostTags => "tags": Vec<String>, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
 let tagged = conn.fetch_all(&select_from(Post)
     .select(cols!(PostId))
     .where_(PostTags.any("rust")))?;
+# let _ = tagged;
+# Ok(())
+# }
 ```
 
 [`@>`, `<@`, `&&`, `= ANY`, `= ALL`](arrays.md)
 
 ### Search text and patterns
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserName => "name": String, } }
+# table! { Post => "posts" { PostBody => "body": String, } }
+# fn main() {
 // Full-text search: `"body" @@ to_tsquery($1)`
 let hits = select_from(Post).where_(PostBody.matches_tsquery("rust & sql"));
 
 // POSIX regex: `("name" ~ $1)`
 let named = select_from(User).where_(UserName.regex_match("^al"));
+# let _ = (hits, named);
+# }
 ```
 
 [Full-text search](fts.md) and [regular expressions](regex.md).
@@ -104,7 +144,9 @@ subquery to `Option<T>` automatically.
 `Postgres` defaults to `Pg16`. Pin one per module with the version prelude:
 
 ```rust
+# extern crate rurqe;
 use rurqe::postgres::pg16::prelude::*;
+# fn main() {}
 ```
 
 Every capability marker of the core is implemented for `Postgres<V>` for every

@@ -9,7 +9,7 @@ the `fetch_all`, `fetch_optional`, `fetch_one`, and `execute` helpers of the
 
 Feature: `deadpool-postgres`. It is `Clone` and implements `AsyncQueryBackend`.
 
-```rust
+```rust,ignore
 pub struct PgAsyncPool {
     pool: deadpool_postgres::Pool,
 }
@@ -33,7 +33,7 @@ let rows = pool
 
 A pool error lands in `PgError::Pool`:
 
-```rust
+```rust,ignore
 impl From<deadpool_postgres::PoolError> for PgError {
     fn from(error: deadpool_postgres::PoolError) -> Self {
         PgError::Pool(error)
@@ -48,7 +48,7 @@ one type.
 
 Feature: `r2d2`. The pool is parameterized by an `r2d2` connection manager.
 
-```rust
+```rust,ignore
 pub struct PgPool<M: ManageConnection> {
     pool: r2d2::Pool<M>,
 }
@@ -61,7 +61,7 @@ impl<M: ManageConnection<Connection = postgres::Client>> PgPool<M> {
 
 The errors are kept apart explicitly:
 
-```rust
+```rust,ignore
 pub enum PgPoolError {
     Pool(r2d2::Error),
     Query(PgError),
@@ -75,7 +75,7 @@ pub enum PgPoolError {
 
 Feature: `r2d2`. The manager is any `r2d2` manager over `rusqlite::Connection`.
 
-```rust
+```rust,ignore
 pub struct SqlitePool<M: ManageConnection> {
     pool: r2d2::Pool<M>,
 }
@@ -86,7 +86,7 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
 }
 ```
 
-```rust
+```rust,ignore
 pub enum SqlitePoolError {
     Pool(r2d2::Error),
     Query(::rusqlite::Error),
@@ -96,7 +96,7 @@ pub enum SqlitePoolError {
 The crate documentation example builds and runs as a doctest with the `r2d2`
 feature enabled:
 
-```rust
+```rust,ignore
 use r2d2_sqlite::SqliteConnectionManager;
 
 let manager = SqliteConnectionManager::memory();

@@ -26,6 +26,8 @@ and `GroupedQuery`. Everything outside those boundaries does not compile.
 ## The synchronous backend
 
 ```rust
+# extern crate rurqe;
+# use rurqe::prelude::*;
 pub trait QueryBackend {
     type Error;
 
@@ -39,6 +41,7 @@ pub trait QueryBackend {
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error>;
 }
+# fn main() {}
 ```
 
 `fetch_raw_limited` has a default implementation: it calls `fetch_raw` and
@@ -50,6 +53,9 @@ a query that needs one row never materializes the whole set.
 ## The asynchronous backend
 
 ```rust
+# extern crate rurqe;
+# use core::future::Future;
+# use rurqe::prelude::*;
 pub trait AsyncQueryBackend: Sync {
     type Error: Send;
 
@@ -69,6 +75,7 @@ pub trait AsyncQueryBackend: Sync {
         query: &BuiltQuery,
     ) -> impl Future<Output = Result<u64, Self::Error>> + Send;
 }
+# fn main() {}
 ```
 
 The backend is taken by `&self` and requires `Sync`: a connection is shared
@@ -97,13 +104,16 @@ decoding the extra row.
 ## The execution error
 
 ```rust
+# extern crate rurqe;
+# use rurqe::prelude::*;
 pub enum ExecutionError<E> {
-    Build(crate::query::BuildError),
+    Build(BuildError),
     Backend(E),
-    RowDecode { row_index: usize, source: crate::row::RowDecodeError },
+    RowDecode { row_index: usize, source: RowDecodeError },
     NoRows,
     MultipleRows { count: usize },
 }
+# fn main() {}
 ```
 
 The practical consequence of the two-tier architecture: `ExecutionError::Build`
