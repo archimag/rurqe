@@ -124,6 +124,21 @@ short response.
 row that failed to decode. The index is zero when the query requested a single
 row through `fetch_optional`/`fetch_one`: at most one row is decoded there.
 
+## Streaming rows and choosing the collection
+
+`fetch_collect` and `fetch_iter` (see [Runtime: overview](overview.md)) change
+only *when* a row is decoded, never *how*:
+
+- `fetch_collect::<C, _>` decodes every row into `C: FromIterator<Q::Row>`, so a
+  projection of pairs becomes a `HashMap`, a projection of one column becomes a
+  `HashSet`, and a `Vec` is one choice among them rather than the only one;
+- `fetch_iter` hands back a `QueryRowIter` owning the raw `Vec<Vec<SqlVal>>` of a
+  statement that has already finished: the connection is released before the
+  first row is decoded, and `FromRow` runs on `.next()`.
+
+A decode failure keeps the same shape in both cases: the index is the position
+of the failing row inside the returned buffer and starts at zero.
+
 ## What happens on the PostgreSQL side
 
 The adapter encodes a parameter into the binary representation of the **column

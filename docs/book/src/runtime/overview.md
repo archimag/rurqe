@@ -12,7 +12,7 @@ contract on its own.
 |---|---|---|
 | `ExecutableQuery` | turns a built query into a `BuiltQuery` (SQL + parameters) | `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `GroupedQuery` |
 | `QueryBackend` | synchronous execution of a ready statement | `PgConnection`, `PgPool`, `SqliteConnection`, `SqlitePool` |
-| `QueryBackendExt` | row decoding (`fetch_all`, `fetch_optional`, `fetch_one`, `execute`) | automatically for every `QueryBackend` |
+| `QueryBackendExt` | row decoding and collection (`fetch_all`, `fetch_collect`, `fetch_iter`, `fetch_optional`, `fetch_one`, `execute`) | automatically for every `QueryBackend` |
 | `AsyncQueryBackend` | asynchronous execution of a ready statement | `PgAsyncConnection`, `PgAsyncTransaction`, `PgAsyncPool` |
 | `AsyncQueryBackendExt` | the same helpers for asynchronous backends | automatically for every `AsyncQueryBackend` |
 
@@ -87,9 +87,19 @@ which is polled row by row and stops at the requested count.
 
 The `QueryBackendExt` / `AsyncQueryBackendExt` helpers apply one policy:
 
-- `fetch_all` — reads every row and decodes each through
-  `FromRow::try_from_row`; a decode failure carries the row index in
+- `fetch_all` — `fetch_collect::<Vec<Q::Row>, _>`: reads every row and decodes
+  each through `FromRow::try_from_row`; a decode failure carries the row index in
   `ExecutionError::RowDecode { row_index, source }`.
+- `fetch_collect<C, Q>` — decodes every row into `C: FromIterator<Q::Row>`.
+  The collection is chosen at the call site, so a projection of pairs lands in a
+  `HashMap`, a single-column projection in a `HashSet` or a `BTreeSet`, and
+  `Vec` stays one choice among them: the rows are collected in one pass, without
+  an intermediate `Vec` allocation. The decode error keeps the same shape.
+- `fetch_iter` — reads the same raw buffer and returns a `QueryRowIter` that
+  owns it, so the connection is released before the first row is decoded and
+  `FromRow` runs on `.next()`. A `fold`, `map`, `filter`, or `sum` over the rows
+  therefore never materialises a collection. `decoded()` counts the rows already
+  decoded and `size_hint()` reports how many are left.
 - `fetch_optional` — requests **at most two** rows
   (`fetch_raw_limited(&built, Some(2))`). Zero rows — `Ok(None)`, one — decoding,
   more — `ExecutionError::MultipleRows { count }` *before* any attempt to decode
@@ -100,6 +110,54 @@ The `QueryBackendExt` / `AsyncQueryBackendExt` helpers apply one policy:
 A query that by contract returns one row therefore cannot physically pull the
 whole set from the network, and the "too many rows" error arises without
 decoding the extra row.
+
+## Choosing the collection and streaming rows
+
+`fetch_collect` names the target collection at the call site, so a projection of
+pairs becomes a map and a projection of one value becomes a set, both in a
+single pass:
+
+```rust,no_run
+# extern crate rurqe;
+# use std::collections::HashMap;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
+let pairs = select_from(User).select((UserId, UserName));
+
+let by_id: HashMap<i64, String> = conn.fetch_collect(&pairs)?;
+# let _ = by_id;
+# Ok(())
+# }
+```
+
+`fetch_iter` returns an iterator instead of a collection: the raw values are
+already in memory, so the connection is free, and each row is decoded only when
+it is pulled out of the buffer:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderTotal => "total": f64, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
+let totals = select_from(Order).select((OrderTotal,));
+let mut billed = 0.0f64;
+
+for row in conn.fetch_iter(&totals)? {
+    let (total,) = row?;
+    billed += total;
+}
+# let _ = billed;
+# Ok(())
+# }
+```
+
+Both helpers apply the row-index policy of `fetch_all`. The asynchronous
+counterpart mirrors `fetch_collect` behind a `Send` future, so a spawned task
+collects into a map or a set as well; the raw buffer is awaited once and decoded
+afterwards, so no separate iterator is exposed there.
 
 ## The execution error
 
