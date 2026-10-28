@@ -4,21 +4,22 @@ PostgreSQL locks the rows a statement selects until the enclosing transaction
 ends. That is how a worker claims a pending job without contending with its
 peers:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
 use rurqe::postgres::prelude::*;
-
-let next_job = conn.fetch_optional(&select_from(Job)
+# table! { Job => "jobs" { JobId => "id": i64, JobPayload => "payload": String, JobStatus => "status": String, JobCreatedAt => "created_at": i64, } }
+# fn main() {
+let next_job = select_from(Job)
     .select(cols!(JobId, JobPayload))
     .where_(JobStatus.eq("pending"))
     .order_by_asc(JobCreatedAt)
     .limit(1)
     .for_update()
-    .skip_locked())?;
-
-match next_job {
-    Some(job) => println!("claimed #{}: {}", job.job_id, job.payload),
-    None => println!("queue is empty"),
-}
+    .skip_locked()
+    .build()
+    .expect("valid locking query");
+# let _ = next_job;
+# }
 ```
 
 ```sql
@@ -38,12 +39,20 @@ FOR UPDATE SKIP LOCKED
 | `nowait()` | `NOWAIT` | fail immediately instead of waiting for a locked row |
 | `skip_locked()` | `SKIP LOCKED` | ignore locked rows and take the next free one |
 
-```rust
+```rust,no_run
+# extern crate rurqe;
+use rurqe::postgres::prelude::*;
+# table! { Account => "accounts" { AccountId => "id": i64, AccountBalance => "balance": i64, } }
+# fn main() {
 // A report that must not wait for an in-flight writer
-let report = conn.fetch_all(&select_from(Account)
+let report = select_from(Account)
     .select(cols!(AccountId, AccountBalance))
     .for_update()
-    .nowait())?;
+    .nowait()
+    .build()
+    .expect("valid locking query");
+# let _ = report;
+# }
 ```
 
 ## The call order the engine accepts

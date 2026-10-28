@@ -7,45 +7,48 @@ an older one by naming it.
 
 ## PostgreSQL
 
+`Postgres` is `Postgres<Pg16>` unless a version is named, and the markers
+`Pg14`, `Pg15`, and `Pg16` pin the release: `Postgres<Pg14>` targets a
+PostgreSQL 14 server.
+
+The `PgVersion` marker trait is implemented by all three of them. Rendering does
+not depend on the trait — quoting, placeholders, and JSONB row aggregation are
+identical for every version — so the parameter exists to *prove capabilities*:
+every capability marker of the dialect is implemented for each `PgVersion`, and
+a marker that required a newer engine would be bounded by the version marker
+instead.
+
+In application code the pin is named once per module through the version
+prelude of the dialect, so no query repeats it — see
+[Preludes](preludes.md):
+
 ```rust
-use rurqe_postgres::{Pg14, Pg16, Postgres};
-
-// `Postgres` defaults to `Postgres<Pg16>`.
-let q = select_from::<Postgres, _>(users);
-
-// Pin an older engine by naming its marker.
-let legacy = select_from::<Postgres<Pg14>, _>(users);
+# extern crate rurqe;
+use rurqe::postgres::pg16::prelude::*;
+# fn main() {}
 ```
-
-The `PgVersion` marker trait is implemented by `Pg14`, `Pg15`, and `Pg16`.
-Rendering does not depend on it — quoting, placeholders, and JSONB row
-aggregation are identical for every version — so the parameter exists to
-*prove capabilities*: every capability marker of the dialect is implemented
-for each `PgVersion`, and a marker that required a newer engine would be
-bounded by the version marker instead.
 
 ## SQLite
 
-```rust
-use rurqe_sqlite::{Sqlite, Sqlite3_24, Sqlite3_35};
-
-// `Sqlite` defaults to `Sqlite<Sqlite3_35>`.
-let q = select_from::<Sqlite, _>(posts);
-
-// Pin the older engine explicitly.
-let legacy = select_from::<Sqlite<Sqlite3_24>, _>(posts);
-```
-
-The SQLite dialect declares its versions as marker types `Sqlite3_0` through
-`Sqlite3_38` and gates capabilities with the const-generic bound:
-
-```rust
-pub trait SqliteVersionAtLeast<const MAJOR: u32, const MINOR: u32>: SqliteVersion {}
-```
+`Sqlite` is `Sqlite<Sqlite3_35>` unless a version is named, and the dialect
+declares its versions as marker types `Sqlite3_0` through `Sqlite3_38`.
 
 A capability is exposed from the engine version that introduced it, so a
-version marker below the threshold does not carry the clause at all. The
-thresholds the dialect currently uses:
+version marker below the threshold does not carry the clause at all: the choice
+of pin decides which SQL the builder can express.
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::sqlite3_0;
+# table! { User => "users" { UserId => "id": i64, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/dialects.rs:version}}
+# }
+```
+
+The gate itself is a const-generic bound,
+`pub trait SqliteVersionAtLeast<const MAJOR: u32, const MINOR: u32>: SqliteVersion {}`,
+and the thresholds the dialect currently uses are:
 
 | Feature | Engine version |
 |---|---|

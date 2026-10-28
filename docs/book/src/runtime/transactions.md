@@ -6,6 +6,19 @@ lives in one place — `TransactionGuard` in
 `crates/rurqe-core/src/query/transaction.rs` — and the adapter only provides
 state accounting through `TransactionalConnection`.
 
+## A block in practice
+
+An outer `transaction` call opens the transaction, and a `transaction` call
+made while it is still open becomes a `SAVEPOINT` inside it:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::prelude::*;
+# table! { Account => "accounts" { AccountId => "id": i64, AccountBalance => "balance": i64, } }
+# fn main() {}
+{{#rustdoc_include ../../../../examples/transactions.rs:transaction}}
+```
+
 ## State accounting: `TransactionStatus`
 
 ```rust

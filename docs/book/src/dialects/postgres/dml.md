@@ -7,14 +7,21 @@ implementing `SupportsReturning` — for PostgreSQL that is every engine
 version. It projects single columns, tuples, or whole record selections,
 decoded like any `SELECT` projection:
 
-```rust
-let new_id: i64 = insert_into(users)
+```rust,no_run
+# extern crate rurqe;
+use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserEmail => "email": String, UserActive => "is_active": bool, } }
+# fn main() {
+let inserted = insert_into(User)
     .values((
-        users.email.set("user@example.com"),
-        users.is_active.set(true),
+        UserEmail::set("user@example.com"),
+        UserActive::set(true),
     ))
-    .returning(users.id)
-    .fetch_one(&mut conn)?;
+    .returning(cols!(UserId))
+    .build()
+    .expect("valid insert");
+# let _ = inserted;
+# }
 ```
 
 ## ON CONFLICT
@@ -23,16 +30,19 @@ Upserts are gated by `SupportsOnConflict`. The conflict target names the
 constrained columns, `do_nothing()` skips the conflicting row, and
 `do_update(…)` assigns under the conflict:
 
-```rust
-insert_into(users)
-    .values((
-        users.id,
-        users.name.set("alice"),
-    ))
-    .on_conflict(users.id)
-    .do_update((
-        users.name.set(excluded(users.name)),
-    ))
+```rust,no_run
+# extern crate rurqe;
+use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() {
+let upsert = insert_into(User)
+    .values((UserId::set(1i64), UserName::set("alice")))
+    .on_conflict(UserId)
+    .do_update((UserName.set(excluded(UserName)),))
+    .build()
+    .expect("valid upsert");
+# let _ = upsert;
+# }
 ```
 
 * `target_where(…)` narrows the conflict target to rows matching a predicate —
@@ -54,14 +64,23 @@ A compatible `SelectQuery` inserts directly into a target table, server-side,
 without a client round-trip; parameters chain across both statements and the
 projection type-checks against the target columns:
 
-```rust
-insert_into(archived_users)
-    .columns((archived_users.id, archived_users.email))
+```rust,no_run
+# extern crate rurqe;
+use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserEmail => "email": String, UserActive => "is_active": bool, } }
+# table! { ArchivedUser => "archived_users" { ArchivedUserId => "id": i64, ArchivedUserEmail => "email": String, } }
+# fn main() {
+let archive = insert_into(ArchivedUser)
+    .columns((ArchivedUserId, ArchivedUserEmail))
     .from_select(
-        select_from(users)
-            .select((users.id, users.email))
-            .where_(users.is_active.eq(false)),
+        select_from(User)
+            .select((UserId, UserEmail))
+            .where_(UserActive.eq(false)),
     )
+    .build()
+    .expect("valid insert from select");
+# let _ = archive;
+# }
 ```
 
 An empty row source is rejected — an insert with no rows is a typestate

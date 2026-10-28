@@ -9,32 +9,10 @@ RURQE reads the relation in one statement: the engine aggregates the child rows 
 ```rust,no_run
 # extern crate rurqe;
 use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
-
-let users = select_from(User)
-    .select(select!(
-        user_id: UserId,
-        user_name: UserName,
-        orders: nest_many(
-            select_from(Order)
-                .select(select!(order_id: OrderId, total: OrderTotal))
-                .where_(OrderUserId.eq(UserId.without_scope()))
-                .order_by_desc(OrderTotal)
-        ),
-    ))
-    .where_(UserActive.eq(true))
-    .fetch_all(&mut conn)?;
-
-for user in users {
-    println!("{} — {} orders", user.user_name, user.orders.len());
-    for order in user.orders {
-        println!("  #{} for {}", order.order_id, order.total);
-    }
-}
-# Ok(())
+# fn main() {
+{{#rustdoc_include ../../../../examples/nested.rs:nested}}
 # }
 ```
 
@@ -58,7 +36,7 @@ let users = select_from(User)
         latest: nest_one(
             select_from(Order)
                 .select(select!(total: OrderTotal))
-                .where_(OrderUserId.eq(UserId.without_scope()))
+                .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
                 .order_by_desc(OrderId)
         ),
     ))
@@ -86,9 +64,10 @@ The nested statement is a query of its own, so its scope holds only its own `FRO
 # table! { User => "users" { UserId => "id": i64, } }
 # table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
 # fn main() {
-select_from(Order)
+let nested = select_from(Order)
     .select(select!(total: OrderTotal))
-    .where_(OrderUserId.eq(UserId.without_scope()));
+    .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()));
+# let _ = nested;
 # }
 ```
 

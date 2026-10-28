@@ -24,7 +24,7 @@ Every call checks a connection out of the pool, awaits execution, and returns
 the connection. `fetch_raw_limited` passes the limit into the `tokio_postgres`
 row stream, so a single-row lookup stops at the second row.
 
-```rust
+```rust,ignore
 use rurqe::postgres::prelude::*;
 
 let rows = pool

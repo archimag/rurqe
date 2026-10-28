@@ -27,27 +27,27 @@ table! {
 use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
 # fn main() {
-let query = select_from(User)
-    .select(select!(user_id: UserId, user_name: UserName))
-    .where_(UserActive.eq(true))
-    .order_by_asc(UserId);
-# let _ = query;
+{{#rustdoc_include ../../../../examples/dialects.rs:postgres}}
 # }
 ```
 
 ```sql
-SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
-WHERE ("active" = $1)
-ORDER BY "id" ASC
+SELECT "id" FROM "users" WHERE ("id" = $1)
 ```
 
-The identical lines under `use rurqe::sqlite::prelude::*;` render the same
-statement against SQLite:
+The same builder calls, run under the SQLite pin, reach the other engine:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::sqlite3_35;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/dialects.rs:sqlite}}
+# }
+```
 
 ```sql
-SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
-WHERE ("active" = ?)
-ORDER BY "id" ASC
+SELECT "id" FROM "users" WHERE ("id" = ?)
 ```
 
 Only spelling changed: identifiers are quoted the way the engine quotes them,
@@ -119,13 +119,11 @@ let row = db.fetch_one(&insert_into(User)
 
 and against 3.24 it is not a method at all:
 
-```rust
-```rust
+```rust,no_run
 # extern crate rurqe;
 use rurqe::sqlite::sqlite3_24::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # fn main() {
-
 // The pinned version has no `RETURNING`: the call does not exist.
 let inserted = insert_into(User)
     .values((UserId::set(1i64), UserName::set("alice")));

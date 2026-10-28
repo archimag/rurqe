@@ -4,13 +4,13 @@ Queries are generic over their dialect, but an application should name that
 dialect exactly once. Each dialect facade ships a prelude that binds it for
 the whole import, so the rest of the code carries no type annotations:
 
-```rust
+```rust,no_run
+# extern crate rurqe;
 use rurqe::postgres::prelude::*;
-
-let rows = select_from(users)
-    .select((users.id, users.email))
-    .where_(users.is_active.eq(true))
-    .fetch_all(&mut conn)?;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/dialects.rs:postgres}}
+# }
 ```
 
 A prelude exports the dialect-bound query entry points — `select_from`,
