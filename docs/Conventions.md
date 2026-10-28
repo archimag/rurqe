@@ -48,6 +48,7 @@ Every executable walkthrough — a query, a mutation, a relation, a transaction 
 
   inside a `rust,no_run` fenced block. The path resolves relative to the chapter file, so a chapter at `docs/book/src/<section>/` climbs four levels to the repository root; a chapter placed deeper adjusts the prefix. `rustdoc_include` also honours the rustdoc hiding convention, so a line prefixed with `# ` inside an anchored region is compiled but not rendered.
 * **Execution:** the verification pipeline compiles an example and never runs it, so an example may name a connection it does not open. Database-dependent behaviour is documented, not executed.
+* **Coverage:** an example target earns its compilation by being read. `cargo test --workspace` runs the guard in `examples/tests/doc_coverage.rs`, which fails the pipeline when a registered example file or one of its `// ANCHOR: ...` regions is included by no chapter under `docs/book/src`. Deleting the last chapter that includes a fragment obliges you to delete or re-home the example in the same commit.
 
 ## 5. Toolchain and Verification
 * **Local Build:** Documentation is built with `just doc-build` (rendered into `target/book`).

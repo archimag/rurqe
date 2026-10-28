@@ -84,6 +84,25 @@ let filtered = select_from(Order)
 
 `having` is available only on a `GroupedQuery` — a plain `SelectQuery` has no `HAVING` clause.
 
+## `FILTER (WHERE ...)`
+
+The rows an aggregate call evaluates can be restricted without a `CASE WHEN` detour: the clause is written on the call itself and travels with the expression wherever the caller projects it.
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { Order => "orders" { OrderTotal => "total": f64, OrderStatus => "status": String, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/aggregates.rs:filtered}}
+# }
+```
+
+`filter_where` obeys the same belonging rule as the call's `DISTINCT` modifier:
+
+* the method exists on the aggregate call alone — an expression built from the call, such as `sum(OrderTotal) + 1.0`, is an `Aggregate` but no longer the call, so it accepts no clause: there is nothing left for the clause to restrict;
+* repeated calls accumulate their predicates with `AND` on the same call instead of replacing each other;
+* the predicate is recorded in the expression's tree rather than in the statement, so the aggregate stays a dialect-neutral value, and the rendering is the native `... FILTER (WHERE ...)` form gated by the `SupportsAggregateFilter` capability trait.
+
 ## Ordering and paginating groups
 
 | Method | What it orders |
