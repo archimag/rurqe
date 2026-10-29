@@ -15,6 +15,18 @@
 //! [`TransactionGuard::begin`] retries the abandoned rollback rather than
 //! running a fresh transaction on top of an unknown one.
 //!
+//! Whether a refused rollback means an abandoned transaction or a block that a
+//! raw driver handle already closed is a driver observation rather than a fact
+//! the guard can derive: a caller bypassing the guard issues its own `COMMIT` or
+//! `ROLLBACK` through the adapter's raw handle, and the guard only observes that
+//! its next rollback was refused. The classification therefore belongs to the
+//! adapter, which overrides [`TransactionBackend::rollback`] and answers a
+//! refusal the driver reports as "no transaction is open" with `Ok`. That answer
+//! is what degrades a desync into a no-op that leaves the connection clean:
+//! `Drop` and the recovery path of [`TransactionGuard::begin`] record the
+//! connection clean instead of poisoning it, so a healthy adapter accepts the
+//! next typed transaction.
+//!
 //! The isolation level belongs to the outermost transaction only:
 //! [`TransactionGuard::begin_with`] renders `BEGIN ISOLATION LEVEL ...`, while
 //! [`TransactionGuard::begin`] keeps the backend default, and a guard opened
