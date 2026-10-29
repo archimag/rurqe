@@ -13,11 +13,13 @@
 - [Schema: tables and columns](core/schema.md)
 - [Projections and `SELECT`](core/select.md)
 - [Predicates and `WHERE`](core/filtering.md)
-- [Ordering and pagination](core/ordering.md)
+- [Expressions](core/expressions.md)
 - [DML: `INSERT`](core/insert.md)
 - [DML: `UPDATE`](core/update.md)
 - [DML: `DELETE`](core/delete.md)
 - [Nested results: `nest_many` and `nest_one`](features/nested.md)
+  - [MULTISET: how nesting becomes SQL](features/multiset.md)
+  - [Engines, capability gates, and decoding](features/multiset_engines.md)
 
 # Part III: Relational Power
 
@@ -77,6 +79,15 @@
 # Part VI: The `rurqe` Toolchain
 
 - [The `rurqe` toolchain](toolchain/overview.md)
+
+# Part VII: Relational Theory
+
+- [Overview: relational theory in Rust types](theory/overview.md)
+- [From Codd's relational algebra to the Rust type system](theory/codd_to_rust.md)
+- [Scopes: `TableScope` and `ExprScope`](theory/scopes.md)
+- [Nullability: outer joins as a type change](theory/nullability.md)
+- [Disjointness: relation name uniqueness](theory/disjointness.md)
+- [NF² and MULTISET: nested relations](theory/nf2_multiset.md)
 
 # Appendices
 
