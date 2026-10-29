@@ -165,9 +165,11 @@ Engine specifics — capability gates, versions, dialect extensions — are cove
 2. [Projections and `SELECT`](select.md)
 3. [Predicates and `WHERE`](filtering.md)
 4. [Ordering and pagination](ordering.md)
-5. [DML: `INSERT`, `UPDATE`, `DELETE`](dml.md)
-6. [Nested results: `nest_many` and `nest_one`](../features/nested.md)
-7. [MULTISET: how nesting becomes SQL](../features/multiset.md)
-8. [Engines, capability gates, and decoding](../features/multiset_engines.md)
+5. [DML: `INSERT`](insert.md)
+6. [DML: `UPDATE`](update.md)
+7. [DML: `DELETE`](delete.md)
+8. [Nested results: `nest_many` and `nest_one`](../features/nested.md)
+9. [MULTISET: how nesting becomes SQL](../features/multiset.md)
+10. [Engines, capability gates, and decoding](../features/multiset_engines.md)
 
 Every chapter follows one scheme: the task, the code, the SQL it produces, and the mistake the compiler refuses.

@@ -114,7 +114,7 @@ With both branches taken the filter renders as `WHERE (("active" = $1) AND ("nam
 | `.when(flag, \|q\| ...)` | applies the closure when the flag holds |
 | `.if_some(value, \|q, v\| ...)` | applies the closure on `Some`, handing the value over |
 
-The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()` (see [DML](dml.md)).
+The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()` (see [DML: `UPDATE`](update.md) and [DML: `DELETE`](delete.md)).
 
 ## `LIKE`, `ILIKE`, and SQLite
 
@@ -159,5 +159,5 @@ let rows = select_from(User)
 
 - [Subqueries](subqueries.md) — `EXISTS`, `IN`, scalar subqueries.
 - [Ordering and pagination](ordering.md) — tuple comparisons and keyset cursors.
-- [DML](dml.md) — the same predicates on the `WHERE` of mutations.
+- [DML: `UPDATE`](update.md) and [DML: `DELETE`](delete.md) — the same predicates on the `WHERE` of mutations.
 - [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions.

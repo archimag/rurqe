@@ -14,7 +14,9 @@
 - [Projections and `SELECT`](core/select.md)
 - [Predicates and `WHERE`](core/filtering.md)
 - [Ordering and pagination](core/ordering.md)
-- [DML: `INSERT`, `UPDATE`, `DELETE`](core/dml.md)
+- [DML: `INSERT`](core/insert.md)
+- [DML: `UPDATE`](core/update.md)
+- [DML: `DELETE`](core/delete.md)
 - [Nested results: `nest_many` and `nest_one`](features/nested.md)
 
 # Part III: Relational Power
