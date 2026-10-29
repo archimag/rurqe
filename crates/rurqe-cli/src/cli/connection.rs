@@ -54,7 +54,12 @@ pub(crate) enum Connection {
     /// SQLite database handle.
     Sqlite(rusqlite::Connection),
     /// PostgreSQL client.
-    Postgres(postgres::Client),
+    ///
+    /// The client is boxed because it carries the session protocol buffers and
+    /// is far larger than the SQLite handle, so keeping it inline would size
+    /// every `Connection` — and every match arm over one — by the PostgreSQL
+    /// driver.
+    Postgres(Box<postgres::Client>),
 }
 
 /// Opens a connection to the database identified by `url`, detecting its engine.
@@ -66,7 +71,7 @@ pub(crate) enum Connection {
 /// driver that could only misread it.
 pub(crate) fn connect(url: &str) -> Result<Connection, CliError> {
     match DatabaseTarget::parse(url) {
-        Ok(DatabaseTarget::Postgres) => Ok(Connection::Postgres(connect_postgres(url)?)),
+        Ok(DatabaseTarget::Postgres) => Ok(Connection::Postgres(Box::new(connect_postgres(url)?))),
         Ok(DatabaseTarget::SqliteMemory) => open_sqlite(None, url).map(Connection::Sqlite),
         Ok(DatabaseTarget::SqliteFile(path)) => {
             open_sqlite(Some(path.as_str()), url).map(Connection::Sqlite)

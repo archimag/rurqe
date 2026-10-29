@@ -2,8 +2,6 @@
 
 #[cfg(feature = "deadpool-postgres")]
 mod deadpool_impl {
-    use core::future::Future;
-
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
 
@@ -38,14 +36,9 @@ mod deadpool_impl {
     impl AsyncQueryBackend for PgAsyncPool {
         type Error = PgError;
 
-        fn fetch_raw(
-            &self,
-            query: &BuiltQuery,
-        ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
-            async move {
-                let client = self.pool.get().await?;
-                fetch_raw_async(&*client, query).await
-            }
+        async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+            let client = self.pool.get().await?;
+            fetch_raw_async(&**client, query).await
         }
 
         /// Reads at most `limit` rows from the checked-out connection.
@@ -53,25 +46,18 @@ mod deadpool_impl {
         /// The limit reaches the row stream of the underlying
         /// `tokio_postgres` client, so a single-row lookup stops after the
         /// second row instead of materialising the whole result set.
-        fn fetch_raw_limited(
+        async fn fetch_raw_limited(
             &self,
             query: &BuiltQuery,
             limit: Option<usize>,
-        ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
-            async move {
-                let client = self.pool.get().await?;
-                fetch_raw_limited_async(&*client, query, limit).await
-            }
+        ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+            let client = self.pool.get().await?;
+            fetch_raw_limited_async(&**client, query, limit).await
         }
 
-        fn execute_raw(
-            &self,
-            query: &BuiltQuery,
-        ) -> impl Future<Output = Result<u64, PgError>> + Send {
-            async move {
-                let client = self.pool.get().await?;
-                execute_raw_async(&*client, query).await
-            }
+        async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
+            let client = self.pool.get().await?;
+            execute_raw_async(&**client, query).await
         }
     }
 }

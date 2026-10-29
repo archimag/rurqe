@@ -1,7 +1,9 @@
 //! Typed nested collections from a single round trip: `cols!` with
 //! `nest_many`, so the children of every parent arrive as one JSON document.
 
+use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
+use tokio_postgres::NoTls;
 
 table! {
     /// The `users` table.
@@ -20,7 +22,10 @@ table! {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = example_pool()?;
+
     // ANCHOR: nested
     // One statement reads every parent together with the rows of its
     // collection: the engine aggregates the children into a JSON document and
@@ -42,8 +47,19 @@ fn main() {
                     .order_by_desc(OrderTotal),
             ),
         })
-        .build()
-        .expect("valid nested query");
+        .fetch_all(&pool)
+        .await?;
     // ANCHOR_END: nested
-    println!("{}", users_with_orders.sql);
+    println!("{}", users_with_orders.len());
+
+    Ok(())
+}
+
+/// Builds the asynchronous pool every example executes against.
+///
+/// The pool is lazy — it opens no connection until the first statement is sent
+/// — so an example compiles and runs without a reachable database.
+fn example_pool() -> Result<PgAsyncPool, Box<dyn std::error::Error>> {
+    let pool = deadpool_postgres::Config::new().create_pool(Some(Runtime::Tokio1), NoTls)?;
+    Ok(PgAsyncPool::new(pool))
 }

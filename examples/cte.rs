@@ -1,7 +1,9 @@
 //! Common table expressions: aggregate a relation once, name the result, and
 //! read it back as a relation of the same statement.
 
+use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
+use tokio_postgres::NoTls;
 
 table! {
     /// The `users` table.
@@ -28,7 +30,10 @@ table! {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = example_pool()?;
+
     // ANCHOR: summary
     let totals = select_from(Order)
         .group_by(OrderUserId)
@@ -47,9 +52,19 @@ fn main() {
             user_name: UserName,
             total_spent: TotalsTotal,
         })
-        .build()
-        .expect("valid CTE query");
+        .fetch_all(&pool)
+        .await?;
     // ANCHOR_END: report
 
-    println!("{}", report.sql);
+    println!("{}", report.len());
+    Ok(())
+}
+
+/// Builds the asynchronous pool every example executes against.
+///
+/// The pool is lazy — it opens no connection until the first statement is sent
+/// — so an example compiles and runs without a reachable database.
+fn example_pool() -> Result<PgAsyncPool, Box<dyn std::error::Error>> {
+    let pool = deadpool_postgres::Config::new().create_pool(Some(Runtime::Tokio1), NoTls)?;
+    Ok(PgAsyncPool::new(pool))
 }

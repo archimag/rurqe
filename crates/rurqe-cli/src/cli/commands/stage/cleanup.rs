@@ -43,7 +43,9 @@ pub(crate) fn cleanup_stage(
     }
 
     let mut admin = match connect(scratch_url)? {
-        Connection::Postgres(client) => client,
+        // The connection is a boxed client, so the inner value is taken out of
+        // the box before the admin session borrows it mutably.
+        Connection::Postgres(client) => *client,
         Connection::Sqlite(_) => {
             return Err(CliError(format!(
                 "`{}` does not address a PostgreSQL database",

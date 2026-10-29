@@ -101,7 +101,7 @@ pub(crate) fn introspect_connection_schema(
 ) -> Result<SchemaCatalog, CliError> {
     match connection {
         Connection::Sqlite(conn) => introspect_sqlite(conn),
-        Connection::Postgres(client) => introspect_postgres_schema(client, schema),
+        Connection::Postgres(client) => introspect_postgres_schema(client.as_mut(), schema),
     }
 }
 

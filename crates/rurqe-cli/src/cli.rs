@@ -69,7 +69,7 @@ macro_rules! with_migration_backend {
                 $run
             }
             Connection::Postgres(client) => {
-                let mut $backend = PostgresMigrationBackend::new(client);
+                let mut $backend = PostgresMigrationBackend::new(*client);
                 $run
             }
         }
@@ -90,7 +90,8 @@ macro_rules! with_migration_backend {
                 let mut $backend = SqliteMigrationBackend::new(conn);
                 $run
             }
-            Connection::Postgres(mut client) => {
+            Connection::Postgres(client) => {
+                let mut client = *client;
                 let notice = report_vacuous_postgres_schema(&mut client, &schema)?;
                 let mut $backend = PostgresMigrationBackend::new(client).with_schema(schema);
 

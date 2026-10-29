@@ -47,7 +47,7 @@ impl PostgresSandbox {
     /// its own digests instead of an assumed `public`.
     pub(crate) fn connect(url: &str, schema: &str) -> Result<Self, String> {
         let mut admin = match connect(url).map_err(|error| error.to_string())? {
-            Connection::Postgres(client) => client,
+            Connection::Postgres(client) => *client,
             Connection::Sqlite(_) => {
                 return Err(format!(
                     "`{}` does not address a PostgreSQL database",

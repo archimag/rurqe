@@ -1,6 +1,11 @@
 //! Row mutations: `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, and upsert.
+//!
+//! Every mutation terminates against an asynchronous pool, so a chapter
+//! includes the shape an application actually writes.
 
+use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
+use tokio_postgres::NoTls;
 
 table! {
     /// The `users` table.
@@ -26,45 +31,49 @@ table! {
         AccountId => "id": i64,
     }
 }
-fn main() {
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = example_pool()?;
+
     // ANCHOR: insert
-    let insert_query = insert_into(User)
+    let inserted = insert_into(User)
         .values((
             UserId::set(1i64),
             UserName::set("root"),
             UserEmail::set("root@example.com"),
         ))
         .returning(cols!(UserId))
-        .build()
-        .expect("valid insert");
+        .fetch_one(&pool)
+        .await?;
     // ANCHOR_END: insert
-    println!("{}", insert_query.sql);
+    println!("inserted {inserted:?}");
 
     // ANCHOR: update
-    let update_query = update(User)
+    let updated = update(User)
         .set(UserName::set("admin"))
         .where_(Expr::column::<UserId>().eq(1i64))
-        .build()
-        .expect("valid update");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: update
-    println!("{}", update_query.sql);
+    println!("updated {updated} row(s)");
 
     // ANCHOR: delete
-    let delete_query = delete_from(User)
+    let deleted = delete_from(User)
         .where_(Expr::column::<UserId>().eq(1i64))
-        .build()
-        .expect("valid delete");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: delete
-    println!("{}", delete_query.sql);
+    println!("deleted {deleted} row(s)");
 
     // ANCHOR: upsert
-    let upsert_query = insert_into(User)
+    let upserted = insert_into(User)
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict_do_nothing()
-        .build()
-        .expect("valid upsert");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: upsert
-    println!("{}", upsert_query.sql);
+    println!("upserted {upserted} row(s)");
 
     // ANCHOR: values_many
     let bulk = insert_into(User)
@@ -81,10 +90,10 @@ fn main() {
             ),
         ])
         .expect("the row source is not empty")
-        .build()
-        .expect("valid bulk insert");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: values_many
-    println!("{}", bulk.sql);
+    println!("inserted {bulk} row(s)");
 
     // ANCHOR: from_select
     // The source projection is a tuple of the inserted columns: `from_select`
@@ -94,27 +103,38 @@ fn main() {
         .where_(Expr::column::<ArchivedUserId>().gt(0i64));
     let copied = insert_into(User)
         .from_select((UserId, UserName, UserEmail), source)
-        .build()
-        .expect("valid insert from select");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: from_select
-    println!("{}", copied.sql);
+    println!("copied {copied} row(s)");
 
     // ANCHOR: update_from
     let linked = update(User)
         .set(UserName::set("root"))
         .from_table(Account)
         .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
-        .build()
-        .expect("valid update from");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: update_from
-    println!("{}", linked.sql);
+    println!("linked {linked} row(s)");
 
     // ANCHOR: delete_using
     let cleaned = delete_from(User)
         .using_table(Account)
         .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
-        .build()
-        .expect("valid delete using");
+        .execute(&pool)
+        .await?;
     // ANCHOR_END: delete_using
-    println!("{}", cleaned.sql);
+    println!("cleaned {cleaned} row(s)");
+
+    Ok(())
+}
+
+/// Builds the asynchronous pool every example executes against.
+///
+/// The pool is lazy — it opens no connection until the first statement is sent
+/// — so an example compiles and runs without a reachable database.
+fn example_pool() -> Result<PgAsyncPool, Box<dyn std::error::Error>> {
+    let pool = deadpool_postgres::Config::new().create_pool(Some(Runtime::Tokio1), NoTls)?;
+    Ok(PgAsyncPool::new(pool))
 }
