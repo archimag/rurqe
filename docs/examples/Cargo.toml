@@ -31,7 +31,7 @@ publish = false
 [dependencies]
 # Every example executes through the asynchronous pool, so the facade is built
 # with the pool adapter that owns it: `PgAsyncPool` is `deadpool-postgres`.
-rurqe = { path = "../crates/rurqe", version = "0.1.0", features = ["deadpool-postgres"] }
+rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["deadpool-postgres"] }
 # The pool is configured through the adapter itself and terminates TLS with the
 # driver's `NoTls` connector, so both crates are named directly.
 deadpool-postgres = "0.14"
