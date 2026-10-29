@@ -75,7 +75,7 @@ against both.
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn run(pool: PgAsyncPool) -> Result<(), Box<dyn std::error::Error>> {
+# async fn run(pool: PgAsyncPool) -> Result<()> {
 let users = select_from(User)
     .select((UserId, UserName))
     .fetch_all(&pool)
@@ -92,7 +92,7 @@ The synchronous backend is the same call without the `.await`:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# fn main() -> Result<()> {
 # let mut conn: PgConnection = todo!();
 let users = select_from(User)
     .select((UserId, UserName))
@@ -224,7 +224,7 @@ single pass. The terminal is written on the query:
 # use std::collections::HashMap;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn run(pool: PgAsyncPool) -> Result<(), Box<dyn std::error::Error>> {
+# async fn run(pool: PgAsyncPool) -> Result<()> {
 let pairs = select_from(User).select((UserId, UserName));
 
 let by_id: HashMap<i64, String> = pool.fetch_collect(&pairs).await?;
@@ -244,7 +244,7 @@ call without the `.await`:
 # use std::collections::HashMap;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# fn main() -> Result<()> {
 # let mut conn: PgConnection = todo!();
 let pairs = select_from(User).select((UserId, UserName));
 
@@ -263,7 +263,7 @@ so it exposes the collected helpers instead of an iterator.
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { Order => "orders" { OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# fn main() -> Result<()> {
 # let mut conn: PgConnection = todo!();
 let totals = select_from(Order).select((OrderTotal,));
 let mut billed = 0.0f64;

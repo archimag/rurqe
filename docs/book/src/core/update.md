@@ -42,7 +42,7 @@ The shortest executable statement assigns one column and restricts one row: `upd
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update}}
 #     Ok(())
@@ -67,7 +67,7 @@ The three constructors — `UserName::set("root")`, `UserName::default_value()`,
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Account => "accounts" { AccountId => "id": i64, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update_from}}
 #     Ok(())

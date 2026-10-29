@@ -48,7 +48,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:insert}}
 #     Ok(())
@@ -78,7 +78,7 @@ A tuple of assignments is accepted only when every element targets the same tabl
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:values_many}}
 #     Ok(())
@@ -99,7 +99,7 @@ One statement carries the whole batch, so the parameters are numbered across the
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
 # table! { ArchivedUser => "archived_users" { ArchivedUserId => "id": i64, ArchivedUserName => "name": String, ArchivedUserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:from_select}}
 #     Ok(())
@@ -119,7 +119,7 @@ The source projection is a tuple that has to match the target column list in ari
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:upsert}}
 #     Ok(())

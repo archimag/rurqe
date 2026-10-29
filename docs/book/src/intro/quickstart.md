@@ -45,7 +45,7 @@ A filtered projection, executed on an asynchronous pool:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
 #     Ok(())
@@ -61,7 +61,7 @@ A filtered projection, executed on an asynchronous pool:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:insert}}
 #     Ok(())
@@ -77,7 +77,7 @@ A filtered projection, executed on an asynchronous pool:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update}}
 #     Ok(())
@@ -89,7 +89,7 @@ A filtered projection, executed on an asynchronous pool:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete}}
 #     Ok(())
@@ -103,7 +103,7 @@ A filtered projection, executed on an asynchronous pool:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:upsert}}
 #     Ok(())
@@ -118,7 +118,7 @@ A filtered projection, executed on an asynchronous pool:
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/joins.rs:outer}}
 #     Ok(())
@@ -137,7 +137,7 @@ A one-to-many relation comes back as a typed collection in a single round trip, 
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/nested.rs:nested}}
 #     Ok(())

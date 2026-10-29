@@ -39,7 +39,7 @@ The shortest statement names a relation, projects, and reads:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 let rows = select_from(User)
     .select(cols!(UserId, UserName))
@@ -80,7 +80,7 @@ Three of those steps are the ones a query is felt through.
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 let rows = select_from(User)
     .select(cols!(user_id: UserId, contact_email: UserName))
@@ -130,7 +130,7 @@ The shortest chain that both compiles and executes reads a relation, projects it
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
 #     Ok(())
@@ -150,7 +150,7 @@ Every other clause is documented by its own chapter, but the projection is what 
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 let active = select!(UserId, UserName as contact_email)
     .from(User)
@@ -175,7 +175,7 @@ Anything that renders as a value can be a field — write the field name yoursel
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 let rows = select_from(Order)
     .select(cols!(
@@ -251,7 +251,7 @@ A DTO is a row shape, not a projection: its fields must be column markers, and a
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserName => "name": String, } }
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 let unique_names = select_from(User)
     .select(cols!(UserName))
