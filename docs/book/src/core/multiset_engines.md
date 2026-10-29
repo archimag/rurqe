@@ -2,7 +2,7 @@
 
 ## `SupportsJsonAggregation`
 
-The nested-projection capability is expressed by a marker trait:
+```text
 
 ```rust
 #[diagnostic::on_unimplemented(
@@ -26,7 +26,7 @@ The JSON functions of SQLite were an optional build extension before 3.38.0, so 
 
 ## Dialect binding
 
-```rust
+```text
 InnerD: Dialect + DialectInScope<QueryD>
 ```
 
