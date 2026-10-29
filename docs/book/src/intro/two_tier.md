@@ -15,14 +15,22 @@ RURQE therefore validates a statement at two gates, and both run before the stat
 The message is phrased in SQL terms rather than in type-system terms:
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderTotal => "total": f64, } }
-# fn main() {
+use rurqe::postgres::prelude::*;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+    }
+}
+
+table! {
+    Order => "orders" {
+        OrderTotal => "total": f64,
+    }
+}
+
 // rejected by the compiler: `OrderTotal` belongs to a table the query never adds
 let _ = select_from(User).select(cols!(UserId, OrderTotal));
-# }
 ```
 
 ```text
@@ -35,12 +43,7 @@ error[E0277]: column `OrderTotal` cannot be projected from this query's scope
 Two classes of rule are out of reach of a positive assertion: one that states an **absence**, and one that compares a clause with another clause written later in the chain (`DISTINCT ON` against the leading `ORDER BY`). They are validated deterministically while the statement is assembled, and the refusal is a typed value:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/quickstart.rs:build_refusal}}
-# }
 ```
 
 | Rule | Typed failure |

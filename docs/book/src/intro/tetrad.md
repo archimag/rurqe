@@ -16,15 +16,7 @@ RURQE is assembled from four industrial ideas, each of which closes a weakness o
 - `rust-analyzer` works without a database connection: the whole schema is encoded in types.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ## 2. Relational depth
@@ -34,16 +26,7 @@ RURQE is assembled from four industrial ideas, each of which closes a weakness o
 - **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderStatus => "status": String, OrderUserId => "user_id": i64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ## 3. Lifecycle integrity

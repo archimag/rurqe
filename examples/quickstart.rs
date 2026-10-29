@@ -9,6 +9,7 @@ use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
 use tokio_postgres::NoTls;
 
+// ANCHOR: schema
 table! {
     /// The `users` table.
     User => "users" {
@@ -17,6 +18,7 @@ table! {
         UserEmail => "email": String,
     }
 }
+// ANCHOR_END: schema
 
 #[tokio::main]
 async fn main() -> Result<()> {

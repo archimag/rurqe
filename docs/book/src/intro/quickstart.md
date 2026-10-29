@@ -21,18 +21,8 @@ rurqe = { version = "0.1", features = ["sqlite", "macros"] }
 
 ## 2. Schema
 
-```rust
-# extern crate rurqe;
-# use rurqe::prelude::*;
-table! {
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-        UserEmail => "email": String,
-    }
-}
-# fn main() {}
+```rust,no_run
+{{#rustdoc_include ../../../../examples/quickstart.rs:schema}}
 ```
 
 A real project rarely writes this by hand: `cargo db-codegen` generates the same zero-sized markers from the live catalog.
@@ -42,15 +32,7 @@ A real project rarely writes this by hand: `cargo db-codegen` generates the same
 A filtered projection, executed on an asynchronous pool:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 `users` is a vector of the produced row: one field per projection, named after the marker (`UserId` → `user_id`), which is why no tuple index appears anywhere. Assembling the statement opened no connection — `.fetch_all(&pool).await?` is the terminal call, and it is the only place the runtime appears, since the identical chain ends with `.fetch_all(&mut conn)?` against a synchronous connection. `build()` stays available on its own, and it is the one step that can refuse a syntactically sound but semantically invalid statement, so the refusal arrives before any network I/O.
@@ -58,15 +40,7 @@ A filtered projection, executed on an asynchronous pool:
 ## 4. A write that returns the row
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:insert}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 `values` checks every value against the column's Rust type at the call site, so `UserId::set("1")` does not compile. `returning` is gated by the engine: on a version that cannot return a row, the call is not a method at all.
@@ -74,56 +48,23 @@ A filtered projection, executed on an asynchronous pool:
 ## 5. Mutations
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 `update(...)` and `delete_from(...)` start unfiltered: the statement is not buildable until `.where_(...)` or an explicit `.allow_all()` is written, so an accidental full-table mutation is impossible by construction. An upsert appends an `ON CONFLICT` clause of its own:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:upsert}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ## 6. Joins lift nullability
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/joins.rs:outer}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 `order_total` is `Option<f64>` in the projected row because the join may leave the right relation unmatched — and reading it as `f64` does not compile. Nothing in the query mentions a nullable type: the projection is written once and the type follows from the join.
@@ -133,16 +74,7 @@ A filtered projection, executed on an asynchronous pool:
 A one-to-many relation comes back as a typed collection in a single round trip, without a Cartesian product folded on the client:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/nested.rs:nested}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ## 8. No turbofish anywhere
@@ -150,24 +82,13 @@ A one-to-many relation comes back as a typed collection in a single round trip, 
 One import pins the dialect, so entry points take a table value and no type parameter is ever spelled out:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/dialects.rs:postgres}}
-# }
 ```
 
 The same query on SQLite differs only in the prelude and the placeholder style (`?` instead of `$1`):
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::sqlite::prelude::*;
-# use rurqe::sqlite::sqlite3_35;
-# table! { User => "users" { UserId => "id": i64, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/dialects.rs:sqlite}}
-# }
 ```
 
 Version modules (`pg14`, `pg15`, `pg16`, `sqlite3_0` … `sqlite3_38`) also fix the capability set: `RETURNING` needs SQLite 3.35, `ON CONFLICT` needs 3.24, and a clause the pinned version lacks is not a method at all.
