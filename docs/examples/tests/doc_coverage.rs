@@ -86,14 +86,10 @@ fn example_file_of(path: &str) -> Option<&str> {
 
 /// Directory holding the book sources next to the examples crate.
 fn book_source() -> PathBuf {
-    let book = package_root()
-        .join("..")
-        .join("docs")
-        .join("book")
-        .join("src");
+    let book = package_root().join("..");
     assert!(
         book.is_dir(),
-        "the book source directory {book:?} must exist next to the examples crate"
+        "the book source directory {book:?} must exist as the parent of the examples crate"
     );
     book
 }
@@ -134,8 +130,16 @@ fn collect_directives(dir: &Path, directives: &mut Vec<(String, String, String)>
             .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
             .path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|name| {
+                name == "examples" || name == "target" || name == "book" || name == ".git"
+            }) {
+                continue;
+            }
             collect_directives(&path, directives);
         } else if path.extension().is_some_and(|ext| ext == "md") {
+            if path.file_name().is_some_and(|name| name == "Conventions.md") {
+                continue;
+            }
             collect_file_directives(&path, directives);
         }
     }
@@ -218,8 +222,16 @@ fn collect_hidden_scaffolding(dir: &Path, hidden: &mut Vec<(String, usize, Strin
             .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
             .path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|name| {
+                name == "examples" || name == "target" || name == "book" || name == ".git"
+            }) {
+                continue;
+            }
             collect_hidden_scaffolding(&path, hidden);
         } else if path.extension().is_some_and(|ext| ext == "md") {
+            if path.file_name().is_some_and(|name| name == "Conventions.md") {
+                continue;
+            }
             let text = fs::read_to_string(&path)
                 .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
             for (number, line) in rust_block_lines(&text) {
