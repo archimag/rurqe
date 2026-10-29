@@ -26,12 +26,7 @@ table! {
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
-
-    // ANCHOR: nested
-    // One statement reads every parent together with the rows of its
-    // collection: the engine aggregates the children into a JSON document and
-    // the record field decodes into a `Vec` of the nested projection, so no
-    // second statement is sent and no Cartesian product is folded by hand.
+// ANCHOR: nested
     let users_with_orders = select_from(User)
         .select(cols! {
             user_name: UserName,
@@ -41,16 +36,13 @@ async fn main() -> Result<()> {
                         order_id: OrderId,
                         total: OrderTotal,
                     })
-                    // The child statement declares only `orders`, so the key of
-                    // the enclosing row enters its predicate as a value the
-                    // child statement needs no relation for.
                     .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
                     .order_by_desc(OrderTotal),
             ),
         })
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: nested
+// ANCHOR_END: nested
     println!("{}", users_with_orders.len());
 
     // ANCHOR: nest_one

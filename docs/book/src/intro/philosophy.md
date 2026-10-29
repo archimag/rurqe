@@ -44,7 +44,6 @@ A one-to-many relation is one statement as well — no N+1 queries and no Cartes
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/nested.rs:nested}}
 #     Ok(())
