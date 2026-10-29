@@ -254,11 +254,87 @@ fn an_aliased_marker_declares_the_lateral_relation_under_its_alias() {
         ))
         .build()
         .expect("valid query");
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn distinct_deduplicates_rows_of_an_aliased_relation() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<User, UserAlias>>()
+        .select((AliasedCol::<UserAlias, UserName>::new(),))
+        .distinct()
+        .order_by(AliasedCol::<UserAlias, UserName>::new(), OrderDirection::Asc)
+        .build()
+        .expect("valid query");
 
     assert_eq!(
         built.sql,
-        "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" CROSS JOIN LATERAL \
-         (SELECT \"total\" FROM \"orders\" WHERE (\"user_id\" = \"users\".\"id\") LIMIT 1) AS \"o\""
+        "SELECT DISTINCT \"u\".\"name\" FROM \"users\" AS \"u\" ORDER BY \"u\".\"name\" ASC"
     );
     assert!(built.params.is_empty());
+}
+
+#[test]
+fn order_by_desc_with_limit_and_offset_paginates_aliased_rows() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<User, UserAlias>>()
+        .select((
+            AliasedCol::<UserAlias, UserId>::new(),
+            AliasedCol::<UserAlias, UserName>::new(),
+        ))
+        .order_by_desc(AliasedCol::<UserAlias, UserName>::new())
+        .limit(2)
+        .offset(1)
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"u\".\"id\", \"u\".\"name\" FROM \"users\" AS \"u\" \
+         ORDER BY \"u\".\"name\" DESC LIMIT 2 OFFSET 1"
+    );
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn between_bounds_filter_rows_of_an_aliased_relation() {
+    let built = SelectQuery::<MockDialect>::new()
+        .from::<Aliased<User, UserAlias>>()
+        .select((AliasedCol::<UserAlias, UserId>::new(),))
+        .where_(Expr::column::<AliasedCol<UserAlias, UserId>>().between(1i64, 10i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"u\".\"id\" FROM \"users\" AS \"u\" WHERE (\"u\".\"id\" BETWEEN $1 AND $2)"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(10)]);
+}
+
+#[test]
+fn left_joined_derived_table_lifts_its_aliased_columns_into_options() {
+    let derived = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId, OrderTotal))
+        .where_(Expr::column::<OrderTotal>().gt(10.0))
+        .as_table::<Aliased<RecentOrder, OrderAlias>>();
+
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<User>()
+        .left_join_subquery(
+            derived,
+            Expr::column::<UserId>().eq(Expr::column::<AliasedCol<OrderAlias, RecentId>>()),
+        );
+    let total = query.nullable::<AliasedCol<OrderAlias, RecentTotal>>();
+
+    let built = query.select((UserId, total)).build().expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"users\".\"id\", \"o\".\"total\" FROM \"users\" LEFT JOIN \
+         (SELECT \"id\", \"total\" FROM \"orders\" WHERE (\"total\" > $1)) AS \"o\" \
+         ON (\"users\".\"id\" = \"o\".\"id\")"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(10.0)]);
 }
