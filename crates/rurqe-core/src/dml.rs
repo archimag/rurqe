@@ -438,6 +438,10 @@ macro_rules! impl_assignment_set_for_tuple {
     };
 }
 
+// The tuple arities of an assignment set stop at eight, so one merge folds at
+// most eight incoming assignments into the recorded ones. `merge_assignments`
+// scans that bounded set instead of building a position map; revisit the choice
+// when these invocations are widened.
 impl_assignment_set_for_tuple!((0, A));
 impl_assignment_set_for_tuple!((0, A), (1, B));
 impl_assignment_set_for_tuple!((0, A), (1, B), (2, C));

@@ -11,8 +11,6 @@
 
 use core::fmt;
 use core::marker::PhantomData;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::scope::ValuesScope;
@@ -88,6 +86,9 @@ macro_rules! impl_insert_columns {
     };
 }
 
+// The column-list arities stop at eight, and `merge_assignments` scans within
+// that bound instead of building a position map; widening these invocations is
+// what would make the map worth its constant cost again.
 impl_insert_columns!(C1);
 impl_insert_columns!(C1, C2);
 impl_insert_columns!(C1, C2, C3);
@@ -137,6 +138,9 @@ macro_rules! impl_insert_source_for_tuple {
     };
 }
 
+// The row-source arities stop at eight, the same bound `merge_assignments`
+// scans within when it folds repeated assignments; see the note on the
+// column-list invocations above before widening them.
 impl_insert_source_for_tuple!(A);
 impl_insert_source_for_tuple!(A, B);
 impl_insert_source_for_tuple!(A, B, C);
@@ -667,31 +671,30 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
 /// carrying the last value — within one assignment set and across repeated
 /// `set(...)` calls alike. A column recorded for the first time is appended.
 ///
-/// The recorded positions are held in a map while the assignments are merged, so a
-/// set of `n` assignments costs one lookup per assignment instead of a scan over
-/// the assignments recorded so far.
+/// The incoming set is bounded by the tuple implementations of
+/// [`AssignmentSet`](crate::dml::AssignmentSet), which stop at eight elements,
+/// and a bulk insert merges one such row at a time, so the recorded list stays a
+/// handful of keys long. The merge therefore scans `existing` and compares the
+/// `&'static str` names directly: at that size a linear scan costs less than
+/// allocating and hashing a position map, and the merge allocates nothing of its
+/// own. Widening the tuple arities past that bound is what would make the map
+/// worth its constant cost again.
 pub(crate) fn merge_assignments(
     existing: &mut Vec<(&'static str, AssignValue)>,
     incoming: Vec<(&'static str, AssignValue)>,
 ) {
-    let mut positions = HashMap::with_capacity(existing.len() + incoming.len());
-    for (index, (column, _)) in existing.iter().enumerate() {
-        positions.entry(*column).or_insert(index);
-    }
-
     for (column, value) in incoming {
-        match positions.entry(column) {
-            Entry::Occupied(occupied) => {
-                let index = *occupied.get();
+        // The recorded list carries each name at most once, so the first match
+        // is the position the column keeps: the scan runs before the write, so
+        // the borrow of the search and the borrow of the assignment stay apart.
+        let recorded = existing.iter().position(|(name, _)| *name == column);
+        match recorded {
+            Some(index) => {
                 if let Some(slot) = existing.get_mut(index) {
                     slot.1 = value;
                 }
             }
-            Entry::Vacant(vacant) => {
-                let index = existing.len();
-                vacant.insert(index);
-                existing.push((column, value));
-            }
+            None => existing.push((column, value)),
         }
     }
 }
