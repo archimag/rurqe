@@ -34,13 +34,13 @@ async fn main() -> Result<()> {
     // ANCHOR_END: inner
     println!("{}", inner_join.len());
 
-    // ANCHOR: outer
+// ANCHOR: outer
     let outer_join = select_from(User)
         .left_join(Order, OrderUserId.eq(UserId))
         .select(cols!(UserName, OrderTotal))
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: outer
+// ANCHOR_END: outer
     println!("{}", outer_join.len());
 
     Ok(())
