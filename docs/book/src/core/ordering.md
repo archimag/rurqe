@@ -4,28 +4,15 @@ Ordering is described by the `.order_by*` family; pagination by `.limit(u32)` an
 
 Both are the last steps of the logical query processing order: the rows exist, the projection has named its output columns, and the ordering is applied to what they produced.
 
-## Columns and column tuples
-
-A criterion is written over a single column or over a tuple of up to eight columns: a tuple unfolds into as many criteria as it has elements, so `.order_by_desc((EventCreatedAt, EventId))` renders `ORDER BY "created_at" DESC, "id" DESC`.
+## Columns and criteria
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
-let built = select_from(User)
-    .select(cols!(UserId, UserName))
-    .where_(UserId.gt(10i64))
-    .order_by_asc(UserId)
-    .limit(5)
-    .build()
-    .expect("valid query");
-# let _ = built;
-# }
+{{#rustdoc_include ../../../../examples/ordering.rs:order_by}}
 ```
 
 ```text
-SELECT "id" AS "user_id", "name" AS "user_name" FROM "users" WHERE ("id" > $1) ORDER BY "id" ASC LIMIT 5
+SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
+WHERE ("id" > $1) ORDER BY "id" ASC LIMIT 5 OFFSET 10
 ```
 
 The family:
@@ -40,54 +27,38 @@ The family:
 | `.order_by_expr*` | a criterion by expression |
 | `.limit(n)` / `.offset(n)` | `LIMIT` / `OFFSET` |
 
-`NULLS FIRST` / `NULLS LAST` is a dialect capability: the methods require `D: SupportsNullsOrdering`.
+Criteria are recorded in the order they are added: `.order_by_desc(EventCreatedAt).order_by_desc(EventId)` orders by the creation time first and the identifier second.
+
+## `NULLS FIRST` / `NULLS LAST`
+
+Databases differ in where they place absent values, and an index or a keyset cursor needs the placement pinned. The nulls family makes it explicit:
+
+```rust,no_run
+{{#rustdoc_include ../../../../examples/ordering.rs:nulls}}
+```
+
+`NULLS FIRST` / `NULLS LAST` is a dialect capability: the methods are unavailable on a dialect that does not support the placement.
 
 ## Ordering by an expression or a window
 
-`order_by_expr*` accepts two kinds of criterion:
+`.order_by_expr*` accepts two kinds of criterion:
 
 - an expression — arithmetic, `CASE`, a scalar function;
 - a whole window, with the `OVER (...)` inside the criterion.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let built = select_from(Order)
-    .select((OrderUserId,))
-    .order_by_expr_desc(row_number().over(Window::partition_by(OrderUserId)))
-    .build()?;
-# let _ = built;
-# Ok(())
-# }
+{{#rustdoc_include ../../../../examples/ordering.rs:window_order}}
 ```
 
-> **Compiler Guard in Action.** A criterion of a plain query is a per-row value: the statement yields one row per source row, so ordering by an aggregate is refused there. An aggregate folds the rows of a group, so it orders the result only on a grouped statement.
+A criterion of a plain query is a per-row value: the statement yields one row per source row, so ordering by an aggregate is refused there. An aggregate folds the rows of a group, so it orders the result only on a grouped statement.
 
 ## Keyset pagination with tuples
 
-A tuple of columns is a `RowExpr`, and it compares against a tuple of values as a single value (SQL:1992):
+A tuple of columns compares against a tuple of values as a single value (SQL:1992):
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { Event => "events" { EventId => "id": i64, EventCreatedAt => "created_at": i64, EventData => "data": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let cursor_time = 0i64;
-# let cursor_id = 0i64;
-let page = select_from(Event)
-    .select(cols!(EventId, EventCreatedAt, EventData))
-    .where_((EventCreatedAt, EventId).lt((cursor_time, cursor_id)))
-    .order_by_desc((EventCreatedAt, EventId))
-    .limit(50)
-    .build()?;
-# let _ = page;
-# Ok(())
-# }
+{{#rustdoc_include ../../../../examples/ordering.rs:keyset}}
 ```
-
-The `RowExpr` operators: `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in_subquery`, `not_in_subquery`. Rendering the comparison:
 
 ```text
 (("created_at", "id") < ($1, $2))
@@ -95,13 +66,15 @@ The `RowExpr` operators: `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in_subquery`, `n
 
 The right operand is a tuple of values: every element is checked against the type of the corresponding row element, so a mismatched pair is refused at the call site. An index built over `(created_at, id)` is used by the engine natively — no client-side stitching of conditions happens.
 
+The row operators: `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in_subquery`, `not_in_subquery`.
+
 ## `DISTINCT` and `DISTINCT ON`
 
 - `.distinct()` — deduplication; requires every `ORDER BY` expression to be present in the projection.
-- `.distinct_on(col)` — a PostgreSQL specialty, gated by `SupportsDistinctOn`; the leading `ORDER BY` expressions must match the `DISTINCT ON` expressions left to right.
-- Both rules compare the **assembled expressions**, not the types, so they are checked in `.build()`: `BuildError::DistinctOrderNotProjected { position }` and `BuildError::DistinctOnOrderMismatch { position }`.
-- Deduplication removes the row-locking clauses: `FOR UPDATE` / `FOR SHARE` are unreachable on a deduplicated statement, and an assembled statement carrying both is rejected as `BuildError::DistinctOnWithLock` / `DistinctWithLock`.
+- `.distinct_on(col)` — a PostgreSQL specialty; the leading `ORDER BY` expressions must match the `DISTINCT ON` expressions left to right.
+- Both rules compare the assembled expressions, not the types, so they are checked while the statement is built: `BuildError::DistinctOrderNotProjected { position }` and `BuildError::DistinctOnOrderMismatch { position }`.
+- Deduplication removes the row-locking clauses: `FOR UPDATE` / `FOR SHARE` are unreachable on a deduplicated statement, and an assembled statement carrying both is rejected.
 
 ## Order and set operations
 
-A criterion recorded **before** `UNION`/`INTERSECT`/`EXCEPT` belongs to the left operand and renders inside its parentheses. The same call **after** the combination applies to the combined rows and requires the `order_by_output*` / `order_by_index*` forms.
+A criterion recorded before `UNION`/`INTERSECT`/`EXCEPT` belongs to the left operand and renders inside its parentheses. The same call after the combination applies to the combined rows and requires the `.order_by_output*` / `.order_by_index*` forms — the Set operations chapter covers them.

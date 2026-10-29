@@ -69,3 +69,35 @@ path = "transactions.rs"
 [[example]]
 name = "cte"
 path = "cte.rs"
+
+[[example]]
+name = "select"
+path = "select.rs"
+
+[[example]]
+name = "filtering"
+path = "filtering.rs"
+
+[[example]]
+name = "expressions"
+path = "expressions.rs"
+
+[[example]]
+name = "subqueries"
+path = "subqueries.rs"
+
+[[example]]
+name = "aliasing"
+path = "aliasing.rs"
+
+[[example]]
+name = "ordering"
+path = "ordering.rs"
+
+[[example]]
+name = "set_ops"
+path = "set_ops.rs"
+
+[[example]]
+name = "window"
+path = "window.rs"

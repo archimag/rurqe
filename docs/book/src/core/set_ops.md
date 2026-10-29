@@ -13,24 +13,10 @@ A set operation is the step of the logical query processing order that combines 
 | `.intersect(other)` | `INTERSECT` | the rows produced by both |
 | `.except(other)` | `EXCEPT` | the rows of this query absent from `other` |
 
-The two statements must share the dialect `D` and the output type `Output` — the signature fixes both, so a combined statement keeps decoding its rows with the same `FromRow`.
+The two statements must share the dialect and the output row type — the signature fixes both, so a combined statement keeps decoding its rows with the same row shape.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserName => "name": String, } }
-# table! { ArchivedUser => "archived_users" { ArchivedUserName => "name": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let combined = select_from(User)
-    .select(cols!(UserName))
-    .union_all(
-        select_from(ArchivedUser)
-            .select(cols!(ArchivedUserName)),
-    )
-    .build()?;
-# let _ = combined;
-# Ok(())
-# }
+{{#rustdoc_include ../../../../examples/set_ops.rs:union}}
 ```
 
 ```text
@@ -46,26 +32,13 @@ let combined = select_from(User)
 
 ## Ordering the combined rows
 
-Ordering the combined statement goes through the output-oriented forms: `order_by_output*` addresses an output column by name, and `order_by_index*` addresses it by a 1-based position.
+Ordering the combined statement goes through the output-oriented forms: `.order_by_output*` addresses an output column, and `.order_by_index*` addresses it by a 1-based position.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserName => "name": String, } }
-# table! { ArchivedUser => "archived_users" { ArchivedUserName => "name": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let page = select_from(User)
-    .select(cols!(UserName))
-    .union_all(select_from(ArchivedUser).select(cols!(ArchivedUserName)))
-    .order_by_output_asc(UserName)
-    .limit(50)
-    .build()?;
-# let _ = page;
-# Ok(())
-# }
+{{#rustdoc_include ../../../../examples/set_ops.rs:ordered}}
 ```
 
-A criterion recorded **before** the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded **after** it applies to the combined rows. The first combined-row criterion closes the statement: no further operand can follow the ordering of the combined rows.
+A criterion recorded before the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded after it applies to the combined rows. The first combined-row criterion closes the statement: no further operand can follow the ordering of the combined rows.
 
 ## What `.build()` adds
 
@@ -73,4 +46,4 @@ The rules that compare assembled clauses rather than types run pre-flight:
 
 - `BuildError::CompoundOrderIndex` — a 1-based position outside the projection list;
 - `BuildError::CompoundOrderColumn` — an output name the projection list does not produce;
-- `BuildError::SetOperandArity` — an operand disagreeing with the assembled clause; the type signature keeps it out of user code, and the rule guards ASTs assembled without it.
+- `BuildError::SetOperandArity` — an operand disagreeing with the assembled clause.

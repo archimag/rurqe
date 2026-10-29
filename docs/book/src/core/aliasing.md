@@ -4,95 +4,40 @@ An alias is a compile-time name under which a table is referenced. Aliasing keep
 
 ## `table_alias!`
 
-```rust
-# extern crate rurqe;
-# use rurqe::prelude::*;
-table_alias! {
-    /// The `u` alias.
-    U1 => "u"
-}
-# fn main() {}
+```rust,no_run
+{{#rustdoc_include ../../../../examples/aliasing.rs:aliases}}
 ```
 
-The macro declares a unit struct implementing `TableAlias` with `const NAME: &'static str = "u"`. The marker carries no data — only the name, known to the compiler.
+The macro declares a unit struct — the alias marker — bound to the table it aliases and to the name it renders. The marker carries no data: only the name, known to the compiler. The table-bound form mirrors the columns of the aliased table, so a column added to the table appears on every alias of it in the same commit, and no alias declaration can drift from its table.
 
 ## The markers
 
 | Type | Meaning |
 |---|---|
-| `U1: TableAlias` | the alias name `NAME` |
-| `Aliased<User, U1>: Table` | the table `User` referenced under `U1` |
-| `AliasedCol<U1, UserId>: Column` | the column `UserId` addressed through `U1` |
+| `Manager` | the alias marker: the name `"m"` bound to `User` |
+| `Aliased<User, Manager>` | the table `User` referenced under `Manager` |
+| `Manager.col(UserName)` | the column `UserName` addressed through `Manager` |
 
-`Aliased<T, A>` keeps the schema identity of `T` — its columns still belong to `T` — while rendering the table under its alias in `FROM` and `JOIN` clauses:
-
-```text
-FROM "users" AS "u"
-```
-
-`AliasedCol<A, C>` keeps the column's Rust type and owning table, while its SQL reference becomes the qualified form:
+`Aliased<User, Manager>` keeps the schema identity of `User` — its columns still belong to `User` — while rendering the table under its alias in `FROM` and `JOIN` clauses:
 
 ```text
-"u"."id"
+FROM "users" AS "m"
 ```
 
-## Addressing a column through an alias
+A column addressed through the alias keeps the column's Rust type and owning table, while its SQL reference becomes the qualified form:
 
-Two ergonomic forms exist, and both produce the same `AliasedCol` marker. The explicit constructor `AliasedCol::<A, C>::new()` (or `::default()`) remains available as well:
-
-```rust,no_run
-# extern crate rurqe;
-# use rurqe::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table_alias! {
-#     /// The `u` alias.
-#     U1 => "u"
-# }
-# fn main() {
-// Through the alias marker: `A.col(C)`.
-let aliased: AliasedCol<U1, UserId> = U1.col(UserId);
-
-// Through the column marker: `col.alias::<A>()`.
-let through_column: AliasedCol<U1, UserId> = UserId.alias::<U1>();
-# let _ = (aliased, through_column);
-# }
+```text
+"m"."name"
 ```
 
 ## A self-join
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserManagerId => "manager_id": i64, } }
-table_alias! {
-    /// The `m` alias.
-    Manager => "m"
-}
-
-table_alias! {
-    /// The `e` alias.
-    Employee => "e"
-}
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-let built = select_from::<Postgres, Aliased<User, Manager>>()
-    .inner_join(
-        Aliased::<User, Employee>::new(),
-        Employee
-            .col(UserManagerId)
-            .eq(Expr::column::<AliasedCol<Manager, UserId>>()),
-    )
-    .select((
-        Manager.col(UserName),
-        Employee.col(UserName),
-    ))
-    .build()?;
-# let _ = built;
-# Ok(())
-# }
+{{#rustdoc_include ../../../../examples/aliasing.rs:self_join}}
 ```
 
 ```text
-SELECT "m"."name", "e"."name"
+SELECT "m"."name" AS "manager_name", "e"."name" AS "employee_name"
 FROM "users" AS "m"
 INNER JOIN "users" AS "e" ON ("e"."manager_id" = "m"."id")
 ```
@@ -101,4 +46,4 @@ Both occurrences of `"users"` carry their own effective name, so the statement d
 
 ## Aliases and scopes
 
-An `Aliased<T, A>` is a `Table` like any other: it enters `TableScope`, joins, and nullability checking exactly like a stored relation, and an `AliasedCol<A, C>` keeps `ColumnBelongsTo<T>` through its owning table. An outer-joined aliased relation lifts its columns to `Option<T>` through the same rule that governs a stored relation.
+An aliased table is a table like any other: it enters the scope, joins, and nullability checking exactly like a stored relation, and a column addressed through the alias keeps its owning table. An outer-joined aliased relation lifts its columns to `Option<T>` through the same rule that governs a stored relation.

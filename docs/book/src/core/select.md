@@ -36,18 +36,7 @@ SELECT ... [ UNION [ALL] | INTERSECT | EXCEPT ] SELECT ...
 The shortest statement names a relation, projects, and reads:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
-let rows = select_from(User)
-    .select(cols!(UserId, UserName))
-    .fetch_all(&pool)
-    .await?;
-#     Ok(())
-# }
-# fn main() {}
+{{#rustdoc_include ../../../../examples/quickstart.rs:query}}
 ```
 
 ## Logical query processing order
@@ -74,25 +63,7 @@ FROM → WHERE → GROUP BY → HAVING → WINDOW → SELECT → DISTINCT
 
 Three of those steps are the ones a query is felt through.
 
-**`WHERE` runs before the projection exists.** A field name produced by `select!` or `cols!` is an output name, and an output name is created by `SELECT`, so a filter addresses the column markers of the relations, not the field names of the row:
-
-```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
-let rows = select_from(User)
-    .select(cols!(user_id: UserId, contact_email: UserName))
-    .where_(UserActive.eq(true))
-    .fetch_all(&pool)
-    .await?;
-#     Ok(())
-# }
-# fn main() {}
-```
-
-The projection renames nothing outside the row: `user_id` and `contact_email` are names the result carries, while the filter keeps working with `UserActive`. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly with `.order_by_output*` / `.order_by_index*`.
+**`WHERE` runs before the projection exists.** A field name produced by `select!` or `cols!` is an output name, and an output name is created by `SELECT`, so a filter addresses the column markers of the relations, not the field names of the row. The projection below renames `UserId` and `UserEmail` to `user_id` and `contact_email`, while its filter keeps working with `UserActive`: the renames are names the result carries, not names a predicate may read. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly with `.order_by_output*` / `.order_by_index*`.
 
 **`GROUP BY` runs before the projection is evaluated.** Once a query is grouped, a stored column survives into the projection only when it is grouped, aggregated, constant, or read through a window; anything else names a value the grouping collapsed. The refusal happens at the call site, not in the engine.
 
@@ -119,6 +90,7 @@ The table is the deterministic reference: every clause of the anatomy has a row,
 | `LIMIT` / `OFFSET` | `LIMIT n`, `OFFSET n` | `.limit(n)`, `.offset(n)` | windows the result | Ordering and pagination |
 | `FOR UPDATE` / `FOR SHARE` | `FOR UPDATE`, `FOR SHARE`, `NOWAIT`, `SKIP LOCKED` | `.for_update()`, `.for_share()`, then `.nowait()`, `.skip_locked()` — PostgreSQL | claims the rows; the statement can no longer be nested or combined | — |
 | — | the statement itself | `.build()`, `.fetch_all(...)`, `.fetch_one(...)`, `.fetch_optional(...)`, `.fetch_collect(...)`, `.fetch_iter(...)`, `.execute(...)` | renders or runs the statement; reachable only once a projection is recorded | — |
+
 ## Clause-by-clause walkthrough
 
 ### The minimal complete query
@@ -126,70 +98,28 @@ The table is the deterministic reference: every clause of the anatomy has a row,
 The shortest chain that both compiles and executes reads a relation, projects it, filters it, and builds:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
-`users` is a vector of the produced row, one field per projected element, and the projection is written once with `cols!`. Assembling the statement opened no connection: `.fetch_all(&pool).await?` is the terminal call that rendered it and ran it on the asynchronous pool, while `build()` is the same step without execution — the one place that can refuse a syntactically sound but semantically invalid statement, so such a refusal arrives before any network I/O.
+Assembling the statement opened no connection: the terminal call renders it and runs it on the asynchronous pool, while `build()` is the same step without execution — the one place that can refuse a syntactically sound but semantically invalid statement, so such a refusal arrives before any network I/O.
 
 ### The projection
 
-Every other clause is documented by its own chapter, but the projection is what the row type is made of, so it stays here.
-
-`select!` and `cols!` expand to the same macro: `select!` heads a chain, `cols!` names a projection handed to `.select(...)`. Every element becomes one field of the produced row, named after its marker:
+`select!` and `cols!` expand to the same macro: `select!` heads a chain, `cols!` names a projection handed to `.select(...)`. Every element becomes one field of the produced row, named after its marker unless the field name is written out:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
-let active = select!(UserId, UserName as contact_email)
-    .from(User)
-    .where_(UserActive.eq(true))
-    .order_by_asc(UserId)
-    .fetch_all(&pool)
-    .await?;
-
-for row in active {
-    println!("#{} <{}>", row.user_id, row.contact_email);
-}
-#     Ok(())
-# }
-# fn main() {}
+{{#rustdoc_include ../../../../examples/select.rs:aliased_fields}}
 ```
 
-`UserId` becomes `user_id`, and `UserName as contact_email` becomes `contact_email`. A marker named after a Rust keyword is written with a raw identifier (`Type` is `r#type`) and still carries the bare keyword as its output column.
+`UserId` becomes `user_id`, and `user_id: UserId` states the same name explicitly; `contact_email: UserEmail` renames the field away from the marker. A marker named after a Rust keyword is written with a raw identifier (`Type` is `r#type`) and still carries the bare keyword as its output column.
 
 Anything that renders as a value can be a field — write the field name yourself:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
-let rows = select_from(Order)
-    .select(cols!(
-        order_id: OrderId,
-        total: OrderTotal,
-        billed: coalesce(OrderTotal, 0.0f64),
-    ))
-    .fetch_all(&pool)
-    .await?;
-#     Ok(())
-# }
-# fn main() {}
+{{#rustdoc_include ../../../../examples/select.rs:computed}}
 ```
 
-`billed` has the type of the expression (`f64`), not the type of a stored column.
+`total_with_tax` has the type of the expression (`f64`), not the type of a stored column.
 
 One name per field: duplicate field names are refused while the macro expands, and the message carries the remedy:
 
@@ -197,75 +127,21 @@ One name per field: duplicate field names are refused while the macro expands, a
 projection field `id` is produced by more than one projection; rename one of them with `as <alias>` or `alias: <expr>`
 ```
 
-A positional tuple projection still exists — for low-level code, and for a row that feeds a typed collection of pairs directly (see [Runtime: overview](../runtime/overview.md)). A named projection is preferred, because a field name survives a change in the column order.
-
 A positional tuple projection still exists — for low-level code, and for a row that feeds a typed collection of pairs directly. A named projection is preferred, because a field name survives a change in the column order.
 
-`select!` is anonymous — right inside a query, useless in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them:
-
-```rust
-# extern crate rurqe;
-# use rurqe::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-dto! {
-    /// A user row crossing a repository boundary.
-    pub struct UserSummary {
-        UserId,
-        UserName as contact_email,
-        UserActive,
-    }
-}
-# fn main() {}
-```
-
-The declaration implements `FromRow`, so a row decodes by field name:
-
-```rust
-# extern crate rurqe;
-# use rurqe::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# dto! { pub struct UserSummary { UserId, UserName as contact_email, UserActive, } }
-# fn main() {
-let row = UserSummary::from_row(&[
-    SqlVal::I64(7),
-    SqlVal::Text("root".to_owned()),
-    SqlVal::Bool(true),
-])
-.expect("row decodes");
-
-assert_eq!(row.user_id, 7);
-assert_eq!(row.contact_email, "root");
-# }
-```
-
-It also implements the nested-row contracts, so `Vec<UserSummary>` decodes straight out of a collection document.
-
-A DTO is a row shape, not a projection: its fields must be column markers, and a computed field is refused during expansion with a message that points at `select!`. The statement projects with `select!`; the DTO names what the row is.
+`select!` is anonymous — right inside a query, useless in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them; the declaration implements the row-decoding contracts, so the row crosses function boundaries wherever a projection is accepted. The statement projects with `select!` or `cols!`; the DTO names what the row is.
 
 ### `DISTINCT` and `DISTINCT ON`
 
 `.distinct()` keeps one row per distinct combination of the projected attributes; `.distinct_on(col)` — PostgreSQL alone — keeps one row per group and needs the ordering to start with the same expression. Both remove the row-locking clauses from the statement, because the lock claims rows the deduplication then discards.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserName => "name": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
-let unique_names = select_from(User)
-    .select(cols!(UserName))
-    .distinct()
-    .order_by_asc(UserName)
-    .fetch_all(&pool)
-    .await?;
-#     Ok(())
-# }
-# fn main() {}
+{{#rustdoc_include ../../../../examples/select.rs:distinct}}
 ```
 
 ### The nullable shape, explicitly
 
-Sometimes the nullable form is needed without an outer join — to align a projection with an already computed result. `query.nullable::<OrderTotal>()` is the same column with `Option<f64>` as its value type; a second layer never appears, because `Option<Option<T>>` collapses into `Option<T>`.
+Sometimes the nullable form is needed without an outer join — to align a projection with an already computed result. `query.nullable::<OrderTotal>()` marks the projected column as optional: it is the same column with `Option<f64>` as its value type, and a second layer never appears, because `Option<Option<T>>` collapses into `Option<T>`.
 
 ## Dialect capability gates
 
@@ -292,31 +168,44 @@ Below the stated threshold the feature does not exist on the target, so the meth
 - A projection is recorded once. After `UNION`, `INTERSECT`, or `EXCEPT` the output columns are the ones the first list named, so `.select(...)` is unreachable on the combined statement; ordering the combined rows goes through `.order_by_output_asc(...)` or `.order_by_index(...)`.
 - Every projected item must belong to a relation the statement introduces. A column of a table outside the scope is refused at the call site, and the diagnostic note points at the remedy — introduce the column's table with `from` or a join before projecting it.
 - A hand-written selection that records nothing is rejected while the statement is built, instead of rendering `SELECT  FROM "users"`.
+- Two relations sharing one effective name in `FROM` / `JOIN` are rejected while the statement is built: alias the second occurrence, and both render under their own name.
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# fn main() {
-// Rejected: nothing is projected, so there is no statement to build.
-let statement = select_from(User).build();
-# let _ = statement;
-# }
+use rurqe::postgres::prelude::*;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+    }
+}
+
+fn main() {
+    // Rejected: nothing is projected, so there is no statement to build.
+    let statement = select_from(User).build();
+}
 ```
 
 The accepted form projects first — `select_from(User).select(cols!(UserId)).build()`.
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() {
-// Rejected: `OrderTotal` belongs to `orders`, a relation this query never reads.
-let rows = select_from(User).select(cols!(UserId, OrderTotal));
-# let _ = rows;
-# }
+use rurqe::postgres::prelude::*;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+    }
+}
+
+table! {
+    Order => "orders" {
+        OrderTotal => "total": f64,
+    }
+}
+
+fn main() {
+    // Rejected: `OrderTotal` belongs to `orders`, a relation this query never reads.
+    let rows = select_from(User).select(cols!(UserId, OrderTotal));
+}
 ```
 
 The accepted form introduces the relation before projecting its column: `select_from(User).inner_join(Order, OrderUserId.eq(UserId)).select(cols!(UserId, OrderTotal))` — and there the field arrives as `f64`, because an inner join keeps both sides matched; write `.left_join(...)` instead and the same field arrives as `Option<f64>`.
-
