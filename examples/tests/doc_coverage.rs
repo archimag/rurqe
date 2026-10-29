@@ -104,25 +104,29 @@ fn book_source() -> PathBuf {
 /// include syntax inside fenced samples, and a sample is not an inclusion.
 fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
     let mut included: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (file, anchor) in example_directives() {
+    for (_, file, anchor) in example_directives() {
         included.entry(file).or_default().insert(anchor);
     }
     included
 }
 
 /// Every include directive of the book that addresses the `examples/` crate,
-/// as the example file name and the anchor region it names.
+/// as the chapter that carries it, the example file name, and the anchor
+/// region it names.
 ///
-/// The pair is collected before anything is resolved, so a directive naming a
-/// missing file or a missing anchor stays visible instead of disappearing from
-/// the walk.
-fn example_directives() -> Vec<(String, String)> {
+/// A directive that names no anchor region is collected with an empty anchor:
+/// mdbook substitutes the whole file when no region is named, and a whole
+/// example file — crate-level imports and a `#[tokio::main]` entry point —
+/// does not compile as a doctest. Every entry is collected before anything
+/// is resolved, so a directive naming a missing file, a missing anchor, or
+/// no anchor at all stays visible instead of disappearing from the walk.
+fn example_directives() -> Vec<(String, String, String)> {
     let mut directives = Vec::new();
     collect_directives(&book_source(), &mut directives);
     directives
 }
 
-fn collect_directives(dir: &Path, directives: &mut Vec<(String, String)>) {
+fn collect_directives(dir: &Path, directives: &mut Vec<(String, String, String)>) {
     let entries = fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
     for entry in entries {
@@ -137,7 +141,7 @@ fn collect_directives(dir: &Path, directives: &mut Vec<(String, String)>) {
     }
 }
 
-fn collect_file_directives(path: &Path, directives: &mut Vec<(String, String)>) {
+fn collect_file_directives(path: &Path, directives: &mut Vec<(String, String, String)>) {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
     let mut rest = text.as_str();
@@ -148,11 +152,16 @@ fn collect_file_directives(path: &Path, directives: &mut Vec<(String, String)>) 
         };
         let directive = rest[..end].trim();
         rest = &rest[end + 2..];
-        let Some((path_part, anchor)) = directive.split_once(':') else {
-            continue;
+        let (path_part, anchor) = match directive.split_once(':') {
+            Some((path_part, anchor)) => (path_part, anchor.trim()),
+            None => (directive, ""),
         };
         if let Some(file) = example_file_of(path_part) {
-            directives.push((file.to_owned(), anchor.trim().to_owned()));
+            directives.push((
+                path.display().to_string(),
+                file.to_owned(),
+                anchor.to_owned(),
+            ));
         }
     }
 }
@@ -237,7 +246,14 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
     let registered = registered_example_names();
     let mut checked = 0usize;
 
-    for (file, anchor) in example_directives() {
+    for (chapter, file, anchor) in example_directives() {
+        assert!(
+            !anchor.is_empty(),
+            "chapter {chapter} includes the whole example file `{file}` without naming \
+             an `// ANCHOR: ...` region: mdbook substitutes the entire file, whose \
+             crate-level imports and `#[tokio::main]` entry point do not compile as \
+             a doctest; include an anchored fragment of the file instead"
+        );
         let name = file.strip_suffix(".rs").unwrap_or_else(|| {
             panic!(
                 "a chapter includes `{file}:{anchor}`, but `{file}` is not a Rust example \
