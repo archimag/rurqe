@@ -84,11 +84,8 @@ fn example_file_of(path: &str) -> Option<&str> {
     segments.next()
 }
 
-/// Anchor regions the chapters include, keyed by the example file name.
-///
-/// The walk reads `docs/book/src` alone: the conventions documents state the
-/// include syntax inside fenced samples, and a sample is not an inclusion.
-fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
+/// Directory holding the book sources next to the examples crate.
+fn book_source() -> PathBuf {
     let book = package_root()
         .join("..")
         .join("docs")
@@ -98,12 +95,34 @@ fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
         book.is_dir(),
         "the book source directory {book:?} must exist next to the examples crate"
     );
-    let mut included = BTreeMap::new();
-    collect_directives(&book, &mut included);
+    book
+}
+
+/// Anchor regions the chapters include, keyed by the example file name.
+///
+/// The walk reads `docs/book/src` alone: the conventions documents state the
+/// include syntax inside fenced samples, and a sample is not an inclusion.
+fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
+    let mut included: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (file, anchor) in example_directives() {
+        included.entry(file).or_default().insert(anchor);
+    }
     included
 }
 
-fn collect_directives(dir: &Path, included: &mut BTreeMap<String, BTreeSet<String>>) {
+/// Every include directive of the book that addresses the `examples/` crate,
+/// as the example file name and the anchor region it names.
+///
+/// The pair is collected before anything is resolved, so a directive naming a
+/// missing file or a missing anchor stays visible instead of disappearing from
+/// the walk.
+fn example_directives() -> Vec<(String, String)> {
+    let mut directives = Vec::new();
+    collect_directives(&book_source(), &mut directives);
+    directives
+}
+
+fn collect_directives(dir: &Path, directives: &mut Vec<(String, String)>) {
     let entries = fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
     for entry in entries {
@@ -111,14 +130,14 @@ fn collect_directives(dir: &Path, included: &mut BTreeMap<String, BTreeSet<Strin
             .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
             .path();
         if path.is_dir() {
-            collect_directives(&path, included);
+            collect_directives(&path, directives);
         } else if path.extension().is_some_and(|ext| ext == "md") {
-            collect_file_directives(&path, included);
+            collect_file_directives(&path, directives);
         }
     }
 }
 
-fn collect_file_directives(path: &Path, included: &mut BTreeMap<String, BTreeSet<String>>) {
+fn collect_file_directives(path: &Path, directives: &mut Vec<(String, String)>) {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
     let mut rest = text.as_str();
@@ -133,10 +152,7 @@ fn collect_file_directives(path: &Path, included: &mut BTreeMap<String, BTreeSet
             continue;
         };
         if let Some(file) = example_file_of(path_part) {
-            included
-                .entry(file.to_owned())
-                .or_default()
-                .insert(anchor.trim().to_owned());
+            directives.push((file.to_owned(), anchor.trim().to_owned()));
         }
     }
 }
@@ -214,4 +230,41 @@ fn every_anchor_is_included_by_a_chapter() {
             );
         }
     }
+}
+
+#[test]
+fn every_include_names_a_registered_example_and_a_declared_anchor() {
+    let registered = registered_example_names();
+    let mut checked = 0usize;
+
+    for (file, anchor) in example_directives() {
+        let name = file.strip_suffix(".rs").unwrap_or_else(|| {
+            panic!(
+                "a chapter includes `{file}:{anchor}`, but `{file}` is not a Rust example \
+                 file of the examples crate"
+            )
+        });
+        assert!(
+            registered.iter().any(|target| target == name),
+            "a chapter includes `{file}:{anchor}`, but `{name}` is not a registered \
+             [[example]] target in examples/Cargo.toml"
+        );
+
+        let path = package_root().join(&file);
+        let anchors = declared_anchors(&path);
+        assert!(
+            anchors.iter().any(|declared| declared == &anchor),
+            "a chapter includes `{file}:{anchor}`, but examples/{file} declares no \
+             `// ANCHOR: {anchor}` region: fix the include directive or rename the anchor \
+             together with its fragment"
+        );
+
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no chapter under docs/book/src includes a fragment of the examples crate, so the \
+         book documents no compiled code at all"
+    );
 }
