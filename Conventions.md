@@ -21,6 +21,16 @@
   * Single Source of Truth (SSOT) for data structures, serialization formats, and validation rules.
 * **Strict Typing over String Parsing:**
   * Drive control flow and business logic with strong `enum` types and typed DTOs. Never branch on text prefixes (`starts_with`), regex matching, or keyword searches.
+* **Unified Column Addressing (`Table.Column` and the bare column marker):**
+  * A table declaration occupies both namespaces: the table marker `User` exists as a type and as a zero-sized value carrying one field per declared column, so a column is addressed as `User.UserId` with no turbofish, no `Expr::column::<...>()` call, and no other generic wrapper.
+  * Every declared column marker is also exported as a standalone zero-sized value, so the table prefix is optional. A query over a single relation writes the bare marker (`UserId`); the `Table.Column` form is introduced exactly where it earns its place — two relations sharing a column name, or a table addressed through an alias.
+  * The two spellings are the same marker, so the choice is purely a matter of qualification: `User.UserId` and `UserId` produce the same expression node and cost nothing at runtime.
+* **Alias Symmetry Invariant:**
+  * The table-bound form `table_alias! { Manager => User as "m" }` mirrors the columns of the aliased table, so `User.UserId` and `Manager.UserId` are spelled identically and differ only in the qualifier they render (`"users"."id"` versus `"m"."id"`).
+  * The expansion reads the column list of the target table instead of restating it, so a column added to a table appears on every alias of that table in the same commit and no alias declaration can drift from its table.
+  * The marker-only form `table_alias! { Manager => "m" }` declares an alias that mirrors no table and exposes no column accessors; it exists for aliases referenced without a schema identity.
+  * An alias is declared in the module that declares its table, because the expansion reaches the column list through the table declaration.
+  * Application code, examples, and documentation never construct an alias marker through a turbofish: `AliasedCol::<Manager, UserId>::new()` and `aliased::<User, Manager>()` are internal machinery of the macro expansion and of the low-level API, never the addressed form. An aliased column is addressed as `Manager.UserId`.
 * **Standard Ecosystem Libraries over Hand-Rolled Code (No Reinventing the Wheel):**
   * Strictly forbid rolling custom ad-hoc parsers for standardized data formats (TOML, JSON, YAML, SQL DDL), cryptographic primitives, character encodings, or protocol wire formats when mature, well-tested, de-facto standard community crates exist (e.g. `toml`, `serde`, `syn`, `sha2`).
   * Minimizing Cargo dependency count ("zero-dep fetish") is explicitly rejected when achieved at the expense of specification compliance, validation strictness, or safety.

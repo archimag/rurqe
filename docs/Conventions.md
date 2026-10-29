@@ -22,6 +22,9 @@
   - Value-based table markers without turbofish generics: `select_from(User)`, `insert_into(User)`, `update(User)`, `delete_from(User)`.
   - Readers and LLMs must see clean, idiomatic SQL-like Rust code rather than intimidating generic machinery.
   - The canonical shape of an example is a value-based entry point (`select_from(users)`), a column marker compared with a plain value (`OrderUserId.eq(UserId)`), and a projection handed to `.select(...)`.
+  - Column addressing is uniform and turbofish-free. A table declaration exposes its columns through the table value (`User.UserId`), while the standalone column marker (`UserId`) stays available for the ordinary single-relation query: a chapter teaches the bare marker first and introduces the `Table.Column` prefix only where it is required, namely when two relations share a column name or when a table is addressed through an alias.
+  - An alias mirrors the columns of the table it aliases, so a chapter never explains a second addressing syntax: after `table_alias! { Manager => User as "m" }`, `Manager.UserId` reads exactly like `User.UserId` and renders `"m"."id"`.
+  - An alias marker is never built with a turbofish. `AliasedCol::<Manager, UserId>::new()` and `aliased::<User, Manager>()` are internal machinery, and the book does not present them as the addressed form.
 * **Low-Level Generics Scoping:** Low-level unpinned turbofish generics (`select_from::<Postgres, User>()`, generic `SelectQuery<D, ...>` signatures, raw `AliasedCol<A, C>::new()`) must be strictly relegated to internal architecture chapters, dialect-agnostic library extension sections, or low-level fallback explanations. Never use them in introductory or tutorial examples.
 
 ## 5. Code as Single Source of Truth (SSOT)
