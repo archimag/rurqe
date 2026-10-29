@@ -7,7 +7,7 @@ A subquery is a whole statement nested inside another one. RURQE distinguishes t
 A `SELECT` projecting exactly one column is also a scalar operand, so it slots directly into any operator position:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/subqueries.rs:scalar}}
+{{#rustdoc_include ../examples/subqueries.rs:scalar}}
 ```
 
 ```text
@@ -24,7 +24,7 @@ A multi-column projection is not a scalar operand and is rejected by the compile
 An `EXISTS` predicate is built from a projected query:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/subqueries.rs:exists}}
+{{#rustdoc_include ../examples/subqueries.rs:exists}}
 ```
 
 `Expr::exists` and `Expr::not_exists` take the nested statement; an unlocked projected query also exposes `.exists()` / `.not_exists()` directly.
@@ -36,7 +36,7 @@ The reference `Expr::column::<UserId>().without_scope()` is a correlated one: `.
 `.in_subquery(q)` / `.not_in_subquery(q)` accept a nested statement whose projection matches the outer expression:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/subqueries.rs:in_subquery}}
+{{#rustdoc_include ../examples/subqueries.rs:in_subquery}}
 ```
 
 ```text

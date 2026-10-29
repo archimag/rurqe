@@ -5,7 +5,7 @@
 That order is what makes the rule "a column is either grouped or aggregated" checkable at all: the grouping is known before the projection is written, so a projection naming a column the grouping collapsed is refused at the call site. Writing `.select(...)` first would leave the projection nothing to check it against.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
+{{#rustdoc_include ../examples/aggregates.rs:group_by}}
 ```
 
 ```text
@@ -77,7 +77,7 @@ let filtered = select_from(Order)
 The rows an aggregate call evaluates can be restricted without a `CASE WHEN` detour: the clause is written on the call itself and travels with the expression wherever the caller projects it.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/aggregates.rs:filtered}}
+{{#rustdoc_include ../examples/aggregates.rs:filtered}}
 ```
 
 `filter_where` obeys the same belonging rule as the call's `DISTINCT` modifier:

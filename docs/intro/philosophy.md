@@ -21,7 +21,7 @@ The dialect is pinned once by the prelude (`use rurqe::postgres::prelude::*;`), 
 A report over two relations, written once and checked while it is written:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/joins.rs:outer}}
+{{#rustdoc_include ../examples/joins.rs:outer}}
 ```
 
 No turbofish, no SQL literal, no manual mapping: the projection is named once, and the nullability of `order_total` follows from the join — an unmatched order cannot be decoded into a plain `f64`.
@@ -31,7 +31,7 @@ No turbofish, no SQL literal, no manual mapping: the projection is named once, a
 A one-to-many relation is one statement as well — no N+1 queries and no Cartesian product folded by hand on the client:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/nested.rs:nested}}
+{{#rustdoc_include ../examples/nested.rs:nested}}
 ```
 
 The engine aggregates the child rows into a JSON document and the client decodes it into a `Vec` whose element type is the nested record.

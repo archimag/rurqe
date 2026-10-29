@@ -5,7 +5,7 @@ An alias is a compile-time name under which a table is referenced. Aliasing keep
 ## `table_alias!`
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/aliasing.rs:aliases}}
+{{#rustdoc_include ../examples/aliasing.rs:aliases}}
 ```
 
 The macro declares a unit struct — the alias marker — bound to the table it aliases and to the name it renders. The marker carries no data: only the name, known to the compiler. The table-bound form mirrors the columns of the aliased table, so a column added to the table appears on every alias of it in the same commit, and no alias declaration can drift from its table.
@@ -33,7 +33,7 @@ A column addressed through the alias keeps the column's Rust type and owning tab
 ## A self-join
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/aliasing.rs:self_join}}
+{{#rustdoc_include ../examples/aliasing.rs:self_join}}
 ```
 
 ```text

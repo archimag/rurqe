@@ -16,7 +16,7 @@ RURQE is assembled from four industrial ideas, each of which closes a weakness o
 - `rust-analyzer` works without a database connection: the whole schema is encoded in types.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+{{#rustdoc_include ../examples/quickstart.rs:query}}
 ```
 
 ## 2. Relational depth
@@ -26,7 +26,7 @@ RURQE is assembled from four industrial ideas, each of which closes a weakness o
 - **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
+{{#rustdoc_include ../examples/aggregates.rs:group_by}}
 ```
 
 ## 3. Lifecycle integrity

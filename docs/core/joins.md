@@ -20,7 +20,7 @@ This chapter documents the `FROM` and `JOIN` steps of that order in depth: the j
 The join builders take the table marker as a value and read the joined type `T` from it, so the compiler infers `T`, the joined scope, and the position marker at the call site: no turbofish is written and no runtime cost is paid, because the marker is zero-sized.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/joins.rs:inner}}
+{{#rustdoc_include ../examples/joins.rs:inner}}
 ```
 
 ```text
@@ -39,7 +39,7 @@ A column marker is a complete operand on its own, on either side of the comparis
 `LEFT JOIN`, `FULL OUTER JOIN`, and `LEFT JOIN LATERAL` may leave the joined relation unmatched, so its columns reach the projected row as `Option<T>`:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/joins.rs:outer}}
+{{#rustdoc_include ../examples/joins.rs:outer}}
 ```
 
 The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).

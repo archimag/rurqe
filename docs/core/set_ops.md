@@ -16,7 +16,7 @@ A set operation is the step of the logical query processing order that combines 
 The two statements must share the dialect and the output row type — the signature fixes both, so a combined statement keeps decoding its rows with the same row shape.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/set_ops.rs:union}}
+{{#rustdoc_include ../examples/set_ops.rs:union}}
 ```
 
 ```text
@@ -35,7 +35,7 @@ The two statements must share the dialect and the output row type — the signat
 Ordering the combined statement goes through the output-oriented forms: `.order_by_output*` addresses an output column, and `.order_by_index*` addresses it by a 1-based position.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/set_ops.rs:ordered}}
+{{#rustdoc_include ../examples/set_ops.rs:ordered}}
 ```
 
 A criterion recorded before the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded after it applies to the combined rows. The first combined-row criterion closes the statement: no further operand can follow the ordering of the combined rows.

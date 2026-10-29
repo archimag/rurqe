@@ -36,7 +36,7 @@ SELECT ... [ UNION [ALL] | INTERSECT | EXCEPT ] SELECT ...
 The shortest statement names a relation, projects, and reads:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+{{#rustdoc_include ../examples/quickstart.rs:query}}
 ```
 
 ## Logical query processing order
@@ -98,7 +98,7 @@ The table is the deterministic reference: every clause of the anatomy has a row,
 The shortest chain that both compiles and executes reads a relation, projects it, filters it, and builds:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+{{#rustdoc_include ../examples/quickstart.rs:query}}
 ```
 
 Assembling the statement opened no connection: the terminal call renders it and runs it on the asynchronous pool, while `build()` is the same step without execution — the one place that can refuse a syntactically sound but semantically invalid statement, so such a refusal arrives before any network I/O.
@@ -108,7 +108,7 @@ Assembling the statement opened no connection: the terminal call renders it and 
 `select!` and `cols!` expand to the same macro: `select!` heads a chain, `cols!` names a projection handed to `.select(...)`. Every element becomes one field of the produced row, named after its marker unless the field name is written out:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/select.rs:aliased_fields}}
+{{#rustdoc_include ../examples/select.rs:aliased_fields}}
 ```
 
 `UserId` becomes `user_id`, and `user_id: UserId` states the same name explicitly; `contact_email: UserEmail` renames the field away from the marker. A marker named after a Rust keyword is written with a raw identifier (`Type` is `r#type`) and still carries the bare keyword as its output column.
@@ -116,7 +116,7 @@ Assembling the statement opened no connection: the terminal call renders it and 
 Anything that renders as a value can be a field — write the field name yourself:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/select.rs:computed}}
+{{#rustdoc_include ../examples/select.rs:computed}}
 ```
 
 `total_with_tax` has the type of the expression (`f64`), not the type of a stored column.
@@ -136,7 +136,7 @@ A positional tuple projection still exists — for low-level code, and for a row
 `.distinct()` keeps one row per distinct combination of the projected attributes; `.distinct_on(col)` — PostgreSQL alone — keeps one row per group and needs the ordering to start with the same expression. Both remove the row-locking clauses from the statement, because the lock claims rows the deduplication then discards.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/select.rs:distinct}}
+{{#rustdoc_include ../examples/select.rs:distinct}}
 ```
 
 ### The nullable shape, explicitly

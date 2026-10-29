@@ -68,7 +68,7 @@ Every executable walkthrough — a query, a mutation, a relation, a transaction 
 * **Anchors:** every includable region is wrapped in `// ANCHOR: <name>` and `// ANCHOR_END: <name>` comments. Names are unique inside a file and describe the fragment (`query`, `mutation`, `transaction`), never its position. Scaffolding — imports, table markers, the `fn main` wrapper, a connection stub — stays outside the anchored regions: fragment inclusion is how the book hides it, so an anchored region must read on its own.
 * **Projection macros:** `select!` heads a statement, `cols!` names a projection argument. A named-record query may begin with `select!(...).from(table)`, but once a builder chain is running, every `.select(...)` call receives its projections through `cols!(...)`, never through `select!(...)`. The two macros expand identically, so the rule is purely stylistic: the head of a chain and its projection clause stay distinguishable at a glance.
 * **Inclusion:** a chapter includes a fragment with
-
+  {{#rustdoc_include ../examples/quickstart.rs:query}}
   ```text
   {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
   ```
@@ -107,7 +107,7 @@ The parts are mandatory and ordered. A statement chapter that omits one of them 
 
 * One subsection per clause, in the order of the anatomy, each of them showing the accepted form, the SQL the form renders, and the result type it returns.
 * Every example is a fragment of the root `examples/` crate, included inside a `rust,no_run` fenced block (§ 6):
-
+  {{#rustdoc_include ../examples/crud.rs:<anchor>}}
   ```text
   {{#rustdoc_include ../../../../examples/crud.rs:<anchor>}}
   ```

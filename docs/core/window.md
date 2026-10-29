@@ -40,7 +40,7 @@ The window is obtained by calling `.over(spec)`.
 ## Example
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/window.rs:ranked}}
+{{#rustdoc_include ../examples/window.rs:ranked}}
 ```
 
 ```text
@@ -59,7 +59,7 @@ FROM "employees"
 | `WindowFrameBound::UnboundedFollowing` | the frame ends at the last row of the partition |
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/window.rs:frames}}
+{{#rustdoc_include ../examples/window.rs:frames}}
 ```
 
 `ROWS` counts the bounds in physical rows, `RANGE` — in values of the ordering column (steadier with coinciding timestamps). `GROUPS` is not implemented: it is not supported by SQLite and is covered by `ROWS`/`RANGE`.

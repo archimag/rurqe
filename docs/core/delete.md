@@ -36,7 +36,7 @@ The shortest executable statement restricts one row: `delete_from(User).where_(U
 ### `WHERE`: which rows go
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:delete}}
+{{#rustdoc_include ../examples/crud.rs:delete}}
 ```
 
 ```text
@@ -48,7 +48,7 @@ DELETE FROM "users" WHERE ("id" = $1)
 ### `USING`: deciding from a second relation
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:delete_using}}
+{{#rustdoc_include ../examples/crud.rs:delete_using}}
 ```
 
 ```text

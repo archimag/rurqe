@@ -7,7 +7,7 @@ Both are the last steps of the logical query processing order: the rows exist, t
 ## Columns and criteria
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/ordering.rs:order_by}}
+{{#rustdoc_include ../examples/ordering.rs:order_by}}
 ```
 
 ```text
@@ -34,7 +34,7 @@ Criteria are recorded in the order they are added: `.order_by_desc(EventCreatedA
 Databases differ in where they place absent values, and an index or a keyset cursor needs the placement pinned. The nulls family makes it explicit:
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/ordering.rs:nulls}}
+{{#rustdoc_include ../examples/ordering.rs:nulls}}
 ```
 
 `NULLS FIRST` / `NULLS LAST` is a dialect capability: the methods are unavailable on a dialect that does not support the placement.
@@ -47,7 +47,7 @@ Databases differ in where they place absent values, and an index or a keyset cur
 - a whole window, with the `OVER (...)` inside the criterion.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/ordering.rs:window_order}}
+{{#rustdoc_include ../examples/ordering.rs:window_order}}
 ```
 
 A criterion of a plain query is a per-row value: the statement yields one row per source row, so ordering by an aggregate is refused there. An aggregate folds the rows of a group, so it orders the result only on a grouped statement.
@@ -57,7 +57,7 @@ A criterion of a plain query is a per-row value: the statement yields one row pe
 A tuple of columns compares against a tuple of values as a single value (SQL:1992):
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/ordering.rs:keyset}}
+{{#rustdoc_include ../examples/ordering.rs:keyset}}
 ```
 
 ```text

@@ -39,7 +39,7 @@ The shortest executable statement assigns one column and restricts one row: `upd
 ### `SET` and `WHERE`: one row
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:update}}
+{{#rustdoc_include ../examples/crud.rs:update}}
 ```
 
 ```text
@@ -55,7 +55,7 @@ The three constructors — `UserName::set("root")`, `UserName::default_value()`,
 ### `FROM`: reading a second relation
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:update_from}}
+{{#rustdoc_include ../examples/crud.rs:update_from}}
 ```
 
 ```text

@@ -17,7 +17,7 @@ A column marker is an expression of its column type. This chapter covers the sur
 Both operands must yield the same numeric type — `i32`, `i64`, `f64`, or `Decimal` (the last under the `decimal` feature) — and the result keeps that type. Columns, expressions, and numeric literals combine freely.
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/expressions.rs:arithmetic}}
+{{#rustdoc_include ../examples/expressions.rs:arithmetic}}
 ```
 
 A computed field of a named projection carries the type of the expression: `row.total_with_tax` is an `f64`.
@@ -27,7 +27,7 @@ Arithmetic folds aggregation markers like the scalar functions below: `sum(Order
 ## `CASE WHEN`
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/expressions.rs:case}}
+{{#rustdoc_include ../examples/expressions.rs:case}}
 ```
 
 The type argument of `Expr::<f64>::case()` is the type every branch produces; a `when` whose value does not match is refused at the call site. `.when(...)` repeats — each call appends a branch — and `.else_(...)` closes the chain with the fallback. A `CASE` without a single `when` does not compile: there is nothing to close.

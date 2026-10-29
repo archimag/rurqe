@@ -44,7 +44,7 @@ A `WITH` is not a second round trip: it is one statement, and a second named rel
 ### `WITH name AS (...)`: the named statement
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/cte.rs:summary}}
+{{#rustdoc_include ../examples/cte.rs:summary}}
 ```
 
 ```text
@@ -58,7 +58,7 @@ SELECT "user_id" AS "owner_id", SUM("amount") AS "total" FROM "orders" GROUP BY 
 ### Reading the relation: `FROM` and `JOIN`
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/cte.rs:report}}
+{{#rustdoc_include ../examples/cte.rs:report}}
 ```
 
 The statement below renders as one round trip:

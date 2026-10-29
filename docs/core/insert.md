@@ -45,7 +45,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 ### `VALUES`: one row
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:insert}}
+{{#rustdoc_include ../examples/crud.rs:insert}}
 ```
 
 ```text
@@ -67,7 +67,7 @@ A tuple of assignments is accepted only when every element targets the same tabl
 ### `VALUES`: many rows
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:values_many}}
+{{#rustdoc_include ../examples/crud.rs:values_many}}
 ```
 
 ```text
@@ -79,7 +79,7 @@ One statement carries the whole batch, so the parameters are numbered across the
 ### `SELECT`: rows from another relation
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:from_select}}
+{{#rustdoc_include ../examples/crud.rs:from_select}}
 ```
 
 ```text
@@ -91,7 +91,7 @@ The source projection is a tuple that has to match the target column list in ari
 ### `ON CONFLICT`: the upsert
 
 ```rust,no_run
-{{#rustdoc_include ../../../../examples/crud.rs:upsert}}
+{{#rustdoc_include ../examples/crud.rs:upsert}}
 ```
 
 ```text
