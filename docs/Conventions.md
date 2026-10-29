@@ -112,7 +112,30 @@ The parts are mandatory and ordered. A statement chapter that omits one of them 
 * The chapter lists the invariants that make an invalid statement unwritable, each one phrased as the SQL rule it enforces: a `SELECT` needs a projection, an `UPDATE` needs `SET`, an `UPDATE` or a `DELETE` needs `WHERE` or an explicit `.allow_all()`, an `INSERT` needs a row source, and every expression must reference a relation the statement introduces.
 * Each guard is paired with the positive form a reader should write instead, so the chapter never leaves the reader with a prohibition and no remedy.
 * Negative examples are `rust,compile_fail` fenced blocks, and the quoted diagnostic is the message the compiler actually emits, copied verbatim from the compile-fail suite (§ 5).
+* Negative examples are `rust,compile_fail` fenced blocks, and the quoted diagnostic is the message the compiler actually emits, copied verbatim from the compile-fail suite (§ 5).
 
+### 7.6 The `SELECT` Statement and Its Subchapters
+
+`SELECT` is the one statement whose clauses are documented by a family of chapters. The family has exactly one head page — the statement chapter listed first in `SUMMARY.md` — and that page is the only chapter carrying all five parts of § 7 for the complete statement:
+
+| Part | Carried by |
+|---|---|
+| 1. Clause anatomy | the head page, for every clause of the statement |
+| 2. SQL ↔ DSL mapping | the head page, extended by the chapter column below |
+| 3. Clause-by-clause walkthrough | the head page for the minimal complete query, the subchapter for the clause it owns |
+| 4. Dialect capability gates | the head page, for the statement as a whole |
+| 5. Compile-time and typestate guards | the head page for the statement-level guards, the subchapter for the guards of its own clause |
+
+* **The head page states the logical query processing order.** The walkthrough follows the order in which the engine evaluates the statement, never the order in which it is written:
+
+  ```text
+  FROM → WHERE → GROUP BY → HAVING → WINDOW → SELECT → DISTINCT → UNION / INTERSECT / EXCEPT → ORDER BY → LIMIT / OFFSET
+  ```
+
+  Every step of the order states what it makes available and what it forecloses, because that is how the reading of a query is explained: a `WHERE` predicate is evaluated before the projection exists, so it cannot read an output name that an `ORDER BY` addresses; a grouped statement projects only grouped columns, aggregates, constants, and windows; the nullability of a projected attribute follows from the relations the `FROM` clause introduced, so it is fixed before the projection is written.
+* **A subchapter owns one clause family.** A chapter is subordinate to the head page when it extends a clause the anatomy already names. The subchapter documents that clause in depth — every accepted form, the SQL it renders, and the guards of the clause — and never repeats the skeleton or the capability matrix in full.
+* **The mapping table names the chapter.** On a head page, the table of § 7.2 carries one further column: the chapter that documents the clause in depth. A clause whose row names no chapter is documented by the head page alone, and a capability the library does not implement still appears only in the capability matrix (§ 7.4).
+* **`SUMMARY.md` mirrors the hierarchy.** Every subchapter is nested under its head page, so the statement reads as one collapsible block, and the statements reusing the same clause families — the DML statements and `WITH` — sit as siblings of that block inside the same part. A clause chapter listed at the level of its head page breaks the hierarchy, and a head page shown without its subchapters misleads the reader into expecting the whole statement on one page.
 ---
 
 ## 8. Toolchain and Verification

@@ -11,27 +11,25 @@
 
 - [Everyday queries: the portable core](core/overview.md)
 - [Schema: tables and columns](core/schema.md)
-- [Projections and `SELECT`](core/select.md)
-- [Predicates and `WHERE`](core/filtering.md)
-- [Expressions](core/expressions.md)
+- [The `SELECT` statement](core/select.md)
+  - [Predicates and `WHERE`](core/filtering.md)
+  - [Expressions](core/expressions.md)
+  - [Joins](core/joins.md)
+  - [Aliases](core/aliasing.md)
+  - [Subqueries](core/subqueries.md)
+  - [`GROUP BY` and `HAVING`](core/group_by.md)
+  - [Window functions](core/window.md)
+  - [Ordering and pagination](core/ordering.md)
+  - [Set operations](core/set_ops.md)
 - [DML: `INSERT`](core/insert.md)
 - [DML: `UPDATE`](core/update.md)
 - [DML: `DELETE`](core/delete.md)
+- [Common table expressions (`WITH`)](core/cte.md)
 - [Nested results: `nest_many` and `nest_one`](features/nested.md)
   - [MULTISET: how nesting becomes SQL](features/multiset.md)
   - [Engines, capability gates, and decoding](features/multiset_engines.md)
 
-# Part III: Relational Power
-
-- [Joins](core/joins.md)
-- [Aliases](core/aliasing.md)
-- [Subqueries](core/subqueries.md)
-- [Common table expressions (`WITH`)](core/cte.md)
-- [`GROUP BY` and `HAVING`](core/group_by.md)
-- [Window functions](core/window.md)
-- [Set operations](core/set_ops.md)
-
-# Part IV: Dialects & Runtime
+# Part III: Dialects & Runtime
 
 - [Dialects overview](dialects/overview.md)
 - [Philosophy: native or nothing](dialects/philosophy.md)
@@ -64,7 +62,7 @@
   - [Ecosystem types, values, and decoding](runtime/types.md)
   - [Custom types](runtime/custom_types.md)
 
-# Part V: Lifecycle and Migrations
+# Part IV: Lifecycle and Migrations
 
 - [Schema evolution: overview](migrations/overview.md)
 - [The crisis of traditional migrations in the AI era](migrations/problem.md)
@@ -76,11 +74,11 @@
 - [The checkpoint protocol](migrations/checkpoint_protocol.md)
 - [Migration concurrency](dialects/sqlite/concurrency.md)
 
-# Part VI: The `rurqe` Toolchain
+# Part V: The `rurqe` Toolchain
 
 - [The `rurqe` toolchain](toolchain/overview.md)
 
-# Part VII: Relational Theory
+# Part VI: Relational Theory
 
 - [Overview: relational theory in Rust types](theory/overview.md)
 - [From Codd's relational algebra to the Rust type system](theory/codd_to_rust.md)
