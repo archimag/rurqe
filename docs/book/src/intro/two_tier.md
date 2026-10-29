@@ -39,16 +39,7 @@ Two classes of rule are out of reach of a positive assertion: one that states an
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # fn main() {
-// Refused while building, before the statement reaches the engine: `DISTINCT ON`
-// deduplicates the rows on one expression while the leading `ORDER BY` criterion
-// names another, so no engine would accept the statement.
-let rejected = select_from(User)
-    .select(cols!(UserId, UserName))
-    .distinct_on(UserName)
-    .order_by_asc(UserId)
-    .build();
-
-assert!(rejected.is_err());
+{{#rustdoc_include ../../../../examples/quickstart.rs:build_refusal}}
 # }
 ```
 

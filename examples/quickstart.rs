@@ -30,6 +30,17 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: query
 
+    // ANCHOR: build_refusal
+    // Syntactically sound but semantically invalid: `DISTINCT ON` deduplicates
+    // the rows on one expression while the leading `ORDER BY` criterion names
+    // another, so no engine would accept the statement.
+    let rejected = select_from(User)
+        .select(cols!(UserId, UserName))
+        .distinct_on(UserName)
+        .order_by_asc(UserId)
+        .build();
+    assert!(rejected.is_err());
+    // ANCHOR_END: build_refusal
     println!("{}", users.len());
     Ok(())
 }

@@ -15,14 +15,16 @@ RURQE is assembled from four industrial ideas, each of which closes a weakness o
 - **Named projections.** `select!` synthesizes an anonymous row struct at the call site, `cols!` keeps a positional selection when a tuple is genuinely wanted, and `dto!` produces a reusable struct for results that cross a function boundary. No `row.0`, no manual `FromRow` boilerplate.
 - `rust-analyzer` works without a database connection: the whole schema is encoded in types.
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let contacts = select_from(User)
-    .select(cols!(UserId, UserName as contact_email))
-    .where_(UserId.gt(10i64))
-    .order_by_asc(UserId)
-    .fetch_all(&mut conn)?;
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+#     Ok(())
+# }
+# fn main() {}
 ```
 
 ## 2. Relational depth
@@ -31,16 +33,17 @@ let contacts = select_from(User)
 - **Relational expressiveness.** Multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, and the set operations `UNION` / `INTERSECT` / `EXCEPT`.
 - **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically.
 
-```rust
-use rurqe::postgres::prelude::*;
-
-let ranked = select_from(Employee)
-    .select(select!(
-        employee_id: EmployeeId,
-        salary: Salary,
-        position: rank().over(Window::partition_by(DepartmentId).order_by_desc(Salary)),
-    ))
-    .fetch_all(&mut conn)?;
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderStatus => "status": String, OrderUserId => "user_id": i64, } }
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
+#     Ok(())
+# }
+# fn main() {}
 ```
 
 ## 3. Lifecycle integrity
