@@ -29,6 +29,23 @@ async fn main() -> Result<()> {
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: query
+    println!("{}", users.len());
+
+    // ANCHOR: conditional
+    // The flags a handler receives at runtime; a false flag or an absent value
+    // adds no clause, and the statement keeps its type.
+    let only_active = true;
+    let search: Option<&str> = None;
+    let filtered = select_from(User)
+        .select(cols!(UserId, UserName, UserEmail))
+        .when(only_active, |query| query.where_(UserEmail.ilike("%@example.com")))
+        .if_some(search, |query, term| {
+            query.where_(UserName.ilike(format!("%{term}%")))
+        })
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: conditional
+    println!("{}", filtered.len());
 
     // ANCHOR: build_refusal
     // Syntactically sound but semantically invalid: `DISTINCT ON` deduplicates
@@ -41,7 +58,7 @@ async fn main() -> Result<()> {
         .build();
     assert!(rejected.is_err());
     // ANCHOR_END: build_refusal
-    println!("{}", users.len());
+
     Ok(())
 }
 

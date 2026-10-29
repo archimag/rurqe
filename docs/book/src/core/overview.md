@@ -10,111 +10,56 @@ Three rules hold across every chapter:
 | **Named fields** | `select!` / `cols!` synthesize a record with the field names of the projection, so a row is read as `row.user_id`, never `row.0` |
 | **Reusable shapes** | `dto!` declares a row shape once, with the field types read from the schema |
 
-## The two tables this part uses
-
-```rust
-# extern crate rurqe;
-# use rurqe::prelude::*;
-table! {
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-        UserActive => "active": bool,
-    }
-}
-
-table! {
-    /// The `orders` table.
-    Order => "orders" {
-        OrderId => "id": i64,
-        OrderUserId => "user_id": i64,
-        OrderTotal => "total": f64,
-    }
-}
-# fn main() {}
-```
-
-In a real project these markers are not written by hand: `cargo db-codegen` reads the live catalog and generates the same zero-sized types, together with the catalog snapshot that CI verifies.
+The fragments of this part read two tables — `users` and `orders` — declared as zero-sized markers, one marker per column. In a real project the markers are not written by hand: the code generator reads the live catalog and emits the same types together with the catalog snapshot that CI verifies. Every fragment below is included from the example crate the workspace compiles, so a chapter cannot drift from the code it documents.
 
 ## A query you would actually write
 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
-let rows = select!(
-    user_id: UserId,
-    user_name: UserName,
-    total: OrderTotal,
-)
-.from(User)
-.inner_join(Order, OrderUserId.eq(Expr::column::<UserId>()))
-.where_(UserActive.eq(true))
-.order_by_asc(UserId)
-.limit(20)
-.fetch_all(&mut conn)?;
-
-for row in rows {
-    println!("#{} {} — {}", row.user_id, row.user_name, row.total);
-}
-# Ok(())
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
-No column type is repeated, no dialect is named, no tuple is indexed. `total` arrives as `f64`; replace `inner_join` with `left_join` and the same line yields `Option<f64>`, because the join may leave the order unmatched.
+No column type is repeated, no dialect is named, no tuple is indexed. The projection is written once and the produced row carries one field per projected marker, so the reading side addresses `row.user_id` and never `row.0`.
 
 ## The same query, assembled at runtime
 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
-# let only_active = true;
-# let search: Option<&str> = None;
-let rows = select_from(User)
-    .select(select!(user_id: UserId, user_name: UserName))
-    .when(only_active, |query| query.where_(UserActive.eq(true)))
-    .if_some(search, |query, term| query.where_(UserName.ilike(format!("%{term}%"))))
-    .order_by_asc(UserId)
-    .fetch_all(&mut conn)?;
-# let _ = rows;
-# Ok(())
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/quickstart.rs:conditional}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
-An absent branch adds nothing, and the query keeps its type, so nothing downstream has to be re-typed.
+A false flag or an absent value adds no clause, and the query keeps its type, so nothing downstream has to be re-typed. The clauses that change the type of the statement — a projection, a join, a lock — stay outside those branches.
 
 ## Aggregations keep the same ergonomics
 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
-# table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
-let spend = select_from(Order)
-    .group_by(OrderUserId)
-    .select(select!(
-        user_id: OrderUserId,
-        orders: count_all(),
-        spend: coalesce(sum(OrderTotal), 0.0f64),
-    ))
-    .having(count_all().gt(1i64))
-    .order_by_expr_desc(count_all())
-    .limit(10)
-    .fetch_all(&mut conn)?;
-# let _ = spend;
-# Ok(())
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderStatus => "status": String, OrderUserId => "user_id": i64, } }
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
-`count_all()` and `sum(OrderTotal)` are ordinary values, `coalesce` keeps the aggregate property of its argument, and the grouped query accepts exactly the columns it grouped by plus those aggregates — anything else is refused at the call site instead of by the engine.
+`count_all()` is an ordinary value: it compares in `HAVING` like any other expression, and the grouped query accepts exactly the columns it grouped by plus the aggregates — anything else is refused at the call site instead of by the engine.
 
 ## One query instead of N+1
 
@@ -124,28 +69,15 @@ A one-to-many relation needs neither a second statement nor a client-side fold: 
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
-let users = select_from(User)
-    .select(select!(
-        user_id: UserId,
-        user_name: UserName,
-        orders: nest_many(
-            select_from(Order)
-                .select(select!(order_id: OrderId, total: OrderTotal))
-                .where_(OrderUserId.eq(UserId.without_scope()))
-                .order_by_desc(OrderTotal)
-        ),
-    ))
-    .fetch_all(&mut conn)?;
-
-for user in users {
-    println!("{} — {} orders", user.user_name, user.orders.len());
-}
-# Ok(())
+# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/nested.rs:nested}}
+#     Ok(())
 # }
+# fn main() {}
 ```
+
 The child rows are aggregated by the engine, so the ordering, the filter, and the row limit of the nested statement decide the contents of the collection.
 
 ## A group of writes is one transaction
