@@ -36,12 +36,11 @@ fn record_opening_balance(conn: &mut SqliteConnection) -> Result<(), Error> {
 }
 // ANCHOR_END: transaction
 
-fn main() {
-    let mut conn = SqliteConnection::open_in_memory().expect("in-memory sqlite database");
+fn main() -> Result<()> {
+    let mut conn = SqliteConnection::open_in_memory()?;
     conn.execute_batch(
         "CREATE TABLE accounts (id INTEGER NOT NULL PRIMARY KEY, balance INTEGER NOT NULL);",
-    )
-    .expect("create accounts table");
+    )?;
 
-    record_opening_balance(&mut conn).expect("opening balance recorded");
+    record_opening_balance(&mut conn)
 }

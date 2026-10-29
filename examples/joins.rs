@@ -22,8 +22,8 @@ table! {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pool = example_pool()?;
+async fn main() -> Result<()> {
+    let pool = example_pool();
 
     // ANCHOR: inner
     let inner_join = select_from(User)
@@ -50,7 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// The pool is lazy — it opens no connection until the first statement is sent
 /// — so an example compiles and runs without a reachable database.
-fn example_pool() -> Result<PgAsyncPool, Box<dyn std::error::Error>> {
-    let pool = deadpool_postgres::Config::new().create_pool(Some(Runtime::Tokio1), NoTls)?;
-    Ok(PgAsyncPool::new(pool))
+fn example_pool() -> PgAsyncPool {
+    // The configuration is a literal, so building the pool fails only for a
+    // reason the example itself cannot cause; the pool still opens no
+    // connection until the first statement is sent.
+    let pool = deadpool_postgres::Config::new()
+        .create_pool(Some(Runtime::Tokio1), NoTls)
+        .expect("the example pool configuration is valid");
+    PgAsyncPool::new(pool)
 }
