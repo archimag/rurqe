@@ -16,7 +16,8 @@
 //! is declared without a `#[sql(..)]` attribute (or with `#[sql(as = Text)]`),
 //! `Display` renders the label, `FromStr` parses it back, and a variant renames
 //! itself with `#[sql(rename = "...")]` when the database label differs from the
-//! Rust identifier.
+//! Rust identifier. Every variant needs a distinct label, and a `#[sql(rename)]`
+//! repeating the label of another variant is rejected at expansion time.
 //!
 //! Every mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`,
 //! `MakeNullable`, the expression-compatibility impls, and the matching
@@ -338,6 +339,11 @@ fn single_field(name: &Ident, data: &DataStruct) -> syn::Result<SingleField> {
 }
 
 /// Collects the unit variants of a derived enum together with their labels.
+///
+/// Two variants sharing one label would make the textual representation
+/// non-injective: `Display` renders both of them to the same text, and `FromStr`
+/// decodes that text back to whichever variant was declared first. A repeated
+/// label is therefore rejected at the declaration that repeats it.
 fn enum_variants(data: &DataEnum) -> syn::Result<Vec<EnumVariant>> {
     if data.variants.is_empty() {
         return Err(syn::Error::new(
@@ -347,6 +353,8 @@ fn enum_variants(data: &DataEnum) -> syn::Result<Vec<EnumVariant>> {
     }
 
     let mut variants = Vec::with_capacity(data.variants.len());
+    let mut claimed: Vec<(String, &Ident)> = Vec::with_capacity(data.variants.len());
+
     for variant in &data.variants {
         if !matches!(variant.fields, Fields::Unit) {
             return Err(syn::Error::new_spanned(
@@ -354,17 +362,42 @@ fn enum_variants(data: &DataEnum) -> syn::Result<Vec<EnumVariant>> {
                 "`SqlType` derives only on an enum of unit variants",
             ));
         }
+
+        let declared = variant_label(variant)?;
+
+        for (label, first) in &claimed {
+            if label == &declared.label {
+                return Err(syn::Error::new(
+                    declared.span,
+                    format!(
+                        "label `{}` is shared by `{}` and `{}`; every variant of a \
+                         `SqlType` enum needs a distinct label",
+                        declared.label, first, variant.ident,
+                    ),
+                ));
+            }
+        }
+
+        claimed.push((declared.label.clone(), &variant.ident));
         variants.push(EnumVariant {
             ident: variant.ident.clone(),
-            label: variant_label(variant)?,
+            label: declared.label,
         });
     }
 
     Ok(variants)
 }
 
+/// The database label of one enum variant together with the span declaring it.
+struct DeclaredLabel {
+    /// The text the variant is stored as.
+    label: String,
+    /// Where the label is written: the `rename` literal, or the variant itself.
+    span: Span,
+}
+
 /// Reads the database label of `variant`, defaulting to its identifier.
-fn variant_label(variant: &syn::Variant) -> syn::Result<String> {
+fn variant_label(variant: &syn::Variant) -> syn::Result<DeclaredLabel> {
     let mut label: Option<LitStr> = None;
 
     for attr in &variant.attrs {
@@ -387,8 +420,14 @@ fn variant_label(variant: &syn::Variant) -> syn::Result<String> {
     }
 
     Ok(match label {
-        Some(label) => label.value(),
-        None => variant.ident.to_string(),
+        Some(label) => DeclaredLabel {
+            span: label.span(),
+            label: label.value(),
+        },
+        None => DeclaredLabel {
+            span: variant.ident.span(),
+            label: variant.ident.to_string(),
+        },
     })
 }
 
@@ -723,3 +762,65 @@ fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
 // literal impl would collide with it. The operand impls of the type itself are
 // emitted once, by `function_operand_impl` and
 // `borrowed_function_operand_impl`.
+
+#[cfg(test)]
+mod tests {
+    //! Rejection of an enum whose variants repeat a label.
+
+    use super::*;
+    use syn::parse_quote;
+
+    /// The message the derive emits for `input`, which it has to reject.
+    fn rejection(input: DeriveInput) -> String {
+        let error = expand(input).expect_err("a repeated label is rejected");
+        error.to_string()
+    }
+
+    #[test]
+    fn a_rename_colliding_with_a_default_label_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            enum Mood {
+                Happy,
+                #[sql(rename = "Happy")]
+                Glad,
+            }
+        };
+
+        assert_eq!(
+            rejection(input),
+            "label `Happy` is shared by `Happy` and `Glad`; every variant of a \
+             `SqlType` enum needs a distinct label"
+        );
+    }
+
+    #[test]
+    fn two_renames_colliding_are_rejected() {
+        let input: DeriveInput = parse_quote! {
+            enum Mood {
+                #[sql(rename = "ok")]
+                Happy,
+                #[sql(rename = "ok")]
+                Sad,
+            }
+        };
+
+        assert_eq!(
+            rejection(input),
+            "label `ok` is shared by `Happy` and `Sad`; every variant of a \
+             `SqlType` enum needs a distinct label"
+        );
+    }
+
+    #[test]
+    fn distinct_labels_still_expand() {
+        let input: DeriveInput = parse_quote! {
+            enum Mood {
+                Happy,
+                #[sql(rename = "very_sad")]
+                Sad,
+            }
+        };
+
+        assert!(expand(input).is_ok(), "distinct labels are accepted");
+    }
+}
