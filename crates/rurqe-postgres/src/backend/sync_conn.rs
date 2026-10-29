@@ -79,7 +79,7 @@ pub(crate) fn fetch_raw_limited_sync(
 /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available.
 pub struct PgConnection {
     client: postgres::Client,
-    status: TransactionStatus,
+    status: TransactionStatus<PgError>,
 }
 
 impl PgConnection {
@@ -201,7 +201,7 @@ impl QueryBackend for PgConnection {
 impl TransactionBackend for PgConnection {}
 
 impl TransactionalConnection for PgConnection {
-    fn transaction_status(&mut self) -> &mut TransactionStatus {
+    fn transaction_status(&mut self) -> &mut TransactionStatus<PgError> {
         &mut self.status
     }
 }

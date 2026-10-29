@@ -22,7 +22,7 @@ use super::types::{value_ref_to_sql_val, SqlValParam};
 /// executed directly.
 pub struct SqliteConnection {
     connection: Connection,
-    status: TransactionStatus,
+    status: TransactionStatus<::rusqlite::Error>,
 }
 
 impl SqliteConnection {
@@ -75,7 +75,7 @@ impl SqliteConnection {
 }
 
 impl TransactionalConnection for SqliteConnection {
-    fn transaction_status(&mut self) -> &mut TransactionStatus {
+    fn transaction_status(&mut self) -> &mut TransactionStatus<::rusqlite::Error> {
         &mut self.status
     }
 }

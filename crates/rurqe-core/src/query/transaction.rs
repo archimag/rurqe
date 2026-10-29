@@ -9,8 +9,10 @@
 //! repeats the guard.
 //!
 //! A rollback the driver refuses leaves its transaction open, so the guard never
-//! reports such a block as closed: it poisons the connection instead, and the
-//! next [`TransactionGuard::begin`] retries the abandoned rollback rather than
+//! reports such a block as closed: it poisons the connection instead, the guard
+//! holding the abandoned transaction refuses to commit it rather than persisting
+//! the work the rollback was supposed to discard, and the next
+//! [`TransactionGuard::begin`] retries the abandoned rollback rather than
 //! running a fresh transaction on top of an unknown one.
 //!
 //! The isolation level belongs to the outermost transaction only:
@@ -25,17 +27,26 @@ use super::execution::{IsolationLevel, TransactionBackend, TransactionContext};
 use super::savepoint::SavepointName;
 
 /// The transaction bookkeeping a synchronous connection keeps between calls.
+///
+/// The status is parameterised by the driver error of the connection, because a
+/// rollback the driver refused is retried later: the error that poisoned the
+/// connection stays recorded until the abandoned transaction is closed, and the
+/// guard that refuses to commit it hands that error back to the caller.
 #[derive(Debug, Clone, Default)]
-pub struct TransactionStatus {
+pub struct TransactionStatus<E = ()> {
     context: TransactionContext,
     open: bool,
-    poisoned: bool,
+    poison: Option<E>,
 }
 
-impl TransactionStatus {
+impl<E> TransactionStatus<E> {
     /// Creates the bookkeeping of a connection without an open transaction.
     pub fn new() -> Self {
-        TransactionStatus::default()
+        TransactionStatus {
+            context: TransactionContext::new(),
+            open: false,
+            poison: None,
+        }
     }
 
     /// Whether the outermost transaction block is currently open.
@@ -45,11 +56,13 @@ impl TransactionStatus {
 
     /// Whether a failed rollback left the connection in an unknown state.
     ///
+    ///
     /// A transaction the driver refused to roll back may still hold the work of
     /// its block, so the connection stays poisoned until that transaction is
-    /// closed for real: until then the guard refuses to open a new one.
+    /// closed for real: until then the guard refuses both to open a new
+    /// transaction and to commit the one that holds the pending work.
     pub fn is_poisoned(&self) -> bool {
-        self.poisoned
+        self.poison.is_some()
     }
 
     /// The number of nested savepoints currently open.
@@ -67,9 +80,18 @@ impl TransactionStatus {
         self.open = open;
     }
 
-    /// Records that a rollback failed, leaving the connection in an unknown state.
-    fn mark_poisoned(&mut self) {
-        self.poisoned = true;
+    /// Records the driver error of a refused rollback, poisoning the connection.
+    fn mark_poisoned(&mut self, error: E) {
+        self.poison = Some(error);
+    }
+
+    /// Takes the driver error of the refused rollback that poisoned the connection.
+    ///
+    /// The guard takes the error when it refuses to commit, so the failure the
+    /// driver reported reaches the caller instead of the block being committed
+    /// with the work the rollback was supposed to discard.
+    fn take_poison(&mut self) -> Option<E> {
+        self.poison.take()
     }
 
     /// Records that the connection left the outermost transaction block.
@@ -79,7 +101,7 @@ impl TransactionStatus {
     /// connection never opened in the first place.
     fn mark_closed(&mut self) {
         self.open = false;
-        self.poisoned = false;
+        self.poison = None;
         while self.context.close_savepoint().is_some() {}
     }
 
@@ -107,7 +129,11 @@ impl TransactionStatus {
 )]
 pub trait TransactionalConnection: TransactionBackend {
     /// The transaction bookkeeping of the connection.
-    fn transaction_status(&mut self) -> &mut TransactionStatus;
+    ///
+    /// The status carries the driver error of the connection, so a refused
+    /// rollback keeps the error it produced until the abandoned transaction is
+    /// closed for real.
+    fn transaction_status(&mut self) -> &mut TransactionStatus<Self::Error>;
 }
 
 /// An open transaction or savepoint, rolled back unless it is committed.
@@ -116,7 +142,9 @@ pub trait TransactionalConnection: TransactionBackend {
 /// dropping it without [`commit`](TransactionGuard::commit) rolls the block
 /// back: a failing or unwinding block never leaves a finished transaction or
 /// savepoint behind. When the driver refuses that rollback the connection is
-/// poisoned instead of being reported as clean.
+/// poisoned instead of being reported as clean, and the guard holding the
+/// abandoned transaction refuses to commit it, so the work that rollback was
+/// supposed to discard is never persisted by an enclosing block.
 pub struct TransactionGuard<'a, B: TransactionalConnection + ?Sized> {
     connection: &'a mut B,
     outer: bool,
@@ -231,6 +259,12 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
     }
 
     /// Commits the outermost transaction or releases the nested savepoint.
+    ///
+    /// A connection poisoned by a failed rollback never commits: the work of the
+    /// block whose rollback the driver refused may still be pending inside the
+    /// open transaction, so the method hands that driver error back instead of
+    /// persisting it, and the guard stays unfinished so that dropping it forces
+    /// the rollback the connection needs.
     pub fn commit(mut self) -> Result<(), B::Error> {
         self.release()?;
         self.finished = true;
@@ -238,7 +272,20 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
     }
 
     /// Commits or releases the guarded block.
+    ///
+    /// The poison check runs before either branch, so an enclosing guard refuses
+    /// to commit the transaction and a nested one refuses to release the
+    /// savepoint as long as the work of a block whose rollback failed is still
+    /// pending.
     fn release(&mut self) -> Result<(), B::Error> {
+        if let Some(error) = self.connection.transaction_status().take_poison() {
+            #[cfg(feature = "tracing")]
+            tracing::error!(
+                "refusing to commit a transaction whose rollback failed; the connection has to be discarded"
+            );
+            return Err(error);
+        }
+
         if self.outer {
             self.connection.commit()?;
             self.connection.transaction_status().mark_closed();
@@ -280,12 +327,14 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
                     #[cfg(feature = "tracing")]
                     tracing::warn!("rolled back transaction");
                 }
-                Err(_) => {
+                Err(error) => {
                     // The work of the block may still be pending, so the
                     // bookkeeping keeps the transaction open and poisons the
                     // connection: the next `begin` retries this rollback instead
-                    // of opening a fresh transaction on top of the abandoned one.
-                    self.connection.transaction_status().mark_poisoned();
+                    // of opening a fresh transaction on top of the abandoned one,
+                    // and committing this transaction is refused with the error
+                    // the driver reported here.
+                    self.connection.transaction_status().mark_poisoned(error);
                     #[cfg(feature = "tracing")]
                     tracing::error!(
                         "rolling back the transaction failed; the connection stays poisoned until it is discarded"
@@ -293,21 +342,24 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
                 }
             }
         } else if let Some(savepoint) = self.savepoint.as_ref() {
-            let closed = match self.connection.rollback_to_savepoint(savepoint) {
-                Ok(()) => self.connection.release_savepoint(savepoint).is_ok(),
-                Err(_) => false,
+            let failure = match self.connection.rollback_to_savepoint(savepoint) {
+                Ok(()) => self.connection.release_savepoint(savepoint).err(),
+                Err(error) => Some(error),
             };
-            if closed {
-                self.connection.transaction_status().close_savepoint();
-                #[cfg(feature = "tracing")]
-                tracing::warn!(savepoint = %savepoint, "rolled back to savepoint");
-            } else {
-                self.connection.transaction_status().mark_poisoned();
-                #[cfg(feature = "tracing")]
-                tracing::error!(
-                    savepoint = %savepoint,
-                    "rolling back to the savepoint failed; the connection stays poisoned until it is discarded"
-                );
+            match failure {
+                None => {
+                    self.connection.transaction_status().close_savepoint();
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(savepoint = %savepoint, "rolled back to savepoint");
+                }
+                Some(error) => {
+                    self.connection.transaction_status().mark_poisoned(error);
+                    #[cfg(feature = "tracing")]
+                    tracing::error!(
+                        savepoint = %savepoint,
+                        "rolling back to the savepoint failed; the connection stays poisoned until it is discarded"
+                    );
+                }
             }
         }
     }
@@ -323,7 +375,7 @@ mod tests {
     /// A connection whose transactional statements are scripted by the test.
     #[derive(Default)]
     struct MockConnection {
-        status: TransactionStatus,
+        status: TransactionStatus<String>,
         statements: Vec<String>,
         fail_rollback: bool,
         fail_savepoint_rollback: bool,
@@ -364,7 +416,7 @@ mod tests {
     }
 
     impl TransactionalConnection for MockConnection {
-        fn transaction_status(&mut self) -> &mut TransactionStatus {
+        fn transaction_status(&mut self) -> &mut TransactionStatus<String> {
             &mut self.status
         }
     }
@@ -443,6 +495,36 @@ mod tests {
             1,
             "a refused savepoint rollback keeps the savepoint recorded"
         );
+    }
+
+    #[test]
+    fn a_poisoned_connection_refuses_to_commit_the_enclosing_transaction() {
+        let mut connection = MockConnection {
+            fail_savepoint_rollback: true,
+            ..MockConnection::default()
+        };
+        let mut outer = TransactionGuard::begin(&mut connection).expect("the transaction opens");
+        drop(TransactionGuard::begin(&mut *outer).expect("the savepoint opens"));
+
+        let refused = outer.commit();
+
+        assert_eq!(
+            refused.err(),
+            Some(String::from("savepoint rollback refused")),
+            "the refusal hands the error of the failed rollback back"
+        );
+        assert_eq!(
+            connection.statements,
+            vec![
+                String::from("BEGIN"),
+                String::from("SAVEPOINT rurqe_sp_1"),
+                String::from("ROLLBACK TO SAVEPOINT rurqe_sp_1"),
+                String::from("ROLLBACK"),
+            ],
+            "the abandoned work is never committed, and the guard forces the rollback"
+        );
+        assert!(!connection.status.is_open());
+        assert!(!connection.status.is_poisoned());
     }
 
     #[test]
