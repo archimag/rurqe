@@ -39,15 +39,7 @@ The shortest executable statement assigns one column and restricts one row: `upd
 ### `SET` and `WHERE`: one row
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -63,16 +55,7 @@ The three constructors — `UserName::set("root")`, `UserName::default_value()`,
 ### `FROM`: reading a second relation
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# table! { Account => "accounts" { AccountId => "id": i64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update_from}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -96,16 +79,10 @@ An absent branch adds no clause, and the statement keeps its type, so nothing do
 ### `RETURNING`
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
 let renamed = update(User)
     .set(UserName::set("root"))
     .where_(UserId.eq(1i64))
     .returning(cols!(UserName));
-# let _ = renamed;
-# }
 ```
 
 The clause writes back into the rewritten row, so it accepts only a projection of that row: a column of another relation names something the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.
@@ -140,31 +117,19 @@ refusing to build a mutation without column values
 ```
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
 // Rejected: the statement assigns a value but restricts no row.
 let mutating = update(User)
     .set(UserName::set("root"))
     .build();
-# let _ = mutating;
-# }
 ```
 
 The accepted form records the filter — `.where_(UserId.eq(1i64))` — or states the intent with `.allow_all()`.
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
 // Rejected: the statement restricts a row but assigns nothing to it.
 let mutating = update(User)
     .where_(UserId.eq(1i64))
     .build();
-# let _ = mutating;
-# }
 ```
 
 The accepted form records the assignment first — `.set(UserName::set("root"))` — and then the filter.

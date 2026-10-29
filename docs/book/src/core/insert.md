@@ -45,15 +45,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 ### `VALUES`: one row
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:insert}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -75,15 +67,7 @@ A tuple of assignments is accepted only when every element targets the same tabl
 ### `VALUES`: many rows
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:values_many}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -95,16 +79,7 @@ One statement carries the whole batch, so the parameters are numbered across the
 ### `SELECT`: rows from another relation
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# table! { ArchivedUser => "archived_users" { ArchivedUserId => "id": i64, ArchivedUserName => "name": String, ArchivedUserEmail => "email": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:from_select}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -116,15 +91,7 @@ The source projection is a tuple that has to match the target column list in ari
 ### `ON CONFLICT`: the upsert
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:upsert}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -162,14 +129,8 @@ Below the stated threshold the clause does not exist on the target, so the metho
 - A row that assigns nothing, or a row that disagrees with the first row on the number of values or on the column at a position, is rejected while the statement is assembled — before any SQL reaches the engine.
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
 // Rejected: the statement names a table but records no row to insert.
 let written = insert_into(User).build();
-# let _ = written;
-# }
 ```
 
 The accepted form records the rows first — `.values((UserId::set(1i64), UserName::set("root")))` — and only then builds or executes the statement.

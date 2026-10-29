@@ -20,13 +20,7 @@ This chapter documents the `FROM` and `JOIN` steps of that order in depth: the j
 The join builders take the table marker as a value and read the joined type `T` from it, so the compiler infers `T`, the joined scope, and the position marker at the call site: no turbofish is written and no runtime cost is paid, because the marker is zero-sized.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/joins.rs:inner}}
-# }
 ```
 
 ```text
@@ -45,13 +39,7 @@ A column marker is a complete operand on its own, on either side of the comparis
 `LEFT JOIN`, `FULL OUTER JOIN`, and `LEFT JOIN LATERAL` may leave the joined relation unmatched, so its columns reach the projected row as `Option<T>`:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/joins.rs:outer}}
-# }
 ```
 
 The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
@@ -61,16 +49,11 @@ The lifting is automatic: the outer-join scope marks the joined relation nullabl
 Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The compiler refuses the statement even earlier: one marker can only name one relation, so a second occurrence has to be written as an alias of the first.
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserManagerId => "manager_id": i64, } }
-# fn main() {
 // Rejected by the compiler: `users` is already the relation the statement
 // selects from, so the bare marker cannot stand for a second occurrence.
 let _ = select_from(User)
     .inner_join(User, UserManagerId.eq(Expr::column::<UserId>()))
     .select(cols!(UserId));
-# }
 ```
 
 The fix is to alias the second occurrence through the alias markers — see [Aliases](aliasing.md).
@@ -84,17 +67,12 @@ The fix is to alias the second occurrence through the alias markers, so each use
 `LATERAL` joins are gated by `SupportsLateralJoin` — implemented for PostgreSQL, absent for SQLite, so the methods do not exist there at compile time:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderTotal => "total": f64, OrderUserId => "user_id": i64, OrderCreatedAt => "created_at": i64, } }
 table! {
     /// The `latest_order` lateral relation marker.
     LatestOrder => "latest_order" {
         LatestOrderTotal => "total": f64,
     }
 }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let report = select_from(User)
     .left_join_lateral(lateral::<LatestOrder, _, _, _>(
         select_from(Order)
@@ -106,9 +84,6 @@ let report = select_from(User)
     .select(cols!(UserId, LatestOrderTotal))
     .build()?;
 // Row: (i64, Option<f64>) — the lateral projection lifts through the left join.
-# let _ = report;
-# Ok(())
-# }
 ```
 
 A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>`; a correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations.

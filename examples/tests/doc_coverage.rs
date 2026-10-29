@@ -166,6 +166,71 @@ fn collect_file_directives(path: &Path, directives: &mut Vec<(String, String, St
     }
 }
 
+/// Prefix of a rustdoc hiding line, which a chapter never carries.
+const HIDDEN_LINE_PREFIX: &str = "# ";
+
+/// Whether a fence info string opens a Rust block.
+///
+/// A Rust sample is tagged `rust`, `rust,no_run`, or `rust,compile_fail`, while
+/// a `text`, `sql`, `toml`, or `bash` sample is not Rust: a `# `-prefixed line
+/// inside it is a comment of that language rather than a hidden doctest line.
+fn opens_rust_block(info: &str) -> bool {
+    info.split(',').next().is_some_and(|tag| tag.trim() == "rust")
+}
+
+/// The lines of every fenced Rust block of `text`, numbered from one.
+fn rust_block_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut lines = Vec::new();
+    let mut in_fence = false;
+    let mut in_rust_block = false;
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if in_fence {
+                in_fence = false;
+                in_rust_block = false;
+            } else {
+                in_fence = true;
+                in_rust_block = opens_rust_block(info);
+            }
+            continue;
+        }
+        if in_rust_block {
+            lines.push((index + 1, line));
+        }
+    }
+    lines
+}
+
+/// Chapter lines that hide scaffolding inside a fenced Rust block, as the
+/// chapter path, the one-based line number, and the line itself.
+fn hidden_scaffolding() -> Vec<(String, usize, String)> {
+    let mut hidden = Vec::new();
+    collect_hidden_scaffolding(&book_source(), &mut hidden);
+    hidden
+}
+
+fn collect_hidden_scaffolding(dir: &Path, hidden: &mut Vec<(String, usize, String)>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
+            .path();
+        if path.is_dir() {
+            collect_hidden_scaffolding(&path, hidden);
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
+            for (number, line) in rust_block_lines(&text) {
+                if line.starts_with(HIDDEN_LINE_PREFIX) {
+                    hidden.push((path.display().to_string(), number, line.to_owned()));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn example_targets_match_the_files_on_disk() {
     let root = package_root();
@@ -309,5 +374,21 @@ fn no_legacy_features_part_remains() {
         "the legacy `features/` part directory still holds chapter files {chapters:?} under \
          {legacy:?}: every Part II chapter lives under `core/`, so a chapter left there is a \
          stale copy the table of contents no longer reaches"
+    );
+}
+
+#[test]
+fn no_chapter_hides_scaffolding_inside_a_rust_block() {
+    let hidden = hidden_scaffolding();
+    let rendered: Vec<String> = hidden
+        .iter()
+        .map(|(chapter, number, line)| format!("{chapter}:{number}: {line}"))
+        .collect();
+    assert!(
+        hidden.is_empty(),
+        "{} chapter line(s) hide scaffolding inside a fenced `rust` block: {rendered:?}; a \
+         chapter includes a fragment of the examples crate instead of hiding the lines that \
+         make that fragment compile",
+        hidden.len()
     );
 }

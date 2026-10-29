@@ -36,15 +36,7 @@ The shortest executable statement restricts one row: `delete_from(User).where_(U
 ### `WHERE`: which rows go
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -56,16 +48,7 @@ DELETE FROM "users" WHERE ("id" = $1)
 ### `USING`: deciding from a second relation
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Account => "accounts" { AccountId => "id": i64, } }
-# async fn example() -> Result<()> {
-#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete_using}}
-#     Ok(())
-# }
-# fn main() {}
 ```
 
 ```text
@@ -81,15 +64,9 @@ The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(..
 ### `RETURNING`
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
 let removed = delete_from(User)
     .where_(UserId.eq(1i64))
     .returning(cols!(UserName));
-# let _ = removed;
-# }
 ```
 
 The clause writes back into the removed row, so it accepts only a projection of that row: a column of another relation names something the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.
@@ -118,14 +95,8 @@ refusing to build a full-table mutation without a filter
 ```
 
 ```rust,compile_fail
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# fn main() {
 // Rejected: the statement removes rows but restricts none.
 let removed = delete_from(User).build();
-# let _ = removed;
-# }
 ```
 
 The accepted form records the filter — `.where_(UserId.eq(1i64))` — or states the intent with `.allow_all()`.

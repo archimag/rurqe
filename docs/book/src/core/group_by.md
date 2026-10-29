@@ -5,13 +5,7 @@
 That order is what makes the rule "a column is either grouped or aggregated" checkable at all: the grouping is known before the projection is written, so a projection naming a column the grouping collapsed is refused at the call site. Writing `.select(...)` first would leave the projection nothing to check it against.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
-# table! { Order => "orders" { OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/aggregates.rs:group_by}}
-# }
 ```
 
 ```text
@@ -69,18 +63,11 @@ Two kinds of predicate are allowed here:
 A predicate reading a bare column is rejected: the grouping has discarded the per-row value. A separate form exists for comparing a **grouped** column:
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let filtered = select_from(Order)
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
     .having_col(OrderUserId, Expr::column::<OrderUserId>().gt(10i64))
     .build()?;
-# let _ = filtered;
-# Ok(())
-# }
 ```
 
 `having` is available only on a grouped statement — a plain query has no `HAVING` clause.
@@ -90,12 +77,7 @@ let filtered = select_from(Order)
 The rows an aggregate call evaluates can be restricted without a `CASE WHEN` detour: the clause is written on the call itself and travels with the expression wherever the caller projects it.
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { Order => "orders" { OrderTotal => "total": f64, OrderStatus => "status": String, } }
-# fn main() {
 {{#rustdoc_include ../../../../examples/aggregates.rs:filtered}}
-# }
 ```
 
 `filter_where` obeys the same belonging rule as the call's `DISTINCT` modifier:
@@ -113,19 +95,12 @@ The rows an aggregate call evaluates can be restricted without a `CASE WHEN` det
 | `limit` / `offset` | the number of groups |
 
 ```rust,no_run
-# extern crate rurqe;
-# use rurqe::postgres::prelude::*;
-# table! { Order => "orders" { OrderUserId => "user_id": i64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let top = select_from(Order)
     .group_by(OrderUserId)
     .select((OrderUserId, count_all()))
     .order_by_expr_desc(count_all())
     .limit(10)
     .build()?;
-# let _ = top;
-# Ok(())
-# }
 ```
 
 ## Finishing a grouped query
