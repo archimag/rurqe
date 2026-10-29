@@ -37,6 +37,13 @@ fn table_is_in_its_own_scope() {
     assert_in_scope::<User>();
 }
 
+#[test]
+fn table_value_addresses_its_columns() {
+    assert_eq!(User.UserId, UserId);
+    assert_eq!(User.UserEmail, UserEmail);
+    assert_eq!(core::mem::size_of::<User>(), 0);
+}
+
 crate::table! {
     Order => "orders" {
         OrderId => "id": i64,

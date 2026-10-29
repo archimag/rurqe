@@ -4,6 +4,20 @@
 //! statically tied to its owning table through [`Column::Table`], which lets the
 //! compiler reject expressions that mix columns from unrelated tables at the
 //! call site.
+//!
+//! A table declaration fills both namespaces. The type namespace carries the
+//! table marker together with one field per column, so a column is addressable
+//! through the table it belongs to — [`Table`], [`Column`], and the accessor
+//! struct the [`table!`](crate::table) macro declares. The value namespace
+//! carries a zero-sized value of that marker, so a builder receives the table
+//! itself, and the qualified address and the bare column marker name the same
+//! marker:
+//!
+//! * qualified: the field of the table accessor, written only where a bare name
+//!   would be ambiguous or where the column is reached through an alias;
+//! * bare: the column marker type of the table declaration, which stays the
+//!   short spelling every simple statement uses.
+//!
 
 mod alias;
 mod arithmetic;

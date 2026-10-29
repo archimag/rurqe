@@ -155,6 +155,37 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 /// assert_eq!(UserEmail::NAME, "email");
 /// assert_eq!(<<UserEmail as Column>::Table as Table>::NAME, "users");
 /// ```
+///
+/// The declaration occupies both namespaces, which is what gives a column two
+/// equivalent spellings. The type namespace carries the table marker together
+/// with one field per column, so `User.UserId` addresses the `id` column through
+/// the table it belongs to; the value namespace carries a zero-sized `User`
+/// value of that type, so a builder receives the very same table. Neither
+/// spelling needs a turbofish, and the qualified address costs nothing:
+///
+/// ```
+/// rurqe_core::table! {
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserEmail => "email": String,
+///     }
+/// }
+///
+/// // `User` is a value, so it is handed to a builder directly.
+/// use rurqe_core::schema::Table;
+///
+/// // `User` is a value, so it is handed to a builder directly.
+/// assert_eq!(User::NAME, "users");
+///
+/// // The qualified address reaches the same marker the bare type names, which
+/// // keeps the prefix optional.
+/// assert_eq!(User.UserId, UserId);
+/// assert_eq!(User.UserEmail, UserEmail);
+///
+/// // The accessor carries markers only, so it stays zero-sized.
+/// assert_eq!(core::mem::size_of::<User>(), 0);
+/// ```
 #[macro_export]
 macro_rules! table {
     (
@@ -167,9 +198,20 @@ macro_rules! table {
         }
     ) => {
         $(#[$table_meta])*
-        #[allow(dead_code)]
+        #[allow(dead_code, non_snake_case)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $table;
+        pub struct $table {
+            $(
+                $(#[$column_meta])*
+                #[allow(non_snake_case)]
+                pub $column: $column,
+            )*
+        }
+
+        #[allow(dead_code, non_upper_case_globals)]
+        pub const $table: $table = $table {
+            $($column: $column,)*
+        };
 
         impl $crate::schema::Table for $table {
             const NAME: &'static str = $table_name;
@@ -190,5 +232,19 @@ macro_rules! table {
 
             $crate::__rurqe_column_arithmetic!([] [] $column, $table);
         )*
+
+        /// Exports the columns this table declares to the declaration that
+        /// mirrors them, so an alias of the table restates no column list.
+        ///
+        /// The expansion names every column of the table in declaration order
+        /// as a `(marker, SQL name)` pair, which is the whole input an alias
+        /// accessor needs.
+        #[doc(hidden)]
+        #[allow(unused_macros)]
+        macro_rules! $table {
+            () => {
+                [$(( $column, $column_name )),*]
+            };
+        }
     };
 }
