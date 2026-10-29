@@ -31,8 +31,8 @@ test:
 [group('tauqe')]
 [doc('Verify mdBook Rust snippets by compiling them with mdbook test')]
 doc-test:
-    cargo test --no-run --workspace
-    mdbook test docs -L target/debug/deps
+    CARGO_TARGET_DIR=target/doctest cargo test --no-run --workspace
+    mdbook test docs -L target/doctest/debug/deps
 
 # Build the mdBook documentation into target/book
 [group('tauqe')]
