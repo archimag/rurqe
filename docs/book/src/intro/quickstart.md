@@ -184,5 +184,4 @@ A statement rejected before it reaches the engine is a typed `BuildError`; a dri
 - [Projections and `SELECT`](../core/select.md) — `select!`, `cols!`, `dto!`, and the row type.
 - [Predicates and `WHERE`](../core/filtering.md) and [ordering](../core/ordering.md).
 - [Joins](../core/joins.md) and [nullability](../theory/nullability.md) — why the type changes.
-- [Nested results](../features/nested.md) — `nest_many` and `nest_one`.
 - [Two-tier SQL correctness](two_tier.md) — which gate catches which mistake.
