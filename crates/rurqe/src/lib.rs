@@ -568,9 +568,10 @@ pub mod prelude {
         BuildError, BuiltQuery, Column, ColumnBelongsTo, Cte, DerivedTable, Dialect,
         ExecutableQuery, ExecutionError, Expr, ExprKind, FromRow, FromSqlValue, FunctionOperand,
         GroupBy, IntoExpr, IsolationLevel, LagLeadFn, OrderDirection, PartitionBy, QueryBackend,
-        QueryBackendExt, RowDecodeError, SelectQuery, SelectTarget, Selection, SqlArrayElement,
-        SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict, SupportsReturning, Table,
-        TableInScope, ToSqlVal, Window, WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+        QueryBackendExt, QueryTerminals, RowDecodeError, SelectQuery, SelectTarget, Selection,
+        SqlArrayElement, SqlCompatible, SqlVal, SupportsDistinctOn, SupportsOnConflict,
+        SupportsReturning, Table, TableInScope, TerminalBackend, ToSqlVal, Window, WindowExpr,
+        WindowExprKind, WindowFn, WindowSpec,
     };
 
     pub use rurqe_core::query::NullsOrder;

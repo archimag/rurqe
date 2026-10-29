@@ -846,3 +846,61 @@ fn fetch_iter_streams_rows_without_collecting_them() {
 
     assert_eq!(total, 10);
 }
+
+#[test]
+fn query_terminals_run_against_a_synchronous_backend() {
+    // The borrow the caller passes selects the runtime: `&mut conn` runs the
+    // statement synchronously and hands the decoded rows straight back.
+    let mut backend = MockBackend {
+        rows: vec![vec![SqlVal::I64(1)], vec![SqlVal::I64(2)]],
+        affected: 5,
+        ..MockBackend::default()
+    };
+
+    assert_eq!(
+        user_id_query().fetch_all(&mut backend),
+        Ok(vec![(1i64,), (2i64,)])
+    );
+    assert_eq!(
+        user_id_query().fetch_one(&mut backend),
+        Err(ExecutionError::MultipleRows { count: 2 })
+    );
+
+    backend.rows = vec![vec![SqlVal::I64(7)]];
+    assert_eq!(
+        user_id_query().fetch_optional(&mut backend),
+        Ok(Some((7i64,)))
+    );
+    assert_eq!(user_id_query().fetch_one(&mut backend), Ok((7i64,)));
+
+    let insert =
+        InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
+    assert_eq!(insert.execute(&mut backend), Ok(5));
+}
+
+#[test]
+fn query_terminals_await_an_asynchronous_backend() {
+    // The very same chain ends in an awaited terminal when the backend is
+    // passed by shared reference, and the future stays movable between tasks.
+    let backend = MockAsyncBackend {
+        rows: vec![vec![SqlVal::I64(7)]],
+        affected: 3,
+    };
+
+    assert_eq!(
+        block_on(spawnable(user_id_query().fetch_all(&backend))),
+        Ok(vec![(7i64,)])
+    );
+    assert_eq!(
+        block_on(spawnable(user_id_query().fetch_optional(&backend))),
+        Ok(Some((7i64,)))
+    );
+    assert_eq!(
+        block_on(spawnable(user_id_query().fetch_one(&backend))),
+        Ok((7i64,))
+    );
+
+    let insert =
+        InsertQuery::<MockDialect, User>::new().values((UserId::set(1i64), UserName::set("root")));
+    assert_eq!(block_on(spawnable(insert.execute(&backend))), Ok(3));
+}

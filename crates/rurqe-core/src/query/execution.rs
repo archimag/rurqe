@@ -2,6 +2,7 @@
 
 use core::fmt;
 use core::future::Future;
+use core::pin::Pin;
 use core::marker::PhantomData;
 
 use crate::dialect::Dialect;
@@ -577,6 +578,286 @@ pub trait AsyncQueryBackendExt: AsyncQueryBackend {
 }
 
 impl<B: AsyncQueryBackend + ?Sized> AsyncQueryBackendExt for B {}
+
+/// The decoding half of a terminal call, implemented once per runtime shape.
+///
+/// A query hands its terminal call here, so [`QueryTerminals`] stays one
+/// contract while the runtime lives in the borrow the caller passes: the
+/// implementation for `&mut B` serves a synchronous [`QueryBackend`] and hands
+/// a [`Result`] back, while the implementation for `&B` serves an
+/// [`AsyncQueryBackend`] and hands a future back. The borrow alone therefore
+/// selects the runtime — `&mut conn` runs the statement synchronously and
+/// `&pool` awaits it — and a call is never ambiguous.
+#[diagnostic::on_unimplemented(
+    message = "this query cannot be executed against the given backend",
+    label = "the backend is neither a synchronous nor an asynchronous RURQE backend",
+    note = "pass a synchronous connection as `&mut conn` and an asynchronous one as `&pool`"
+)]
+pub trait TerminalBackend<'a, Q: ExecutableQuery> {
+    /// The result of [`run_fetch_all`](TerminalBackend::run_fetch_all).
+    type All;
+
+    /// The result of [`run_fetch_optional`](TerminalBackend::run_fetch_optional).
+    type Optional;
+
+    /// The result of [`run_fetch_one`](TerminalBackend::run_fetch_one).
+    type One;
+
+    /// The result of [`run_execute`](TerminalBackend::run_execute).
+    type Count;
+
+    /// Executes `query` and hands back every decoded row.
+    ///
+    /// The dispatcher is named apart from the execution helper the backend
+    /// already offers, so `backend.fetch_all(&query)` resolves to a single
+    /// candidate while `query.fetch_all(&mut backend)` stays the fluent form.
+    fn run_fetch_all(self, query: Q) -> Self::All
+    where
+        Q::Row: FromRow;
+
+    /// Executes `query` and hands back at most one decoded row.
+    fn run_fetch_optional(self, query: Q) -> Self::Optional
+    where
+        Q::Row: FromRow;
+
+    /// Executes `query` and hands back exactly one decoded row.
+    fn run_fetch_one(self, query: Q) -> Self::One
+    where
+        Q::Row: FromRow;
+
+    /// Executes `query` and hands back the number of affected rows.
+    fn run_execute(self, query: Q) -> Self::Count;
+}
+
+impl<'a, B, Q> TerminalBackend<'a, Q> for &'a mut B
+where
+    B: QueryBackend + ?Sized,
+    Q: ExecutableQuery,
+{
+    type All = Result<Vec<Q::Row>, ExecutionError<B::Error>>;
+    type Optional = Result<Option<Q::Row>, ExecutionError<B::Error>>;
+    type One = Result<Q::Row, ExecutionError<B::Error>>;
+    type Count = Result<u64, ExecutionError<B::Error>>;
+
+    fn run_fetch_all(self, query: Q) -> Self::All
+    where
+        Q::Row: FromRow,
+    {
+        QueryBackendExt::fetch_all(self, &query)
+    }
+
+    fn run_fetch_optional(self, query: Q) -> Self::Optional
+    where
+        Q::Row: FromRow,
+    {
+        QueryBackendExt::fetch_optional(self, &query)
+    }
+
+    fn run_fetch_one(self, query: Q) -> Self::One
+    where
+        Q::Row: FromRow,
+    {
+        QueryBackendExt::fetch_one(self, &query)
+    }
+
+    fn run_execute(self, query: Q) -> Self::Count {
+        QueryBackendExt::execute(self, &query)
+    }
+}
+
+#[allow(clippy::type_complexity)]
+impl<'a, B, Q> TerminalBackend<'a, Q> for &'a B
+where
+    B: AsyncQueryBackend + ?Sized + 'a,
+    B::Error: 'a,
+    Q: ExecutableQuery + Sync + Send + 'a,
+    Q::Row: Send + 'static,
+{
+    type All =
+        Pin<Box<dyn Future<Output = Result<Vec<Q::Row>, ExecutionError<B::Error>>> + Send + 'a>>;
+    type Optional = Pin<
+        Box<dyn Future<Output = Result<Option<Q::Row>, ExecutionError<B::Error>>> + Send + 'a>,
+    >;
+    type One = Pin<Box<dyn Future<Output = Result<Q::Row, ExecutionError<B::Error>>> + Send + 'a>>;
+    type Count = Pin<Box<dyn Future<Output = Result<u64, ExecutionError<B::Error>>> + Send + 'a>>;
+
+    fn run_fetch_all(self, query: Q) -> Self::All
+    where
+        Q::Row: FromRow,
+    {
+        Box::pin(async move { AsyncQueryBackendExt::fetch_all(self, &query).await })
+    }
+
+    fn run_fetch_optional(self, query: Q) -> Self::Optional
+    where
+        Q::Row: FromRow,
+    {
+        Box::pin(async move { AsyncQueryBackendExt::fetch_optional(self, &query).await })
+    }
+
+    fn run_fetch_one(self, query: Q) -> Self::One
+    where
+        Q::Row: FromRow,
+    {
+        Box::pin(async move { AsyncQueryBackendExt::fetch_one(self, &query).await })
+    }
+
+    fn run_execute(self, query: Q) -> Self::Count {
+        Box::pin(async move { AsyncQueryBackendExt::execute(self, &query).await })
+    }
+}
+
+/// Terminal execution helpers bound to the query itself.
+///
+/// Assembling a statement never names a runtime: the entry point, the
+/// predicates, the joins, and the projection read identically for a synchronous
+/// connection and an asynchronous pool. The runtime appears in the terminal
+/// call alone, and the borrow the caller passes selects it:
+///
+/// ```no_run
+/// use rurqe_core::dialect::Dialect;
+/// use rurqe_core::expr::SqlVal;
+/// use rurqe_core::query::{BuiltQuery, QueryBackend, QueryTerminals};
+/// use rurqe_core::SelectQuery;
+///
+/// # struct MockDialect;
+/// #
+/// # impl Dialect for MockDialect {
+/// #     fn push_quoted_identifier(out: &mut String, ident: &str) {
+/// #         out.push('"');
+/// #         out.push_str(ident);
+/// #         out.push('"');
+/// #     }
+/// #
+/// #     fn push_placeholder(out: &mut String, index: usize) {
+/// #         out.push('$');
+/// #         out.push_str(&index.to_string());
+/// #     }
+/// # }
+/// #
+/// # struct Connection;
+/// #
+/// # impl QueryBackend for Connection {
+/// #     type Error = std::convert::Infallible;
+/// #
+/// #     fn fetch_raw(&mut self, _query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+/// #         Ok(Vec::new())
+/// #     }
+/// #
+/// #     fn execute_raw(&mut self, _query: &BuiltQuery) -> Result<u64, Self::Error> {
+/// #         Ok(0)
+/// #     }
+/// # }
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// }
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut conn = Connection;
+///
+/// let ids = SelectQuery::<MockDialect>::new()
+///     .from::<User>()
+///     .select((UserId,))
+///     .fetch_all(&mut conn)?;
+///
+/// assert!(ids.is_empty());
+/// # Ok(())
+/// # }
+/// ```
+///
+/// A synchronous connection is passed as `&mut conn` and hands a [`Result`]
+/// back, while an asynchronous pool is passed as `&pool` and hands a future
+/// back, so `query.fetch_all(&mut conn)?` and `query.fetch_all(&pool).await?`
+/// differ in the terminal alone.
+pub trait QueryTerminals<'a, B>: ExecutableQuery + Sized
+where
+    B: TerminalBackend<'a, Self>,
+{
+    /// Executes the query and collects its decoded rows.
+    fn fetch_all(self, backend: B) -> B::All
+    where
+        Self::Row: FromRow,
+    {
+        TerminalBackend::run_fetch_all(backend, self)
+    }
+
+    /// Executes the query and decodes at most one row.
+    fn fetch_optional(self, backend: B) -> B::Optional
+    where
+        Self::Row: FromRow,
+    {
+        TerminalBackend::run_fetch_optional(backend, self)
+    }
+
+    /// Executes the query and decodes exactly one row.
+    fn fetch_one(self, backend: B) -> B::One
+    where
+        Self::Row: FromRow,
+    {
+        TerminalBackend::run_fetch_one(backend, self)
+    }
+
+    /// Executes the query and returns the number of affected rows.
+    fn execute(self, backend: B) -> B::Count {
+        TerminalBackend::run_execute(backend, self)
+    }
+}
+
+// The terminal call is bound to the query builders one by one rather than to
+// every `ExecutableQuery`. A blanket implementation over a bare type parameter
+// unifies with any receiver, so `backend.fetch_all(&query)` — the long form of
+// the same call through `QueryBackendExt` — would see both candidates as
+// applicable and report an ambiguity; naming the builders keeps each spelling
+// unambiguous while the query-side call stays available on every one of them.
+impl<'a, D, Tables, Output, Lock, B> QueryTerminals<'a, B>
+    for SelectQuery<D, Tables, Output, HasProjection, Lock>
+where
+    D: Dialect,
+    Tables: TableScope,
+    B: TerminalBackend<'a, Self>,
+{
+}
+
+impl<'a, D, T, Values, Returning, B> QueryTerminals<'a, B> for InsertQuery<D, T, Values, Returning>
+where
+    D: Dialect,
+    T: Table,
+    Values: InsertSource<T>,
+    B: TerminalBackend<'a, Self>,
+{
+}
+
+impl<'a, D, T, State, Returning, Scope, Assignments, B> QueryTerminals<'a, B>
+    for UpdateQuery<D, T, State, Returning, Scope, Assignments>
+where
+    D: Dialect,
+    T: Table,
+    State: ExecutableMutation,
+    Assignments: AssignmentsPresent,
+    B: TerminalBackend<'a, Self>,
+{
+}
+
+impl<'a, D, T, State, Returning, Scope, B> QueryTerminals<'a, B>
+    for DeleteQuery<D, T, State, Returning, Scope>
+where
+    D: Dialect,
+    T: Table,
+    State: ExecutableMutation,
+    B: TerminalBackend<'a, Self>,
+{
+}
+
+impl<'a, D, Tables, Output, GroupByCols, B> QueryTerminals<'a, B>
+    for GroupedQuery<D, Tables, Output, GroupByCols>
+where
+    D: Dialect,
+    Tables: TableScope,
+    B: TerminalBackend<'a, Self>,
+{
+}
 
 /// The isolation level a transaction runs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
