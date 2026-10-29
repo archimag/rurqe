@@ -65,6 +65,9 @@ pub trait TableAlias: Sized {
 
 /// Declares a table alias marker type together with its SQL name.
 ///
+/// The marker-only form declares an alias that mirrors no table and only names
+/// the alias itself:
+///
 /// ```
 /// rurqe_core::table_alias! {
 ///     /// The `o` alias.
@@ -75,8 +78,44 @@ pub trait TableAlias: Sized {
 ///
 /// assert_eq!(OrderAlias::NAME, "o");
 /// ```
+///
+/// The table-bound form also mirrors the columns of the aliased table, so the
+/// alias addresses them exactly like the table does, and every field stays
+/// typed as the marker of that column under the alias:
+///
+/// ```
+/// use rurqe_core::schema::{AliasedCol, Column, TableAlias};
+///
+/// rurqe_core::table! {
+///     User => "users" {
+///         UserId => "id": i64,
+///         UserEmail => "email": String,
+///     }
+/// }
+///
+/// rurqe_core::table_alias! {
+///     /// The `u` alias.
+///     U1 => User as "u"
+/// }
+///
+/// assert_eq!(U1::NAME, "u");
+///
+/// // `U1.UserId` addresses the column through the alias, as `User.UserId`
+/// // addresses it through the table.
+/// let through_alias: AliasedCol<U1, UserId> = U1.UserId;
+/// assert_eq!(<AliasedCol<U1, UserId> as Column>::NAME, "id");
+/// ```
+///
+/// The table-bound form reaches the columns through the declaration of the
+/// table, so it is written in the module that declares the table.
 #[macro_export]
 macro_rules! table_alias {
+    (
+        $(#[$alias_meta:meta])*
+        $alias:ident => $table:ident as $alias_name:literal
+    ) => {
+        $table! { @alias [$(#[$alias_meta])*] $alias, $alias_name }
+    };
     (
         $(#[$alias_meta:meta])*
         $alias:ident => $alias_name:literal
@@ -85,6 +124,48 @@ macro_rules! table_alias {
         #[allow(dead_code)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $alias;
+
+        impl $crate::schema::TableAlias for $alias {
+            const NAME: &'static str = $alias_name;
+        }
+    };
+}
+
+/// Declares the accessor mirror of a table alias.
+///
+/// [`table_alias!`](crate::table_alias) reaches this declaration through the
+/// hidden macro [`table!`](crate::table) emits, which is the only place that
+/// knows the columns of the aliased table. The column list arrives as the
+/// `(marker, SQL name)` pairs the table declared, and every pair becomes a
+/// field of the alias accessor typed as that column under the alias, followed
+/// by the constant of the same name that exposes the accessor itself.
+///
+/// The invocation is an implementation detail of the two public macros and is
+/// not part of the stable surface.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __rurqe_alias_decl {
+    (
+        [$(($column:ident, $column_name:literal)),* $(,)?]
+        [$(#[$alias_meta:meta])*]
+        $alias:ident,
+        $alias_name:literal
+    ) => {
+        $(#[$alias_meta])*
+        #[allow(dead_code, non_snake_case)]
+        pub struct $alias {
+            $(
+                #[allow(non_snake_case)]
+                pub $column: $crate::schema::AliasedCol<$alias, $column>,
+            )*
+        }
+
+        #[allow(dead_code, non_upper_case_globals)]
+        pub const $alias: $alias = $alias {
+            $(
+                $column: $crate::schema::AliasedCol::<$alias, $column>::new(),
+            )*
+        };
 
         impl $crate::schema::TableAlias for $alias {
             const NAME: &'static str = $alias_name;
@@ -143,7 +224,10 @@ pub struct AliasedCol<A, C>(PhantomData<fn() -> (A, C)>);
 
 impl<A: TableAlias, C: Column> AliasedCol<A, C> {
     /// Creates the aliased column marker for the column `C` under the alias `A`.
-    pub fn new() -> Self {
+    ///
+    /// The constructor is a `const fn`, so the accessor an alias declares can
+    /// mirror the accessor of the table it aliases as a constant.
+    pub const fn new() -> Self {
         AliasedCol(PhantomData)
     }
 }

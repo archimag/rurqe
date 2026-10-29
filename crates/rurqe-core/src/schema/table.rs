@@ -233,17 +233,56 @@ macro_rules! table {
             $crate::__rurqe_column_arithmetic!([] [] $column, $table);
         )*
 
-        /// Exports the columns this table declares to the declaration that
-        /// mirrors them, so an alias of the table restates no column list.
-        ///
-        /// The expansion names every column of the table in declaration order
-        /// as a `(marker, SQL name)` pair, which is the whole input an alias
-        /// accessor needs.
+        // Exports the columns this table declares to the declaration that
+        // mirrors them, so an alias of the table restates no column list.
+        //
+        // The expansion names every column of the table in declaration order
+        // as a `(marker, SQL name)` pair, which is the whole input an alias
+        // accessor needs. The trailing `$` is the escaped dollar sign the
+        // emitted macro reads as the start of its own metavariables.
+        $crate::__rurqe_table_columns! {
+            $table,
+            [$(( $column, $column_name )),*]
+            $
+        }
+    };
+}
+
+/// Emits the hidden per-table macro that exposes the declared columns.
+///
+/// A macro cannot write the metavariables of the macro it emits: every `$name`
+/// in a transcriber is read as one of its own metavariables, and a name it does
+/// not bind is rejected. [`table!`](crate::table) therefore hands the literal
+/// `$` token — placed last in the invocation, where a transcriber reproduces it
+/// verbatim — to this helper, which binds it to `$d` and writes `$d` wherever
+/// the emitted macro has to read a `$` as the start of its own metavariable.
+///
+/// The emitted macro answers two invocations. `()` yields the declared columns
+/// as `(marker, SQL name)` pairs, so the column list of a table is declared
+/// once. `@alias` carries an alias declaration together with the columns of the
+/// table and mirrors them into the alias accessor.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __rurqe_table_columns {
+    (
+        $table:ident,
+        [$($columns:tt)*]
+        $d:tt
+    ) => {
         #[doc(hidden)]
         #[allow(unused_macros)]
         macro_rules! $table {
             () => {
-                [$(( $column, $column_name )),*]
+                [$($columns)*]
+            };
+
+            (@alias [$d(#[$d alias_meta:meta])*] $d alias:ident, $d alias_name:literal) => {
+                $crate::__rurqe_alias_decl! {
+                    [$($columns)*]
+                    [$d(#[$d alias_meta])*]
+                    $d alias,
+                    $d alias_name
+                }
             };
         }
     };
