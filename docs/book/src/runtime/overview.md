@@ -5,21 +5,102 @@ the adapter crates `rurqe-postgres` and `rurqe-sqlite` own *how*. The boundary
 between the two is fixed by the execution contract's trait set, and no adapter
 rewrites that contract on its own.
 
-## The five traits of the execution contract
+## The six traits of the execution contract
 
 | Trait | Role | Implemented by |
 |---|---|---|
 | `ExecutableQuery` | turns a built query into a `BuiltQuery` (SQL + parameters) | `SelectQuery`, `InsertQuery`, `UpdateQuery`, `DeleteQuery`, `GroupedQuery` |
 | `QueryBackend` | synchronous execution of a ready statement | `PgConnection`, `PgPool`, `SqliteConnection`, `SqlitePool` |
-| `QueryBackendExt` | row decoding and collection (`fetch_all`, `fetch_collect`, `fetch_iter`, `fetch_optional`, `fetch_one`, `execute`) | automatically for every `QueryBackend` |
+| `QueryBackendExt` | synchronous row decoding and collection (`fetch_all`, `fetch_collect`, `fetch_iter`, `fetch_optional`, `fetch_one`, `execute`) | automatically for every `QueryBackend` |
 | `AsyncQueryBackend` | asynchronous execution of a ready statement | `PgAsyncConnection`, `PgAsyncTransaction`, `PgAsyncPool` |
-| `AsyncQueryBackendExt` | the same helpers for asynchronous backends | automatically for every `AsyncQueryBackend` |
+| `AsyncQueryBackendExt` | the same helpers for asynchronous backends, each one returning a `Send` future | automatically for every `AsyncQueryBackend` |
+| `QueryTerminals` | puts the four query-side terminals on the query itself (`query.fetch_all(&backend)`, `query.fetch_optional(&backend)`, `query.fetch_one(&backend)`, `query.execute(&backend)`) | automatically for every `ExecutableQuery` whose row type is known |
 
 `ExecutableQuery` is implemented exactly for the statements that can be
 rendered: a `SELECT` with a projection, in any locking form; an `INSERT` with
 a non-empty row source; an `UPDATE` that sets at least one column and carries
 a `WHERE` or an explicit `.allow_all()`; a `DELETE` under the same guard; and
 a grouped query. Everything outside those boundaries does not compile.
+
+## Building is runtime-orthogonal
+
+Assembling a statement performs no I/O and names no driver. The entry point
+(`select_from` / `insert_into` / `update` / `delete_from`), the predicates, the
+joins, the grouping, the ordering, and the projection are the same chain in a
+synchronous and in an asynchronous program, and the terminal call alone decides
+which runtime executes it.
+
+| Terminal | Written on | Async form | Sync form |
+|---|---|---|---|
+| all rows | the query | `query.fetch_all(&pool).await?` | `query.fetch_all(&mut conn)?` |
+| one row, optional | the query | `query.fetch_optional(&pool).await?` | `query.fetch_optional(&mut conn)?` |
+| one row, required | the query | `query.fetch_one(&pool).await?` | `query.fetch_one(&mut conn)?` |
+| a mutation | the query | `query.execute(&pool).await?` | `query.execute(&mut conn)?` |
+
+Both spellings are supported and are one implementation: a query carries the
+four terminals itself through `QueryTerminals`, and every backend carries the
+same four helpers through `QueryBackendExt` or `AsyncQueryBackendExt`. The
+query-side form reads as the SQL statement it renders —
+`query.fetch_one(&pool).await?` — while the backend-side form keeps a chain that
+started from a connection handle. The runtime shows up in exactly one place:
+the `.await?` required by an asynchronous backend.
+
+## The query-side terminal surface
+
+```rust
+# extern crate rurqe;
+# use rurqe::prelude::*;
+pub trait QueryTerminals<'a, B>: ExecutableQuery + Sized
+where
+    B: TerminalBackend<'a, Self>,
+{
+    fn fetch_all(self, backend: B) -> B::Output<Vec<Self::Row>>;
+
+    fn fetch_optional(self, backend: B) -> B::Output<Option<Self::Row>>;
+
+    fn fetch_one(self, backend: B) -> B::Output<Self::Row>;
+
+    fn execute(self, backend: B) -> B::Output<u64>;
+}
+# fn main() {}
+```
+
+`TerminalBackend` is what makes one method serve both runtimes: a `&mut B` where
+`B: QueryBackend` produces the result directly, and a `&B` where
+`B: AsyncQueryBackend` produces the future. A query therefore never names `sync`
+or `async` itself — the backend argument decides, and the same chain type-checks
+against both.
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# async fn run(pool: PgAsyncPool) -> Result<(), Box<dyn std::error::Error>> {
+let users = select_from(User)
+    .select((UserId, UserName))
+    .fetch_all(&pool)
+    .await?;
+# let _ = users;
+# Ok(())
+# }
+# fn main() {}
+```
+
+The synchronous backend is the same call without the `.await`:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut conn: PgConnection = todo!();
+let users = select_from(User)
+    .select((UserId, UserName))
+    .fetch_all(&mut conn)?;
+# let _ = users;
+# Ok(())
+# }
+```
 
 ## The synchronous backend
 
@@ -81,6 +162,26 @@ between tasks, and the returned futures are explicitly `+ Send`, so a query can
 move into `tokio::spawn`. The limit travels into `tokio_postgres::RowStream`,
 which is polled row by row and stops at the requested count.
 
+## Parity of the two `*Ext` surfaces
+
+Every helper exists on both sides, and only the calling convention differs.
+
+| Helper | `QueryBackendExt` | `AsyncQueryBackendExt` |
+|---|---|---|
+| every row | `fetch_all(&mut self, &Q)` | `fetch_all(&self, &Q)` returning a `Send` future |
+| into a collection | `fetch_collect<C, Q>(&mut self, &Q)` | `fetch_collect<C, Q>(&self, &Q)` returning a `Send` future |
+| one row, required | `fetch_one(&mut self, &Q)` | `fetch_one(&self, &Q)` returning a `Send` future |
+| one row, optional | `fetch_optional(&mut self, &Q)` | `fetch_optional(&self, &Q)` returning a `Send` future |
+| a mutation | `execute(&mut self, &Q)` | `execute(&self, &Q)` returning a `Send` future |
+| streaming rows | `fetch_iter(&mut self, &Q)` | not exposed — the buffer is awaited once and decoded afterwards |
+
+The synchronous surface takes `&mut self`, because `postgres::Client` and
+`rusqlite::Connection` execute through `&mut`. The asynchronous surface takes
+`&self` and requires `Sync`, because `tokio_postgres::Client` is shared by
+reference. Both surfaces decode through the same `FromRow`, raise the same
+`ExecutionError` variants, and apply the same row-limit policy; a statement
+moved between runtimes keeps its behaviour and changes only its terminator.
+
 ## Row decoding
 
 The `QueryBackendExt` / `AsyncQueryBackendExt` helpers apply one policy:
@@ -107,13 +208,36 @@ The `QueryBackendExt` / `AsyncQueryBackendExt` helpers apply one policy:
 
 A query that by contract returns one row therefore cannot physically pull the
 whole set from the network, and the "too many rows" error arises without
-decoding the extra row.
+decoding the extra row. The query-side terminals delegate to exactly these
+helpers, so `query.fetch_optional(&pool).await?` and
+`pool.fetch_optional(&query).await?` are one implementation and one set of
+errors.
 
 ## Choosing the collection and streaming rows
 
 `fetch_collect` names the target collection at the call site, so a projection of
 pairs becomes a map and a projection of one value becomes a set, both in a
-single pass:
+single pass. The terminal is written on the query:
+
+```rust,no_run
+# extern crate rurqe;
+# use std::collections::HashMap;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# async fn run(pool: PgAsyncPool) -> Result<(), Box<dyn std::error::Error>> {
+let pairs = select_from(User).select((UserId, UserName));
+
+let by_id: HashMap<i64, String> = pool.fetch_collect(&pairs).await?;
+# let _ = by_id;
+# Ok(())
+# }
+# fn main() {}
+```
+
+`fetch_collect` is the one helper that names its collection at the call site and
+therefore stays on the backend: the rows are collected into the target type in a
+single pass, without an intermediate `Vec`. The synchronous spelling is the same
+call without the `.await`:
 
 ```rust,no_run
 # extern crate rurqe;
@@ -130,9 +254,10 @@ let by_id: HashMap<i64, String> = conn.fetch_collect(&pairs)?;
 # }
 ```
 
-`fetch_iter` returns an iterator instead of a collection: the raw values are
-already in memory, so the connection is free, and each row is decoded only when
-it is pulled out of the buffer:
+`fetch_iter` exists on the synchronous surface only: the raw values are already
+in memory, so the connection is free and each row is decoded only when it is
+pulled out of the buffer. The asynchronous surface awaits the whole buffer first,
+so it exposes the collected helpers instead of an iterator.
 
 ```rust,no_run
 # extern crate rurqe;
@@ -155,7 +280,7 @@ for row in conn.fetch_iter(&totals)? {
 Both helpers apply the row-index policy of `fetch_all`. The asynchronous
 counterpart mirrors `fetch_collect` behind a `Send` future, so a spawned task
 collects into a map or a set as well; the raw buffer is awaited once and decoded
-afterwards, so no separate iterator is exposed there.
+afterwards.
 
 ## The execution error
 

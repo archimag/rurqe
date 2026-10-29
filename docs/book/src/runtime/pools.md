@@ -3,7 +3,22 @@
 A pool is a backend too. Application code does not distinguish a pool from a
 connection: as soon as a type implements `QueryBackend` or `AsyncQueryBackend`,
 the `fetch_all`, `fetch_optional`, `fetch_one`, and `execute` helpers of the
-`*Ext` traits appear on it for free.
+`*Ext` traits appear on it for free — and the same four terminals appear on the
+query, so `query.fetch_all(&pool)` resolves exactly like
+`pool.fetch_all(&query)`.
+
+## Which pool belongs to which runtime
+
+| Runtime | Pool | Backend trait | Terminal form |
+|---|---|---|---|
+| asynchronous (`tokio`) | `PgAsyncPool` (`deadpool-postgres`) | `AsyncQueryBackend` | `query.fetch_all(&pool).await?` |
+| synchronous (`postgres`) | `PgPool<M>` (`r2d2`) | `QueryBackend` | `query.fetch_all(&mut pool)?` |
+| synchronous (`rusqlite`) | `SqlitePool<M>` (`r2d2`) | `QueryBackend` | `query.fetch_all(&mut pool)?` |
+
+The pool type never appears in the statement: the query is assembled before a
+pool is chosen, and only the terminal call names the backend. Moving a query
+from a synchronous to an asynchronous pool changes the terminal and nothing
+else.
 
 ## The asynchronous pool: `PgAsyncPool` (deadpool-postgres)
 
@@ -27,8 +42,20 @@ row stream, so a single-row lookup stops at the second row.
 ```rust,ignore
 use rurqe::postgres::prelude::*;
 
+let rows = select_from(Users)
+    .select(cols!(UsersId))
+    .fetch_all(&pool)
+    .await?;
+```
+
+The backend-side spelling of the same call is available as well:
+
+```rust,ignore
+use rurqe::postgres::prelude::*;
+
 let rows = pool
-    .fetch_all(&select_from(Users).select(cols!(UsersId)))?;
+    .fetch_all(&select_from(Users).select(cols!(UsersId)))
+    .await?;
 ```
 
 A pool error lands in `PgError::Pool`:
@@ -70,6 +97,17 @@ pub enum PgPoolError {
 
 `fetch_raw_limited` passes the limit into the `postgres` row iterator
 (`query_raw(...).take(limit)`), so the semantics match `PgConnection`.
+
+A synchronous pool is a `QueryBackend`, so the query-side terminal takes it by
+`&mut` and returns the result without an `.await`:
+
+```rust,ignore
+use rurqe::postgres::prelude::*;
+
+let rows = select_from(Users)
+    .select(cols!(UsersId))
+    .fetch_all(&mut pool)?;
+```
 
 ## The synchronous SQLite pool: `SqlitePool<M>` (r2d2)
 
@@ -123,3 +161,5 @@ not on a pool: a pool hands out a connection for the duration of a call, while
   application code.
 - The row limit reaches the driver in every built-in adapter.
 - Pool errors and query errors are separate variants of one enum.
+- The four terminals are available on the query and on the backend, with the
+  `.await?` of the asynchronous form as the only difference.
