@@ -1,6 +1,5 @@
 default: verify
 
-# Run full workspace verification (checks, clippy, tests)
 # Run full workspace verification (checks, clippy, tests, doc build)
 [group('tauqe')]
 [doc('Run full workspace verification (checks, clippy, tests, doc build)')]
@@ -10,8 +9,8 @@ verify: check clippy test doc-build
 [group('tauqe')]
 [doc('Run cargo check across all workspace targets')]
 check:
-    # `--workspace` includes the root `examples` crate and `--all-targets` its
-    # `[[example]]` targets, so every documented example is compiled here.
+    # `--workspace` includes the `docs/examples` crate and `--all-targets`
+    # its `[[example]]` targets, so every documented example is compiled here.
     cargo check --workspace --all-targets
 
 # Run cargo clippy with -D warnings across all workspace targets
@@ -31,6 +30,9 @@ test:
 [group('tauqe')]
 [doc('Verify the book: example coverage guard and a clean mdBook build')]
 doc-test:
+    # The book root is `docs/`: `docs/book.toml` declares `src = "."`, so the
+    # chapters sit directly under `docs/`, and the compiled examples crate sits
+    # beside them at `docs/examples`.
     cargo test -p rurqe-examples --test doc_coverage
     mdbook build docs --dest-dir ../target/book
 
@@ -38,6 +40,8 @@ doc-test:
 [group('tauqe')]
 [doc('Build the mdBook documentation into target/book')]
 doc-build:
+    # `docs/book.toml` sets `src = "."`, so the chapters live directly in
+    # `docs/` and the book renders into `target/book` at the repository root.
     mdbook build docs --dest-dir ../target/book
 
 # Serve the mdBook documentation locally with live reload
