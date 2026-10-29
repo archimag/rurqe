@@ -11,6 +11,21 @@ table! {
     }
 }
 
+table! {
+    /// The `archived_users` table.
+    ArchivedUser => "archived_users" {
+        ArchivedUserId => "id": i64,
+        ArchivedUserName => "name": String,
+        ArchivedUserEmail => "email": String,
+    }
+}
+
+table! {
+    /// The `accounts` table.
+    Account => "accounts" {
+        AccountId => "id": i64,
+    }
+}
 fn main() {
     // ANCHOR: insert
     let insert_query = insert_into(User)
@@ -50,4 +65,56 @@ fn main() {
         .expect("valid upsert");
     // ANCHOR_END: upsert
     println!("{}", upsert_query.sql);
+
+    // ANCHOR: values_many
+    let bulk = insert_into(User)
+        .values_many([
+            (
+                UserId::set(1i64),
+                UserName::set("alice"),
+                UserEmail::set("alice@example.com"),
+            ),
+            (
+                UserId::set(2i64),
+                UserName::set("bob"),
+                UserEmail::set("bob@example.com"),
+            ),
+        ])
+        .expect("the row source is not empty")
+        .build()
+        .expect("valid bulk insert");
+    // ANCHOR_END: values_many
+    println!("{}", bulk.sql);
+
+    // ANCHOR: from_select
+    // The source projection is a tuple of the inserted columns: `from_select`
+    // ties the row type of the `SELECT` to the target column list.
+    let source = select_from(ArchivedUser)
+        .select((ArchivedUserId, ArchivedUserName, ArchivedUserEmail))
+        .where_(Expr::column::<ArchivedUserId>().gt(0i64));
+    let copied = insert_into(User)
+        .from_select((UserId, UserName, UserEmail), source)
+        .build()
+        .expect("valid insert from select");
+    // ANCHOR_END: from_select
+    println!("{}", copied.sql);
+
+    // ANCHOR: update_from
+    let linked = update(User)
+        .set(UserName::set("root"))
+        .from_table(Account)
+        .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+        .build()
+        .expect("valid update from");
+    // ANCHOR_END: update_from
+    println!("{}", linked.sql);
+
+    // ANCHOR: delete_using
+    let cleaned = delete_from(User)
+        .using_table(Account)
+        .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+        .build()
+        .expect("valid delete using");
+    // ANCHOR_END: delete_using
+    println!("{}", cleaned.sql);
 }

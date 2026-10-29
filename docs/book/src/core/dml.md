@@ -48,6 +48,37 @@ INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3) RETURNING "id"
 - `.returning(...)` projects the affected rows and is gated by `SupportsReturning`.
 - The typestates: `build` stays unreachable until a row source is recorded (`InsertSource`), and a row source known to be empty yields a `Result` instead of the query (`EmptyRows`).
 
+Inserting many rows records a single multi-row `VALUES` list:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/crud.rs:values_many}}
+# }
+```
+
+```text
+INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3), ($4, $5, $6)
+```
+
+Copying rows from another relation goes through `.from_select(columns, query)`, so the statement reads and writes in a single round trip. The source projection is a tuple matching the target column list exactly:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
+# table! { ArchivedUser => "archived_users" { ArchivedUserId => "id": i64, ArchivedUserName => "name": String, ArchivedUserEmail => "email": String, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/crud.rs:from_select}}
+# }
+```
+
+```text
+INSERT INTO "users" ("id", "name", "email") SELECT "id", "name", "email" FROM "archived_users" WHERE ("id" > $1)
+```
+
 An upsert appends an `ON CONFLICT` clause:
 
 ```rust,no_run
@@ -88,6 +119,22 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 - `.from_table(other)` renders `UPDATE ... FROM`, gated by `SupportsUpdateFrom`.
 - `.returning(...)` is gated by `SupportsReturning`.
 
+A `FROM` source is introduced with `.from_table(other)` before the filter that reads it, and every column of the source is in scope of `SET`, the filter, and `RETURNING`:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
+# table! { Account => "accounts" { AccountId => "id": i64, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/crud.rs:update_from}}
+# }
+```
+
+```text
+UPDATE "users" SET "name" = $1 FROM "accounts" WHERE ("users"."id" = "accounts"."id")
+```
+
 ## `DELETE`
 
 ```rust,no_run
@@ -105,6 +152,22 @@ DELETE FROM "users" WHERE ("id" = $1)
 
 - `.using(...)` / `.using_table(...)` render `DELETE ... USING`, gated by `SupportsDeleteUsing`.
 - `.returning(...)` is gated by `SupportsReturning`.
+
+A `USING` source is introduced with `.using_table(other)` and takes part in the filter like the deleted table itself:
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, } }
+# table! { Account => "accounts" { AccountId => "id": i64, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/crud.rs:delete_using}}
+# }
+```
+
+```text
+DELETE FROM "users" USING "accounts" WHERE ("users"."id" = "accounts"."id")
+```
 
 ## Dynamic filters
 
