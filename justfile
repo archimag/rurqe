@@ -27,13 +27,12 @@ test:
     cargo test --workspace
     cargo test -p rurqe-sqlite --features r2d2 --doc
 
-# Verify mdBook Rust snippets by compiling them with mdbook test
+# Verify the book: example coverage guard and a clean mdBook build
 [group('tauqe')]
-[doc('Verify mdBook Rust snippets by compiling them with mdbook test')]
+[doc('Verify the book: example coverage guard and a clean mdBook build')]
 doc-test:
-    CARGO_TARGET_DIR=target/doctest cargo clean -p rurqe
-    CARGO_TARGET_DIR=target/doctest cargo build -p rurqe --all-features --lib
-    mdbook test docs -L target/doctest/debug/deps
+    cargo test -p rurqe-examples --test doc_coverage
+    mdbook build docs --dest-dir ../target/book
 
 # Build the mdBook documentation into target/book
 [group('tauqe')]
