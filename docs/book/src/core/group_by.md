@@ -1,22 +1,8 @@
 # `GROUP BY` and `HAVING`
 
-The grouping γ folds rows into groups. `.group_by(...)` is available only on a query without a projection and without a lock, and moves it into a **different type** — `GroupedQuery`:
+`GROUP BY` folds the source rows into groups, and `HAVING` filters the groups the fold produced. The grouping is the third step of the [logical query processing order](select.md#logical-query-processing-order): it runs after `WHERE` has chosen the source rows and before the projection is evaluated. The head page of the statement family is [The `SELECT` statement](select.md).
 
-```rust
-# extern crate rurqe;
-# use rurqe::core::query::EmptyGroupSet;
-# use rurqe::core::{Dialect, HasProjection};
-pub struct GroupedQuery<
-    D: Dialect,
-    Tables = (),
-    Output = (),
-    GroupByCols = EmptyGroupSet,
-    Projected = HasProjection,
-> { /* ... */ }
-# fn main() {}
-```
-
-The meaning of the transition: the rule "a column is either grouped or aggregated" requires knowledge of the grouping, and after `.select(...)` the set of projections is already fixed, so there would be nothing to check it against.
+That order is what makes the rule "a column is either grouped or aggregated" checkable at all: the grouping is known before the projection is written, so a projection naming a column the grouping collapsed is refused at the call site. Writing `.select(...)` first would leave the projection nothing to check it against.
 
 ```rust,no_run
 # extern crate rurqe;
@@ -39,18 +25,18 @@ A single column or a tuple can be grouped: `.group_by((UserId, UserName))`.
 
 ## What can be projected
 
-`GroupedSelectTarget<GroupByCols, P, D>` is implemented for exactly four cases:
+Exactly four projection forms survive a grouping:
 
 | Projection | Condition |
 |---|---|
-| a column | it is part of `GROUP BY` (`ColumnInGroupBy`) |
-| an aggregate `Expr<T, Scope, Marker, ..>` | `Marker: AggregateMarker` |
-| a constant expression `Expr<T, (), NonAggregate, ..>` | reads no table |
-| a window expression | the window columns are grouped, and the operand aggregates rows or is constant |
+| a column | it is part of `GROUP BY` |
+| an aggregate expression | the call folds the rows of the group |
+| a constant expression | it reads no table |
+| a window expression | the window reads grouped columns, and its operand aggregates rows or is constant |
 
-Projecting an ungrouped column is rejected at the call site, and a `select!` selection receives the same check through `GroupedSelection`.
+Projecting an ungrouped column is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
 
-The `schema` escape hatch `Expr::column::<C>()` does not bypass the rule: an expression reading a column keeps that column's scope. `without_scope()` does not help either — it substitutes the `Unscoped` marker, not an empty scope, so the expression does not become a constant.
+The low-level `Expr::column::<C>()` form does not bypass the rule: an expression reading a column keeps that column's relation. `.without_scope()` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
 
 ## The aggregate functions
 
@@ -69,14 +55,14 @@ An aggregate call is an expression like any other: it compares — `.having(coun
 
 ## Aggregate folding in scalar functions
 
-`coalesce`, `nullif`, `greatest`, `least`, and `CASE` propagate the aggregate marker through `FunctionOperand` / `CombineAggr`, so `coalesce(sum(orders.total), 0.0)` stays an aggregate and projects from a `GroupedQuery`. A `CASE` branch reading a bare column makes the expression per-row, and the grouping rejects it.
+`coalesce`, `nullif`, `greatest`, `least`, and `CASE` fold the aggregation of their arguments, so `coalesce(sum(orders.total), 0.0)` stays an aggregate and projects from a grouped statement. A `CASE` branch reading a bare column makes the whole expression per-row, and the grouping rejects it.
 
 ## `HAVING`
 
 `HAVING` filters the already computed groups, so it is written over an aggregate. The example above already uses `.having(count_all().gt(0i64))`; it renders as `HAVING (COUNT(*) > $1)`.
 
 Two kinds of predicate are allowed (`HavingPredicate`):
-
+Two kinds of predicate are allowed here:
 - an aggregate one (`Marker: AggregateMarker`) — as above;
 - a constant within the group (`Expr<bool, (), NonAggregate, ..>`) — for example a `sql!` fragment comparing two aggregates.
 
@@ -97,7 +83,7 @@ let filtered = select_from(Order)
 # }
 ```
 
-`having` is available only on a `GroupedQuery` — a plain `SelectQuery` has no `HAVING` clause.
+`having` is available only on a grouped statement — a plain query has no `HAVING` clause.
 
 ## `FILTER (WHERE ...)`
 
@@ -116,14 +102,14 @@ The rows an aggregate call evaluates can be restricted without a `CASE WHEN` det
 
 * the method exists on the aggregate call alone — an expression built from the call, such as `sum(OrderTotal) + 1.0`, is an `Aggregate` but no longer the call, so it accepts no clause: there is nothing left for the clause to restrict;
 * repeated calls accumulate their predicates with `AND` on the same call instead of replacing each other;
-* the predicate is recorded in the expression's tree rather than in the statement, so the aggregate stays a dialect-neutral value, and the rendering is the native `... FILTER (WHERE ...)` form gated by the `SupportsAggregateFilter` capability trait.
+* the predicate stays part of the aggregate expression rather than of the statement, and the rendering is the native `... FILTER (WHERE ...)` form — PostgreSQL always, SQLite from 3.30.
 
 ## Ordering and paginating groups
 
 | Method | What it orders |
 |---|---|
-| `order_by` / `order_by_asc` / `order_by_desc` / `order_by_nulls` | a grouped column (checked by `ColumnInGroupBy`) |
-| `order_by_expr` / `order_by_expr_asc` / `order_by_expr_desc` / `order_by_expr_*_nulls_*` | an aggregate (`Marker: AggregateMarker`) |
+| `order_by` / `order_by_asc` / `order_by_desc` / `order_by_nulls` | a grouped column |
+| `order_by_expr` / `order_by_expr_asc` / `order_by_expr_desc` / `order_by_expr_*_nulls_*` | an aggregate expression |
 | `limit` / `offset` | the number of groups |
 
 ```rust,no_run
@@ -144,11 +130,11 @@ let top = select_from(Order)
 
 ## Finishing a grouped query
 
-- `.build()` — only after `.select(...)` (`ProjectionPresent`);
+- `.build()` — only after `.select(...)`;
 - `.as_cte::<T>()` and `.as_table::<T>()` — nest the aggregated query as a CTE or a derived table;
 - a further `.group_by(...)` is possible only before the projection.
 
-A grouped query is not locked: `GroupedQuery` provides no `for_update`/`for_share`, because PostgreSQL does not lock the rows of a statement that yields one row per group.
+A grouped query cannot lock its rows: `for_update` / `for_share` do not exist on it, because PostgreSQL does not lock the rows of a statement that yields one row per group.
 
 ## What `.build()` adds
 
@@ -158,6 +144,7 @@ The residual cases that cannot be expressed as a positive assertion in types: `B
 
 ## Related chapters
 
+- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
 - [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions an aggregate folds through.
 - [Window functions](window.md) — a window over groups.
 - [Projections and `SELECT`](select.md)

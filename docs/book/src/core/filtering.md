@@ -2,6 +2,8 @@
 
 A predicate is a value of its own: it can be returned from a function, stored in a variable, and handed to `.where_(...)` on a `SELECT` or on a mutation. Calling `.where_(...)` twice adds a second condition with `AND` — there is no manual conjunction to build.
 
+`WHERE` is the second step of the [logical query processing order](select.md#logical-query-processing-order): it runs once the relations are established and before a grouping or a projection exists, which is why a filter addresses the column markers of the relations and never the field names a projection produces. The head page of the statement family is [The `SELECT` statement](select.md).
+
 ## The operators
 
 | Method | SQL |
@@ -157,6 +159,7 @@ let rows = select_from(User)
 
 ## Related chapters
 
+- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
 - [Subqueries](subqueries.md) — `EXISTS`, `IN`, scalar subqueries.
 - [Ordering and pagination](ordering.md) — tuple comparisons and keyset cursors.
 - [DML: `UPDATE`](update.md) and [DML: `DELETE`](delete.md) — the same predicates on the `WHERE` of mutations.

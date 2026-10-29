@@ -2,6 +2,8 @@
 
 `UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT` combine the rows of two statements. The operators live on a projected query and consume the other operand entirely.
 
+A set operation is the step of the [logical query processing order](select.md#logical-query-processing-order) that combines finished statements: each operand is projected first, and the combination then fixes the output columns of the whole statement. The head page of the statement family is [The `SELECT` statement](select.md).
+
 ## The family
 
 | Method | SQL | Rows |
@@ -37,8 +39,8 @@ let combined = select_from(User)
 
 ## What the combination changes
 
-- The scope becomes `Compound`: the combined rows no longer belong to a table, so every table-qualified method — `.where_` over table columns, `.order_by` with columns, joins — no longer applies.
-- The projection is fixed by the first list: the query carries `SetOpApplied`, `ProjectionOpen` is not implemented for it, and `.select(...)` is unreachable.
+- The combined rows no longer belong to a table, so every table-qualified method — `.where_` over table columns, `.order_by` with columns, joins — no longer applies.
+- The projection is fixed by the first list: `.select(...)` is unreachable on the combined statement.
 - A combined statement can neither keep the row-level lock of an operand nor accept a new one.
 - `limit` / `offset` apply to the combined rows.
 
@@ -63,7 +65,7 @@ let page = select_from(User)
 # }
 ```
 
-A criterion recorded **before** the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded **after** it applies to the combined rows. The first combined-row criterion moves the query into `TailClosed`, where `SetOperand` has no implementation: no operand can follow the ordering of the combined rows.
+A criterion recorded **before** the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded **after** it applies to the combined rows. The first combined-row criterion closes the statement: no further operand can follow the ordering of the combined rows.
 
 ## What `.build()` adds
 
@@ -73,15 +75,8 @@ The rules that compare assembled clauses rather than types run pre-flight:
 - `BuildError::CompoundOrderColumn` — an output name the projection list does not produce;
 - `BuildError::SetOperandArity` — an operand disagreeing with the assembled clause; the type signature keeps it out of user code, and the rule guards ASTs assembled without it.
 
-## Where this lives in the code
-
-| Module | Contents |
-|---|---|
-| `rurqe-core/src/query/select/set_ops.rs` | the `union` / `union_all` / `intersect` / `except` builders |
-| `rurqe-core/src/query/select/ordering/compound.rs` | `order_by_output*` / `order_by_index*` |
-| `rurqe-core/src/query/validate.rs` | the compound ordering rules |
-
 ## Related chapters
 
+- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is a step of.
 - [Ordering and pagination](ordering.md) — the per-operand ordering.
 - [Projections and `SELECT`](select.md) — how the output columns are fixed.

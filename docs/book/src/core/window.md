@@ -1,10 +1,12 @@
 # Window functions
 
-A window expression is computed by the engine with an `OVER (...)` clause. In RURQE every window carries three things the compiler checks:
+A window expression is computed by the engine with an `OVER (...)` clause, and it belongs to the `WINDOW` step of the [logical query processing order](select.md#logical-query-processing-order): after the grouping, before the projection. The head page of the statement family is [The `SELECT` statement](select.md).
 
-- `Scope` — the tables the expression and its specification read;
-- `Cols` — the type-level set of columns the window reads (`GROUP BY` checks the window through it);
-- `D` — the dialect requirements (including `NULLS FIRST/LAST` inside the window's `ORDER BY`).
+Every window carries three things the compiler checks:
+
+- the relations the expression and its specification read;
+- the columns the window reads, which a grouping checks like any other reference;
+- the dialect requirements, including `NULLS FIRST` / `NULLS LAST` inside the window's `ORDER BY`.
 
 ## The specification
 
@@ -12,14 +14,14 @@ The constructors live on `Window`, and every one of them returns a specification
 
 | Builder | Produces |
 |---|---|
-| `Window::new()` / `Window::empty()` | `WindowSpec<()>` — `OVER ()` |
-| `Window::partition_by(partition)` | `WindowSpec<P::Scope, P::Columns>` |
-| `Window::order_by(col, direction)` / `order_by_asc(col)` / `order_by_desc(col)` | `WindowSpec<C::Table, WindowColumnSet<C>>` |
-| `Window::order_by_nulls(col, direction, nulls)` and its four shortcuts | the same, requiring `SupportsNullsOrdering` |
-| `Window::rows_between(start, end)` / `range_between(start, end)` | a framed `WindowSpec<()>` |
-| `.partition_by`, `.order_by*`, `.rows_between`, `.range_between` on a `WindowSpec` | the specification, extended |
+| `Window::new()` / `Window::empty()` | `OVER ()` |
+| `Window::partition_by(partition)` | `OVER (PARTITION BY ...)` |
+| `Window::order_by(col, direction)` / `order_by_asc(col)` / `order_by_desc(col)` | `OVER (ORDER BY col ASC \| DESC)` |
+| `Window::order_by_nulls(col, direction, nulls)` and its four shortcuts | the same, with `NULLS FIRST` or `NULLS LAST` |
+| `Window::rows_between(start, end)` / `range_between(start, end)` | `OVER (ROWS BETWEEN ... AND ...)`, `OVER (RANGE BETWEEN ... AND ...)` |
+| `.partition_by`, `.order_by*`, `.rows_between`, `.range_between` on a specification | the specification, extended |
 
-Every call merges the scopes, the column sets, and the dialect requirements of the specification it receives.
+Every call merges the relations, the columns, and the dialect requirements of the specification it receives.
 
 ## Functions
 
@@ -31,7 +33,7 @@ Every call merges the scopes, the column sets, and the dialect requirements of t
 | `lag(col)` | `Option<col::RustType>` |
 | `lead(col)` | `Option<col::RustType>` |
 
-`LAG`/`LEAD` take an `.offset(n)`; without it the offset defaults to 1. The zero-marker of a window without an operand is `Aggregate` (the identity of the marker fold), and the `lag`/`lead` column lands in the `Cols` set.
+`LAG` / `LEAD` take an `.offset(n)`; without it the offset defaults to 1. A ranking window reads no column operand, while the column handed to `lag` / `lead` joins the columns the window reads.
 
 The window is obtained by calling `.over(spec)`.
 
@@ -124,7 +126,14 @@ let moving = select_from(Order)
 
 ## Invariants
 
-1. **Capability.** A statement projecting a window compiles only if the dialect implements `SupportsWindowFunctions`.
+1. **Capability.** A statement projecting a window compiles only if the dialect supports window functions — PostgreSQL always, SQLite from 3.25.
 2. **Scope.** The `PARTITION BY`, the window's `ORDER BY`, and the `lag`/`lead` column must belong to the query's tables — otherwise the error lands at the call site.
-3. **`NULLS FIRST/LAST` inside a window** requires `SupportsNullsOrdering`; the requirement travels with the window expression up to the statement.
-4. **Grouping.** The window columns are checked through `WindowColsInGroupBy`, and the operand through the aggregate marker: `SUM("user_id")` folds one value per group, so a window over an aggregate stays projectable from a `GroupedQuery` — the example above.
+3. **`NULLS FIRST` / `NULLS LAST` inside a window** requires a dialect that supports the placement — PostgreSQL always, SQLite from 3.30; the requirement travels with the window expression up to the statement.
+4. **Grouping.** The columns a window reads are checked like any other reference, and its operand either aggregates the rows of the group or stays constant: `SUM("user_id")` folds one value per group, so a window over an aggregate stays projectable from a grouped statement — the example above.
+
+## Related chapters
+
+- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
+- [`GROUP BY` and `HAVING`](group_by.md) — a window over groups.
+- [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions.
+- [Ordering and pagination](ordering.md) — the same ordering rules outside a window.

@@ -1,6 +1,8 @@
 # Joins
 
-A join adds a relation to the `FROM` clause and reinterprets the query under the scope type describing the joined relations. Every builder records a `JoinAst` and moves the query into the new scope through `with_scope`, so the relational effect of a join is expressed by the return type instead of by the rendered clause.
+`FROM` and `JOIN` are the first step of the [logical query processing order](select.md#logical-query-processing-order): the relations are established before any other clause is evaluated, so they fix the declared type of every column the rest of the statement reads, outer-join nullability included. A join adds a relation to the `FROM` clause and extends the scope of the query with it.
+
+The head page of this statement family is [The `SELECT` statement](select.md). It carries the clause anatomy of the whole statement, the evaluation order, and the capability matrix; this chapter documents the `FROM` and `JOIN` steps of that order in depth.
 
 ## The join family
 
@@ -34,7 +36,7 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 ## The `ON` predicate and the scope
 
-The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join appends its scope type to the chain: `Joined<Tables, T>`, `LeftJoined<Tables, T>`, `CrossJoined<Tables, T>`, `FullOuterJoined<Tables, T>`, `CrossLateralJoined<Tables, T>`, `LeftLateralJoined<Tables, T>`. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
+The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join extends the relation scope of the query by the joined relation, and an outer join marks that relation nullable for every column projected from it. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
 
 A column marker is a complete operand on its own, on either side of the comparison: `OrderUserId.eq(UserId)` compares two columns without any wrapper, exactly as `OrderTotal.gt(0.0f64)` compares a column with a bound value. Both operands declare the tables they reference, so the predicate's scope carries every relation it reads, and the join builder checks the `ON` clause against the relations the statement declares — a column of a relation the query does not introduce is still refused at the call site. `Expr::column::<C>()` stays the constructor for the positions that need an expression value standing on its own, and correlation still goes through `.without_scope()`, because the marker always claims its table.
 
@@ -52,11 +54,11 @@ A column marker is a complete operand on its own, on either side of the comparis
 # }
 ```
 
-The lifting is automatic: the outer-join scope types mark the joined relation nullable, and `SelectionFor::Row` computes `Option<T>` for its columns — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
+The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
 
 ## Unaliased duplicate relations
 
-Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The compiler refuses the statement even earlier: the second occurrence would need its own relation scope and position, which the bare marker does not provide.
+Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The compiler refuses the statement even earlier: one marker can only name one relation, so a second occurrence has to be written as an alias of the first.
 
 ```rust,compile_fail
 # extern crate rurqe;
@@ -113,6 +115,7 @@ A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral p
 
 ## Related chapters
 
+- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
 - [Common table expressions](cte.md) — derived tables and `LATERAL`.
 - [Aliases](aliasing.md) — the remedy for duplicate relations.
 - [Nullability](../theory/nullability.md) — the outer-join lifting rules.
