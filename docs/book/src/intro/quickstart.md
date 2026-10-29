@@ -39,18 +39,21 @@ A real project rarely writes this by hand: `cargo db-codegen` generates the same
 
 ## 3. A typed read
 
-A filtered projection, built without a connection:
+A filtered projection, executed on an asynchronous pool:
 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
-`built` is a `BuiltQuery`: `sql` holds the statement and `params` its parameters. `build()` is the one place that can refuse a syntactically sound but semantically invalid statement, so the refusal arrives before any network I/O. The projection is written once with `cols!`, and the row has one field per projection, named after the marker (`UserId` → `user_id`) — which is why no tuple index appears anywhere.
+`users` is a vector of the produced row: one field per projection, named after the marker (`UserId` → `user_id`), which is why no tuple index appears anywhere. Assembling the statement opened no connection — `.fetch_all(&pool).await?` is the terminal call, and it is the only place the runtime appears, since the identical chain ends with `.fetch_all(&mut conn)?` against a synchronous connection. `build()` stays available on its own, and it is the one step that can refuse a syntactically sound but semantically invalid statement, so the refusal arrives before any network I/O.
 
 ## 4. A write that returns the row
 
@@ -58,9 +61,12 @@ A filtered projection, built without a connection:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:insert}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 `values` checks every value against the column's Rust type at the call site, so `UserId::set("1")` does not compile. `returning` is gated by the engine: on a version that cannot return a row, the call is not a method at all.
@@ -71,18 +77,24 @@ A filtered projection, built without a connection:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:update}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 ```rust,no_run
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 `update(...)` and `delete_from(...)` start unfiltered: the statement is not buildable until `.where_(...)` or an explicit `.allow_all()` is written, so an accidental full-table mutation is impossible by construction. An upsert appends an `ON CONFLICT` clause of its own:
@@ -91,9 +103,12 @@ A filtered projection, built without a connection:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:upsert}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 ## 6. Joins lift nullability
@@ -103,9 +118,12 @@ A filtered projection, built without a connection:
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/joins.rs:outer}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 `order_total` is `Option<f64>` in the projected row because the join may leave the right relation unmatched — and reading it as `f64` does not compile. Nothing in the query mentions a nullable type: the projection is written once and the type follows from the join.
@@ -119,9 +137,12 @@ A one-to-many relation comes back as a typed collection in a single round trip, 
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/nested.rs:nested}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 Details in [Nested results](../features/nested.md).
@@ -154,7 +175,7 @@ Version modules (`pg14`, `pg15`, `pg16`, `sqlite3_0` … `sqlite3_38`) also fix 
 
 ## 9. Building and executing are separate steps
 
-`build()` produces the statement; executing it needs a connection. The execution family covers every shape a query can have: `fetch_one`, `fetch_optional`, `fetch_all`, `fetch_collect`, `fetch_iter`, and `execute` for a mutation, which reads no rows back.
+Assembling a statement opens no connection; the terminal call is what executes it, and that call sits on the query itself. The family covers every shape a query can have — `fetch_one`, `fetch_optional`, `fetch_all`, `fetch_collect`, `fetch_iter`, and `execute` for a mutation, which reads no rows back — and the runtime is chosen there and nowhere else: `.fetch_all(&pool).await?` on an asynchronous pool, `.fetch_all(&mut conn)?` on a synchronous connection. `build()` remains the non-executing form of the same step, and it is the one place that can refuse a statement before any I/O.
 
 ## 10. Errors are types
 

@@ -39,14 +39,15 @@ The shortest statement names a relation, projects, and reads:
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 let rows = select_from(User)
     .select(cols!(UserId, UserName))
-    .fetch_all(&mut conn)?;
-# let _ = rows;
-# Ok(())
+    .fetch_all(&pool)
+    .await?;
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 ## Logical query processing order
@@ -79,15 +80,16 @@ Three of those steps are the ones a query is felt through.
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 let rows = select_from(User)
     .select(cols!(user_id: UserId, contact_email: UserName))
     .where_(UserActive.eq(true))
-    .fetch_all(&mut conn)?;
-# let _ = rows;
-# Ok(())
+    .fetch_all(&pool)
+    .await?;
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 The projection renames nothing outside the row: `user_id` and `contact_email` are names the result carries, while the filter keeps working with `UserActive`. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly — see [Set operations](set_ops.md).
@@ -128,12 +130,15 @@ The shortest chain that both compiles and executes reads a relation, projects it
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserEmail => "email": String, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/quickstart.rs:query}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
-`built` is a value of the statement type: `sql` holds the rendered statement and `params` its parameters. Building is the one place that can refuse a syntactically sound but semantically invalid statement, so the refusal arrives before any network I/O; reading rows adds a connection and one of the `fetch_*` helpers.
+`users` is a vector of the produced row, one field per projected element, and the projection is written once with `cols!`. Assembling the statement opened no connection: `.fetch_all(&pool).await?` is the terminal call that rendered it and ran it on the asynchronous pool, while `build()` is the same step without execution — the one place that can refuse a syntactically sound but semantically invalid statement, so such a refusal arrives before any network I/O.
 
 ### The projection
 
@@ -145,19 +150,21 @@ Every other clause is documented by its own chapter, but the projection is what 
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, UserActive => "active": bool, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 let active = select!(UserId, UserName as contact_email)
     .from(User)
     .where_(UserActive.eq(true))
     .order_by_asc(UserId)
-    .fetch_all(&mut conn)?;
+    .fetch_all(&pool)
+    .await?;
 
 for row in active {
     println!("#{} <{}>", row.user_id, row.contact_email);
 }
-# Ok(())
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 `UserId` becomes `user_id`, and `UserName as contact_email` becomes `contact_email`. A marker named after a Rust keyword is written with a raw identifier (`Type` is `r#type`) and still carries the bare keyword as its output column.
@@ -168,18 +175,19 @@ Anything that renders as a value can be a field — write the field name yoursel
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 let rows = select_from(Order)
     .select(cols!(
         order_id: OrderId,
         total: OrderTotal,
         billed: coalesce(OrderTotal, 0.0f64),
     ))
-    .fetch_all(&mut conn)?;
-# let _ = rows;
-# Ok(())
+    .fetch_all(&pool)
+    .await?;
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 `billed` has the type of the expression (`f64`), not the type of a stored column.
@@ -243,16 +251,17 @@ A DTO is a row shape, not a projection: its fields must be column markers, and a
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserName => "name": String, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 let unique_names = select_from(User)
     .select(cols!(UserName))
     .distinct()
     .order_by_asc(UserName)
-    .fetch_all(&mut conn)?;
-# let _ = unique_names;
-# Ok(())
+    .fetch_all(&pool)
+    .await?;
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 ### The nullable shape, explicitly

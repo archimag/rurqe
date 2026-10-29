@@ -39,9 +39,12 @@ The shortest executable statement restricts one row: `delete_from(User).where_(U
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 ```text
@@ -57,9 +60,12 @@ DELETE FROM "users" WHERE ("id" = $1)
 # use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, } }
 # table! { Account => "accounts" { AccountId => "id": i64, } }
-# fn main() {
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/crud.rs:delete_using}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 ```text

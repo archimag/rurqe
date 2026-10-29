@@ -1,7 +1,7 @@
 # Two-Tier SQL Correctness
 
 The promise "valid SQL or a compile error" cannot be expressed entirely inside the type system of stable Rust. RURQE therefore validates a statement at two gates, and both run before the statement is sent: the **compiler** answers every rule that can be stated as a positive assertion ("this relation is in scope"), and **validation inside `.build()`** answers the rules that need a negative assertion ("no relation under this name exists") or that align one clause with another clause written later in the fluent chain. A statement that passes both gates is valid for the dialect and the pinned engine version.
-
+RURQE therefore validates a statement at two gates, and both run before the statement is sent: the **compiler** answers every rule that can be stated as a positive assertion ("this relation is in scope"), and **validation inside `.build()`** answers the rules that need a negative assertion ("no relation under this name exists") or that align one clause with another clause written later in the fluent chain. A statement that passes both gates is valid for the dialect and the pinned engine version. Neither gate touches the runtime: the statement is assembled the same way for both, and the terminal call alone decides whether it is awaited (`.fetch_all(&pool).await?`) or returned directly (`.fetch_all(&mut conn)?`).
 ## Gate 1: the compiler
 
 | SQL rule | What the compiler does |
@@ -71,8 +71,7 @@ The duplicate relation is the case where the two gates meet: two occurrences of 
 | Database engine | execution | a failure of a valid statement: a constraint violation, a missing privilege, a parameter the server refuses | an `ExecutionError` |
 
 - **The first gate is not relaxed for convenience.** If an invariant can be expressed positively, it lives in the types.
-- **The second gate does not duplicate the first.** It covers exactly the rules that need an absence check or a cross-clause alignment.
-- **Neither gate panics.** A problem is a compile error, a `BuildError`, or an `ExecutionError`, never a panic on the way.
+- **The terminal call chooses the runtime.** `.fetch_all(&pool).await?` against an asynchronous pool and `.fetch_all(&mut conn)?` against a synchronous connection assemble the identical statement; nothing earlier in the chain changes, and neither form is a second way to write the query.
 
 ## Errors that come from the engine
 
