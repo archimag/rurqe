@@ -22,16 +22,16 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-    // ANCHOR: query
+// ANCHOR: query
     let users = select_from(User)
         .select(cols!(UserId, UserName, UserEmail))
         .where_(Expr::column::<UserId>().eq(7i64))
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: query
+// ANCHOR_END: query
     println!("{}", users.len());
 
-    // ANCHOR: conditional
+// ANCHOR: conditional
     // The flags a handler receives at runtime; a false flag or an absent value
     // adds no clause, and the statement keeps its type.
     let only_active = true;
@@ -44,10 +44,10 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: conditional
+// ANCHOR_END: conditional
     println!("{}", filtered.len());
 
-    // ANCHOR: build_refusal
+// ANCHOR: build_refusal
     // Syntactically sound but semantically invalid: `DISTINCT ON` deduplicates
     // the rows on one expression while the leading `ORDER BY` criterion names
     // another, so no engine would accept the statement.
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
         .order_by_asc(UserId)
         .build();
     assert!(rejected.is_err());
-    // ANCHOR_END: build_refusal
+// ANCHOR_END: build_refusal
 
     Ok(())
 }

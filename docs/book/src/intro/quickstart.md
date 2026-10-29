@@ -162,7 +162,8 @@ The same query on SQLite differs only in the prelude and the placeholder style (
 
 ```rust,no_run
 # extern crate rurqe;
-# use rurqe::sqlite::{sqlite3_0, sqlite3_35};
+# use rurqe::sqlite::prelude::*;
+# use rurqe::sqlite::sqlite3_35;
 # table! { User => "users" { UserId => "id": i64, } }
 # fn main() {
 {{#rustdoc_include ../../../../examples/dialects.rs:sqlite}}

@@ -27,7 +27,7 @@ A report over two relations, written once and checked while it is written:
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
 # async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
-{{#include ../../../../examples/joins.rs:outer}}
+{{#rustdoc_include ../../../../examples/joins.rs:outer}}
 #     Ok(())
 # }
 # fn main() {}
@@ -46,7 +46,7 @@ A one-to-many relation is one statement as well — no N+1 queries and no Cartes
 # table! { Order => "orders" { OrderId => "id": i64, OrderTotal => "total": f64, OrderUserId => "user_id": i64, } }
 # async fn example() -> Result<()> {
 #     let pool: PgAsyncPool = todo!();
-{{#include ../../../../examples/nested.rs:nested}}
+{{#rustdoc_include ../../../../examples/nested.rs:nested}}
 #     Ok(())
 # }
 # fn main() {}

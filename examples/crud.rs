@@ -36,7 +36,7 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-    // ANCHOR: insert
+// ANCHOR: insert
     let inserted = insert_into(User)
         .values((
             UserId::set(1i64),
@@ -46,36 +46,36 @@ async fn main() -> Result<()> {
         .returning(cols!(UserId))
         .fetch_one(&pool)
         .await?;
-    // ANCHOR_END: insert
+// ANCHOR_END: insert
     println!("inserted {inserted:?}");
 
-    // ANCHOR: update
+// ANCHOR: update
     let updated = update(User)
         .set(UserName::set("admin"))
         .where_(Expr::column::<UserId>().eq(1i64))
         .execute(&pool)
         .await?;
-    // ANCHOR_END: update
+// ANCHOR_END: update
     println!("updated {updated} row(s)");
 
-    // ANCHOR: delete
-    let deleted = delete_from(User)
+// ANCHOR: delete
+    let removed = delete_from(User)
         .where_(Expr::column::<UserId>().eq(1i64))
         .execute(&pool)
         .await?;
-    // ANCHOR_END: delete
-    println!("deleted {deleted} row(s)");
+// ANCHOR_END: delete
+    println!("removed {removed} row(s)");
 
-    // ANCHOR: upsert
+// ANCHOR: upsert
     let upserted = insert_into(User)
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict_do_nothing()
         .execute(&pool)
         .await?;
-    // ANCHOR_END: upsert
+// ANCHOR_END: upsert
     println!("upserted {upserted} row(s)");
 
-    // ANCHOR: values_many
+// ANCHOR: values_many
     let bulk = insert_into(User)
         .values_many([
             (
@@ -92,10 +92,10 @@ async fn main() -> Result<()> {
         .expect("the row source is not empty")
         .execute(&pool)
         .await?;
-    // ANCHOR_END: values_many
+// ANCHOR_END: values_many
     println!("inserted {bulk} row(s)");
 
-    // ANCHOR: from_select
+// ANCHOR: from_select
     // The source projection is a tuple of the inserted columns: `from_select`
     // ties the row type of the `SELECT` to the target column list.
     let source = select_from(ArchivedUser)
@@ -105,26 +105,26 @@ async fn main() -> Result<()> {
         .from_select((UserId, UserName, UserEmail), source)
         .execute(&pool)
         .await?;
-    // ANCHOR_END: from_select
+// ANCHOR_END: from_select
     println!("copied {copied} row(s)");
 
-    // ANCHOR: update_from
+// ANCHOR: update_from
     let linked = update(User)
         .set(UserName::set("root"))
         .from_table(Account)
         .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
         .execute(&pool)
         .await?;
-    // ANCHOR_END: update_from
+// ANCHOR_END: update_from
     println!("linked {linked} row(s)");
 
-    // ANCHOR: delete_using
+// ANCHOR: delete_using
     let cleaned = delete_from(User)
         .using_table(Account)
         .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
         .execute(&pool)
         .await?;
-    // ANCHOR_END: delete_using
+// ANCHOR_END: delete_using
     println!("cleaned {cleaned} row(s)");
 
     Ok(())

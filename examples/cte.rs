@@ -34,7 +34,7 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-    // ANCHOR: summary
+// ANCHOR: summary
     let totals = select_from(Order)
         .group_by(OrderUserId)
         .select(cols! {
@@ -42,9 +42,9 @@ async fn main() -> Result<()> {
             total: sum(OrderAmount),
         })
         .as_cte::<UserTotals>();
-    // ANCHOR_END: summary
+// ANCHOR_END: summary
 
-    // ANCHOR: report
+// ANCHOR: report
     let report = select_from(User)
         .with(totals)
         .inner_join(UserTotals, TotalsOwnerId.eq(UserId))
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: report
+// ANCHOR_END: report
 
     println!("{}", report.len());
     Ok(())

@@ -26,7 +26,7 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-    // ANCHOR: group_by
+// ANCHOR: group_by
     let per_user = select_from(User)
         .inner_join(Order, OrderUserId.eq(UserId))
         .group_by(UserId)
@@ -37,15 +37,15 @@ async fn main() -> Result<()> {
         .having(count_all().gt(0i64))
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: group_by
+// ANCHOR_END: group_by
     println!("{}", per_user.len());
 
-    // ANCHOR: filtered
+// ANCHOR: filtered
     let refunded = select_from(Order)
         .select((sum(OrderTotal).filter_where(OrderStatus.eq("refunded")),))
         .fetch_one(&pool)
         .await?;
-    // ANCHOR_END: filtered
+// ANCHOR_END: filtered
     println!("{refunded:?}");
 
     Ok(())

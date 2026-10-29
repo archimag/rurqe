@@ -25,13 +25,13 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-    // ANCHOR: inner
+// ANCHOR: inner
     let inner_join = select_from(User)
         .inner_join(Order, OrderUserId.eq(UserId))
         .select(cols!(UserId, UserName, OrderTotal))
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: inner
+// ANCHOR_END: inner
     println!("{}", inner_join.len());
 
 // ANCHOR: outer

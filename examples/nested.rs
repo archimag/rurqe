@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
 // ANCHOR_END: nested
     println!("{}", users_with_orders.len());
 
-    // ANCHOR: nest_one
+// ANCHOR: nest_one
     // The same shape for a one-to-one relation: the collection stops at the
     // first row, so the field reads as an `Option` of the nested projection
     // and an absent child stays distinguishable from a child without values.
@@ -64,10 +64,10 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-    // ANCHOR_END: nest_one
+// ANCHOR_END: nest_one
     println!("{}", users_with_top_order.len());
 
-    // ANCHOR: correlation
+// ANCHOR: correlation
     // The child statement introduces only `orders` in its scope, so a column
     // of the enclosing query is marked as resolved elsewhere instead of being
     // looked up among the relations the child statement declares.
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
         .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
         .build()
         .expect("the correlated statement is valid");
-    // ANCHOR_END: correlation
+// ANCHOR_END: correlation
 
     Ok(())
 }
