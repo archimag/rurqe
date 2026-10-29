@@ -1,6 +1,6 @@
 # Everyday queries: the portable core
 
-This part is the tour of the everyday surface — the half of the DSL that does not depend on a specific engine: projections, filters, ordering, grouping, windows, joins, aliases, subqueries, CTEs, set operations, DML, and nested collections.
+This part is the tour of the everyday surface — the half of the DSL that does not depend on a specific engine: projections, filters, ordering, grouping, windows, joins, aliases, subqueries, CTEs, set operations, DML, nested collections, and the transaction a group of them runs in.
 
 Three rules hold across every chapter:
 
@@ -147,6 +147,36 @@ for user in users {
 # }
 ```
 The child rows are aggregated by the engine, so the ordering, the filter, and the row limit of the nested statement decide the contents of the collection.
+
+## A group of writes is one transaction
+
+Atomicity is written into the chain rather than configured afterwards: the block commits when its closure returns `Ok` and rolls every statement back when it does not, while a block opened inside it becomes a savepoint instead of a second transaction.
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::prelude::*;
+# table! { Account => "accounts" { AccountId => "id": i64, AccountBalance => "balance": i64, } }
+# fn main() {}
+{{#rustdoc_include ../../../../examples/transactions.rs:transaction}}
+```
+
+The block runs on the synchronous connection, which is what a migration runner, a CLI tool, or an embedded deployment opens; the shape of the block is the same over an asynchronous handle.
+
+## The pinned version decides which clauses exist
+
+One import also fixes the engine release, and that release alone decides which clauses the compiler accepts: the builder chain never changes, only the method set does.
+
+```rust,no_run
+# extern crate rurqe;
+# use rurqe::sqlite::prelude::*;
+# use rurqe::sqlite::sqlite3_0;
+# table! { User => "users" { UserId => "id": i64, } }
+# fn main() {
+{{#rustdoc_include ../../../../examples/dialects.rs:version}}
+# }
+```
+
+The statement is the one any other release composes as well. Pinning an older release does not defer the failure to runtime — it removes the clauses that release does not support from the method set, so the call cannot be written at all.
 
 ## What the chapters rely on
 
