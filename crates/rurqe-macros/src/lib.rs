@@ -121,7 +121,12 @@ pub fn raw_sql(input: TokenStream) -> TokenStream {
 ///
 /// The generated code implements `ToSqlVal`, `From<Self> for SqlVal`,
 /// `FromSqlValue`, and the expression-compatibility impls, so the newtype is
-/// usable both as a bound parameter and as a decoded row value.
+/// usable both as a bound parameter and as a decoded row value, by value and by
+/// reference.
+///
+/// The borrowed form of the newtype reads the wrapped value through a clone, so
+/// a `#[sql(transparent)]` newtype requires its wrapped value to implement
+/// `Clone`.
 #[proc_macro_derive(SqlType, attributes(sql))]
 pub fn sql_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);

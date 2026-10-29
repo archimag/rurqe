@@ -17,7 +17,7 @@ use rurqe_core::expr::{
 };
 use rurqe_core::query::{HasProjection, LeftJoined, MakeNullable, SelectQuery};
 use rurqe_core::row::{FromSqlValue, RowDecodeError};
-use rurqe_macros::SqlType;
+use rurqe_macros::{sql, SqlType};
 
 #[derive(Debug, PartialEq, Eq, SqlType)]
 #[sql(transparent)]
@@ -259,8 +259,8 @@ fn derived_newtypes_compose_with_the_expression_builders() {
         value: "root@example.com".to_owned(),
     };
     assert_eq!(
-        AccountEmail.eq(email.clone()),
-        Expr::column::<AccountEmail>().eq(email)
+        AccountEmail.eq(&email),
+        Expr::column::<AccountEmail>().eq(&email)
     );
 }
 
@@ -445,9 +445,12 @@ where
 
 #[test]
 fn derived_newtypes_are_scalar_function_operands() {
-    // A delegated newtype contributes the value it wraps.
+    // A delegated newtype contributes the value it wraps, by value and by
+    // reference.
     assert_function_operand::<UserId, UserId>();
+    assert_function_operand::<UserId, &UserId>();
     assert_function_operand::<Email, Email>();
+    assert_function_operand::<Email, &Email>();
 
     // A binary newtype is accepted by value and by reference.
     assert_function_operand::<Txid, Txid>();
@@ -507,9 +510,11 @@ where
 #[test]
 fn derived_newtypes_are_per_row_comparison_operands() {
     // A delegated newtype binds the value it wraps, which computes one value
-    // per row.
+    // per row, by value and by reference.
     assert_into_expr::<UserId, UserId>();
+    assert_into_expr::<UserId, &UserId>();
     assert_into_expr::<Email, Email>();
+    assert_into_expr::<Email, &Email>();
 
     // A binary newtype is accepted by value and by reference.
     assert_into_expr::<Txid, Txid>();
@@ -629,4 +634,45 @@ fn derived_newtypes_are_case_branches() {
         .end();
 
     assert!(matches!(address.kind(), ExprKind::Case { .. }));
+}
+
+#[test]
+fn borrowed_newtypes_bind_as_parameters() {
+    // The borrowed form of a delegated newtype encodes the value it wraps, so a
+    // caller binds a parameter without giving the value up.
+    let id = UserId(7);
+    assert_eq!(ToSqlVal::to_sql_val(&id), SqlVal::I64(7));
+
+    let email = Email {
+        value: "root@example.com".to_owned(),
+    };
+    assert_eq!(
+        ToSqlVal::to_sql_val(&email),
+        SqlVal::Text("root@example.com".to_owned())
+    );
+
+    // A raw template binds the borrowed value through the same contract.
+    let from_macro = sql!(bool, "\"accounts\".\"id\" = ?", &id);
+    assert_eq!(
+        from_macro.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["\"accounts\".\"id\" = ".to_owned(), String::new()],
+            params: vec![SqlVal::I64(7)],
+        }
+    );
+
+    let address = Address::from_str("addr_1").expect("the address is inside the domain");
+    assert_eq!(
+        ToSqlVal::to_sql_val(&address),
+        SqlVal::Text("addr_1".to_owned())
+    );
+
+    let from_macro = sql!(bool, "\"wallets\".\"address\" = ?", &address);
+    assert_eq!(
+        from_macro.kind(),
+        &ExprKind::Raw {
+            fragments: vec!["\"wallets\".\"address\" = ".to_owned(), String::new()],
+            params: vec![SqlVal::Text("addr_1".to_owned())],
+        }
+    );
 }

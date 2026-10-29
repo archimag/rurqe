@@ -6,7 +6,9 @@
 //! already implements the contracts:
 //!
 //! - `#[sql(transparent)]` delegates to the wrapped value, so `struct UserId(i64)`
-//!   binds and decodes exactly like `i64`;
+//!   binds and decodes exactly like `i64`. The wrapped value has to implement
+//!   `Clone`, because the borrowed forms of the newtype read it through a clone
+//!   instead of moving out of the reference;
 //! - `#[sql(as = Bytes)]` encodes through `AsRef<[u8]>` and decodes through
 //!   `TryFrom<&[u8]>`, optionally validating the blob length with `len = N`;
 //! - `#[sql(as = Text)]` encodes through `Display` and decodes through `FromStr`.
@@ -474,6 +476,11 @@ fn label_impls(name: &Ident, variants: &[EnumVariant]) -> TokenStream {
 }
 
 /// Emits the parameter-encoding impls of the derived newtype.
+///
+/// The owned value and its borrowed form are encoded the same way, so a caller
+/// binds a value it still needs afterwards. The transparent mode reads the
+/// wrapped value out of the borrow through `Clone`; the binary and textual modes
+/// re-encode a byte slice or the rendered text.
 fn encode_impls(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStream {
     match storage {
         Storage::Transparent => {
@@ -482,6 +489,14 @@ fn encode_impls(name: &Ident, storage: &Storage, field: &SingleField) -> TokenSt
                 impl ::rurqe::core::expr::ToSqlVal for #name {
                     fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
                         ::rurqe::core::expr::ToSqlVal::to_sql_val(#access)
+                    }
+                }
+
+                impl<'a> ::rurqe::core::expr::ToSqlVal for &'a #name {
+                    fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
+                        ::rurqe::core::expr::ToSqlVal::to_sql_val(
+                            ::core::clone::Clone::clone(&#access),
+                        )
                     }
                 }
             }
@@ -639,14 +654,14 @@ fn text_decode_impl(name: &Ident) -> TokenStream {
 /// Every [`IntoExpr`](rurqe_core::expr::IntoExpr) impl has a matching
 /// [`FunctionOperand`](rurqe_core::expr::FunctionOperand) impl next to it, so a
 /// derived type is accepted as an argument of a scalar function call as well as
-/// as a comparison operand.
+/// as a comparison operand. Each contract is emitted for the owned value and for
+/// its borrowed form, so an operand is accepted by reference as well as by value.
 fn expression_impls(name: &Ident, storage: &Storage) -> TokenStream {
     let owned = owned_expression_impl(name);
     let owned_operands = function_operand_impl(name);
 
     match storage {
-        Storage::Transparent => quote! { #owned #owned_operands },
-        Storage::Bytes { .. } => {
+        Storage::Transparent | Storage::Bytes { .. } => {
             let borrowed = borrowed_expression_impl(name);
             let borrowed_operands = borrowed_function_operand_impl(name);
             quote! { #owned #borrowed #owned_operands #borrowed_operands }
