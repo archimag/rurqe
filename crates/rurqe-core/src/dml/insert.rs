@@ -441,6 +441,13 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// than the first one at the same position is rejected as
     /// [`BuildError::MismatchedRowColumns`], so a value can never be bound to a
     /// column its own row did not name.
+    ///
+    /// The source `SELECT` of an `INSERT INTO ... SELECT` supplies one value per
+    /// target column, positionally, so a statement whose recorded projection list
+    /// disagrees with the column list is rejected as
+    /// [`BuildError::InsertSelectArity`] instead of being rendered into a
+    /// statement every engine answers with `INSERT has more expressions than
+    /// target columns`.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The target renders through its `Table::table_ref`, so a target
         // referenced under an alias renders its `AS "alias"` clause and is
@@ -452,6 +459,21 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         let relations = [target];
         if let Some(select) = &self.select {
             select.validate()?;
+            // The source supplies one value per target column, positionally, so a
+            // statement projecting another number of columns renders a column
+            // list and a select list of different widths — `INSERT INTO "users"
+            // ("id") SELECT "old_id", "old_name" ...` — which every engine
+            // rejects with `INSERT has more expressions than target columns`.
+            // The builder types the source against the row type of the target
+            // column list, which the public `Selection` / `SelectionFor` traits
+            // report themselves, so the recorded projection list is compared with
+            // the column list here as well.
+            if select.projections.len() != self.columns.len() {
+                return Err(BuildError::InsertSelectArity {
+                    expected: self.columns.len(),
+                    actual: select.projections.len(),
+                });
+            }
         }
         for (row_index, row) in self.rows.iter().enumerate() {
             // A row that records no assignment leaves the statement without a

@@ -310,6 +310,28 @@ pub enum BuildError {
         /// The 0-based position of the row that records no assignment.
         row: usize,
     },
+    /// An `INSERT INTO ... SELECT` projects a different number of columns than
+    /// the statement inserts into.
+    ///
+    /// The source statement supplies one value per target column, positionally,
+    /// so a `SELECT` projecting more or fewer columns than the column list names
+    /// renders a statement every engine rejects — PostgreSQL answers `INSERT has
+    /// more expressions than target columns`. The builder types the source
+    /// statement against the row type of the target column list, reported by the
+    /// public [`InsertColumns`](crate::dml::insert::InsertColumns) trait, while
+    /// the source statement reports its own row through
+    /// [`Selection`](crate::query::Selection) and `SelectionFor`, which an
+    /// implementation outside the crate states itself: the reported row type and
+    /// the recorded projection list can disagree exactly like the empty
+    /// projection [`BuildError::EmptyProjection`] defends against. The recorded
+    /// projection list is therefore compared with the rendered column list here
+    /// before a single character of the statement is rendered.
+    InsertSelectArity {
+        /// The number of columns the statement inserts into.
+        expected: usize,
+        /// The number of columns the source statement projects.
+        actual: usize,
+    },
     /// An `UPDATE` records no column assignment.
     ///
     /// The `SET` clause sits between the target and the `WHERE` clause, so a
@@ -573,6 +595,14 @@ impl fmt::Display for BuildError {
                      the statement would render `INSERT INTO \"...\" () VALUES ()`, which no engine accepts, \
                      so every row has to assign at least one column through `.values(...)` or `.values_many(...)`, \
                      or the statement has to take its rows from a source `SELECT` through `.from_select(...)`"
+                )
+            }
+            BuildError::InsertSelectArity { expected, actual } => {
+                write!(
+                    f,
+                    "the source SELECT of this INSERT projects {actual} column(s) but the statement inserts into {expected} column(s); \
+                     the source supplies one value per target column, positionally, \
+                     so align the column list passed to `columns` / `from_select` with the projection of the source statement"
                 )
             }
             BuildError::EmptyUpdateSet { table } => {
