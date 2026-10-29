@@ -85,6 +85,11 @@
 * **Mandatory Test Coverage:**
   * Every new feature must be verified by automated unit or integration tests.
   * Every bug fix must include an accompanying regression test.
+* **Typed Zero-Cost Errors (No `Box<dyn std::error::Error>`):**
+  * Application code, the root `examples/` crate, and every runnable documentation snippet declare a fallible entry point as `async fn main() -> Result<()>`, taking the `Error` and `Result` aliases from the prelude of the active dialect (`rurqe::postgres::prelude::*`, `rurqe::sqlite::prelude::*`, or a version-pinned prelude).
+  * Those aliases pin the concrete driver error — `ExecutionError<PgError>` for PostgreSQL and `ExecutionError<rusqlite::Error>` for SQLite — so a failure keeps its typed variants (`Build`, `Backend`, `RowDecode`, `NoRows`, `MultipleRows`) and the signature costs neither a heap allocation nor a virtual call.
+  * `Box<dyn std::error::Error>` and every other type-erased error wrapper are forbidden in examples, tutorials, and book snippets: they discard the driver error type the library deliberately keeps visible and teach a signature the application never writes. A snippet that has to stay dialect-agnostic names `ExecutionError` over the driver error in scope instead of erasing it.
+  * A query or mutation result is propagated with `?`, so the typed error surfaces at the runtime boundary and a terminal call stays a single `?`-terminated expression.
 
 ---
 
