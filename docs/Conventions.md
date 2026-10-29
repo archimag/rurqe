@@ -62,7 +62,60 @@ Every executable walkthrough — a query, a mutation, a relation, a transaction 
 * **Execution:** the verification pipeline compiles an example and never runs it, so an example may name a connection it does not open. Database-dependent behaviour is documented, not executed.
 * **Coverage:** an example target earns its compilation by being read. `cargo test --workspace` runs the guard in `examples/tests/doc_coverage.rs`, which fails the pipeline when a registered example file or one of its `// ANCHOR: ...` regions is included by no chapter under `docs/book/src`. Deleting the last chapter that includes a fragment obliges you to delete or re-home the example in the same commit.
 
-## 7. Toolchain and Verification
+## 7. SQL Statement Chapters: the Canonical Structure
+
+A chapter that documents one SQL statement — `WITH`, `SELECT`, `INSERT`, `UPDATE`, or `DELETE` — follows one fixed structure. The same five parts appear in the same order in every statement chapter, so a reader who learned to navigate one of them can navigate all of them, and an LLM can locate the anatomy, the mapping, the examples, the dialect matrix, and the guards without reading the whole chapter.
+
+| Part | Content | Backed by |
+|---|---|---|
+| 1. Clause anatomy | The clause skeleton in canonical SQL order and a description of every clause | a `sql` fenced block and a Markdown table |
+| 2. SQL ↔ DSL mapping | One row per clause: the SQL clause, the builder method, the effect on the query typestate | a Markdown table |
+| 3. Clause-by-clause walkthrough | One subsection per clause with a compiled example and the SQL it renders | `examples/` anchors included by fragment |
+| 4. Dialect capability gates | Which dialects and versions accept each clause, and what the compiler does otherwise | a Markdown table |
+| 5. Compile-time and typestate guards | The invariants that make an invalid statement unwritable, with the exact rejection diagnostics | `rust,compile_fail` doc-tests |
+
+The parts are mandatory and ordered. A statement chapter that omits one of them is incomplete, and a chapter may append further sections only after part 5.
+
+### 7.1 Clause Anatomy
+
+* The chapter opens with the clause skeleton of the statement in canonical SQL order, one clause per line, with the optional clauses bracketed, inside a `sql` fenced block.
+* A Markdown table follows the skeleton: one row per clause, stating its purpose, whether it is optional, and what it changes — the projected rows, the written rows, or the ordering of the result.
+* The minimal valid statement comes first: the shortest chain that both compiles and executes. Advanced forms are introduced by the walkthrough, never by the skeleton.
+
+### 7.2 SQL ↔ DSL Mapping
+
+* One Markdown table states, per clause, the SQL clause, the builder method or entry point that produces it, and the effect the clause has on the query typestate (a `SELECT` without a projection is not executable, an `UPDATE` without `WHERE` is not executable, and so on).
+* Every method named in the table exists in the current API, and every clause of the skeleton has a row. A clause without a method is a capability the library does not offer, and the row says so instead of inventing a method.
+* The table is the deterministic reference. The walkthrough below is the narrative path through the same clauses, in the same order.
+
+### 7.3 Clause-by-Clause Walkthrough
+
+* One subsection per clause, in the order of the anatomy, each of them showing the accepted form, the SQL the form renders, and the result type it returns.
+* Every example is a fragment of the root `examples/` crate, included inside a `rust,no_run` fenced block (§ 6):
+
+  ```text
+  {{#rustdoc_include ../../../../examples/crud.rs:<anchor>}}
+  ```
+
+  The chapter never copies the code inline, so the prose cannot drift from a compiling file.
+* Anchor names describe the form they contain (`values`, `values_many`, `from_select`, `on_conflict`, `returning`, `set`, `using`), never their position in the file.
+* A form that has no example is a form the chapter does not document. Extending the statement documentation obliges you to extend the example crate with the corresponding anchor in the same commit.
+
+### 7.4 Dialect Capability Gates
+
+* One Markdown table states, per clause or per statement feature, which dialects accept it and from which version: `RETURNING` from SQLite 3.35, `ON CONFLICT` from SQLite 3.24, `LATERAL` on PostgreSQL only, and so on.
+* The capability is named in SQL and version terms. The internal marker the compiler checks is never exposed: the reader learns that the clause is unavailable on a target, not which type refused it.
+* A feature the library does not implement — recursive `WITH`, `MERGE`, and every other backlog item — appears only in this matrix, marked as unavailable. It never receives an example, a builder method, or hypothetical syntax.
+
+### 7.5 Compile-time and Typestate Guards
+
+* The chapter lists the invariants that make an invalid statement unwritable, each one phrased as the SQL rule it enforces: a `SELECT` needs a projection, an `UPDATE` needs `SET`, an `UPDATE` or a `DELETE` needs `WHERE` or an explicit `.allow_all()`, an `INSERT` needs a row source, and every expression must reference a relation the statement introduces.
+* Each guard is paired with the positive form a reader should write instead, so the chapter never leaves the reader with a prohibition and no remedy.
+* Negative examples are `rust,compile_fail` fenced blocks, and the quoted diagnostic is the message the compiler actually emits, copied verbatim from the compile-fail suite (§ 5).
+
+---
+
+## 8. Toolchain and Verification
 * **Local Build:** Documentation is built with `just doc-build` (rendered into `target/book`).
 * **Local Preview:** Documentation is served locally with `just doc-serve`.
 * **Snippet Verification:** Documentation code snippets are verified with `just doc-test` (`mdbook test docs -L target/debug/deps`).
