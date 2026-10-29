@@ -8,12 +8,15 @@ RURQE reads the relation in one statement: the engine aggregates the child rows 
 
 ```rust,no_run
 # extern crate rurqe;
-use rurqe::postgres::prelude::*;
+# use rurqe::postgres::prelude::*;
 # table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() {
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
 {{#rustdoc_include ../../../../examples/nested.rs:nested}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 `user.orders` is a `Vec` of a record with `order_id` and `total`; nothing is decoded by index, and no second statement was sent.
@@ -24,32 +27,15 @@ The same call for a one-to-one relation stops at the first row and reads as `Opt
 
 ```rust,no_run
 # extern crate rurqe;
-use rurqe::postgres::prelude::*;
-# table! { User => "users" { UserId => "id": i64, } }
+# use rurqe::postgres::prelude::*;
+# table! { User => "users" { UserId => "id": i64, UserName => "name": String, } }
 # table! { Order => "orders" { OrderId => "id": i64, OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-# let mut conn: PgConnection = todo!();
-
-let users = select_from(User)
-    .select(select!(
-        user_id: UserId,
-        latest: nest_one(
-            select_from(Order)
-                .select(select!(total: OrderTotal))
-                .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
-                .order_by_desc(OrderId)
-        ),
-    ))
-    .fetch_all(&mut conn)?;
-
-for user in users {
-    match user.latest {
-        Some(latest) => println!("#{}: {}", user.user_id, latest.total),
-        None => println!("#{}: no orders", user.user_id),
-    }
-}
-# Ok(())
+# async fn example() -> Result<()> {
+#     let pool: PgAsyncPool = todo!();
+{{#rustdoc_include ../../../../examples/nested.rs:nest_one}}
+#     Ok(())
 # }
+# fn main() {}
 ```
 
 An absent child is `None`, not an empty collection: "no row" and "a row without values" stay distinguishable.
@@ -64,10 +50,7 @@ The nested statement is a query of its own, so its scope holds only its own `FRO
 # table! { User => "users" { UserId => "id": i64, } }
 # table! { Order => "orders" { OrderUserId => "user_id": i64, OrderTotal => "total": f64, } }
 # fn main() {
-let nested = select_from(Order)
-    .select(select!(total: OrderTotal))
-    .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()));
-# let _ = nested;
+{{#rustdoc_include ../../../../examples/nested.rs:correlation}}
 # }
 ```
 

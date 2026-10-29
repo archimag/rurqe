@@ -1,5 +1,6 @@
 //! Typed nested collections from a single round trip: `cols!` with
-//! `nest_many`, so the children of every parent arrive as one JSON document.
+//! `nest_many` and `nest_one`, so the children of every parent arrive as one
+//! JSON document.
 
 use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
@@ -41,8 +42,8 @@ async fn main() -> Result<()> {
                         total: OrderTotal,
                     })
                     // The child statement declares only `orders`, so the key of
-                    // the enclosing row enters its predicate as a value that
-                    // statement needs no relation for.
+                    // the enclosing row enters its predicate as a value the
+                    // child statement needs no relation for.
                     .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
                     .order_by_desc(OrderTotal),
             ),
@@ -51,6 +52,39 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: nested
     println!("{}", users_with_orders.len());
+
+    // ANCHOR: nest_one
+    // The same shape for a one-to-one relation: the collection stops at the
+    // first row, so the field reads as an `Option` of the nested projection
+    // and an absent child stays distinguishable from a child without values.
+    let users_with_top_order = select_from(User)
+        .select(cols! {
+            user_name: UserName,
+            top_order: nest_one(
+                select_from(Order)
+                    .select(cols! {
+                        order_id: OrderId,
+                        total: OrderTotal,
+                    })
+                    .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
+                    .order_by_desc(OrderTotal),
+            ),
+        })
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: nest_one
+    println!("{}", users_with_top_order.len());
+
+    // ANCHOR: correlation
+    // The child statement introduces only `orders` in its scope, so a column
+    // of the enclosing query is marked as resolved elsewhere instead of being
+    // looked up among the relations the child statement declares.
+    let _correlated = select_from(Order)
+        .select(cols!(OrderTotal))
+        .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
+        .build()
+        .expect("the correlated statement is valid");
+    // ANCHOR_END: correlation
 
     Ok(())
 }
