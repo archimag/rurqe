@@ -46,7 +46,7 @@ A one-to-many relation is one statement as well — no N+1 queries and no Cartes
 # }
 ```
 
-The engine aggregates the child rows into a JSON document and the client decodes it into a `Vec` whose element type is the nested record — see [Nested results](../features/nested.md).
+The engine aggregates the child rows into a JSON document and the client decodes it into a `Vec` whose element type is the nested record.
 
 ## Six principles
 
@@ -56,7 +56,7 @@ The live catalog is introspected (`pg_catalog`, `information_schema`, the SQLite
 
 ### 2. No invalid statement reaches the database
 
-A statement is checked twice. The compiler rejects every rule that can be stated as a positive assertion — a column of a relation the query never joins, a `LEFT JOIN` field read as `T`, an `UPDATE` without `WHERE`, a clause the pinned engine version does not support. Validation inside `.build()` then rejects the rules that need a negative assertion (two relations under one effective name) or that align one clause with a clause written later in the chain (`DISTINCT ON` against the leading `ORDER BY`), before any network I/O. Both gates are described in [Two-tier SQL correctness](two_tier.md).
+A statement is checked twice. The compiler rejects every rule that can be stated as a positive assertion — a column of a relation the query never joins, a `LEFT JOIN` field read as `T`, an `UPDATE` without `WHERE`, a clause the pinned engine version does not support. Validation inside `.build()` then rejects the rules that need a negative assertion (two relations under one effective name) or that align one clause with a clause written later in the chain (`DISTINCT ON` against the leading `ORDER BY`), before any network I/O.
 
 ### 3. Native or nothing
 
@@ -85,9 +85,3 @@ No "just in case" fields and no dead code kept for later. Standard formats and c
 | An ambiguous `JOIN` never reaches the database | the statement is refused, and the colliding relation is named |
 | The schema never drifts from the code | `cargo db-codegen`, `schema.lock`, `cargo db-verify` |
 
-## Where to go next
-
-- [The architectural tetrad](tetrad.md) — the four industrial ideas the project is assembled from.
-- [Two-tier SQL correctness](two_tier.md) — which gate catches which rule.
-- [Quickstart in five minutes](quickstart.md) — the first working query.
-- [Relational theory overview](../theory/overview.md) — optional reading for the maths behind the types.

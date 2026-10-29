@@ -2,7 +2,7 @@
 
 `UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT` combine the rows of two statements. The operators live on a projected query and consume the other operand entirely.
 
-A set operation is the step of the [logical query processing order](select.md#logical-query-processing-order) that combines finished statements: each operand is projected first, and the combination then fixes the output columns of the whole statement. The head page of the statement family is [The `SELECT` statement](select.md).
+A set operation is the step of the logical query processing order that combines finished statements: each operand is projected first, and the combination then fixes the output columns of the whole statement.
 
 ## The family
 
@@ -74,9 +74,3 @@ The rules that compare assembled clauses rather than types run pre-flight:
 - `BuildError::CompoundOrderIndex` — a 1-based position outside the projection list;
 - `BuildError::CompoundOrderColumn` — an output name the projection list does not produce;
 - `BuildError::SetOperandArity` — an operand disagreeing with the assembled clause; the type signature keeps it out of user code, and the rule guards ASTs assembled without it.
-
-## Related chapters
-
-- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is a step of.
-- [Ordering and pagination](ordering.md) — the per-operand ordering.
-- [Projections and `SELECT`](select.md) — how the output columns are fixed.

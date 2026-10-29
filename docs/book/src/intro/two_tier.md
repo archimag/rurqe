@@ -77,4 +77,3 @@ The duplicate relation is the case where the two gates meet: two occurrences of 
 
 A failure of a valid statement — a constraint violation, missing privileges, a parameter the server refuses — is admissible and is returned as an `ExecutionError`, preserving the driver error. It stays inspectable: `is_not_found()`, `is_multiple_rows()`, `is_row_decode()`, `is_build()`, `as_backend()`, `into_backend()`.
 
-The full catalogue of rejected statements is in the [error reference](../appendix/compiler_errors.md).

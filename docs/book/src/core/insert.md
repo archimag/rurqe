@@ -141,7 +141,7 @@ Both conflict predicates render natively. There is no `CASE WHEN` emulation and 
 
 ### `RETURNING`
 
-`returning(...)` accepts the same named lists as a projection — single columns, tuples, or whole record selections. The clause addresses the written row alone, which is why `.returning(cols!(UserId))` above yields the generated key rather than a row count, and why a column of another relation is not part of what it can project. See [Projections and `SELECT`](select.md) for the projection forms.
+`returning(...)` accepts the same named lists as a projection — single columns, tuples, or whole record selections. The clause addresses the written row alone, which is why `.returning(cols!(UserId))` above yields the generated key rather than a row count, and why a column of another relation is not part of what it can project.
 
 ## Dialect capability gates
 
@@ -173,10 +173,3 @@ let written = insert_into(User).build();
 ```
 
 The accepted form records the rows first — `.values((UserId::set(1i64), UserName::set("root")))` — and only then builds or executes the statement.
-
-## Related chapters
-
-- [DML: `UPDATE`](update.md) — assignments, `UPDATE ... FROM`, and the filter typestate.
-- [DML: `DELETE`](delete.md) — `DELETE ... USING` and the same filter rules.
-- [Predicates and `WHERE`](filtering.md) — the predicate model every mutation shares.
-- [Projections and `SELECT`](select.md) — the projection forms `RETURNING` accepts.

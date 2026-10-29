@@ -77,7 +77,7 @@ DELETE FROM "users" USING "accounts" WHERE ("users"."id" = "accounts"."id")
 ### Filters assembled at runtime
 
 The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` — and the explicit `.allow_all()` behave on a `DELETE` exactly as they do on an `UPDATE`; see [DML: `UPDATE`](update.md) and [Predicates and `WHERE`](filtering.md). An absent branch adds no clause, and the statement keeps its type.
-
+The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` — and the explicit `.allow_all()` behave on a `DELETE` exactly as they do on an `UPDATE`. An absent branch adds no clause, and the statement keeps its type.
 ### `RETURNING`
 
 ```rust,no_run
@@ -129,9 +129,3 @@ let removed = delete_from(User).build();
 ```
 
 The accepted form records the filter — `.where_(UserId.eq(1i64))` — or states the intent with `.allow_all()`.
-
-## Related chapters
-
-- [DML: `INSERT`](insert.md) — the value model and the upsert clause.
-- [DML: `UPDATE`](update.md) — assignments and the same filter typestate.
-- [Predicates and `WHERE`](filtering.md) — the predicate model and the dynamic forms.

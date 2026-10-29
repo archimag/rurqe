@@ -59,7 +59,7 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 ### `SET`: the value model
 
 The three constructors — `UserName::set("root")`, `UserName::default_value()`, and `UserName::set_expr(expr)` — behave here exactly as they do on an `INSERT`; see [DML: `INSERT`](insert.md). An assignment tuple belongs to one table, so a statement cannot assign a column of a relation it does not update.
-
+The three constructors — `UserName::set("root")`, `UserName::default_value()`, and `UserName::set_expr(expr)` — behave here exactly as they do on an `INSERT`. An assignment tuple belongs to one table, so a statement cannot assign a column of a relation it does not update.
 ### `FROM`: reading a second relation
 
 ```rust,no_run
@@ -91,7 +91,7 @@ UPDATE "users" SET "name" = $1 FROM "accounts" WHERE ("users"."id" = "accounts".
 | `.where_if(...)` | the conditional form of `.where_` |
 | `.allow_all()` | confirms a full-table mutation explicitly |
 
-An absent branch adds no clause, and the statement keeps its type, so nothing downstream has to be re-typed. The predicate model itself is described in [Predicates and `WHERE`](filtering.md).
+An absent branch adds no clause, and the statement keeps its type, so nothing downstream has to be re-typed.
 
 ### `RETURNING`
 
@@ -168,10 +168,3 @@ let mutating = update(User)
 ```
 
 The accepted form records the assignment first — `.set(UserName::set("root"))` — and then the filter.
-
-## Related chapters
-
-- [DML: `INSERT`](insert.md) — the value model and the upsert clause.
-- [DML: `DELETE`](delete.md) — the same filter typestate on a deletion.
-- [Predicates and `WHERE`](filtering.md) — the predicate model and the dynamic forms.
-- [Projections and `SELECT`](select.md) — what `RETURNING` accepts.

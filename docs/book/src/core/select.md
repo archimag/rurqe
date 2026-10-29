@@ -92,34 +92,33 @@ let rows = select_from(User)
 # fn main() {}
 ```
 
-The projection renames nothing outside the row: `user_id` and `contact_email` are names the result carries, while the filter keeps working with `UserActive`. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly — see [Set operations](set_ops.md).
+The projection renames nothing outside the row: `user_id` and `contact_email` are names the result carries, while the filter keeps working with `UserActive`. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly with `.order_by_output*` / `.order_by_index*`.
 
-**`GROUP BY` runs before the projection is evaluated.** Once a query is grouped, a stored column survives into the projection only when it is grouped, aggregated, constant, or read through a window; anything else names a value the grouping collapsed. The refusal happens at the call site, not in the engine — see [`GROUP BY` and `HAVING`](group_by.md).
+**`GROUP BY` runs before the projection is evaluated.** Once a query is grouped, a stored column survives into the projection only when it is grouped, aggregated, constant, or read through a window; anything else names a value the grouping collapsed. The refusal happens at the call site, not in the engine.
 
-**`FROM` fixes nullability before the projection is written.** The type of a projected attribute follows from the relations the statement introduced: a column read through an outer join is an `Option<T>`, and no part of the projection mentions it — see [Nullability](../theory/nullability.md) and [Joins](joins.md).
+**`FROM` fixes nullability before the projection is written.** The type of a projected attribute follows from the relations the statement introduced: a column read through an outer join is an `Option<T>`, and no part of the projection mentions it.
 
 ## SQL ↔ DSL mapping
 
-The table is the deterministic reference: every clause of the anatomy has a row, and the row names the builder method that produces it, the effect it has on the statement, and the chapter that documents it in depth.
+The table is the deterministic reference: every clause of the anatomy has a row, and the row names the builder method that produces it, the effect it has on the statement, and the clause family that takes it further in depth.
 
 | Step | SQL clause | Builder method | Effect on the statement | Chapter |
 |---|---|---|---|---|
-| `FROM` | `FROM relation` | `select_from(table)`, `.from(table)`, `.from_subquery(...)` | introduces a relation and the declared types of its columns | [Joins](joins.md), [Aliases](aliasing.md) |
-| `JOIN` | `[INNER\|LEFT\|CROSS\|FULL OUTER] JOIN ... ON ...`, `LATERAL` | `.inner_join(...)`, `.left_join(...)`, `.cross_join(...)`, `.full_outer_join(...)`, `.inner_join_subquery(...)`, `.left_join_subquery(...)`, `.cross_join_lateral(...)`, `.left_join_lateral(...)` | adds a relation to the scope; an outer join lifts its columns to `Option<T>` | [Joins](joins.md), [Aliases](aliasing.md) |
-| — | any condition or value inside a clause | `.eq`, `.ne`, `.gt`, `.lt`, `.between`, `.in_list`, `.like`, `.is_null`, `.and`, `.or`, arithmetic operators, `CASE`, the scalar functions | builds the value a clause compares or projects | [Expressions](expressions.md) |
-| `WHERE` | `WHERE condition` | `.where_(pred)`, `.where_opt(Option<pred>)`, `.when(flag, \|q\| ...)`, `.if_some(value, \|q, v\| ...)` | restricts the rows and keeps the row type | [Predicates and `WHERE`](filtering.md) |
-| `GROUP BY` | `GROUP BY expression, ...` | `.group_by(columns)` | moves the query into a grouped statement, where only grouped columns, aggregates, constants, and windows are projectable | [`GROUP BY` and `HAVING`](group_by.md) |
-| `HAVING` | `HAVING condition` | `.having(pred)`, `.having_col(...)` | filters the groups the aggregate produced | [`GROUP BY` and `HAVING`](group_by.md) |
-| `WINDOW` | `WINDOW name AS (...)` | — the query builder has no named window clause | a specification is attached to the expression with `.over(...)`; there is no name to reuse | [Window functions](window.md) |
+| `FROM` | `FROM relation` | `select_from(table)`, `.from(table)`, `.from_subquery(...)` | introduces a relation and the declared types of its columns | Joins, Aliases |
+| `JOIN` | `[INNER\|LEFT\|CROSS\|FULL OUTER] JOIN ... ON ...`, `LATERAL` | `.inner_join(...)`, `.left_join(...)`, `.cross_join(...)`, `.full_outer_join(...)`, `.inner_join_subquery(...)`, `.left_join_subquery(...)`, `.cross_join_lateral(...)`, `.left_join_lateral(...)` | adds a relation to the scope; an outer join lifts its columns to `Option<T>` | Joins, Aliases |
+| — | any condition or value inside a clause | `.eq`, `.ne`, `.gt`, `.lt`, `.between`, `.in_list`, `.like`, `.is_null`, `.and`, `.or`, arithmetic operators, `CASE`, the scalar functions | builds the value a clause compares or projects | Expressions |
+| `WHERE` | `WHERE condition` | `.where_(pred)`, `.where_opt(Option<pred>)`, `.when(flag, \|q\| ...)`, `.if_some(value, \|q, v\| ...)` | restricts the rows and keeps the row type | Predicates and `WHERE` |
+| `GROUP BY` | `GROUP BY expression, ...` | `.group_by(columns)` | moves the query into a grouped statement, where only grouped columns, aggregates, constants, and windows are projectable | `GROUP BY` and `HAVING` |
+| `HAVING` | `HAVING condition` | `.having(pred)`, `.having_col(...)` | filters the groups the aggregate produced | `GROUP BY` and `HAVING` |
+| `WINDOW` | `WINDOW name AS (...)` | — the query builder has no named window clause | a specification is attached to the expression with `.over(...)`; there is no name to reuse | Window functions |
 | `SELECT` | `SELECT projection, ...` | `select!(...)` at the head of a chain, `.select(cols!(...))` inside one | records the projection and the output names; a query without one does not build | this page |
 | `DISTINCT` | `DISTINCT`, `DISTINCT ON (...)` | `.distinct()`, `.distinct_on(col)` — PostgreSQL | drops duplicates; the locking clauses leave the statement | this page |
-| `UNION`, `INTERSECT`, `EXCEPT` | `UNION [ALL]`, `INTERSECT`, `EXCEPT` | `.union(query)`, `.union_all(query)`, `.intersect(query)`, `.except(query)` | combines statements and closes the projection list | [Set operations](set_ops.md) |
-| `ORDER BY` | `ORDER BY expression ...` | `.order_by_asc(...)`, `.order_by_desc(...)`, `.order_by_nulls(...)`, `.order_by_expr(...)` and their variants | orders the result and keeps the row type | [Ordering and pagination](ordering.md) |
-| `ORDER BY` of a combined statement | `ORDER BY output_column \| position` | `.order_by_output_asc(...)`, `.order_by_output_desc(...)`, `.order_by_index(n)` | orders the combined rows; no further operand can follow | [Set operations](set_ops.md) |
-| `LIMIT` / `OFFSET` | `LIMIT n`, `OFFSET n` | `.limit(n)`, `.offset(n)` | windows the result | [Ordering and pagination](ordering.md) |
-| `FOR UPDATE` / `FOR SHARE` | `FOR UPDATE`, `FOR SHARE`, `NOWAIT`, `SKIP LOCKED` | `.for_update()`, `.for_share()`, then `.nowait()`, `.skip_locked()` — PostgreSQL | claims the rows; the statement can no longer be nested or combined | [Row locking](../dialects/postgres/locking.md) |
-| — | the statement itself | `.build()`, `.fetch_all(...)`, `.fetch_one(...)`, `.fetch_optional(...)`, `.fetch_collect(...)`, `.fetch_iter(...)`, `.execute(...)` | renders or runs the statement; reachable only once a projection is recorded | [Runtime: overview](../runtime/overview.md) |
-
+| `UNION`, `INTERSECT`, `EXCEPT` | `UNION [ALL]`, `INTERSECT`, `EXCEPT` | `.union(query)`, `.union_all(query)`, `.intersect(query)`, `.except(query)` | combines statements and closes the projection list | Set operations |
+| `ORDER BY` | `ORDER BY expression ...` | `.order_by_asc(...)`, `.order_by_desc(...)`, `.order_by_nulls(...)`, `.order_by_expr(...)` and their variants | orders the result and keeps the row type | Ordering and pagination |
+| `ORDER BY` of a combined statement | `ORDER BY output_column \| position` | `.order_by_output_asc(...)`, `.order_by_output_desc(...)`, `.order_by_index(n)` | orders the combined rows; no further operand can follow | Set operations |
+| `LIMIT` / `OFFSET` | `LIMIT n`, `OFFSET n` | `.limit(n)`, `.offset(n)` | windows the result | Ordering and pagination |
+| `FOR UPDATE` / `FOR SHARE` | `FOR UPDATE`, `FOR SHARE`, `NOWAIT`, `SKIP LOCKED` | `.for_update()`, `.for_share()`, then `.nowait()`, `.skip_locked()` — PostgreSQL | claims the rows; the statement can no longer be nested or combined | — |
+| — | the statement itself | `.build()`, `.fetch_all(...)`, `.fetch_one(...)`, `.fetch_optional(...)`, `.fetch_collect(...)`, `.fetch_iter(...)`, `.execute(...)` | renders or runs the statement; reachable only once a projection is recorded | — |
 ## Clause-by-clause walkthrough
 
 ### The minimal complete query
@@ -200,7 +199,7 @@ projection field `id` is produced by more than one projection; rename one of the
 
 A positional tuple projection still exists — for low-level code, and for a row that feeds a typed collection of pairs directly (see [Runtime: overview](../runtime/overview.md)). A named projection is preferred, because a field name survives a change in the column order.
 
-### `dto!`: a named row shape
+A positional tuple projection still exists — for low-level code, and for a row that feeds a typed collection of pairs directly. A named projection is preferred, because a field name survives a change in the column order.
 
 `select!` is anonymous — right inside a query, useless in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them:
 
@@ -239,7 +238,7 @@ assert_eq!(row.contact_email, "root");
 # }
 ```
 
-It also implements the nested-row contracts, so `Vec<UserSummary>` decodes straight out of a collection document (see [Nested results](../features/nested.md)).
+It also implements the nested-row contracts, so `Vec<UserSummary>` decodes straight out of a collection document.
 
 A DTO is a row shape, not a projection: its fields must be column markers, and a computed field is refused during expansion with a message that points at `select!`. The statement projects with `select!`; the DTO names what the row is.
 
@@ -268,23 +267,6 @@ let unique_names = select_from(User)
 
 Sometimes the nullable form is needed without an outer join — to align a projection with an already computed result. `query.nullable::<OrderTotal>()` is the same column with `Option<f64>` as its value type; a second layer never appears, because `Option<Option<T>>` collapses into `Option<T>`.
 
-### The clauses documented elsewhere
-
-In evaluation order, the chapters that take a clause further than this page does:
-
-| Step | Chapter | What it adds |
-|---|---|---|
-| `FROM`, `JOIN` | [Joins](joins.md) | the join family, the outer-join nullability rule, and the lateral forms |
-| `FROM`, `JOIN` | [Aliases](aliasing.md) | addressing one relation twice, and the uniqueness rule a self-join needs |
-| `WHERE` | [Predicates and `WHERE`](filtering.md) | the predicate model, the null predicates, and the conditional filter family |
-| any clause | [Expressions](expressions.md) | arithmetic, `CASE`, the scalar functions, and raw fragments |
-| any clause | [Subqueries](subqueries.md) | `EXISTS`, `IN`, and a scalar subquery as a value |
-| `GROUP BY`, `HAVING` | [`GROUP BY` and `HAVING`](group_by.md) | the grouped statement and the projection restriction |
-| `WINDOW` | [Window functions](window.md) | the window specification, the ranking functions, and the frame bounds |
-| `ORDER BY`, `LIMIT`, `OFFSET` | [Ordering and pagination](ordering.md) | the criteria, the null placement, and the keyset forms |
-| `UNION`, `INTERSECT`, `EXCEPT` | [Set operations](set_ops.md) | combining statements and ordering the combined rows |
-| `FOR UPDATE`, `FOR SHARE` | [Row locking](../dialects/postgres/locking.md) | the lock strengths and the acquisition modifiers |
-
 ## Dialect capability gates
 
 | Feature | PostgreSQL | SQLite |
@@ -302,7 +284,7 @@ In evaluation order, the chapters that take a clause further than this page does
 | `IS [NOT] DISTINCT FROM` in a predicate | every declared version | never |
 | nested collections (`nest_many` / `nest_one`) | `jsonb_agg` | from 3.38 |
 
-Below the stated threshold the feature does not exist on the target, so the method cannot even be named there: the compiler refuses the call and the diagnostic names the unsupported clause instead of a trait resolution cascade. The full matrix is in the [Appendices](../appendix/matrix.md).
+Below the stated threshold the feature does not exist on the target, so the method cannot even be named there: the compiler refuses the call and the diagnostic names the unsupported clause instead of a trait resolution cascade.
 
 ## Compile-time and typestate guards
 
@@ -338,11 +320,3 @@ let rows = select_from(User).select(cols!(UserId, OrderTotal));
 
 The accepted form introduces the relation before projecting its column: `select_from(User).inner_join(Order, OrderUserId.eq(UserId)).select(cols!(UserId, OrderTotal))` — and there the field arrives as `f64`, because an inner join keeps both sides matched; write `.left_join(...)` instead and the same field arrives as `Option<f64>`.
 
-## Related chapters
-
-- [Joins](joins.md) and [Nullability](../theory/nullability.md) — where the type of a projected attribute comes from.
-- [Predicates and `WHERE`](filtering.md) — the filter model, and the conditional forms a handler needs.
-- [`GROUP BY` and `HAVING`](group_by.md) — the grouped statement and its projection restriction.
-- [Window functions](window.md) — the specification a `WINDOW` clause would name.
-- [Ordering and pagination](ordering.md) and [Set operations](set_ops.md) — the two steps after the projection.
-- [DML: `INSERT`](insert.md) — the mutation side that `RETURNING` writes back.

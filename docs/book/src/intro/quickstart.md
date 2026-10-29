@@ -145,8 +145,6 @@ A one-to-many relation comes back as a typed collection in a single round trip, 
 # fn main() {}
 ```
 
-Details in [Nested results](../features/nested.md).
-
 ## 8. No turbofish anywhere
 
 One import pins the dialect, so entry points take a table value and no type parameter is ever spelled out:

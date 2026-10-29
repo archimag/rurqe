@@ -2,7 +2,7 @@
 
 Ordering is described by the `.order_by*` family; pagination by `.limit(u32)` and `.offset(u32)`.
 
-Both are the last steps of the [logical query processing order](select.md#logical-query-processing-order): the rows exist, the projection has named its output columns, and the ordering is applied to what they produced. The head page of the statement family is [The `SELECT` statement](select.md).
+Both are the last steps of the logical query processing order: the rows exist, the projection has named its output columns, and the ordering is applied to what they produced.
 
 ## Columns and column tuples
 
@@ -63,7 +63,7 @@ let built = select_from(Order)
 # }
 ```
 
-> **Compiler Guard in Action.** A criterion of a plain query is a per-row value: the statement yields one row per source row, so ordering by an aggregate is refused there. An aggregate folds the rows of a group, so it orders the result only on a grouped statement — see [`GROUP BY` and `HAVING`](group_by.md).
+> **Compiler Guard in Action.** A criterion of a plain query is a per-row value: the statement yields one row per source row, so ordering by an aggregate is refused there. An aggregate folds the rows of a group, so it orders the result only on a grouped statement.
 
 ## Keyset pagination with tuples
 
@@ -104,11 +104,4 @@ The right operand is a tuple of values: every element is checked against the typ
 
 ## Order and set operations
 
-A criterion recorded **before** `UNION`/`INTERSECT`/`EXCEPT` belongs to the left operand and renders inside its parentheses. The same call **after** the combination applies to the combined rows and requires the `order_by_output*` / `order_by_index*` forms (see [Set operations](set_ops.md)).
-
-## Related chapters
-
-- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
-- [`GROUP BY` and `HAVING`](group_by.md) — ordering groups.
-- [Window functions](window.md) — `ORDER BY` inside `OVER (...)`.
-- [Predicates and `WHERE`](filtering.md)
+A criterion recorded **before** `UNION`/`INTERSECT`/`EXCEPT` belongs to the left operand and renders inside its parentheses. The same call **after** the combination applies to the combined rows and requires the `order_by_output*` / `order_by_index*` forms.

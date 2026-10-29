@@ -2,7 +2,7 @@
 
 A predicate is a value of its own: it can be returned from a function, stored in a variable, and handed to `.where_(...)` on a `SELECT` or on a mutation. Calling `.where_(...)` twice adds a second condition with `AND` — there is no manual conjunction to build.
 
-`WHERE` is the second step of the [logical query processing order](select.md#logical-query-processing-order): it runs once the relations are established and before a grouping or a projection exists, which is why a filter addresses the column markers of the relations and never the field names a projection produces. The head page of the statement family is [The `SELECT` statement](select.md).
+`WHERE` is the second step of the logical query processing order: it runs once the relations are established and before a grouping or a projection exists, which is why a filter addresses the column markers of the relations and never the field names a projection produces.
 
 ## The operators
 
@@ -116,7 +116,7 @@ With both branches taken the filter renders as `WHERE (("active" = $1) AND ("nam
 | `.when(flag, \|q\| ...)` | applies the closure when the flag holds |
 | `.if_some(value, \|q, v\| ...)` | applies the closure on `Some`, handing the value over |
 
-The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()` (see [DML: `UPDATE`](update.md) and [DML: `DELETE`](delete.md)).
+The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()`.
 
 ## `LIKE`, `ILIKE`, and SQLite
 
@@ -144,7 +144,7 @@ let rows = select_from(User)
 # }
 ```
 
-`in_subquery` requires the nested statement to project exactly one column of the compared type: SQL compares a value with a set of values, so a two-column projection is refused at the call site. A single-column query is also a scalar operand, so it slots into a comparison directly — `OrderTotal.gt(select_from(Order).select(cols!(...)))`. `EXISTS` and `NOT EXISTS` are covered in [Subqueries](subqueries.md).
+`in_subquery` requires the nested statement to project exactly one column of the compared type: SQL compares a value with a set of values, so a two-column projection is refused at the call site. A single-column query is also a scalar operand, so it slots into a comparison directly — `OrderTotal.gt(select_from(Order).select(cols!(...)))`.
 
 ## What is refused, and why
 
@@ -157,10 +157,3 @@ let rows = select_from(User)
 
 `COUNT(*) > 1` is therefore written in `.having(...)` on a grouped query, where it is accepted, and not in `WHERE`.
 
-## Related chapters
-
-- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
-- [Subqueries](subqueries.md) — `EXISTS`, `IN`, scalar subqueries.
-- [Ordering and pagination](ordering.md) — tuple comparisons and keyset cursors.
-- [DML: `UPDATE`](update.md) and [DML: `DELETE`](delete.md) — the same predicates on the `WHERE` of mutations.
-- [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions.

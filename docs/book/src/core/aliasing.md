@@ -97,21 +97,8 @@ FROM "users" AS "m"
 INNER JOIN "users" AS "e" ON ("e"."manager_id" = "m"."id")
 ```
 
-Both occurrences of `"users"` carry their own effective name, so the statement does not collide with the duplicate-relation rule of [Joins](joins.md); every column reference is qualified through the alias marker that owns it.
+Both occurrences of `"users"` carry their own effective name, so the statement does not collide with the duplicate-relation rule; every column reference is qualified through the alias marker that owns it.
 
 ## Aliases and scopes
 
-An `Aliased<T, A>` is a `Table` like any other: it enters `TableScope`, joins, and nullability checking exactly like a stored relation, and an `AliasedCol<A, C>` keeps `ColumnBelongsTo<T>` through its owning table. An outer-joined aliased relation lifts its columns to `Option<T>` through the same `TableNullabilityInScope` rule (see [Joins](joins.md) and [Nullability](../theory/nullability.md)).
-
-## Where this lives in the code
-
-| Module | Contents |
-|---|---|
-| `rurqe-core/src/schema/alias.rs` | `TableAlias`, `table_alias!`, `Aliased`, `AliasedCol` |
-| `rurqe-core/src/schema/table.rs` | `Column::alias` |
-
-## Related chapters
-
-- [Schema: ZST markers](schema.md) — `Column::alias` and the marker contracts.
-- [Joins](joins.md) — unaliased duplicate relations.
-- [Scopes](../theory/scopes.md) — how the alias markers enter `TableScope`.
+An `Aliased<T, A>` is a `Table` like any other: it enters `TableScope`, joins, and nullability checking exactly like a stored relation, and an `AliasedCol<A, C>` keeps `ColumnBelongsTo<T>` through its owning table. An outer-joined aliased relation lifts its columns to `Option<T>` through the same rule that governs a stored relation.

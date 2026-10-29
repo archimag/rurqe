@@ -2,7 +2,7 @@
 
 Everything that produces a value in SQL is an expression: a column, a literal, a comparison, an arithmetic operation, a function call. An expression is a typed value `Expr<T, Scope>` — `T` is the Rust type it decodes to, and the scope records which tables it reads, so an expression cannot name a table the statement does not introduce.
 
-A column marker is an expression of its column type. The comparisons and predicates built from expressions are covered in [Predicates and `WHERE`](filtering.md); this chapter covers the rest of the surface: arithmetic, `CASE`, the scalar functions, and null-safe comparison.
+A column marker is an expression of its column type. This chapter covers the surface a value is built from beyond comparison: arithmetic, `CASE`, the scalar functions, and null-safe comparison.
 
 ## Arithmetic
 
@@ -35,7 +35,7 @@ let rows = select!(order_id: OrderId, total_with_tax: OrderTotal + OrderTax)
 
 A computed field of a named projection carries the type of the expression: `row.total_with_tax` is an `f64`.
 
-Arithmetic folds aggregation markers like the scalar functions below: `sum(OrderTotal) + 1.0` is still an aggregate, so it projects from a grouped query (see [`GROUP BY` and `HAVING`](group_by.md)).
+Arithmetic folds aggregation markers like the scalar functions below: `sum(OrderTotal) + 1.0` is still an aggregate, so it projects from a grouped query.
 
 ## `CASE WHEN`
 
@@ -123,10 +123,5 @@ When an expression the builder does not model is unavoidable, `sql!` builds a ty
 | Arithmetic mixing operand types (an `i64` column with an `f64` literal) | compile error: both operands must yield one numeric type |
 | A `CASE` branch producing a different type | compile error at the `when` call |
 | A `CASE` without a `when` branch | compile error: the builder cannot be closed |
-| An expression naming a table the statement does not introduce | compile error naming the table — see [Predicates and `WHERE`](filtering.md) |
+| An expression naming a table the statement does not introduce | compile error naming the table |
 
-## Related chapters
-
-- [Predicates and `WHERE`](filtering.md) — comparisons, lists, and runtime filters.
-- [`GROUP BY` and `HAVING`](group_by.md) — aggregates, `DISTINCT`, and `FILTER`.
-- [Subqueries](subqueries.md) — a single-column query as a scalar operand.

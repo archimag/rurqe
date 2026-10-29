@@ -109,7 +109,7 @@ A finished statement also participates in a query without being given a name of 
 | a statement evaluated for every row it is joined with | `.as_lateral::<Marker>()` and `.cross_join_lateral(...)` / `.left_join_lateral(...)` |
 
 A derived table renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the statement; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table. `LATERAL` is a dialect capability: PostgreSQL supports it, SQLite does not, so the methods do not exist there at compile time. The join side of both is covered in [Joins](joins.md), and the correlated reference they are written with in [Subqueries](subqueries.md).
-
+A derived table renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the statement; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table. `LATERAL` is a dialect capability: PostgreSQL supports it, SQLite does not, so the methods do not exist there at compile time.
 ## Dialect capability gates
 
 | Feature | PostgreSQL | SQLite |
@@ -122,14 +122,14 @@ A derived table renders inline as `(SELECT ...) AS "name"`, so the joined relati
 | `WITH RECURSIVE` | not offered | not offered |
 
 `LATERAL` is gated by a dialect capability, so on SQLite the methods that take a lateral relation do not exist and the compiler refuses the call instead of the engine refusing the statement. A recursive `WITH` is not part of the API, receives no builder method, and is listed in the capability matrix of the [Appendices](../appendix/matrix.md) as unavailable.
-
+`LATERAL` is gated by a dialect capability, so on SQLite the methods that take a lateral relation do not exist and the compiler refuses the call instead of the engine refusing the statement. A recursive `WITH` is not part of the API, receives no builder method, and is unavailable.
 ## Compile-time and typestate guards
 
 - Rows are published only by a statement that projects them: `as_cte`, `as_table`, and `as_lateral` do not exist on a query without a projection, so a relation can never be named after a statement that would render `SELECT  FROM ...`.
 - A named relation joins the scope through `.with(...)`. Projecting its columns before that is refused at the call site, and the diagnostic note points at the remedy — introduce the column's table with `from` or a join before projecting it.
 - Two relations under one name are refused while the statement is built, before any SQL reaches the engine; alias one of them, as [Aliases](aliasing.md) describes.
 - The engine recorded by the named statement has to match the engine of the query that reads it, so a relation built for one dialect does not compile into a statement of another.
-
+Two relations under one name are refused while the statement is built, before any SQL reaches the engine; alias one of them so each occurrence carries a name of its own.
 ```rust,compile_fail
 # extern crate rurqe;
 # use rurqe::postgres::prelude::*;
@@ -158,10 +158,3 @@ let rows = select_from(User).select(cols!(UserId, TotalsTotal));
 ```
 
 The accepted form introduces the relation with `.with(...)` — and then either joins it or reads its columns directly.
-
-## Related chapters
-
-- [Joins](joins.md) — derived tables, lateral joins, and the nullability of outer joins.
-- [`GROUP BY` and `HAVING`](group_by.md) — the aggregate an expression like this one starts from.
-- [Subqueries](subqueries.md) — scalar, `EXISTS`, and `IN` subqueries.
-- [Aliases](aliasing.md) — the remedy for two relations under one name.

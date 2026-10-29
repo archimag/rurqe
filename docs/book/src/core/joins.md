@@ -1,9 +1,9 @@
 # Joins
 
-`FROM` and `JOIN` are the first step of the [logical query processing order](select.md#logical-query-processing-order): the relations are established before any other clause is evaluated, so they fix the declared type of every column the rest of the statement reads, outer-join nullability included. A join adds a relation to the `FROM` clause and extends the scope of the query with it.
+`FROM` and `JOIN` are the first step of the logical query processing order: the relations are established before any other clause is evaluated, so they fix the declared type of every column the rest of the statement reads, outer-join nullability included. A join adds a relation to the `FROM` clause and extends the scope of the query with it.
 
 The head page of this statement family is [The `SELECT` statement](select.md). It carries the clause anatomy of the whole statement, the evaluation order, and the capability matrix; this chapter documents the `FROM` and `JOIN` steps of that order in depth.
-
+This chapter documents the `FROM` and `JOIN` steps of that order in depth: the join family and its `ON` predicate, the nullability an outer join introduces, and the derived and lateral relations a statement can read from.
 ## The join family
 
 | Method | SQL | Gated by |
@@ -55,7 +55,7 @@ A column marker is a complete operand on its own, on either side of the comparis
 ```
 
 The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
-
+The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field.
 ## Unaliased duplicate relations
 
 Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The compiler refuses the statement even earlier: one marker can only name one relation, so a second occurrence has to be written as an alias of the first.
@@ -74,11 +74,11 @@ let _ = select_from(User)
 ```
 
 The fix is to alias the second occurrence through the alias markers — see [Aliases](aliasing.md).
-
+The fix is to alias the second occurrence through the alias markers, so each use of `"users"` carries its own effective name.
 ## Joining derived tables
 
 `.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table. Building derived tables is covered in [Common table expressions](cte.md).
-
+`.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table.
 ## `LATERAL` joins
 
 `LATERAL` joins are gated by `SupportsLateralJoin` — implemented for PostgreSQL, absent for SQLite, so the methods do not exist there at compile time:
@@ -111,11 +111,5 @@ let report = select_from(User)
 # }
 ```
 
-A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>`; a correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations (see [Subqueries](subqueries.md)).
+A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>`; a correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations.
 
-## Related chapters
-
-- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
-- [Common table expressions](cte.md) — derived tables and `LATERAL`.
-- [Aliases](aliasing.md) — the remedy for duplicate relations.
-- [Nullability](../theory/nullability.md) — the outer-join lifting rules.

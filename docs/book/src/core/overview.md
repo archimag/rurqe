@@ -146,8 +146,7 @@ for user in users {
 # Ok(())
 # }
 ```
-
-[Nested results](../features/nested.md) covers `nest_many` and `nest_one` in full, and [MULTISET](../features/multiset.md) shows the SQL that comes out of it.
+The child rows are aggregated by the engine, so the ordering, the filter, and the row limit of the nested statement decide the contents of the collection.
 
 ## What the chapters rely on
 
@@ -157,19 +156,8 @@ for user in users {
 | `rurqe-macros` | `select!`, `cols!`, `dto!`, `sql!`, `#[derive(SqlType)]` |
 | `rurqe` | the entry points, the prelude, and the version-pinned dialect modules |
 
-Engine specifics — capability gates, versions, dialect extensions — are covered in [Dialects](../dialects/overview.md).
+Engine specifics — capability gates, versions, dialect extensions — are bound by the dialect prelude a statement imports.
 
-## Chapters of this part
+## How the chapters are written
 
-1. [Schema: tables and columns](schema.md)
-2. [Projections and `SELECT`](select.md)
-3. [Predicates and `WHERE`](filtering.md)
-4. [Ordering and pagination](ordering.md)
-5. [DML: `INSERT`](insert.md)
-6. [DML: `UPDATE`](update.md)
-7. [DML: `DELETE`](delete.md)
-8. [Nested results: `nest_many` and `nest_one`](../features/nested.md)
-9. [MULTISET: how nesting becomes SQL](../features/multiset.md)
-10. [Engines, capability gates, and decoding](../features/multiset_engines.md)
-
-Every chapter follows one scheme: the task, the code, the SQL it produces, and the mistake the compiler refuses.
+Every chapter of this part follows one scheme: the task, the code, the SQL it produces, and the mistake the compiler refuses.

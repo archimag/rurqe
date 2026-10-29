@@ -90,9 +90,3 @@ SELECT "id" FROM "users" WHERE ("id" = $1)
 ## Code generation instead of a hand-written `table!`
 
 In a real project the markers are not written by hand: `cargo db-codegen` introspects the live database catalog and generates a `schema.rs` with the same unit structs, the `SCHEMA_HASH` constant, and DTO structs. The catalog snapshot is fixed in `schema.lock`, and `cargo db-verify` in CI checks that the code, the migrations, and the database have not drifted apart. A hand-written `table!` remains the tool for tests and small projects — every example in this book uses it.
-
-## Related chapters
-
-- [Scopes: `TableScope` and `ExprScope`](../theory/scopes.md) — how the markers enter a query's scope.
-- [Aliases](aliasing.md) — `Aliased<T, A>` and `AliasedCol<A, C>`.
-- [Nullability](../theory/nullability.md) — why the column of an outer join changes its Rust type.

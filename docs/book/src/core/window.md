@@ -1,6 +1,6 @@
 # Window functions
 
-A window expression is computed by the engine with an `OVER (...)` clause, and it belongs to the `WINDOW` step of the [logical query processing order](select.md#logical-query-processing-order): after the grouping, before the projection. The head page of the statement family is [The `SELECT` statement](select.md).
+A window expression is computed by the engine with an `OVER (...)` clause, and it belongs to the `WINDOW` step of the logical query processing order: after the grouping, before the projection.
 
 Every window carries three things the compiler checks:
 
@@ -130,10 +130,3 @@ let moving = select_from(Order)
 2. **Scope.** The `PARTITION BY`, the window's `ORDER BY`, and the `lag`/`lead` column must belong to the query's tables — otherwise the error lands at the call site.
 3. **`NULLS FIRST` / `NULLS LAST` inside a window** requires a dialect that supports the placement — PostgreSQL always, SQLite from 3.30; the requirement travels with the window expression up to the statement.
 4. **Grouping.** The columns a window reads are checked like any other reference, and its operand either aggregates the rows of the group or stays constant: `SUM("user_id")` folds one value per group, so a window over an aggregate stays projectable from a grouped statement — the example above.
-
-## Related chapters
-
-- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
-- [`GROUP BY` and `HAVING`](group_by.md) — a window over groups.
-- [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions.
-- [Ordering and pagination](ordering.md) — the same ordering rules outside a window.

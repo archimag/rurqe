@@ -29,7 +29,7 @@ let contacts = select_from(User)
 
 - **The schema is the primary source.** The catalog is introspected and the markers are generated from it; the schema is never duplicated by hand.
 - **Relational expressiveness.** Multi-table joins, subqueries, CTEs (`WITH`), window functions, aggregations, `CASE WHEN`, `LATERAL`, `FULL OUTER JOIN`, and the set operations `UNION` / `INTERSECT` / `EXCEPT`.
-- **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically (see [Nullability](../theory/nullability.md)).
+- **Relational invariants in the types.** Outer joins lift columns into `Option<T>` automatically.
 
 ```rust
 use rurqe::postgres::prelude::*;
@@ -77,9 +77,3 @@ let ranked = select_from(Employee)
 | `rurqe-migrate` | Migration engine, schema catalog, checksums, checkpoints, stages |
 | `rurqe-cli` | Catalog introspection, code generation, drift verification, stage and prune tooling |
 
-## What this means for reading the book
-
-- Ergonomics first: [Quickstart in five minutes](quickstart.md).
-- Why the guarantees hold: [Two-tier SQL correctness](two_tier.md).
-- Relational depth and theory: [Relational theory overview](../theory/overview.md).
-- Dialects, runtime, migrations and the toolchain each have their own part of the book.

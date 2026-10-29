@@ -53,10 +53,4 @@ A `sql!` / `raw_sql!` fragment declares how many parameters it binds. Inside a n
 
 ## Which engines can render it
 
-The projection requires the dialect to declare JSON aggregation. PostgreSQL does; SQLite does from 3.38 (`Sqlite3_38`), because the JSON functions were an opt-in extension before that release. Encodings, decoding, and the capability gate itself are covered in [Engines, capability gates, and decoding](multiset_engines.md).
-
-## Related chapters
-
-- [Nested results: `nest_many` and `nest_one`](nested.md)
-- [Engines, capability gates, and decoding](multiset_engines.md)
-- [NF² and MULTISET: nested relations](../theory/nf2_multiset.md)
+The projection requires the dialect to declare JSON aggregation. PostgreSQL does; SQLite does from 3.38 (`Sqlite3_38`), because the JSON functions were an opt-in extension before that release.

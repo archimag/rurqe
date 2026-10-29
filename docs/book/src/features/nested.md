@@ -93,16 +93,11 @@ The filter, the ordering, the row limit, and any grouping of the nested statemen
 | SQLite 3.38+ (`rurqe::sqlite::sqlite3_38::prelude`) | supported, through the JSON functions |
 | SQLite below 3.38 | not available — the projection does not compile |
 
-The gate is the dialect's JSON aggregation capability. SQLite shipped the JSON functions as an opt-in extension until 3.38, so a default build of an older release would reject the statement at runtime; the projection is refused at compile time instead. See [Engines, capability gates, and decoding](multiset_engines.md).
+The gate is the dialect's JSON aggregation capability. SQLite shipped the JSON functions as an opt-in extension until 3.38, so a default build of an older release would reject the statement at runtime; the projection is refused at compile time instead.
 
 ## Compiler Guard in Action
 
 - A nested statement without a projection (`nest_many(select_from(Order))`) does not compile: there is no row type to collect.
 - A dialect without JSON aggregation does not accept the projection at all, so an unsupported engine fails at the type level instead of inside the driver.
 - The element type has to declare its keys, which is what the `select!` record does.
-
-## Related chapters
-
-- [MULTISET: how nesting becomes SQL](multiset.md)
-- [Engines, capability gates, and decoding](multiset_engines.md)
-- [NF² and MULTISET: nested relations](../theory/nf2_multiset.md)
+- The element type has to declare its keys, which is what the `select!` record does.

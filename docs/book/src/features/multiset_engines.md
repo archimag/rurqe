@@ -2,7 +2,7 @@
 
 ## `SupportsJsonAggregation`
 
-The nested-projection capability is expressed by a marker trait in `crates/rurqe-core/src/dialect.rs`:
+The nested-projection capability is expressed by a marker trait:
 
 ```rust
 #[diagnostic::on_unimplemented(
@@ -64,9 +64,4 @@ Without the `serde_json` feature there is no document: `RowObject` collapses int
 | The row type declares the document keys | `MultisetRow::FIELDS`, compilation |
 | The nested query projects rows | `HasProjection`, compilation |
 | Raw-fragment parameters match the placeholders | `RawSqlError`, rendering |
-
-## Related chapters
-
-- [Nested results: nest_many and nest_one](nested.md)
-- [MULTISET: how nesting turns into SQL](multiset.md)
-- [JSON and nested collections (SQLite)](../dialects/sqlite/json.md)
+| Raw-fragment parameters match the placeholders | `RawSqlError`, rendering |

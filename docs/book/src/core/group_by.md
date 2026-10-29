@@ -1,6 +1,6 @@
 # `GROUP BY` and `HAVING`
 
-`GROUP BY` folds the source rows into groups, and `HAVING` filters the groups the fold produced. The grouping is the third step of the [logical query processing order](select.md#logical-query-processing-order): it runs after `WHERE` has chosen the source rows and before the projection is evaluated. The head page of the statement family is [The `SELECT` statement](select.md).
+`GROUP BY` folds the source rows into groups, and `HAVING` filters the groups the fold produced. The grouping is the third step of the logical query processing order: it runs after `WHERE` has chosen the source rows and before the projection is evaluated.
 
 That order is what makes the rule "a column is either grouped or aggregated" checkable at all: the grouping is known before the projection is written, so a projection naming a column the grouping collapsed is refused at the call site. Writing `.select(...)` first would leave the projection nothing to check it against.
 
@@ -51,7 +51,7 @@ The low-level `Expr::column::<C>()` form does not bypass the rule: an expression
 
 `count_all()` counts rows; `count(col)` counts the rows where the column is present — the distinction the two spellings carry.
 
-An aggregate call is an expression like any other: it compares — `.having(count_all().gt(0i64))` above — and it travels through the arithmetic and the scalar functions of [Expressions](expressions.md). The call-attached `DISTINCT` modifier and `FILTER (WHERE ...)` exist on the call alone; an expression built from the call, such as `sum(OrderTotal) + 1.0`, accepts neither.
+An aggregate call is an expression like any other: it compares — `.having(count_all().gt(0i64))` above — and it travels through the arithmetic and the scalar functions. The call-attached `DISTINCT` modifier and `FILTER (WHERE ...)` exist on the call alone; an expression built from the call, such as `sum(OrderTotal) + 1.0`, accepts neither.
 
 ## Aggregate folding in scalar functions
 
@@ -141,11 +141,3 @@ A grouped query cannot lock its rows: `for_update` / `for_share` do not exist on
 The residual cases that cannot be expressed as a positive assertion in types: `BuildError::UngroupedColumn`, `UngroupedHavingColumn`, `UngroupedColumnWithAggregate`.
 
 > **Compiler Guard in Action.** `OrderTotal` is not part of `GROUP BY` and is not aggregated — `select((OrderUserId, OrderTotal))` does not compile, with a message saying the column is "neither grouped nor an aggregate".
-
-## Related chapters
-
-- [The `SELECT` statement](select.md) — the clause anatomy and the evaluation order this chapter is one step of.
-- [Expressions](expressions.md) — arithmetic, `CASE`, and the scalar functions an aggregate folds through.
-- [Window functions](window.md) — a window over groups.
-- [Projections and `SELECT`](select.md)
-- [NF² and MULTISET](../theory/nf2_multiset.md) — an aggregated subquery as a derived table.
