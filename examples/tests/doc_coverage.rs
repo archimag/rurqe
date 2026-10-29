@@ -284,3 +284,30 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
          book documents no compiled code at all"
     );
 }
+
+#[test]
+fn no_legacy_features_part_remains() {
+    let legacy = book_source().join("features");
+    // The directory shell is not the violation. Git tracks files, not
+    // directories, so a completed relocation leaves an empty `features/`
+    // behind on a working tree while the table of contents already reaches
+    // every chapter under `core/`. What must not survive is a chapter file.
+    let entries = match fs::read_dir(&legacy) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    let mut chapters: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .map(|path| path.display().to_string())
+        .collect();
+    chapters.sort();
+    assert!(
+        chapters.is_empty(),
+        "the legacy `features/` part directory still holds chapter files {chapters:?} under \
+         {legacy:?}: every Part II chapter lives under `core/`, so a chapter left there is a \
+         stale copy the table of contents no longer reaches"
+    );
+}

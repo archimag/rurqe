@@ -83,4 +83,3 @@ The gate is the dialect's JSON aggregation capability. SQLite shipped the JSON f
 - A nested statement without a projection (`nest_many(select_from(Order))`) does not compile: there is no row type to collect.
 - A dialect without JSON aggregation does not accept the projection at all, so an unsupported engine fails at the type level instead of inside the driver.
 - The element type has to declare its keys, which is what the `select!` record does.
-- The element type has to declare its keys, which is what the `select!` record does.

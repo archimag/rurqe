@@ -3,8 +3,6 @@
 ## `SupportsJsonAggregation`
 
 ```text
-
-```rust
 #[diagnostic::on_unimplemented(
     message = "dialect `{Self}` does not support JSON aggregation of a row set",
     label = "JSON array and object aggregation is not supported by this dialect",
@@ -63,5 +61,4 @@ Without the `serde_json` feature there is no document: `RowObject` collapses int
 | The dialect can aggregate a row set into JSON | `SupportsJsonAggregation`, compilation |
 | The row type declares the document keys | `MultisetRow::FIELDS`, compilation |
 | The nested query projects rows | `HasProjection`, compilation |
-| Raw-fragment parameters match the placeholders | `RawSqlError`, rendering |
 | Raw-fragment parameters match the placeholders | `RawSqlError`, rendering |
