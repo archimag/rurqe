@@ -48,6 +48,27 @@ async fn main() -> Result<()> {
 // ANCHOR_END: filtered
     println!("{refunded:?}");
 
+// ANCHOR: having_col
+    let filtered = select_from(Order)
+        .group_by(OrderUserId)
+        .select((OrderUserId, count_all()))
+        .having_col(OrderUserId, OrderUserId.gt(10i64))
+        .fetch_all(&pool)
+        .await?;
+// ANCHOR_END: having_col
+    println!("{}", filtered.len());
+
+// ANCHOR: group_ordering
+    let top = select_from(Order)
+        .group_by(OrderUserId)
+        .select((OrderUserId, count_all()))
+        .order_by_expr_desc(count_all())
+        .limit(10)
+        .fetch_all(&pool)
+        .await?;
+// ANCHOR_END: group_ordering
+    println!("{}", top.len());
+
     Ok(())
 }
 

@@ -63,11 +63,7 @@ Two kinds of predicate are allowed here:
 A predicate reading a bare column is rejected: the grouping has discarded the per-row value. A separate form exists for comparing a **grouped** column:
 
 ```rust,no_run
-let filtered = select_from(Order)
-    .group_by(OrderUserId)
-    .select((OrderUserId, count_all()))
-    .having_col(OrderUserId, Expr::column::<OrderUserId>().gt(10i64))
-    .build()?;
+{{#rustdoc_include ../examples/aggregates.rs:having_col}}
 ```
 
 `having` is available only on a grouped statement — a plain query has no `HAVING` clause.
@@ -95,12 +91,7 @@ The rows an aggregate call evaluates can be restricted without a `CASE WHEN` det
 | `limit` / `offset` | the number of groups |
 
 ```rust,no_run
-let top = select_from(Order)
-    .group_by(OrderUserId)
-    .select((OrderUserId, count_all()))
-    .order_by_expr_desc(count_all())
-    .limit(10)
-    .build()?;
+{{#rustdoc_include ../examples/aggregates.rs:group_ordering}}
 ```
 
 ## Finishing a grouped query
