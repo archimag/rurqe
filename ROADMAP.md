@@ -966,7 +966,8 @@ The following capabilities represent valuable, high-utility SQL features that re
    - Modular TLS support (`postgres-rustls` or `postgres-native-tls`) behind an optional Cargo feature flag, enabling encrypted connections when `sslmode=require` or `sslmode=verify-full` is specified.
 9. **Automated `schema.lock` Parity in Stage Verification:**
    - Extension to `cargo db stage verify` validating that the committed `schema.lock` snapshot matches the declarative stage catalog bit-for-bit without requiring a separate drift step.
-
+10. **PostgreSQL 17 Dialect & Version Marker (`Pg17`):**
+    - Dedicated version marker `Pg17` with updated default `Postgres<Pg17>`, gating new engine capabilities including SQL/JSON standard expressions (`JSON_TABLE`, etc.) and `MERGE ... RETURNING`.
 ---
 
 ## Architectural Exclusions & Anti-Patterns [Won't Do / YAGNI]
