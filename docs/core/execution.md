@@ -34,21 +34,8 @@ Asynchronous execution is the primary standard for services and web applications
 
 Synchronous execution is supported for CLI tools, embedded applications, and background workers through `rusqlite` (`SqliteConnection`) and synchronous `postgres` (`PgConnection`):
 
-```rust
-use rurqe::sqlite::prelude::*;
-
-table! {
-    User => "users" {
-        UserId => "id": i64,
-    }
-}
-
-fn load_user(conn: &mut SqliteConnection) -> Result<Option<i64>, Error> {
-    let user = select_from(User)
-        .select(cols!(UserId))
-        .fetch_optional(conn)?;
-    Ok(user.map(|row| row.user_id))
-}
+```rust,no_run
+{{#rustdoc_include ../examples/sync_execution.rs:load_user}}
 ```
 
 ## Typed Error Handling
