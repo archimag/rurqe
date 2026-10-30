@@ -1,6 +1,6 @@
 //! AST representations and parsing logic for query projections and aliases.
 
-use proc_macro2::{Spacing, Span, TokenStream, TokenTree};
+use proc_macro2::{Punct, Spacing, Span, TokenStream, TokenTree};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -120,10 +120,7 @@ impl Parse for ProjectionItem {
 
         // Collect the raw item tokens up to the next top-level comma, so an
         // `as alias` suffix is distinguished from a Rust cast expression.
-        let mut tokens = Vec::new();
-        while !input.is_empty() && !input.peek(Token![,]) {
-            tokens.push(input.parse::<TokenTree>()?);
-        }
+        let tokens = collect_item_tokens(input)?;
 
         if tokens.is_empty() {
             return Err(input.error("expected a projection column or expression"));
@@ -143,7 +140,78 @@ impl Parse for ProjectionItem {
         })
     }
 }
+/// Collects the item body tokens up to the next top-level comma.
+///
+/// A comma between two projections separates them, while a comma inside a
+/// generic argument list belongs to the item it follows: `AliasedCol::<A, C>`
+/// and `Expr::sum::<A, B>()` are one projection each. Delimiter groups are
+/// already atomic in the token stream, so the angle brackets of a generic
+/// argument list are the only nesting the collector has to track itself.
+fn collect_item_tokens(input: ParseStream) -> syn::Result<Vec<TokenTree>> {
+    let mut tokens: Vec<TokenTree> = Vec::new();
+    let mut angle_depth = 0usize;
 
+    while !input.is_empty() {
+        if angle_depth == 0 && input.peek(Token![,]) {
+            break;
+        }
+
+        let token = input.parse::<TokenTree>()?;
+        angle_depth = match &token {
+            TokenTree::Punct(punct) => match punct.as_char() {
+                '<' if opens_generic_arguments(&tokens) && !shifts_left(punct, input) => {
+                    angle_depth + 1
+                }
+                '>' if angle_depth > 0 && closes_generic_arguments(&tokens) => angle_depth - 1,
+                _ => angle_depth,
+            },
+            _ => angle_depth,
+        };
+        tokens.push(token);
+    }
+
+    Ok(tokens)
+}
+
+/// Reports whether a `<` opens a generic argument list.
+///
+/// The character opens a list at a turbofish (`Expr::<T>`) and after the type
+/// name it parameterises (`AliasedCol<A, C>`). It opens nothing when it follows
+/// any other token, so a comparison written inside a projection is never read as
+/// the beginning of a type.
+fn opens_generic_arguments(previous: &[TokenTree]) -> bool {
+    match previous.last() {
+        Some(TokenTree::Punct(punct)) => punct.as_char() == ':',
+        Some(TokenTree::Ident(_)) => true,
+        _ => false,
+    }
+}
+
+/// Reports whether a `>` closes a generic argument list.
+///
+/// `->` and `=>` end with the same character without closing a list, so they are
+/// not counted, while `>>` spells two closings and closes two nested lists.
+fn closes_generic_arguments(previous: &[TokenTree]) -> bool {
+    match previous.last() {
+        Some(TokenTree::Punct(punct)) if punct.spacing() == Spacing::Joint => {
+            !matches!(punct.as_char(), '-' | '=')
+        }
+        _ => true,
+    }
+}
+
+/// Reports whether a `<` is the first half of a shift operator.
+///
+/// `<<` is spelled as two adjacent `<` characters, and only the second one is
+/// left to be examined: the first one opens nothing, so a shift expression keeps
+/// its item together instead of swallowing the separator that follows it.
+fn shifts_left(previous: &Punct, input: ParseStream) -> bool {
+    if previous.spacing() != Spacing::Joint {
+        return false;
+    }
+
+    matches!(input.cursor().punct(), Some((punct, _)) if punct.as_char() == '<')
+}
 /// Splits the leading `alias:` or trailing `as alias` naming from an item body.
 ///
 /// The naming is normalised into the field identifier the projection exposes, so
@@ -651,5 +719,57 @@ mod tests {
                 "unexpected message for `{label}`: {error}"
             );
         }
+    }
+    #[test]
+    fn generic_argument_lists_do_not_split_an_item() {
+        let list: ProjectionList = parse_str("AliasedCol::<Manager, UserId>, users::EMAIL")
+            .expect("a comma inside a generic argument list belongs to the item");
+        assert_eq!(list.len(), 2);
+        assert!(matches!(list.items[0].target, ProjectionTarget::Column(_)));
+        assert_eq!(
+            list.items[0].field_ident().expect("named"),
+            "manager_user_id"
+        );
+        assert_eq!(list.items[1].field_ident().expect("named"), "email");
+
+        let item: ProjectionItem =
+            parse_str("Expr::sum::<OrderTotal, i64>() as total").expect("valid projection");
+        assert_eq!(
+            item.alias.as_ref().map(|a| a.to_string()),
+            Some("total".into())
+        );
+        assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+    }
+
+    #[test]
+    fn a_named_generic_projection_keeps_its_alias() {
+        let item: ProjectionItem = parse_str("total: Expr::sum::<OrderTotal, i64>()")
+            .expect("valid projection");
+
+        assert_eq!(
+            item.alias.as_ref().map(|a| a.to_string()),
+            Some("total".into())
+        );
+        assert!(matches!(item.target, ProjectionTarget::Expr(_)));
+    }
+
+    #[test]
+    fn a_shift_operator_does_not_open_a_generic_argument_list() {
+        let list: ProjectionList = parse_str("users::ID << 1, users::EMAIL")
+            .expect("the shift keeps the two items apart");
+
+        assert_eq!(list.len(), 2);
+        assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
+        assert_eq!(list.items[1].field_ident().expect("named"), "email");
+    }
+
+    #[test]
+    fn a_return_arrow_does_not_close_a_generic_argument_list() {
+        let list: ProjectionList = parse_str("Expr::<fn(i64) -> i64>::sum(), users::EMAIL")
+            .expect("the arrow keeps the item together");
+
+        assert_eq!(list.len(), 2);
+        assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
+        assert_eq!(list.items[1].field_ident().expect("named"), "email");
     }
 }
