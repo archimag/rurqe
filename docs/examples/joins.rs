@@ -9,7 +9,8 @@ table! {
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
-        UserManagerId => "manager_id": i64,    }
+        UserManagerId => "manager_id": i64,
+    }
 }
 
 table! {
