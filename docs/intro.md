@@ -2,6 +2,38 @@
 
 RURQE is a strictly typed SQL query builder, relational execution engine, and database-first code generation toolkit for Rust. Its central promise: every query that compiles is a syntactically and semantically valid statement for the targeted database dialect and engine version, and an invalid query fails to compile.
 
+## Guided Query Example
+
+One chain carries the whole promise end to end: the builder declares the relations, the projection names the fields of the result, the compiler derives the type of each field from the clause that introduced its relation, and the statement the engine receives is exactly the one the chain assembled.
+
+```rust,no_run
+{{#rustdoc_include examples/joins.rs:outer}}
+```
+
+The result is a record with one field per projected column, so a row is read by name rather than by position:
+
+```rust,no_run
+{{#rustdoc_include examples/joins.rs:outer_rows}}
+```
+
+`row.user_id` is an `i64` and `row.user_name` a `String`, because the `FROM` relation is matched unconditionally; `row.order_total` is an `Option<f64>`, because a left join may leave the joined relation unmatched. Reading that field as an unwrapped `f64` fails to compile, and the query chain itself names no type at all.
+
+The same chain renders into one statement, whose projection aliases carry the field names into the result:
+
+```sql
+SELECT "users"."id" AS "user_id", "users"."name" AS "user_name",
+       "orders"."total" AS "order_total"
+FROM "users" LEFT JOIN "orders" ON ("orders"."user_id" = "users"."id")
+```
+
+Relations can also be nested into collections within a single round trip, avoiding N+1 queries and manual client-side grouping:
+
+```rust,no_run
+{{#rustdoc_include examples/nested.rs:nested}}
+```
+
+The database aggregates child rows into a JSON structure, and the client deserializes the result directly into typed collections.
+
 ## Core Relational Problems
 
 The boundary between application code and a relational database typically suffers from three fundamental issues:
@@ -33,24 +65,6 @@ RURQE unifies four foundational design principles into a cohesive developer expe
   * Monomorphized builders compile down to static SQL string buffers and direct deserialization passes with zero virtual calls or runtime overhead.
   * Dialect and version capability traits (`SupportsReturning`, `SupportsOnConflict`, `SupportsRowLocking`) enforce engine-specific syntax at compile time; unsupported methods do not exist on incompatible dialect targets.
   * Actionable compiler diagnostics via `#[diagnostic::on_unimplemented]` explain violated SQL rules directly rather than exposing internal trait cascades.
-
-## Guided Query Example
-
-A multi-relation query demonstrates compile-time relation scoping, named projections, and automatic nullability lifting:
-
-```rust,no_run
-{{#rustdoc_include examples/joins.rs:outer}}
-```
-
-The projection defines typed field names, and `order_total` automatically resolves to `Option<f64>` because an outer join may produce unmatched rows. Attempting to decode that field as an unwrapped `f64` fails to compile.
-
-Relations can also be nested into collections within a single round trip, avoiding N+1 queries and manual client-side grouping:
-
-```rust,no_run
-{{#rustdoc_include examples/nested.rs:nested}}
-```
-
-The database aggregates child rows into a JSON structure, and the client deserializes the result directly into typed collections.
 
 ## Design Principles
 

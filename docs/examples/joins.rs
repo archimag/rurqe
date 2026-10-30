@@ -44,11 +44,17 @@ async fn main() -> Result<()> {
     // ANCHOR: outer
     let outer_join = select_from(User)
         .left_join(Order, OrderUserId.eq(UserId))
-        .select(cols!(UserName, OrderTotal))
+        .select(cols!(UserId, UserName, OrderTotal))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: outer
-    println!("{}", outer_join.len());
+    // ANCHOR: outer_rows
+    // The fetched rows are read by field name: the projection decided the
+    // names, and the left join decided the type of `order_total`.
+    for row in &outer_join {
+        println!("user #{}: {} spent {:?}", row.user_id, row.user_name, row.order_total);
+    }
+    // ANCHOR_END: outer_rows
 
     // ANCHOR: duplicate_refused
     // The same relation is addressed twice without an alias, so the `FROM` clause

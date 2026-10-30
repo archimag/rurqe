@@ -50,7 +50,8 @@ const ORDERING: &str = include_str!("../../core/ordering.md");
 
 /// The chapter walking through the join fragments.
 const JOINS: &str = include_str!("../../core/joins.md");
-
+/// The chapter walking through the guided query.
+const INTRODUCTION: &str = include_str!("../../intro.md");
 /// The chapter walking through the nested-statement fragments.
 const SUBQUERIES: &str = include_str!("../../core/subqueries.md");
 
@@ -116,7 +117,25 @@ fn the_join_walkthrough_quotes_its_inner_join() {
          ON (\"orders\".\"user_id\" = \"users\".\"id\")",
     );
 }
+#[test]
+fn the_introduction_quotes_its_outer_join() {
+    // `joins.rs`, anchor `outer`: the projected columns keep the field names
+    // the synthesized record exposes, and the left-joined relation stays
+    // optional.
+    let built = select_from(User)
+        .left_join(Order, OrderUserId.eq(UserId))
+        .select(cols!(UserId, UserName, OrderTotal))
+        .build()
+        .expect("the statement of the fragment is valid");
 
+    assert_quoted(
+        INTRODUCTION,
+        &built,
+        "SELECT \"users\".\"id\" AS \"user_id\", \"users\".\"name\" AS \"user_name\", \
+         \"orders\".\"total\" AS \"order_total\" FROM \"users\" LEFT JOIN \"orders\" \
+         ON (\"orders\".\"user_id\" = \"users\".\"id\")",
+    );
+}
 #[test]
 fn the_subquery_walkthrough_quotes_its_scalar_comparison() {
     // `subqueries.rs`, anchor `scalar`: the nested statement renders inside the
