@@ -10,7 +10,7 @@ src = "."
 # also the destination the `just doc-build` and `just doc-serve` recipes pass as
 # `--dest-dir`, so a plain `mdbook build docs` never writes into the source tree.
 build-dir = "../target/book"
-create-missing = true
+create-missing = false
 
 [output.html]
 no-section-label = false

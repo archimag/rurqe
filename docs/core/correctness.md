@@ -17,7 +17,8 @@ Compile-time type soundness prevents syntactically and semantically invalid quer
 | A `LEFT JOIN` column may be `NULL` | Automatically lifts the column type to `Option<T>`; reading it as an unwrapped scalar fails to compile |
 | `UPDATE` / `DELETE` must be filtered | Mutation statements require `.where_(...)` or an explicit `.allow_all()` before execution methods exist |
 | A `SELECT` projects, an `UPDATE` assigns, an `INSERT` has rows | Terminal calls do not exist until required statement clauses are written |
-| A grouped query projects only grouped columns, aggregates, constants, and windows | After `.group_by(...)` the projection, the `HAVING` predicate, and the window specification are checked against the recorded grouping at the call site || The engine must support the clause | Unsupported clauses have no methods: `.for_update()` on SQLite, `RETURNING` below SQLite 3.35 |
+| A grouped query projects only grouped columns, aggregates, constants, and windows | After `.group_by(...)` the projection, the `HAVING` predicate, and the window specification are checked against the recorded grouping at the call site |
+| The engine must support the clause | Unsupported clauses have no methods: `.for_update()` on SQLite, `RETURNING` below SQLite 3.35 |
 | A raw SQL template binds exactly one parameter per declared placeholder | The `sql!` / `raw_sql!` macros refuse a template whose placeholder census disagrees while the macro expands |
 Compiler error messages describe the violated SQL rule directly rather than leaking internal generic type cascades:
 
