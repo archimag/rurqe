@@ -9,7 +9,7 @@ That order is what makes the rule "a column is either grouped or aggregated" che
 ```
 
 ```sql
-SELECT "users"."id" AS "user_id", COUNT(*)
+SELECT "users"."id" AS "user_id", COUNT(*) AS "orders"
 FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 GROUP BY "users"."id"
 HAVING (COUNT(*) > $1)

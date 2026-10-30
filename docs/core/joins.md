@@ -24,7 +24,8 @@ The join builders take the table marker as a value and read the joined type `T` 
 ```
 
 ```sql
-SELECT "users"."id", "users"."name", "orders"."total"
+SELECT "users"."id" AS "user_id", "users"."name" AS "user_name",
+       "orders"."total" AS "order_total"
 FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 ```
 

@@ -11,8 +11,9 @@ A `SELECT` projecting exactly one column is also a scalar operand, so it slots d
 ```
 
 ```sql
-SELECT "id", "name", "price" FROM "products"
-WHERE ("price" > (SELECT AVG("price") FROM "products"))
+SELECT "id" AS "product_id", "name" AS "product_name",
+       "price" AS "product_price"
+FROM "products" WHERE ("price" > (SELECT AVG("price") FROM "products"))
 ```
 
 The same conversion exists through `From`, so `.into()` works where the target type is unambiguous, and `Expr::subquery(query)` names it explicitly where it is not — inside a `CASE` branch or a tuple comparison, for example.
@@ -40,7 +41,8 @@ The reference `UserId.without_scope()` is a correlated one: `.without_scope()` l
 ```
 
 ```sql
-SELECT "id", "name" FROM "users" WHERE "id" IN (SELECT "user_id" FROM "orders")
+SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
+WHERE ("id" IN (SELECT "user_id" FROM "orders"))
 ```
 
 The expected row type is tied to the nested projection: an expression of type `T` accepts only a `(T,)` projection, and a row tuple `(a, b)` accepts only `(T1, T2)`. An arity- or type-mismatched projection is rejected at the call site.
