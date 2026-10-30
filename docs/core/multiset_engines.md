@@ -61,4 +61,4 @@ Without the `serde_json` feature there is no document: `RowObject` collapses int
 | The dialect can aggregate a row set into JSON | `SupportsJsonAggregation`, compilation |
 | The row type declares the document keys | `MultisetRow::FIELDS`, compilation |
 | The nested query projects rows | `HasProjection`, compilation |
-| Raw-fragment parameters match the placeholders | `RawSqlError`, rendering |
+| Raw-fragment parameters match the placeholders | `BuildError::RawSql`, pre-flight validation in `.build()` |

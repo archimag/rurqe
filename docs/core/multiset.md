@@ -49,7 +49,7 @@ When the nested statement combines statements (`UNION`, `INTERSECT`, `EXCEPT`), 
 
 ## Raw SQL inside a nested query
 
-A `sql!` / `raw_sql!` fragment declares how many parameters it binds. Inside a nested query a disagreement between that count and the fragments is reported as an error instead of sending SQL with a lost or shifted placeholder, so a value never binds into the wrong slot.
+A `sql!` / `raw_sql!` template is censused where the macro expands, so a literal template whose placeholders disagree with the parameters it is given is refused before it becomes part of a statement. A raw expression assembled from fragments without the macro — including one written inside a nested query — is caught by the pre-flight validation of the enclosing statement, which reports the mismatch as `BuildError::RawSql` before any SQL is rendered, so a value never binds into a lost or shifted slot.
 
 ## Which engines can render it
 

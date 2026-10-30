@@ -18,7 +18,7 @@ Compile-time type soundness prevents syntactically and semantically invalid quer
 | `UPDATE` / `DELETE` must be filtered | Mutation statements require `.where_(...)` or an explicit `.allow_all()` before execution methods exist |
 | A `SELECT` projects, an `UPDATE` assigns, an `INSERT` has rows | Terminal calls do not exist until required statement clauses are written |
 | The engine must support the clause | Unsupported clauses have no methods: `.for_update()` on SQLite, `RETURNING` below SQLite 3.35 |
-
+| A raw SQL template binds exactly one parameter per declared placeholder | The `sql!` / `raw_sql!` macros refuse a template whose placeholder census disagrees while the macro expands |
 Compiler error messages describe the violated SQL rule directly rather than leaking internal generic type cascades:
 
 ```rust,compile_fail
@@ -58,8 +58,9 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 | `DISTINCT ON (x)` must lead the `ORDER BY` with the same expression | `DistinctOnOrderMismatch` |
 | `DISTINCT` must order by an expression the projection produces | `DistinctOrderNotProjected` |
 | A compound statement must order by a name or a position it produces | `CompoundOrderColumn`, `CompoundOrderIndex` |
-| A set operation must combine operands projecting the same number of columns | `SetOperandArity` || Two relations must not share one effective name | `DuplicateRelation` |
-| A raw SQL fragment must carry as many placeholders as it has parameters | `RawSql` |
+| A set operation must combine operands projecting the same number of columns | `SetOperandArity` |
+| Two relations must not share one effective name | `DuplicateRelation` |
+| An assembled raw SQL expression carries as many placeholders as it has parameters | `RawSql` |
 
 When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias (`table.as_alias("u2")`) resolves the conflict.
 
