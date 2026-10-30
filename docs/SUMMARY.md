@@ -34,5 +34,6 @@
 # Part III: Database Dialects
 
 - [Dialects & capabilities](core/dialects.md)
+  - [Comparing PostgreSQL and SQLite](core/dialects/comparison.md)
   - [PostgreSQL](core/dialects/postgres.md)
   - [SQLite](core/dialects/sqlite.md)
