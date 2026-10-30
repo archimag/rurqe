@@ -35,9 +35,7 @@ async fn main() -> Result<()> {
     // ANCHOR: scalar
     let above_average = select_from(Product)
         .select(cols!(ProductId, ProductName, ProductPrice))
-        .where_(
-            ProductPrice.gt(select_from(Product).select((avg(ProductPrice),))),
-        )
+        .where_(ProductPrice.gt(select_from(Product).select((avg(ProductPrice),))))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: scalar
@@ -59,9 +57,7 @@ async fn main() -> Result<()> {
     // ANCHOR: in_subquery
     let with_orders = select_from(User)
         .select(cols!(UserId, UserName))
-        .where_(UserId.in_subquery(
-            select_from(Order).select((OrderUserId,)),
-        ))
+        .where_(UserId.in_subquery(select_from(Order).select((OrderUserId,))))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: in_subquery

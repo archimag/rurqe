@@ -19,7 +19,7 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-// ANCHOR: addressing
+    // ANCHOR: addressing
     // The bare marker: the statement reads one relation, so the column needs no
     // qualification.
     let by_bare_marker = select_from(User)
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
         .where_(User.UserId.eq(1i64))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: addressing
+    // ANCHOR_END: addressing
     println!("{} {}", by_bare_marker.len(), by_table_prefix.len());
 
     Ok(())

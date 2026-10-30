@@ -84,9 +84,7 @@ async fn main() -> Result<()> {
     // ANCHOR: in_subquery
     let with_orders = select_from(User)
         .select(cols!(UserId, UserName))
-        .where_(UserId.in_subquery(
-            select_from(Order).select((OrderUserId,)),
-        ))
+        .where_(UserId.in_subquery(select_from(Order).select((OrderUserId,))))
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: in_subquery

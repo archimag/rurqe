@@ -26,7 +26,7 @@ table! {
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
-// ANCHOR: nested
+    // ANCHOR: nested
     let users_with_orders = select_from(User)
         .select(cols! {
             user_name: UserName,
@@ -42,10 +42,10 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: nested
+    // ANCHOR_END: nested
     println!("{}", users_with_orders.len());
 
-// ANCHOR: nest_one
+    // ANCHOR: nest_one
     // The same shape for a one-to-one relation: the collection stops at the
     // first row, so the field reads as an `Option` of the nested projection
     // and an absent child stays distinguishable from a child without values.
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: nest_one
+    // ANCHOR_END: nest_one
     println!("{}", users_with_top_order.len());
 
     let _ = build_correlated;
@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
 
 /// Builds the correlated statement as a fragment of its own.
 fn build_correlated() -> Result<(), BuildError> {
-// ANCHOR: correlation
+    // ANCHOR: correlation
     // The child statement introduces only `orders` in its scope, so a column
     // of the enclosing query is marked as resolved elsewhere instead of being
     // looked up among the relations the child statement declares.
@@ -82,7 +82,7 @@ fn build_correlated() -> Result<(), BuildError> {
         .select(cols!(OrderTotal))
         .where_(OrderUserId.eq(UserId.without_scope()))
         .build()?;
-// ANCHOR_END: correlation
+    // ANCHOR_END: correlation
     Ok(())
 }
 

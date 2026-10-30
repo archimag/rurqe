@@ -2,8 +2,8 @@
 
 use core::fmt;
 use core::future::Future;
-use core::pin::Pin;
 use core::marker::PhantomData;
+use core::pin::Pin;
 
 use crate::dialect::Dialect;
 use crate::dml::insert::InsertSource;
@@ -675,9 +675,8 @@ where
 {
     type All =
         Pin<Box<dyn Future<Output = Result<Vec<Q::Row>, ExecutionError<B::Error>>> + Send + 'a>>;
-    type Optional = Pin<
-        Box<dyn Future<Output = Result<Option<Q::Row>, ExecutionError<B::Error>>> + Send + 'a>,
-    >;
+    type Optional =
+        Pin<Box<dyn Future<Output = Result<Option<Q::Row>, ExecutionError<B::Error>>> + Send + 'a>>;
     type One = Pin<Box<dyn Future<Output = Result<Q::Row, ExecutionError<B::Error>>> + Send + 'a>>;
     type Count = Pin<Box<dyn Future<Output = Result<u64, ExecutionError<B::Error>>> + Send + 'a>>;
 

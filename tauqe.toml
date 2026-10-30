@@ -25,14 +25,16 @@ scribe = "Claude Haiku"    # history compaction, git squash commit messages, dif
 # The coder list is the natural escalation ladder (level up): on verification
 # healing stalls or exhausted retries the turn advances to the next coder entry.
 coder = [
-  "DeepSeek Flash",
-  { model = "GLM", effort = "high" },
+  { model = "DeepSeek Flash", effort = "max" },
+  { model = "GLM", effort = "max" },
   { model = "Gemini Flash", level_up = false }
 ]
 
 # Conceptual design, plan refinement, blocked-step replanning.
 architect = [
-  "GLM"
+  "GLM",
+  { model = "Gemini Flash", level_up = false },
+  { model = "Claude Sonnet", level_up = false }
 ]
 
 # Automated code review of active context files.
@@ -71,7 +73,7 @@ budget_tokens = 20000  # session history token budget before compaction is trigg
 
 [context]
 max_discovery_rounds = 8     # maximum rounds for autonomous context discovery
-files_token_budget = 500000  # token budget for files in active context (default: 300000)
+files_token_budget = 900000  # token budget for files in active context (default: 300000)
 repomap_token_budget = 40000 # token budget for the repository map (default: 4000)
 # max_pattern_batch = 150     # maximum files admitted by one glob request (default: 150)
 pinned = [

@@ -752,7 +752,10 @@ fn fetch_collect_decodes_rows_into_a_hash_set_and_a_btree_set() {
     let ordered = backend
         .fetch_collect::<std::collections::BTreeSet<(i64,)>, _>(&user_id_query())
         .expect("rows decode");
-    assert_eq!(ordered, std::collections::BTreeSet::from([(1i64,), (2i64,)]));
+    assert_eq!(
+        ordered,
+        std::collections::BTreeSet::from([(1i64,), (2i64,)])
+    );
 }
 
 #[test]

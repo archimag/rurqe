@@ -263,7 +263,10 @@ fn distinct_deduplicates_rows_of_an_aliased_relation() {
         .from::<Aliased<User, UserAlias>>()
         .select((AliasedCol::<UserAlias, UserName>::new(),))
         .distinct()
-        .order_by(AliasedCol::<UserAlias, UserName>::new(), OrderDirection::Asc)
+        .order_by(
+            AliasedCol::<UserAlias, UserName>::new(),
+            OrderDirection::Asc,
+        )
         .build()
         .expect("valid query");
 

@@ -32,8 +32,8 @@ pub use query::{
     LagLeadFn, LockUnavailable, Locked, LockedQuery, NoLock, OrderDirection, PartitionBy, Query,
     QueryBackend, QueryBackendExt, QueryTerminals, RowClause, SelectQuery, SelectTarget,
     SelectTargetInScope, Selection, SelectionInScope, TailClosed, TerminalBackend,
-    TransactionBackend, TransactionContext, Window,
-    WindowExpr, WindowExprKind, WindowFn, WindowSpec,
+    TransactionBackend, TransactionContext, Window, WindowExpr, WindowExprKind, WindowFn,
+    WindowSpec,
 };
 pub use row::{FromRow, FromSqlValue, RowDecodeError};
 pub use schema::{At, Column, ColumnBelongsTo, Table, TableInScope};

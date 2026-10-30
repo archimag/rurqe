@@ -37,7 +37,7 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-// ANCHOR: insert
+    // ANCHOR: insert
     let inserted = insert_into(User)
         .values((
             UserId::set(1i64),
@@ -47,38 +47,38 @@ async fn main() -> Result<()> {
         .returning(cols!(UserId))
         .fetch_one(&pool)
         .await?;
-// ANCHOR_END: insert
+    // ANCHOR_END: insert
     println!("inserted {inserted:?}");
 
-// ANCHOR: update
+    // ANCHOR: update
     let updated = update(User)
         .set(UserName::set("admin"))
         .where_(UserId.eq(1i64))
         .execute(&pool)
         .await?;
-// ANCHOR_END: update
+    // ANCHOR_END: update
     println!("updated {updated} row(s)");
 
-// ANCHOR: delete
+    // ANCHOR: delete
     let removed = delete_from(User)
         .where_(UserId.eq(1i64))
         .execute(&pool)
         .await?;
-// ANCHOR_END: delete
+    // ANCHOR_END: delete
     println!("removed {removed} row(s)");
 
-// ANCHOR: upsert
+    // ANCHOR: upsert
     let upserted = insert_into(User)
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict_do_nothing()
         .execute(&pool)
         .await?;
-// ANCHOR_END: upsert
+    // ANCHOR_END: upsert
     println!("upserted {upserted} row(s)");
 
     let _ = assemble_bulk_insert;
 
-// ANCHOR: from_select
+    // ANCHOR: from_select
     // The source projection is a tuple of the inserted columns: `from_select`
     // ties the row type of the `SELECT` to the target column list.
     let source = select_from(ArchivedUser)
@@ -88,45 +88,45 @@ async fn main() -> Result<()> {
         .from_select((UserId, UserName, UserEmail), source)
         .execute(&pool)
         .await?;
-// ANCHOR_END: from_select
+    // ANCHOR_END: from_select
     println!("copied {copied} row(s)");
 
-// ANCHOR: update_from
+    // ANCHOR: update_from
     let linked = update(User)
         .set(UserName::set("root"))
         .from_table(Account)
         .where_(UserId.eq(AccountId))
         .execute(&pool)
         .await?;
-// ANCHOR_END: update_from
+    // ANCHOR_END: update_from
     println!("linked {linked} row(s)");
 
-// ANCHOR: update_returning
+    // ANCHOR: update_returning
     let renamed = update(User)
         .set(UserName::set("root"))
         .where_(UserId.eq(1i64))
         .returning(cols!(UserName))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: update_returning
+    // ANCHOR_END: update_returning
     println!("renamed {renamed:?}");
 
-// ANCHOR: delete_using
+    // ANCHOR: delete_using
     let cleaned = delete_from(User)
         .using_table(Account)
         .where_(UserId.eq(AccountId))
         .execute(&pool)
         .await?;
-// ANCHOR_END: delete_using
+    // ANCHOR_END: delete_using
     println!("cleaned {cleaned} row(s)");
 
-// ANCHOR: delete_returning
+    // ANCHOR: delete_returning
     let removed = delete_from(User)
         .where_(UserId.eq(1i64))
         .returning(cols!(UserName))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: delete_returning
+    // ANCHOR_END: delete_returning
     println!("removed rows: {removed:?}");
 
     Ok(())
@@ -138,21 +138,20 @@ async fn main() -> Result<()> {
 /// rendering a `VALUES` list with no row in it, so the fragment carries
 /// `EmptyRows` rather than the driver error of the pool.
 fn assemble_bulk_insert() -> Result<(), EmptyRows> {
-// ANCHOR: values_many
-    insert_into(User)
-        .values_many([
-            (
-                UserId::set(1i64),
-                UserName::set("alice"),
-                UserEmail::set("alice@example.com"),
-            ),
-            (
-                UserId::set(2i64),
-                UserName::set("bob"),
-                UserEmail::set("bob@example.com"),
-            ),
-        ])?;
-// ANCHOR_END: values_many
+    // ANCHOR: values_many
+    insert_into(User).values_many([
+        (
+            UserId::set(1i64),
+            UserName::set("alice"),
+            UserEmail::set("alice@example.com"),
+        ),
+        (
+            UserId::set(2i64),
+            UserName::set("bob"),
+            UserEmail::set("bob@example.com"),
+        ),
+    ])?;
+    // ANCHOR_END: values_many
     Ok(())
 }
 

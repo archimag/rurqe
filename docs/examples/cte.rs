@@ -34,7 +34,7 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-// ANCHOR: summary
+    // ANCHOR: summary
     let totals = select_from(Order)
         .group_by(OrderUserId)
         .select(cols! {
@@ -42,9 +42,9 @@ async fn main() -> Result<()> {
             total: sum(OrderAmount),
         })
         .as_cte::<UserTotals>();
-// ANCHOR_END: summary
+    // ANCHOR_END: summary
 
-// ANCHOR: report
+    // ANCHOR: report
     let report = select_from(User)
         .with(totals)
         .inner_join(UserTotals, TotalsOwnerId.eq(UserId))
@@ -54,10 +54,10 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: report
+    // ANCHOR_END: report
     println!("{}", report.len());
 
-// ANCHOR: derived
+    // ANCHOR: derived
     // The same aggregate published as a derived table: the statement keeps no
     // name of its own, so the join renders it inline as the relation it reads.
     let inline_totals = select_from(Order)
@@ -75,10 +75,10 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: derived
+    // ANCHOR_END: derived
     println!("{}", inline_report.len());
 
-// ANCHOR: derived_left
+    // ANCHOR: derived_left
     // A left-joined derived table lifts its columns: the aggregate may have no
     // row for a user, so `total_spent` arrives as `Option<f64>`.
     let optional_totals = select_from(Order)
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
         })
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: derived_left
+    // ANCHOR_END: derived_left
     println!("{}", optional_report.len());
     Ok(())
 }

@@ -5,9 +5,9 @@ use crate::expr::builder::{Expr, NonAggregate};
 use crate::expr::scope::{MergeScope, Merged, Merged3, Unscoped};
 use crate::schema::Column;
 
-use super::InSubquery;
 use super::conversion::{IntoExpr, IntoExprList};
 use super::numeric::{CombineAggr, CombinedAggr};
+use super::InSubquery;
 
 /// A SQL expression of type `T` that can be compared with bound values.
 ///

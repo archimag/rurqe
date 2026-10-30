@@ -1476,10 +1476,7 @@ fn a_column_marker_is_a_between_bound_and_a_membership_candidate() {
     );
     assert!(matches!(
         members.kind(),
-        ExprKind::InList {
-            negated: false,
-            ..
-        }
+        ExprKind::InList { negated: false, .. }
     ));
 
     let absent: Expr<bool, (User, Order), NonAggregate, ()> = UserId.not_in_list(vec![OrderId]);

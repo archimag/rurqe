@@ -24,32 +24,34 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-// ANCHOR: query
+    // ANCHOR: query
     let users = select_from(User)
         .select(cols!(UserId, UserName, UserEmail))
         .where_(UserId.eq(7i64))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: query
+    // ANCHOR_END: query
     println!("{}", users.len());
 
-// ANCHOR: conditional
+    // ANCHOR: conditional
     // The flags a handler receives at runtime; a false flag or an absent value
     // adds no clause, and the statement keeps its type.
     let only_active = true;
     let search: Option<&str> = None;
     let filtered = select_from(User)
         .select(cols!(UserId, UserName, UserEmail))
-        .when(only_active, |query| query.where_(UserEmail.ilike("%@example.com")))
+        .when(only_active, |query| {
+            query.where_(UserEmail.ilike("%@example.com"))
+        })
         .if_some(search, |query, term| {
             query.where_(UserName.ilike(format!("%{term}%")))
         })
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: conditional
+    // ANCHOR_END: conditional
     println!("{}", filtered.len());
 
-// ANCHOR: build_refusal
+    // ANCHOR: build_refusal
     // Syntactically sound but semantically invalid: `DISTINCT ON` deduplicates
     // the rows on one expression while the leading `ORDER BY` criterion names
     // another, so no engine would accept the statement.
@@ -58,8 +60,11 @@ async fn main() -> Result<()> {
         .distinct_on(UserName)
         .order_by_asc(UserId)
         .build();
-    assert!(matches!(rejected, Err(BuildError::DistinctOnOrderMismatch { .. })));
-// ANCHOR_END: build_refusal
+    assert!(matches!(
+        rejected,
+        Err(BuildError::DistinctOnOrderMismatch { .. })
+    ));
+    // ANCHOR_END: build_refusal
 
     Ok(())
 }

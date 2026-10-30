@@ -32,25 +32,25 @@ table! {
 async fn main() -> Result<()> {
     let pool = example_pool();
 
-// ANCHOR: inner
+    // ANCHOR: inner
     let inner_join = select_from(User)
         .inner_join(Order, OrderUserId.eq(UserId))
         .select(cols!(UserId, UserName, OrderTotal))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: inner
+    // ANCHOR_END: inner
     println!("{}", inner_join.len());
 
-// ANCHOR: outer
+    // ANCHOR: outer
     let outer_join = select_from(User)
         .left_join(Order, OrderUserId.eq(UserId))
         .select(cols!(UserName, OrderTotal))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: outer
+    // ANCHOR_END: outer
     println!("{}", outer_join.len());
 
-// ANCHOR: duplicate_refused
+    // ANCHOR: duplicate_refused
     // The same relation is addressed twice without an alias, so the `FROM` clause
     // and the join both name `users`. No engine accepts the statement, and the
     // builder refuses it before any SQL is sent to the database.
@@ -62,9 +62,9 @@ async fn main() -> Result<()> {
         duplicate,
         Err(BuildError::DuplicateRelation { name: "users" })
     ));
-// ANCHOR_END: duplicate_refused
+    // ANCHOR_END: duplicate_refused
 
-// ANCHOR: lateral
+    // ANCHOR: lateral
     // The correlated subquery is published as the relation marker `LatestOrder`,
     // so the enclosing statement reads its rows like those of a stored table.
     let latest_order = select_from(Order)
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
         .select(cols!(UserId, LatestOrderTotal))
         .fetch_all(&pool)
         .await?;
-// ANCHOR_END: lateral
+    // ANCHOR_END: lateral
     println!("{}", report.len());
     Ok(())
 }
