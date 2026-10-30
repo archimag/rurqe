@@ -101,3 +101,7 @@ path = "set_ops.rs"
 [[example]]
 name = "window"
 path = "window.rs"
+
+[[example]]
+name = "schema"
+path = "schema.rs"

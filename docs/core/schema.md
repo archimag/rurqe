@@ -6,24 +6,11 @@ A schema in RURQE is defined using zero-sized marker types (`ZST`). Table and co
 
 The `table!` macro declares zero-sized table and column markers:
 
-```rust
-use rurqe::prelude::*;
-
-table! {
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-        UserActive => "active": bool,
-    }
-}
+```rust,no_run
+{{#rustdoc_include ../examples/schema.rs:declaration}}
 ```
 
-The macro generates a unit struct for the table and one unit struct per column marker. Because unit structs serve simultaneously as types and as values in Rust, column markers can be passed directly as values in expressions and predicates without turbofish generic syntax:
-
-```rust
-UserId.eq(1i64)
-```
+The macro generates a unit struct for the table and one unit struct per column marker. Because unit structs serve simultaneously as types and as values in Rust, a column marker is passed directly as a value in a predicate — no turbofish generic syntax, no wrapper expression — as the addressing form written below shows.
 
 ## Value-Based Column Addressing
 
@@ -34,12 +21,8 @@ RURQE supports two addressing styles for table columns:
 
 Both forms refer to the identical zero-sized marker, generate identical SQL AST nodes, and compile with zero runtime overhead:
 
-```rust
-// Standalone marker
-select_from(User).select(cols!(UserId)).where_(UserId.eq(1i64));
-
-// Table-prefixed marker
-select_from(User).select(cols!(User.UserId)).where_(User.UserId.eq(1i64));
+```rust,no_run
+{{#rustdoc_include ../examples/schema.rs:addressing}}
 ```
 
 ## Rust Type to SQL Type Mapping
