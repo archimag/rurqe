@@ -38,6 +38,10 @@ tokio-postgres = "0.7"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+# The example files sit at the package root rather than in a nested `examples/`
+# subdirectory, so an include path from a chapter never climbs out of the book
+# directory. Cargo discovers example targets only under `<package>/examples/`,
+# which is why every file below is registered explicitly.
 [[example]]
 name = "quickstart"
 path = "quickstart.rs"
