@@ -1,4 +1,4 @@
-# MULTISET: how nesting becomes SQL
+# The MULTISET statement
 
 A nested collection is not stitched together on the client: it becomes one aggregate subquery inside the statement.
 

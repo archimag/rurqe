@@ -1,4 +1,4 @@
-# Set operations
+# Set Operations
 
 `UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT` combine the rows of two statements. The operators live on a projected query and consume the other operand entirely.
 

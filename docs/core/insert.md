@@ -1,4 +1,4 @@
-# DML: `INSERT`
+# The INSERT statement
 
 An `INSERT` writes rows into exactly one table. The chain names the target table, then the row source — literal rows or a `SELECT` — and optionally the policy for a row that collides with a unique constraint and the projection of the written rows. Every fragment on this page is included from `examples/crud.rs`, so the page cannot drift from the code it documents.
 

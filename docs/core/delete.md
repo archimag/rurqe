@@ -1,4 +1,4 @@
-# DML: `DELETE`
+# The DELETE statement
 
 A `DELETE` removes rows of one table. The chain records the filter that selects the rows, optionally an extra relation the decision is read from, and optionally a projection of the removed rows. Like an `UPDATE`, a statement that silently matches every row is unwritable by accident. Every fragment on this page is included from `examples/crud.rs`.
 
@@ -59,7 +59,6 @@ DELETE FROM "users" USING "accounts" WHERE ("users"."id" = "accounts"."id")
 
 ### Filters assembled at runtime
 
-The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` — and the explicit `.allow_all()` behave on a `DELETE` exactly as they do on an `UPDATE`; see [DML: `UPDATE`](update.md) and [Predicates and `WHERE`](filtering.md). An absent branch adds no clause, and the statement keeps its type.
 The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` — and the explicit `.allow_all()` behave on a `DELETE` exactly as they do on an `UPDATE`. An absent branch adds no clause, and the statement keeps its type.
 ### `RETURNING`
 

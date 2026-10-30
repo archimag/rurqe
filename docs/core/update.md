@@ -1,4 +1,4 @@
-# DML: `UPDATE`
+# The UPDATE statement
 
 An `UPDATE` rewrites rows of one table. The chain records the assignments, the filter that selects the rows, and optionally an extra source relation to read from and a projection of the rewritten rows. The filter is a typestate, not a convention: a statement that silently matches every row is unwritable by accident. Every fragment on this page is included from `examples/crud.rs`.
 
@@ -50,7 +50,6 @@ UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 
 ### `SET`: the value model
 
-The three constructors — `UserName::set("root")`, `UserName::default_value()`, and `UserName::set_expr(expr)` — behave here exactly as they do on an `INSERT`; see [DML: `INSERT`](insert.md). An assignment tuple belongs to one table, so a statement cannot assign a column of a relation it does not update.
 The three constructors — `UserName::set("root")`, `UserName::default_value()`, and `UserName::set_expr(expr)` — behave here exactly as they do on an `INSERT`. An assignment tuple belongs to one table, so a statement cannot assign a column of a relation it does not update.
 ### `FROM`: reading a second relation
 
