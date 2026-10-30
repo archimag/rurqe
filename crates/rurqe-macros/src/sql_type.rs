@@ -27,7 +27,7 @@
 //! builders exactly like a built-in scalar and is lifted into `Option<Self>` when
 //! it is projected from an outer join.
 //!
-//! Every path the expansion emits is anchored at `::rurqe::core`, the re-export
+//! Every path the expansion emits is anchored at `::rurqe::__core`, the re-export
 //! the facade publishes for its macros, so the derive works in a crate that
 //! depends only on `rurqe` without adding `rurqe-core` to its manifest.
 //!
@@ -154,9 +154,9 @@ fn expand_enum(name: &Ident, attrs: &[Attribute], data: &DataEnum) -> syn::Resul
 /// Emits the `SqlVal` conversion of the derived type.
 fn conversions_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl ::core::convert::From<#name> for ::rurqe::core::expr::SqlVal {
+        impl ::core::convert::From<#name> for ::rurqe::__core::expr::SqlVal {
             fn from(value: #name) -> Self {
-                ::rurqe::core::expr::ToSqlVal::to_sql_val(value)
+                ::rurqe::__core::expr::ToSqlVal::to_sql_val(value)
             }
         }
     }
@@ -169,11 +169,11 @@ fn conversions_impl(name: &Ident) -> TokenStream {
 /// decodes like any other array without a second attribute.
 fn nullability_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl ::rurqe::core::query::MakeNullable for #name {
+        impl ::rurqe::__core::query::MakeNullable for #name {
             type Nullable = ::core::option::Option<#name>;
         }
 
-        impl ::rurqe::core::expr::SqlArrayElement for #name {}
+        impl ::rurqe::__core::expr::SqlArrayElement for #name {}
     }
 }
 
@@ -486,15 +486,15 @@ fn encode_impls(name: &Ident, storage: &Storage, field: &SingleField) -> TokenSt
         Storage::Transparent => {
             let access = field.access();
             quote! {
-                impl ::rurqe::core::expr::ToSqlVal for #name {
-                    fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                        ::rurqe::core::expr::ToSqlVal::to_sql_val(#access)
+                impl ::rurqe::__core::expr::ToSqlVal for #name {
+                    fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                        ::rurqe::__core::expr::ToSqlVal::to_sql_val(#access)
                     }
                 }
 
-                impl<'a> ::rurqe::core::expr::ToSqlVal for &'a #name {
-                    fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                        ::rurqe::core::expr::ToSqlVal::to_sql_val(
+                impl<'a> ::rurqe::__core::expr::ToSqlVal for &'a #name {
+                    fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                        ::rurqe::__core::expr::ToSqlVal::to_sql_val(
                             ::core::clone::Clone::clone(&#access),
                         )
                     }
@@ -502,17 +502,17 @@ fn encode_impls(name: &Ident, storage: &Storage, field: &SingleField) -> TokenSt
             }
         }
         Storage::Bytes { .. } => quote! {
-            impl ::rurqe::core::expr::ToSqlVal for #name {
-                fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                    ::rurqe::core::expr::SqlVal::Bytes(
+            impl ::rurqe::__core::expr::ToSqlVal for #name {
+                fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                    ::rurqe::__core::expr::SqlVal::Bytes(
                         ::std::convert::AsRef::<[u8]>::as_ref(&self).to_vec(),
                     )
                 }
             }
 
-            impl<'a> ::rurqe::core::expr::ToSqlVal for &'a #name {
-                fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                    ::rurqe::core::expr::SqlVal::Bytes(
+            impl<'a> ::rurqe::__core::expr::ToSqlVal for &'a #name {
+                fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                    ::rurqe::__core::expr::SqlVal::Bytes(
                         ::std::convert::AsRef::<[u8]>::as_ref(self).to_vec(),
                     )
                 }
@@ -525,17 +525,17 @@ fn encode_impls(name: &Ident, storage: &Storage, field: &SingleField) -> TokenSt
 /// Emits the parameter-encoding impls of a value stored as its text.
 fn text_encode_impls(name: &Ident) -> TokenStream {
     quote! {
-        impl ::rurqe::core::expr::ToSqlVal for #name {
-            fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                ::rurqe::core::expr::SqlVal::Text(
+        impl ::rurqe::__core::expr::ToSqlVal for #name {
+            fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                ::rurqe::__core::expr::SqlVal::Text(
                     ::std::string::ToString::to_string(&self),
                 )
             }
         }
 
-        impl<'a> ::rurqe::core::expr::ToSqlVal for &'a #name {
-            fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                ::rurqe::core::expr::SqlVal::Text(
+        impl<'a> ::rurqe::__core::expr::ToSqlVal for &'a #name {
+            fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                ::rurqe::__core::expr::SqlVal::Text(
                     ::std::string::ToString::to_string(self),
                 )
             }
@@ -550,15 +550,15 @@ fn decode_impl(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStr
             let ty = &field.ty;
             let wrap = field.wrap(&quote!(inner));
             quote! {
-                impl ::rurqe::core::row::FromSqlValue for #name {
+                impl ::rurqe::__core::row::FromSqlValue for #name {
                     fn from_sql_value(
-                        value: &::rurqe::core::expr::SqlVal,
+                        value: &::rurqe::__core::expr::SqlVal,
                     ) -> ::core::result::Result<
                         Self,
-                        ::rurqe::core::row::RowDecodeError,
+                        ::rurqe::__core::row::RowDecodeError,
                     > {
                         let inner =
-                            <#ty as ::rurqe::core::row::FromSqlValue>::from_sql_value(value)?;
+                            <#ty as ::rurqe::__core::row::FromSqlValue>::from_sql_value(value)?;
                         ::core::result::Result::Ok(#wrap)
                     }
                 }
@@ -569,7 +569,7 @@ fn decode_impl(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStr
                 Some(len) => quote! {
                     if bytes.len() != #len {
                         return ::core::result::Result::Err(
-                            ::rurqe::core::row::RowDecodeError::InvalidValue {
+                            ::rurqe::__core::row::RowDecodeError::InvalidValue {
                                 target: ::std::any::type_name::<Self>(),
                                 found: "bytes",
                                 detail: ::std::format!(
@@ -584,18 +584,18 @@ fn decode_impl(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStr
                 None => TokenStream::new(),
             };
             quote! {
-                impl ::rurqe::core::row::FromSqlValue for #name {
+                impl ::rurqe::__core::row::FromSqlValue for #name {
                     fn from_sql_value(
-                        value: &::rurqe::core::expr::SqlVal,
+                        value: &::rurqe::__core::expr::SqlVal,
                     ) -> ::core::result::Result<
                         Self,
-                        ::rurqe::core::row::RowDecodeError,
+                        ::rurqe::__core::row::RowDecodeError,
                     > {
                         match value {
-                            ::rurqe::core::expr::SqlVal::Bytes(bytes) => {
+                            ::rurqe::__core::expr::SqlVal::Bytes(bytes) => {
                                 #validate
                                 ::core::convert::TryFrom::try_from(bytes.as_slice()).map_err(
-                                    |error| ::rurqe::core::row::RowDecodeError::InvalidValue {
+                                    |error| ::rurqe::__core::row::RowDecodeError::InvalidValue {
                                         target: ::std::any::type_name::<Self>(),
                                         found: "bytes",
                                         detail: ::std::format!("{error}"),
@@ -603,7 +603,7 @@ fn decode_impl(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStr
                                 )
                             }
                             _ => ::core::result::Result::Err(
-                                ::rurqe::core::row::RowDecodeError::TypeMismatch {
+                                ::rurqe::__core::row::RowDecodeError::TypeMismatch {
                                     target: ::std::any::type_name::<Self>(),
                                     found: value.variant_name(),
                                 },
@@ -620,17 +620,17 @@ fn decode_impl(name: &Ident, storage: &Storage, field: &SingleField) -> TokenStr
 /// Emits the row-decoding impl of a value stored as its text.
 fn text_decode_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl ::rurqe::core::row::FromSqlValue for #name {
+        impl ::rurqe::__core::row::FromSqlValue for #name {
             fn from_sql_value(
-                value: &::rurqe::core::expr::SqlVal,
+                value: &::rurqe::__core::expr::SqlVal,
             ) -> ::core::result::Result<
                 Self,
-                ::rurqe::core::row::RowDecodeError,
+                ::rurqe::__core::row::RowDecodeError,
             > {
                 match value {
-                    ::rurqe::core::expr::SqlVal::Text(text) => {
+                    ::rurqe::__core::expr::SqlVal::Text(text) => {
                         <Self as ::std::str::FromStr>::from_str(text.as_str()).map_err(
-                            |error| ::rurqe::core::row::RowDecodeError::InvalidValue {
+                            |error| ::rurqe::__core::row::RowDecodeError::InvalidValue {
                                 target: ::std::any::type_name::<Self>(),
                                 found: "text",
                                 detail: ::std::format!("{error}"),
@@ -638,7 +638,7 @@ fn text_decode_impl(name: &Ident) -> TokenStream {
                         )
                     }
                     _ => ::core::result::Result::Err(
-                        ::rurqe::core::row::RowDecodeError::TypeMismatch {
+                        ::rurqe::__core::row::RowDecodeError::TypeMismatch {
                             target: ::std::any::type_name::<Self>(),
                             found: value.variant_name(),
                         },
@@ -686,14 +686,14 @@ fn text_expression_impls(name: &Ident) -> TokenStream {
 /// Emits the owned-value operand compatibility of the derived type.
 fn owned_expression_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl ::rurqe::core::expr::IntoExpr<#name> for #name {
+        impl ::rurqe::__core::expr::IntoExpr<#name> for #name {
             type Scope = ();
-            type Aggr = ::rurqe::core::expr::NonAggregate;
+            type Aggr = ::rurqe::__core::expr::NonAggregate;
             type Dialect = ();
 
-            fn into_expr_kind(self) -> ::rurqe::core::expr::ExprKind {
-                ::rurqe::core::expr::ExprKind::Value(
-                    ::rurqe::core::expr::ToSqlVal::to_sql_val(self),
+            fn into_expr_kind(self) -> ::rurqe::__core::expr::ExprKind {
+                ::rurqe::__core::expr::ExprKind::Value(
+                    ::rurqe::__core::expr::ToSqlVal::to_sql_val(self),
                 )
             }
         }
@@ -703,16 +703,16 @@ fn owned_expression_impl(name: &Ident) -> TokenStream {
 /// Emits the borrowed-value operand compatibility of the derived type.
 fn borrowed_expression_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl<'a> ::rurqe::core::expr::SqlCompatible<#name, &'a #name> for &'a #name {}
+        impl<'a> ::rurqe::__core::expr::SqlCompatible<#name, &'a #name> for &'a #name {}
 
-        impl<'a> ::rurqe::core::expr::IntoExpr<#name> for &'a #name {
+        impl<'a> ::rurqe::__core::expr::IntoExpr<#name> for &'a #name {
             type Scope = ();
-            type Aggr = ::rurqe::core::expr::NonAggregate;
+            type Aggr = ::rurqe::__core::expr::NonAggregate;
             type Dialect = ();
 
-            fn into_expr_kind(self) -> ::rurqe::core::expr::ExprKind {
-                ::rurqe::core::expr::ExprKind::Value(
-                    ::rurqe::core::expr::ToSqlVal::to_sql_val(self),
+            fn into_expr_kind(self) -> ::rurqe::__core::expr::ExprKind {
+                ::rurqe::__core::expr::ExprKind::Value(
+                    ::rurqe::__core::expr::ToSqlVal::to_sql_val(self),
                 )
             }
         }
@@ -728,9 +728,9 @@ fn borrowed_expression_impl(name: &Ident) -> TokenStream {
 /// type.
 fn string_assignment_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl<'a> ::rurqe::core::expr::SqlCompatible<#name, &'a str> for &'a str {}
+        impl<'a> ::rurqe::__core::expr::SqlCompatible<#name, &'a str> for &'a str {}
 
-        impl ::rurqe::core::expr::SqlCompatible<#name, ::std::string::String>
+        impl ::rurqe::__core::expr::SqlCompatible<#name, ::std::string::String>
             for ::std::string::String
         {
         }
@@ -740,14 +740,14 @@ fn string_assignment_impl(name: &Ident) -> TokenStream {
 /// Emits the owned-value scalar-function operand compatibility of the derived type.
 fn function_operand_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl ::rurqe::core::expr::FunctionOperand<#name> for #name {
+        impl ::rurqe::__core::expr::FunctionOperand<#name> for #name {
             type Scope = ();
-            type Aggr = ::rurqe::core::expr::NonAggregate;
+            type Aggr = ::rurqe::__core::expr::NonAggregate;
             type Dialect = ();
 
-            fn into_operand_kind(self) -> ::rurqe::core::expr::ExprKind {
-                ::rurqe::core::expr::ExprKind::Value(
-                    ::rurqe::core::expr::ToSqlVal::to_sql_val(self),
+            fn into_operand_kind(self) -> ::rurqe::__core::expr::ExprKind {
+                ::rurqe::__core::expr::ExprKind::Value(
+                    ::rurqe::__core::expr::ToSqlVal::to_sql_val(self),
                 )
             }
         }
@@ -757,14 +757,14 @@ fn function_operand_impl(name: &Ident) -> TokenStream {
 /// Emits the borrowed-value scalar-function operand compatibility of the derived type.
 fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
     quote! {
-        impl<'a> ::rurqe::core::expr::FunctionOperand<#name> for &'a #name {
+        impl<'a> ::rurqe::__core::expr::FunctionOperand<#name> for &'a #name {
             type Scope = ();
-            type Aggr = ::rurqe::core::expr::NonAggregate;
+            type Aggr = ::rurqe::__core::expr::NonAggregate;
             type Dialect = ();
 
-            fn into_operand_kind(self) -> ::rurqe::core::expr::ExprKind {
-                ::rurqe::core::expr::ExprKind::Value(
-                    ::rurqe::core::expr::ToSqlVal::to_sql_val(self),
+            fn into_operand_kind(self) -> ::rurqe::__core::expr::ExprKind {
+                ::rurqe::__core::expr::ExprKind::Value(
+                    ::rurqe::__core::expr::ToSqlVal::to_sql_val(self),
                 )
             }
         }

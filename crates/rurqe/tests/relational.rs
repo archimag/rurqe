@@ -6,7 +6,7 @@
 //! through `FromRow`, and aggregate expressions compose with `GROUP BY` and
 //! `HAVING`.
 
-use rurqe::core::schema::{At, Next};
+use rurqe::__core::schema::{At, Next};
 use rurqe::prelude::*;
 
 table! {
@@ -1656,7 +1656,7 @@ mod postgres_extension_traits {
 
 #[test]
 fn greatest_and_least_render_their_comparison_functions() {
-    use rurqe::core::expr::{greatest, least};
+    use rurqe::__core::expr::{greatest, least};
 
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((OrderId, greatest(OrderTotal, [1.0, 2.0])))
@@ -1680,7 +1680,7 @@ fn greatest_and_least_render_their_comparison_functions() {
 
 #[test]
 fn the_null_safe_predicates_compare_against_absent_values() {
-    use rurqe::core::expr::{is_distinct_from, is_not_distinct_from};
+    use rurqe::__core::expr::{is_distinct_from, is_not_distinct_from};
 
     let built = select_from::<Postgres<Pg16>, Order>()
         .select((OrderId,))

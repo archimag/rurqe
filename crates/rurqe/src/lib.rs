@@ -33,11 +33,18 @@ use rurqe_core::{Dialect, SelectQuery, Table};
 ///
 /// A procedural macro cannot name its own facade the way a declarative macro
 /// names it with `$crate`, so the expansions of [`rurqe_macros`] address the core
-/// crate through this re-export — `::rurqe::core::expr::SqlVal`, for instance.
+/// crate through this re-export — `::rurqe::__core::expr::SqlVal`, for instance.
 /// A crate that depends only on `rurqe` therefore compiles `select!`, `dto!`,
 /// `sql!`/`raw_sql!`, and `#[derive(SqlType)]` without adding `rurqe-core` to its
 /// own manifest, and renaming this re-export breaks them.
-pub use rurqe_core as core;
+///
+/// The anchor deliberately avoids the name `core`: a glob import of the crate
+/// root binds every public item, and an item named `core` would take precedence
+/// over the built-in `core` crate, silently rebinding every `core::…` path
+/// written in the importing module. The `__core` spelling keeps the anchor
+/// reachable to the macro expansions while staying a name no importing module
+/// writes by accident.
+pub use rurqe_core as __core;
 
 #[cfg(feature = "macros")]
 pub use rurqe_macros as macros;
@@ -114,12 +121,12 @@ mod docs;
 macro_rules! pin_dialect_version {
     // The items shared by both module shapes, expanded inside the module.
     (@module => $dialect:ty, $error:ty;) => {
-        use $crate::core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
-        use $crate::core::query::{HasProjection, NoProjection};
-        use $crate::core::{SelectQuery, Table};
+        use $crate::__core::dml::{DeleteQuery, InsertQuery, Unfiltered, UpdateQuery};
+        use $crate::__core::query::{HasProjection, NoProjection};
+        use $crate::__core::{SelectQuery, Table};
 
         /// The error type produced by queries pinned to this dialect version.
-        pub type Error = $crate::core::query::ExecutionError<$error>;
+        pub type Error = $crate::__core::query::ExecutionError<$error>;
 
         /// A [`Result`](core::result::Result) defaulting to [`Error`].
         ///
@@ -170,12 +177,12 @@ macro_rules! pin_dialect_version {
         impl<S, T, Positions> SelectFrom<T, Positions> for S
         where
             T: Table,
-            S: $crate::core::query::SelectionFor<T, Positions, $dialect>
+            S: $crate::__core::query::SelectionFor<T, Positions, $dialect>
                 + Send
                 + Sync
                 + 'static,
         {
-            type Row = <S as $crate::core::query::SelectionFor<T, Positions, $dialect>>::Row;
+            type Row = <S as $crate::__core::query::SelectionFor<T, Positions, $dialect>>::Row;
 
             fn from(self, table: T) -> SelectQuery<$dialect, T, Self::Row, HasProjection> {
                 SelectQuery::new()

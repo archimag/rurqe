@@ -38,7 +38,7 @@
 //! column of a table the clause cannot address, are therefore rejected at the call
 //! site that embeds the projection.
 //!
-//! Every path the expansion emits is anchored at `::rurqe::core`, the re-export
+//! Every path the expansion emits is anchored at `::rurqe::__core`, the re-export
 //! of `rurqe-core` the facade publishes for its macros: a procedural macro cannot
 //! name its own facade the way a declarative macro does with `$crate`, so the
 //! facade is the single anchor and a crate that depends only on `rurqe` compiles
@@ -104,9 +104,9 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #field: #record_param,
         });
         field_reads.extend(quote! {
-            #field: ::rurqe::core::row::FromSqlValue::from_sql_value(
+            #field: ::rurqe::__core::row::FromSqlValue::from_sql_value(
                 values.get(#field_index).ok_or(
-                    ::rurqe::core::row::RowDecodeError::ArityMismatch {
+                    ::rurqe::__core::row::RowDecodeError::ArityMismatch {
                         expected: #arity,
                         actual: values.len(),
                     },
@@ -114,58 +114,58 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             )?,
         });
         document_writes.extend(quote! {
-            (#key, ::rurqe::core::expr::ToSqlVal::to_sql_val(self.#field)),
+            (#key, ::rurqe::__core::expr::ToSqlVal::to_sql_val(self.#field)),
         });
         document_reads.extend(quote! {
-            #field: ::rurqe::core::nested::nested_field(&document, #key)?,
+            #field: ::rurqe::__core::nested::nested_field(&document, #key)?,
         });
         scope_bounds.extend(quote! {
-            #element: ::rurqe::core::query::SelectTargetInScope<Tables, #position, __D>,
+            #element: ::rurqe::__core::query::SelectTargetInScope<Tables, #position, __D>,
         });
         grouped_bounds.extend(quote! {
-            #element: ::rurqe::core::query::GroupedSelectTarget<__G, #position, __D>,
+            #element: ::rurqe::__core::query::GroupedSelectTarget<__G, #position, __D>,
         });
         from_bounds.extend(quote! {
-            #element: ::rurqe::core::query::SelectTargetInScope<
+            #element: ::rurqe::__core::query::SelectTargetInScope<
                 __T,
-                ::rurqe::core::schema::At<0>,
+                ::rurqe::__core::schema::At<0>,
                 __D,
             >,
         });
         from_positions.extend(quote! {
-            ::rurqe::core::schema::At<0>,
+            ::rurqe::__core::schema::At<0>,
         });
         scoped_args.push(quote! {
-            <#element as ::rurqe::core::query::SelectTargetInScope<Tables, #position, __D>>::Output
+            <#element as ::rurqe::__core::query::SelectTargetInScope<Tables, #position, __D>>::Output
         });
         record_args.push(quote! {
-            <#element as ::rurqe::core::query::SelectTarget>::RustType
+            <#element as ::rurqe::__core::query::SelectTarget>::RustType
         });
 
         match &item.target {
             ProjectionTarget::Column(column) => {
                 element_values.push(quote! { #column });
                 selection_bounds.extend(quote! {
-                    #element: ::rurqe::core::schema::Column
-                        + ::rurqe::core::query::SelectTarget
+                    #element: ::rurqe::__core::schema::Column
+                        + ::rurqe::__core::query::SelectTarget
                         + ::core::marker::Send
                         + ::core::marker::Sync
                         + 'static,
                 });
                 belongs_bounds.extend(quote! {
-                    #element: ::rurqe::core::schema::ColumnBelongsTo<__T>,
+                    #element: ::rurqe::__core::schema::ColumnBelongsTo<__T>,
                 });
                 // `push_column_names` names the columns themselves — an `INSERT`
                 // column list or an `ON CONFLICT` target takes no alias — while
                 // the projection below carries the field name of the record.
                 name_pushes.extend(quote! {
-                    out.push(<#element as ::rurqe::core::schema::Column>::NAME);
+                    out.push(<#element as ::rurqe::__core::schema::Column>::NAME);
                 });
             }
             ProjectionTarget::Expr(expr) => {
                 element_values.push(quote! { #expr });
                 selection_bounds.extend(quote! {
-                    #element: ::rurqe::core::query::SelectTarget
+                    #element: ::rurqe::__core::query::SelectTarget
                         + ::core::marker::Send
                         + ::core::marker::Sync
                         + 'static,
@@ -185,9 +185,9 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         // a derived table or a common table expression publishes exactly the
         // fields the record decodes instead of the column names of its relations.
         projection_pushes.extend(quote! {
-            out.push(::rurqe::core::expr::ExprKind::Aliased {
+            out.push(::rurqe::__core::expr::ExprKind::Aliased {
                 expr: ::std::boxed::Box::new(
-                    ::rurqe::core::query::SelectTarget::to_expr_kind(&self.#field_index),
+                    ::rurqe::__core::query::SelectTarget::to_expr_kind(&self.#field_index),
                 ),
                 alias: #key,
             });
@@ -203,8 +203,8 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     // rather than by the engine once the statement left the builder.
     let table_selection_impl = if all_columns {
         quote! {
-            impl<__T: ::rurqe::core::schema::Table, #(#element_params,)*>
-                ::rurqe::core::query::TableSelection<__T>
+            impl<__T: ::rurqe::__core::schema::Table, #(#element_params),*>
+                ::rurqe::__core::query::TableSelection<__T>
                 for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds
@@ -223,17 +223,17 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 #field_defs
             }
 
-            impl<#(#record_params),*> ::rurqe::core::row::FromRow
+            impl<#(#record_params),*> ::rurqe::__core::row::FromRow
                 for __RurqeRecord<#(#record_params),*>
             where
-                #(#record_params: ::rurqe::core::row::FromSqlValue,)*
+                #(#record_params: ::rurqe::__core::row::FromSqlValue,)*
             {
                 fn try_from_row(
-                    values: &[::rurqe::core::expr::SqlVal],
-                ) -> ::core::result::Result<Self, ::rurqe::core::row::RowDecodeError> {
+                    values: &[::rurqe::__core::expr::SqlVal],
+                ) -> ::core::result::Result<Self, ::rurqe::__core::row::RowDecodeError> {
                     if values.len() != #arity {
                         return ::core::result::Result::Err(
-                            ::rurqe::core::row::RowDecodeError::ArityMismatch {
+                            ::rurqe::__core::row::RowDecodeError::ArityMismatch {
                                 expected: #arity,
                                 actual: values.len(),
                             },
@@ -250,42 +250,42 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             // written back into the JSON object of its fields, read from the
             // object the engine aggregated, and published as the array element of
             // a nested projection.
-            impl<#(#record_params),*> ::rurqe::core::expr::ToSqlVal
+            impl<#(#record_params),*> ::rurqe::__core::expr::ToSqlVal
                 for __RurqeRecord<#(#record_params),*>
             where
-                #(#record_params: ::rurqe::core::expr::ToSqlVal,)*
+                #(#record_params: ::rurqe::__core::expr::ToSqlVal,)*
             {
-                fn to_sql_val(self) -> ::rurqe::core::expr::SqlVal {
-                    ::rurqe::core::nested::multiset_object(&[#document_writes])
+                fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
+                    ::rurqe::__core::nested::multiset_object(&[#document_writes])
                 }
             }
 
-            impl<#(#record_params),*> ::rurqe::core::row::FromSqlValue
+            impl<#(#record_params),*> ::rurqe::__core::row::FromSqlValue
                 for __RurqeRecord<#(#record_params),*>
             where
-                #(#record_params: ::rurqe::core::row::FromSqlValue,)*
+                #(#record_params: ::rurqe::__core::row::FromSqlValue,)*
             {
                 fn from_sql_value(
-                    value: &::rurqe::core::expr::SqlVal,
-                ) -> ::core::result::Result<Self, ::rurqe::core::row::RowDecodeError> {
-                    let document = ::rurqe::core::nested::json_object(value)?;
+                    value: &::rurqe::__core::expr::SqlVal,
+                ) -> ::core::result::Result<Self, ::rurqe::__core::row::RowDecodeError> {
+                    let document = ::rurqe::__core::nested::json_object(value)?;
                     ::core::result::Result::Ok(__RurqeRecord {
                         #document_reads
                     })
                 }
             }
 
-            impl<#(#record_params),*> ::rurqe::core::expr::SqlArrayElement
+            impl<#(#record_params),*> ::rurqe::__core::expr::SqlArrayElement
                 for __RurqeRecord<#(#record_params),*>
             where
-                #(#record_params: ::rurqe::core::expr::SqlArrayElement,)*
+                #(#record_params: ::rurqe::__core::expr::SqlArrayElement,)*
             {
             }
 
-            impl<#(#record_params),*> ::rurqe::core::nested::MultisetRow
+            impl<#(#record_params),*> ::rurqe::__core::nested::MultisetRow
                 for __RurqeRecord<#(#record_params),*>
             where
-                #(#record_params: ::rurqe::core::expr::SqlArrayElement + 'static,)*
+                #(#record_params: ::rurqe::__core::expr::SqlArrayElement + 'static,)*
             {
                 const FIELDS: &'static [&'static str] = &[#(#field_keys),*];
             }
@@ -293,7 +293,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             #[allow(dead_code)]
             struct __RurqeSelection<#(#element_params),*>(#(#element_params),*);
 
-            impl<#(#element_params),*> ::rurqe::core::query::Selection
+            impl<#(#element_params),*> ::rurqe::__core::query::Selection
                 for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds
@@ -308,14 +308,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 #[allow(unused_variables)]
                 fn push_projections(
                     &self,
-                    out: &mut ::std::vec::Vec<::rurqe::core::expr::ExprKind>,
+                    out: &mut ::std::vec::Vec<::rurqe::__core::expr::ExprKind>,
                 ) {
                     #projection_pushes
                 }
             }
 
             impl<Tables, __D, #(#position_params,)* #(#element_params,)*>
-                ::rurqe::core::query::SelectionFor<Tables, (#(#position_args,)*), __D>
+                ::rurqe::__core::query::SelectionFor<Tables, (#(#position_args,)*), __D>
                 for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds
@@ -328,7 +328,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             // every projected column must be grouped or an aggregate, which the
             // `GroupedSelectTarget` bound of each element states.
             impl<__G, __D, #(#position_params,)* #(#element_params,)*>
-                ::rurqe::core::query::GroupedSelection<__G, (#(#position_args,)*), __D>
+                ::rurqe::__core::query::GroupedSelection<__G, (#(#position_args,)*), __D>
                 for __RurqeSelection<#(#element_params),*>
             where
                 #selection_bounds
@@ -355,22 +355,22 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 pub fn from_table<__D, __T>(
                     self,
                     table: __T,
-                ) -> ::rurqe::core::query::SelectQuery<
+                ) -> ::rurqe::__core::query::SelectQuery<
                     __D,
                     __T,
-                    <Self as ::rurqe::core::query::SelectionFor<__T, (#from_positions), __D>>::Row,
-                    ::rurqe::core::query::HasProjection,
+                    <Self as ::rurqe::__core::query::SelectionFor<__T, (#from_positions), __D>>::Row,
+                    ::rurqe::__core::query::HasProjection,
                 >
                 where
-                    __D: ::rurqe::core::dialect::Dialect,
-                    __T: ::rurqe::core::schema::Table,
+                    __D: ::rurqe::__core::dialect::Dialect,
+                    __T: ::rurqe::__core::schema::Table,
                     #from_bounds
-                    Self: ::rurqe::core::query::SelectionFor<__T, (#from_positions), __D>
+                    Self: ::rurqe::__core::query::SelectionFor<__T, (#from_positions), __D>
                         + ::core::marker::Send
                         + ::core::marker::Sync
                         + 'static,
                 {
-                    ::rurqe::core::query::SelectQuery::<__D>::new()
+                    ::rurqe::__core::query::SelectQuery::<__D>::new()
                         .from_table(table)
                         .select::<Self, (#from_positions)>(self)
                 }
@@ -449,7 +449,7 @@ mod tests {
         let expanded = expand_projections(&projections).expect("projections expand");
         let rendered = expanded.to_string();
 
-        assert!(rendered.contains(":: rurqe :: core"));
+        assert!(rendered.contains(":: rurqe :: __core"));
         assert!(!rendered.contains(":: rurqe_core"));
     }
 

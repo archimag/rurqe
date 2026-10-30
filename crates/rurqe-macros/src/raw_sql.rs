@@ -2,7 +2,7 @@
 //!
 //! The template is censused and split at expansion time, so the analysis itself
 //! runs inside this crate and keeps addressing `rurqe_core` directly. What the
-//! macro emits is anchored at `::rurqe::core` — the re-export the facade
+//! macro emits is anchored at `::rurqe::__core` — the re-export the facade
 //! publishes for its macros — so a crate that depends only on `rurqe` compiles
 //! the generated expression without adding `rurqe-core` to its manifest.
 
@@ -96,10 +96,10 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         {
-            let __rurqe_params: ::std::vec::Vec<::rurqe::core::expr::SqlVal> = ::std::vec![
-                #( ::rurqe::core::expr::ToSqlVal::to_sql_val(#args) ),*
+            let __rurqe_params: ::std::vec::Vec<::rurqe::__core::expr::SqlVal> = ::std::vec![
+                #( ::rurqe::__core::expr::ToSqlVal::to_sql_val(#args) ),*
             ];
-            ::rurqe::core::expr::Expr::<#ty>::raw_fragments(
+            ::rurqe::__core::expr::Expr::<#ty>::raw_fragments(
                 ::std::vec![ #( ::std::string::String::from(#fragments) ),* ],
                 __rurqe_params,
             )
