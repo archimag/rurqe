@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
         .where_(Expr::exists(
             select_from(Order)
                 .select((OrderUserId,))
-                .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope())),
+                .where_(OrderUserId.eq(UserId.without_scope())),
         ))
         .fetch_all(&pool)
         .await?;
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     // ANCHOR: in_subquery
     let with_orders = select_from(User)
         .select(cols!(UserId, UserName))
-        .where_(Expr::column::<UserId>().in_subquery(
+        .where_(UserId.in_subquery(
             select_from(Order).select((OrderUserId,)),
         ))
         .fetch_all(&pool)
