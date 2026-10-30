@@ -26,6 +26,19 @@ The field name follows the marker in snake case, so `UserId` is read as `user_id
 
 The name a projection states is the output name of the statement, so the result is read as `row.contact_email`. A positional tuple projection still exists for low-level code, but it carries no names: a field read from a named projection survives a change in the column order, and a position does not.
 
+A fetched row therefore exposes exactly the items its statement named:
+
+```rust,no_run
+{{#rustdoc_include ../examples/quickstart.rs:named_rows}}
+```
+
+```sql
+SELECT "id" AS "user_id", "name" AS "contact_email", "email" AS "user_email"
+FROM "users"
+WHERE ("email" = $1)
+ORDER BY "id" ASC
+```
+
 ## `select!` starts the statement
 
 A projection can stand at the front of a chain, where it names the fields and starts the query at once:

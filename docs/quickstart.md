@@ -44,6 +44,31 @@ A filtered projection executed against an asynchronous connection pool:
 
 The result vector contains synthesized record structs whose fields match the projected column markers (`UserId` maps to `user_id`). Assembling the query chain opens no connection; execution occurs exclusively at the terminal call (`.fetch_all(&pool).await?`).
 
+A projection names its items, so the fetched rows are read by those names: the field a chain reads is the one its projection declared, never a position in the row.
+
+```rust,no_run
+{{#rustdoc_include examples/quickstart.rs:named_rows}}
+```
+
+```sql
+SELECT "id" AS "user_id", "name" AS "contact_email", "email" AS "user_email"
+FROM "users"
+WHERE ("email" = $1)
+ORDER BY "id" ASC
+```
+
+A row that has to cross a function boundary is declared once with `dto!`, which reads every field type from the schema instead of restating it:
+
+```rust,no_run
+{{#rustdoc_include examples/quickstart.rs:dto}}
+```
+
+The declaration turns the values of such a row into the struct, and the struct is read by the names the declaration gave its fields:
+
+```rust,no_run
+{{#rustdoc_include examples/quickstart.rs:dto_row}}
+```
+
 ## 4. Dynamic Query Construction
 
 Conditional query modifiers allow runtime branches to augment query clauses without breaking the builder's typestate or erasing static types:

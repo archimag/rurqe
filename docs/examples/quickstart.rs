@@ -20,6 +20,16 @@ table! {
 }
 // ANCHOR_END: schema
 
+// ANCHOR: dto
+dto! {
+    /// A user row crossing a function boundary.
+    pub struct UserRow {
+        UserId,
+        UserName as contact_email,
+    }
+}
+// ANCHOR_END: dto
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
@@ -32,6 +42,28 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: query
     println!("{}", users.len());
+
+    // ANCHOR: named_rows
+    // The projection decides the field names, so a fetched row is read by the
+    // name its item declared instead of by a position in the row.
+    let named = select_from(User)
+        .select(cols!(UserId, UserName as contact_email, UserEmail))
+        .where_(UserEmail.eq("root@example.com"))
+        .order_by_asc(UserId)
+        .fetch_all(&pool)
+        .await?;
+    for row in &named {
+        println!("#{} <{}> / {}", row.user_id, row.contact_email, row.user_email);
+    }
+    // ANCHOR_END: named_rows
+
+    // ANCHOR: dto_row
+    // The declared row carries the names of its declaration, so a decoded row is
+    // read by name wherever the row is used.
+    if let Some(row) = UserRow::from_row(&[SqlVal::I64(7), SqlVal::Text("root".to_owned())]) {
+        println!("#{} <{}>", row.user_id, row.contact_email);
+    }
+    // ANCHOR_END: dto_row
 
     // ANCHOR: conditional
     // The flags a handler receives at runtime; a false flag or an absent value
