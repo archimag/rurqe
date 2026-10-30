@@ -12,8 +12,14 @@
 //! reports such a block as closed: it poisons the connection instead, the guard
 //! holding the abandoned transaction refuses to commit it rather than persisting
 //! the work the rollback was supposed to discard, and the next
-//! [`TransactionGuard::begin`] retries the abandoned rollback rather than
-//! running a fresh transaction on top of an unknown one.
+//! [`TransactionGuard::begin`] recovers the abandoned work before it opens
+//! anything. What the recovery may touch is decided by ownership rather than by
+//! depth: a poison left by an outermost guard, which is gone, is recovered by
+//! rolling the whole transaction back, while a poison left by a nested guard
+//! whose enclosing transaction is still owned by a live guard is recovered by
+//! closing only the abandoned savepoint. A nested `begin` therefore never
+//! discards a transaction an enclosing guard still owns, and the enclosing
+//! `commit()` reports the pending failure instead of silently succeeding.
 //!
 //! Whether a refused rollback means an abandoned transaction or a block that a
 //! raw driver handle already closed is a driver observation rather than a fact
@@ -49,6 +55,7 @@ pub struct TransactionStatus<E = ()> {
     context: TransactionContext,
     open: bool,
     poison: Option<E>,
+    owned: bool,
 }
 
 impl<E> TransactionStatus<E> {
@@ -58,6 +65,7 @@ impl<E> TransactionStatus<E> {
             context: TransactionContext::new(),
             open: false,
             poison: None,
+            owned: false,
         }
     }
 
@@ -77,6 +85,17 @@ impl<E> TransactionStatus<E> {
         self.poison.is_some()
     }
 
+    /// Whether a live guard owns the outermost transaction block.
+    ///
+    /// Ownership is what tells one poison apart from the other: a failure left
+    /// by a nested guard poisons a transaction that a live guard still owns, so
+    /// the pending work can be retried inside that transaction, while a failure
+    /// left by an outermost guard belongs to a transaction nobody owns any more
+    /// and has to be rolled back as a whole.
+    pub fn is_owned(&self) -> bool {
+        self.owned
+    }
+
     /// The number of nested savepoints currently open.
     pub fn depth(&self) -> usize {
         self.context.depth()
@@ -90,6 +109,11 @@ impl<E> TransactionStatus<E> {
     /// Records whether the outermost transaction block is open.
     fn mark_open(&mut self, open: bool) {
         self.open = open;
+    }
+
+    /// Records whether a live guard owns the outermost transaction block.
+    fn mark_owner(&mut self, owned: bool) {
+        self.owned = owned;
     }
 
     /// Records the driver error of a refused rollback, poisoning the connection.
@@ -113,6 +137,7 @@ impl<E> TransactionStatus<E> {
     /// connection never opened in the first place.
     fn mark_closed(&mut self) {
         self.open = false;
+        self.owned = false;
         self.poison = None;
         while self.context.close_savepoint().is_some() {}
     }
@@ -173,9 +198,13 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
     /// clause.
     ///
     /// A connection poisoned by a failed rollback never opens a new block
-    /// silently: the abandoned transaction is rolled back first, so a driver that
-    /// refuses the rollback reports the failure here instead of running the next
-    /// block inside a transaction whose state is unknown.
+    /// silently: the abandoned work is recovered first, so a driver that refuses
+    /// the recovery reports the failure here instead of running the next block
+    /// inside a transaction whose state is unknown. What the recovery rolls back
+    /// depends on ownership: without a live owner the whole transaction is
+    /// rolled back, while a transaction a live guard still owns only has its
+    /// abandoned savepoint closed, so a nested block can never discard the
+    /// enclosing transaction.
     pub fn begin(connection: &'a mut B) -> Result<Self, B::Error> {
         Self::begin_with(connection, None)
     }
@@ -192,9 +221,13 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
     /// ignored for such a block while the enclosing transaction keeps its own.
     ///
     /// A connection poisoned by a failed rollback never opens a new block
-    /// silently: the abandoned transaction is rolled back first, so a driver that
-    /// refuses the rollback reports the failure here instead of running the next
-    /// block inside a transaction whose state is unknown.
+    /// silently: the abandoned work is recovered first, so a driver that refuses
+    /// the recovery reports the failure here instead of running the next block
+    /// inside a transaction whose state is unknown. What the recovery rolls back
+    /// depends on ownership: without a live owner the whole transaction is
+    /// rolled back, while a transaction a live guard still owns only has its
+    /// abandoned savepoint closed, so a nested block can never discard the
+    /// enclosing transaction.
     pub fn begin_with(
         connection: &'a mut B,
         isolation: Option<IsolationLevel>,
@@ -222,6 +255,7 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
         } else {
             connection.begin(isolation)?;
             connection.transaction_status().mark_open(true);
+            connection.transaction_status().mark_owner(true);
             #[cfg(feature = "tracing")]
             tracing::info!("beginning transaction");
             Ok(TransactionGuard {
@@ -233,14 +267,75 @@ impl<'a, B: TransactionalConnection + ?Sized> TransactionGuard<'a, B> {
         }
     }
 
-    /// Closes the transaction a failed rollback left behind.
+    /// Recovers the abandoned work a failed rollback left behind.
     ///
-    /// The retry either finishes the abandoned rollback, which leaves the
-    /// connection clean, or hands the driver error back to the caller, which is
-    /// the signal that the connection has to be discarded rather than reused.
+    /// The action depends on ownership, and on nothing else. A transaction no
+    /// live guard owns is rolled back as a whole, which is the only way to
+    /// discard the pending work of a guard that is gone; a driver that refuses
+    /// that rollback hands its error back, which is the signal that the
+    /// connection has to be discarded rather than reused.
+    ///
+    /// A transaction a live guard still owns is the other case: the pending
+    /// failure belongs to a savepoint of that transaction, because a failing
+    /// nested drop keeps its savepoint recorded. Only the abandoned savepoint
+    /// closure is retried, so the enclosing transaction and the work the
+    /// enclosing guard is responsible for stay intact. A retry that heals
+    /// clears the poison and lets the caller open the fresh savepoint, while a
+    /// retry that fails again keeps the pending poison, so the enclosing guard
+    /// refuses to commit and reports the failure instead of silently persisting
+    /// work that was supposed to be rolled back.
+    ///
+    /// A poisoned transaction recorded as owned but carrying no savepoint cannot
+    /// be reached through a guard, because a failing nested drop keeps its
+    /// savepoint; the case falls back to the full rollback rather than leaving
+    /// the connection unrecovered.
     fn recover(connection: &mut B) -> Result<(), B::Error> {
         if !connection.transaction_status().is_poisoned() {
             return Ok(());
+        }
+
+        let owned = connection.transaction_status().is_owned();
+        let abandoned = if owned {
+            // The name is read back from the recorded savepoint, which was
+            // validated on the way in, so rebuilding it cannot fail in practice.
+            connection
+                .transaction_status()
+                .current_savepoint()
+                .and_then(|name| SavepointName::new(name.to_owned()).ok())
+        } else {
+            None
+        };
+
+        if let Some(savepoint) = abandoned {
+            let failure = match connection.rollback_to_savepoint(&savepoint) {
+                Ok(()) => connection.release_savepoint(&savepoint).err(),
+                Err(error) => Some(error),
+            };
+
+            return match failure {
+                None => {
+                    let _ = connection.transaction_status().take_poison();
+                    connection.transaction_status().close_savepoint();
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(
+                        savepoint = %savepoint,
+                        "recovered the abandoned savepoint of a live transaction"
+                    );
+                    Ok(())
+                }
+                Some(error) => {
+                    // The pending poison stays recorded rather than being
+                    // replaced by this failure: it is the signal that makes the
+                    // enclosing guard refuse to commit, and hand-holding the
+                    // only copy of it back to this caller would lose it.
+                    #[cfg(feature = "tracing")]
+                    tracing::error!(
+                        savepoint = %savepoint,
+                        "rolling back to the abandoned savepoint failed again; the enclosing transaction keeps its pending failure"
+                    );
+                    Err(error)
+                }
+            };
         }
 
         match connection.rollback() {
@@ -347,6 +442,11 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
                     // and committing this transaction is refused with the error
                     // the driver reported here.
                     self.connection.transaction_status().mark_poisoned(error);
+                    // The dying guard abandons its transaction, so the next
+                    // `begin` on the bare connection performs the full recovery
+                    // instead of retrying the savepoint of a transaction nobody
+                    // owns any more.
+                    self.connection.transaction_status().mark_owner(false);
                     #[cfg(feature = "tracing")]
                     tracing::error!(
                         "rolling back the transaction failed; the connection stays poisoned until it is discarded"
@@ -378,266 +478,4 @@ impl<B: TransactionalConnection + ?Sized> Drop for TransactionGuard<'_, B> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::expr::SqlVal;
-    use crate::query::{BuiltQuery, QueryBackend};
-
-    /// A connection whose transactional statements are scripted by the test.
-    #[derive(Default)]
-    struct MockConnection {
-        status: TransactionStatus<String>,
-        statements: Vec<String>,
-        fail_rollback: bool,
-        fail_savepoint_rollback: bool,
-    }
-
-    impl QueryBackend for MockConnection {
-        type Error = String;
-
-        fn fetch_raw(&mut self, _query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-            Ok(Vec::new())
-        }
-
-        fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
-            self.statements.push(query.sql.clone());
-            Ok(0)
-        }
-    }
-
-    impl TransactionBackend for MockConnection {
-        fn rollback(&mut self) -> Result<(), Self::Error> {
-            self.statements.push(String::from("ROLLBACK"));
-            if self.fail_rollback {
-                Err(String::from("rollback refused"))
-            } else {
-                Ok(())
-            }
-        }
-
-        fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-            self.statements
-                .push(format!("ROLLBACK TO SAVEPOINT {name}"));
-            if self.fail_savepoint_rollback {
-                Err(String::from("savepoint rollback refused"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    impl TransactionalConnection for MockConnection {
-        fn transaction_status(&mut self) -> &mut TransactionStatus<String> {
-            &mut self.status
-        }
-    }
-
-    #[test]
-    fn a_failed_rollback_poisons_the_connection() {
-        let mut connection = MockConnection {
-            fail_rollback: true,
-            ..MockConnection::default()
-        };
-
-        drop(TransactionGuard::begin(&mut connection).expect("the transaction opens"));
-
-        assert!(connection.status.is_poisoned());
-        assert!(
-            connection.status.is_open(),
-            "a refused rollback never closes the transaction"
-        );
-        assert_eq!(
-            connection.statements,
-            vec![String::from("BEGIN"), String::from("ROLLBACK")]
-        );
-    }
-
-    #[test]
-    fn a_poisoned_connection_refuses_a_new_transaction() {
-        let mut connection = MockConnection {
-            fail_rollback: true,
-            ..MockConnection::default()
-        };
-        drop(TransactionGuard::begin(&mut connection).expect("the transaction opens"));
-
-        let refused = TransactionGuard::begin(&mut connection);
-
-        assert_eq!(refused.err(), Some(String::from("rollback refused")));
-        assert!(connection.status.is_poisoned());
-        assert!(connection.status.is_open());
-    }
-
-    #[test]
-    fn a_poisoned_connection_recovers_once_the_rollback_succeeds() {
-        let mut connection = MockConnection {
-            fail_rollback: true,
-            ..MockConnection::default()
-        };
-        drop(TransactionGuard::begin(&mut connection).expect("the transaction opens"));
-        assert!(connection.status.is_poisoned());
-
-        connection.fail_rollback = false;
-        let guard = TransactionGuard::begin(&mut connection).expect("the connection recovers");
-        assert!(guard.is_outer());
-        assert!(!guard.status.is_poisoned());
-        assert!(guard.status.is_open());
-        guard.commit().expect("the recovered transaction commits");
-
-        assert!(!connection.status.is_open());
-        assert!(!connection.status.is_poisoned());
-    }
-
-    #[test]
-    fn a_failed_savepoint_rollback_poisons_the_connection() {
-        let mut connection = MockConnection {
-            fail_savepoint_rollback: true,
-            ..MockConnection::default()
-        };
-        let mut outer = TransactionGuard::begin(&mut connection).expect("the transaction opens");
-        drop(TransactionGuard::begin(&mut *outer).expect("the savepoint opens"));
-
-        assert!(outer.status.is_poisoned());
-        assert!(
-            outer.status.is_open(),
-            "the enclosing transaction stays open"
-        );
-        assert_eq!(
-            outer.status.depth(),
-            1,
-            "a refused savepoint rollback keeps the savepoint recorded"
-        );
-    }
-
-    #[test]
-    fn a_poisoned_connection_refuses_to_commit_the_enclosing_transaction() {
-        let mut connection = MockConnection {
-            fail_savepoint_rollback: true,
-            ..MockConnection::default()
-        };
-        let mut outer = TransactionGuard::begin(&mut connection).expect("the transaction opens");
-        drop(TransactionGuard::begin(&mut *outer).expect("the savepoint opens"));
-
-        let refused = outer.commit();
-
-        assert_eq!(
-            refused.err(),
-            Some(String::from("savepoint rollback refused")),
-            "the refusal hands the error of the failed rollback back"
-        );
-        assert_eq!(
-            connection.statements,
-            vec![
-                String::from("BEGIN"),
-                String::from("SAVEPOINT rurqe_sp_1"),
-                String::from("ROLLBACK TO SAVEPOINT rurqe_sp_1"),
-                String::from("ROLLBACK"),
-            ],
-            "the abandoned work is never committed, and the guard forces the rollback"
-        );
-        assert!(!connection.status.is_open());
-        assert!(!connection.status.is_poisoned());
-    }
-
-    #[test]
-    fn a_nested_block_rolls_back_to_its_savepoint() {
-        let mut connection = MockConnection::default();
-        let mut outer = TransactionGuard::begin(&mut connection).expect("the transaction opens");
-        drop(TransactionGuard::begin(&mut *outer).expect("the savepoint opens"));
-
-        assert!(!outer.status.is_poisoned());
-        assert!(outer.status.is_open());
-        assert_eq!(outer.status.depth(), 0);
-
-        outer.commit().expect("the outer transaction commits");
-        assert!(!connection.status.is_open());
-    }
-
-    #[test]
-    fn begin_with_renders_the_requested_isolation_level() {
-        for (level, expected) in [
-            (
-                IsolationLevel::ReadCommitted,
-                "BEGIN ISOLATION LEVEL READ COMMITTED",
-            ),
-            (
-                IsolationLevel::RepeatableRead,
-                "BEGIN ISOLATION LEVEL REPEATABLE READ",
-            ),
-            (
-                IsolationLevel::Serializable,
-                "BEGIN ISOLATION LEVEL SERIALIZABLE",
-            ),
-        ] {
-            let mut connection = MockConnection::default();
-            let guard = TransactionGuard::begin_with(&mut connection, Some(level))
-                .expect("the transaction opens");
-
-            assert!(guard.is_outer());
-            assert_eq!(guard.statements, vec![String::from(expected)]);
-            assert!(guard.status.is_open());
-        }
-    }
-
-    #[test]
-    fn begin_without_an_isolation_level_renders_a_plain_begin() {
-        let mut connection = MockConnection::default();
-        let guard = TransactionGuard::begin(&mut connection).expect("the transaction opens");
-        assert_eq!(guard.statements, vec![String::from("BEGIN")]);
-        drop(guard);
-
-        let mut connection = MockConnection::default();
-        let guard =
-            TransactionGuard::begin_with(&mut connection, None).expect("the transaction opens");
-        assert_eq!(guard.statements, vec![String::from("BEGIN")]);
-    }
-
-    #[test]
-    fn a_nested_block_ignores_the_requested_isolation_level() {
-        let mut connection = MockConnection::default();
-        let mut outer = TransactionGuard::begin(&mut connection).expect("the transaction opens");
-        drop(
-            TransactionGuard::begin_with(&mut *outer, Some(IsolationLevel::Serializable))
-                .expect("the savepoint opens"),
-        );
-
-        assert_eq!(
-            outer.statements,
-            vec![
-                String::from("BEGIN"),
-                String::from("SAVEPOINT rurqe_sp_1"),
-                String::from("ROLLBACK TO SAVEPOINT rurqe_sp_1"),
-                String::from("RELEASE SAVEPOINT rurqe_sp_1"),
-            ]
-        );
-        assert!(
-            !outer
-                .statements
-                .iter()
-                .any(|statement| statement.contains("ISOLATION LEVEL")),
-            "a savepoint carries no isolation clause"
-        );
-        assert!(outer.status.is_open());
-        assert_eq!(outer.status.depth(), 0);
-    }
-
-    #[test]
-    fn a_committed_isolation_transaction_renders_begin_then_commit() {
-        let mut connection = MockConnection::default();
-        let guard =
-            TransactionGuard::begin_with(&mut connection, Some(IsolationLevel::Serializable))
-                .expect("the transaction opens");
-        guard.commit().expect("the transaction commits");
-
-        assert_eq!(
-            connection.statements,
-            vec![
-                String::from("BEGIN ISOLATION LEVEL SERIALIZABLE"),
-                String::from("COMMIT"),
-            ]
-        );
-        assert!(!connection.status.is_open());
-        assert!(!connection.status.is_poisoned());
-        assert_eq!(connection.status.depth(), 0);
-    }
-}
+mod tests;
