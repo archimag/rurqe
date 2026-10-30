@@ -1,11 +1,10 @@
 //! Living documentation coverage guard.
 //!
-//! The `examples/` crate is the compiled half of the book: chapters include
-//! fragments of its files through `{{#rustdoc_include ...}}` directives, and
-//! `mdbook build` already refuses a chapter that names a missing file or a
+//! A chapter that includes a missing example target or an unknown anchor fails
+//! the mdbook build immediately, because mdbook aborts on a missing target or a
 //! missing anchor. This guard closes the loop in the other direction: every
 //! registered example target and every anchor region it declares must be
-//! included by at least one chapter under `docs/book/src`, so dead
+//! included by at least one chapter under `docs/`, so dead
 //! documentation cannot accumulate unnoticed.
 //!
 //! The guard reads source text only and never compiles anything: compiling
@@ -96,7 +95,7 @@ fn book_source() -> PathBuf {
 
 /// Anchor regions the chapters include, keyed by the example file name.
 ///
-/// The walk reads `docs/book/src` alone: the conventions documents state the
+/// The walk reads `docs/` alone: the conventions documents state the
 /// include syntax inside fenced samples, and a sample is not an inclusion.
 fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
     let mut included: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -311,7 +310,7 @@ fn every_anchor_is_included_by_a_chapter() {
             assert!(
                 is_included,
                 "anchor `{anchor}` of examples/{file} is included by no chapter under \
-                 docs/book/src: include the fragment from the chapter that documents it, or \
+                 docs/: include the fragment from the chapter that documents it, or \
                  delete the anchor together with its fragment"
             );
         }
@@ -357,7 +356,7 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
 
     assert!(
         checked > 0,
-        "no chapter under docs/book/src includes a fragment of the examples crate, so the \
+        "no chapter under docs/ includes a fragment of the examples crate, so the \
          book documents no compiled code at all"
     );
 }
