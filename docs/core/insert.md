@@ -48,7 +48,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 {{#rustdoc_include ../examples/crud.rs:insert}}
 ```
 
-```text
+```sql
 INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3) RETURNING "id"
 ```
 
@@ -70,7 +70,7 @@ A tuple of assignments is accepted only when every element targets the same tabl
 {{#rustdoc_include ../examples/crud.rs:values_many}}
 ```
 
-```text
+```sql
 INSERT INTO "users" ("id", "name", "email") VALUES ($1, $2, $3), ($4, $5, $6)
 ```
 
@@ -82,7 +82,7 @@ One statement carries the whole batch, so the parameters are numbered across the
 {{#rustdoc_include ../examples/crud.rs:from_select}}
 ```
 
-```text
+```sql
 INSERT INTO "users" ("id", "name", "email") SELECT "id", "name", "email" FROM "archived_users" WHERE ("id" > $1)
 ```
 
@@ -94,7 +94,7 @@ The source projection is a tuple that has to match the target column list in ari
 {{#rustdoc_include ../examples/crud.rs:upsert}}
 ```
 
-```text
+```sql
 INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT DO NOTHING
 ```
 

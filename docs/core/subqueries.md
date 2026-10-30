@@ -10,7 +10,7 @@ A `SELECT` projecting exactly one column is also a scalar operand, so it slots d
 {{#rustdoc_include ../examples/subqueries.rs:scalar}}
 ```
 
-```text
+```sql
 SELECT "id", "name", "price" FROM "products"
 WHERE ("price" > (SELECT AVG("price") FROM "products"))
 ```
@@ -39,7 +39,7 @@ The reference `Expr::column::<UserId>().without_scope()` is a correlated one: `.
 {{#rustdoc_include ../examples/subqueries.rs:in_subquery}}
 ```
 
-```text
+```sql
 SELECT "id", "name" FROM "users" WHERE "id" IN (SELECT "user_id" FROM "orders")
 ```
 
@@ -49,7 +49,7 @@ The expected row type is tied to the nested projection: an expression of type `T
 
 A nested statement renders only when the outer statement does, and its parameters join the same list, so the numbering stays unified across scopes:
 
-```text
+```sql
 WHERE ("total" > $1 AND EXISTS (SELECT ... WHERE "user_id" = $2))
 ```
 

@@ -47,7 +47,7 @@ A `WITH` is not a second round trip: it is one statement, and a second named rel
 {{#rustdoc_include ../examples/cte.rs:summary}}
 ```
 
-```text
+```sql
 SELECT "user_id" AS "owner_id", SUM("amount") AS "total" FROM "orders" GROUP BY "user_id"
 ```
 
@@ -63,7 +63,7 @@ SELECT "user_id" AS "owner_id", SUM("amount") AS "total" FROM "orders" GROUP BY 
 
 The statement below renders as one round trip:
 
-```text
+```sql
 WITH "user_totals" AS (
     SELECT "user_id" AS "owner_id", SUM("amount") AS "total"
     FROM "orders" GROUP BY "user_id"

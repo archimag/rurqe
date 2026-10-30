@@ -8,7 +8,7 @@ That order is what makes the rule "a column is either grouped or aggregated" che
 {{#rustdoc_include ../examples/aggregates.rs:group_by}}
 ```
 
-```text
+```sql
 SELECT "users"."id" AS "user_id", COUNT(*)
 FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 GROUP BY "users"."id"

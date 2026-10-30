@@ -23,7 +23,7 @@ The join builders take the table marker as a value and read the joined type `T` 
 {{#rustdoc_include ../examples/joins.rs:inner}}
 ```
 
-```text
+```sql
 SELECT "users"."id", "users"."name", "orders"."total"
 FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 ```

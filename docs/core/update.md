@@ -42,7 +42,7 @@ The shortest executable statement assigns one column and restricts one row: `upd
 {{#rustdoc_include ../examples/crud.rs:update}}
 ```
 
-```text
+```sql
 UPDATE "users" SET "name" = $1 WHERE ("id" = $2)
 ```
 
@@ -57,7 +57,7 @@ The three constructors — `UserName::set("root")`, `UserName::default_value()`,
 {{#rustdoc_include ../examples/crud.rs:update_from}}
 ```
 
-```text
+```sql
 UPDATE "users" SET "name" = $1 FROM "accounts" WHERE ("users"."id" = "accounts"."id")
 ```
 

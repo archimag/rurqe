@@ -10,7 +10,7 @@ Both are the last steps of the logical query processing order: the rows exist, t
 {{#rustdoc_include ../examples/ordering.rs:order_by}}
 ```
 
-```text
+```sql
 SELECT "id" AS "user_id", "name" AS "user_name" FROM "users"
 WHERE ("id" > $1) ORDER BY "id" ASC LIMIT 5 OFFSET 10
 ```
@@ -60,7 +60,7 @@ A tuple of columns compares against a tuple of values as a single value (SQL:199
 {{#rustdoc_include ../examples/ordering.rs:keyset}}
 ```
 
-```text
+```sql
 (("created_at", "id") < ($1, $2))
 ```
 

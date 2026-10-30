@@ -19,7 +19,7 @@ The two statements must share the dialect and the output row type — the signat
 {{#rustdoc_include ../examples/set_ops.rs:union}}
 ```
 
-```text
+```sql
 (SELECT "name" FROM "users") UNION ALL (SELECT "name" FROM "archived_users")
 ```
 

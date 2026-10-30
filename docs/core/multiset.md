@@ -6,7 +6,7 @@ A nested collection is not stitched together on the client: it becomes one aggre
 
 PostgreSQL aggregates rows natively, so a collection is `jsonb_agg(to_jsonb(...))` over the nested query, with an empty array for a parent that has no children:
 
-```text
+```sql
 SELECT "id",
        COALESCE((SELECT jsonb_agg(to_jsonb("__rurqe_sub"))
                  FROM (SELECT "order_id" AS "order_id", "total" AS "total"
@@ -20,7 +20,7 @@ Every child row is aggregated by the engine, so the ordering, the filter, and th
 
 SQLite has no native row aggregation, so a dialect without it builds every object with `json_object` and collects the objects with `json_group_array`:
 
-```text
+```sql
 COALESCE((SELECT json_group_array(json_object('order_id', "__rurqe_sub"."order_id",
                                                'total', "__rurqe_sub"."total"))
           FROM (SELECT "order_id" AS "order_id", "total" AS "total" FROM "orders")
@@ -33,7 +33,7 @@ Both forms produce the same JSON document, so the client decodes one representat
 
 The single-row form differs in two details: the aggregate is not wrapped in `COALESCE`, and the nested statement is limited to one row.
 
-```text
+```sql
 SELECT "id", (SELECT to_jsonb("__rurqe_sub")
               FROM (SELECT "total" AS "total" FROM "orders" LIMIT 1) AS "__rurqe_sub")
 FROM "users"

@@ -39,7 +39,7 @@ The shortest executable statement restricts one row: `delete_from(User).where_(U
 {{#rustdoc_include ../examples/crud.rs:delete}}
 ```
 
-```text
+```sql
 DELETE FROM "users" WHERE ("id" = $1)
 ```
 
@@ -51,7 +51,7 @@ DELETE FROM "users" WHERE ("id" = $1)
 {{#rustdoc_include ../examples/crud.rs:delete_using}}
 ```
 
-```text
+```sql
 DELETE FROM "users" USING "accounts" WHERE ("users"."id" = "accounts"."id")
 ```
 

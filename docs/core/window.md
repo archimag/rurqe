@@ -43,7 +43,7 @@ The window is obtained by calling `.over(spec)`.
 {{#rustdoc_include ../examples/window.rs:ranked}}
 ```
 
-```text
+```sql
 SELECT "id", ROW_NUMBER() OVER (PARTITION BY "department_id" ORDER BY "salary" DESC)
 FROM "employees"
 ```
