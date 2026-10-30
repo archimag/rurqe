@@ -114,16 +114,61 @@ A derived table renders inline as `(SELECT ...) AS "name"`, so the joined relati
 - Two relations under one name are refused while the statement is built, before any SQL reaches the engine; alias one of them so each occurrence carries a name of its own.
 - The engine recorded by the named statement has to match the engine of the query that reads it, so a relation built for one dialect does not compile into a statement of another.
 ```rust,compile_fail
-// Rejected: `user_totals` is named by the marker, but this statement records no
-// projection, so there is no statement to publish as a relation.
-let totals = select_from(User).as_cte::<UserTotals>();
+use rurqe::postgres::prelude::*;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+    }
+}
+
+table! {
+    UserTotals => "user_totals" {
+        TotalsOwnerId => "owner_id": i64,
+        TotalsTotal => "total": f64,
+    }
+}
+
+fn main() {
+    // Rejected: `user_totals` is named by the marker, but this statement records
+    // no projection, so there is no statement to publish as a relation.
+    let totals = select_from(User).as_cte::<UserTotals>();
+}
+```
+
+```text
+error[E0599]: no method named `as_cte` found for struct `SelectQuery<Postgres<Pg16>, User, (), NoProjection>` in the current scope
+    = note: the method was found for
+            - `SelectQuery<Postgres<Pg16>, Tables, Output, HasProjection>`
 ```
 
 The accepted form projects the statement first — `select_from(Order).group_by(OrderUserId).select(cols! { ... }).as_cte::<UserTotals>()`.
 
 ```rust,compile_fail
-// Rejected: the query never reads `user_totals`, so the column is out of scope.
-let rows = select_from(User).select(cols!(UserId, TotalsTotal));
+use rurqe::postgres::prelude::*;
+
+table! {
+    User => "users" {
+        UserId => "id": i64,
+    }
+}
+
+table! {
+    UserTotals => "user_totals" {
+        TotalsOwnerId => "owner_id": i64,
+        TotalsTotal => "total": f64,
+    }
+}
+
+fn main() {
+    // Rejected: the query never reads `user_totals`, so the column is out of scope.
+    let rows = select_from(User).select(cols!(UserId, TotalsTotal));
+}
+```
+
+```text
+error[E0277]: column `TotalsTotal` cannot be projected from this query's scope
+    = note: introduce the column's table with `from` or a join before projecting it
 ```
 
 The accepted form introduces the relation with `.with(...)` — and then either joins it or reads its columns directly.

@@ -205,6 +205,39 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock: Unlocke
 
 impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output, HasProjection> {
     /// Converts this query into a CTE for the table `T`.
+    ///
+    /// The conversion is reachable only once the query projects its rows, so a
+    /// query without a projection has no statement to publish as a named
+    /// relation:
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     // Fails to compile: the query records no projection, so there is no
+    ///     // statement to publish as a named relation.
+    ///     let _ = SelectQuery::<MockDialect>::new().from::<User>().as_cte::<User>();
+    /// }
+    /// ```
     pub fn as_cte<T: Table>(self) -> Cte<T, Output, D> {
         Cte::new(self)
     }

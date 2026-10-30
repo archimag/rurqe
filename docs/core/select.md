@@ -185,6 +185,10 @@ fn main() {
 }
 ```
 
+```text
+refusing to build a SELECT query without a projection
+    = note: call `.select(...)` with the columns to project before building, rendering, or embedding the query
+```
 The accepted form projects first — `select_from(User).select(cols!(UserId)).build()`.
 
 ```rust,compile_fail
@@ -208,4 +212,8 @@ fn main() {
 }
 ```
 
+```text
+error[E0277]: column `OrderTotal` cannot be projected from this query's scope
+    = note: introduce the column's table with `from` or a join before projecting it
+```
 The accepted form introduces the relation before projecting its column: `select_from(User).inner_join(Order, OrderUserId.eq(UserId)).select(cols!(UserId, OrderTotal))` — and there the field arrives as `f64`, because an inner join keeps both sides matched; write `.left_join(...)` instead and the same field arrives as `Option<f64>`.
