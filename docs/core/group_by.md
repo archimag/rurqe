@@ -30,6 +30,7 @@ Exactly four projection forms survive a grouping:
 
 Projecting an ungrouped column is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
 
+> **Compiler Guard in Action.** `OrderTotal` is not part of `GROUP BY` and is not aggregated — `select((OrderUserId, OrderTotal))` does not compile, with a message saying the column is "neither grouped nor an aggregate".
 However the column is reached for, the rule holds: an expression built over a column keeps that column's relation. `.without_scope()` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
 
 ## The aggregate functions
@@ -103,6 +104,12 @@ A grouped query cannot lock its rows: `for_update` / `for_share` do not exist on
 
 ## What `.build()` adds
 
-The residual cases that cannot be expressed as a positive assertion in types: `BuildError::UngroupedColumn`, `UngroupedHavingColumn`, `UngroupedColumnWithAggregate`.
+The call site refuses a grouped query that reads a column the grouping dropped — in the projection, in the ordering, in a window specification, and in a `HAVING` predicate. `.build()` checks the same rules again on the assembled statement, and for one family of statements that check is the only one there is: a query that never grouped its rows carries no grouping state at all, so nothing in the builder knows that an aggregate collapses the relation.
 
-> **Compiler Guard in Action.** `OrderTotal` is not part of `GROUP BY` and is not aggregated — `select((OrderUserId, OrderTotal))` does not compile, with a message saying the column is "neither grouped nor an aggregate".
+| Typed failure | The statement it refuses |
+|---|---|
+| `UngroupedColumnWithAggregate` | a query without `GROUP BY` that projects an aggregate beside a bare column |
+| `UngroupedColumn` | a statement whose rows an aggregate collapsed, read through a column the collapse dropped — in a projection, in the ordering, or in a `DISTINCT ON` expression |
+| `UngroupedHavingColumn` | a `HAVING` predicate reading a column that is neither aggregated nor grouped |
+
+`select_from(Order).select((OrderUserId, count_all()))` is the first row: it compiles, and the statement is refused when it is built, with a diagnostic asking for the grouping this chapter describes. The second row also governs the ordering of an aggregated query — projecting `count_all()` and ordering the result by `OrderTotal` names a per-row column the collapse removed — while a grouped query orders by a grouped column or by an aggregate, which is what its ordering methods accept.
