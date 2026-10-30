@@ -110,9 +110,9 @@ One-to-many relationships can be queried and transformed into typed child collec
 
 The database engine performs JSON aggregation internally, and the deserializer maps the payload directly into a `Vec` of the synthesized child record — one `order_id`/`total` pair per child row — without Cartesian multiplication on the wire.
 
-## 9. Transactions and Savepoints
+## 9. Transactions
 
-Transactions use RAII guards to guarantee atomicity. A block commits when its closure returns `Ok` and rolls back on `Err` or panic. Nested transactions are handled through savepoints:
+Transactions use an RAII guard to guarantee atomicity. A transaction is opened on a live connection with `.transaction().await?`, and it commits when the handle awaits `commit().await?`; dropping the handle without committing rolls the transaction back, so a returned error or a cancelled future leaves no partial work behind.
 
 ```rust,no_run
 {{#rustdoc_include examples/transactions.rs:transaction}}

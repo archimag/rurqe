@@ -1,16 +1,16 @@
 # Transactions
 
-RURQE provides RAII-managed transaction scopes with automatic rollback on error or panic, atomic commit on success, and transparent nesting via SQL savepoints.
+RURQE provides RAII-managed transactions with explicit commit on success, automatic rollback on drop, and transparent nesting via SQL savepoints on the synchronous adapters.
 
 ## RAII Transaction Scopes
 
-A transaction block is opened via `.transaction(...)`. The transaction commits atomically when its closure returns `Ok`, and automatically rolls back if the closure returns `Err` or unwinds:
+The primary form is asynchronous: a transaction is opened on a live connection through `.transaction()`, which hands back a handle that owns the transaction for the whole block:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/transactions.rs:transaction}}
 ```
 
-Within the closure, the transactional connection handle (`tx`) implements the standard execution traits, allowing queries and mutations to run inside the active transaction.
+The handle implements the standard asynchronous terminal calls — `.fetch_all(&tx).await?`, `.fetch_one(&tx).await?`, `.execute(&tx).await?` — so queries and mutations run inside the active transaction. Committing is explicit: `commit().await?` persists the work and ends the transaction. Dropping the handle without committing rolls the transaction back, so a returned error or a cancelled future leaves no partial work behind.
 
 ## Nested Transactions and Savepoints
 

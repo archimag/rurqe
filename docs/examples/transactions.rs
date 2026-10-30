@@ -1,7 +1,8 @@
-//! Transactional integrity: RAII scopes roll back on error, commit on
-//! success, and nest through `SAVEPOINT`.
+//! Transactional integrity: an RAII guard commits explicitly, rolls back on
+//! drop, and hands its transaction to the standard terminal calls.
 
-use rurqe::sqlite::prelude::*;
+use rurqe::postgres::prelude::*;
+use rurqe::postgres::PgAsyncConnection;
 
 table! {
     /// The `accounts` table.
@@ -14,33 +15,27 @@ table! {
 // ANCHOR: transaction
 /// Records both opening balances in one transaction.
 ///
-/// The outer block commits when its closure returns `Ok` and rolls back when
-/// the closure fails or unwinds. The inner `transaction` call is made while the
-/// outer one is still open, so the adapter wraps that block in a `SAVEPOINT`
-/// instead of opening a second transaction.
-fn record_opening_balance(conn: &mut SqliteConnection) -> Result<(), Error> {
-    conn.transaction(|tx| -> Result<(), Error> {
-        let insert_first = insert_into(Account)
-            .values((AccountId::set(1i64), AccountBalance::set(100i64)));
-        tx.execute(&insert_first)?;
+/// The handle commits only when `commit` is awaited and rolls the transaction
+/// back when it is dropped without one, so a returned error or a cancelled
+/// future leaves no partial work behind.
+async fn record_opening_balances(conn: &mut PgAsyncConnection) -> Result<(), Error> {
+    let tx = conn.transaction().await?;
 
-        tx.transaction(|nested| -> Result<(), Error> {
-            let insert_second = insert_into(Account)
-                .values((AccountId::set(2i64), AccountBalance::set(200i64)));
-            nested.execute(&insert_second)?;
-            Ok(())
-        })?;
+    let first = insert_into(Account).values((AccountId::set(1i64), AccountBalance::set(100i64)));
+    first.execute(&tx).await?;
 
-        Ok(())
-    })
+    let second = insert_into(Account).values((AccountId::set(2i64), AccountBalance::set(200i64)));
+    second.execute(&tx).await?;
+
+    tx.commit().await?;
+    Ok(())
 }
 // ANCHOR_END: transaction
 
-fn main() -> Result<()> {
-    let mut conn = SqliteConnection::open_in_memory()?;
-    conn.execute_batch(
-        "CREATE TABLE accounts (id INTEGER NOT NULL PRIMARY KEY, balance INTEGER NOT NULL);",
-    )?;
-
-    record_opening_balance(&mut conn)
+#[tokio::main]
+async fn main() -> Result<()> {
+    // The connection is never opened: a transaction block is entered through a
+    // live handle, and the pipeline compiles this example without running it.
+    let _ = record_opening_balances;
+    Ok(())
 }
