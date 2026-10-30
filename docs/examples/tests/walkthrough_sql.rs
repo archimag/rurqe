@@ -58,6 +58,9 @@ const SUBQUERIES: &str = include_str!("../../core/subqueries.md");
 /// The chapter walking through the grouping fragment.
 const GROUP_BY: &str = include_str!("../../core/group_by.md");
 
+/// The chapter walking through the nested-collection fragments.
+const MULTISET: &str = include_str!("../../core/multiset.md");
+
 /// Asserts that `built` emits `sql` and that `chapter` quotes that statement.
 fn assert_quoted(chapter: &str, built: &BuiltQuery, sql: &str) {
     assert_eq!(built.sql, sql, "the renderer emits the quoted statement");
@@ -194,5 +197,86 @@ fn the_grouping_walkthrough_quotes_its_grouped_statement() {
         "SELECT \"users\".\"id\" AS \"user_id\", COUNT(*) AS \"orders\" FROM \"users\" \
          INNER JOIN \"orders\" ON (\"orders\".\"user_id\" = \"users\".\"id\") \
          GROUP BY \"users\".\"id\" HAVING (COUNT(*) > $1)",
+    );
+}
+
+#[test]
+fn the_multiset_walkthrough_quotes_its_collection() {
+    // `nested.rs`, anchor `collection`: the nested statement renders inside the
+    // aggregation of the enclosing one.
+    let lines = select_from(Order).select(cols!(order_id: OrderId, total: OrderTotal));
+    let built = select_from(User)
+        .select((UserId, nest_many(lines)))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        MULTISET,
+        &built,
+        "SELECT \"id\", COALESCE((SELECT jsonb_agg(to_jsonb(\"__rurqe_sub\")) FROM \
+         (SELECT \"id\" AS \"order_id\", \"total\" AS \"total\" FROM \"orders\") \
+         AS \"__rurqe_sub\"), '[]'::jsonb) FROM \"users\"",
+    );
+}
+
+#[test]
+fn the_multiset_walkthrough_quotes_its_named_collection() {
+    // `nested.rs`, anchor `named_collection`: a projection names the collection
+    // like any other projected item.
+    let named_lines = select_from(Order).select(cols!(order_id: OrderId, total: OrderTotal));
+    let built = select_from(User)
+        .select(cols! {
+            user_id: UserId,
+            orders: nest_many(named_lines),
+        })
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        MULTISET,
+        &built,
+        "SELECT \"id\" AS \"user_id\", COALESCE((SELECT jsonb_agg(to_jsonb(\"__rurqe_sub\")) \
+         FROM (SELECT \"id\" AS \"order_id\", \"total\" AS \"total\" FROM \"orders\") \
+         AS \"__rurqe_sub\"), '[]'::jsonb) AS \"orders\" FROM \"users\"",
+    );
+}
+
+#[test]
+fn the_multiset_walkthrough_quotes_its_single_row_form() {
+    // `nested.rs`, anchor `single`: the one-to-one form stops at the first row
+    // of its statement.
+    let single_line = select_from(Order).select(cols!(total: OrderTotal));
+    let built = select_from(User)
+        .select((UserId, nest_one(single_line)))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        MULTISET,
+        &built,
+        "SELECT \"id\", (SELECT to_jsonb(\"__rurqe_sub\") FROM \
+         (SELECT \"total\" AS \"total\" FROM \"orders\" LIMIT 1) AS \"__rurqe_sub\") \
+         FROM \"users\"",
+    );
+}
+
+#[test]
+fn the_multiset_walkthrough_quotes_its_sqlite_form() {
+    // `nested.rs`, anchor `collection_sqlite`: a dialect without native row
+    // aggregation assembles the same document field by field.
+    let lines = rurqe::sqlite::sqlite3_38::select_from(Order)
+        .select(cols!(order_id: OrderId, total: OrderTotal));
+    let built = rurqe::sqlite::sqlite3_38::select_from(User)
+        .select((UserId, nest_many(lines)))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        MULTISET,
+        &built,
+        "SELECT \"id\", COALESCE((SELECT json_group_array(json_object('order_id', \
+         \"__rurqe_sub\".\"order_id\", 'total', \"__rurqe_sub\".\"total\")) FROM \
+         (SELECT \"id\" AS \"order_id\", \"total\" AS \"total\" FROM \"orders\") \
+         AS \"__rurqe_sub\"), '[]') FROM \"users\"",
     );
 }

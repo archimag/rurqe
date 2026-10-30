@@ -19,7 +19,19 @@ The nested statement belongs to the same dialect as the enclosing query (or is d
 
 ## Decoding
 
-PostgreSQL reports a nested row document as a JSON value (`SqlVal::Json`), while SQLite reports it as text (`SqlVal::Text`). The decoder accepts both forms, and the collection — a list of child rows or a single optional child row — is assembled from the document without manual JSON parsing. The keys of the document are the field names of the nested projection.
+PostgreSQL reports a nested row document as a JSON value (`SqlVal::Json`), while SQLite reports it as text (`SqlVal::Text`). The decoder accepts both forms, and the collection — a list of child rows or a single optional child row — is assembled from the document without manual JSON parsing. The keys of the document are the field names of the nested projection, so a declared row type reads them by name:
+
+```rust,no_run
+{{#rustdoc_include ../examples/nested.rs:document_row}}
+```
+
+The declaration publishes the same keys the projection writes, so the collection decodes into `Vec<OrderLine>` — and a single nested row into `Option<OrderLine>` — without a positional index:
+
+```rust,no_run
+{{#rustdoc_include ../examples/nested.rs:document_decode}}
+```
+
+A field of a nested row decodes through the same `FromSqlValue` contract a column of the same type decodes through:
 
 | Value type | Representation in the document |
 |---|---|
