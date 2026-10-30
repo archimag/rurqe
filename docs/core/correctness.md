@@ -66,7 +66,7 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 | A `HAVING` predicate reads a column that is neither aggregated nor grouped | `UngroupedHavingColumn` |
 
 The grouping rules sit on both gates, and the split follows the two contracts. A query that grouped its rows through `.group_by(...)` is a grouped statement at the call site, so a projection, a `HAVING` predicate, or a window specification reading a column the grouping dropped is refused by the compiler. The three grouping variants above are the residuals the second gate owns: a statement that projects an aggregate beside a stored column without grouping its rows carries no grouped typestate, so it compiles and is refused when it is built, and the ordering, the `DISTINCT ON` expressions, and the `HAVING` predicate are re-checked on the assembled statement before any SQL is rendered.
-When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias (`table.as_alias("u2")`) resolves the conflict.
+When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias resolves the conflict: `table_alias!` declares the alias marker, and `User.as_alias(Manager)` hands the aliased relation to the builder.
 
 ## Verification Gates Comparison
 

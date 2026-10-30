@@ -54,7 +54,13 @@ The refusal is a pre-flight check of the assembled statement rather than a rende
 
 ## Joining derived tables
 
-`.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table.
+`.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery.
+
+```rust,no_run
+{{#rustdoc_include ../examples/cte.rs:derived_left}}
+```
+
+A left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table: the aggregate produces one row per user that has orders, so a user without orders matches nothing and `total_spent` arrives as `Option<f64>`.
 ## `LATERAL` joins
 
 `LATERAL` joins exist only on PostgreSQL — SQLite has no such clause, so the methods do not exist there at compile time:

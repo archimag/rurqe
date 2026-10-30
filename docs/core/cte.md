@@ -93,8 +93,29 @@ A finished statement also participates in a query without being given a name of 
 | a named statement the query reads (`WITH`) | `.as_cte::<Marker>()` and `.with(...)` |
 | a statement used as a relation in the join list | `.as_table::<Marker>()` and `.inner_join_subquery(...)` / `.left_join_subquery(...)` |
 | a statement evaluated for every row it is joined with | `.as_lateral::<Marker>()` and `.cross_join_lateral(...)` / `.left_join_lateral(...)` |
+```rust,no_run
+{{#rustdoc_include ../examples/cte.rs:derived}}
+```
 
-A derived table renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the statement; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table. `LATERAL` is a dialect capability: PostgreSQL supports it, SQLite does not, so the methods do not exist there at compile time.
+```sql
+SELECT "users"."name" AS "user_name", "user_totals"."total" AS "total_spent"
+FROM "users" INNER JOIN (
+    SELECT "user_id" AS "owner_id", SUM("amount") AS "total"
+    FROM "orders" GROUP BY "user_id"
+) AS "user_totals" ON ("user_totals"."owner_id" = "users"."id")
+```
+
+`.as_table::<UserTotals>()` publishes the finished aggregate as the relation marker `UserTotals`, and `.inner_join_subquery(...)` reads it inline: the statement is rendered as the joined relation itself, so the enclosing query reads its rows in one round trip and the relation behaves like a stored one while its rows come from the derived statement.
+
+A left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table:
+
+```rust,no_run
+{{#rustdoc_include ../examples/cte.rs:derived_left}}
+```
+
+`total_spent` arrives as `Option<f64>` there, because the aggregate produces one row per user that has orders and the left join leaves every other user without a match.
+
+`LATERAL` is a dialect capability: PostgreSQL supports it, SQLite does not, so the methods do not exist there at compile time.
 ## Dialect capability gates
 
 | Feature | PostgreSQL | SQLite |
