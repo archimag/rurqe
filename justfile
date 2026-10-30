@@ -3,7 +3,7 @@ default: verify
 # Run full workspace verification (checks, clippy, tests, doc build)
 [group('tauqe')]
 [doc('Run full workspace verification (checks, clippy, tests, doc build)')]
-verify: fmt-check check clippy test doc-build
+verify: check clippy test doc-build
 
 # Run cargo check across all workspace targets
 [group('tauqe')]

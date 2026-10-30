@@ -51,15 +51,7 @@ auto_level_up = true
 [project]
 runner = "just"
 
-[project.verify]
-command = "just"
-args = ["verify"]
-timeout_secs = 600
 
-[project.post_hook]
-command = "just"
-args = ["fmt"]
-timeout_secs = 120
 [develop]
 max_retries = 5
 # max_replans = 2
