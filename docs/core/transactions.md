@@ -27,7 +27,6 @@ The outer transaction remains open and can handle the error, allowing inner oper
 ```
 
 ## Transaction Isolation Levels
-## Transaction Isolation Levels
 
 This section documents the synchronous runtime form of an isolated transaction boundary. Transaction blocks can be configured with explicit SQL isolation levels:
 
