@@ -1,15 +1,13 @@
 # Summary
 
+- [Introduction](intro.md)
+- [Getting Started](quickstart.md)
+
 # Part I: Getting Started
 
-- [Philosophy of RURQE](intro/philosophy.md)
-- [The architectural tetrad](intro/tetrad.md)
 - [Two-tier SQL correctness](intro/two_tier.md)
-- [Quickstart in five minutes](intro/quickstart.md)
 
 # Part II: Ergonomics & Execution
-
-- [Everyday queries: the portable core](core/overview.md)
 - [Schema: tables and columns](core/schema.md)
 - [The `SELECT` statement](core/select.md)
   - [Predicates and `WHERE`](core/filtering.md)
