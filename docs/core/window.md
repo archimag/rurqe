@@ -12,26 +12,27 @@ Every window carries three things the compiler checks:
 
 The constructors live on `Window`, and every one of them returns a specification that the same methods extend:
 
-| Builder | Produces |
+| Builder | SQL |
 |---|---|
 | `Window::new()` / `Window::empty()` | `OVER ()` |
-| `Window::partition_by(partition)` | `OVER (PARTITION BY ...)` |
-| `Window::order_by(col, direction)` / `order_by_asc(col)` / `order_by_desc(col)` | `OVER (ORDER BY col ASC \| DESC)` |
-| `Window::order_by_nulls(col, direction, nulls)` and its four shortcuts | the same, with `NULLS FIRST` or `NULLS LAST` |
-| `Window::rows_between(start, end)` / `range_between(start, end)` | `OVER (ROWS BETWEEN ... AND ...)`, `OVER (RANGE BETWEEN ... AND ...)` |
-| `.partition_by`, `.order_by*`, `.rows_between`, `.range_between` on a specification | the specification, extended |
+| `Window::partition_by(col)` | `OVER (PARTITION BY col)` |
+| `Window::order_by(col, direction)` | `OVER (ORDER BY col ASC \| DESC)` |
+| `Window::order_by_asc(col)` / `Window::order_by_desc(col)` | `OVER (ORDER BY col ASC)` / `OVER (ORDER BY col DESC)` |
+| `Window::order_by_nulls(col, direction, nulls)` | `OVER (ORDER BY col ... NULLS FIRST \| LAST)` |
+| `Window::rows_between(start, end)` | `OVER (ROWS BETWEEN ... AND ...)` |
+| `Window::range_between(start, end)` | `OVER (RANGE BETWEEN ... AND ...)` |
 
-Every call merges the relations, the columns, and the dialect requirements of the specification it receives.
+Every builder method is also available on `WindowSpec` to extend an existing specification. Chaining methods merges the relations, columns, and dialect requirements into the resulting specification.
 
 ## Functions
 
-| Function | Result type |
-|---|---|
-| `row_number()` | `i64` |
-| `rank()` | `i64` |
-| `dense_rank()` | `i64` |
-| `lag(col)` | `Option<T>`, where `T` is the column's type |
-| `lead(col)` | `Option<T>`, where `T` is the column's type |
+| Function | SQL | Result type |
+|---|---|---|
+| `row_number()` | `ROW_NUMBER()` | `i64` |
+| `rank()` | `RANK()` | `i64` |
+| `dense_rank()` | `DENSE_RANK()` | `i64` |
+| `lag(col)` | `LAG(col)` | `Option<T>`, where `T` is the column's type |
+| `lead(col)` | `LEAD(col)` | `Option<T>`, where `T` is the column's type |
 
 `LAG` / `LEAD` take an `.offset(n)`; without it the offset defaults to 1. A ranking window reads no column operand, while the column handed to `lag` / `lead` joins the columns the window reads.
 
@@ -44,22 +45,25 @@ The window is obtained by calling `.over(spec)`.
 ```
 
 ```sql
-SELECT "id", ROW_NUMBER() OVER (PARTITION BY "department_id" ORDER BY "salary" DESC)
+SELECT "id" AS "employee_id", ROW_NUMBER() OVER (PARTITION BY "department_id" ORDER BY "salary" DESC) AS "position"
 FROM "employees"
 ```
 
 ## Window frames
 
-| Bound | Meaning |
-|---|---|
-| `WindowFrameBound::UnboundedPreceding` | the frame starts at the first row of the partition |
-| `WindowFrameBound::preceding(n)` | `n` rows (or values) above the current row |
-| `WindowFrameBound::CurrentRow` | the current row |
-| `WindowFrameBound::following(n)` | `n` rows (or values) below the current row |
-| `WindowFrameBound::UnboundedFollowing` | the frame ends at the last row of the partition |
+- `WindowFrameBound::UnboundedPreceding`: the frame starts at the first row of the partition.
+- `WindowFrameBound::preceding(n)`: `n` rows (or values) preceding the current row.
+- `WindowFrameBound::CurrentRow`: the current row.
+- `WindowFrameBound::following(n)`: `n` rows (or values) following the current row.
+- `WindowFrameBound::UnboundedFollowing`: the frame ends at the last row of the partition.
 
 ```rust,no_run
 {{#rustdoc_include ../examples/window.rs:frames}}
+```
+
+```sql
+SELECT "id" AS "order_id", SUM("total") OVER (ORDER BY "created_at" ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS "running_total"
+FROM "orders"
 ```
 
 `ROWS` counts the bounds in physical rows, `RANGE` — in values of the ordering column (steadier with coinciding timestamps). `GROUPS` is not implemented: it is not supported by SQLite and is covered by `ROWS`/`RANGE`.

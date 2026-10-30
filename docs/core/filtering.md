@@ -49,14 +49,12 @@ Given `only_active: bool` and `name: Option<&str>`, a handler builds the stateme
 ```
 
 With both branches taken the filter renders as `WHERE ("active" = $1)`; with neither, the statement carries no `WHERE` at all.
+With the active branch taken and the option absent, the filter renders as `WHERE ("active" = $1)`; with neither, the statement carries no `WHERE` at all.
 
-| Method | What it does |
-|---|---|
-| `.where_(pred)` | adds the condition with `AND` |
-| `.where_opt(Option<pred>)` | adds it when it is present |
-| `.when(flag, \|q\| ...)` | applies the closure when the flag holds |
-| `.if_some(value, \|q, v\| ...)` | applies the closure on `Some`, handing the value over |
-
+- `.where_(pred)`: adds the condition with `AND`.
+- `.where_opt(Option<pred>)`: adds it when the option is `Some`.
+- `.when(flag, |q| ...)`: applies the closure when the flag holds.
+- `.if_some(value, |q, v| ...)`: applies the closure on `Some`, handing the value over.
 The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()`.
 
 ## `LIKE`, `ILIKE`, and SQLite
@@ -73,15 +71,13 @@ The closure returns the query it was given, so a clause that would change the qu
 {{#rustdoc_include ../examples/filtering.rs:in_subquery}}
 ```
 
-`in_subquery` requires the nested statement to project exactly one column of the compared type: SQL compares a value with a set of values, so a two-column projection is refused at the call site. A single-column query is also a scalar operand, so it slots into a comparison directly — the Subqueries chapter covers the shape.
+`in_subquery` requires the nested statement to project exactly one column of the compared type: SQL compares a value with a set of values, so a two-column projection is refused at the call site. A single-column query is also a scalar operand, so it slots into a comparison directly.
 
 ## What is refused, and why
 
-| Mistake | What happens |
-|---|---|
-| A column of a table the query does not select from | compile error naming the table; the note says to introduce it with `from` or a join |
-| Comparing columns of two unrelated tables | compile error, the same rule |
-| An aggregate (`SUM`, `COUNT`) in `WHERE` | compile error: a filter runs before groups exist, so aggregates belong in `HAVING` |
-| A comparison against an absent value instead of `IS NULL` | never matches at runtime — use the null predicates |
+- **A column of a table the query does not introduce**: compile error naming the table; the diagnostic note explains to introduce it with `from` or a join before referencing it.
+- **Comparing columns of two unrelated tables**: compile error by the same relational scoping rule.
+- **An aggregate (`SUM`, `COUNT`) in `WHERE`**: compile error because a filter runs before groups exist; aggregates belong in `HAVING`.
+- **A comparison against an absent value instead of `IS NULL`**: never matches at runtime — use the null predicates.
 
 `COUNT(*) > 1` is therefore written in `.having(...)` on a grouped query, where it is accepted, and not in `WHERE`.
