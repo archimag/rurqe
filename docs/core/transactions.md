@@ -32,15 +32,8 @@ Transaction blocks can be configured with explicit SQL isolation levels:
 
 Isolation levels are configured at the transaction boundary:
 
-```rust
-use rurqe::postgres::prelude::*;
-
-fn run_serializable(conn: &mut PgConnection) -> Result<(), Error> {
-    conn.transaction_with_isolation(IsolationLevel::Serializable, |tx| {
-        // operations running under serializable isolation
-        Ok(())
-    })
-}
+```rust,no_run
+{{#rustdoc_include ../examples/transaction_isolation.rs:isolation}}
 ```
 
 ## Raw Handle Escape Hatch

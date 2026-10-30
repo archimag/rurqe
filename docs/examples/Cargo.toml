@@ -109,3 +109,7 @@ path = "schema.rs"
 [[example]]
 name = "sync_execution"
 path = "sync_execution.rs"
+
+[[example]]
+name = "transaction_isolation"
+path = "transaction_isolation.rs"
