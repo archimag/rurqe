@@ -89,7 +89,7 @@ The table is the deterministic reference: every clause of the anatomy has a row,
 | `ORDER BY` of a combined statement | `ORDER BY output_column \| position` | `.order_by_output_asc(...)`, `.order_by_output_desc(...)`, `.order_by_index(n)` | orders the combined rows; no further operand can follow | Set operations |
 | `LIMIT` / `OFFSET` | `LIMIT n`, `OFFSET n` | `.limit(n)`, `.offset(n)` | windows the result | Ordering and pagination |
 | `FOR UPDATE` / `FOR SHARE` | `FOR UPDATE`, `FOR SHARE`, `NOWAIT`, `SKIP LOCKED` | `.for_update()`, `.for_share()`, then `.nowait()`, `.skip_locked()` — PostgreSQL | claims the rows; the statement can no longer be nested or combined | — |
-| — | the statement itself | `.build()`, `.fetch_all(...)`, `.fetch_one(...)`, `.fetch_optional(...)`, `.fetch_collect(...)`, `.fetch_iter(...)`, `.execute(...)` | renders or runs the statement; reachable only once a projection is recorded | — |
+| — | the statement itself | `.build()`, `.fetch_all(...)`, `.fetch_one(...)`, `.fetch_optional(...)`, `.execute(...)` | renders or runs the statement; reachable only once a projection is recorded | — |
 
 ## Clause-by-clause walkthrough
 

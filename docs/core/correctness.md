@@ -58,7 +58,7 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 | `DISTINCT ON (x)` must lead the `ORDER BY` with the same expression | `DistinctOnOrderMismatch` |
 | `DISTINCT` must order by an expression the projection produces | `DistinctOrderNotProjected` |
 | A compound statement must order by a name or a position it produces | `CompoundOrderColumn`, `CompoundOrderIndex` |
-| Two relations must not share one effective name | `DuplicateRelation` |
+| A set operation must combine operands projecting the same number of columns | `SetOperandArity` || Two relations must not share one effective name | `DuplicateRelation` |
 | A raw SQL fragment must carry as many placeholders as it has parameters | `RawSql` |
 
 When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias (`table.as_alias("u2")`) resolves the conflict.

@@ -46,4 +46,4 @@ The rules that compare assembled clauses rather than types run pre-flight:
 
 - `BuildError::CompoundOrderIndex` — a 1-based position outside the projection list;
 - `BuildError::CompoundOrderColumn` — an output name the projection list does not produce;
-- `BuildError::SetOperandArity` — an operand disagreeing with the assembled clause.
+- `BuildError::SetOperandArity` — an operand projecting a different number of columns than the assembled clause projects.
