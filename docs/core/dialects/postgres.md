@@ -19,7 +19,7 @@ The dialect itself defaults to PostgreSQL 16, so a query written under the unver
 The statement renders:
 
 ```sql
-SELECT "id" FROM "users" WHERE ("id" = $1)
+SELECT "id" AS "user_id" FROM "users" WHERE ("id" = $1)
 ```
 
 A pinned module records the release the statement targets. The same chain composes for any pinned release, and only the clauses that release does not support stay unreachable:
@@ -29,6 +29,8 @@ A pinned module records the release the statement targets. The same chain compos
 ```
 
 Both pinned statements render the same text as the unversioned query above: the pinned release decides which clauses the chain can name, not how the named clauses render.
+
+PostgreSQL 16 is the newest release the dialect pins. A later server release joins the set as another module carrying the same entry points, and the capabilities that release introduces become reachable under that module alone.
 
 ## Text Predicates
 
@@ -51,10 +53,21 @@ The pattern or the query binds as one text parameter. In a statement addressing 
 The statement renders:
 
 ```sql
-SELECT "id" FROM "profiles" WHERE ("bio" ~ $1)
+SELECT "id" AS "profile_id" FROM "profiles" WHERE ("bio" ~ $1)
 ```
 
-The `to_tsvector`, `to_tsquery`, and `plainto_tsquery` helpers each build the corresponding server function with its argument bound as one parameter.
+## Full-Text Search
+
+A full-text search compares a query against a text document. Three helpers build the corresponding server function and bind their argument as one parameter, so a document and a query are composed as ordinary expressions of the typed builder:
+
+| SQL form | Method | Produces |
+|---|---|---|
+| `to_tsvector($1)` | `to_tsvector(text)` | the search document of a text |
+| `to_tsquery($1)` | `to_tsquery(query)` | a query spelled with the operators of the query language |
+| `plainto_tsquery($1)` | `plainto_tsquery(text)` | a query folded from plain words |
+| `"bio" @@ to_tsquery($1)` | `matches_tsquery(query)` | the predicate matching a column against a query |
+
+`matches_tsquery` wraps its argument in `to_tsquery` itself, so a predicate over a text column renders `("bio" @@ to_tsquery($1))` with the whole query bound as one parameter. The three helpers are what a statement uses when the document or the query has to stand on its own: projected, compared, or nested inside another expression.
 
 ## JSON and JSONB Documents
 
@@ -80,7 +93,13 @@ A column holding a JSON or JSONB document is declared as `PgJson`, which carries
 {{#rustdoc_include ../../examples/dialects.rs:jsonb}}
 ```
 
-The filter renders as `("metadata" ? $1)` with `"verified"` bound as its text parameter, and the projection renders as `("metadata" ->> $1)` with `"owner"` bound the same way.
+The statement renders:
+
+```sql
+SELECT "id" AS "profile_id", ("metadata" ->> $1) AS "owner" FROM "profiles" WHERE ("metadata" ? $2)
+```
+
+The placeholders follow the statement text, so the projected extraction binds `"owner"` as its first parameter and the filter binds `"verified"` as its second.
 
 ## Array Columns
 
@@ -101,7 +120,7 @@ Array columns are a PostgreSQL capability: the column is declared as `Vec<T>`, o
 The statement renders:
 
 ```sql
-SELECT "id" FROM "profiles" WHERE ("tags" @> $1)
+SELECT "id" AS "profile_id" FROM "profiles" WHERE ("tags" @> $1)
 ```
 
 The argument binds as one parameter: `array_contains`, `array_contained_by`, and `array_overlaps` bind a `Vec<T>` as one array value, while `any` and `all` bind the single element they compare.
@@ -111,7 +130,7 @@ The argument binds as one parameter: `array_contains`, `array_contained_by`, and
 Inside a transaction, a query can claim the rows it selects until the transaction ends:
 
 - `for_update()` renders `FOR UPDATE`: the selected rows are locked against modification by other transactions.
-- `for_share()` renders `FOR SHARE`: the selected rows are locked against modification, while other transactions may still share them.
+- `for_share()` renders `FOR SHARE`: the selected rows are protected against modification, while other transactions may still read them and share the lock.
 
 The wait modifier decides what happens when another transaction already holds a conflicting lock:
 
@@ -127,5 +146,18 @@ Row locking exists only where the engine provides it; the methods are not offere
 The statement renders:
 
 ```sql
-SELECT "id" FROM "users" WHERE ("id" = $1) FOR UPDATE SKIP LOCKED
+SELECT "id" AS "user_id" FROM "users" WHERE ("id" = $1) FOR UPDATE SKIP LOCKED
 ```
+
+## Connections and Pools
+
+The dialect renders a statement; an adapter executes it. PostgreSQL ships two adapters, and the chain that assembles a statement is identical for both — the adapter is named at the terminal call alone:
+
+- `PgAsyncConnection` executes over an asynchronous client, so a terminal call returns a future consumed with `.await?`.
+- `PgConnection` executes over a blocking client, so the same terminal call returns its result directly.
+
+A pool is not a second statement surface. `PgAsyncPool` wraps an asynchronous pool and implements the execution contract of the asynchronous adapter, so a terminal call keeps its shape while the pool checks a connection out for the duration of the call and returns it afterwards. `PgPool` does the same for a blocking pool. Both integrations are opt-in: the asynchronous pool is enabled by the `deadpool-postgres` feature, the blocking one by `r2d2`.
+
+Inside a transaction the terminal calls run against the handle the block receives. `PgAsyncConnection::transaction` opens the asynchronous block, whose handle commits only when `commit` is awaited and rolls back when it is dropped without one, so a returned error or a cancelled future leaves no partial work behind. `PgConnection::transaction` opens the blocking block, which commits when the closure returns `Ok` and rolls back when it returns an error or panics. A blocking block can be opened at an explicit isolation level — `ReadCommitted`, `RepeatableRead`, or `Serializable` — through `transaction_with_isolation`; the level applies to the outermost block, because the engine defines no per-savepoint isolation.
+
+A statement the typed builder does not model is issued through the driver client the blocking adapter exposes with `client` and `client_mut`. Such a statement behaves exactly as the driver defines it and takes no part in the bookkeeping of the typed transaction around it.
