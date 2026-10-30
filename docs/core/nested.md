@@ -32,13 +32,13 @@ The nested statement is a query of its own, so its scope holds only its own `FRO
 
 Without it the child query would reference `"users"`, a relation it never declares, and the call is rejected at the call site.
 
-## The outer projection is `select!`
+## The outer projection is `cols!`
 
-`nest_many(...)` and `nest_one(...)` are computed projections, so the outer list is a `select!`. `dto!` accepts column markers only, and its message points at `select!` for computed projections.
+`nest_many(...)` and `nest_one(...)` are computed projections, so the outer list is a `cols!`. `dto!` accepts column markers only, and its message points at `select!` for computed projections.
 
 ## The keys are the field names
 
-The nested `select!` names the JSON keys of every child row: `select!(order_id: OrderId, total: OrderTotal)` produces documents of the shape `{"order_id": …, "total": …}`. The declaration and the document cannot drift apart, because both come from the same list.
+The nested `cols!` names the JSON keys of every child row: `cols! { order_id: OrderId, total: OrderTotal }` produces documents of the shape `{"order_id": …, "total": …}`. The declaration and the document cannot drift apart, because both come from the same list.
 
 ## What the child query controls
 
@@ -58,4 +58,4 @@ The gate is the dialect's JSON aggregation capability. SQLite shipped the JSON f
 
 - A nested statement without a projection (`nest_many(select_from(Order))`) does not compile: there is no row type to collect.
 - A dialect without JSON aggregation does not accept the projection at all, so an unsupported engine fails at the type level instead of inside the driver.
-- The element type has to declare its keys, which is what the `select!` record does.
+- The element type has to declare its keys, which is what the `cols!` record does.

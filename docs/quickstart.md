@@ -108,7 +108,7 @@ One-to-many relationships can be queried and transformed into typed child collec
 {{#rustdoc_include examples/nested.rs:nested}}
 ```
 
-The database engine performs JSON aggregation internally, and the deserializer maps the payload directly into a `Vec<OrderSummary>` without Cartesian multiplication on the wire.
+The database engine performs JSON aggregation internally, and the deserializer maps the payload directly into a `Vec` of the synthesized child record — one `order_id`/`total` pair per child row — without Cartesian multiplication on the wire.
 
 ## 9. Transactions and Savepoints
 
