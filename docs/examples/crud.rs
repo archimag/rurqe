@@ -1,7 +1,8 @@
 //! Row mutations: `INSERT`, `UPDATE`, `DELETE`, `RETURNING`, and upsert.
 //!
-//! Every mutation terminates against an asynchronous pool, so a chapter
-//! includes the shape an application actually writes.
+//! Every mutation except the bulk insert terminates against an asynchronous
+//! pool, so a chapter includes the shape an application actually writes; the
+//! bulk insert is assembled as a build fragment of its own.
 
 use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
@@ -75,25 +76,7 @@ async fn main() -> Result<()> {
 // ANCHOR_END: upsert
     println!("upserted {upserted} row(s)");
 
-// ANCHOR: values_many
-    let bulk = insert_into(User)
-        .values_many([
-            (
-                UserId::set(1i64),
-                UserName::set("alice"),
-                UserEmail::set("alice@example.com"),
-            ),
-            (
-                UserId::set(2i64),
-                UserName::set("bob"),
-                UserEmail::set("bob@example.com"),
-            ),
-        ])
-        .expect("the row source is not empty")
-        .execute(&pool)
-        .await?;
-// ANCHOR_END: values_many
-    println!("inserted {bulk} row(s)");
+    let _ = assemble_bulk_insert;
 
 // ANCHOR: from_select
     // The source projection is a tuple of the inserted columns: `from_select`
@@ -146,6 +129,30 @@ async fn main() -> Result<()> {
 // ANCHOR_END: delete_returning
     println!("removed rows: {removed:?}");
 
+    Ok(())
+}
+
+/// Assembles the bulk insert as a build fragment of its own.
+///
+/// The row source is the fallible step: an empty list is refused instead of
+/// rendering a `VALUES` list with no row in it, so the fragment carries
+/// `EmptyRows` rather than the driver error of the pool.
+fn assemble_bulk_insert() -> Result<(), EmptyRows> {
+// ANCHOR: values_many
+    insert_into(User)
+        .values_many([
+            (
+                UserId::set(1i64),
+                UserName::set("alice"),
+                UserEmail::set("alice@example.com"),
+            ),
+            (
+                UserId::set(2i64),
+                UserName::set("bob"),
+                UserEmail::set("bob@example.com"),
+            ),
+        ])?;
+// ANCHOR_END: values_many
     Ok(())
 }
 

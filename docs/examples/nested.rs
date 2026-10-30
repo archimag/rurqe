@@ -67,6 +67,13 @@ async fn main() -> Result<()> {
 // ANCHOR_END: nest_one
     println!("{}", users_with_top_order.len());
 
+    let _ = build_correlated;
+
+    Ok(())
+}
+
+/// Builds the correlated statement as a fragment of its own.
+fn build_correlated() -> Result<(), BuildError> {
 // ANCHOR: correlation
     // The child statement introduces only `orders` in its scope, so a column
     // of the enclosing query is marked as resolved elsewhere instead of being
@@ -74,10 +81,8 @@ async fn main() -> Result<()> {
     let _correlated = select_from(Order)
         .select(cols!(OrderTotal))
         .where_(OrderUserId.eq(UserId.without_scope()))
-        .build()
-        .expect("the correlated statement is valid");
+        .build()?;
 // ANCHOR_END: correlation
-
     Ok(())
 }
 

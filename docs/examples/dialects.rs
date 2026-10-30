@@ -1,5 +1,6 @@
 //! One query, three dialect modules: identifier quoting, placeholders, and
-//! the pinned capability set differ, the typed builder stays the same.
+//! the pinned capability set differ, the typed builder stays the same. The file
+//! only assembles and renders statements, so it names no runtime at all.
 
 use rurqe::postgres::prelude::*;
 use rurqe::sqlite::{sqlite3_0, sqlite3_35};
@@ -11,13 +12,12 @@ table! {
     }
 }
 
-fn main() {
+fn main() -> Result<(), BuildError> {
 // ANCHOR: postgres
     let postgres_query = select_from(User)
         .select(cols!(UserId))
         .where_(UserId.eq(7i64))
-        .build()
-        .expect("valid postgres query");
+        .build()?;
 // ANCHOR_END: postgres
     println!("{}", postgres_query.sql);
 
@@ -25,8 +25,7 @@ fn main() {
     let sqlite_query = sqlite3_35::select_from(User)
         .select(cols!(UserId))
         .where_(UserId.eq(7i64))
-        .build()
-        .expect("valid sqlite query");
+        .build()?;
 // ANCHOR_END: sqlite
     println!("{}", sqlite_query.sql);
 
@@ -37,8 +36,8 @@ fn main() {
     let legacy_query = sqlite3_0::select_from(User)
         .select(cols!(UserId))
         .where_(UserId.eq(7i64))
-        .build()
-        .expect("valid legacy sqlite query");
+        .build()?;
 // ANCHOR_END: version
     println!("{}", legacy_query.sql);
+    Ok(())
 }

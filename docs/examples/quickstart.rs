@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
         .distinct_on(UserName)
         .order_by_asc(UserId)
         .build();
-    assert!(rejected.is_err());
+    assert!(matches!(rejected, Err(BuildError::DistinctOnOrderMismatch { .. })));
 // ANCHOR_END: build_refusal
 
     Ok(())
