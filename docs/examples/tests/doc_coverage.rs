@@ -132,6 +132,78 @@ fn book_source() -> PathBuf {
     book
 }
 
+/// File name of the table of contents inside the book source.
+const SUMMARY_FILE: &str = "SUMMARY.md";
+
+/// Whether a directory of the book source holds no chapter.
+///
+/// The example crate carries its own tests, `target` and `book` are build
+/// output, and `.git` is not part of the working tree at all.
+fn is_skipped_directory(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    name == "examples" || name == "target" || name == "book" || name == ".git"
+}
+
+/// Whether a Markdown file is a book-level document rather than a chapter.
+///
+/// The table of contents defines the chapter set and the conventions document
+/// states how the book is written, so neither is a chapter of its own.
+fn is_book_metadata(path: &Path) -> bool {
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    name == SUMMARY_FILE || name == "Conventions.md"
+}
+
+/// Chapters the table of contents links, as paths relative to the book source.
+///
+/// `SUMMARY.md` is the single statement of what the book contains: mdbook
+/// builds exactly the chapters it names, so an entry without a file aborts the
+/// build while a chapter without an entry never reaches a reader. The target
+/// of every list item is reduced to its path, so neither the title nor a
+/// fragment reaches the comparison.
+fn summary_entries() -> Vec<String> {
+    let path = book_source().join(SUMMARY_FILE);
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{path:?} is not readable: {error}"));
+    text.lines()
+        .filter_map(|line| {
+            let target = line.split_once("](")?.1.split_once(')')?.0.trim();
+            let chapter = target.split('#').next()?.trim();
+            (!chapter.is_empty()).then(|| chapter.to_owned())
+        })
+        .collect()
+}
+
+/// Markdown files under `dir`, relative to the book source and `/`-separated.
+///
+/// The walk skips the directories the inclusion guards skip, so a file the
+/// book never reads cannot appear as a chapter of it.
+fn relative_chapter_files(dir: &Path, book: &Path, chapters: &mut Vec<String>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
+            .path();
+        if path.is_dir() {
+            if is_skipped_directory(&path) {
+                continue;
+            }
+            relative_chapter_files(&path, book, chapters);
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            if is_book_metadata(&path) {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(book)
+                .unwrap_or_else(|error| panic!("chapter {path:?} lies under {book:?}: {error}"));
+            chapters.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+}
 /// Anchor regions the chapters include, keyed by the example file name.
 ///
 /// The walk reads `docs/` alone: the conventions documents state the
@@ -168,9 +240,7 @@ fn collect_directives(dir: &Path, directives: &mut Vec<(String, String, String)>
             .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
             .path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|name| {
-                name == "examples" || name == "target" || name == "book" || name == ".git"
-            }) {
+            if is_skipped_directory(&path) {
                 continue;
             }
             collect_directives(&path, directives);
@@ -265,9 +335,7 @@ fn collect_hidden_scaffolding(dir: &Path, hidden: &mut Vec<(String, usize, Strin
             .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
             .path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|name| {
-                name == "examples" || name == "target" || name == "book" || name == ".git"
-            }) {
+            if is_skipped_directory(&path) {
                 continue;
             }
             collect_hidden_scaffolding(&path, hidden);
@@ -559,9 +627,7 @@ fn collect_fence_violations(dir: &Path, violations: &mut Vec<FenceViolation>) {
             .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
             .path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|name| {
-                name == "examples" || name == "target" || name == "book" || name == ".git"
-            }) {
+            if is_skipped_directory(&path) {
                 continue;
             }
             collect_fence_violations(&path, violations);
@@ -678,5 +744,39 @@ fn no_chapter_hides_scaffolding_inside_a_rust_block() {
          chapter includes a fragment of the examples crate instead of hiding the lines that \
          make that fragment compile",
         hidden.len()
+    );
+}
+
+#[test]
+fn every_summary_entry_names_an_existing_chapter() {
+    let book = book_source();
+    let mut missing = Vec::new();
+    for chapter in summary_entries() {
+        if !book.join(&chapter).is_file() {
+            missing.push(chapter);
+        }
+    }
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "SUMMARY.md links {missing:?}, but no such file exists under {book:?}: mdbook aborts on a \
+         chapter the table of contents names and the source lacks, so the entry is either pointed \
+         at an existing chapter or removed together with the file it named"
+    );
+}
+
+#[test]
+fn every_chapter_is_reachable_from_the_table_of_contents() {
+    let book = book_source();
+    let listed: BTreeSet<String> = summary_entries().into_iter().collect();
+    let mut chapters = Vec::new();
+    relative_chapter_files(&book, &book, &mut chapters);
+    chapters.retain(|chapter| !listed.contains(chapter));
+    chapters.sort();
+    assert!(
+        chapters.is_empty(),
+        "chapters under {book:?} are named by no SUMMARY.md entry: {chapters:?}; a chapter the \
+         table of contents does not reach is not part of the book, so it is either listed or \
+         deleted together with the fragments it documents"
     );
 }

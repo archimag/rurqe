@@ -55,8 +55,14 @@ table! {
     }
 }
 
-/// The chapter walking through the dialect fragments.
-const DIALECTS: &str = include_str!("../../core/dialects.md");
+/// The chapter comparing the two engines.
+const COMPARISON: &str = include_str!("../../core/dialects/comparison.md");
+
+/// The chapter walking through the PostgreSQL fragments.
+const POSTGRES: &str = include_str!("../../core/dialects/postgres.md");
+
+/// The chapter walking through the SQLite fragments.
+const SQLITE: &str = include_str!("../../core/dialects/sqlite.md");
 
 /// The chapter walking through the ordering fragment.
 const ORDERING: &str = include_str!("../../core/ordering.md");
@@ -284,14 +290,13 @@ fn the_multiset_walkthrough_quotes_its_sqlite_form() {
         .build()
         .expect("the statement of the fragment is valid");
 
-    assert_quoted(
-        MULTISET,
-        &built,
-        "SELECT \"id\", COALESCE((SELECT json_group_array(json_object('order_id', \
-         \"__rurqe_sub\".\"order_id\", 'total', \"__rurqe_sub\".\"total\")) FROM \
-         (SELECT \"id\" AS \"order_id\", \"total\" AS \"total\" FROM \"orders\") \
-         AS \"__rurqe_sub\"), '[]') FROM \"users\"",
-    );
+    let statement = "SELECT \"id\", COALESCE((SELECT json_group_array(json_object('order_id', \
+                     \"__rurqe_sub\".\"order_id\", 'total', \"__rurqe_sub\".\"total\")) FROM \
+                     (SELECT \"id\" AS \"order_id\", \"total\" AS \"total\" FROM \"orders\") \
+                     AS \"__rurqe_sub\"), '[]') FROM \"users\"";
+
+    assert_quoted(MULTISET, &built, statement);
+    assert_quoted(SQLITE, &built, statement);
 }
 
 #[test]
@@ -303,7 +308,7 @@ fn the_dialect_walkthrough_quotes_its_postgres_prelude() {
         .expect("the statement of the fragment is valid");
 
     assert_quoted(
-        DIALECTS,
+        POSTGRES,
         &built,
         "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = $1)",
     );
@@ -321,7 +326,7 @@ fn the_dialect_walkthrough_quotes_its_sqlite_prelude() {
         .expect("the statement of the fragment is valid");
 
     assert_quoted(
-        DIALECTS,
+        SQLITE,
         &built,
         "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = ?)",
     );
@@ -329,7 +334,33 @@ fn the_dialect_walkthrough_quotes_its_sqlite_prelude() {
 }
 
 #[test]
-fn the_dialect_walkthrough_quotes_its_jsonb_extraction() {
+fn the_comparison_walkthrough_quotes_both_renderings() {
+    // `dialects.rs`, anchors `postgres` and `sqlite`: one chain under each
+    // prelude, and the two statements differ only in the bind style.
+    let postgres = select_from(User)
+        .select(cols!(UserId))
+        .where_(UserId.eq(7i64))
+        .build()
+        .expect("the statement of the fragment is valid");
+    let sqlite = rurqe::sqlite::sqlite3_35::select_from(User)
+        .select(cols!(UserId))
+        .where_(UserId.eq(7i64))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        COMPARISON,
+        &postgres,
+        "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = $1)",
+    );
+    assert_quoted(
+        COMPARISON,
+        &sqlite,
+        "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = ?)",
+    );
+}
+
+#[test]fn the_dialect_walkthrough_quotes_its_jsonb_extraction() {
     let built = select_from(Profile)
         .select(cols! {
             profile_id: ProfileId,
@@ -340,7 +371,7 @@ fn the_dialect_walkthrough_quotes_its_jsonb_extraction() {
         .expect("the statement of the fragment is valid");
 
     assert_quoted(
-        DIALECTS,
+        POSTGRES,
         &built,
         "SELECT \"id\" AS \"profile_id\", (\"metadata\" ->> $1) AS \"owner\" \
          FROM \"profiles\" WHERE (\"metadata\" ? $2)",
@@ -363,7 +394,7 @@ fn the_dialect_walkthrough_quotes_its_array_containment() {
         .expect("the statement of the fragment is valid");
 
     assert_quoted(
-        DIALECTS,
+        POSTGRES,
         &built,
         "SELECT \"id\" AS \"profile_id\" FROM \"profiles\" WHERE (\"tags\" @> $1)",
     );
@@ -385,7 +416,7 @@ fn the_dialect_walkthrough_quotes_its_regex_match() {
         .expect("the statement of the fragment is valid");
 
     assert_quoted(
-        DIALECTS,
+        POSTGRES,
         &built,
         "SELECT \"id\" AS \"profile_id\" FROM \"profiles\" WHERE (\"bio\" ~ $1)",
     );
@@ -403,7 +434,7 @@ fn the_dialect_walkthrough_quotes_its_row_lock() {
         .expect("the statement of the fragment is valid");
 
     assert_quoted(
-        DIALECTS,
+        POSTGRES,
         &built,
         "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = $1) \
          FOR UPDATE SKIP LOCKED",
