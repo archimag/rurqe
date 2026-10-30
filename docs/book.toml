@@ -14,3 +14,6 @@ create-missing = true
 
 [output.html]
 no-section-label = false
+
+[output.html.playground]
+runnable = false
