@@ -129,8 +129,31 @@ Below the stated threshold the clause does not exist on the target, so the metho
 - A row that assigns nothing, or a row that disagrees with the first row on the number of values or on the column at a position, is rejected while the statement is assembled — before any SQL reaches the engine.
 
 ```rust,compile_fail
-// Rejected: the statement names a table but records no row to insert.
-let written = insert_into(User).build();
+use rurqe::postgres::prelude::*;
+
+table! {
+    /// The `users` table.
+    User => "users" {
+        UserId => "id": i64,
+        UserName => "name": String,
+        UserEmail => "email": String,
+    }
+}
+
+fn main() {
+    // Rejected: the statement names a table but records no row to insert.
+    let written = insert_into(User).build();
+}
+```
+
+```text
+error[E0277]: refusing to build an INSERT without rows
+  --> src/main.rs:12:18
+   |
+12 |     let written = insert_into(User).build();
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this INSERT has neither `VALUES` rows nor a source `SELECT`
+   |
+   = note: supply rows with `.values(...)`, `.values_many(...)`, or `.from_select(...)` before building the statement
 ```
 
 The accepted form records the rows first — `.values((UserId::set(1i64), UserName::set("root")))` — and only then builds or executes the statement.
