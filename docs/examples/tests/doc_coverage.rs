@@ -421,7 +421,223 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
          book documents no compiled code at all"
     );
 }
+/// Structure holding an anchor pairing violation in an example file.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct AnchorViolation {
+    file: String,
+    line: usize,
+    message: String,
+}
 
+/// Verifies that every `// ANCHOR: <name>` directive in `path` has a matching
+/// and properly nested `// ANCHOR_END: <name>` closing directive, with no
+/// duplicate anchor names, empty names, or malformed directives.
+fn check_anchor_pairing(path: &Path) -> Vec<AnchorViolation> {
+    let source = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("example file {path:?} is not readable: {error}"));
+    let mut violations = Vec::new();
+    let mut open_anchors: Vec<(String, usize)> = Vec::new();
+    let mut seen_anchors: BTreeSet<String> = BTreeSet::new();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    for (idx, line) in source.lines().enumerate() {
+        let line_num = idx + 1;
+        let trimmed = line.trim();
+
+        if let Some(rest) = trimmed.strip_prefix("// ANCHOR:") {
+            let name = rest.trim();
+            if name.is_empty() {
+                violations.push(AnchorViolation {
+                    file: file_name.clone(),
+                    line: line_num,
+                    message: "empty anchor name in `// ANCHOR:` directive".to_string(),
+                });
+                continue;
+            }
+            if !seen_anchors.insert(name.to_string()) {
+                violations.push(AnchorViolation {
+                    file: file_name.clone(),
+                    line: line_num,
+                    message: format!("duplicate anchor `{name}` declared in the same file"),
+                });
+            }
+            open_anchors.push((name.to_string(), line_num));
+        } else if let Some(rest) = trimmed.strip_prefix("// ANCHOR_END:") {
+            let name = rest.trim();
+            if name.is_empty() {
+                violations.push(AnchorViolation {
+                    file: file_name.clone(),
+                    line: line_num,
+                    message: "empty anchor name in `// ANCHOR_END:` directive".to_string(),
+                });
+                continue;
+            }
+            if let Some(pos) = open_anchors.iter().rposition(|(open_name, _)| open_name == name) {
+                if pos != open_anchors.len() - 1 {
+                    violations.push(AnchorViolation {
+                        file: file_name.clone(),
+                        line: line_num,
+                        message: format!(
+                            "anchor `{name}` closed out of order; expected to close `{}` opened on line {}",
+                            open_anchors.last().unwrap().0,
+                            open_anchors.last().unwrap().1
+                        ),
+                    });
+                }
+                open_anchors.remove(pos);
+            } else {
+                violations.push(AnchorViolation {
+                    file: file_name.clone(),
+                    line: line_num,
+                    message: format!("`// ANCHOR_END: {name}` does not match any currently open anchor"),
+                });
+            }
+        } else if trimmed.starts_with("// ANCHOR") {
+            violations.push(AnchorViolation {
+                file: file_name.clone(),
+                line: line_num,
+                message: format!(
+                    "malformed anchor directive `{trimmed}`; expected `// ANCHOR: <name>` or `// ANCHOR_END: <name>`"
+                ),
+            });
+        }
+    }
+
+    for (unclosed, open_line) in open_anchors {
+        violations.push(AnchorViolation {
+            file: file_name.clone(),
+            line: open_line,
+            message: format!("anchor `{unclosed}` opened on line {open_line} is never closed with `// ANCHOR_END: {unclosed}`"),
+        });
+    }
+
+    violations
+}
+
+#[test]
+fn every_anchor_is_properly_paired_and_closed() {
+    let mut violations = Vec::new();
+    for target in registered_examples() {
+        let file = format!("{}.rs", target.name);
+        let path = package_root().join(&file);
+        violations.extend(check_anchor_pairing(&path));
+    }
+    let lib_path = package_root().join("src").join("lib.rs");
+    if lib_path.is_file() {
+        violations.extend(check_anchor_pairing(&lib_path));
+    }
+    let rendered: Vec<String> = violations
+        .iter()
+        .map(|v| format!("{}:{}: {}", v.file, v.line, v.message))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "anchor pairing violations found in example files:\n{rendered:#?}\nEvery \
+         `// ANCHOR: <name>` must have a unique name and be properly closed with a matching \
+         `// ANCHOR_END: <name>`"
+    );
+}
+
+/// Structure holding a code fence violation in a book chapter.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct FenceViolation {
+    chapter: String,
+    line: usize,
+    message: String,
+}
+
+fn collect_fence_violations(dir: &Path, violations: &mut Vec<FenceViolation>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
+            .path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| {
+                name == "examples" || name == "target" || name == "book" || name == ".git"
+            }) {
+                continue;
+            }
+            collect_fence_violations(&path, violations);
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "Conventions.md")
+            {
+                continue;
+            }
+            check_chapter_fences(&path, violations);
+        }
+    }
+}
+
+fn check_chapter_fences(path: &Path, violations: &mut Vec<FenceViolation>) {
+    let text = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
+    let mut in_fence = false;
+    let mut open_line = 0;
+    let chapter_display = path.display().to_string();
+
+    for (idx, line) in text.lines().enumerate() {
+        let line_num = idx + 1;
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if in_fence {
+                in_fence = false;
+            } else {
+                in_fence = true;
+                open_line = line_num;
+                let tag = info.trim();
+                if tag.is_empty() {
+                    violations.push(FenceViolation {
+                        chapter: chapter_display.clone(),
+                        line: line_num,
+                        message: "unannotated code fence opening with no language tag (must specify \
+                                  e.g. text, sql, toml, bash, rust,no_run)"
+                            .to_string(),
+                    });
+                } else if tag == "rust" {
+                    violations.push(FenceViolation {
+                        chapter: chapter_display.clone(),
+                        line: line_num,
+                        message: "bare ```rust code fence is strictly forbidden; must be \
+                                  ```rust,no_run, ```rust,compile_fail, or ```rust,ignore"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if in_fence {
+        violations.push(FenceViolation {
+            chapter: chapter_display,
+            line: open_line,
+            message: format!("unclosed code fence opened on line {open_line} reaches EOF"),
+        });
+    }
+}
+
+#[test]
+fn no_chapter_has_unannotated_or_bare_rust_code_fences() {
+    let mut violations = Vec::new();
+    collect_fence_violations(&book_source(), &mut violations);
+    let rendered: Vec<String> = violations
+        .iter()
+        .map(|v| format!("{}:{}: {}", v.chapter, v.line, v.message))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "code fence violations found in book chapters:\n{rendered:#?}\nAll opening code fences \
+         must be annotated with a language tag, and bare ```rust is forbidden (Conventions.md § 5)"
+    );
+}
 #[test]
 fn no_legacy_features_part_remains() {
     let legacy = book_source().join("features");
