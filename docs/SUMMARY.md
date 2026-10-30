@@ -36,3 +36,10 @@
 - [Comparing PostgreSQL and SQLite](core/dialects/comparison.md)
 - [PostgreSQL](core/dialects/postgres.md)
 - [SQLite](core/dialects/sqlite.md)
+
+# Part IV: Schema Lifecycle & Tooling
+
+- [Schema code generation](lifecycle/codegen.md)
+- [Migrations](lifecycle/migrations.md)
+- [Stage-based schema evolution](lifecycle/stage.md)
+- [Schema drift verification](lifecycle/drift.md)
