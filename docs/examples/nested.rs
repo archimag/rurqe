@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
                         order_id: OrderId,
                         total: OrderTotal,
                     })
-                    .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
+                    .where_(OrderUserId.eq(UserId.without_scope()))
                     .order_by_desc(OrderTotal),
             ),
         })
@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
                         order_id: OrderId,
                         total: OrderTotal,
                     })
-                    .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
+                    .where_(OrderUserId.eq(UserId.without_scope()))
                     .order_by_desc(OrderTotal),
             ),
         })
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
     // looked up among the relations the child statement declares.
     let _correlated = select_from(Order)
         .select(cols!(OrderTotal))
-        .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
+        .where_(OrderUserId.eq(UserId.without_scope()))
         .build()
         .expect("the correlated statement is valid");
 // ANCHOR_END: correlation

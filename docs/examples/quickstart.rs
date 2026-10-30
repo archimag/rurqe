@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
 // ANCHOR: query
     let users = select_from(User)
         .select(cols!(UserId, UserName, UserEmail))
-        .where_(Expr::column::<UserId>().eq(7i64))
+        .where_(UserId.eq(7i64))
         .fetch_all(&pool)
         .await?;
 // ANCHOR_END: query

@@ -15,7 +15,7 @@ fn main() {
 // ANCHOR: postgres
     let postgres_query = select_from(User)
         .select(cols!(UserId))
-        .where_(Expr::column::<UserId>().eq(7i64))
+        .where_(UserId.eq(7i64))
         .build()
         .expect("valid postgres query");
 // ANCHOR_END: postgres
@@ -24,7 +24,7 @@ fn main() {
 // ANCHOR: sqlite
     let sqlite_query = sqlite3_35::select_from(User)
         .select(cols!(UserId))
-        .where_(Expr::column::<UserId>().eq(7i64))
+        .where_(UserId.eq(7i64))
         .build()
         .expect("valid sqlite query");
 // ANCHOR_END: sqlite
@@ -36,7 +36,7 @@ fn main() {
     // release does not support stay unreachable.
     let legacy_query = sqlite3_0::select_from(User)
         .select(cols!(UserId))
-        .where_(Expr::column::<UserId>().eq(7i64))
+        .where_(UserId.eq(7i64))
         .build()
         .expect("valid legacy sqlite query");
 // ANCHOR_END: version

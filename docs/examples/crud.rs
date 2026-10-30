@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
 // ANCHOR: update
     let updated = update(User)
         .set(UserName::set("admin"))
-        .where_(Expr::column::<UserId>().eq(1i64))
+        .where_(UserId.eq(1i64))
         .execute(&pool)
         .await?;
 // ANCHOR_END: update
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
 
 // ANCHOR: delete
     let removed = delete_from(User)
-        .where_(Expr::column::<UserId>().eq(1i64))
+        .where_(UserId.eq(1i64))
         .execute(&pool)
         .await?;
 // ANCHOR_END: delete
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     // ties the row type of the `SELECT` to the target column list.
     let source = select_from(ArchivedUser)
         .select((ArchivedUserId, ArchivedUserName, ArchivedUserEmail))
-        .where_(Expr::column::<ArchivedUserId>().gt(0i64));
+        .where_(ArchivedUserId.gt(0i64));
     let copied = insert_into(User)
         .from_select((UserId, UserName, UserEmail), source)
         .execute(&pool)
@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
     let linked = update(User)
         .set(UserName::set("root"))
         .from_table(Account)
-        .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+        .where_(UserId.eq(AccountId))
         .execute(&pool)
         .await?;
 // ANCHOR_END: update_from
@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
 // ANCHOR: delete_using
     let cleaned = delete_from(User)
         .using_table(Account)
-        .where_(Expr::column::<UserId>().eq(Expr::column::<AccountId>()))
+        .where_(UserId.eq(AccountId))
         .execute(&pool)
         .await?;
 // ANCHOR_END: delete_using
