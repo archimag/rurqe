@@ -28,14 +28,14 @@ async fn main() -> Result<()> {
     let pool = example_pool();
 
     // ANCHOR: self_join
-    let managed = select_from(Aliased::<User, Manager>::new())
+    let managed = select_from(User.as_alias(Manager))
         .inner_join(
-            Aliased::<User, Employee>::new(),
-            Employee.col(UserManagerId).eq(Manager.col(UserId)),
+            User.as_alias(Employee),
+            Employee.UserManagerId.eq(Manager.UserId),
         )
         .select(cols!(
-            manager_name: Manager.col(UserName),
-            employee_name: Employee.col(UserName),
+            manager_name: Manager.UserName,
+            employee_name: Employee.UserName,
         ))
         .fetch_all(&pool)
         .await?;

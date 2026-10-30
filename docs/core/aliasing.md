@@ -12,13 +12,12 @@ The macro declares a unit struct — the alias marker — bound to the table it 
 
 ## The markers
 
-| Type | Meaning |
+| Form | Meaning |
 |---|---|
-| `Manager` | the alias marker: the name `"m"` bound to `User` |
-| `Aliased<User, Manager>` | the table `User` referenced under `Manager` |
-| `Manager.col(UserName)` | the column `UserName` addressed through `Manager` |
+| `Manager` | the alias marker: the name `"m"` bound to `User`. |
+| `Manager.UserId` | the column `id` addressed through `Manager`. |
 
-`Aliased<User, Manager>` keeps the schema identity of `User` — its columns still belong to `User` — while rendering the table under its alias in `FROM` and `JOIN` clauses:
+The alias marker is handed to the table it references — `User.as_alias(Manager)` — and the builders accept the resulting relation wherever they accept a table. The relation keeps the schema identity of `User` — its columns still belong to `User` — while rendering the table under its alias in `FROM` and `JOIN` clauses:
 
 ```text
 FROM "users" AS "m"
