@@ -1,18 +1,16 @@
 [book]
 title = "RURQE: Rust Universal Relational Query Engine"
 authors = ["RURQE"]
-description = "Документация RURQE: строго типизированный SQL, реляционная теория в типах Rust, миграции и кодогенерация"
-language = "ru"
+description = "RURQE documentation: strictly typed SQL, relational theory in Rust types, migrations and code generation"
+language = "en"
 src = "."
 
 [build]
-build-dir = "book"
+# The book renders into the repository-root `target/book` directory, which is
+# also the destination the `just doc-build` and `just doc-serve` recipes pass as
+# `--dest-dir`, so a plain `mdbook build docs` never writes into the source tree.
+build-dir = "../target/book"
 create-missing = true
 
 [output.html]
 no-section-label = false
-
-# Snippet editions: every Rust block is compiled by `mdbook test`, which passes
-# this edition to rustdoc, so the examples use the 2021 prelude resolution.
-[rust]
-edition = "2021"
