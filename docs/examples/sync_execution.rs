@@ -25,7 +25,9 @@ fn load_user(conn: &mut SqliteConnection) -> Result<Option<i64>, Error> {
 // ANCHOR_END: load_user
 
 fn main() -> Result<()> {
+    // ANCHOR: open_in_memory
     let mut conn = SqliteConnection::open_in_memory()?;
+    // ANCHOR_END: open_in_memory
     conn.execute_batch("CREATE TABLE users (id INTEGER NOT NULL PRIMARY KEY);")?;
 
     match load_user(&mut conn)? {

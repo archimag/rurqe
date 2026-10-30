@@ -45,6 +45,19 @@ table! {
     }
 }
 
+table! {
+    /// The `profiles` table.
+    Profile => "profiles" {
+        ProfileId => "id": i64,
+        ProfileBio => "bio": String,
+        ProfileMetadata => "metadata": PgJson,
+        ProfileTags => "tags": Vec<String>,
+    }
+}
+
+/// The chapter walking through the dialect fragments.
+const DIALECTS: &str = include_str!("../../core/dialects.md");
+
 /// The chapter walking through the ordering fragment.
 const ORDERING: &str = include_str!("../../core/ordering.md");
 
@@ -279,4 +292,121 @@ fn the_multiset_walkthrough_quotes_its_sqlite_form() {
          (SELECT \"id\" AS \"order_id\", \"total\" AS \"total\" FROM \"orders\") \
          AS \"__rurqe_sub\"), '[]') FROM \"users\"",
     );
+}
+
+#[test]
+fn the_dialect_walkthrough_quotes_its_postgres_prelude() {
+    let built = select_from(User)
+        .select(cols!(UserId))
+        .where_(UserId.eq(7i64))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        DIALECTS,
+        &built,
+        "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = $1)",
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(7)]);
+}
+
+#[test]
+fn the_dialect_walkthrough_quotes_its_sqlite_prelude() {
+    // The SQLite prelude builds the same statement, and only the placeholder of
+    // the dialect differs.
+    let built = rurqe::sqlite::sqlite3_35::select_from(User)
+        .select(cols!(UserId))
+        .where_(UserId.eq(7i64))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        DIALECTS,
+        &built,
+        "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = ?)",
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(7)]);
+}
+
+#[test]
+fn the_dialect_walkthrough_quotes_its_jsonb_extraction() {
+    let built = select_from(Profile)
+        .select(cols! {
+            profile_id: ProfileId,
+            owner: ProfileMetadata.json_get_text("owner"),
+        })
+        .where_(ProfileMetadata.json_has_key("verified"))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        DIALECTS,
+        &built,
+        "SELECT \"id\" AS \"profile_id\", (\"metadata\" ->> $1) AS \"owner\" \
+         FROM \"profiles\" WHERE (\"metadata\" ? $2)",
+    );
+    assert_eq!(
+        built.params,
+        vec![
+            SqlVal::Text("owner".to_owned()),
+            SqlVal::Text("verified".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn the_dialect_walkthrough_quotes_its_array_containment() {
+    let built = select_from(Profile)
+        .select(cols!(ProfileId))
+        .where_(ProfileTags.array_contains(vec!["rust".to_owned(), "sql".to_owned()]))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        DIALECTS,
+        &built,
+        "SELECT \"id\" AS \"profile_id\" FROM \"profiles\" WHERE (\"tags\" @> $1)",
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::Array(vec![
+            SqlVal::Text("rust".to_owned()),
+            SqlVal::Text("sql".to_owned()),
+        ])]
+    );
+}
+
+#[test]
+fn the_dialect_walkthrough_quotes_its_regex_match() {
+    let built = select_from(Profile)
+        .select(cols!(ProfileId))
+        .where_(ProfileBio.regex_match("^rust"))
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        DIALECTS,
+        &built,
+        "SELECT \"id\" AS \"profile_id\" FROM \"profiles\" WHERE (\"bio\" ~ $1)",
+    );
+    assert_eq!(built.params, vec![SqlVal::Text("^rust".to_owned())]);
+}
+
+#[test]
+fn the_dialect_walkthrough_quotes_its_row_lock() {
+    let built = select_from(User)
+        .select(cols!(UserId))
+        .where_(UserId.eq(7i64))
+        .for_update()
+        .skip_locked()
+        .build()
+        .expect("the statement of the fragment is valid");
+
+    assert_quoted(
+        DIALECTS,
+        &built,
+        "SELECT \"id\" AS \"user_id\" FROM \"users\" WHERE (\"id\" = $1) \
+         FOR UPDATE SKIP LOCKED",
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(7)]);
 }
