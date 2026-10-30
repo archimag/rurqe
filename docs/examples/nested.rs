@@ -2,10 +2,8 @@
 //! `nest_many` and `nest_one`, so the children of every parent arrive as one
 //! JSON document.
 
-use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
-use tokio_postgres::NoTls;
-
+use rurqe_examples::example_pool;
 table! {
     /// The `users` table.
     User => "users" {
@@ -162,16 +160,3 @@ fn decode_document() -> Result<(), RowDecodeError> {
     Ok(())
 }
 
-/// Builds the asynchronous pool every example executes against.
-///
-/// The pool is lazy — it opens no connection until the first statement is sent
-/// — so an example compiles and runs without a reachable database.
-fn example_pool() -> PgAsyncPool {
-    // The configuration is a literal, so building the pool fails only for a
-    // reason the example itself cannot cause; the pool still opens no
-    // connection until the first statement is sent.
-    let pool = deadpool_postgres::Config::new()
-        .create_pool(Some(Runtime::Tokio1), NoTls)
-        .expect("the example pool configuration is valid");
-    PgAsyncPool::new(pool)
-}

@@ -25,8 +25,22 @@
 //! `fn main` wrapper, a connection stub — stays outside the anchored regions, so
 //! the fragment reads on its own in the rendered chapter.
 //!
-//! This library target carries no API of its own: it keeps the package root a
-//! valid Cargo package before the example targets exist, and it holds the rules
-//! this directory follows. The example files are registered in `Cargo.toml` as
-//! explicit `[[example]]` targets, because Cargo discovers example targets only
-//! under `<package>/examples/`.
+//! The library target provides shared infrastructure for the example targets,
+//! such as the centralized [`example_pool`] function. The example files are
+//! registered in `Cargo.toml` as explicit `[[example]]` targets, because Cargo
+//! discovers example targets only under `<package>/examples/`.
+
+use deadpool_postgres::Runtime;
+use rurqe::postgres::prelude::*;
+use tokio_postgres::NoTls;
+
+/// Builds the shared asynchronous connection pool used across documentation examples.
+///
+/// The pool is lazy — it opens no connection until the first statement is sent —
+/// allowing examples to compile and run without a reachable database.
+pub fn example_pool() -> PgAsyncPool {
+    let pool = deadpool_postgres::Config::new()
+        .create_pool(Some(Runtime::Tokio1), NoTls)
+        .unwrap_or_else(|error| panic!("the example pool configuration is valid: {error}"));
+    PgAsyncPool::new(pool)
+}

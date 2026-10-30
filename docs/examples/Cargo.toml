@@ -15,14 +15,14 @@ publish = false
 # deliberately does not opt into `[lints] workspace = true`.
 
 # The crate compiles three entry-point forms, so the facade is built with the
-# drivers they name: the asynchronous form awaits a `deadpool-postgres` pool,
-# the `sync_`-prefixed files drive the blocking `rusqlite` and `postgres`
-# adapters, and the build-only file (`dialects.rs`) assembles statements under
-# pinned SQLite version modules without opening a connection. The facade's
-# default features stay enabled — they carry the projection macros and the
-# ecosystem column types the examples also compile against — and `postgres`,
-# `sqlite`, and `macros` are named here as well, so no target depends on a
-# default that may change.
+# drivers they name: the asynchronous form awaits a `deadpool-postgres` pool
+# (instantiated via `rurqe_examples::example_pool`), the `sync_`-prefixed files
+# drive the blocking `rusqlite` and `postgres` adapters, and the build-only file
+# (`dialects.rs`) assembles statements under pinned SQLite version modules
+# without opening a connection. The facade's default features stay enabled —
+# they carry the projection macros and the ecosystem column types the examples
+# also compile against — and `postgres`, `sqlite`, and `macros` are named here
+# as well, so no target depends on a default that may change.
 [dependencies]
 rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres"] }
 # The pool is configured through the adapter itself and terminates TLS with the
