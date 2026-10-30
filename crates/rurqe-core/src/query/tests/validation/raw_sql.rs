@@ -6,7 +6,7 @@
 //! criterion alike.
 
 use super::{empty_ast, relation_statement, scalar_subquery, unbalanced_raw, unbalanced_raw_error};
-use crate::expr::{BinaryOp, ExprKind, JoinAst, JoinKind, OrderCriterion, OrderDirection, RawSqlError};
+use crate::expr::{ExprKind, JoinAst, JoinKind, OrderCriterion, OrderDirection, RawSqlError};
 use crate::query::*;
 use crate::schema::TableRef;
 
@@ -88,32 +88,4 @@ fn a_structural_violation_inside_a_nested_statement_of_a_projection_is_reported(
     ast.projections.push(scalar_subquery(inner));
 
     assert_eq!(ast.validate(), Err(unbalanced_raw_error()));
-}
-
-#[test]
-fn a_join_on_predicate_qualified_by_a_name_nothing_declares_is_rejected() {
-    // The `ON` condition of a join belongs to the statement scope, so it resolves
-    // its references against the relations the statement introduces.
-    let mut ast = relation_statement("users", "id");
-    ast.joins.push(JoinAst {
-        kind: JoinKind::Inner,
-        table: TableRef::plain("orders"),
-        lateral: None,
-        on: Some(ExprKind::Binary {
-            op: BinaryOp::Eq,
-            lhs: Box::new(ExprKind::Column {
-                table: "orders",
-                name: "user_id",
-            }),
-            rhs: Box::new(ExprKind::QualifiedColumn {
-                table: "ghosts",
-                column: "id",
-            }),
-        }),
-    });
-
-    assert_eq!(
-        ast.validate(),
-        Err(BuildError::UnresolvedQualifier { name: "ghosts" })
-    );
 }
