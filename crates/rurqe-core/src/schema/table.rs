@@ -1,7 +1,7 @@
 //! Table and column markers together with their relational contracts.
 
 use crate::dialect::Dialect;
-use crate::schema::alias::{AliasedCol, TableAlias};
+use crate::schema::alias::{Aliased, AliasedCol, TableAlias};
 
 /// A table of the database schema, represented as a zero-sized marker type.
 ///
@@ -29,6 +29,41 @@ pub trait Table {
             table: Self::NAME,
             name: column,
         }
+    }
+    /// References this table under the alias `A`.
+    ///
+    /// The alias marker is declared with [`table_alias!`](crate::table_alias),
+    /// and the method hands a builder the aliased relation as a plain value, so
+    /// the table enters `FROM` and `JOIN` without naming a generic wrapper:
+    ///
+    /// ```
+    /// use rurqe_core::schema::{Aliased, Table};
+    ///
+    /// rurqe_core::table! {
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table_alias! {
+    ///     /// The `m` alias.
+    ///     M1 => User as "m"
+    /// }
+    ///
+    /// // The builder receives the aliased relation, not a generic wrapper.
+    /// let manager: Aliased<User, M1> = User.as_alias(M1);
+    ///
+    /// assert_eq!(<Aliased<User, M1> as Table>::table_ref().name, "users");
+    /// assert_eq!(<Aliased<User, M1> as Table>::table_ref().alias, Some("m"));
+    /// ```
+    ///
+    /// The columns of the relation are addressed through the alias exactly as the
+    /// table addresses them: `M1.UserId` renders `"m"."id"`.
+    fn as_alias<A: TableAlias>(&self, _alias: A) -> Aliased<Self, A>
+    where
+        Self: Sized,
+    {
+        Aliased::new()
     }
 }
 
