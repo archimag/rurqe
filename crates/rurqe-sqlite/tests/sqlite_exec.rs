@@ -2,7 +2,9 @@
 
 use rurqe_sqlite::rurqe_core::dml::{ColumnAssign, InsertQuery};
 use rurqe_sqlite::rurqe_core::expr::{Expr, SqlVal};
-use rurqe_sqlite::rurqe_core::query::{ExecutionError, QueryBackendExt, SelectQuery};
+use rurqe_sqlite::rurqe_core::query::{
+    ExecutionError, QueryBackendExt, SelectQuery, TransactionalConnection,
+};
 use rurqe_sqlite::rurqe_core::table;
 use rurqe_sqlite::rusqlite::Connection;
 use rurqe_sqlite::{Sqlite, Sqlite3_35, SqliteConnection};
@@ -333,4 +335,125 @@ fn typed_execution_errors_are_inspectable_without_boxing() {
         owned.to_string().contains("missing_function"),
         "unexpected error: {owned}"
     );
+}
+
+#[test]
+fn a_raw_commit_through_the_handle_costs_only_its_own_call_its_error() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    let outcome = adapter.transaction(|conn| -> Result<(), rurqe_sqlite::rusqlite::Error> {
+        conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+        // The raw handle is a supported escape hatch: committing through it
+        // closes the transaction the typed scope still believes it owns.
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    });
+
+    let failed = outcome.expect_err("the scope's own commit finds no transaction");
+    assert!(
+        failed.to_string().contains("cannot commit"),
+        "unexpected error: {failed}"
+    );
+    assert!(
+        !adapter.transaction_status().is_poisoned(),
+        "a desynchronized commit costs its own call its error, nothing else"
+    );
+    assert!(!adapter.transaction_status().is_open());
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 1, "the raw commit persisted the row");
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")?;
+            Ok(())
+        })
+        .expect("a fresh typed transaction opens");
+}
+
+#[test]
+fn a_raw_rollback_inside_a_typed_scope_leaves_the_connection_clean() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    let outcome = adapter.transaction(|conn| -> Result<(), TestError> {
+        conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+        // The raw handle is a supported escape hatch: rolling the transaction
+        // back through it leaves the guard a rollback without a transaction.
+        conn.execute_batch("ROLLBACK")?;
+        Err(TestError)
+    });
+
+    assert!(outcome.is_err());
+    assert!(
+        !adapter.transaction_status().is_poisoned(),
+        "the refused rollback is benign: the driver observes no open transaction"
+    );
+    assert!(!adapter.transaction_status().is_open());
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 0, "the raw rollback discarded the row");
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")?;
+            Ok(())
+        })
+        .expect("a fresh typed transaction opens");
+}
+
+#[test]
+fn a_raw_rollback_inside_a_nested_scope_does_not_poison_the_bookkeeping() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    let outcome = adapter.transaction(|conn| -> Result<(), TestError> {
+        conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+        let inner = conn.transaction(|inner| -> Result<(), TestError> {
+            inner.execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")?;
+            // The raw handle closes the transaction the savepoint belongs to,
+            // so the nested guard finds neither a savepoint to roll back to
+            // nor one to release.
+            inner.execute_batch("ROLLBACK")?;
+            Err(TestError)
+        });
+
+        assert!(
+            inner.is_err(),
+            "the closure error of the nested block travels back"
+        );
+
+        // The raw rollback took the enclosing transaction with it, so the
+        // enclosing scope cannot commit any more either.
+        Err(TestError)
+    });
+
+    assert!(outcome.is_err());
+    assert!(
+        !adapter.transaction_status().is_poisoned(),
+        "the refused savepoint statements are benign: no transaction is open"
+    );
+    assert!(!adapter.transaction_status().is_open());
+    assert_eq!(adapter.transaction_status().depth(), 0);
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (3, 'admin')")?;
+            Ok(())
+        })
+        .expect("a fresh typed transaction opens");
 }

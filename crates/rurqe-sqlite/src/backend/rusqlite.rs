@@ -6,7 +6,7 @@ use ::rusqlite::Connection;
 
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
-    BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionGuard,
+    BuiltQuery, IsolationLevel, QueryBackend, SavepointName, TransactionBackend, TransactionGuard,
     TransactionStatus, TransactionalConnection,
 };
 
@@ -80,11 +80,78 @@ impl TransactionalConnection for SqliteConnection {
     }
 }
 
+impl SqliteConnection {
+    /// Answers a refused transaction-control statement as benign when the
+    /// driver observes no open transaction.
+    ///
+    /// The raw handle of the adapter is a supported escape hatch, so a caller
+    /// may issue `COMMIT` or `ROLLBACK` through it while a typed scope is
+    /// still open. SQLite then refuses the statement the guard sends next with
+    /// `cannot rollback - no transaction is active`, even though the
+    /// connection is already exactly as clean as the guard wanted it to be, so
+    /// that refusal must not be recorded as a poisoning failure. The
+    /// observation is `is_autocommit` — the same one the CLI migration driver
+    /// uses to detect a script that left a transaction open: a refusal raised
+    /// while no transaction is open is benign, while one that leaves a
+    /// transaction open stays the driver's own error.
+    fn benign_if_closed(&self, error: ::rusqlite::Error) -> Result<(), ::rusqlite::Error> {
+        if self.connection.is_autocommit() {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+}
+
 impl TransactionBackend for SqliteConnection {
     fn begin(&mut self, _isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
         // SQLite serialises access through database-level locking, so the
         // requested isolation level does not map onto a `BEGIN` clause.
         self.connection.execute_batch("BEGIN")
+    }
+
+    /// Rolls the transaction back, tolerating a transaction the raw handle
+    /// already closed.
+    ///
+    /// A refused `ROLLBACK` is benign exactly when the driver observes no open
+    /// transaction, so the transaction bookkeeping records the connection
+    /// clean instead of poisoning a healthy adapter. `commit` stays untouched:
+    /// the ratified classification covers the rollback path only, so a
+    /// desynchronized `COMMIT` keeps costing its own transaction call its
+    /// driver error.
+    fn rollback(&mut self) -> Result<(), Self::Error> {
+        match self.connection.execute_batch("ROLLBACK") {
+            Ok(()) => Ok(()),
+            Err(error) => self.benign_if_closed(error),
+        }
+    }
+
+    /// Rolls back to the savepoint `name`, tolerating a savepoint the raw
+    /// handle already closed along with the transaction that carried it.
+    ///
+    /// The refusal is benign under the same observation as
+    /// [`rollback`](TransactionBackend::rollback): no open transaction means
+    /// there is no abandoned work left to report.
+    fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
+        let statement = format!("ROLLBACK TO SAVEPOINT {}", name.as_str());
+        match self.connection.execute_batch(&statement) {
+            Ok(()) => Ok(()),
+            Err(error) => self.benign_if_closed(error),
+        }
+    }
+
+    /// Releases the savepoint `name`, tolerating a savepoint the raw handle
+    /// already closed along with the transaction that carried it.
+    ///
+    /// The refusal is benign under the same observation as
+    /// [`rollback`](TransactionBackend::rollback): a block whose savepoint is
+    /// already gone holds no work the release could keep.
+    fn release_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
+        let statement = format!("RELEASE SAVEPOINT {}", name.as_str());
+        match self.connection.execute_batch(&statement) {
+            Ok(()) => Ok(()),
+            Err(error) => self.benign_if_closed(error),
+        }
     }
 }
 
