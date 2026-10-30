@@ -125,7 +125,6 @@ The parts are mandatory and ordered. A statement chapter that omits one of them 
 * The chapter lists the invariants that make an invalid statement unwritable, each one phrased as the SQL rule it enforces: a `SELECT` needs a projection, an `UPDATE` needs `SET`, an `UPDATE` or a `DELETE` needs `WHERE` or an explicit `.allow_all()`, an `INSERT` needs a row source, and every expression must reference a relation the statement introduces.
 * Each guard is paired with the positive form a reader should write instead, so the chapter never leaves the reader with a prohibition and no remedy.
 * Negative examples are `rust,compile_fail` fenced blocks, and the quoted diagnostic is the message the compiler actually emits, copied verbatim from the compile-fail suite (§ 5).
-* Negative examples are `rust,compile_fail` fenced blocks, and the quoted diagnostic is the message the compiler actually emits, copied verbatim from the compile-fail suite (§ 5).
 
 ### 7.6 The `SELECT` Statement and Its Subchapters
 
@@ -152,7 +151,6 @@ The parts are mandatory and ordered. A statement chapter that omits one of them 
 ---
 
 ## 8. Toolchain and Verification
-* **Local Build:** Documentation is built with `just doc-build` (rendered into `target/book`).
 * **Local Build:** Documentation is built with `just doc-build` (rendered into `target/book`). The book root is `docs/`: `docs/book.toml` declares `src = "."`, so the chapters (`docs/SUMMARY.md`, `docs/intro/`, `docs/core/`) sit directly under it, while the compiled example crate sits beside them in `docs/examples/` and every inclusion reaches it as `../examples/<file>.rs`.
 * **Documentation Verification:** `just doc-test` runs the living-documentation coverage guard (`cargo test -p rurqe-examples --test doc_coverage`) and then builds the book (`mdbook build docs --dest-dir ../target/book`). A chapter that names a missing example, a missing anchor, an unregistered target, or a whole example file fails the guard; a book that does not build fails the recipe. The recipe never compiles a chapter as Rust, because the compile-time guarantee for the documented code is proven by `just check` over the example crate.
 * **Zero Broken Links:** All cross-chapter links in `SUMMARY.md` and chapter files must resolve cleanly. A broken book build is treated as a failed CI check.
