@@ -3,7 +3,7 @@ default: verify
 # Run full workspace verification (checks, clippy, tests, doc build)
 [group('tauqe')]
 [doc('Run full workspace verification (checks, clippy, tests, doc build)')]
-verify: check clippy test doc-build
+verify: fmt-check check clippy test doc-build
 
 # Run cargo check across all workspace targets
 [group('tauqe')]
@@ -51,11 +51,13 @@ doc-serve:
     mdbook serve docs --dest-dir ../target/book --open
 
 # Format all workspace code
+[group('tauqe')]
 [doc('Format all workspace code')]
 fmt:
     cargo fmt --all
 
 # Check formatting across all workspace targets
+[group('tauqe')]
 [doc('Check formatting across all workspace targets')]
 fmt-check:
     cargo fmt --all -- --check
