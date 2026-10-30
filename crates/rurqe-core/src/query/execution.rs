@@ -588,6 +588,14 @@ impl<B: AsyncQueryBackend + ?Sized> AsyncQueryBackendExt for B {}
 /// [`AsyncQueryBackend`] and hands a future back. The borrow alone therefore
 /// selects the runtime — `&mut conn` runs the statement synchronously and
 /// `&pool` awaits it — and a call is never ambiguous.
+///
+/// The asynchronous arm is the one place where executing a statement pays a
+/// heap allocation: it hands back a boxed future per call, because the helper
+/// futures of [`AsyncQueryBackendExt`] are opaque `impl Future` types that
+/// stable Rust cannot name in an associated type. The box is the whole cost of
+/// the erasure — query construction, the rendered statement, the backend
+/// borrow, and the decoded rows stay concrete — and an adapter driven directly
+/// through [`AsyncQueryBackendExt`] never pays it.
 #[diagnostic::on_unimplemented(
     message = "this query cannot be executed against the given backend",
     label = "the backend is neither a synchronous nor an asynchronous RURQE backend",
@@ -665,6 +673,28 @@ where
     }
 }
 
+/// The asynchronous arm of [`TerminalBackend`].
+///
+/// The four associated types are `Pin<Box<dyn Future<Output = T> + Send + 'a>>`
+/// values, so every terminal call allocates its state machine once and resumes
+/// it through a single virtual call.
+///
+/// The erasure is what that allocation buys, and stable Rust offers no way to
+/// buy it back. The helpers of [`AsyncQueryBackendExt`] hand back opaque
+/// `impl Future` types, and an associated type cannot be an opaque
+/// `impl Future`: `impl Trait` in associated type position
+/// (`impl_trait_in_assoc_type` and `type_alias_impl_trait`) is nightly-only,
+/// and the stable-Rust invariant of this workspace forbids it. Naming the
+/// futures instead would require the [`AsyncQueryBackend`] contract to hand
+/// back nameable future types, which an arm implemented for every adapter
+/// cannot ask of adapters it does not own.
+///
+/// The cost stays bounded to that box. The query, the backend borrow, the
+/// rendered statement, and the decoded rows are concrete types, the
+/// construction path allocates nothing, and the synchronous arm of
+/// [`TerminalBackend`] is allocation-free. The `Q::Row: 'static` bound below
+/// belongs to the same erasure: the boxed future carries the decoded rows at
+/// its end, so the row type outlives the box it is moved out of.
 #[allow(clippy::type_complexity)]
 impl<'a, B, Q> TerminalBackend<'a, Q> for &'a B
 where
