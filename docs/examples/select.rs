@@ -23,9 +23,32 @@ table! {
     }
 }
 
+// ANCHOR: dto_declaration
+dto! {
+    /// A user row crossing a function boundary.
+    pub struct UserSummary {
+        UserId,
+        UserName as contact_email,
+    }
+}
+// ANCHOR_END: dto_declaration
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
+
+    // ANCHOR: select_head
+    // `select!` heads the chain: the projection comes first, and the relation
+    // is named right after it.
+    let named = select!(UserId, UserName as contact_email)
+        .from(User)
+        .where_(UserActive.eq(true))
+        .fetch_all(&pool)
+        .await?;
+    // ANCHOR_END: select_head
+    for row in &named {
+        println!("#{} <{}>", row.user_id, row.contact_email);
+    }
 
     // ANCHOR: aliased_fields
     let active = select_from(User)
@@ -59,6 +82,16 @@ async fn main() -> Result<()> {
         .await?;
     // ANCHOR_END: distinct
     println!("{}", unique_names.len());
+
+    // ANCHOR: dto_decode
+    // The row is read through the declaration: the fields keep the types the
+    // schema declares, and the column order of the statement does not matter.
+    let summary = UserSummary::from_row(&[
+        SqlVal::I64(7),
+        SqlVal::Text("root".to_owned()),
+    ]);
+    // ANCHOR_END: dto_decode
+    println!("{summary:?}");
 
     Ok(())
 }
