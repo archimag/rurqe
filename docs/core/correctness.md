@@ -3,7 +3,7 @@
 The promise "valid SQL or a compile error" cannot be expressed entirely inside the type system of stable Rust. RURQE validates a statement at two gates before any SQL reaches the database engine:
 
 1. **The compiler (Gate 1)** enforces relational invariants expressible as positive assertions: relation scope isolation, outer-join nullability lifting, typestates, dialect capability gating, and the grouping coverage of a query that grouped its rows.
-2. **Validation inside `.build()` (Gate 2)** enforces the rules that need a negative assertion (absence of duplicate unaliased relations), a cross-clause alignment (`DISTINCT ON` prefix matching leading `ORDER BY`), or a statement-level aggregation the builder typestates never saw: an aggregate projected beside a bare column without a grouping, and the ordering, deduplication, and `HAVING` clauses of a collapsed statement.
+2. **Validation inside `.build()` (Gate 2)** enforces the rules that need a negative assertion (absence of duplicate unaliased relations), a cross-clause alignment (`DISTINCT ON` prefix matching leading `ORDER BY`), or a statement-level aggregation the builder typestates never saw: an aggregate projected beside a bare column without a grouping (`UngroupedColumnWithAggregate`), and the ordering, deduplication, and `HAVING` clauses of a collapsed statement.
 
 A statement that passes both gates is guaranteed valid for the target dialect and engine version. Neither gate touches the runtime: query construction is runtime-orthogonal, and the terminal method alone determines whether execution is awaited or synchronous.
 
@@ -73,8 +73,8 @@ When two occurrences of the same unaliased table share a relation name in `FROM`
 
 | Gate | Execution timing | Evaluated invariants | Caller outcome |
 |---|---|---|---|
-| Compiler | `cargo build` | Positive assertions: relation scope, nullable joins, mutation typestates, dialect capability gates | Compile-time error |
-| Statement validation | `.build()` | Negative assertions (duplicate unaliased relations) and cross-clause ordering alignments | `Result<BuiltQuery, BuildError>` |
+| Compiler | `cargo build` | Positive assertions: relation scope, nullable joins, mutation typestates, dialect capability gates, grouped query projections | Compile-time error |
+| Statement validation | `.build()` | Negative assertions (duplicate unaliased relations), cross-clause alignments (`DISTINCT ON`), and residual aggregation checks (`UngroupedColumnWithAggregate`) | `Result<BuiltQuery, BuildError>` |
 | Database engine | Terminal query call | Server-side runtime errors: constraint violations, missing permissions, invalid connection state | `Result<T, ExecutionError>` |
 
 ## Engine Errors and Diagnostics
