@@ -30,7 +30,7 @@ Exactly four projection forms survive a grouping:
 
 Projecting an ungrouped column is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
 
-The low-level `Expr::column::<C>()` form does not bypass the rule: an expression reading a column keeps that column's relation. `.without_scope()` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
+However the column is reached for, the rule holds: an expression built over a column keeps that column's relation. `.without_scope()` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
 
 ## The aggregate functions
 
@@ -55,10 +55,9 @@ An aggregate call is an expression like any other: it compares — `.having(coun
 
 `HAVING` filters the already computed groups, so it is written over an aggregate. The example above already uses `.having(count_all().gt(0i64))`; it renders as `HAVING (COUNT(*) > $1)`.
 
-Two kinds of predicate are allowed (`HavingPredicate`):
 Two kinds of predicate are allowed here:
-- an aggregate one (`Marker: AggregateMarker`) — as above;
-- a constant within the group (`Expr<bool, (), NonAggregate, ..>`) — for example a `sql!` fragment comparing two aggregates.
+- an aggregate predicate, which folds the rows of the group — as above;
+- a constant within the group, for example a `sql!` fragment comparing two aggregates.
 
 A predicate reading a bare column is rejected: the grouping has discarded the per-row value. A separate form exists for comparing a **grouped** column:
 
@@ -78,7 +77,7 @@ The rows an aggregate call evaluates can be restricted without a `CASE WHEN` det
 
 `filter_where` obeys the same belonging rule as the call's `DISTINCT` modifier:
 
-* the method exists on the aggregate call alone — an expression built from the call, such as `sum(OrderTotal) + 1.0`, is an `Aggregate` but no longer the call, so it accepts no clause: there is nothing left for the clause to restrict;
+* the method exists on the aggregate call alone — an expression built from the call, such as `sum(OrderTotal) + 1.0`, is an aggregate but no longer the call, so it accepts no clause: there is nothing left for the clause to restrict;
 * repeated calls accumulate their predicates with `AND` on the same call instead of replacing each other;
 * the predicate stays part of the aggregate expression rather than of the statement, and the rendering is the native `... FILTER (WHERE ...)` form — PostgreSQL always, SQLite from 3.30.
 

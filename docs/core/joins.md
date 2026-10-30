@@ -11,11 +11,11 @@ This chapter documents the `FROM` and `JOIN` steps of that order in depth: the j
 | `.inner_join(table, on)` | `INNER JOIN "table" ON (...)` | — |
 | `.left_join(table, on)` | `LEFT JOIN "table" ON (...)` | — |
 | `.cross_join(table)` | `CROSS JOIN "table"` | — |
-| `.full_outer_join(table, on)` | `FULL OUTER JOIN "table" ON (...)` | `SupportsFullOuterJoin` |
+| `.full_outer_join(table, on)` | `FULL OUTER JOIN "table" ON (...)` | PostgreSQL only |
 | `.inner_join_subquery(derived, on)` | `INNER JOIN (SELECT ...) AS "name" ON (...)` | — |
 | `.left_join_subquery(derived, on)` | `LEFT JOIN (SELECT ...) AS "name" ON (...)` | — |
-| `.cross_join_lateral(lateral)` | `CROSS JOIN LATERAL (SELECT ...)` | `SupportsLateralJoin` |
-| `.left_join_lateral(lateral)` | `LEFT JOIN LATERAL (SELECT ...) ON true` | `SupportsLateralJoin` |
+| `.cross_join_lateral(lateral)` | `CROSS JOIN LATERAL (SELECT ...)` | PostgreSQL only |
+| `.left_join_lateral(lateral)` | `LEFT JOIN LATERAL (SELECT ...) ON true` | PostgreSQL only |
 
 The join builders take the table marker as a value and read the joined type `T` from it, so the compiler infers `T`, the joined scope, and the position marker at the call site: no turbofish is written and no runtime cost is paid, because the marker is zero-sized.
 
@@ -32,7 +32,7 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join extends the relation scope of the query by the joined relation, and an outer join marks that relation nullable for every column projected from it. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
 
-A column marker is a complete operand on its own, on either side of the comparison: `OrderUserId.eq(UserId)` compares two columns without any wrapper, exactly as `OrderTotal.gt(0.0f64)` compares a column with a bound value. Both operands declare the tables they reference, so the predicate's scope carries every relation it reads, and the join builder checks the `ON` clause against the relations the statement declares — a column of a relation the query does not introduce is still refused at the call site. `Expr::column::<C>()` stays the constructor for the positions that need an expression value standing on its own, and correlation still goes through `.without_scope()`, because the marker always claims its table.
+A column marker is a complete operand on its own, on either side of the comparison: `OrderUserId.eq(UserId)` compares two columns without any wrapper, exactly as `OrderTotal.gt(0.0f64)` compares a column with a bound value. Both operands declare the tables they reference, so the predicate's scope carries every relation it reads, and the join builder checks the `ON` clause against the relations the statement declares — a column of a relation the query does not introduce is still refused at the call site. Correlation still goes through `.without_scope()`, because the marker always claims its table.
 
 ## Nullability of outer joins
 
@@ -59,7 +59,7 @@ The refusal is a pre-flight check of the assembled statement rather than a rende
 `.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table.
 ## `LATERAL` joins
 
-`LATERAL` joins are gated by `SupportsLateralJoin` — implemented for PostgreSQL, absent for SQLite, so the methods do not exist there at compile time:
+`LATERAL` joins exist only on PostgreSQL — SQLite has no such clause, so the methods do not exist there at compile time:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/joins.rs:lateral}}
