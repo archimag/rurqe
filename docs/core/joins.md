@@ -46,18 +46,13 @@ The lifting is automatic: the outer-join scope marks the joined relation nullabl
 The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field.
 ## Unaliased duplicate relations
 
-Joining a table the query already addresses renders its name twice in the `FROM` clause, which the engine rejects as `table name specified more than once` unless the second relation is aliased. The compiler refuses the statement even earlier: one marker can only name one relation, so a second occurrence has to be written as an alias of the first.
+Joining a table the query already addresses renders the same name twice — once in the `FROM` clause and once through the join — which no engine accepts: PostgreSQL reports `table name specified more than once`. The statement is therefore refused deterministically while it is assembled, before a single byte reaches the database, with the typed `BuildError::DuplicateRelation` naming the colliding relation. The predicate of the fragment is written as an unscoped expression, so the duplicate is what the statement reports rather than the reference being ambiguous between the two positions the relation occupies.
 
-```rust,compile_fail
-// Rejected by the compiler: `users` is already the relation the statement
-// selects from, so the bare marker cannot stand for a second occurrence.
-let _ = select_from(User)
-    .inner_join(User, UserManagerId.eq(Expr::column::<UserId>()))
-    .select(cols!(UserId));
+```rust,no_run
+{{#rustdoc_include ../examples/joins.rs:duplicate_refused}}
 ```
 
-The fix is to alias the second occurrence through the alias markers — see [Aliases](aliasing.md).
-The fix is to alias the second occurrence through the alias markers, so each use of `"users"` carries its own effective name.
+The refusal is a pre-flight check of the assembled statement rather than a rendering accident: it fires on every run and no SQL is dispatched. The fix is to alias the second occurrence through the alias markers, so each use of `"users"` carries its own effective name — see [Aliases](aliasing.md).
 ## Joining derived tables
 
 `.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table. Building derived tables is covered in [Common table expressions](cte.md).
@@ -67,24 +62,8 @@ The fix is to alias the second occurrence through the alias markers, so each use
 `LATERAL` joins are gated by `SupportsLateralJoin` — implemented for PostgreSQL, absent for SQLite, so the methods do not exist there at compile time:
 
 ```rust,no_run
-table! {
-    /// The `latest_order` lateral relation marker.
-    LatestOrder => "latest_order" {
-        LatestOrderTotal => "total": f64,
-    }
-}
-let report = select_from(User)
-    .left_join_lateral(lateral::<LatestOrder, _, _, _>(
-        select_from(Order)
-            .select((OrderTotal,))
-            .where_(OrderUserId.eq(Expr::column::<UserId>().without_scope()))
-            .order_by_desc(OrderCreatedAt)
-            .limit(1),
-    ))
-    .select(cols!(UserId, LatestOrderTotal))
-    .build()?;
-// Row: (i64, Option<f64>) — the lateral projection lifts through the left join.
+{{#rustdoc_include ../examples/joins.rs:lateral}}
 ```
 
-A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>`; a correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations.
+The subquery is published as the relation marker `LatestOrder` through `as_lateral::<LatestOrder>()`, so the enclosing statement addresses its columns like those of a stored table. A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>` — `latest_order_total` arrives as `Option<f64>`. A correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations.
 

@@ -9,7 +9,7 @@ table! {
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
-    }
+        UserManagerId => "manager_id": i64,    }
 }
 
 table! {
@@ -18,6 +18,13 @@ table! {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
         OrderUserId => "user_id": i64,
+    }
+}
+
+table! {
+    /// The `latest_order` lateral relation marker.
+    LatestOrder => "latest_order" {
+        LatestOrderTotal => "total": f64,
     }
 }
 
@@ -43,6 +50,36 @@ async fn main() -> Result<()> {
 // ANCHOR_END: outer
     println!("{}", outer_join.len());
 
+// ANCHOR: duplicate_refused
+    // The same relation is addressed twice without an alias, so the `FROM` clause
+    // and the join both name `users`. No engine accepts the statement, and the
+    // builder refuses it before any SQL is sent to the database.
+    let duplicate = select_from(User)
+        .inner_join(User, UserManagerId.eq(UserId).without_scope())
+        .select((Expr::count_all(),))
+        .build();
+    assert!(matches!(
+        duplicate,
+        Err(BuildError::DuplicateRelation { name: "users" })
+    ));
+// ANCHOR_END: duplicate_refused
+
+// ANCHOR: lateral
+    // The correlated subquery is published as the relation marker `LatestOrder`,
+    // so the enclosing statement reads its rows like those of a stored table.
+    let latest_order = select_from(Order)
+        .select((OrderTotal,))
+        .where_(OrderUserId.eq(UserId.without_scope()))
+        .order_by_desc(OrderId)
+        .limit(1)
+        .as_lateral::<LatestOrder>();
+    let report = select_from(User)
+        .left_join_lateral(latest_order)
+        .select(cols!(UserId, LatestOrderTotal))
+        .fetch_all(&pool)
+        .await?;
+// ANCHOR_END: lateral
+    println!("{}", report.len());
     Ok(())
 }
 
