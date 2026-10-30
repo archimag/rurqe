@@ -10,12 +10,29 @@ pub trait Table {
     /// The SQL identifier of the table, known at compile time.
     const NAME: &'static str;
 
-    /// The `FROM` / `JOIN` reference of this table, alias included.
+    /// The schema the table lives in, when it is not the primary schema.
     ///
-    /// The default reference is the bare table name; [`Aliased`](crate::schema::Aliased)
-    /// tables override it to render their `AS` clause.
+    /// A table of the primary schema carries `None`, so the reference it
+    /// contributes renders the bare table name (`FROM "users"`). A table of a
+    /// secondary schema carries `Some("auth")` and renders its qualifier
+    /// (`FROM "auth"."users"`).
+    ///
+    /// The default keeps every declaration that says nothing about a schema —
+    /// including every declaration written with [`table!`](crate::table) —
+    /// rendering exactly as it did before the qualifier existed.
+    const SCHEMA: Option<&'static str> = None;
+
+    /// The `FROM` / `JOIN` reference of this table, schema and alias included.
+    ///
+    /// The default reference qualifies the table with [`Table::SCHEMA`] when the
+    /// table declares one, and [`Aliased`](crate::schema::Aliased) tables
+    /// override it to append their `AS` clause.
     fn table_ref() -> TableRef {
-        TableRef::plain(Self::NAME)
+        TableRef {
+            schema: Self::SCHEMA,
+            name: Self::NAME,
+            alias: None,
+        }
     }
 
     /// Builds the expression node referencing `column` of this table.
@@ -70,6 +87,9 @@ pub trait Table {
 /// A table reference rendered into a `FROM` or `JOIN` clause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TableRef {
+    /// The schema the table lives in, when it is not the primary schema.
+    pub schema: Option<&'static str>,
+
     /// The SQL identifier of the table.
     pub name: &'static str,
 
@@ -78,21 +98,58 @@ pub struct TableRef {
 }
 
 impl TableRef {
-    /// Creates a reference to a table without an alias.
+    /// Creates a reference to a table of the primary schema without an alias.
     pub const fn plain(name: &'static str) -> Self {
-        Self { name, alias: None }
+        Self {
+            schema: None,
+            name,
+            alias: None,
+        }
     }
 
-    /// Creates a reference to `name` exposed under `alias`.
+    /// Creates a reference to `name` of the primary schema exposed under `alias`.
     pub const fn aliased(name: &'static str, alias: &'static str) -> Self {
         Self {
+            schema: None,
             name,
             alias: Some(alias),
         }
     }
 
-    /// Renders the reference, appending `AS "alias"` when the table is aliased.
+    /// Creates a reference to `name` of the secondary schema `schema`.
+    pub const fn qualified(schema: &'static str, name: &'static str) -> Self {
+        Self {
+            schema: Some(schema),
+            name,
+            alias: None,
+        }
+    }
+
+    /// Creates a reference to `name` of the secondary schema `schema` exposed
+    /// under `alias`.
+    pub const fn qualified_aliased(
+        schema: &'static str,
+        name: &'static str,
+        alias: &'static str,
+    ) -> Self {
+        Self {
+            schema: Some(schema),
+            name,
+            alias: Some(alias),
+        }
+    }
+
+    /// Renders the reference, qualifying it with its schema when it has one and
+    /// appending `AS "alias"` when the table is aliased.
+    ///
+    /// A table of the primary schema renders its bare name — `"users"` — while a
+    /// table of a secondary schema renders `"auth"."users"`; the alias follows
+    /// the table in both cases.
     pub fn render<D: Dialect>(&self, out: &mut String) {
+        if let Some(schema) = self.schema {
+            D::push_quoted_identifier(out, schema);
+            out.push('.');
+        }
         D::push_quoted_identifier(out, self.name);
         if let Some(alias) = self.alias {
             out.push_str(" AS ");

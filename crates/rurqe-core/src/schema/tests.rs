@@ -118,6 +118,93 @@ fn aliased_column_preserves_the_column_rust_type() {
     takes_rust_type::<AliasedCol<UserAlias, UserEmail>>();
 }
 
+/// A table of the secondary schema `auth`, declared by hand so the `SCHEMA`
+/// override sits next to the marker itself.
+struct AuthUser;
+
+impl Table for AuthUser {
+    const NAME: &'static str = "users";
+
+    const SCHEMA: Option<&'static str> = Some("auth");
+}
+
+crate::table_alias! {
+    /// The `a` alias.
+    AuthUserAlias => "a"
+}
+
+/// Quotes every identifier with double quotes.
+struct RelationDialect;
+
+impl crate::dialect::Dialect for RelationDialect {
+    fn push_quoted_identifier(out: &mut String, ident: &str) {
+        out.push('"');
+        out.push_str(ident);
+        out.push('"');
+    }
+
+    fn push_placeholder(out: &mut String, index: usize) {
+        let _ = index;
+        out.push('?');
+    }
+}
+
+/// Renders a relation reference under [`RelationDialect`].
+fn render_reference(reference: &TableRef) -> String {
+    let mut sql = String::new();
+    reference.render::<RelationDialect>(&mut sql);
+    sql
+}
+
+#[test]
+fn a_table_of_the_primary_schema_renders_without_a_qualifier() {
+    assert_eq!(User::SCHEMA, None);
+    assert_eq!(render_reference(&User::table_ref()), "\"users\"");
+}
+
+#[test]
+fn a_table_of_a_secondary_schema_renders_its_qualifier() {
+    assert_eq!(AuthUser::SCHEMA, Some("auth"));
+    assert_eq!(AuthUser::table_ref(), TableRef::qualified("auth", "users"));
+    assert_eq!(
+        render_reference(&AuthUser::table_ref()),
+        "\"auth\".\"users\""
+    );
+}
+
+#[test]
+fn a_qualified_reference_renders_its_alias_after_the_table() {
+    assert_eq!(
+        render_reference(&TableRef::qualified_aliased("auth", "users", "a")),
+        "\"auth\".\"users\" AS \"a\""
+    );
+}
+
+#[test]
+fn an_alias_forwards_the_schema_of_the_table_it_aliases() {
+    assert_eq!(
+        <Aliased<AuthUser, AuthUserAlias> as Table>::SCHEMA,
+        Some("auth")
+    );
+    assert_eq!(<Aliased<AuthUser, AuthUserAlias> as Table>::NAME, "users");
+    assert_eq!(
+        Aliased::<AuthUser, AuthUserAlias>::table_ref(),
+        TableRef::qualified_aliased("auth", "users", "a")
+    );
+    assert_eq!(
+        render_reference(&Aliased::<AuthUser, AuthUserAlias>::table_ref()),
+        "\"auth\".\"users\" AS \"a\""
+    );
+}
+
+#[test]
+fn an_alias_of_a_primary_schema_table_renders_flat() {
+    assert_eq!(<Aliased<User, UserAlias> as Table>::SCHEMA, None);
+    assert_eq!(
+        render_reference(&Aliased::<User, UserAlias>::table_ref()),
+        "\"users\" AS \"u\""
+    );
+}
 #[test]
 fn alias_helpers_produce_aliased_column_markers() {
     let through_column: AliasedCol<UserAlias, UserId> = UserId.alias::<UserAlias>();

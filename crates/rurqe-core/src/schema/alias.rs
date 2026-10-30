@@ -176,7 +176,9 @@ macro_rules! __rurqe_alias_decl {
 /// The table `T` referenced under the alias `A`.
 ///
 /// The marker keeps the schema identity of `T` — so its columns still belong to
-/// `T` — while rendering `"table" AS "alias"` in `FROM` and `JOIN` clauses.
+/// `T` — while rendering `"table" AS "alias"` in `FROM` and `JOIN` clauses. The
+/// schema qualifier of the aliased table passes through, so an alias of a table
+/// of a secondary schema renders `"auth"."users" AS "u"`.
 ///
 /// ```text
 /// SELECT "u"."id" FROM "users" AS "u"
@@ -203,8 +205,14 @@ impl<T: Table, A: TableAlias> Default for Aliased<T, A> {
 impl<T: Table, A: TableAlias> Table for Aliased<T, A> {
     const NAME: &'static str = T::NAME;
 
+    const SCHEMA: Option<&'static str> = T::SCHEMA;
+
     fn table_ref() -> TableRef {
-        TableRef::aliased(T::NAME, A::NAME)
+        TableRef {
+            schema: T::SCHEMA,
+            name: T::NAME,
+            alias: Some(A::NAME),
+        }
     }
 
     fn column_expr(column: &'static str) -> crate::expr::ExprKind {
