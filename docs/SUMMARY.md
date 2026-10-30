@@ -3,12 +3,15 @@
 - [Introduction](intro.md)
 - [Getting Started](quickstart.md)
 
-# Part I: Getting Started
+# Part I: Architecture & Concepts
 
-- [Two-tier SQL correctness](intro/two_tier.md)
+- [Two-tier SQL correctness](core/correctness.md)
+- [Database schema](core/schema.md)
+- [Dialects & capabilities](core/dialects.md)
+- [SQL execution: sync vs async](core/execution.md)
+- [Transactions](core/transactions.md)
 
 # Part II: Ergonomics & Execution
-- [Schema: tables and columns](core/schema.md)
 - [The `SELECT` statement](core/select.md)
   - [Predicates and `WHERE`](core/filtering.md)
   - [Expressions](core/expressions.md)
