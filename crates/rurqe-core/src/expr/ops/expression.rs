@@ -5,6 +5,7 @@ use crate::expr::builder::{Expr, NonAggregate};
 use crate::expr::scope::{MergeScope, Merged, Merged3, Unscoped};
 use crate::schema::Column;
 
+use super::InSubquery;
 use super::conversion::{IntoExpr, IntoExprList};
 use super::numeric::{CombineAggr, CombinedAggr};
 
@@ -235,6 +236,96 @@ pub trait Expression<T> {
         I: IntoExprList<T>,
     {
         self.into_expression().not_in_list(values)
+    }
+
+    /// Builds an `IN (subquery)` predicate matching this expression.
+    ///
+    /// The nested query renders inline with the enclosing statement, so its
+    /// parameters continue the placeholder numbering of the outer query. It has
+    /// to project a single column holding the compared type, because an `IN`
+    /// predicate compares one value with a set of values.
+    ///
+    /// ```
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::expr::Expression;
+    /// use rurqe_core::query::SelectQuery;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push('"');
+    ///         out.push_str(ident);
+    ///         out.push('"');
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         out.push('$');
+    ///         out.push_str(&index.to_string());
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `users` table.
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table! {
+    ///     /// The `orders` table.
+    ///     Order => "orders" {
+    ///         OrderUserId => "user_id": i64,
+    ///     }
+    /// }
+    ///
+    /// let buyers = SelectQuery::<MockDialect>::new()
+    ///     .from::<Order>()
+    ///     .select((OrderUserId,));
+    ///
+    /// let built = SelectQuery::<MockDialect>::new()
+    ///     .from::<User>()
+    ///     .select((UserId,))
+    ///     .where_(UserId.in_subquery(buyers))
+    ///     .build()
+    ///     .expect("valid query");
+    ///
+    /// assert_eq!(
+    ///     built.sql,
+    ///     "SELECT \"id\" FROM \"users\" WHERE (\"id\" IN (SELECT \"user_id\" FROM \"orders\"))"
+    /// );
+    /// ```
+    ///
+    /// A nested query of another shape is rejected at the call site, exactly as
+    /// the inherent method of the same name rejects it.
+    #[allow(clippy::type_complexity)]
+    fn in_subquery<S>(
+        self,
+        subquery: S,
+    ) -> Expr<bool, Self::Scope, NonAggregate, MergedDialect<Self::Dialect, S::Dialect>>
+    where
+        Self: Sized,
+        Self::Dialect: MergeDialect<S::Dialect>,
+        S: InSubquery<(T,)>,
+    {
+        self.into_expression().in_subquery(subquery)
+    }
+
+    /// Builds a `NOT IN (subquery)` negated membership predicate.
+    ///
+    /// The negation keeps the contract of the positive form: the nested query
+    /// still has to project a single column of the compared type.
+    #[allow(clippy::type_complexity)]
+    fn not_in_subquery<S>(
+        self,
+        subquery: S,
+    ) -> Expr<bool, Self::Scope, NonAggregate, MergedDialect<Self::Dialect, S::Dialect>>
+    where
+        Self: Sized,
+        Self::Dialect: MergeDialect<S::Dialect>,
+        S: InSubquery<(T,)>,
+    {
+        self.into_expression().not_in_subquery(subquery)
     }
 }
 
