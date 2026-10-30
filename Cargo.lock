@@ -1027,8 +1027,10 @@ version = "0.1.0"
 dependencies = [
  "deadpool-postgres",
  "rurqe",
+ "serde",
  "tokio",
  "tokio-postgres",
+ "toml",
 ]
 
 [[package]]

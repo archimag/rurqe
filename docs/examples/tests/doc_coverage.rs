@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 /// The directive tag every chapter inclusion starts with.
 const INCLUDE_TAG: &str = "{{#rustdoc_include";
 
@@ -23,35 +25,72 @@ fn package_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// Names of the example targets registered in `examples/Cargo.toml`.
+/// The parts of `examples/Cargo.toml` the guard reads.
+///
+/// Only the declared targets matter: the manifest is parsed as TOML into this
+/// DTO so that every legal spelling of the same target list — single-quoted
+/// strings, trailing comments, reordered keys, inline tables — yields the same
+/// result, instead of a line scan silently dropping a target it does not
+/// recognise.
+///
+/// The file is a Cargo manifest before it is a DTO: it carries top-level
+/// tables the guard never reads (`[dependencies]`, `[dev-dependencies]`), so
+/// the manifest itself tolerates them. The `[[example]]` target section is
+/// modelled completely, and `deny_unknown_fields` turns a misspelled key of a
+/// `[[example]]` target into an error instead of a field quietly ignored.
+#[derive(Deserialize)]
+struct ExamplesManifest {
+    package: PackageSection,
+    #[serde(default)]
+    example: Vec<ExampleTarget>,
+}
+
+/// The `[package]` section, read for the crate name the guard reports with.
+///
+/// Cargo also writes keys the guard does not model (`version`, `edition`,
+/// `publish`, and the rest), so this section tolerates unknown fields; only
+/// an `[[example]]` target is modelled completely and strictly.
+#[derive(Deserialize)]
+struct PackageSection {
+    name: String,
+}
+
+/// One `[[example]]` target: its target name and the file it is built from.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExampleTarget {
+    name: String,
+    path: String,
+}
+
+/// The example targets registered in `examples/Cargo.toml`, parsed as TOML.
 ///
 /// Registration is what places a file under `cargo check --workspace
 /// --all-targets`, so the manifest is the source of truth for what counts as
 /// a live documentation target.
+fn registered_examples() -> Vec<ExampleTarget> {
+    let manifest_path = package_root().join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|error| panic!("examples/Cargo.toml is readable: {error}"));
+    let parsed: ExamplesManifest = toml::from_str(&manifest).unwrap_or_else(|error| {
+        panic!(
+            "examples/Cargo.toml parses as a typed manifest with a [[example]] target list: \
+             {error}"
+        )
+    });
+    assert_eq!(
+        parsed.package.name, "rurqe-examples",
+        "the manifest under test is the `rurqe-examples` package"
+    );
+    parsed.example
+}
+
+/// Names of the example targets registered in `examples/Cargo.toml`.
 fn registered_example_names() -> Vec<String> {
-    let manifest = fs::read_to_string(package_root().join("Cargo.toml"))
-        .expect("examples/Cargo.toml is readable");
-    let mut names = Vec::new();
-    let mut in_example_section = false;
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("[[example]]") {
-            in_example_section = true;
-            continue;
-        }
-        if trimmed.starts_with('[') {
-            in_example_section = false;
-        }
-        if in_example_section {
-            let name = trimmed
-                .strip_prefix("name = \"")
-                .and_then(|rest| rest.strip_suffix('"'));
-            if let Some(name) = name {
-                names.push(name.to_owned());
-            }
-        }
-    }
-    names
+    registered_examples()
+        .into_iter()
+        .map(|target| target.name)
+        .collect()
 }
 
 /// Anchor regions one example file declares: every `// ANCHOR: <name>` line.
@@ -245,19 +284,30 @@ fn collect_hidden_scaffolding(dir: &Path, hidden: &mut Vec<(String, usize, Strin
 #[test]
 fn example_targets_match_the_files_on_disk() {
     let root = package_root();
-    let registered = registered_example_names();
+    let registered = registered_examples();
     assert!(
         !registered.is_empty(),
         "examples/Cargo.toml registers no [[example]] targets, so the crate compiles no \
          documentation at all"
     );
 
-    for name in &registered {
-        let path = root.join(format!("{name}.rs"));
+    for target in &registered {
+        let declared = root.join(&target.path);
         assert!(
-            path.is_file(),
-            "example target `{name}` is registered in examples/Cargo.toml, but `{name}.rs` \
-             does not exist at the package root"
+            declared.is_file(),
+            "example target `{}` is registered in examples/Cargo.toml with `path = {:?}`, but \
+             that file does not exist under the package root; a moved or renamed target has to \
+             update the manifest with it",
+            target.name,
+            target.path
+        );
+        let from_name = root.join(format!("{}.rs", target.name));
+        assert!(
+            from_name.is_file(),
+            "example target `{}` is registered in examples/Cargo.toml, but `{}.rs` does not \
+             exist at the package root",
+            target.name,
+            target.name
         );
     }
 
@@ -278,8 +328,10 @@ fn example_targets_match_the_files_on_disk() {
         .collect();
     on_disk.sort();
 
-    let mut registered_files: Vec<String> =
-        registered.iter().map(|name| format!("{name}.rs")).collect();
+    let mut registered_files: Vec<String> = registered
+        .iter()
+        .map(|target| format!("{}.rs", target.name))
+        .collect();
     registered_files.sort();
 
     assert_eq!(
@@ -294,14 +346,15 @@ fn example_targets_match_the_files_on_disk() {
 fn every_anchor_is_included_by_a_chapter() {
     let included = included_anchors();
 
-    for name in registered_example_names() {
-        let file = format!("{name}.rs");
+    for target in registered_examples() {
+        let file = format!("{}.rs", target.name);
         let path = package_root().join(&file);
         let anchors = declared_anchors(&path);
         assert!(
             !anchors.is_empty(),
-            "example `{name}` declares no `// ANCHOR: ...` region, so no chapter can include \
-             a fragment of it"
+            "example `{}` declares no `// ANCHOR: ...` region, so no chapter can include \
+             a fragment of it",
+            target.name
         );
         for anchor in anchors {
             let is_included = included

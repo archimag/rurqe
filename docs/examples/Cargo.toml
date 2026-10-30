@@ -14,21 +14,6 @@ publish = false
 # statement or the row it produced is the point of running it, so this package
 # deliberately does not opt into `[lints] workspace = true`.
 
-# Cargo discovers example targets only under `<package>/examples/`, while the
-# documentary files live at the package root, so that a chapter reaches them
-# with the compact `{{#rustdoc_include ../../../..//examples/<file>.rs:<anchor>}}`
-# path. Every file is therefore registered here as an explicit target whose
-# `name` is the file stem and whose `path` is the file name:
-#
-#     [[example]]
-#     name = "quickstart"
-#     path = "quickstart.rs"
-#
-# Registration is what places the file under `cargo check --workspace
-# --all-targets`; an unregistered file is dead documentation. The targets are
-# compiled, never executed, by the verification pipeline.
-
-[dependencies]
 # The crate compiles three entry-point forms, so the facade is built with the
 # drivers they name: the asynchronous form awaits a `deadpool-postgres` pool,
 # the `sync_`-prefixed files drive the blocking `rusqlite` and `postgres`
@@ -38,12 +23,20 @@ publish = false
 # ecosystem column types the examples also compile against — and `postgres`,
 # `sqlite`, and `macros` are named here as well, so no target depends on a
 # default that may change.
+[dependencies]
 rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres"] }
 # The pool is configured through the adapter itself and terminates TLS with the
 # driver's `NoTls` connector, so both crates are named directly.
 deadpool-postgres = "0.14"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-postgres = "0.7"
+
+[dev-dependencies]
+# The coverage guard reads this manifest into a typed DTO instead of scanning
+# it line by line, so a legal TOML spelling of the same targets yields the same
+# list and no target can silently drop out of the anchor-coverage check.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [[example]]
 name = "quickstart"
