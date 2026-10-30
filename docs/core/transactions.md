@@ -14,7 +14,7 @@ Within the closure, the transactional connection handle (`tx`) implements the st
 
 ## Nested Transactions and Savepoints
 
-Calling `.transaction(...)` inside an active transaction scope transparently creates a nested transaction managed via SQL savepoints:
+This section documents the synchronous runtime form: the scoped transaction API of the synchronous adapters, where the closure returns a `Result` directly instead of a future. Calling `.transaction(...)` inside an active transaction scope transparently creates a nested transaction managed via SQL savepoints:
 
 * An inner transaction boundary issues `SAVEPOINT savepoint_N`.
 * If the inner closure succeeds with `Ok`, it executes `RELEASE SAVEPOINT savepoint_N`.
@@ -22,9 +22,14 @@ Calling `.transaction(...)` inside an active transaction scope transparently cre
 
 The outer transaction remains open and can handle the error, allowing inner operations to fail and roll back without aborting the entire transaction.
 
+```rust,no_run
+{{#rustdoc_include ../examples/sync_transactions.rs:transaction}}
+```
+
+## Transaction Isolation Levels
 ## Transaction Isolation Levels
 
-Transaction blocks can be configured with explicit SQL isolation levels:
+This section documents the synchronous runtime form of an isolated transaction boundary. Transaction blocks can be configured with explicit SQL isolation levels:
 
 * `ReadCommitted`: Prevents dirty reads (default in PostgreSQL).
 * `RepeatableRead`: Prevents non-repeatable reads and phantom reads.
@@ -33,7 +38,7 @@ Transaction blocks can be configured with explicit SQL isolation levels:
 Isolation levels are configured at the transaction boundary:
 
 ```rust,no_run
-{{#rustdoc_include ../examples/transaction_isolation.rs:isolation}}
+{{#rustdoc_include ../examples/sync_transaction_isolation.rs:isolation}}
 ```
 
 ## Raw Handle Escape Hatch

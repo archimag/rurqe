@@ -111,5 +111,9 @@ name = "sync_execution"
 path = "sync_execution.rs"
 
 [[example]]
-name = "transaction_isolation"
-path = "transaction_isolation.rs"
+name = "sync_transactions"
+path = "sync_transactions.rs"
+
+[[example]]
+name = "sync_transaction_isolation"
+path = "sync_transaction_isolation.rs"
