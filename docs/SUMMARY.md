@@ -22,6 +22,7 @@
   - [Subqueries](core/subqueries.md)
   - [`GROUP BY` and `HAVING`](core/group_by.md)
   - [Window functions](core/window.md)
+  - [Set Operations](core/set_ops.md)
   - [Ordering and pagination](core/ordering.md)
 - [The INSERT statement](core/insert.md)
 - [The UPDATE statement](core/update.md)
@@ -29,4 +30,3 @@
 - [The MULTISET statement](core/multiset.md)
   - [Nested results: `nest_many` and `nest_one`](core/nested.md)
   - [Engines, capability gates, and decoding](core/multiset_engines.md)
-- [Set Operations](core/set_ops.md)
