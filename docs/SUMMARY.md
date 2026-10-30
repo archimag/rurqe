@@ -9,6 +9,8 @@
 - [Database schema](core/schema.md)
 - [Projections and typed rows](core/projections.md)
 - [Dialects & capabilities](core/dialects.md)
+  - [PostgreSQL](core/dialects/postgres.md)
+  - [SQLite](core/dialects/sqlite.md)
 - [SQL execution: sync vs async](core/execution.md)
 - [Transactions](core/transactions.md)
 
