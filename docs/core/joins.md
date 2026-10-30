@@ -2,7 +2,7 @@
 
 `FROM` and `JOIN` are the first step of the logical query processing order: the relations are established before any other clause is evaluated, so they fix the declared type of every column the rest of the statement reads, outer-join nullability included. A join adds a relation to the `FROM` clause and extends the scope of the query with it.
 
-The head page of this statement family is [The `SELECT` statement](select.md). It carries the clause anatomy of the whole statement, the evaluation order, and the capability matrix; this chapter documents the `FROM` and `JOIN` steps of that order in depth.
+The head page of this statement family is the `SELECT` statement chapter, which carries the clause anatomy of the whole statement, the evaluation order, and the capability matrix.
 This chapter documents the `FROM` and `JOIN` steps of that order in depth: the join family and its `ON` predicate, the nullability an outer join introduces, and the derived and lateral relations a statement can read from.
 ## The join family
 
@@ -43,20 +43,17 @@ A column marker is a complete operand on its own, on either side of the comparis
 {{#rustdoc_include ../examples/joins.rs:outer}}
 ```
 
-The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field (see [Nullability](../theory/nullability.md)).
 The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field.
 ## Unaliased duplicate relations
 
 Joining a table the query already addresses renders the same name twice — once in the `FROM` clause and once through the join — which no engine accepts: PostgreSQL reports `table name specified more than once`. The statement is therefore refused deterministically while it is assembled, before a single byte reaches the database, with the typed `BuildError::DuplicateRelation` naming the colliding relation. The predicate of the fragment is written as an unscoped expression, so the duplicate is what the statement reports rather than the reference being ambiguous between the two positions the relation occupies.
-
+The refusal is a pre-flight check of the assembled statement rather than a rendering accident: it fires on every run and no SQL is dispatched. The fix is to alias the second occurrence through the alias markers, so each use of `"users"` carries its own effective name.
 ```rust,no_run
 {{#rustdoc_include ../examples/joins.rs:duplicate_refused}}
 ```
 
-The refusal is a pre-flight check of the assembled statement rather than a rendering accident: it fires on every run and no SQL is dispatched. The fix is to alias the second occurrence through the alias markers, so each use of `"users"` carries its own effective name — see [Aliases](aliasing.md).
 ## Joining derived tables
 
-`.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table. Building derived tables is covered in [Common table expressions](cte.md).
 `.inner_join_subquery(derived, on)` and `.left_join_subquery(derived, on)` join a `DerivedTable` — a finished statement exposed as a relation. The wrapped query renders inline as `(SELECT ...) AS "name"`, so the joined relation behaves like a stored one while its rows come from the subquery; a left-joined derived table lifts its columns to `Option<T>` exactly like a left-joined stored table.
 ## `LATERAL` joins
 
