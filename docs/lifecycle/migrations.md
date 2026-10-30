@@ -420,11 +420,8 @@ be another. The `embed_migrations!` macro bakes the scripts into the binary at
 compile time, so a container start needs no `migrations/` directory mounted, no
 reading of files, and no write access to a scripts directory:
 
-```text
-let embedded = embed_migrations!(
-    "V1__create_users.sql" => "CREATE TABLE users (id BIGINT PRIMARY KEY);",
-    "R__active_users.sql" => "CREATE VIEW active_users AS SELECT id FROM users;",
-)?;
+```rust,no_run
+{{#rustdoc_include ../examples/migrations.rs:embed}}
 ```
 
 It takes pairs of script name and script text — the same names, the same version

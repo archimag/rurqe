@@ -14,17 +14,19 @@ publish = false
 # statement or the row it produced is the point of running it, so this package
 # deliberately does not opt into `[lints] workspace = true`.
 
-# The crate compiles three entry-point forms, so the facade is built with the
+# The crate compiles four entry-point forms, so the facade is built with the
 # drivers they name: the asynchronous form awaits a `deadpool-postgres` pool
 # (instantiated via `rurqe_examples::example_pool`), the `sync_`-prefixed files
-# drive the blocking `rusqlite` and `postgres` adapters, and the build-only file
+# drive the blocking `rusqlite` and `postgres` adapters, the build-only file
 # (`dialects.rs`) assembles statements under pinned SQLite version modules
-# without opening a connection. The facade's default features stay enabled —
-# they carry the projection macros and the ecosystem column types the examples
-# also compile against — and `postgres`, `sqlite`, and `macros` are named here
-# as well, so no target depends on a default that may change.
+# without opening a connection, and the bootstrap file (`migrations.rs`) bakes
+# migration scripts into the binary. The facade's default features stay enabled
+# — they carry the projection macros and the ecosystem column types the
+# examples also compile against — and `postgres`, `sqlite`, `macros`, and
+# `migrate` are named here as well, so no target depends on a default that may
+# change.
 [dependencies]
-rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres"] }
+rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres", "migrate"] }
 # The pool is configured through the adapter itself and terminates TLS with the
 # driver's `NoTls` connector, so both crates are named directly.
 deadpool-postgres = "0.14"
@@ -121,3 +123,7 @@ path = "sync_transactions.rs"
 [[example]]
 name = "sync_transaction_isolation"
 path = "sync_transaction_isolation.rs"
+
+[[example]]
+name = "migrations"
+path = "migrations.rs"

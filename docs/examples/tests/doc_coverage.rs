@@ -7,6 +7,12 @@
 //! included by at least one chapter under `docs/`, so dead
 //! documentation cannot accumulate unnoticed.
 //!
+//! The direction of the inclusion matters as much as its target: a fragment is
+//! included into a `rust,no_run` fence, because that is the fence the book
+//! compiles and the one a reader meets as code. A directive quoted inside a
+//! `text` block documents the syntax instead of including anything, and the
+//! guard refuses it so the two notions cannot drift apart.
+//!
 //! The guard reads source text only and never compiles anything: compiling
 //! the targets is the job of `cargo check --workspace --all-targets` in the
 //! same pipeline.
@@ -20,6 +26,25 @@ use serde::Deserialize;
 /// The directive tag every chapter inclusion starts with.
 const INCLUDE_TAG: &str = "{{#rustdoc_include";
 
+/// The fence a chapter includes a fragment into.
+///
+/// The tag is matched whole, because the other Rust fences carry blocks the
+/// book never substitutes: `rust,compile_fail` demonstrates a rejection and
+/// `rust,ignore` is reserved for an illustrative sketch, so neither of them
+/// can hold an inclusion.
+const INCLUSION_FENCE: &str = "rust,no_run";
+
+/// One `{{#rustdoc_include}}` directive of a chapter.
+struct Directive {
+    /// The chapter file carrying the directive.
+    chapter: String,
+    /// The example file the directive addresses.
+    file: String,
+    /// The anchor region the directive names, empty when it names none.
+    anchor: String,
+    /// The info string of the fence the directive sits in, empty outside one.
+    fence: String,
+}
 /// Root of the `rurqe-examples` package.
 fn package_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -210,8 +235,11 @@ fn relative_chapter_files(dir: &Path, book: &Path, chapters: &mut Vec<String>) {
 /// include syntax inside fenced samples, and a sample is not an inclusion.
 fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
     let mut included: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for (_, file, anchor) in example_directives() {
-        included.entry(file).or_default().insert(anchor);
+    for directive in example_directives() {
+        included
+            .entry(directive.file)
+            .or_default()
+            .insert(directive.anchor);
     }
     included
 }
@@ -226,13 +254,13 @@ fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
 /// does not compile as a doctest. Every entry is collected before anything
 /// is resolved, so a directive naming a missing file, a missing anchor, or
 /// no anchor at all stays visible instead of disappearing from the walk.
-fn example_directives() -> Vec<(String, String, String)> {
+fn example_directives() -> Vec<Directive> {
     let mut directives = Vec::new();
     collect_directives(&book_source(), &mut directives);
     directives
 }
 
-fn collect_directives(dir: &Path, directives: &mut Vec<(String, String, String)>) {
+fn collect_directives(dir: &Path, directives: &mut Vec<Directive>) {
     let entries = fs::read_dir(dir)
         .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
     for entry in entries {
@@ -256,27 +284,45 @@ fn collect_directives(dir: &Path, directives: &mut Vec<(String, String, String)>
     }
 }
 
-fn collect_file_directives(path: &Path, directives: &mut Vec<(String, String, String)>) {
+fn collect_file_directives(path: &Path, directives: &mut Vec<Directive>) {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
-    let mut rest = text.as_str();
-    while let Some(start) = rest.find(INCLUDE_TAG) {
-        rest = rest[start + INCLUDE_TAG.len()..].trim_start();
-        let Some(end) = rest.find("}}") else {
-            break;
-        };
-        let directive = rest[..end].trim();
-        rest = &rest[end + 2..];
-        let (path_part, anchor) = match directive.split_once(':') {
-            Some((path_part, anchor)) => (path_part, anchor.trim()),
-            None => (directive, ""),
-        };
-        if let Some(file) = example_file_of(path_part) {
-            directives.push((
-                path.display().to_string(),
-                file.to_owned(),
-                anchor.to_owned(),
-            ));
+    let mut in_fence = false;
+    // The info string of the fence the walk is inside; it is cleared when the
+    // block closes, so a directive outside every fence records an empty one.
+    let mut fence = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(opening) = trimmed.strip_prefix("```") {
+            if in_fence {
+                in_fence = false;
+                fence.clear();
+            } else {
+                in_fence = true;
+                fence = opening.trim().to_owned();
+            }
+            continue;
+        }
+        let mut rest = line;
+        while let Some(start) = rest.find(INCLUDE_TAG) {
+            rest = rest[start + INCLUDE_TAG.len()..].trim_start();
+            let Some(end) = rest.find("}}") else {
+                break;
+            };
+            let directive = rest[..end].trim();
+            rest = &rest[end + 2..];
+            let (path_part, anchor) = match directive.split_once(':') {
+                Some((path_part, anchor)) => (path_part, anchor.trim()),
+                None => (directive, ""),
+            };
+            if let Some(file) = example_file_of(path_part) {
+                directives.push(Directive {
+                    chapter: path.display().to_string(),
+                    file: file.to_owned(),
+                    anchor: anchor.to_owned(),
+                    fence: fence.clone(),
+                });
+            }
         }
     }
 }
@@ -451,7 +497,7 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
     let registered = registered_example_names();
     let mut checked = 0usize;
 
-    for (chapter, file, anchor) in example_directives() {
+    for Directive { chapter, file, anchor, .. } in example_directives() {
         assert!(
             !anchor.is_empty(),
             "chapter {chapter} includes the whole example file `{file}` without naming \
@@ -489,7 +535,31 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
          book documents no compiled code at all"
     );
 }
-/// Structure holding an anchor pairing violation in an example file.
+
+#[test]
+fn every_include_sits_inside_a_rust_no_run_fence() {
+    let mut misplaced = Vec::new();
+    for directive in example_directives() {
+        let Directive { chapter, file, anchor, fence } = directive;
+        if fence == INCLUSION_FENCE {
+            continue;
+        }
+        let placement = if fence.is_empty() {
+            "no fence".to_owned()
+        } else {
+            format!("a `{fence}` fence")
+        };
+        misplaced.push(format!("{chapter}: includes {file}:{anchor} inside {placement}"));
+    }
+    assert!(
+        misplaced.is_empty(),
+        "include directives found outside a `{INCLUSION_FENCE}` fence:\n{misplaced:#?}\nA \
+         fragment is included into the fence the book compiles, so the block around the \
+         directive has to be `{INCLUSION_FENCE}`; a `text`, `sql`, `toml`, or `bash` fence \
+         documents the directive instead of performing it, and `rust,compile_fail` or \
+         `rust,ignore` carries a block that the book never substitutes"
+    );
+}/// Structure holding an anchor pairing violation in an example file.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct AnchorViolation {
