@@ -259,10 +259,19 @@ fn decode_bool_integer(value: i64) -> Option<bool> {
 /// is read back, so a rounded, fractional, or out-of-range number stays reported
 /// instead of being silently changed by the cast.
 fn integral_float(value: f64) -> Option<i64> {
-    let integer = value as i64;
+    // The 64-bit integer range as floating point bounds: `i64::MIN` is exactly
+    // representable, while `i64::MAX` is not, so `2^63` is the smallest value
+    // the positive side excludes. The bounds are checked before the cast,
+    // because `as i64` saturates: `2^63` would land on `i64::MAX` and a value
+    // below `i64::MIN` on `i64::MIN`, silently changing a number the integer
+    // range does not hold.
+    const LOWER_BOUND: f64 = -9_223_372_036_854_775_808.0;
+    const UPPER_BOUND: f64 = 9_223_372_036_854_775_808.0;
 
-    if integer as f64 == value {
-        Some(integer)
+    let in_range = (LOWER_BOUND..UPPER_BOUND).contains(&value);
+
+    if value.is_finite() && value.fract() == 0.0 && in_range {
+        Some(value as i64)
     } else {
         None
     }
@@ -755,6 +764,41 @@ mod tests {
         assert!(i64::from_sql_value(&SqlVal::F64(1e30)).is_err());
     }
 
+    #[test]
+    fn integer_values_report_the_edges_of_the_floating_point_range() {
+        // `-2^63` is exactly `i64::MIN`, while `2^63` is outside the range and
+        // previously decoded into `i64::MAX` through the saturating cast.
+        assert_eq!(
+            i64::from_sql_value(&SqlVal::F64(-9_223_372_036_854_775_808.0)),
+            Ok(i64::MIN)
+        );
+
+        let error = i64::from_sql_value(&SqlVal::F64(9_223_372_036_854_775_808.0))
+            .expect_err("2^63 lies outside the 64-bit integer range");
+        assert!(matches!(
+            error,
+            RowDecodeError::InvalidValue {
+                found: "float64",
+                ..
+            }
+        ));
+        assert!(error.to_string().contains("not an exact 64-bit integer"));
+        assert!(i64::from_sql_value(&SqlVal::F64(f64::NEG_INFINITY)).is_err());
+
+        // `2^53` is the largest integer a `f64` carries exactly: `2^53 + 1`
+        // rounds to `2^53`, so that very number is the one read back instead of
+        // a value the floating point representable set never held.
+        let two_pow_53 = 9_007_199_254_740_992.0_f64;
+
+        assert_eq!(
+            i64::from_sql_value(&SqlVal::F64(two_pow_53)),
+            Ok(9_007_199_254_740_992)
+        );
+        assert_eq!(
+            i64::from_sql_value(&SqlVal::F64(two_pow_53 + 1.0)),
+            Ok(9_007_199_254_740_992)
+        );
+    }
     #[test]
     fn decodes_tuples_in_selection_order() {
         let row = <(i64, String, bool)>::try_from_row(&[
