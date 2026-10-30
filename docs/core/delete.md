@@ -63,9 +63,7 @@ The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(..
 ### `RETURNING`
 
 ```rust,no_run
-let removed = delete_from(User)
-    .where_(UserId.eq(1i64))
-    .returning(cols!(UserName));
+{{#rustdoc_include ../examples/crud.rs:delete_returning}}
 ```
 
 The clause writes back into the removed row, so it accepts only a projection of that row: a column of another relation names something the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.

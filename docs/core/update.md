@@ -78,10 +78,7 @@ An absent branch adds no clause, and the statement keeps its type, so nothing do
 ### `RETURNING`
 
 ```rust,no_run
-let renamed = update(User)
-    .set(UserName::set("root"))
-    .where_(UserId.eq(1i64))
-    .returning(cols!(UserName));
+{{#rustdoc_include ../examples/crud.rs:update_returning}}
 ```
 
 The clause writes back into the rewritten row, so it accepts only a projection of that row: a column of another relation names something the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.

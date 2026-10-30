@@ -118,6 +118,16 @@ async fn main() -> Result<()> {
 // ANCHOR_END: update_from
     println!("linked {linked} row(s)");
 
+// ANCHOR: update_returning
+    let renamed = update(User)
+        .set(UserName::set("root"))
+        .where_(UserId.eq(1i64))
+        .returning(cols!(UserName))
+        .fetch_all(&pool)
+        .await?;
+// ANCHOR_END: update_returning
+    println!("renamed {renamed:?}");
+
 // ANCHOR: delete_using
     let cleaned = delete_from(User)
         .using_table(Account)
@@ -126,6 +136,15 @@ async fn main() -> Result<()> {
         .await?;
 // ANCHOR_END: delete_using
     println!("cleaned {cleaned} row(s)");
+
+// ANCHOR: delete_returning
+    let removed = delete_from(User)
+        .where_(UserId.eq(1i64))
+        .returning(cols!(UserName))
+        .fetch_all(&pool)
+        .await?;
+// ANCHOR_END: delete_returning
+    println!("removed rows: {removed:?}");
 
     Ok(())
 }
