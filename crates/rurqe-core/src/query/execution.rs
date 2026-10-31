@@ -1,4 +1,4 @@
-//! Query execution contracts, typed errors, and the transaction savepoint context.
+//! Query execution contracts and typed errors.
 
 use core::fmt;
 use core::future::Future;
@@ -13,7 +13,6 @@ use crate::row::FromRow;
 use crate::schema::Table;
 
 use super::group_by::GroupedQuery;
-use super::savepoint::SavepointName;
 use super::scope::TableScope;
 use super::select::{BuiltQuery, HasProjection, SelectQuery};
 
@@ -886,46 +885,4 @@ where
     Tables: TableScope,
     B: TerminalBackend<'a, Self>,
 {
-}
-
-/// Tracks the nesting depth and savepoint names of an open transaction.
-#[derive(Debug, Clone, Default)]
-pub struct TransactionContext {
-    next_savepoint: u32,
-    savepoints: Vec<SavepointName>,
-}
-
-impl TransactionContext {
-    /// Creates a context for the outermost transaction.
-    pub fn new() -> Self {
-        TransactionContext::default()
-    }
-
-    /// The number of nested savepoints currently open.
-    pub fn depth(&self) -> usize {
-        self.savepoints.len()
-    }
-
-    /// Whether the context currently sits inside a nested transaction.
-    pub fn is_nested(&self) -> bool {
-        !self.savepoints.is_empty()
-    }
-
-    /// The name of the innermost open savepoint, if any.
-    pub fn current_savepoint(&self) -> Option<&str> {
-        self.savepoints.last().map(SavepointName::as_str)
-    }
-
-    /// Allocates a fresh savepoint name and makes it the innermost block.
-    pub fn open_savepoint(&mut self) -> SavepointName {
-        self.next_savepoint += 1;
-        let name = SavepointName::generated(self.next_savepoint);
-        self.savepoints.push(name.clone());
-        name
-    }
-
-    /// Ends the innermost block and returns the savepoint name it used.
-    pub fn close_savepoint(&mut self) -> Option<SavepointName> {
-        self.savepoints.pop()
-    }
 }
