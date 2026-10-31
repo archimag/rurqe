@@ -60,13 +60,13 @@ Create a lightweight, strictly typed query builder core with an extensible multi
 
 ### Example Usage
 ```rust
-table! {
-    users {
-        id: i32,
-        email: String,
-        is_active: bool,
+table!(
+    User => "users" {
+        UserId => "id": i32,
+        UserName => "name": String,
+        UserActive => "active": bool,
     }
-}
+);
 
 let rows: Vec<(i32, String)> = db
     .select((users::ID, users::EMAIL))
@@ -695,17 +695,17 @@ The catalogue is distributed across the API surface it protects:
 ```rust
 use rurqe::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-table! {
+table!(
     Order => "orders" {
         OrderTotal => "total": f64,
     }
-}
+);
 
 // Rejected at compile time: `OrderTotal` belongs to `Order`, which the query
 // never introduces, so the error names the missing relation instead of leaking

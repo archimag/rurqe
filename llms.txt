@@ -42,23 +42,23 @@ Schemas are declared with zero boilerplate using the `table!` macro:
 ```rust
 use rurqe::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
         OrderUserId => "user_id": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 ```
 
 ### 2. Relational Querying (Joins & Sound Nullability)
@@ -463,21 +463,21 @@ Schema markers are zero-sized values, so tables are passed as arguments instead 
 ```rust
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     Users => "users" {
         UsersId => "id": i64,
         UsersName => "name": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Orders => "orders" {
         OrdersUserId => "user_id": i64,
         OrdersTotal => "total": f64,
     }
-}
+);
 
 let built = select_from(Users)
     .inner_join_table(Orders, OrdersUserId.eq(Expr::column::<UsersId>()))
