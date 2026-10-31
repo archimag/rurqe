@@ -1,3 +1,4 @@
+use super::backend::MigrationTransaction;
 use super::time::format_timestamp;
 use super::{
     InMemoryBackend, InMemoryTransaction, LockGuard, MigrationBackend, MigrationStatusKind,
@@ -445,4 +446,339 @@ fn status_ensures_the_history_table_under_the_run_lock() {
         !backend.inner.locked,
         "the lock is released once the history is read"
     );
+}
+
+/// The history write a fixture transaction is made to fail.
+///
+/// The two knobs of [`InMemoryBackend`] (`fail_success_entry` and
+/// `fail_success_commit`) inject a failure at the applied-row write and at the
+/// commit. This enum adds the mutations [`Migrator::repair`] performs, which the
+/// in-memory backend always accepts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum HistoryFailure {
+    /// Every history write succeeds beyond the knobs of [`InMemoryBackend`].
+    #[default]
+    None,
+    /// Deleting a recorded history entry fails.
+    DeleteEntry,
+    /// Updating a recorded checksum fails.
+    UpdateChecksum,
+}
+
+/// How the fixture transactions of a run terminated.
+#[derive(Debug, Default)]
+struct TransactionState {
+    /// Transactions opened and not terminated yet.
+    open: usize,
+    /// Commits that succeeded.
+    commits: usize,
+    /// Commits the fixture failed.
+    failed_commits: usize,
+    /// Transactions ended by an explicit rollback.
+    rollbacks: usize,
+}
+
+/// An [`InMemoryBackend`] recording how every transaction terminates.
+///
+/// The staged rows live in the wrapped [`InMemoryTransaction`], which discards
+/// them on rollback and on drop, so an abandoned transaction leaves the recorded
+/// history untouched and `open` above zero.
+#[derive(Debug, Default)]
+struct ObservingBackend {
+    inner: InMemoryBackend,
+    failure: HistoryFailure,
+    state: TransactionState,
+}
+
+impl MigrationBackend for ObservingBackend {
+    type Transaction<'a> = ObservingTransaction<'a>;
+
+    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+        self.inner.ensure_schema_history_table()
+    }
+
+    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+        self.inner.read_history()
+    }
+
+    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        let inner = self.inner.begin()?;
+        self.state.open += 1;
+        Ok(ObservingTransaction {
+            inner,
+            failure: self.failure,
+            state: &mut self.state,
+        })
+    }
+}
+
+/// A transaction of [`ObservingBackend`] delegating its history writes.
+struct ObservingTransaction<'a> {
+    inner: InMemoryTransaction<'a>,
+    failure: HistoryFailure,
+    state: &'a mut TransactionState,
+}
+
+impl MigrationTransaction for ObservingTransaction<'_> {
+    fn execute(&mut self, sql: &str) -> Result<(), Error> {
+        self.inner.execute(sql)
+    }
+
+    fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
+        self.inner.record_entry(entry)
+    }
+
+    fn delete_entry(&mut self, installed_rank: i64) -> Result<(), Error> {
+        if self.failure == HistoryFailure::DeleteEntry {
+            return Err(Error::Backend(format!(
+                "simulated failure deleting the history entry at rank {installed_rank}"
+            )));
+        }
+        self.inner.delete_entry(installed_rank)
+    }
+
+    fn update_checksum(&mut self, script: &str, checksum: &Checksum) -> Result<(), Error> {
+        if self.failure == HistoryFailure::UpdateChecksum {
+            return Err(Error::Backend(format!(
+                "simulated failure updating the recorded checksum of `{script}`"
+            )));
+        }
+        self.inner.update_checksum(script, checksum)
+    }
+
+    fn commit(self) -> Result<(), Error> {
+        let ObservingTransaction { inner, state, .. } = self;
+        state.open = state.open.saturating_sub(1);
+        let outcome = inner.commit();
+        if outcome.is_ok() {
+            state.commits += 1;
+        } else {
+            state.failed_commits += 1;
+        }
+        outcome
+    }
+
+    fn rollback(self) -> Result<(), Error> {
+        let ObservingTransaction { inner, state, .. } = self;
+        state.open = state.open.saturating_sub(1);
+        state.rollbacks += 1;
+        inner.rollback()
+    }
+}
+
+#[test]
+fn a_transactional_script_whose_history_write_fails_names_the_script_and_rolls_back() {
+    let mut backend = ObservingBackend::default();
+    backend.inner.fail_success_entry = true;
+    let migration = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+        .expect("a valid script name");
+
+    let error = Migrator::new()
+        .migrate(&mut backend, std::slice::from_ref(&migration))
+        .expect_err("the failing history write aborts the run");
+
+    match &error {
+        Error::MigrationExecutionFailed { script, source } => {
+            assert_eq!(script, "V1__users.sql");
+            assert!(
+                source.contains("V1__users.sql"),
+                "the backend diagnostic travels inside the script-naming error: {source}"
+            );
+        }
+        other => panic!("expected MigrationExecutionFailed, got {other:?}"),
+    }
+
+    assert_eq!(
+        backend.state.rollbacks,
+        1,
+        "the transaction of the script is rolled back"
+    );
+    assert_eq!(
+        backend.state.commits,
+        1,
+        "only the best-effort failed row commits"
+    );
+    assert_eq!(backend.state.failed_commits, 0);
+    assert_eq!(
+        backend.state.open,
+        0,
+        "every transaction is terminated before the run returns"
+    );
+    assert_eq!(backend.inner.history.len(), 1);
+    assert_eq!(backend.inner.history[0].script, "V1__users.sql");
+    assert!(
+        !backend.inner.history[0].success,
+        "the attempt is recorded as failed, not as applied"
+    );
+}
+
+#[test]
+fn a_transactional_script_whose_commit_fails_names_the_script_and_leaves_no_applied_row() {
+    let mut backend = ObservingBackend::default();
+    backend.inner.fail_success_commit = true;
+    let migration = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+        .expect("a valid script name");
+
+    let error = Migrator::new()
+        .migrate(&mut backend, std::slice::from_ref(&migration))
+        .expect_err("the failing commit aborts the run");
+
+    match &error {
+        Error::MigrationExecutionFailed { script, source } => {
+            assert_eq!(script, "V1__users.sql");
+            assert!(source.contains("commit"), "got {source}");
+        }
+        other => panic!("expected MigrationExecutionFailed, got {other:?}"),
+    }
+
+    assert_eq!(
+        backend.state.failed_commits,
+        1,
+        "the commit of the script transaction fails"
+    );
+    assert_eq!(
+        backend.state.rollbacks,
+        0,
+        "a failed commit consumes its transaction"
+    );
+    assert_eq!(
+        backend.state.commits,
+        1,
+        "only the best-effort failed row commits"
+    );
+    assert_eq!(
+        backend.state.open,
+        0,
+        "every transaction is terminated before the run returns"
+    );
+    assert_eq!(backend.inner.history.len(), 1);
+    assert_eq!(backend.inner.history[0].script, "V1__users.sql");
+    assert!(
+        !backend.inner.history[0].success,
+        "the history holds no applied row for the script"
+    );
+}
+
+#[test]
+fn a_baseline_whose_history_write_fails_propagates_the_backend_error_and_rolls_back() {
+    let mut backend = ObservingBackend::default();
+    backend.inner.fail_success_entry = true;
+
+    let error = Migrator::new()
+        .baseline(
+            &mut backend,
+            "1.0.0".parse().expect("a valid version"),
+            "legacy baseline",
+        )
+        .expect_err("the failing history write aborts the baseline");
+
+    match &error {
+        Error::Backend(message) => assert!(message.contains("recording"), "got {message}"),
+        other => panic!("expected Backend, got {other:?}"),
+    }
+
+    assert!(
+        backend.inner.history.is_empty(),
+        "the baseline row is rolled back with its transaction"
+    );
+    assert_eq!(backend.state.rollbacks, 1);
+    assert_eq!(backend.state.commits, 0);
+    assert_eq!(backend.state.open, 0);
+}
+
+#[test]
+fn a_repair_whose_purge_fails_rolls_back_the_staged_checksum_update() {
+    let mut backend = ObservingBackend {
+        failure: HistoryFailure::DeleteEntry,
+        ..ObservingBackend::default()
+    };
+
+    let original = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+        .expect("a valid script name");
+    let edited = Migration::parse("V1__users.sql", "CREATE TABLE users (id BIGINT);")
+        .expect("a valid script name");
+    let failed = Migration::parse("V2__broken.sql", "BOOM;").expect("a valid script name");
+
+    let history = vec![
+        SchemaHistoryEntry::applied(1, &original, "2024-01-01 00:00:00", 3),
+        SchemaHistoryEntry::failed(2, &failed, "2024-01-01 00:00:00", 1),
+    ];
+    backend.inner.history = history.clone();
+
+    let error = Migrator::new()
+        .repair(&mut backend, &[edited, failed])
+        .expect_err("the failing purge aborts the repair");
+
+    match &error {
+        Error::Backend(message) => assert!(message.contains("deleting"), "got {message}"),
+        other => panic!("expected Backend, got {other:?}"),
+    }
+
+    assert_eq!(
+        backend.inner.history,
+        history,
+        "the whole repair transaction is rolled back"
+    );
+    assert_eq!(
+        backend.inner.history[0].checksum,
+        Some(original.checksum),
+        "the staged checksum update is not persisted"
+    );
+    assert!(
+        !backend.inner.history[1].success,
+        "the failed entry is not purged"
+    );
+    assert_eq!(backend.state.rollbacks, 1);
+    assert_eq!(backend.state.commits, 0);
+    assert_eq!(backend.state.open, 0);
+}
+
+#[test]
+fn a_repair_whose_checksum_update_fails_rolls_back_the_staged_purge() {
+    let mut backend = ObservingBackend {
+        failure: HistoryFailure::UpdateChecksum,
+        ..ObservingBackend::default()
+    };
+
+    let original = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+        .expect("a valid script name");
+    let edited = Migration::parse("V1__users.sql", "CREATE TABLE users (id BIGINT);")
+        .expect("a valid script name");
+    let failed = Migration::parse("V2__broken.sql", "BOOM;").expect("a valid script name");
+
+    // The failed entry is recorded ahead of the edited one on purpose: its purge
+    // is staged before the checksum update fails, so the rollback has to discard
+    // the purge as well.
+    let history = vec![
+        SchemaHistoryEntry::failed(1, &failed, "2024-01-01 00:00:00", 1),
+        SchemaHistoryEntry::applied(2, &original, "2024-01-01 00:00:00", 3),
+    ];
+    backend.inner.history = history.clone();
+
+    let error = Migrator::new()
+        .repair(&mut backend, &[edited, failed])
+        .expect_err("the failing checksum update aborts the repair");
+
+    match &error {
+        Error::Backend(message) => assert!(message.contains("checksum"), "got {message}"),
+        other => panic!("expected Backend, got {other:?}"),
+    }
+
+    assert_eq!(
+        backend.inner.history,
+        history,
+        "the whole repair transaction is rolled back"
+    );
+    assert!(
+        !backend.inner.history[0].success,
+        "the staged purge is not persisted"
+    );
+    assert_eq!(
+        backend.inner.history[1].checksum,
+        Some(original.checksum),
+        "the recorded checksum is unchanged"
+    );
+    assert_eq!(backend.state.rollbacks, 1);
+    assert_eq!(backend.state.commits, 0);
+    assert_eq!(backend.state.open, 0);
 }
