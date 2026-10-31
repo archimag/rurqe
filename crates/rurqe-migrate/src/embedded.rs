@@ -49,6 +49,10 @@ use crate::version::MigrationVersion;
 /// wrappers themselves are unaffected by the feature, because they run the
 /// guard-free cores on a blocking thread of the pool. Run the synchronous methods
 /// on a plain (non-Tokio) thread otherwise.
+///
+/// A script name identifies one migration, so a collection refuses two entries
+/// sharing one script name: one run would otherwise apply two different bodies
+/// under a single recorded identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedMigrations {
     migrations: Vec<Migration>,
@@ -60,13 +64,16 @@ impl EmbeddedMigrations {
     /// Every script is parsed and its SHA-256 digest computed at construction time.
     /// Migrations are sorted using [`Migrator::sort_migrations`]: versioned migrations
     /// in ascending version order, followed by repeatable migrations sorted by script name.
+    ///
+    /// Two entries sharing one script name are rejected with
+    /// [`Error::DuplicateScriptName`]: a single run would otherwise apply two
+    /// different bodies under one recorded identity.
     pub fn new(scripts: &[(&str, &str)]) -> Result<Self, Error> {
         let mut parsed = Vec::with_capacity(scripts.len());
         for &(script, sql) in scripts {
             parsed.push(Migration::parse(script, sql)?);
         }
-        let sorted = Migrator::sort_migrations(&parsed);
-        Ok(Self { migrations: sorted })
+        Self::assemble(&parsed)
     }
 
     /// Creates an empty embedded migration set.
@@ -76,10 +83,21 @@ impl EmbeddedMigrations {
         }
     }
 
-    /// Wraps an existing list of pre-parsed migrations, sorting them deterministically.
-    pub fn from_migrations(migrations: Vec<Migration>) -> Self {
-        let sorted = Migrator::sort_migrations(&migrations);
-        Self { migrations: sorted }
+    /// Wraps an existing list of pre-parsed migrations, sorting them
+    /// deterministically.
+    ///
+    /// Two entries sharing one script name are rejected with
+    /// [`Error::DuplicateScriptName`] for the same reason [`new`](Self::new)
+    /// rejects them.
+    pub fn from_migrations(migrations: Vec<Migration>) -> Result<Self, Error> {
+        Self::assemble(&migrations)
+    }
+
+    /// Sorts `migrations` and refuses two entries sharing one script name.
+    fn assemble(migrations: &[Migration]) -> Result<Self, Error> {
+        let sorted = Migrator::sort_migrations(migrations);
+        Migrator::validate_script_uniqueness(&sorted)?;
+        Ok(Self { migrations: sorted })
     }
 
     /// Returns a slice of the parsed and sorted migrations.
@@ -341,6 +359,38 @@ mod tests {
 
         assert_eq!(report.applied_count, 2);
         assert_eq!(backend.history.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_script_names_are_rejected_at_construction() {
+        let error = EmbeddedMigrations::new(&[
+            ("R__view.sql", "CREATE VIEW v AS SELECT 1;"),
+            ("R__view.sql", "CREATE VIEW v AS SELECT 2;"),
+        ])
+        .expect_err("two scripts under one name must be rejected");
+
+        assert_eq!(
+            error,
+            Error::DuplicateScriptName {
+                script: "R__view.sql".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn from_migrations_rejects_duplicate_script_names() {
+        let first = Migration::parse("R__view.sql", "SELECT 1;").expect("a valid script name");
+        let second = Migration::parse("R__view.sql", "SELECT 2;").expect("a valid script name");
+
+        let error = EmbeddedMigrations::from_migrations(vec![first, second])
+            .expect_err("two scripts under one name must be rejected");
+
+        assert_eq!(
+            error,
+            Error::DuplicateScriptName {
+                script: "R__view.sql".to_owned()
+            }
+        );
     }
 
     #[test]

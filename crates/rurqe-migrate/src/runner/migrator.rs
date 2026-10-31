@@ -1,6 +1,6 @@
 //! The migration lifecycle runner.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::checkpoint::Checkpoint;
 use crate::error::Error;
@@ -96,6 +96,7 @@ impl Migrator {
     ) -> Result<MigrationReport, Error> {
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
+        Self::validate_script_uniqueness(migrations)?;
         self.validate_version_uniqueness(migrations)?;
         let history = guard.read_history()?;
         self.validate_history(&history, migrations)?;
@@ -372,6 +373,28 @@ impl Migrator {
                     });
                 }
                 seen.insert(key, migration.script.as_str());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Rejects two migrations declaring the same script name.
+    ///
+    /// A script name identifies one migration, so two entries under one name
+    /// would apply two different bodies under a single recorded identity: the
+    /// first one is recorded, and the second is then re-applied as a modified
+    /// script and recorded a second time. `EmbeddedMigrations` refuses such a
+    /// set at construction; this check covers a list assembled by hand, before
+    /// any script of the run executes.
+    pub(crate) fn validate_script_uniqueness(migrations: &[Migration]) -> Result<(), Error> {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+
+        for migration in migrations {
+            if !seen.insert(migration.script.as_str()) {
+                return Err(Error::DuplicateScriptName {
+                    script: migration.script.clone(),
+                });
             }
         }
 

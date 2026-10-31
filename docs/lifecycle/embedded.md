@@ -25,8 +25,9 @@ fallible collection:
 ```
 
 Every pair is parsed and digested when the collection is built, so a script whose
-name follows no convention, and a version that does not parse, stop the process at
-startup instead of leaving a gap in the recorded history. The collection is sorted
+name follows no convention, a version that does not parse, and two entries sharing
+one script name stop the process at startup instead of leaving a gap in the
+recorded history. The collection is sorted
 once, the way a directory of scripts is sorted: versioned scripts in ascending
 version order, followed by the repeatable scripts ordered by script name.
 
@@ -45,9 +46,13 @@ they are:
   and by value;
 - `to_vec` copies them out;
 - `empty` builds a collection holding no script;
-- `from_migrations` wraps already parsed migrations and sorts them
-  deterministically.
-
+- `from_migrations` wraps already parsed migrations, sorts them
+  deterministically, and refuses two entries sharing one script name.
+A script name identifies one migration. Two entries under one name would apply
+two different bodies under a single recorded identity: the first one is recorded,
+the second is re-applied as a modified script and recorded again, and the history
+ends up with two rows for one name. Both constructors refuse such a set, and a run
+refuses a list assembled by hand before it applies anything.
 ## Applying the collection
 
 Every lifecycle operation exists twice: a blocking method that drives the backend

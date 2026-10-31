@@ -202,7 +202,29 @@ fn the_history_of_a_non_transactional_migration_is_written_after_it_runs() {
     assert_eq!(backend.non_transactional_sql.len(), 1);
     assert_eq!(backend.history.len(), 2);
     assert!(backend.history.iter().all(|entry| entry.success));
-}
+    }
+
+    #[test]
+    fn duplicate_script_names_are_rejected_before_any_migration_runs() {
+        let mut backend = InMemoryBackend::new();
+        let first = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 1;")
+            .expect("a valid script name");
+        let second = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 2;")
+            .expect("a valid script name");
+
+        let error = Migrator::new()
+            .migrate(&mut backend, &[first, second])
+            .expect_err("two scripts under one name must be rejected");
+
+        assert_eq!(
+            error,
+            Error::DuplicateScriptName {
+                script: "R__view.sql".to_owned()
+            }
+        );
+        assert!(backend.history.is_empty(), "no script ran");
+        assert!(!backend.locked, "the lock is released on the way out");
+    }
 
 #[test]
 fn a_failed_non_transactional_migration_is_recorded_as_failed() {

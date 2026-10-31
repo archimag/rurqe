@@ -51,6 +51,16 @@ pub enum Error {
         /// The second script declaring the version.
         second: String,
     },
+
+    /// Two migrations declare the same script name.
+    ///
+    /// A script name identifies one migration, so two entries under one name
+    /// would apply two different bodies under a single recorded identity and
+    /// leave an ambiguous history behind.
+    DuplicateScriptName {
+        /// The duplicated script name.
+        script: String,
+    },
     /// Executing a migration script failed.
     MigrationExecutionFailed {
         /// The script that failed to execute.
@@ -164,6 +174,11 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "duplicate migration version {version}: `{first}` and `{second}` declare the same version"
+            ),
+            Error::DuplicateScriptName { script } => write!(
+                f,
+                "duplicate migration script name `{script}`: every migration of a run must \
+                 declare a distinct script name"
             ),
             Error::MigrationExecutionFailed { script, source } => write!(
                 f,
