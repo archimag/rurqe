@@ -4,6 +4,8 @@ use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
 
 // ANCHOR: schema_declaration
+// The schema name is stated once, and every nested `table!` inherits it, so
+// the table declaration below carries no `in` clause of its own.
 schema! {
     /// The `auth` schema.
     Auth => "auth" as auth {

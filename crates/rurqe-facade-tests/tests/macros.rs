@@ -77,6 +77,8 @@ impl_sql_text_newtype!(Nonce);
 schema! {
     /// The `audit` schema.
     Audit => "audit" as audit {
+        // The schema name above reaches every nested `table!` declaration, so
+        // the table states its SQL name without an `in` clause.
         table! {
             Events => "events" {
                 EventId => "id": i64,

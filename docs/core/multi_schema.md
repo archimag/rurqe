@@ -18,20 +18,24 @@ Tables belonging to the primary schema are declared using the standard `table!` 
 ```rust,no_run
 {{#rustdoc_include ../examples/multi_schema.rs:primary_declaration}}
 ```
+
 | Declaration | Emitted SQL Relation |
 |---|---|
-| `User => "users"` — table in primary schema | `"users"` |
-| `Sessions => "sessions" in "auth"` — table in secondary schema | `"auth"."sessions"` |
+| `User => "users"` — table in the primary schema | `"users"` |
+| `Sessions => "sessions"` inside a `schema!` block for `"auth"` — table in a secondary schema | `"auth"."sessions"` |
+| `Sessions => "sessions" in "auth"` — isolated table declaration in a secondary schema | `"auth"."sessions"` |
 
 A column reference in `SELECT` projections, predicates, and ordering clauses remains qualified strictly by its table name or relation alias (`"sessions"."id"`), never by the schema name (`"auth"."sessions"."id"` is invalid column syntax in SQL). Because the table reference in `FROM` or `JOIN` is already fully qualified, column addressing stays unambiguous without qualification bloat.
 
 ## Grouping Tables with `schema!`
 
-The `schema!` macro declares a secondary schema and the tables belonging to it:
+The `schema!` macro declares a secondary schema and the tables belonging to it. Each table of the schema is written as an ordinary `table!` declaration, so its columns keep exactly the shape a table of the primary schema has:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/multi_schema.rs:schema_declaration}}
 ```
+
+The schema name is written once, on the head of the block, and `schema!` attaches it to every nested `table!` declaration. A nested table therefore never repeats the schema through an `in` clause of its own, while the relation it renders is still qualified with that schema (`"auth"."sessions"`).
 
 The macro establishes both Rust namespaces simultaneously:
 
