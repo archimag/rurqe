@@ -8,13 +8,21 @@
 //! rollback of a failing or unwinding block behave exactly as they do on an
 //! owned connection. The pooled handle itself returns to the pool on every exit
 //! path, because the checkout guard is dropped however the block ends.
+//!
+//! The asynchronous `PgAsyncPool` exposes the same closure-scoped form: its
+//! `transaction` and `transaction_with_isolation` keep one pooled connection for
+//! the whole block, let the block nest through savepoints, and close it with an
+//! awaited `COMMIT` or `ROLLBACK`. A block that is cancelled or unwound cannot
+//! await either statement, so its connection returns to the pool with the
+//! transaction still open and the pool has to be rebuilt.
 
 #[cfg(feature = "deadpool-postgres")]
 mod deadpool_impl {
     use rurqe_core::expr::SqlVal;
-    use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
+    use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 
     use crate::backend::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
+    use crate::backend::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
     use crate::backend::types::PgError;
 
     /// A `deadpool-postgres` pool executing RURQE queries asynchronously.
@@ -25,6 +33,10 @@ mod deadpool_impl {
     /// [`AsyncQueryBackendExt`](rurqe_core::query::AsyncQueryBackendExt) become
     /// available directly on the pool: every call checks a connection out,
     /// awaits the statement, and returns the connection to the pool.
+    ///
+    /// A multi-statement block goes through
+    /// [`transaction`](PgAsyncPool::transaction), which keeps one connection
+    /// checked out for the whole block and commits it as a whole.
     #[derive(Clone)]
     pub struct PgAsyncPool {
         pool: deadpool_postgres::Pool,
@@ -39,6 +51,163 @@ mod deadpool_impl {
         /// Returns a shared reference to the wrapped pool.
         pub fn pool(&self) -> &deadpool_postgres::Pool {
             &self.pool
+        }
+
+        /// Runs `f` inside a transaction on a pooled connection, committing on
+        /// `Ok` and rolling back on `Err`.
+        ///
+        /// The connection stays checked out for the whole block, so every
+        /// statement of `f` runs on one physical connection and the block is
+        /// atomic exactly as it is on an owned connection: the outermost call
+        /// runs between `BEGIN` and `COMMIT`, a call made while a transaction is
+        /// already open nests inside a `SAVEPOINT` through
+        /// [`PgAsyncScope::transaction`], and a block returning `Err` has its
+        /// statements rolled back before the error reaches the caller. The pool
+        /// itself is shared, so several transactions can run concurrently: every
+        /// call checks its own connection out, and the handle returns to the
+        /// pool on every completed path, because the checkout guard is dropped
+        /// however the block ends.
+        ///
+        /// ```text
+        /// pool
+        ///     .transaction(|scope| {
+        ///         Box::pin(async move {
+        ///             insert_into::<Postgres, User>()
+        ///                 .values((UserId::set(1i64),))
+        ///                 .execute(&scope)
+        ///                 .await?;
+        ///
+        ///             // A nested block is a savepoint: its rollback undoes only
+        ///             // its own statements.
+        ///             scope
+        ///                 .transaction(|nested| {
+        ///                     Box::pin(async move {
+        ///                         insert_into::<Postgres, User>()
+        ///                             .values((UserId::set(2i64),))
+        ///                             .execute(&nested)
+        ///                             .await?;
+        ///                         Ok(())
+        ///                     })
+        ///                 })
+        ///                 .await?;
+        ///
+        ///             Ok(())
+        ///         })
+        ///     })
+        ///     .await?;
+        /// ```
+        ///
+        /// The closure erases its own future into a boxed [`Send`] one, exactly
+        /// as the closure of
+        /// [`crate::PgAsyncConnection::transaction_with_isolation`] does, because
+        /// an asynchronous terminal call returns an opaque `impl Future` that a
+        /// closure return type cannot name on stable Rust. `E` is the error of
+        /// `f` and has to absorb the driver error, which the dialect error alias
+        /// over [`PgError`] does, so a terminal call propagates with `?`
+        /// unchanged inside the block.
+        ///
+        /// A checkout failure surfaces as [`PgError::Pool`]; a failure raised by
+        /// `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgError`].
+        ///
+        /// # Abandoned blocks
+        ///
+        /// A block that is cancelled or unwound never reaches the end of this
+        /// method, so neither `COMMIT` nor `ROLLBACK` is awaited for it: the
+        /// checkout guard is dropped on the way out, and the connection returns
+        /// to the pool with the transaction of the abandoned block still open.
+        /// `deadpool-postgres` recycles a connection by checking that it is not
+        /// closed, not by checking that it holds no open transaction, so the
+        /// next caller receives that connection in that state. The synchronous
+        /// pools differ here: their guard performs the rollback in its `Drop`
+        /// before the connection returns to the pool.
+        ///
+        /// A block that has to survive an abandoned future therefore belongs in
+        /// a task that finishes or reports its own cancellation, and a pool that
+        /// observed one has to be rebuilt rather than reused.
+        pub async fn transaction<T, E, F>(&self, f: F) -> Result<T, E>
+        where
+            E: From<PgError>,
+            F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
+        {
+            let object = self.pool.get().await.map_err(PgError::from)?;
+            run_transaction(&object, String::from("BEGIN"), f).await
+        }
+
+        /// Runs `f` inside a transaction at the requested `isolation` level on a
+        /// pooled connection, committing on `Ok` and rolling back on `Err`.
+        ///
+        /// The helper mirrors [`PgAsyncPool::transaction`] and differs only in
+        /// the statement that opens the outermost block: the block runs between
+        /// `BEGIN ISOLATION LEVEL <level>` and `COMMIT`, with the level text
+        /// coming from [`IsolationLevel::as_str`], so every statement of `f`
+        /// observes the isolation the caller asked for. A call made while a
+        /// transaction is already open nests inside a `SAVEPOINT` and the
+        /// requested level is ignored for that nested block, because SQL defines
+        /// no per-savepoint isolation and the enclosing transaction keeps the
+        /// level it was opened with.
+        ///
+        /// The error mapping and the abandoned-block failure mode are the ones
+        /// documented on [`PgAsyncPool::transaction`]: a checkout failure
+        /// surfaces as [`PgError::Pool`], a failure raised by `BEGIN`, by `f`,
+        /// or by `COMMIT` surfaces as [`PgError`], and a cancelled or unwound
+        /// block returns its connection to the pool with the transaction still
+        /// open.
+        pub async fn transaction_with_isolation<T, E, F>(
+            &self,
+            isolation: IsolationLevel,
+            f: F,
+        ) -> Result<T, E>
+        where
+            E: From<PgError>,
+            F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
+        {
+            let object = self.pool.get().await.map_err(PgError::from)?;
+
+            let mut begin = String::from("BEGIN ISOLATION LEVEL ");
+            begin.push_str(isolation.as_str());
+            run_transaction(&object, begin, f).await
+        }
+    }
+
+    /// Opens the transaction `begin` denotes on `client`, runs `f` inside it,
+    /// and closes it once the closure returns.
+    ///
+    /// The commit of a block that returned `Ok` and the rollback of a block that
+    /// returned `Err` are both awaited, so the transaction is closed before the
+    /// result reaches the caller. A rollback the driver refuses is traced instead
+    /// of replacing the error of the block, and the connection must then be
+    /// discarded rather than reused, because the statements of the block stay
+    /// pending inside the transaction.
+    async fn run_transaction<T, E, F>(
+        client: &tokio_postgres::Client,
+        begin: String,
+        f: F,
+    ) -> Result<T, E>
+    where
+        E: From<PgError>,
+        F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
+    {
+        execute_control(client, begin).await.map_err(E::from)?;
+
+        match f(PgAsyncScope::new(client)).await {
+            Ok(value) => {
+                execute_control(client, String::from("COMMIT"))
+                    .await
+                    .map_err(E::from)?;
+                tracing::info!("committed transaction");
+                Ok(value)
+            }
+            Err(error) => {
+                match execute_control(client, String::from("ROLLBACK")).await {
+                    Ok(()) => tracing::warn!("rolled back transaction"),
+                    Err(failure) => tracing::error!(
+                        failure = %failure,
+                        "rolling back the transaction failed; the pooled connection is \
+                         returned with its transaction open and must be discarded"
+                    ),
+                }
+                Err(error)
+            }
         }
     }
 
