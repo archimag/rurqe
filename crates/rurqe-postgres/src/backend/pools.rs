@@ -269,15 +269,36 @@ mod r2d2_impl {
         pool: r2d2::Pool<M>,
     }
 
+    // `r2d2::Pool` is an `Arc`-backed handle that clones without requiring the
+    // manager to be `Clone`, so the implementation is written out instead of
+    // derived: a derive would add an `M: Clone` bound to the handle.
+    impl<M: ManageConnection> Clone for PgPool<M> {
+        fn clone(&self) -> Self {
+            Self {
+                pool: self.pool.clone(),
+            }
+        }
+    }
+
     impl<M: ManageConnection<Connection = postgres::Client>> PgPool<M> {
         /// Wraps an existing `r2d2` pool managing `postgres` connections.
         pub fn new(pool: r2d2::Pool<M>) -> Self {
             Self { pool }
         }
 
+        /// Returns a shared reference to the wrapped pool.
+        pub fn pool(&self) -> &r2d2::Pool<M> {
+            &self.pool
+        }
+
         /// Checks a connection out of the pool.
-        pub fn get(&self) -> Result<r2d2::PooledConnection<M>, r2d2::Error> {
-            self.pool.get()
+        ///
+        /// A checkout failure surfaces as [`PgPoolError::Pool`], so the whole
+        /// pool API speaks one error vocabulary: a checkout failure and a
+        /// statement failure both propagate with `?` into a function returning
+        /// [`PgPoolError`].
+        pub fn get(&self) -> Result<r2d2::PooledConnection<M>, PgPoolError> {
+            self.pool.get().map_err(PgPoolError::Pool)
         }
 
         /// Runs `f` inside a transaction on a pooled connection, committing on
@@ -300,7 +321,7 @@ mod r2d2_impl {
         where
             F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
         {
-            let mut pooled = self.pool.get().map_err(PgPoolError::Pool)?;
+            let mut pooled = self.get()?;
             PgConnection::borrowed(&mut pooled)
                 .transaction(f)
                 .map_err(PgPoolError::Query)
@@ -331,7 +352,7 @@ mod r2d2_impl {
         where
             F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
         {
-            let mut pooled = self.pool.get().map_err(PgPoolError::Pool)?;
+            let mut pooled = self.get()?;
             PgConnection::borrowed(&mut pooled)
                 .transaction_with_isolation(isolation, f)
                 .map_err(PgPoolError::Query)
@@ -365,11 +386,23 @@ mod r2d2_impl {
         }
     }
 
+    impl From<r2d2::Error> for PgPoolError {
+        fn from(error: r2d2::Error) -> Self {
+            PgPoolError::Pool(error)
+        }
+    }
+
+    impl From<PgError> for PgPoolError {
+        fn from(error: PgError) -> Self {
+            PgPoolError::Query(error)
+        }
+    }
+
     impl<M: ManageConnection<Connection = postgres::Client>> QueryBackend for PgPool<M> {
         type Error = PgPoolError;
 
         fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-            let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
+            let mut connection = self.get()?;
             fetch_raw_sync(&mut connection, query).map_err(PgPoolError::Query)
         }
 
@@ -383,13 +416,28 @@ mod r2d2_impl {
             query: &BuiltQuery,
             limit: Option<usize>,
         ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-            let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
+            let mut connection = self.get()?;
             fetch_raw_limited_sync(&mut connection, query, limit).map_err(PgPoolError::Query)
         }
 
         fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
-            let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
+            let mut connection = self.get()?;
             execute_raw_sync(&mut connection, query).map_err(PgPoolError::Query)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{PgError, PgPoolError};
+
+        #[test]
+        fn the_pool_error_absorbs_the_driver_error() {
+            let failure = PgPoolError::from(PgError::InvalidValue {
+                column_type: String::from("text"),
+                reason: String::from("the value is not a text value"),
+            });
+
+            assert!(matches!(failure, PgPoolError::Query(_)));
         }
     }
 }

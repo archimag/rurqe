@@ -29,11 +29,12 @@ use super::rusqlite::{execute_raw_with, fetch_raw_limited_with, fetch_raw_with, 
 ///
 /// ```
 /// use r2d2_sqlite::SqliteConnectionManager;
+/// use rurqe_sqlite::{SqlitePool, SqlitePoolError};
 ///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # fn main() -> Result<(), SqlitePoolError> {
 /// let manager = SqliteConnectionManager::memory();
 /// let pool = r2d2::Pool::builder().max_size(4).build(manager)?;
-/// let _pool = rurqe_sqlite::SqlitePool::new(pool);
+/// let _pool = SqlitePool::new(pool);
 /// # Ok(())
 /// # }
 /// ```
@@ -45,15 +46,36 @@ pub struct SqlitePool<M: ManageConnection> {
     pool: r2d2::Pool<M>,
 }
 
+// `r2d2::Pool` is an `Arc`-backed handle that clones without requiring the
+// manager to be `Clone`, so the implementation is written out instead of
+// derived: a derive would add an `M: Clone` bound to the handle.
+impl<M: ManageConnection> Clone for SqlitePool<M> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+        }
+    }
+}
+
 impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
     /// Wraps an existing `r2d2` pool managing `rusqlite` connections.
     pub fn new(pool: r2d2::Pool<M>) -> Self {
         Self { pool }
     }
 
+    /// Returns a shared reference to the wrapped pool.
+    pub fn pool(&self) -> &r2d2::Pool<M> {
+        &self.pool
+    }
+
     /// Checks a connection out of the pool.
-    pub fn get(&self) -> Result<r2d2::PooledConnection<M>, r2d2::Error> {
-        self.pool.get()
+    ///
+    /// A checkout failure surfaces as [`SqlitePoolError::Pool`], so the whole
+    /// pool API speaks one error vocabulary: a checkout failure and a
+    /// statement failure both propagate with `?` into a function returning
+    /// [`SqlitePoolError`].
+    pub fn get(&self) -> Result<r2d2::PooledConnection<M>, SqlitePoolError> {
+        self.pool.get().map_err(SqlitePoolError::Pool)
     }
 
     /// Runs `f` inside a transaction on a pooled connection, committing on
@@ -79,7 +101,7 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
     where
         F: FnOnce(&mut SqliteConnection<&mut ::rusqlite::Connection>) -> Result<T, ::rusqlite::Error>,
     {
-        let mut pooled = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        let mut pooled = self.get()?;
         SqliteConnection::borrowed(&mut pooled)
             .transaction(f)
             .map_err(SqlitePoolError::Query)
@@ -113,11 +135,23 @@ impl StdError for SqlitePoolError {
     }
 }
 
+impl From<r2d2::Error> for SqlitePoolError {
+    fn from(error: r2d2::Error) -> Self {
+        SqlitePoolError::Pool(error)
+    }
+}
+
+impl From<::rusqlite::Error> for SqlitePoolError {
+    fn from(error: ::rusqlite::Error) -> Self {
+        SqlitePoolError::Query(error)
+    }
+}
+
 impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for SqlitePool<M> {
     type Error = SqlitePoolError;
 
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-        let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        let mut connection = self.get()?;
         fetch_raw_with(&mut connection, query).map_err(SqlitePoolError::Query)
     }
 
@@ -126,12 +160,12 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for 
         query: &BuiltQuery,
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-        let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        let mut connection = self.get()?;
         fetch_raw_limited_with(&mut connection, query, limit).map_err(SqlitePoolError::Query)
     }
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
-        let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        let mut connection = self.get()?;
         execute_raw_with(&mut connection, query).map_err(SqlitePoolError::Query)
     }
 }
@@ -140,7 +174,7 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for 
 mod tests {
     use r2d2_sqlite::SqliteConnectionManager;
 
-    use super::SqlitePool;
+    use super::{SqlitePool, SqlitePoolError};
 
     /// Builds a one-connection pool over a shared in-memory database.
     fn pool() -> SqlitePool<SqliteConnectionManager> {
@@ -216,5 +250,20 @@ mod tests {
             })
             .expect("the counting block commits");
         assert_eq!(count, 1, "only the enclosing insert survived");
+    }
+
+    #[test]
+    fn the_pool_error_absorbs_the_driver_error() {
+        let failure = SqlitePoolError::from(::rusqlite::Error::InvalidQuery);
+
+        assert!(matches!(failure, SqlitePoolError::Query(_)));
+    }
+
+    #[test]
+    fn a_cloned_handle_checks_a_connection_out() {
+        let pool = pool();
+        let clone = pool.clone();
+
+        assert!(clone.get().is_ok(), "the clone serves a connection");
     }
 }
