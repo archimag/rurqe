@@ -8,10 +8,24 @@ verify: check clippy test doc-build
 # Run cargo check across all workspace targets
 [group('tauqe')]
 [doc('Run cargo check across all workspace targets')]
-check:
+check: check-features
     # `--workspace` includes the `docs/examples` crate and `--all-targets`
     # its `[[example]]` targets, so every documented example is compiled here.
     cargo check --workspace --all-targets
+
+# Check the PostgreSQL adapter under each feature combination a la carte
+[group('tauqe')]
+[doc('Check the PostgreSQL adapter under each feature combination a la carte')]
+check-features:
+    # A pool adapter executes through the driver it pools: `deadpool-postgres`
+    # carries the asynchronous adapter and `r2d2` the synchronous one. Each
+    # combination below is built on its own rather than under the feature
+    # unification of the workspace check, so the coupling declared in the
+    # adapter's manifest is exercised by a build instead of only documented.
+    cargo check -p rurqe-postgres --no-default-features
+    cargo check -p rurqe-postgres --no-default-features --features deadpool-postgres
+    cargo check -p rurqe-postgres --no-default-features --features r2d2
+    cargo check -p rurqe-postgres --no-default-features --all-features
 
 # Run cargo clippy with -D warnings across all workspace targets
 [group('tauqe')]

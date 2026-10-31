@@ -29,6 +29,11 @@ uuid = { version = "1", optional = true }
 # is compiled only when its own feature asks for it.
 postgres = ["dep:postgres", "dep:bytes"]
 tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "dep:futures-core", "chrono", "serde_json", "uuid"]
+# A pool adapter is compiled on top of the driver it pools, so the pool feature
+# carries the driver feature instead of leaving the implication implicit:
+# `deadpool-postgres` pools the asynchronous client and `r2d2` the synchronous
+# one. Each pool submodule of `backend::pools` is gated on that pair, so the
+# coupling is declared here and enforced at the module that depends on it.
 deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
 r2d2 = ["dep:r2d2", "postgres"]
 # A value family is forwarded to the drivers that are compiled in, so a driver

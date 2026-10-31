@@ -15,8 +15,11 @@
 //! awaited `COMMIT` or `ROLLBACK`. A block that is cancelled or unwound cannot
 //! await either statement, so its connection returns to the pool with the
 //! transaction still open and the pool has to be rebuilt.
+//!
+//! Each pool is gated on the driver it pools, so the feature that enables a pool
+//! carries its driver and the module of that pool is compiled on the pair.
 
-#[cfg(feature = "deadpool-postgres")]
+#[cfg(all(feature = "deadpool-postgres", feature = "tokio-postgres"))]
 mod deadpool_impl {
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
@@ -240,10 +243,10 @@ mod deadpool_impl {
     }
 }
 
-#[cfg(feature = "deadpool-postgres")]
+#[cfg(all(feature = "deadpool-postgres", feature = "tokio-postgres"))]
 pub use deadpool_impl::PgAsyncPool;
 
-#[cfg(feature = "r2d2")]
+#[cfg(all(feature = "r2d2", feature = "postgres"))]
 mod r2d2_impl {
     use std::error::Error as StdError;
     use std::fmt;
@@ -442,5 +445,5 @@ mod r2d2_impl {
     }
 }
 
-#[cfg(feature = "r2d2")]
+#[cfg(all(feature = "r2d2", feature = "postgres"))]
 pub use r2d2_impl::{PgPool, PgPoolError};
