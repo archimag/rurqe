@@ -123,7 +123,30 @@ prompt = "Audit CLI toolchain commands (migrate, codegen, verify, stage, prune),
 name = "macros"
 paths = ["crates/rurqe-macros/src"]
 prompt = "Audit procedural and declarative macros (select!, dto!, table!, sql_type!). Verify hygiene, actionable compile-error diagnostics, and clean break syntax."
+[[review.presets]]
+name = "library"
+title = "Library Crates Audit (Excluding CLI)"
+post_analysis = "manual"
 
+[[review.presets.groups]]
+name = "core"
+paths = ["crates/rurqe-core/src", "crates/rurqe/src"]
+prompt = "Audit typed query builder, relational AST, expression engine, and facade entry points. Verify compile-time SQL correctness, zero-cost monomorphization, panic-free typestates, no unwrap/expect in production code, module size limits (<800 LOC), and adherence to Conventions.md."
+
+[[review.presets.groups]]
+name = "dialects"
+paths = ["crates/rurqe-postgres/src", "crates/rurqe-sqlite/src"]
+prompt = "Audit dialect renderers, capability marker traits, version gates, and execution backends (sync and async). Verify error mapping to ExecutionError, proper transaction rollback handling, and dialect-specific expression extensions."
+
+[[review.presets.groups]]
+name = "migrate"
+paths = ["crates/rurqe-migrate/src"]
+prompt = "Audit migration runner, catalog schema representation, checkpoint verification, and embedded migrations. Verify SHA-256 checksum integrity, transactional execution, and panic-free error propagation."
+
+[[review.presets.groups]]
+name = "macros"
+paths = ["crates/rurqe-macros/src"]
+prompt = "Audit procedural and declarative macros (select!, dto!, table!, sql_type!). Verify hygiene, actionable compile-error diagnostics, and clean break syntax."
 [[review.presets]]
 name = "docs"
 title = "Documentation Audit"
