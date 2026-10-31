@@ -43,5 +43,6 @@
 - [Database migrations](lifecycle/database_migrations.md)
 - [Schema code generation](lifecycle/codegen.md)
 - [Migrations](lifecycle/migrations.md)
+- [Running migrations in production](lifecycle/embedded.md)
 - [Stage-based schema evolution](lifecycle/stage.md)
 - [Schema drift verification](lifecycle/drift.md)
