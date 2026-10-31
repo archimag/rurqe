@@ -40,6 +40,7 @@
 
 # Part IV: Schema Lifecycle & Tooling
 
+- [Database migrations](lifecycle/database_migrations.md)
 - [Schema code generation](lifecycle/codegen.md)
 - [Migrations](lifecycle/migrations.md)
 - [Stage-based schema evolution](lifecycle/stage.md)
