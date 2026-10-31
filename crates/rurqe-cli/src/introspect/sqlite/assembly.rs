@@ -9,6 +9,7 @@ use rurqe_migrate::catalog::{
 
 use crate::introspect::types::{
     fold_indexes, map_sqlite_declared_type_to_kind, RawCatalogSections, RawIndexMetadata,
+    TableKey,
 };
 
 use super::check_enums::parse_sqlite_check_enums;
@@ -89,18 +90,26 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
     sections: &RawCatalogSections<'_>,
     enum_columns: &[SqliteEnumColumn],
 ) -> SchemaCatalog {
-    let mut enums_by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // A SQLite file has no schema layer, so every entity of its catalog belongs
+    // to the primary schema and carries no attribution. The grouping keys keep
+    // the composite `(schema, name)` identity the catalog records, with the
+    // schema always absent, so same-named objects of one file stay apart exactly
+    // as they do in an engine that has schemas.
+    let mut enums_by_name: BTreeMap<(Option<String>, String), Vec<String>> = BTreeMap::new();
     let mut check_enums: BTreeMap<(String, String), String> = BTreeMap::new();
     for recovered in enum_columns {
         let candidate = recovered.column_name.clone();
         let variants = recovered.variants.clone();
-        let enum_name = match enums_by_name.get(&candidate) {
+        let key = (None, candidate.clone());
+        let enum_name = match enums_by_name.get(&key) {
             Some(existing_variants) if existing_variants == &variants => candidate,
             None => candidate,
             Some(_) => format!("{}_{}_enum", recovered.table_name, recovered.column_name),
         };
+        // An enum whose value set differs from the one already declared under the
+        // same column name keeps its own identity through the disambiguated name.
         enums_by_name
-            .entry(enum_name.clone())
+            .entry((None, enum_name.clone()))
             .or_insert_with(|| variants);
         check_enums.insert(
             (recovered.table_name.clone(), recovered.column_name.clone()),
@@ -108,9 +117,9 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
         );
     }
 
-    let mut columns_by_table: BTreeMap<String, Vec<ColumnDef>> = BTreeMap::new();
-    let mut fks_by_table: BTreeMap<String, BTreeMap<i64, ForeignKeyDef>> = BTreeMap::new();
-    let mut checks_by_table: BTreeMap<String, Vec<CheckDef>> = BTreeMap::new();
+    let mut columns_by_table: BTreeMap<TableKey, Vec<ColumnDef>> = BTreeMap::new();
+    let mut fks_by_table: BTreeMap<TableKey, BTreeMap<i64, ForeignKeyDef>> = BTreeMap::new();
+    let mut checks_by_table: BTreeMap<TableKey, Vec<CheckDef>> = BTreeMap::new();
     let mut indexes_by_table = fold_indexes(indexes);
 
     // Key columns in key order: they name both the assembled primary keys and
@@ -130,7 +139,7 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
             def = def.with_default(default);
         }
         columns_by_table
-            .entry(column.table_name.clone())
+            .entry(table_key(&column.table_name))
             .or_default()
             .push(def);
 
@@ -148,7 +157,7 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
 
     for fk in foreign_keys {
         let constraint = fks_by_table
-            .entry(fk.table_name.clone())
+            .entry(table_key(&fk.table_name))
             .or_default()
             .entry(fk.id)
             .or_insert_with(|| {
@@ -180,24 +189,25 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
 
     for check in sections.checks {
         checks_by_table
-            .entry(check.table_name.clone())
+            .entry(table_key(&check.table_name))
             .or_default()
             .push(CheckDef::new(&check.name, &check.expression));
     }
 
     let mut result_tables = Vec::new();
     for table in tables {
-        let table_columns = columns_by_table.remove(&table.name).unwrap_or_default();
+        let identity = table_key(&table.name);
+        let table_columns = columns_by_table.remove(&identity).unwrap_or_default();
         let primary_key: Vec<String> = primary_keys
             .get(table.name.as_str())
             .map(|key| key.iter().map(|(_, name)| (*name).to_owned()).collect())
             .unwrap_or_default();
         let table_foreign_keys: Vec<ForeignKeyDef> = fks_by_table
-            .remove(&table.name)
+            .remove(&identity)
             .map(|constraints| constraints.into_values().collect())
             .unwrap_or_default();
-        let table_checks = checks_by_table.remove(&table.name).unwrap_or_default();
-        let table_indexes = indexes_by_table.remove(&table.name).unwrap_or_default();
+        let table_checks = checks_by_table.remove(&identity).unwrap_or_default();
+        let table_indexes = indexes_by_table.remove(&identity).unwrap_or_default();
 
         let mut def = TableDef::new(&table.name, table_columns, primary_key);
         for check in table_checks {
@@ -214,7 +224,7 @@ pub(super) fn catalog_from_sqlite_metadata_with_enums(
 
     let mut enums: Vec<EnumDef> = enums_by_name
         .into_iter()
-        .map(|(name, variants)| EnumDef::new(name, variants))
+        .map(|((_schema, name), variants)| EnumDef::new(name, variants))
         .collect();
     enums.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -280,4 +290,12 @@ fn implicit_referenced_column(
         .get(referenced_table)
         .and_then(|key| key.get(ordinal))
         .map(|(_, name)| (*name).to_owned())
+}
+
+/// The composite catalog identity of a SQLite table.
+///
+/// A SQLite file has no schema layer, so the schema part of the identity is
+/// always absent and the name alone keeps the tables of the file apart.
+fn table_key(table_name: &str) -> TableKey {
+    (None, table_name.to_owned())
 }

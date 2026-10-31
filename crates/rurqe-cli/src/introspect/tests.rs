@@ -1,4 +1,9 @@
-use rurqe_migrate::catalog::TypeKind;
+use rurqe_migrate::catalog::{ForeignKeyAction, TypeKind};
+
+use crate::introspect::types::{
+    catalog_from_metadata_with_sections, RawCatalogSections, RawCheckMetadata, RawTriggerMetadata,
+    RawViewMetadata,
+};
 
 use super::*;
 
@@ -845,4 +850,446 @@ fn a_domain_column_is_reported_as_the_type_it_is_declared_over() {
     let catalog = catalog_from_metadata(&tables, &columns, &[], &[], &[], &[]);
 
     assert_eq!(catalog.tables[0].columns[0].type_kind, TypeKind::Text);
+}
+
+#[test]
+fn same_named_objects_of_two_schemas_assemble_independently() {
+    let tables = vec![
+        RawTableMetadata {
+            schema: None,
+            name: "users".to_owned(),
+        },
+        RawTableMetadata {
+            schema: Some("auth".to_owned()),
+            name: "users".to_owned(),
+        },
+    ];
+    let columns = vec![
+        RawColumnMetadata {
+            schema: None,
+            table_name: "users".to_owned(),
+            column_name: "id".to_owned(),
+            data_type: "bigint".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("int8".to_owned()),
+            udt_schema: None,
+        },
+        RawColumnMetadata {
+            schema: Some("auth".to_owned()),
+            table_name: "users".to_owned(),
+            column_name: "id".to_owned(),
+            data_type: "integer".to_owned(),
+            is_nullable: true,
+            column_default: None,
+            udt_name: Some("int4".to_owned()),
+            udt_schema: None,
+        },
+        RawColumnMetadata {
+            schema: None,
+            table_name: "users".to_owned(),
+            column_name: "mood".to_owned(),
+            data_type: "USER-DEFINED".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("mood".to_owned()),
+            udt_schema: None,
+        },
+        RawColumnMetadata {
+            schema: Some("auth".to_owned()),
+            table_name: "users".to_owned(),
+            column_name: "mood".to_owned(),
+            data_type: "USER-DEFINED".to_owned(),
+            is_nullable: false,
+            column_default: None,
+            udt_name: Some("mood".to_owned()),
+            udt_schema: Some("auth".to_owned()),
+        },
+        RawColumnMetadata {
+            schema: Some("auth".to_owned()),
+            table_name: "users".to_owned(),
+            column_name: "legacy".to_owned(),
+            data_type: "USER-DEFINED".to_owned(),
+            is_nullable: true,
+            column_default: None,
+            udt_name: Some("mood".to_owned()),
+            udt_schema: Some("archive".to_owned()),
+        },
+    ];
+    let pks = vec![
+        RawPrimaryKeyMetadata {
+            schema: None,
+            table_name: "users".to_owned(),
+            column_name: "id".to_owned(),
+        },
+        RawPrimaryKeyMetadata {
+            schema: Some("auth".to_owned()),
+            table_name: "users".to_owned(),
+            column_name: "mood".to_owned(),
+        },
+    ];
+    let fks = vec![
+        RawForeignKeyMetadata {
+            schema: None,
+            name: "users_mood_fkey".to_owned(),
+            table_name: "users".to_owned(),
+            column_name: "mood".to_owned(),
+            referenced_table: "moods".to_owned(),
+            referenced_column: "name".to_owned(),
+            referenced_schema: None,
+            on_delete: ForeignKeyAction::Cascade,
+            on_update: ForeignKeyAction::NoAction,
+        },
+        RawForeignKeyMetadata {
+            schema: Some("auth".to_owned()),
+            name: "users_mood_fkey".to_owned(),
+            table_name: "users".to_owned(),
+            column_name: "mood".to_owned(),
+            referenced_table: "moods".to_owned(),
+            referenced_column: "label".to_owned(),
+            referenced_schema: Some("auth".to_owned()),
+            on_delete: ForeignKeyAction::NoAction,
+            on_update: ForeignKeyAction::Restrict,
+        },
+    ];
+    let indexes = vec![
+        RawIndexMetadata {
+            schema: None,
+            table_name: "users".to_owned(),
+            index_name: "users_mood_idx".to_owned(),
+            column_name: Some("mood".to_owned()),
+            unique: false,
+            method: None,
+            predicate: None,
+            expression: None,
+        },
+        RawIndexMetadata {
+            schema: Some("auth".to_owned()),
+            table_name: "users".to_owned(),
+            index_name: "users_mood_idx".to_owned(),
+            column_name: Some("mood".to_owned()),
+            unique: true,
+            method: None,
+            predicate: Some("mood IS NOT NULL".to_owned()),
+            expression: None,
+        },
+    ];
+    let enums = vec![
+        RawEnumMetadata {
+            schema: None,
+            name: "mood".to_owned(),
+            variant: "happy".to_owned(),
+        },
+        RawEnumMetadata {
+            schema: None,
+            name: "mood".to_owned(),
+            variant: "sad".to_owned(),
+        },
+        RawEnumMetadata {
+            schema: Some("auth".to_owned()),
+            name: "mood".to_owned(),
+            variant: "calm".to_owned(),
+        },
+    ];
+    let checks = vec![
+        RawCheckMetadata {
+            schema: None,
+            table_name: "users".to_owned(),
+            name: "users_mood_check".to_owned(),
+            expression: "mood <> 'banned'".to_owned(),
+        },
+        RawCheckMetadata {
+            schema: Some("auth".to_owned()),
+            table_name: "users".to_owned(),
+            name: "users_mood_check".to_owned(),
+            expression: "mood <> 'calm'".to_owned(),
+        },
+    ];
+    let views = vec![
+        RawViewMetadata {
+            schema: None,
+            name: "mood_counts".to_owned(),
+            definition: "SELECT mood FROM users".to_owned(),
+        },
+        RawViewMetadata {
+            schema: Some("auth".to_owned()),
+            name: "mood_counts".to_owned(),
+            definition: "SELECT mood FROM users WHERE mood IS NOT NULL".to_owned(),
+        },
+    ];
+    let triggers = vec![
+        RawTriggerMetadata {
+            schema: None,
+            name: "users_touch".to_owned(),
+            table_name: "users".to_owned(),
+            definition: "EXECUTE FUNCTION touch_public()".to_owned(),
+        },
+        RawTriggerMetadata {
+            schema: Some("auth".to_owned()),
+            name: "users_touch".to_owned(),
+            table_name: "users".to_owned(),
+            definition: "EXECUTE FUNCTION touch_auth()".to_owned(),
+        },
+    ];
+
+    let catalog = catalog_from_metadata_with_sections(
+        &tables,
+        &columns,
+        &pks,
+        &fks,
+        &indexes,
+        &enums,
+        &RawCatalogSections {
+            checks: &checks,
+            views: &views,
+            triggers: &triggers,
+        },
+    );
+
+    assert_eq!(catalog.tables.len(), 2);
+    let public = catalog
+        .tables
+        .iter()
+        .find(|table| table.schema.is_none())
+        .expect("the primary schema keeps its table");
+    let auth = catalog
+        .tables
+        .iter()
+        .find(|table| table.schema.as_deref() == Some("auth"))
+        .expect("the secondary schema keeps its table");
+
+    assert_eq!(public.name, "users");
+    assert_eq!(auth.name, "users");
+    assert_eq!(public.columns.len(), 2);
+    assert_eq!(auth.columns.len(), 3);
+
+    let public_id = public
+        .columns
+        .iter()
+        .find(|column| column.name == "id")
+        .expect("the primary table declares the column");
+    let auth_id = auth
+        .columns
+        .iter()
+        .find(|column| column.name == "id")
+        .expect("the secondary table declares the column");
+    assert_eq!(public_id.type_kind, TypeKind::Int64);
+    assert!(!public_id.nullable);
+    assert_eq!(auth_id.type_kind, TypeKind::Int32);
+    assert!(auth_id.nullable);
+
+    let public_mood = public
+        .columns
+        .iter()
+        .find(|column| column.name == "mood")
+        .expect("the primary table declares the column");
+    let auth_mood = auth
+        .columns
+        .iter()
+        .find(|column| column.name == "mood")
+        .expect("the secondary table declares the column");
+    assert_eq!(public_mood.type_kind, TypeKind::Enum("mood".to_owned()));
+    assert_eq!(auth_mood.type_kind, TypeKind::Enum("mood".to_owned()));
+
+    let auth_legacy = auth
+        .columns
+        .iter()
+        .find(|column| column.name == "legacy")
+        .expect("the secondary table declares the column");
+    assert_eq!(auth_legacy.type_kind, TypeKind::Other("mood".to_owned()));
+
+    assert_eq!(public.primary_key, vec!["id"]);
+    assert_eq!(auth.primary_key, vec!["mood"]);
+
+    assert_eq!(public.foreign_keys.len(), 1);
+    assert_eq!(auth.foreign_keys.len(), 1);
+    assert_eq!(public.foreign_keys[0].columns, vec!["mood"]);
+    assert_eq!(public.foreign_keys[0].on_delete, ForeignKeyAction::Cascade);
+    assert!(public.foreign_keys[0].referenced_schema.is_none());
+    assert_eq!(auth.foreign_keys[0].referenced_columns, vec!["label"]);
+    assert_eq!(auth.foreign_keys[0].on_update, ForeignKeyAction::Restrict);
+    assert_eq!(auth.foreign_keys[0].referenced_schema.as_deref(), Some("auth"));
+
+    assert_eq!(public.checks.len(), 1);
+    assert_eq!(auth.checks.len(), 1);
+    assert_eq!(public.checks[0].expression, "mood <> 'banned'");
+    assert_eq!(auth.checks[0].expression, "mood <> 'calm'");
+
+    assert_eq!(public.indexes.len(), 1);
+    assert_eq!(auth.indexes.len(), 1);
+    assert_eq!(public.indexes[0].columns, vec!["mood"]);
+    assert!(!public.indexes[0].unique);
+    assert!(public.indexes[0].predicate.is_none());
+    assert!(auth.indexes[0].unique);
+    assert_eq!(auth.indexes[0].predicate.as_deref(), Some("mood IS NOT NULL"));
+
+    assert_eq!(catalog.enums.len(), 2);
+    let public_mood_type = catalog
+        .enums
+        .iter()
+        .find(|definition| definition.schema.is_none())
+        .expect("the primary schema keeps its enum type");
+    assert_eq!(public_mood_type.variants, vec!["happy", "sad"]);
+    let auth_mood_type = catalog
+        .enums
+        .iter()
+        .find(|definition| definition.schema.as_deref() == Some("auth"))
+        .expect("the secondary schema keeps its enum type");
+    assert_eq!(auth_mood_type.variants, vec!["calm"]);
+
+    let public_view = catalog
+        .views
+        .iter()
+        .find(|view| view.schema.is_none())
+        .expect("the primary schema keeps its view");
+    assert_eq!(public_view.definition, "SELECT mood FROM users");
+    let auth_view = catalog
+        .views
+        .iter()
+        .find(|view| view.schema.as_deref() == Some("auth"))
+        .expect("the secondary schema keeps its view");
+    assert_eq!(auth_view.definition, "SELECT mood FROM users WHERE mood IS NOT NULL");
+
+    let public_trigger = catalog
+        .triggers
+        .iter()
+        .find(|trigger| trigger.schema.is_none())
+        .expect("the primary schema keeps its trigger");
+    assert_eq!(public_trigger.definition, "EXECUTE FUNCTION touch_public()");
+    let auth_trigger = catalog
+        .triggers
+        .iter()
+        .find(|trigger| trigger.schema.as_deref() == Some("auth"))
+        .expect("the secondary schema keeps its trigger");
+    assert_eq!(auth_trigger.definition, "EXECUTE FUNCTION touch_auth()");
+}
+
+#[test]
+fn a_single_schema_catalog_carries_no_schema_attribution() {
+    let tables = vec![RawTableMetadata {
+        schema: None,
+        name: "users".to_owned(),
+    }];
+    let columns = vec![RawColumnMetadata {
+        schema: None,
+        table_name: "users".to_owned(),
+        column_name: "id".to_owned(),
+        data_type: "bigint".to_owned(),
+        is_nullable: false,
+        column_default: None,
+        udt_name: None,
+        udt_schema: None,
+    }];
+    let fks = vec![RawForeignKeyMetadata {
+        schema: None,
+        name: "users_parent_fkey".to_owned(),
+        table_name: "users".to_owned(),
+        column_name: "id".to_owned(),
+        referenced_table: "users".to_owned(),
+        referenced_column: "id".to_owned(),
+        referenced_schema: None,
+        on_delete: ForeignKeyAction::NoAction,
+        on_update: ForeignKeyAction::NoAction,
+    }];
+    let enums = vec![RawEnumMetadata {
+        schema: None,
+        name: "mood".to_owned(),
+        variant: "happy".to_owned(),
+    }];
+    let views = vec![RawViewMetadata {
+        schema: None,
+        name: "mood_counts".to_owned(),
+        definition: "SELECT mood FROM users".to_owned(),
+    }];
+    let triggers = vec![RawTriggerMetadata {
+        schema: None,
+        name: "users_touch".to_owned(),
+        table_name: "users".to_owned(),
+        definition: "EXECUTE FUNCTION touch()".to_owned(),
+    }];
+
+    let catalog = catalog_from_metadata_with_sections(
+        &tables,
+        &columns,
+        &[],
+        &fks,
+        &[],
+        &enums,
+        &RawCatalogSections {
+            checks: &[],
+            views: &views,
+            triggers: &triggers,
+        },
+    );
+
+    assert!(catalog.tables[0].schema.is_none());
+    assert!(catalog.tables[0].foreign_keys[0].referenced_schema.is_none());
+    assert!(catalog.enums[0].schema.is_none());
+    assert!(catalog.views[0].schema.is_none());
+    assert!(catalog.triggers[0].schema.is_none());
+}
+
+#[test]
+fn sqlite_enum_names_stay_distinct_when_their_value_sets_differ() {
+    let tasks = "CREATE TABLE tasks (state TEXT CHECK (state IN ('todo', 'done')))";
+    let jobs = "CREATE TABLE jobs (state TEXT CHECK (state IN ('queued', 'running')))";
+    let tables = vec![
+        RawSqliteTableMetadata {
+            name: "tasks".to_owned(),
+            sql: Some(tasks.to_owned()),
+        },
+        RawSqliteTableMetadata {
+            name: "jobs".to_owned(),
+            sql: Some(jobs.to_owned()),
+        },
+    ];
+    let columns = vec![
+        RawSqliteColumnMetadata {
+            table_name: "tasks".to_owned(),
+            column_name: "state".to_owned(),
+            data_type: "TEXT".to_owned(),
+            not_null: false,
+            pk_position: 0,
+            default_value: None,
+        },
+        RawSqliteColumnMetadata {
+            table_name: "jobs".to_owned(),
+            column_name: "state".to_owned(),
+            data_type: "TEXT".to_owned(),
+            not_null: false,
+            pk_position: 0,
+            default_value: None,
+        },
+    ];
+
+    let catalog = catalog_from_sqlite_metadata_with_sections(
+        &tables,
+        &columns,
+        &[],
+        &[],
+        &RawCatalogSections::default(),
+    );
+
+    assert_eq!(catalog.enums.len(), 2);
+    assert!(catalog.tables[0].schema.is_none());
+    assert!(catalog.tables[1].schema.is_none());
+
+    let tasks_table = &catalog.tables[0];
+    let jobs_table = &catalog.tables[1];
+    assert_eq!(tasks_table.columns[0].type_kind, TypeKind::Enum("state".to_owned()));
+    assert_eq!(jobs_table.columns[0].type_kind, TypeKind::Enum("jobs_state_enum".to_owned()));
+
+    let state = catalog
+        .enums
+        .iter()
+        .find(|definition| definition.name == "state")
+        .expect("the enum type of the declaring table is assembled");
+    assert_eq!(state.variants, vec!["todo", "done"]);
+
+    let jobs_state = catalog
+        .enums
+        .iter()
+        .find(|definition| definition.name == "jobs_state_enum")
+        .expect("the disambiguated enum type is assembled");
+    assert_eq!(jobs_state.variants, vec!["queued", "running"]);
 }
