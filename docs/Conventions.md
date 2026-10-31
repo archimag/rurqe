@@ -2,6 +2,8 @@
 
 ## 1. Language and Tone
 * **Plain Technical English:** All documentation, guides, diagrams, and explanations in the book must be written strictly in clear, simple, concise, and unambiguous technical English. Avoid conversational fluff, filler words, or unnecessary prose ornamentation.
+* **Standard Engineering Terminology:** Database and software engineering concepts are named with the term the industry already uses, so a reader recognizes the subject of a chapter from its title alone: `Database Migrations`, `Sequential migrations`, `Embedded migrations`, `DDL`, `Schema drift`, `Connection pooling`.
+* **No Invented Jargon:** Manufactured or pseudo-academic wording is strictly forbidden in chapter titles and in prose. The concept the industry calls `Database Migrations` is never renamed "Schema change management", and an established term is never replaced by a synonym the reader has to decode.
 * **Dual Audience (Human + LLM):** Content must provide intuitive walkthroughs, diagrams, and "Compiler Guard in Action" examples for human engineers, paired with deterministic SQL ↔ DSL mapping tables, strict typestate rules, and explicit compiler diagnostic listings for LLMs.
 
 ## 2. Scope: the Book Is a User Guide
