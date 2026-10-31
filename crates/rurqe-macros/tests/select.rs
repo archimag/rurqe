@@ -13,27 +13,27 @@ use rurqe_core::query::{HasProjection, LeftJoined, SelectQuery, Selection, Selec
 use rurqe_core::row::{FromRow, FromSqlValue, RowDecodeError};
 use rurqe_macros::select;
 
-rurqe_core::table! {
+rurqe_core::table!(
     User => "users" {
         UserId => "id": i64,
         UserEmail => "email": String,
         UserActive => "active": bool,
     }
-}
+);
 
-rurqe_core::table! {
+rurqe_core::table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 
-rurqe_core::table! {
+rurqe_core::table!(
     Contact => "contacts" {
         ContactUserId => "user_id": i64,
         ContactEmail => "contact_email": String,
     }
-}
+);
 
 /// A minimal dialect that renders bare identifiers and `$N` placeholders.
 struct TestDialect;
@@ -453,12 +453,12 @@ mod question_mark_dialect_scope {
     use rurqe_core::schema::Table;
     use rurqe_macros::select;
 
-    rurqe_core::table! {
+    rurqe_core::table!(
         User => "users" {
             UserId => "id": i64,
             UserEmail => "email": String,
         }
-    }
+    );
 
     /// A dialect that quotes identifiers and renders anonymous `?` placeholders.
     struct QuestionDialect;

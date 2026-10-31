@@ -12,19 +12,19 @@ use rurqe_core::nested::MultisetRow;
 use rurqe_core::row::{FromRow, FromSqlValue};
 use rurqe_macros::dto;
 
-rurqe_core::table! {
+rurqe_core::table!(
     User => "users" {
         UserId => "id": i64,
         UserEmail => "email": String,
         UserActive => "active": bool,
     }
-}
+);
 
-rurqe_core::table! {
+rurqe_core::table!(
     Keyword => "keywords" {
         Type => "type": i64,
     }
-}
+);
 
 dto! {
     /// A user projection returned by repository functions.

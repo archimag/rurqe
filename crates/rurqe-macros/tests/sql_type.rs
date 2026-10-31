@@ -78,37 +78,34 @@ pub enum Mood {
     Sad,
 }
 
-rurqe_core::table! {
-    /// The `accounts` table typed with derived domain newtypes.
+rurqe_core::table!(
     Account => "accounts" {
         AccountId => "id": UserId,
         AccountEmail => "email": Email,
     }
-}
+);
 
-rurqe_core::table! {
+rurqe_core::table!(
     /// The `account_audit` table referencing an account by its domain identifier.
     AccountAudit => "account_audit" {
         AuditId => "id": i64,
         AuditAccountId => "account_id": UserId,
     }
-}
-
-rurqe_core::table! {
+);
+rurqe_core::table!(
     /// The `posts` table typed with a database enum column.
     Post => "posts" {
         PostId => "id": i64,
         PostMood => "mood": Mood,
     }
-}
-
-rurqe_core::table! {
+);
+rurqe_core::table!(
     /// The `wallets` table typed with a text-stored domain newtype.
     Wallet => "wallets" {
         WalletId => "id": i64,
         WalletAddress => "address": Address,
     }
-}
+);
 
 /// A text-stored domain type declared with the declarative helper macro.
 #[derive(Debug, PartialEq, Eq)]
