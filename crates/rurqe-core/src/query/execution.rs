@@ -777,11 +777,11 @@ where
 /// #         Ok(0)
 /// #     }
 /// # }
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut conn = Connection;

@@ -123,18 +123,18 @@ impl<D: SupportsAggregateFilter> AggregateInDialect<D> for FilteredAggregate {}
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     let query = SelectQuery::<MockDialect>::new()
@@ -167,18 +167,18 @@ impl<D: SupportsAggregateFilter> AggregateInDialect<D> for FilteredAggregate {}
 /// #     }
 /// # }
 /// #
-/// # rurqe_core::table! {
+/// # rurqe_core::table!(
 /// #     User => "users" {
 /// #         UserId => "id": i64,
 /// #     }
-/// # }
-/// #
-/// # rurqe_core::table! {
+/// # );
+///
+/// # rurqe_core::table!(
 /// #     Order => "orders" {
 /// #         OrderUserId => "user_id": i64,
 /// #         OrderTotal => "total": f64,
 /// #     }
-/// # }
+/// # );
 /// #
 /// fn main() {
 ///     let query = SelectQuery::<MockDialect>::new()
@@ -512,17 +512,17 @@ mod tests {
     use crate::query::LeftLateralJoined;
     use crate::schema::At;
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
         }
-    }
+    );
 
-    crate::table! {
+    crate::table!(
         OrderStats => "order_stats" {
             OrderStatsTotal => "total": f64,
         }
-    }
+    );
 
     /// Statically requires `T` to have `Option<T>` as its nullable form.
     fn lifts_into_an_option<T>()

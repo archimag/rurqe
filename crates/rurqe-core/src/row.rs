@@ -596,13 +596,13 @@ mod tests {
     use crate::expr::ToSqlVal;
     use crate::query::Selection;
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
             UserActive => "active": bool,
         }
-    }
+    );
 
     #[test]
     fn decodes_scalar_values() {
