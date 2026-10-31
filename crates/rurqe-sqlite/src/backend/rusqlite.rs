@@ -5,11 +5,14 @@ use core::ops::{Deref, DerefMut};
 
 use ::rusqlite::Connection;
 
+use rurqe_core::dialect::Dialect;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
     BuiltQuery, IsolationLevel, QueryBackend, SavepointName, TransactionBackend, TransactionGuard,
     TransactionStatus, TransactionalConnection,
 };
+
+use crate::dialect::{Sqlite, Sqlite3_35};
 
 use super::types::{value_ref_to_sql_val, SqlValParam};
 
@@ -123,7 +126,19 @@ impl<B: BorrowMut<Connection>> SqliteConnection<B> {
         }
     }
 }
-
+/// Renders a savepoint name as a quoted SQLite identifier.
+///
+/// A savepoint name cannot be bound as a parameter, so it is rendered into the
+/// statement text. [`SavepointName`] restricts the text to `[A-Za-z0-9_]`, but
+/// that invariant belongs to `rurqe-core` and is invisible here, so the name is
+/// quoted through the SQLite identifier rule instead of being concatenated raw:
+/// an embedded `"` is doubled and the whole name stays a single token. A quoted
+/// name parses to the same savepoint text as the bare token the shared
+/// `SAVEPOINT` statement creates, so both spellings address one savepoint, and
+/// identifier escaping is identical across every declared SQLite version.
+fn quoted_savepoint(name: &str) -> String {
+    Sqlite::<Sqlite3_35>::quote_identifier(name)
+}
 impl<B: BorrowMut<Connection>> TransactionalConnection for SqliteConnection<B> {
     fn transaction_status(&mut self) -> &mut TransactionStatus<::rusqlite::Error> {
         &mut self.status
@@ -157,11 +172,15 @@ impl<B: BorrowMut<Connection>> TransactionBackend for SqliteConnection<B> {
     /// Rolls back to the savepoint `name`, tolerating a savepoint the raw
     /// handle already closed along with the transaction that carried it.
     ///
+    /// The name is rendered as a quoted SQLite identifier instead of being
+    /// concatenated raw, so the statement text of this adapter never depends on
+    /// the character set `rurqe-core` validates the name against.
+    ///
     /// The refusal is benign under the same observation as
     /// [`rollback`](TransactionBackend::rollback): no open transaction means
     /// there is no abandoned work left to report.
     fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-        let statement = format!("ROLLBACK TO SAVEPOINT {}", name.as_str());
+        let statement = format!("ROLLBACK TO SAVEPOINT {}", quoted_savepoint(name.as_str()));
         let refused = self.connection.borrow_mut().execute_batch(&statement);
         match refused {
             Ok(()) => Ok(()),
@@ -172,11 +191,14 @@ impl<B: BorrowMut<Connection>> TransactionBackend for SqliteConnection<B> {
     /// Releases the savepoint `name`, tolerating a savepoint the raw handle
     /// already closed along with the transaction that carried it.
     ///
+    /// The name is rendered as a quoted SQLite identifier, exactly as in
+    /// [`rollback_to_savepoint`](TransactionBackend::rollback_to_savepoint).
+    ///
     /// The refusal is benign under the same observation as
     /// [`rollback`](TransactionBackend::rollback): a block whose savepoint is
     /// already gone holds no work the release could keep.
     fn release_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-        let statement = format!("RELEASE SAVEPOINT {}", name.as_str());
+        let statement = format!("RELEASE SAVEPOINT {}", quoted_savepoint(name.as_str()));
         let refused = self.connection.borrow_mut().execute_batch(&statement);
         match refused {
             Ok(()) => Ok(()),
@@ -264,4 +286,26 @@ pub(super) fn execute_raw_with(
     let params = query.params.iter().map(SqlValParam);
     let affected = connection.execute(&query.sql, ::rusqlite::params_from_iter(params))?;
     Ok(affected as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quoted_savepoint;
+
+    #[test]
+    fn a_generated_name_renders_as_a_quoted_identifier() {
+        assert_eq!(quoted_savepoint("rurqe_sp_7"), "\"rurqe_sp_7\"");
+    }
+
+    #[test]
+    fn metacharacters_stay_inside_the_quoted_identifier() {
+        // The validation of `SavepointName` rejects these characters, and the
+        // statements are still rendered so that a name which ever did carry one
+        // reaches SQLite as a single escaped token instead of as SQL.
+        assert_eq!(
+            quoted_savepoint("sp\"; DROP TABLE users; --"),
+            "\"sp\"\"; DROP TABLE users; --\""
+        );
+        assert_eq!(quoted_savepoint("sp'or"), "\"sp'or\"");
+    }
 }

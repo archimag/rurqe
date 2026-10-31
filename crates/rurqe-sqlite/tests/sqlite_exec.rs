@@ -3,7 +3,8 @@
 use rurqe_sqlite::rurqe_core::dml::{ColumnAssign, InsertQuery};
 use rurqe_sqlite::rurqe_core::expr::{Expr, SqlVal};
 use rurqe_sqlite::rurqe_core::query::{
-    ExecutionError, QueryBackendExt, SelectQuery, TransactionalConnection,
+    ExecutionError, QueryBackendExt, SavepointName, SelectQuery, TransactionBackend,
+    TransactionalConnection,
 };
 use rurqe_sqlite::rurqe_core::table;
 use rurqe_sqlite::rusqlite::Connection;
@@ -257,7 +258,46 @@ fn nested_transaction_releases_its_savepoint_on_success() {
         .expect("count rows");
     assert_eq!(count, 2);
 }
+#[test]
+fn savepoint_statements_accept_a_validated_name() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+    let savepoint = SavepointName::new("rurqe_sp_9").expect("a valid savepoint name");
 
+    adapter.begin(None).expect("the transaction opens");
+    adapter
+        .execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")
+        .expect("insert outside the savepoint");
+
+    // The adapter renders a savepoint name as a quoted identifier wherever it
+    // concatenates one, and a quoted name parses to the same savepoint the
+    // shared `SAVEPOINT` statement creates, so the validated name keeps
+    // addressing one savepoint across creation, rollback, and release.
+    adapter.savepoint(&savepoint).expect("the savepoint opens");
+    adapter
+        .execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")
+        .expect("insert inside the savepoint");
+    adapter
+        .rollback_to_savepoint(&savepoint)
+        .expect("the savepoint rolls back");
+    adapter
+        .release_savepoint(&savepoint)
+        .expect("the savepoint releases");
+    adapter.commit().expect("the transaction commits");
+
+    let count: i64 = adapter
+        .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 1, "the savepoint rollback discarded the inner insert");
+
+    let surviving: String = adapter
+        .query_row("SELECT name FROM users", [], |row| row.get(0))
+        .expect("select name");
+    assert_eq!(surviving, "root");
+}
 /// Counts the rows of `users` through a helper naming the concrete error type.
 ///
 /// The signature spells out `ExecutionError<rusqlite::Error>` instead of erasing
