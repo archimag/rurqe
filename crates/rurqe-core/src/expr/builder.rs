@@ -510,4 +510,67 @@ impl Expr<(), ()> {
             column: C::NAME,
         })
     }
+
+    /// Builds a call of the scalar function `name` over column `C`, keeping the
+    /// column reference symbolic.
+    ///
+    /// Dialect extensions describe the calls their engine adds as function nodes
+    /// over a column marker instead of pre-rendered text, exactly as
+    /// [`dialect_op`](Expr::dialect_op) describes an engine-specific operator.
+    /// The reference stays symbolic inside the call: the enclosing statement
+    /// qualifies it against the relations it addresses, a table referenced under
+    /// an alias reaches the call through that alias, and the dialect quotes the
+    /// identifiers, so the call reads the same column the rest of the statement
+    /// does.
+    ///
+    /// The expression carries the scope `C::Table` and the result type
+    /// `C::RustType`, so a statement whose scope lacks the table rejects the call
+    /// at the call site, and a grouped query checks it like any other expression
+    /// reading the column. [`Expr::from_kind`] builds the opposite kind of
+    /// expression: a constant whose scope is fixed to `()`.
+    ///
+    /// `name` is the SQL name of the function as the engine adapter writes it,
+    /// and the produced call takes the column as its only argument.
+    #[doc(hidden)]
+    pub fn column_function<C: Column>(name: &'static str) -> Expr<C::RustType, C::Table> {
+        Expr::new(ExprKind::Function {
+            name,
+            args: vec![C::expr_kind()],
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::table!(
+        User => "users" {
+            UserName => "name": String,
+        }
+    );
+
+    #[test]
+    fn a_column_function_keeps_the_reference_symbolic_and_the_scope_of_its_column() {
+        let lowered = Expr::column_function::<UserName>("LOWER");
+
+        // The built node is the call itself and its single argument is the
+        // symbolic reference of the column marker: the enclosing statement
+        // decides how the identifier is qualified and quoted.
+        assert_eq!(
+            lowered.kind(),
+            &ExprKind::Function {
+                name: "LOWER",
+                args: vec![ExprKind::Column {
+                    table: "users",
+                    name: "name",
+                }],
+            }
+        );
+
+        // The expression carries the table of the column and its result type, so
+        // the call participates in the relational scope of the statement instead
+        // of being a scope-free constant.
+        let _: Expr<String, User, NonAggregate, ()> = lowered;
+    }
 }
