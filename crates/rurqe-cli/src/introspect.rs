@@ -10,7 +10,7 @@
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::{connect, CliError, Connection};
-
+use crate::config::SchemaSelection;
 mod postgres;
 mod sqlite;
 mod types;
@@ -19,7 +19,9 @@ mod types;
 mod tests;
 
 pub use crate::target::{detect_dialect, DatabaseDialect};
-pub use postgres::{introspect_postgres, introspect_postgres_schema};
+pub use postgres::{
+    introspect_postgres, introspect_postgres_schema, introspect_postgres_selection,
+};
 pub use sqlite::{
     catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections, introspect_sqlite,
     parse_sqlite_check_enums, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
@@ -57,7 +59,8 @@ pub fn introspect_database(url: &str) -> Result<SchemaCatalog, CliError> {
 /// without branching on the dialect.
 ///
 /// A selection that describes nothing is reported through the `tracing` facade
-/// before the catalog is handed on; see [`report_vacuous_schema`].
+/// before the catalog is handed on; see [`introspect_database_selection_notice`]
+/// for the analysis.
 pub fn introspect_database_schema(url: &str, schema: &str) -> Result<SchemaCatalog, CliError> {
     let (catalog, notice) = introspect_database_schema_notice(url, schema)?;
 
@@ -72,12 +75,42 @@ pub fn introspect_database_schema(url: &str, schema: &str) -> Result<SchemaCatal
     Ok(catalog)
 }
 
+/// Introspects every schema of `selection` in the live database identified by `url`.
+///
+/// The whole selection is bound as one array parameter of the catalog statements,
+/// so the returned catalog describes the primary schema and every secondary schema
+/// the project declares in one round trip per statement. A SQLite database holds a
+/// single unnamed catalog, so the selection is ignored there rather than rejected:
+/// the same project then introspects both engines without branching on the dialect.
+///
+/// A selection that describes nothing is reported through the `tracing` facade
+/// before the catalog is handed on; see [`introspect_database_selection_notice`]
+/// for the analysis.
+pub fn introspect_database_selection(
+    url: &str,
+    selection: &SchemaSelection,
+) -> Result<SchemaCatalog, CliError> {
+    let (catalog, notice) = introspect_database_selection_notice(url, selection)?;
+
+    // A caller of this entry point receives the catalog alone, so the notice is
+    // logged here; a command that builds a report of its own reaches it through
+    // [`introspect_database_selection_notice`] and never duplicates it on both
+    // streams.
+    if let Some(notice) = notice {
+        tracing::warn!("{notice}");
+    }
+
+    Ok(catalog)
+}
+
 /// Introspects `schema` of the live database identified by `url`, reporting a
 /// selection that describes nothing.
 ///
 /// The notice is returned instead of being only logged, so a command puts it in
 /// the report it prints and the hazard reaches the operator whether or not a
-/// `tracing` sink is installed. See [`report_vacuous_schema`] for the analysis.
+/// `tracing` sink is installed. The single schema is the selection
+/// [`introspect_database_selection_notice`] describes, so both entry points run
+/// the same detection over the same catalog statements.
 pub(crate) fn introspect_database_schema_notice(
     url: &str,
     schema: &str,
@@ -88,54 +121,115 @@ pub(crate) fn introspect_database_schema_notice(
     introspect_connection_schema(&mut connection, schema).map(|catalog| (catalog, notice))
 }
 
+/// Introspects every schema of `selection`, reporting a selection that describes
+/// nothing.
+///
+/// The notice is returned instead of being only logged, so a command puts it in
+/// the report it prints and the hazard reaches the operator whether or not a
+/// `tracing` sink is installed. See [`vacuous_selection_notice`] for the analysis.
+pub(crate) fn introspect_database_selection_notice(
+    url: &str,
+    selection: &SchemaSelection,
+) -> Result<(SchemaCatalog, Option<String>), CliError> {
+    let mut connection = connect(url)?;
+    let notice = report_vacuous_selection(&mut connection, selection)?;
+
+    introspect_connection_selection(&mut connection, selection).map(|catalog| (catalog, notice))
+}
+
 /// Introspects `schema` of an already opened [`Connection`].
 ///
 /// Engine dispatch lives next to the catalog logic, so callers (including tests)
 /// can hand in an open SQLite or PostgreSQL handle without going through URL
-/// parsing. The schema name reaches only the PostgreSQL side; a SQLite
-/// connection has no schema layer, so its single catalog is read whatever name
-/// the caller passes.
+/// parsing. The schema name reaches only the PostgreSQL side; a SQLite connection
+/// has no schema layer, so its single catalog is read whatever name the caller
+/// passes.
 pub(crate) fn introspect_connection_schema(
     connection: &mut Connection,
     schema: &str,
 ) -> Result<SchemaCatalog, CliError> {
+    introspect_connection_selection(connection, &SchemaSelection::single(schema))
+}
+
+/// Introspects every schema of `selection` over an already opened [`Connection`].
+///
+/// Engine dispatch lives next to the catalog logic, so callers (including tests)
+/// can hand in an open SQLite or PostgreSQL handle without going through URL
+/// parsing. The selection reaches only the PostgreSQL side; a SQLite connection
+/// has no schema layer, so its single catalog is read whatever schemas the
+/// selection names.
+pub(crate) fn introspect_connection_selection(
+    connection: &mut Connection,
+    selection: &SchemaSelection,
+) -> Result<SchemaCatalog, CliError> {
     match connection {
         Connection::Sqlite(conn) => introspect_sqlite(conn),
-        Connection::Postgres(client) => introspect_postgres_schema(client.as_mut(), schema),
+        Connection::Postgres(client) => introspect_postgres_selection(client.as_mut(), selection),
     }
 }
 
-/// Reports a selected schema that describes nothing while the database keeps
-/// user relations in other schemas.
+/// Reports a single selected schema that describes nothing while the database
+/// keeps user relations in other schemas.
 ///
-/// A PostgreSQL project may keep its relations in a schema of its own, and a
-/// catalog read from the wrong one is empty rather than wrong: every digest
-/// computed from it — the codegen snapshot, the drift gate, the cold-start
-/// marker, and the checkpoint hash — then compares nothing against nothing and
-/// passes vacuously. The notice names the schemas that do hold relations, so the
-/// operator selects one with `--schema` (or the `schema` key of `rurqe.toml`)
-/// instead of trusting a verification that never looked at their tables.
+/// The single schema is the selection [`report_vacuous_selection`] analyses, so
+/// the entry points that still name one schema run the very detection the
+/// multi-schema ones run.
 pub(crate) fn report_vacuous_schema(
     connection: &mut Connection,
     schema: &str,
 ) -> Result<Option<String>, CliError> {
+    report_vacuous_selection(connection, &SchemaSelection::single(schema))
+}
+
+/// Reports a selection that describes nothing while the database keeps user
+/// relations in other schemas.
+///
+/// A PostgreSQL project may keep its relations in schemas of its own, and a
+/// catalog read from the wrong ones is empty rather than wrong: every digest
+/// computed from it — the codegen snapshot, the drift gate, the cold-start
+/// marker, and the checkpoint hash — then compares nothing against nothing and
+/// passes vacuously. The notice names the schemas that do hold relations, so the
+/// operator selects one with `--schema` (or the `primary_schema` key of
+/// `rurqe.toml`) instead of trusting a verification that never looked at their
+/// tables.
+pub(crate) fn report_vacuous_selection(
+    connection: &mut Connection,
+    selection: &SchemaSelection,
+) -> Result<Option<String>, CliError> {
     match connection {
         // A SQLite database holds one unnamed catalog, so the selection always
-        // describes it whatever name the caller passed.
+        // describes it whatever schemas it names.
         Connection::Sqlite(_) => Ok(None),
-        Connection::Postgres(client) => report_vacuous_postgres_schema(client, schema),
+        Connection::Postgres(client) => report_vacuous_postgres_selection(client, selection),
     }
 }
 
-/// Reports a selected PostgreSQL schema that holds no relation while relations
-/// live elsewhere.
+/// Reports a single selected PostgreSQL schema that holds no relation while
+/// relations live elsewhere.
+///
+/// The single schema is the selection [`report_vacuous_postgres_selection`]
+/// analyses, so the stage sandbox — which materialises one schema at a time —
+/// runs the very detection the live side runs.
 pub(crate) fn report_vacuous_postgres_schema(
     client: &mut ::postgres::Client,
     schema: &str,
 ) -> Result<Option<String>, CliError> {
-    let neighbours = postgres::schema_neighbours(client, schema)?;
+    report_vacuous_postgres_selection(client, &SchemaSelection::single(schema))
+}
 
-    Ok(vacuous_schema_notice(schema, &neighbours))
+/// Reports a selected PostgreSQL selection whose schemas hold no relation while
+/// relations live elsewhere.
+///
+/// The neighbour query answers with the schemas that hold relations outside the
+/// selection, so one round trip both proves that no selected schema describes the
+/// database and names what the operator selects instead.
+pub(crate) fn report_vacuous_postgres_selection(
+    client: &mut ::postgres::Client,
+    selection: &SchemaSelection,
+) -> Result<Option<String>, CliError> {
+    let neighbours = postgres::schema_neighbours(client, &selection.all())?;
+
+    Ok(vacuous_selection_notice(selection, &neighbours))
 }
 
 /// The notice a selection that describes nothing produces, when it describes nothing.
@@ -143,16 +237,22 @@ pub(crate) fn report_vacuous_postgres_schema(
 /// A selection holding a relation of its own describes the database it was asked
 /// about, and one asked about a database that keeps no user relation anywhere else
 /// either is empty rather than wrong, so both produce no notice at all. The wording
-/// names the neighbours, because they are the schemas the operator selects instead.
-pub(crate) fn vacuous_schema_notice(schema: &str, neighbours: &[String]) -> Option<String> {
+/// names the whole selection and the neighbours, because the neighbours are the
+/// schemas the operator selects instead.
+pub(crate) fn vacuous_selection_notice(
+    selection: &SchemaSelection,
+    neighbours: &[String],
+) -> Option<String> {
     if neighbours.is_empty() {
         return None;
     }
 
+    let selected = selection.all().join(", ");
     let names = neighbours.join(", ");
+
     Some(format!(
-        "warning: the selected schema `{schema}` holds no table or view while the database keeps \
-         user relations in {names}; the catalog digest computed from it describes nothing, so pass \
-         `--schema <name>` or set `schema = \"<name>\"` in `rurqe.toml`"
+        "warning: none of the selected schemas ({selected}) holds a table or view while the database \
+         keeps user relations in {names}; the catalog digest computed from the selection describes \
+         nothing, so pass `--schema <name>` or set `primary_schema = \"<name>\"` in `rurqe.toml`"
     ))
 }

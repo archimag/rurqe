@@ -7,12 +7,14 @@ use crate::introspect::types::{
 
 use super::*;
 
+use crate::config::SchemaSelection;
 #[test]
 fn a_schema_selection_describes_the_single_sqlite_catalog() {
     // A SQLite file has no schema layer, so the notice that reports a vacuous
-    // selection never fires whatever name the caller passes.
+    // selection never fires whatever schemas the selection names.
     let mut connection = connect(":memory:").expect("open the in-memory database");
-    let notice = report_vacuous_schema(&mut connection, "tenant_a")
+    let selection = SchemaSelection::new("tenant_a", vec!["audit".to_owned()]);
+    let notice = report_vacuous_selection(&mut connection, &selection)
         .expect("one unnamed catalog is never a vacuous selection");
 
     assert!(
@@ -22,21 +24,24 @@ fn a_schema_selection_describes_the_single_sqlite_catalog() {
 }
 
 #[test]
-fn a_vacuous_selection_names_the_schema_and_the_populated_neighbours() {
+fn a_vacuous_selection_names_the_selection_and_the_populated_neighbours() {
     // The neighbour query needs a PostgreSQL server, so the wording that reaches
     // the operator is pinned on the pure builder the query result feeds.
-    let notice = vacuous_schema_notice("tenant_a", &["app".to_owned(), "billing".to_owned()])
+    let selection = SchemaSelection::new("tenant_a", vec!["audit".to_owned()]);
+    let notice = vacuous_selection_notice(&selection, &["app".to_owned(), "billing".to_owned()])
         .expect("a selection that describes nothing is reported");
 
     assert!(notice.contains("tenant_a"), "got {notice}");
+    assert!(notice.contains("audit"), "got {notice}");
     assert!(notice.contains("app, billing"), "got {notice}");
     assert!(notice.contains("--schema"), "got {notice}");
+    assert!(notice.contains("rurqe.toml"), "got {notice}");
 }
 
 #[test]
 fn a_selection_that_describes_the_database_produces_no_notice() {
     assert!(
-        vacuous_schema_notice("public", &[]).is_none(),
+        vacuous_selection_notice(&SchemaSelection::single("public"), &[]).is_none(),
         "a populated selection names no neighbour"
     );
 }

@@ -7,7 +7,7 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
 use super::super::schema_of;
-use super::super::stage::cleanup_scratch_catalog;
+use super::super::selection_of;use super::super::stage::cleanup_scratch_catalog;
 
 #[test]
 fn the_command_line_schema_wins_over_the_configured_one() {
@@ -153,4 +153,70 @@ fn a_live_creator_keeps_its_database_off_the_candidate_list() {
         "unexpected report: {:?}",
         output.lines()
     );
+}
+
+#[test]
+fn the_selection_carries_the_primary_schema_first_and_the_secondaries_after_it() {
+    let configured = CodegenConfig::parse(
+        "primary_schema = \"app\"\n\
+         schemas = [\"auth\", \"billing\"]\n",
+    )
+    .expect("the schema keys parse");
+
+    let selection = selection_of(None, &configured).expect("the selection resolves");
+
+    assert_eq!(selection.primary(), "app");
+    assert_eq!(
+        selection.secondary().to_vec(),
+        vec!["auth".to_owned(), "billing".to_owned()]
+    );
+    assert_eq!(
+        selection.all(),
+        vec!["app".to_owned(), "auth".to_owned(), "billing".to_owned()],
+        "the primary schema leads the selection"
+    );
+}
+
+#[test]
+fn the_command_line_schema_wins_over_the_configured_primary_one() {
+    let configured = CodegenConfig::parse(
+        "primary_schema = \"app\"\n\
+         schemas = [\"auth\"]\n",
+    )
+    .expect("the schema keys parse");
+
+    let selection = selection_of(Some("reporting"), &configured).expect("the selection resolves");
+
+    assert_eq!(selection.primary(), "reporting");
+    assert_eq!(
+        selection.all(),
+        vec!["reporting".to_owned(), "auth".to_owned()],
+        "the argument replaces the primary schema and keeps the secondaries"
+    );
+}
+
+#[test]
+fn a_default_selection_describes_the_public_schema_alone() {
+    let selection = selection_of(None, &CodegenConfig::default()).expect("the default resolves");
+
+    assert_eq!(selection.primary(), DEFAULT_SCHEMA);
+    assert!(selection.secondary().is_empty());
+    assert_eq!(selection.all(), vec![DEFAULT_SCHEMA.to_owned()]);
+}
+
+#[test]
+fn a_secondary_schema_colliding_with_the_effective_primary_is_refused() {
+    let configured = CodegenConfig::parse(
+        "primary_schema = \"app\"\n\
+         schemas = [\"auth\"]\n",
+    )
+    .expect("the schema keys parse");
+
+    let error = selection_of(Some("auth"), &configured)
+        .expect_err("the argument makes the secondary schema a primary one");
+
+    let message = error.to_string();
+    assert!(message.contains("`auth`"), "got {message}");
+    assert!(message.contains("primary"), "got {message}");
+    assert!(message.contains("secondary"), "got {message}");
 }

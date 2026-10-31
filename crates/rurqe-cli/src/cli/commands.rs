@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::codegen::CodegenOptions;
-use crate::config::CodegenConfig;
+use crate::config::{CodegenConfig, SchemaSelection};
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{process_may_be_alive, process_nonce};
 
@@ -49,18 +49,33 @@ pub(super) fn load_config(path: &Path) -> Result<CodegenConfig, CliError> {
     CodegenConfig::load(path).map_err(cli_error)
 }
 
-/// Resolves the schema a command's catalog digests describe.
+/// Resolves the schema selection a command's catalog digests describe.
 ///
-/// The `--schema` argument wins over the `schema` key of the configuration file at
-/// `config_path`, and the libpq default `public` applies when neither names a
-/// schema. The single resolved value reaches the codegen snapshot, the drift gate,
-/// the cold-start marker, and the checkpoint guard, so those digests always
-/// describe the same schema.
+/// The `--schema` argument wins over the `primary_schema` key of the
+/// configuration file at `config_path` (and over its legacy `schema` alias), the
+/// libpq default `public` applies when neither names a primary schema, and the
+/// `schemas` array contributes the secondary schemas the project declares beside
+/// it. The resolved selection is what a catalog statement binds, so the codegen
+/// snapshot, the drift gate, the cold-start marker, and the checkpoint guard
+/// always describe the same schemas.
+pub(super) fn resolve_selection(
+    explicit: Option<&str>,
+    config_path: &Path,
+) -> Result<SchemaSelection, CliError> {
+    selection_of(explicit, &load_config(config_path)?)
+}
+
+/// Resolves the primary schema a command's catalog digests describe.
+///
+/// The value is the primary schema of [`resolve_selection`], so the commands that
+/// still thread one schema through their entry points keep the selection
+/// resolution — including the refusal of a secondary schema that repeats the
+/// effective primary one — while the selection itself is assembled in one place.
 pub(super) fn resolve_schema(
     explicit: Option<&str>,
     config_path: &Path,
 ) -> Result<String, CliError> {
-    Ok(schema_of(explicit, &load_config(config_path)?))
+    resolve_selection(explicit, config_path).map(|selection| selection.primary().to_owned())
 }
 
 /// Picks the schema out of an already loaded configuration.
@@ -73,6 +88,38 @@ pub(super) fn schema_of(explicit: Option<&str>, config: &CodegenConfig) -> Strin
         .to_owned()
 }
 
+/// Builds the schema selection of an already loaded configuration.
+///
+/// The primary schema is resolved by [`schema_of`], so an explicit argument wins
+/// over the configured `primary_schema` (or its legacy `schema` alias) and the
+/// `public` default applies when neither names one; the `schemas` array
+/// contributes the secondary schemas in declaration order.
+///
+/// A secondary schema that repeats the effective primary one is refused here
+/// rather than while the file is parsed: the configuration file cannot know which
+/// primary schema a command will select, so an explicit `--schema` argument
+/// naming a declared secondary schema is a collision only this layer can see, and
+/// a selection naming one schema twice would introspect the same catalog twice.
+pub(super) fn selection_of(
+    explicit: Option<&str>,
+    config: &CodegenConfig,
+) -> Result<SchemaSelection, CliError> {
+    let primary = schema_of(explicit, config);
+
+    if let Some(collision) = config
+        .schemas()
+        .iter()
+        .find(|name| name.as_str() == primary.as_str())
+    {
+        return Err(CliError(format!(
+            "the secondary schema `{collision}` of the project configuration repeats the primary \
+             schema `{primary}` selected for this command; a schema is declared either as the \
+             primary one or as a secondary one, never both"
+        )));
+    }
+
+    Ok(SchemaSelection::new(primary, config.schemas().to_vec()))
+}
 /// Reads the code generation options out of the project configuration.
 pub(super) fn codegen_options(config: CodegenConfig) -> CodegenOptions {
     let domain_types = config.domain_types();

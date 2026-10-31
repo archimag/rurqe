@@ -14,7 +14,7 @@
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::CliError;
-
+use crate::config::SchemaSelection;
 use super::types::{
     catalog_from_metadata_with_sections, parse_foreign_key_action, RawCatalogSections,
     RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
@@ -35,16 +35,17 @@ pub(crate) use self::queries::{
     POSTGRES_VIEWS,
 };
 
-/// Reads the schemas that keep user relations while `schema` keeps none.
+/// Reads the schemas that keep user relations while none of `schemas` keeps one.
 ///
-/// The call answers with an empty list when `schema` describes the database it is
-/// asked about, so a caller reports a vacuous selection from one round trip.
+/// The call answers with an empty list as soon as one selected schema describes
+/// the database it is asked about, so a caller reports a vacuous selection from
+/// one round trip.
 pub(crate) fn schema_neighbours(
     client: &mut postgres::Client,
-    schema: &str,
+    schemas: &[String],
 ) -> Result<Vec<String>, CliError> {
     let rows = client
-        .query(POSTGRES_SCHEMA_NEIGHBOURS, &[&schema])
+        .query(POSTGRES_SCHEMA_NEIGHBOURS, &[&schemas])
         .map_err(|error| CliError(format!("failed to query PostgreSQL schemas: {error}")))?;
 
     rows.iter()
@@ -59,17 +60,9 @@ pub fn introspect_postgres(client: &mut postgres::Client) -> Result<SchemaCatalo
 
 /// Introspects `schema` over any PostgreSQL connection.
 ///
-/// The schema list is bound as one array parameter rather than being rendered
-/// into the statement text, so no caller can smuggle SQL into the catalog
-/// queries. This entry point selects a single schema, while the catalog
-/// statements already accept a list, so a session that introspects several
-/// schemas at once runs the very same queries.
-///
-/// A schema name a row reports is reduced to the catalog convention while it is
-/// decoded: a row of the selected schema carries no attribution, and a row of any
-/// other schema carries that schema. A single-schema introspection therefore
-/// reproduces the catalog recorded before schemas were read at all, byte for
-/// byte.
+/// The single schema is the selection [`introspect_postgres_selection`]
+/// introspects, so a session that reads one schema runs the very catalog
+/// statements the multi-schema entry point runs.
 ///
 /// The connection is named through [`postgres::GenericClient`], so the same
 /// catalog statements run both on a bare client and inside an open transaction:
@@ -82,10 +75,36 @@ pub fn introspect_postgres_schema<C>(
 where
     C: postgres::GenericClient,
 {
-    // The catalog statements take the whole selection as one array parameter, so
-    // this entry point hands them a one-element list.
-    let schemas = [schema.to_owned()];
+    introspect_postgres_selection(client, &SchemaSelection::single(schema))
+}
 
+/// Introspects every schema of `selection` over any PostgreSQL connection.
+///
+/// The whole selection is bound as one array parameter rather than being rendered
+/// into the statement text, so no caller can smuggle SQL into the catalog queries
+/// and every catalog statement describes the primary schema and its secondary
+/// schemas in one round trip.
+///
+/// A schema name a row reports is reduced to the catalog convention while it is
+/// decoded: a row of the primary schema carries no attribution, and a row of a
+/// secondary schema carries that schema. A single-schema introspection therefore
+/// reproduces the catalog recorded before schemas were read at all, byte for byte.
+///
+/// The connection is named through [`postgres::GenericClient`], so the same
+/// catalog statements run both on a bare client and inside an open transaction:
+/// a scratch schema can therefore be introspected before its transaction
+/// commits, and the golden equation reads it through the same queries.
+pub fn introspect_postgres_selection<C>(
+    client: &mut C,
+    selection: &SchemaSelection,
+) -> Result<SchemaCatalog, CliError>
+where
+    C: postgres::GenericClient,
+{
+    // The catalog statements take the whole selection as one array parameter, and
+    // the primary schema is the one whose rows carry no attribution.
+    let schemas = selection.all();
+    let schema = selection.primary();
     let raw_tables = query_catalog(client, POSTGRES_TABLES, &schemas, "tables", |row| {
         Ok(RawTableMetadata {
             schema: read_schema(row, 0, schema, "tables", "table_schema")?,

@@ -88,7 +88,18 @@ fn the_schema_neighbour_statement_ignores_a_populated_selection() {
 }
 
 #[test]
-fn the_trigger_statement_skips_the_internal_triggers() {
+fn the_schema_neighbour_statement_scans_the_whole_selection() {
+    assert!(
+        POSTGRES_SCHEMA_NEIGHBOURS.contains("table_schema::text = ANY($1)"),
+        "the statement counts the relations of every selected schema"
+    );
+    assert!(
+        POSTGRES_SCHEMA_NEIGHBOURS.contains("table_row.table_schema::text <> ALL($1)"),
+        "a selected schema is never proposed as its own neighbour"
+    );
+}
+
+#[test]fn the_trigger_statement_skips_the_internal_triggers() {
     assert!(
         POSTGRES_TRIGGERS.contains("NOT trigger_row.tgisinternal"),
         "the trigger query must skip the triggers backing a constraint"

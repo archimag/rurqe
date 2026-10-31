@@ -265,21 +265,20 @@ WHERE namespace.nspname::text = ANY($1)
 ORDER BY namespace.nspname, trigger_table.relname, trigger_row.tgname;
 "#;
 
-/// Query naming the schemas that hold user relations while the introspected one
-/// holds none.
+/// Query naming the schemas that hold user relations while none of the
+/// introspected ones does.
 ///
-/// The statement answers with nothing as soon as the selected schema carries a
+/// The statement answers with nothing as soon as one selected schema carries a
 /// table or a view of its own, and with nothing at all on a database that keeps
 /// no relation anywhere else either: only a selection describing an empty catalog
 /// while the database holds relations elsewhere is reported. The history table the
-/// migration engine creates is never counted, so a project whose relations live in
-/// another schema is still reported after a run created
-/// `__rurqe_schema_history` in `public`.
+/// migration engine creates is never counted, and a selected schema is never
+/// proposed as its own neighbour.
 pub(crate) const POSTGRES_SCHEMA_NEIGHBOURS: &str = r#"
 WITH selected AS (
     SELECT count(*) AS relations
     FROM information_schema.tables
-    WHERE table_schema = $1
+    WHERE table_schema::text = ANY($1)
       AND table_type IN ('BASE TABLE', 'VIEW')
       AND table_name != '__rurqe_schema_history'
 )
@@ -288,7 +287,7 @@ FROM information_schema.tables table_row
 CROSS JOIN selected
 WHERE selected.relations = 0
   AND table_row.table_type IN ('BASE TABLE', 'VIEW')
-  AND table_row.table_schema != $1
+  AND table_row.table_schema::text <> ALL($1)
   AND table_row.table_schema NOT IN ('pg_catalog', 'information_schema')
   AND table_row.table_name != '__rurqe_schema_history'
 ORDER BY table_row.table_schema;
