@@ -20,6 +20,7 @@ pub trait Dialect: 'static + Send + Sync {
     /// assembles every object field by field with `json_object` and collects the
     /// objects with `json_group_array`. Both forms produce the same JSON
     /// document, so a client decodes one representation whichever engine
+    /// produced it.
     const SUPPORTS_JSONB_ROW_AGG: bool = false;
 
     /// Whether the dialect accepts an alias on the target of an `INSERT`.

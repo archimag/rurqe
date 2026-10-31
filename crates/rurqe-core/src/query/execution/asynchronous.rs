@@ -77,7 +77,6 @@ pub trait AsyncQueryBackend: Sync {
 /// explicit `Send` future, so awaiting it inside a task spawned on a
 /// multithreaded runtime stays sound.
 pub trait AsyncQueryBackendExt: AsyncQueryBackend {
-    /// Executes `query` and decodes every produced row.
     /// Executes `query` and collects the decoded rows into `C`.
     ///
     /// The collection type is chosen by the caller, so `HashMap`, `HashSet`,
