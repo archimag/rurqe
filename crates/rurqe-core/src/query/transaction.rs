@@ -41,8 +41,12 @@
 
 use core::ops::{Deref, DerefMut};
 
-use super::execution::{IsolationLevel, TransactionBackend, TransactionContext};
+use super::execution::TransactionContext;
 use super::savepoint::SavepointName;
+
+mod backend;
+
+pub use self::backend::{IsolationLevel, TransactionBackend, TransactionalConnection};
 
 /// The transaction bookkeeping a synchronous connection keeps between calls.
 ///
@@ -154,26 +158,6 @@ impl<E> TransactionStatus<E> {
 }
 
 /// A synchronous connection exposing the transaction bookkeeping of a scope.
-///
-/// The trait is the only adapter-specific part of a transaction block: the
-/// connection stores a [`TransactionStatus`] and hands out a mutable reference
-/// to it, while [`TransactionGuard`] owns the `BEGIN`, `SAVEPOINT`, and
-/// rollback policy.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot open a RURQE transaction scope",
-    label = "unsupported transactional connection",
-    note = "synchronous adapters implement `TransactionalConnection` on top of `TransactionBackend`"
-)]
-pub trait TransactionalConnection: TransactionBackend {
-    /// The transaction bookkeeping of the connection.
-    ///
-    /// The status carries the driver error of the connection, so a refused
-    /// rollback keeps the error it produced until the abandoned transaction is
-    /// closed for real.
-    fn transaction_status(&mut self) -> &mut TransactionStatus<Self::Error>;
-}
-
-/// An open transaction or savepoint, rolled back unless it is committed.
 ///
 /// The guard owns the borrow of the connection for the duration of a block, so
 /// dropping it without [`commit`](TransactionGuard::commit) rolls the block

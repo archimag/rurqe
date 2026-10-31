@@ -1,4 +1,4 @@
-//! Query execution contracts, typed errors, and synchronous transaction control.
+//! Query execution contracts, typed errors, and the transaction savepoint context.
 
 use core::fmt;
 use core::future::Future;
@@ -888,28 +888,6 @@ where
 {
 }
 
-/// The isolation level a transaction runs under.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IsolationLevel {
-    /// Reads only rows committed before the statement started.
-    ReadCommitted,
-    /// Reads a stable snapshot, so repeated reads observe the same rows.
-    RepeatableRead,
-    /// Behaves as if transactions ran one after another.
-    Serializable,
-}
-
-impl IsolationLevel {
-    /// The SQL text of the corresponding `ISOLATION LEVEL` clause.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            IsolationLevel::ReadCommitted => "READ COMMITTED",
-            IsolationLevel::RepeatableRead => "REPEATABLE READ",
-            IsolationLevel::Serializable => "SERIALIZABLE",
-        }
-    }
-}
-
 /// Tracks the nesting depth and savepoint names of an open transaction.
 #[derive(Debug, Clone, Default)]
 pub struct TransactionContext {
@@ -949,65 +927,5 @@ impl TransactionContext {
     /// Ends the innermost block and returns the savepoint name it used.
     pub fn close_savepoint(&mut self) -> Option<SavepointName> {
         self.savepoints.pop()
-    }
-}
-
-/// Runs a parameterless statement through a [`QueryBackend`].
-fn execute_statement<B: QueryBackend + ?Sized>(
-    backend: &mut B,
-    sql: String,
-) -> Result<(), B::Error> {
-    backend
-        .execute_raw(&BuiltQuery {
-            sql,
-            params: Vec::new(),
-        })
-        .map(|_| ())
-}
-
-/// A synchronous connection able to run transactions and nested savepoints.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` cannot run RURQE transactions",
-    label = "unsupported transaction backend",
-    note = "synchronous connections implement `TransactionBackend` on top of `QueryBackend`"
-)]
-pub trait TransactionBackend: QueryBackend {
-    /// Opens the outermost transaction with the given isolation level.
-    fn begin(&mut self, isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
-        let mut sql = String::from("BEGIN");
-        if let Some(level) = isolation {
-            sql.push_str(" ISOLATION LEVEL ");
-            sql.push_str(level.as_str());
-        }
-        execute_statement(self, sql)
-    }
-
-    /// Commits the current transaction, persisting all its work.
-    fn commit(&mut self) -> Result<(), Self::Error> {
-        execute_statement(self, String::from("COMMIT"))
-    }
-
-    /// Rolls the current transaction back, discarding all its work.
-    fn rollback(&mut self) -> Result<(), Self::Error> {
-        execute_statement(self, String::from("ROLLBACK"))
-    }
-
-    /// Opens the nested transaction `name` as a savepoint.
-    ///
-    /// The name is a [`SavepointName`], so it cannot carry characters that
-    /// would escape the rendered statement.
-    fn savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-        execute_statement(self, format!("SAVEPOINT {}", name.as_str()))
-    }
-
-    /// Releases the savepoint `name`, keeping its work in the transaction.
-    fn release_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-        execute_statement(self, format!("RELEASE SAVEPOINT {}", name.as_str()))
-    }
-
-    /// Rolls the transaction back to the savepoint `name`, discarding only the
-    /// work done inside the nested block.
-    fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
-        execute_statement(self, format!("ROLLBACK TO SAVEPOINT {}", name.as_str()))
     }
 }
