@@ -1,11 +1,9 @@
 use super::*;
 
-crate::table! {
-    User => "users" {
-        UserId => "id": i64,
-        UserEmail => "email": String,
-    }
-}
+crate::table!(User => "users" {
+    UserId => "id": i64,
+    UserEmail => "email": String,
+});
 
 #[test]
 fn names_are_static_strings() {
@@ -44,12 +42,10 @@ fn table_value_addresses_its_columns() {
     assert_eq!(core::mem::size_of::<User>(), 0);
 }
 
-crate::table! {
-    Order => "orders" {
-        OrderId => "id": i64,
-        OrderUserId => "user_id": i64,
-    }
-}
+crate::table!(Order => "orders" {
+    OrderId => "id": i64,
+    OrderUserId => "user_id": i64,
+});
 
 #[test]
 fn composite_scope_contains_all_member_tables() {
@@ -312,11 +308,9 @@ fn aliased_column_markers_compose_arithmetic_expressions() {
 mod decimal_arithmetic {
     use crate::expr::{BinaryOp, ExprKind};
 
-    crate::table! {
-        Price => "prices" {
-            PriceAmount => "amount": rust_decimal::Decimal,
-        }
-    }
+    crate::table!(Price => "prices" {
+        PriceAmount => "amount": rust_decimal::Decimal,
+    });
 
     #[test]
     fn decimal_columns_compose_arithmetic_expressions() {
@@ -526,4 +520,28 @@ fn a_table_alias_declared_inside_a_schema_module_mirrors_its_table() {
             column: "id",
         }
     );
+}
+
+crate::table!(Widget => "widgets" {
+    WidgetId => "id": i64,
+});
+
+crate::table!(ScopedWidget => "widgets" in "audit" {
+    ScopedWidgetId => "id": i64,
+});
+
+#[test]
+fn both_table_invocation_forms_declare_one_table() {
+    // The plain form belongs to the primary schema, so the relation renders bare.
+    assert_eq!(<Widget as Table>::SCHEMA, None);
+    assert_eq!(<Widget as Table>::table_ref(), TableRef::plain("widgets"));
+    assert_eq!(Widget.WidgetId, WidgetId);
+
+    // The `in` form carries its schema, so the relation renders qualified.
+    assert_eq!(<ScopedWidget as Table>::SCHEMA, Some("audit"));
+    assert_eq!(
+        <ScopedWidget as Table>::table_ref(),
+        TableRef::qualified("audit", "widgets")
+    );
+    assert_eq!(ScopedWidget.ScopedWidgetId, ScopedWidgetId);
 }

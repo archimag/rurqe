@@ -56,11 +56,11 @@ pub trait Table {
     /// ```
     /// use rurqe_core::schema::{Aliased, Table};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// rurqe_core::table_alias! {
     ///     /// The `m` alias.
@@ -191,11 +191,11 @@ pub trait Column {
     /// ```
     /// use rurqe_core::schema::{AliasedCol, Column, TableAlias};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// rurqe_core::table_alias! {
     ///     /// The `u` alias.
@@ -233,13 +233,13 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 /// Rust value type through [`Column::RustType`]:
 ///
 /// ```
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserEmail => "email": String,
 ///     }
-/// }
+/// );
 ///
 /// use rurqe_core::schema::{Column, Table};
 ///
@@ -247,6 +247,12 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 /// assert_eq!(UserEmail::NAME, "email");
 /// assert_eq!(<<UserEmail as Column>::Table as Table>::NAME, "users");
 /// ```
+///
+/// The declaration is written as a statement: the table together with its
+/// columns sits inside parentheses, and the invocation ends with a semicolon.
+/// One invocation therefore declares exactly one table, and it reads as a
+/// single declaration rather than as the opening of a block that could hold
+/// several.
 ///
 /// The declaration occupies both namespaces, which is what gives a column two
 /// equivalent spellings. The type namespace carries the table marker together
@@ -256,15 +262,14 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 /// spelling needs a turbofish, and the qualified address costs nothing:
 ///
 /// ```
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserEmail => "email": String,
 ///     }
-/// }
+/// );
 ///
-/// // `User` is a value, so it is handed to a builder directly.
 /// use rurqe_core::schema::Table;
 ///
 /// // `User` is a value, so it is handed to a builder directly.
@@ -285,12 +290,12 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 /// its qualifier:
 ///
 /// ```
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `sessions` table of the `auth` schema.
 ///     Session => "sessions" in "auth" {
 ///         SessionId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// use rurqe_core::schema::{Table, TableRef};
 ///
@@ -311,14 +316,14 @@ macro_rules! table {
             $($table_body:tt)*
         }
     ) => {
-        $crate::table! {
+        $crate::table!(
             @declare
             [$(#[$table_meta])*]
             $table,
             $table_name,
             [::core::option::Option::None]
             { $($table_body)* }
-        }
+        );
     };
     (
         $(#[$table_meta:meta])*
@@ -326,14 +331,14 @@ macro_rules! table {
             $($table_body:tt)*
         }
     ) => {
-        $crate::table! {
+        $crate::table!(
             @declare
             [$(#[$table_meta])*]
             $table,
             $table_name,
             [::core::option::Option::Some($schema_name)]
             { $($table_body)* }
-        }
+        );
     };
     (
         @declare
