@@ -4,6 +4,8 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 
+use super::guard::LockGuard;
+
 /// Abstract database connection capable of opening transactional scopes.
 pub trait MigrationBackend {
     /// Active transaction type.
@@ -29,6 +31,11 @@ pub trait MigrationBackend {
     }
 
     /// Begins a transactional boundary.
+    ///
+    /// The returned transaction obeys the termination contract of
+    /// [`MigrationTransaction`]: it is committed or rolled back before the runner
+    /// moves on, and one abandoned without a terminal call must leave no open
+    /// database transaction behind.
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error>;
 
     /// Executes `sql` outside of any transaction the runner opens.
@@ -61,6 +68,29 @@ pub trait MigrationBackend {
 }
 
 /// A transactional boundary for applying migrations and recording metadata.
+///
+/// # Termination contract
+///
+/// A transaction opened by [`MigrationBackend::begin`] ends through one of the two
+/// terminal calls: [`commit`](Self::commit) makes its work durable, and
+/// [`rollback`](Self::rollback) discards it. The contract covers the failing paths
+/// as much as the successful one:
+///
+/// * Dropping a transaction without a terminal call must leave no open database
+///   transaction behind. An implementation that owns one ends it in its `Drop`, so
+///   abandoning a transaction on an error path never keeps row and table locks held.
+/// * A failed [`commit`](Self::commit) consumes the transaction all the same: the
+///   work it tried to make durable is not applied, and no open database transaction
+///   survives the call.
+/// * A failed [`rollback`](Self::rollback) reports the driver error, and the
+///   transaction is gone in either case.
+///
+/// The runner drives every transactional step through [`with_transaction`], which
+/// commits on success and rolls back on failure, so the contract is enforced in one
+/// place instead of at each call site. It has to hold: [`LockGuard`] releases the
+/// exclusive migration lock as soon as the runner propagates an error, so a
+/// transaction left open on that path would hold row and table locks while another
+/// runner already owns the lock.
 pub trait MigrationTransaction {
     /// Executes a raw SQL script within the transaction.
     fn execute(&mut self, sql: &str) -> Result<(), Error>;
@@ -85,8 +115,53 @@ pub trait MigrationTransaction {
     fn update_checksum(&mut self, script: &str, checksum: &Checksum) -> Result<(), Error>;
 
     /// Commits the active transaction.
+    ///
+    /// A successful commit makes the work durable. A failing commit consumes the
+    /// transaction all the same and must leave no open database transaction behind,
+    /// as the termination contract of [`MigrationTransaction`] requires.
     fn commit(self) -> Result<(), Error>;
 
     /// Rolls back the active transaction.
+    ///
+    /// A failing rollback still terminates the transaction: the driver error is
+    /// reported, and no open database transaction survives the call.
     fn rollback(self) -> Result<(), Error>;
+}
+
+/// Runs `work` inside one transaction and terminates that transaction either way.
+///
+/// The closure receives the open transaction of `guard`, applies the script, and
+/// writes the history rows it needs. A successful closure commits; a failing one is
+/// rolled back before the error is propagated, whichever step failed — the script,
+/// a history write, or the commit itself. The rollback is best effort: its own
+/// failure is logged and never replaces the error of `work`, which is the
+/// diagnostic that names what went wrong.
+///
+/// Funnelling every transactional step through this helper is what enforces the
+/// termination contract of [`MigrationTransaction`]: [`LockGuard`] releases the
+/// exclusive migration lock as soon as the runner propagates the error, so no open
+/// database transaction may outlive that lock.
+pub(super) fn with_transaction<'g, B, T>(
+    guard: &'g mut LockGuard<'_, B>,
+    work: impl FnOnce(&mut B::Transaction<'g>) -> Result<T, Error>,
+) -> Result<T, Error>
+where
+    B: MigrationBackend + 'g,
+{
+    let mut tx = guard.begin()?;
+
+    let outcome = work(&mut tx);
+
+    match outcome {
+        Ok(value) => tx.commit().map(|()| value),
+        Err(error) => {
+            if let Err(rollback_error) = tx.rollback() {
+                tracing::warn!(
+                    error = %rollback_error,
+                    "failed to roll back an abandoned migration transaction"
+                );
+            }
+            Err(error)
+        }
+    }
 }

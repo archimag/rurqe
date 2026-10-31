@@ -4,7 +4,7 @@ use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::Migration;
 
-use super::backend::{MigrationBackend, MigrationTransaction};
+use super::backend::{with_transaction, MigrationBackend, MigrationTransaction};
 use super::guard::LockGuard;
 use super::time::current_timestamp;
 
@@ -25,19 +25,30 @@ pub(super) fn apply_migration<B: MigrationBackend>(
     let start_time = std::time::Instant::now();
 
     if migration.is_transactional() {
-        let mut tx = guard.begin()?;
+        let outcome = with_transaction(guard, |tx| {
+            tx.execute(&migration.sql)?;
 
-        let elapsed_ms = match tx.execute(&migration.sql) {
-            Ok(()) => start_time.elapsed().as_millis() as i64,
+            let elapsed_ms = start_time.elapsed().as_millis() as i64;
+            let entry = SchemaHistoryEntry::applied(
+                installed_rank,
+                migration,
+                current_timestamp(),
+                elapsed_ms,
+            );
+            tx.record_entry(&entry)?;
+
+            Ok(elapsed_ms)
+        });
+
+        let elapsed_ms = match outcome {
+            Ok(elapsed_ms) => elapsed_ms,
+            // The helper rolled the transaction back, so a failing script, a failing
+            // history write, and a failing commit all leave the connection clean and
+            // keep the migration lock from outliving an open transaction. The failed
+            // attempt is recorded best effort, and the propagated error names the
+            // script instead of the bare driver diagnostic.
             Err(error) => {
                 let elapsed_ms = start_time.elapsed().as_millis() as i64;
-                if let Err(rollback_error) = tx.rollback() {
-                    tracing::warn!(
-                        script = %migration.script,
-                        error = %rollback_error,
-                        "failed to rollback failed migration transaction"
-                    );
-                }
                 tracing::error!(
                     script = %migration.script,
                     error = %error,
@@ -48,10 +59,6 @@ pub(super) fn apply_migration<B: MigrationBackend>(
             }
         };
 
-        let entry =
-            SchemaHistoryEntry::applied(installed_rank, migration, current_timestamp(), elapsed_ms);
-        tx.record_entry(&entry)?;
-        tx.commit()?;
         tracing::info!(
             script = %migration.script,
             elapsed_ms = elapsed_ms,
@@ -98,19 +105,11 @@ pub(super) fn apply_migration<B: MigrationBackend>(
         SchemaHistoryEntry::applied(installed_rank, migration, current_timestamp(), elapsed_ms);
     // The applied row replaces the in-progress one at the same rank inside the
     // very transaction that writes it, so the two never coexist.
-    let mut tx = guard
-        .begin()
-        .map_err(|error| history_not_recorded(migration, &error))?;
-    if let Err(error) = tx.delete_entry(installed_rank) {
-        let _ = tx.rollback();
-        return Err(history_not_recorded(migration, &error));
-    }
-    if let Err(error) = tx.record_entry(&entry) {
-        let _ = tx.rollback();
-        return Err(history_not_recorded(migration, &error));
-    }
-    tx.commit()
-        .map_err(|error| history_not_recorded(migration, &error))?;
+    with_transaction(guard, |tx| {
+        tx.delete_entry(installed_rank)?;
+        tx.record_entry(&entry)
+    })
+    .map_err(|error| history_not_recorded(migration, &error))?;
     tracing::info!(
         script = %migration.script,
         elapsed_ms = elapsed_ms,
@@ -130,14 +129,7 @@ fn record_in_progress<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     entry: &SchemaHistoryEntry,
 ) -> Result<(), Error> {
-    let mut tx = guard.begin()?;
-
-    if let Err(error) = tx.record_entry(entry) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
-
-    tx.commit()
+    with_transaction(guard, |tx| tx.record_entry(entry))
 }
 
 /// Withdraws the in-progress row of a script the backend refused to run.
