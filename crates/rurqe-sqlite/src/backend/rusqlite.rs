@@ -1,5 +1,6 @@
 //! The `rusqlite` connection adapter.
 
+use core::borrow::{Borrow, BorrowMut};
 use core::ops::{Deref, DerefMut};
 
 use ::rusqlite::Connection;
@@ -12,7 +13,15 @@ use rurqe_core::query::{
 
 use super::types::{value_ref_to_sql_val, SqlValParam};
 
-/// A `rusqlite` connection that executes RURQE-built queries.
+/// A `rusqlite` handle that executes RURQE-built queries.
+///
+/// The adapter is generic over the handle it executes through, and the default
+/// type parameter is an owned [`Connection`]: `SqliteConnection` therefore keeps
+/// naming the adapter that owns its connection. [`SqliteConnection::borrowed`]
+/// builds the same adapter over a handle the caller keeps owning, so a
+/// connection checked out of a pool is driven through the identical contracts —
+/// guarded `BEGIN`/`COMMIT`, `SAVEPOINT` nesting, and rollback on error — and
+/// returns to its pool once the adapter is dropped.
 ///
 /// The adapter implements the RURQE
 /// [`QueryBackend`](rurqe_core::query::QueryBackend) contract, so the
@@ -20,12 +29,12 @@ use super::types::{value_ref_to_sql_val, SqlValParam};
 /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available.
 /// It also dereferences to the wrapped [`Connection`], so raw SQL can still be
 /// executed directly.
-pub struct SqliteConnection {
-    connection: Connection,
+pub struct SqliteConnection<B = Connection> {
+    connection: B,
     status: TransactionStatus<::rusqlite::Error>,
 }
 
-impl SqliteConnection {
+impl SqliteConnection<Connection> {
     /// Wraps an existing `rusqlite` connection.
     pub fn new(connection: Connection) -> Self {
         Self {
@@ -39,19 +48,39 @@ impl SqliteConnection {
         Connection::open_in_memory().map(Self::new)
     }
 
-    /// Returns a shared reference to the wrapped connection.
-    pub fn connection(&self) -> &Connection {
-        &self.connection
-    }
-
-    /// Returns a mutable reference to the wrapped connection.
-    pub fn connection_mut(&mut self) -> &mut Connection {
-        &mut self.connection
-    }
-
     /// Consumes the adapter, returning the wrapped connection.
     pub fn into_inner(self) -> Connection {
         self.connection
+    }
+}
+
+impl SqliteConnection<&mut Connection> {
+    /// Wraps a borrowed connection handle with fresh transaction bookkeeping.
+    ///
+    /// The handle stays owned by the caller, which is what makes the adapter
+    /// usable over a connection checked out of a pool: the handle is borrowed
+    /// for the lifetime of the adapter and returns to its owner once the
+    /// adapter is dropped. The bookkeeping starts clean, because such a handle
+    /// may have executed statements before it was checked out.
+    pub fn borrowed(connection: &mut Connection) -> SqliteConnection<&mut Connection> {
+        SqliteConnection {
+            connection,
+            status: TransactionStatus::new(),
+        }
+    }
+}
+
+impl<B: Borrow<Connection>> SqliteConnection<B> {
+    /// Returns a shared reference to the wrapped connection.
+    pub fn connection(&self) -> &Connection {
+        self.connection.borrow()
+    }
+}
+
+impl<B: BorrowMut<Connection>> SqliteConnection<B> {
+    /// Returns a mutable reference to the wrapped connection.
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        self.connection.borrow_mut()
     }
 
     /// Runs `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
@@ -64,7 +93,7 @@ impl SqliteConnection {
     /// half-finished.
     pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
     where
-        F: FnOnce(&mut SqliteConnection) -> Result<T, E>,
+        F: FnOnce(&mut SqliteConnection<B>) -> Result<T, E>,
         E: From<::rusqlite::Error>,
     {
         let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
@@ -72,15 +101,7 @@ impl SqliteConnection {
         guard.commit().map_err(E::from)?;
         Ok(value)
     }
-}
 
-impl TransactionalConnection for SqliteConnection {
-    fn transaction_status(&mut self) -> &mut TransactionStatus<::rusqlite::Error> {
-        &mut self.status
-    }
-}
-
-impl SqliteConnection {
     /// Answers a refused transaction-control statement as benign when the
     /// driver observes no open transaction.
     ///
@@ -95,7 +116,7 @@ impl SqliteConnection {
     /// while no transaction is open is benign, while one that leaves a
     /// transaction open stays the driver's own error.
     fn benign_if_closed(&self, error: ::rusqlite::Error) -> Result<(), ::rusqlite::Error> {
-        if self.connection.is_autocommit() {
+        if self.connection.borrow().is_autocommit() {
             Ok(())
         } else {
             Err(error)
@@ -103,11 +124,17 @@ impl SqliteConnection {
     }
 }
 
-impl TransactionBackend for SqliteConnection {
+impl<B: BorrowMut<Connection>> TransactionalConnection for SqliteConnection<B> {
+    fn transaction_status(&mut self) -> &mut TransactionStatus<::rusqlite::Error> {
+        &mut self.status
+    }
+}
+
+impl<B: BorrowMut<Connection>> TransactionBackend for SqliteConnection<B> {
     fn begin(&mut self, _isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
         // SQLite serialises access through database-level locking, so the
         // requested isolation level does not map onto a `BEGIN` clause.
-        self.connection.execute_batch("BEGIN")
+        self.connection.borrow_mut().execute_batch("BEGIN")
     }
 
     /// Rolls the transaction back, tolerating a transaction the raw handle
@@ -120,7 +147,8 @@ impl TransactionBackend for SqliteConnection {
     /// desynchronized `COMMIT` keeps costing its own transaction call its
     /// driver error.
     fn rollback(&mut self) -> Result<(), Self::Error> {
-        match self.connection.execute_batch("ROLLBACK") {
+        let refused = self.connection.borrow_mut().execute_batch("ROLLBACK");
+        match refused {
             Ok(()) => Ok(()),
             Err(error) => self.benign_if_closed(error),
         }
@@ -134,7 +162,8 @@ impl TransactionBackend for SqliteConnection {
     /// there is no abandoned work left to report.
     fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
         let statement = format!("ROLLBACK TO SAVEPOINT {}", name.as_str());
-        match self.connection.execute_batch(&statement) {
+        let refused = self.connection.borrow_mut().execute_batch(&statement);
+        match refused {
             Ok(()) => Ok(()),
             Err(error) => self.benign_if_closed(error),
         }
@@ -148,32 +177,33 @@ impl TransactionBackend for SqliteConnection {
     /// already gone holds no work the release could keep.
     fn release_savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
         let statement = format!("RELEASE SAVEPOINT {}", name.as_str());
-        match self.connection.execute_batch(&statement) {
+        let refused = self.connection.borrow_mut().execute_batch(&statement);
+        match refused {
             Ok(()) => Ok(()),
             Err(error) => self.benign_if_closed(error),
         }
     }
 }
 
-impl Deref for SqliteConnection {
+impl<B: Borrow<Connection>> Deref for SqliteConnection<B> {
     type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
-        &self.connection
+        self.connection.borrow()
     }
 }
 
-impl DerefMut for SqliteConnection {
+impl<B: BorrowMut<Connection>> DerefMut for SqliteConnection<B> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.connection
+        self.connection.borrow_mut()
     }
 }
 
-impl QueryBackend for SqliteConnection {
+impl<B: BorrowMut<Connection>> QueryBackend for SqliteConnection<B> {
     type Error = ::rusqlite::Error;
 
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-        fetch_raw_with(&mut self.connection, query)
+        fetch_raw_with(self.connection.borrow_mut(), query)
     }
 
     fn fetch_raw_limited(
@@ -181,11 +211,11 @@ impl QueryBackend for SqliteConnection {
         query: &BuiltQuery,
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
-        fetch_raw_limited_with(&mut self.connection, query, limit)
+        fetch_raw_limited_with(self.connection.borrow_mut(), query, limit)
     }
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
-        execute_raw_with(&mut self.connection, query)
+        execute_raw_with(self.connection.borrow_mut(), query)
     }
 }
 
