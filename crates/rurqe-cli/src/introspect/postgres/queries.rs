@@ -107,6 +107,14 @@ ORDER BY kcu.table_name, kcu.ordinal_position;
 /// `confdeltype` and `confupdtype` carry the referential actions of the key as
 /// single letters, which are spelled out here so the catalog receives the action
 /// itself rather than a driver-level character code.
+///
+/// The schema of the referenced table is reported only when the reference
+/// crosses into another schema. A key held inside the introspected schema would
+/// name that schema on every constraint, and the scratch schema a stage
+/// verification builds would record a name the live schema never carries, so
+/// the golden equation could not compare the two catalogs. A reference that
+/// crosses a schema boundary instead keeps the name of the schema it points
+/// into, which is the part of the reference the constraint really declares.
 pub(crate) const POSTGRES_FOREIGN_KEYS: &str = r#"
 SELECT
   constraint_row.conname,
@@ -114,6 +122,10 @@ SELECT
   owning_column.attname AS column_name,
   referenced.relname AS referenced_table,
   referenced_column.attname AS referenced_column,
+  CASE
+    WHEN referenced_namespace.nspname = $1 THEN NULL
+    ELSE referenced_namespace.nspname
+  END AS referenced_schema,
   CASE constraint_row.confdeltype
     WHEN 'c' THEN 'CASCADE'
     WHEN 'r' THEN 'RESTRICT'
@@ -132,6 +144,8 @@ FROM pg_constraint constraint_row
 JOIN pg_class owning ON owning.oid = constraint_row.conrelid
 JOIN pg_namespace namespace ON namespace.oid = owning.relnamespace
 JOIN pg_class referenced ON referenced.oid = constraint_row.confrelid
+JOIN pg_namespace referenced_namespace
+  ON referenced_namespace.oid = referenced.relnamespace
 JOIN generate_subscripts(constraint_row.conkey, 1) AS position(index) ON TRUE
 JOIN pg_attribute owning_column
   ON owning_column.attrelid = constraint_row.conrelid

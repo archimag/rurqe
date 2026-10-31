@@ -47,6 +47,17 @@ fn the_foreign_key_statement_reads_the_referential_actions() {
 }
 
 #[test]
+fn the_foreign_key_statement_reads_the_referenced_schema() {
+    // A reference held inside the introspected schema is reported without a
+    // schema of its own, so the scratch schema of a stage verification and the
+    // live schema it is compared against record the same catalog for the same
+    // DDL; only a reference that crosses into another schema names one.
+    assert!(
+        POSTGRES_FOREIGN_KEYS.contains("referenced_namespace.nspname = $1"),
+        "the foreign key query must report only a cross-schema reference"
+    );
+}
+#[test]
 fn the_check_statement_reads_only_check_constraints() {
     assert!(
         POSTGRES_CHECKS.contains("constraint_row.contype = 'c'"),

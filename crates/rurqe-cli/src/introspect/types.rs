@@ -41,8 +41,11 @@ pub struct RawPrimaryKeyMetadata {
 /// Raw foreign key constraint row.
 ///
 /// One row describes one key column, and the referential actions of the
+/// One row describes one key column, and the referential actions of the
 /// constraint are repeated on every row of it, so folding the rows of a
-/// constraint keeps the actions intact.
+/// constraint keeps the actions intact. The schema of the referenced table is
+/// repeated the same way, and a row carries it only when the reference crosses
+/// into another schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawForeignKeyMetadata {
     pub name: String,
@@ -50,6 +53,7 @@ pub struct RawForeignKeyMetadata {
     pub column_name: String,
     pub referenced_table: String,
     pub referenced_column: String,
+    pub referenced_schema: Option<String>,
     pub on_delete: ForeignKeyAction,
     pub on_update: ForeignKeyAction,
 }
@@ -467,8 +471,13 @@ pub fn catalog_from_metadata_with_sections(
             .or_default()
             .entry(fk.name.clone())
             .or_insert_with(|| {
-                ForeignKeyDef::new(&fk.name, Vec::new(), &fk.referenced_table, Vec::new())
-                    .with_actions(fk.on_delete, fk.on_update)
+                let mut constraint =
+                    ForeignKeyDef::new(&fk.name, Vec::new(), &fk.referenced_table, Vec::new())
+                        .with_actions(fk.on_delete, fk.on_update);
+                if let Some(schema) = &fk.referenced_schema {
+                    constraint = constraint.with_referenced_schema(schema.as_str());
+                }
+                constraint
             });
         constraint.columns.push(fk.column_name.clone());
         constraint

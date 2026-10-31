@@ -104,6 +104,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             column_name: "order_id".to_owned(),
             referenced_table: "orders".to_owned(),
             referenced_column: "id".to_owned(),
+            referenced_schema: None,
             on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
             on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
@@ -113,6 +114,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             column_name: "line_no".to_owned(),
             referenced_table: "orders".to_owned(),
             referenced_column: "line_no".to_owned(),
+            referenced_schema: None,
             on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
             on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
@@ -129,6 +131,48 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
     );
 }
 
+#[test]
+fn a_cross_schema_reference_keeps_its_referenced_schema() {
+    let tables = vec![RawTableMetadata {
+        name: "invoices".to_owned(),
+    }];
+    let fks = vec![RawForeignKeyMetadata {
+        name: "invoices_country_fkey".to_owned(),
+        table_name: "invoices".to_owned(),
+        column_name: "country_code".to_owned(),
+        referenced_table: "countries".to_owned(),
+        referenced_column: "code".to_owned(),
+        referenced_schema: Some("shared".to_owned()),
+        on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+        on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+    }];
+
+    let catalog = catalog_from_metadata(&tables, &[], &[], &fks, &[], &[]);
+    let foreign_key = &catalog.tables[0].foreign_keys[0];
+
+    assert_eq!(foreign_key.referenced_schema.as_deref(), Some("shared"));
+}
+
+#[test]
+fn a_reference_inside_the_schema_stays_schema_less() {
+    let tables = vec![RawTableMetadata {
+        name: "invoices".to_owned(),
+    }];
+    let fks = vec![RawForeignKeyMetadata {
+        name: "invoices_country_fkey".to_owned(),
+        table_name: "invoices".to_owned(),
+        column_name: "country_code".to_owned(),
+        referenced_table: "countries".to_owned(),
+        referenced_column: "code".to_owned(),
+        referenced_schema: None,
+        on_delete: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+        on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
+    }];
+
+    let catalog = catalog_from_metadata(&tables, &[], &[], &fks, &[], &[]);
+
+    assert!(catalog.tables[0].foreign_keys[0].referenced_schema.is_none());
+}
 #[test]
 fn sqlite_composite_foreign_key_rows_fold_into_one_constraint() {
     let tables = vec![RawSqliteTableMetadata {

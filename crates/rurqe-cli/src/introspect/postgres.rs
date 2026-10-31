@@ -109,8 +109,10 @@ where
         schema,
         "foreign keys",
         |row| {
-            let on_delete: String = read_column(row, 5, "foreign keys", "on_delete")?;
-            let on_update: String = read_column(row, 6, "foreign keys", "on_update")?;
+            let referenced_schema: Option<String> =
+                read_column(row, 5, "foreign keys", "referenced_schema")?;
+            let on_delete: String = read_column(row, 6, "foreign keys", "on_delete")?;
+            let on_update: String = read_column(row, 7, "foreign keys", "on_update")?;
 
             Ok(RawForeignKeyMetadata {
                 name: read_column(row, 0, "foreign keys", "conname")?,
@@ -118,6 +120,7 @@ where
                 column_name: read_column(row, 2, "foreign keys", "column_name")?,
                 referenced_table: read_column(row, 3, "foreign keys", "referenced_table")?,
                 referenced_column: read_column(row, 4, "foreign keys", "referenced_column")?,
+                referenced_schema,
                 on_delete: parse_foreign_key_action(&on_delete),
                 on_update: parse_foreign_key_action(&on_update),
             })
