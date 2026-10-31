@@ -5,7 +5,11 @@
 //! every discrepancy in a [`SchemaDiff`]. Both verifiers of the toolchain — the
 //! drift gate and the golden equation — reuse it, so one finding is described by
 //! exactly one implementation.
-
+//!
+//! Entities are matched by their composite `(schema, name)` identity, so two
+//! same-named entities of different schemas are distinct and a finding names an
+//! attributed entity by its qualified name (`auth.users`) while an unattributed
+//! one keeps its bare name (`users`).
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,6 +19,13 @@ use rurqe_migrate::catalog::{
 };
 
 /// Structural schema diff describing exact discrepancies.
+///
+/// Entities are matched by the composite `(schema, name)` identity of the two
+/// catalogs, so a `users` table of the primary schema and a `users` table of the
+/// `auth` schema are two distinct entities rather than one drifted entity. Every
+/// finding carries the display name of the entity: an attributed entity is named
+/// `schema.name` (`auth.users`), while an unattributed one keeps its bare name
+/// (`users`), so a single-schema catalog reads exactly as it always did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SchemaDiff {
     pub missing_tables: Vec<String>,
@@ -363,15 +374,133 @@ impl TableDiff {
     }
 }
 
-/// The three states a named entry can be in, together with the entries both
+/// The composite identity of a catalog entity: the schema it is declared in and
+/// its name.
+///
+/// Two catalogs are compared by this pair, so a `users` table of the primary
+/// schema and a `users` table of the `auth` schema are distinct entities instead
+/// of one drifted entity. The derived order — unattributed entities first, then
+/// every attributed schema in name order — is the canonical order the snapshot
+/// itself uses, so the rendered findings stay deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct EntityKey<'a> {
+    /// The schema the entity is declared in, `None` when the catalog records no
+    /// attribution.
+    schema: Option<&'a str>,
+    /// The identifier of the entity inside its schema.
+    name: &'a str,
+}
+
+impl fmt::Display for EntityKey<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.schema {
+            Some(schema) => write!(f, "{schema}.{}", self.name),
+            None => f.write_str(self.name),
+        }
+    }
+}
+
+/// A catalog entity whose identity is the `(schema, name)` pair.
+///
+/// Every category of the comparison walks through one traversal, so the pair is
+/// read through this trait instead of a closure per category.
+trait SchemaNamed {
+    /// The schema the entity is declared in, `None` when unattributed.
+    fn schema_of(&self) -> Option<&str>;
+
+    /// The identifier of the entity inside its schema.
+    fn entity_name(&self) -> &str;
+}
+
+impl SchemaNamed for TableDef {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl SchemaNamed for EnumDef {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl SchemaNamed for ViewDef {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl SchemaNamed for TriggerDef {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+// A table member is attributed through the table that declares it, so it has no
+// schema of its own: the composite key of a member is its bare name, and its
+// finding is rendered qualified by the owning table instead.
+impl SchemaNamed for ColumnDef {
+    fn schema_of(&self) -> Option<&str> {
+        None
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl SchemaNamed for CheckDef {
+    fn schema_of(&self) -> Option<&str> {
+        None
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+
+impl SchemaNamed for IndexDef {
+    fn schema_of(&self) -> Option<&str> {
+        None
+    }
+
+    fn entity_name(&self) -> &str {
+        self.name.as_str()
+    }
+}
+/// The composite identity of `entity`.
+fn entity_key<'a, V: SchemaNamed>(entity: &'a V) -> EntityKey<'a> {
+    EntityKey {
+        schema: entity.schema_of(),
+        name: entity.entity_name(),
+    }
+}
+
+/// The three states a named entity can be in, together with the entries both
 /// catalogs declare.
 struct NamedEntries<'a, V> {
-    /// Names only the expected catalog declares.
+    /// Display names of the entities only the expected catalog declares.
     missing: Vec<String>,
-    /// Names only the live catalog declares.
+    /// Display names of the entities only the live catalog declares.
     extra: Vec<String>,
-    /// Entries both catalogs declare, in name order.
-    shared: Vec<(&'a str, &'a V, &'a V)>,
+    /// Entries both catalogs declare, in `(schema, name)` order.
+    shared: Vec<(EntityKey<'a>, &'a V, &'a V)>,
 }
 
 impl<'a, V> NamedEntries<'a, V> {
@@ -385,31 +514,39 @@ impl<'a, V> NamedEntries<'a, V> {
             .shared
             .iter()
             .filter(|(_, live, expected)| altered(live, expected))
-            .map(|(name, _, _)| (*name).to_owned())
+            .map(|(key, _, _)| key.to_string())
             .collect();
         (self.missing, self.extra, altered)
     }
 }
 
-/// Groups two catalogs' entries by name and reports which names only one side
-/// declares, together with the entries both sides share.
+/// Groups two catalogs' entries by the composite `(schema, name)` key and reports
+/// which entities only one side declares, together with the entries both sides
+/// share.
 ///
-/// Every category of the comparison goes through this single traversal, so the
-/// unreachable `(None, None)` state is matched once instead of once per category.
-fn compare_named_entries<'a, V>(
+/// The composite key is what keeps two same-named entities of different schemas
+/// apart: the `users` table of the primary schema and the `users` table of the
+/// `auth` schema are each compared against their own counterpart instead of
+/// collapsing into a single drifted entity. Every category of the comparison goes
+/// through this single traversal, so the unreachable `(None, None)` state is
+/// matched once instead of once per category.
+fn compare_named_entries<'a, V: SchemaNamed>(
     live: &'a [V],
     expected: &'a [V],
-    name: impl Fn(&'a V) -> &'a str,
 ) -> NamedEntries<'a, V> {
-    let live_by_name: BTreeMap<&'a str, &'a V> =
-        live.iter().map(|entry| (name(entry), entry)).collect();
-    let expected_by_name: BTreeMap<&'a str, &'a V> =
-        expected.iter().map(|entry| (name(entry), entry)).collect();
+    let live_by_key: BTreeMap<EntityKey<'a>, &'a V> = live
+        .iter()
+        .map(|entry| (entity_key(entry), entry))
+        .collect();
+    let expected_by_key: BTreeMap<EntityKey<'a>, &'a V> = expected
+        .iter()
+        .map(|entry| (entity_key(entry), entry))
+        .collect();
 
-    let names: BTreeSet<&'a str> = live_by_name
+    let keys: BTreeSet<EntityKey<'a>> = live_by_key
         .keys()
         .copied()
-        .chain(expected_by_name.keys().copied())
+        .chain(expected_by_key.keys().copied())
         .collect();
 
     let mut comparison = NamedEntries {
@@ -418,18 +555,16 @@ fn compare_named_entries<'a, V>(
         shared: Vec::new(),
     };
 
-    for entry_name in names {
+    for key in keys {
         match (
-            live_by_name.get(entry_name).copied(),
-            expected_by_name.get(entry_name).copied(),
+            live_by_key.get(&key).copied(),
+            expected_by_key.get(&key).copied(),
         ) {
             (Some(live_entry), Some(expected_entry)) => {
-                comparison
-                    .shared
-                    .push((entry_name, live_entry, expected_entry));
+                comparison.shared.push((key, live_entry, expected_entry));
             }
-            (Some(_), None) => comparison.extra.push(entry_name.to_owned()),
-            (None, Some(_)) => comparison.missing.push(entry_name.to_owned()),
+            (Some(_), None) => comparison.extra.push(key.to_string()),
+            (None, Some(_)) => comparison.missing.push(key.to_string()),
             (None, None) => {}
         }
     }
@@ -438,31 +573,29 @@ fn compare_named_entries<'a, V>(
 }
 
 /// Computes the structural differences between the `live` and `expected` catalogs.
+///
+/// Entities are matched by their composite `(schema, name)` identity, so the
+/// `users` table of the primary schema and the `users` table of the `auth` schema
+/// are compared against their own counterpart, and every finding names the entity
+/// by its qualified display name (`auth.users`). An unattributed entity keeps its
+/// bare name (`users`), so a single-schema catalog renders exactly the findings it
+/// always did.
 pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalog) -> SchemaDiff {
     let mut diff = SchemaDiff::default();
 
-    let (missing, extra, altered) =
-        compare_named_entries(&live.enums, &expected.enums, |entry: &EnumDef| {
-            entry.name.as_str()
-        })
+    let (missing, extra, altered) = compare_named_entries(&live.enums, &expected.enums)
         .into_states(|live, expected| live.variants != expected.variants);
     diff.missing_enums = missing;
     diff.extra_enums = extra;
     diff.altered_enums = altered;
 
-    let (missing, extra, altered) =
-        compare_named_entries(&live.views, &expected.views, |entry: &ViewDef| {
-            entry.name.as_str()
-        })
+    let (missing, extra, altered) = compare_named_entries(&live.views, &expected.views)
         .into_states(|live, expected| live.definition != expected.definition);
     diff.missing_views = missing;
     diff.extra_views = extra;
     diff.altered_views = altered;
 
-    let (missing, extra, altered) =
-        compare_named_entries(&live.triggers, &expected.triggers, |entry: &TriggerDef| {
-            entry.name.as_str()
-        })
+    let (missing, extra, altered) = compare_named_entries(&live.triggers, &expected.triggers)
         .into_states(|live, expected| {
             live.table_name != expected.table_name || live.definition != expected.definition
         });
@@ -473,15 +606,13 @@ pub(crate) fn compute_catalog_diff(live: &SchemaCatalog, expected: &SchemaCatalo
     // A table that drifted is described by the members it changed, so the shared
     // entries stay around for [`compute_table_diff`] instead of collapsing into an
     // `altered` name list.
-    let tables = compare_named_entries(&live.tables, &expected.tables, |entry: &TableDef| {
-        entry.name.as_str()
-    });
+    let tables = compare_named_entries(&live.tables, &expected.tables);
     diff.missing_tables = tables.missing;
     diff.extra_tables = tables.extra;
-    for (table_name, live_table, expected_table) in tables.shared {
+    for (key, live_table, expected_table) in tables.shared {
         let table_diff = compute_table_diff(live_table, expected_table);
         if !table_diff.is_empty() {
-            diff.table_diffs.insert(table_name.to_owned(), table_diff);
+            diff.table_diffs.insert(key.to_string(), table_diff);
         }
     }
 
@@ -500,10 +631,7 @@ fn normalize_expression(expression: &str) -> String {
 fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
     let mut diff = TableDiff::default();
 
-    let (missing, extra, altered) =
-        compare_named_entries(&live.columns, &expected.columns, |entry: &ColumnDef| {
-            entry.name.as_str()
-        })
+    let (missing, extra, altered) = compare_named_entries(&live.columns, &expected.columns)
         .into_states(|live, expected| {
             live.type_kind != expected.type_kind
                 || live.nullable != expected.nullable
@@ -517,10 +645,7 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
         diff.primary_key_mismatch = true;
     }
 
-    let (missing, extra, altered) =
-        compare_named_entries(&live.checks, &expected.checks, |entry: &CheckDef| {
-            entry.name.as_str()
-        })
+    let (missing, extra, altered) = compare_named_entries(&live.checks, &expected.checks)
         .into_states(|live, expected| {
             normalize_expression(&live.expression) != normalize_expression(&expected.expression)
         });
@@ -542,10 +667,7 @@ fn compute_table_diff(live: &TableDef, expected: &TableDef) -> TableDiff {
         diff.foreign_key_mismatch = true;
     }
 
-    let (missing, extra, altered) =
-        compare_named_entries(&live.indexes, &expected.indexes, |entry: &IndexDef| {
-            entry.name.as_str()
-        })
+    let (missing, extra, altered) = compare_named_entries(&live.indexes, &expected.indexes)
         .into_states(|live, expected| {
             live.unique != expected.unique
                 || live.columns != expected.columns

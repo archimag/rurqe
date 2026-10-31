@@ -646,3 +646,124 @@ fn foreign_key_action_drift_is_reported() {
         other => panic!("expected Drift, got {other:?}"),
     }
 }
+
+/// The `users` table of the `auth` schema, beside the primary one of the same name.
+fn auth_users(indexes: Vec<IndexDef>) -> TableDef {
+    users_table(indexes).with_schema("auth")
+}
+
+#[test]
+fn catalogs_are_compared_by_the_composite_schema_and_name_key() {
+    let expected = SchemaCatalog::new(vec![users_table(Vec::new()), auth_users(Vec::new())]);
+    let live = SchemaCatalog::new(vec![
+        users_table(Vec::new()),
+        auth_users(vec![IndexDef::new(
+            "auth_users_email_idx",
+            vec!["email".to_owned()],
+            true,
+        )]),
+    ]);
+
+    let diff = compute_catalog_diff(&live, &expected);
+
+    // Both catalogs declare `users` in either schema, so neither side holds a
+    // table the other one lacks: only the `auth` table gained an index, and the
+    // identically named primary table is not drawn into its finding.
+    assert!(
+        diff.missing_tables.is_empty(),
+        "unexpected missing tables: {:?}",
+        diff.missing_tables
+    );
+    assert!(
+        diff.extra_tables.is_empty(),
+        "unexpected extra tables: {:?}",
+        diff.extra_tables
+    );
+    assert_eq!(
+        diff.table_diffs
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["auth.users"],
+        "the drifted table is named by its composite identity"
+    );
+    assert_eq!(
+        diff.table_diffs["auth.users"].extra_indexes,
+        vec!["auth_users_email_idx".to_owned()]
+    );
+}
+
+#[test]
+fn the_same_bare_name_in_two_schemas_is_two_distinct_entities() {
+    // The `auth.role` enum is missing from the live database and the primary
+    // `role` one is extra: matching by the bare name alone would read the pair as
+    // a single altered enum instead.
+    let expected = SchemaCatalog::new(vec![users_table(Vec::new())])
+        .with_enums(vec![EnumDef::new("role", vec!["admin".to_owned()]).with_schema("auth")]);
+    let live = SchemaCatalog::new(vec![users_table(Vec::new())])
+        .with_enums(vec![EnumDef::new("role", vec!["admin".to_owned()])]);
+
+    let diff = compute_catalog_diff(&live, &expected);
+
+    assert_eq!(diff.missing_enums, vec!["auth.role".to_owned()]);
+    assert_eq!(diff.extra_enums, vec!["role".to_owned()]);
+    assert!(
+        diff.altered_enums.is_empty(),
+        "the two enums are distinct entities, so neither altered: {:?}",
+        diff.altered_enums
+    );
+
+    let message = DriftReport {
+        expected_hash: String::new(),
+        live_hash: String::new(),
+        diff,
+    }
+    .to_string();
+    assert!(
+        message.contains("Enum `auth.role` is declared in snapshot but missing from database."),
+        "the attributed enum is reported under its qualified name: {message}"
+    );
+    assert!(
+        message.contains("Enum `role` exists in database but is missing from snapshot."),
+        "the unattributed enum keeps its bare name: {message}"
+    );
+}
+
+#[test]
+fn a_drifted_primary_schema_table_keeps_its_bare_name() {
+    let snapshot = SchemaCatalog::new(vec![users_table(Vec::new()), auth_users(Vec::new())]);
+    let lock = snapshot.to_lock();
+
+    let live = SchemaCatalog::new(vec![
+        users_table(vec![IndexDef::new(
+            "users_email_idx",
+            vec!["email".to_owned()],
+            false,
+        )]),
+        auth_users(Vec::new()),
+    ]);
+
+    match verify_drift(&live, &lock, None).unwrap_err() {
+        DriftError::Drift(report) => {
+            assert_eq!(
+                report.diff.table_diffs["users"].extra_indexes,
+                vec!["users_email_idx".to_owned()]
+            );
+            assert!(
+                !report.diff.table_diffs.contains_key("auth.users"),
+                "the identically named `auth` table drifted in no way: {report}"
+            );
+
+            let message = report.to_string();
+            assert!(
+                message.contains("Table `users`: index `users_email_idx` exists in database"),
+                "the primary-schema finding keeps its bare name: {message}"
+            );
+            assert!(
+                !message.contains("auth.users"),
+                "no finding names a table that did not drift: {message}"
+            );
+        }
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
