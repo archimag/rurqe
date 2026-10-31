@@ -13,6 +13,27 @@ table! {
 }
 // ANCHOR_END: declaration
 
+// ANCHOR: schema_declaration
+schema! {
+    /// The `auth` schema.
+    Auth => "auth" as auth {
+        Sessions => "sessions" {
+            SessionsId => "id": i64,
+            SessionsUserId => "user_id": i64,
+        }
+    }
+}
+// ANCHOR_END: schema_declaration
+
+// ANCHOR: table_in_clause
+table! {
+    /// The `audit_events` table of the `audit` schema.
+    AuditEvent => "audit_events" in "audit" {
+        AuditEventId => "id": i64,
+    }
+}
+// ANCHOR_END: table_in_clause
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = example_pool();
@@ -33,7 +54,26 @@ async fn main() -> Result<()> {
         .fetch_all(&pool)
         .await?;
     // ANCHOR_END: addressing
-    println!("{} {}", by_bare_marker.len(), by_table_prefix.len());
+    println!("{}", by_bare_marker.len());
+    println!("{}", by_table_prefix.len());
+
+    // ANCHOR: schema_addressing
+    // A schema value addresses the table it declares, and the table value
+    // addresses its columns, so a secondary relation is named without a path.
+    let sessions = select_from(Auth.Sessions)
+        .select(cols!(Auth.Sessions.SessionsId))
+        .where_(Auth.Sessions.SessionsId.eq(1i64))
+        .fetch_all(&pool)
+        .await?;
+    // The module carries the type namespace of the schema, so a signature spells
+    // the very same markers as types.
+    let session_table: auth::Sessions = Auth.Sessions;
+    let session_id: auth::SessionsId = Auth.Sessions.SessionsId;
+    // ANCHOR_END: schema_addressing
+    println!(
+        "{} {session_table:?} {session_id:?}",
+        sessions.len()
+    );
 
     Ok(())
 }

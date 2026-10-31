@@ -25,7 +25,7 @@ project/
 ├── checkpoint.toml            # boundary marker (default `--checkpoint-path`)
 ├── checkpoint-stage/          # boundary snapshot, named after the marker
 ├── schema.lock                # catalog snapshot of the committed stage
-└── rurqe.toml                 # schema selection and codegen settings
+└── rurqe.toml                 # primary_schema, schemas, and codegen settings
 ```
 
 - `schema/` holds the complete DDL of the target schema, not a delta. It is the single description a developer or a model reads to learn what the schema is.
@@ -95,12 +95,13 @@ cargo rurqe stage init --version 5.0
 | `--stage-dir <dir>` | The directory holding the declarative DDL. Defaults to `schema`. |
 | `--description <desc>` | The description recorded in the history row. Defaults to `stage`. |
 | `--database-url <url>` | The database to initialise. Falls back to `DATABASE_URL`. |
-| `--schema <name>` | The PostgreSQL schema the recorded catalog digest describes. |
+| `--schema <name>` | The primary schema the recorded catalog digest describes. The secondary schemas come from `schemas` in `rurqe.toml`. |
 
 The run applies the scripts in file-name order. Every transactional script shares one transaction, so a failure among them leaves the database exactly as it was, while a script declaring itself non-transactional runs outside that transaction, statement by statement, because the engine would refuse it inside a block.
 
 The run ends by recording one baseline entry in `__rurqe_schema_history`. The entry carries the stage version, the description, and the digest of the catalog the stage produced — the digest `schema.lock` records and the generated `SCHEMA_HASH` embeds, because it is derived from the catalog through the engine that really executed the DDL. A backend that cannot introspect itself anchors the digest of the stage directory instead.
 
+The digest describes the whole selection the command resolved — the primary schema plus every secondary schema the project declares — so the marker anchors the summed catalog the project manages rather than the relations of one schema.
 Because the entry is a baseline, every versioned migration at or below the version counts as applied, and the tail above it runs on the next `migrate up`. Repeatable scripts are unaffected and run whenever their contents change.
 
 ```text
@@ -168,11 +169,11 @@ cargo rurqe stage commit --version 5.0
 | `--stage-dir <dir>` | The directory holding the declarative DDL. Defaults to `schema`. |
 | `--lock-path <path>` | The file receiving the catalog snapshot. Defaults to `schema.lock`. |
 | `--checkpoint-path <path>` | The file receiving the boundary marker. Defaults to `checkpoint.toml`. |
-| `--schema <name>` | The PostgreSQL schema the snapshot and its digest describe. |
+| `--schema <name>` | The primary schema the snapshot and its digest describe. The secondary schemas come from `schemas` in `rurqe.toml`. |
 
 The command runs in two phases, and the split is what makes it safe to run beside another writer.
 
-The preparation reads the declarative stage, introspects the live catalog over the selected schema, compares the two, renders the snapshot and the marker, and assembles the boundary snapshot in a hidden sibling of the directory it replaces. The comparison is a gate: the snapshot and the marker describe the live database while the boundary snapshot replays the stage, so committing them while they disagree would seal a triple that contradicts itself. A stage that drifted from the database fails the commit before any artifact is written, with the structural differences rendered in the wording of a commit and both remedies named — apply the migration that closes the gap, or re-initialise the stage from the live catalog. The stage is materialised for that comparison in a disposable scratch state, never over the live database: a throwaway database on the server behind the URL for PostgreSQL, an in-memory database for SQLite.
+The preparation reads the declarative stage, introspects the live catalog over the selected schemas, compares the two, renders the snapshot and the marker, and assembles the boundary snapshot in a hidden sibling of the directory it replaces. The comparison is a gate: the snapshot and the marker describe the live database while the boundary snapshot replays the stage, so committing them while they disagree would seal a triple that contradicts itself. A stage that drifted from the database fails the commit before any artifact is written, with the structural differences rendered in the wording of a commit and both remedies named — apply the migration that closes the gap, or re-initialise the stage from the live catalog. The stage is materialised for that comparison in a disposable scratch state, never over the live database: a throwaway database on the server behind the URL for PostgreSQL, an in-memory database for SQLite.
 
 The critical section is bounded by local filesystem work alone. It opens the exclusive section of the checkpoint marker — the `checkpoint.lock` file beside it — and, inside it:
 
@@ -194,7 +195,7 @@ The rewind guard states the consequence of moving the boundary backwards:
 A successful commit reports the three artifacts it published:
 
 ```text
-Committed the stage to schema.lock, snapshotted the boundary to checkpoint-stage, and anchored `checkpoint.toml` up to version 5.0 (hash 4f1d9c2e..., schema `public`)
+Committed the stage to schema.lock, snapshotted the boundary to checkpoint-stage, and anchored `checkpoint.toml` up to version 5.0 (hash 4f1d9c2e..., schemas `public`)
 ```
 
 ### What a crash leaves behind
@@ -239,7 +240,7 @@ cargo rurqe stage verify --scratch-url :memory:
 | `--migrations-dir <dir>` | The active tail to replay. Defaults to `migrations`. |
 | `--checkpoint-path <path>` | The boundary marker. Defaults to `checkpoint.toml`. |
 | `--scratch-url <url>` | The disposable target both sides are built in. `--database-url` is the fallback. |
-| `--schema <name>` | The PostgreSQL schema both sides are materialised into and introspected over. |
+| `--schema <name>` | The primary schema both sides are materialised into and introspected over. The secondary schemas come from `schemas` in `rurqe.toml`. |
 
 The verification first repairs an interrupted commit inside the exclusive section of the marker and reads the marker, the tail, and the boundary snapshot there. An explicit `--base-stage-dir` wins; without it, the snapshot `stage commit` recorded next to the marker is loaded.
 
@@ -248,10 +249,10 @@ The two sides are then built:
 - the anchored side replays the boundary snapshot, verifies its catalog against `schema_hash` before a single tail script runs, and continues with the tail on the same sandbox, skipping the scripts at or below `pruned_up_to_version` because the boundary snapshot already folds them in;
 - the declarative side replays `schema/` and nothing else.
 
-Both catalogs are introspected over the selected schema and compared structurally: tables, columns, types, nullability, defaults, primary and foreign keys, check constraints, indexes, enums, views, and triggers. A difference is reported as a divergence naming every finding, and the command fails; equivalence is reported as one line:
+Both catalogs are introspected over the selected schemas and compared structurally: tables, columns, types, nullability, defaults, primary and foreign keys, check constraints, indexes, enums, views, and triggers. A difference is reported as a divergence naming every finding, and the command fails; equivalence is reported as one line:
 
 ```text
-Golden equation holds: State(schema) == State(Checkpoint + migrations) (hash 4f1d9c2e..., schema `public`, scratch `:memory:`)
+Golden equation holds: State(schema) == State(Checkpoint + migrations) (hash 4f1d9c2e..., schemas `public`, scratch `:memory:`)
 ```
 
 A checkpoint whose boundary describes a non-empty schema requires a boundary snapshot. Without one the tail would be replayed over an empty database and a consistent project would be reported as diverged, so the verification refuses the equation and names the boundary version instead. An empty boundary is the exception: an empty scratch database reproduces it on its own.
@@ -266,7 +267,7 @@ no scratch database URL provided: pass `--scratch-url <url>` (or `--database-url
 
 - `:memory:` runs both sides in memory, and a SQLite file is used only while it is empty and is deleted when its side ends, so no object, setting, or database-header field reaches the next side.
 - A PostgreSQL URL creates a throwaway `rurqe_scratch_…` database on the server behind it and drops it once the verification ends, so the connected role needs the `CREATEDB` privilege for the duration. Neither side runs inside a transaction block of its own, so statements such as `CREATE INDEX CONCURRENTLY` stay replayable.
-- A selected schema that holds no relation while the scratch keeps user relations elsewhere contributes a warning to the report, so an equation over an empty catalog is never certified silently.
+- A selection whose schemas hold no relation while the scratch keeps user relations elsewhere contributes the vacuous-selection warning to the report, so an equation over an empty catalog is never certified silently.
 
 ## Pruning the history
 

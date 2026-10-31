@@ -27,9 +27,11 @@ builds both of its sides from nothing.
 
 ## What the snapshot pins down
 
-`schema.lock` is the canonical rendering of one catalog: its enums, views,
-triggers, and tables with their columns, primary keys, check constraints,
-foreign keys, and indexes. Every list is ordered by name, and only the orders
+`schema.lock` is the canonical rendering of the catalogs the project declares:
+its enums, views, triggers, and tables with their columns, primary keys, check
+constraints, foreign keys, and indexes. Every entity carries the schema it
+belongs to, every list is ordered by the composite schema-and-name key, and only
+the orders
 that carry meaning are kept: the labels of an enum, the columns of a primary
 key, of a foreign key, and of an index stay in the order they were declared.
 
@@ -68,9 +70,9 @@ cargo db-verify --schema-path src/schema.rs --lock-path schema.lock
 | `--database-url <url>` | The database to read. Falls back to the `DATABASE_URL` environment variable. |
 | `--schema-path <path>` | The generated module carrying `SCHEMA_HASH`. Defaults to `src/schema.rs` when the flag is omitted. |
 | `--lock-path <path>` | The snapshot to compare against. Defaults to `schema.lock`. |
-| `--schema <name>` | The PostgreSQL schema the catalog digest describes. Wins over the `schema` key of `rurqe.toml`. |
+| `--schema <name>` | The primary schema the catalog digest describes. Wins over the `primary_schema` key of `rurqe.toml`, and the secondary schemas come from `schemas`. |
 
-The command introspects the live catalog over the selected schema, reads the
+The command introspects the live catalog over the selected schemas, reads the
 snapshot, and reads the generated module. A run that finds everything in
 agreement reports it as one line:
 
@@ -196,12 +198,12 @@ cargo rurqe stage verify --checkpoint-path checkpoint.toml --scratch-url :memory
 | `--checkpoint-path <path>` | The boundary marker. Defaults to `checkpoint.toml`. |
 | `--scratch-url <url>` | The disposable target both sides are built in. `--database-url` is the fallback. |
 | `--database-url <url>` | The fallback for `--scratch-url`. |
-| `--schema <name>` | The PostgreSQL schema both sides are materialised into and introspected over. |
+| `--schema <name>` | The primary schema both sides are materialised into and introspected over. The secondary schemas come from `schemas` in `rurqe.toml`. |
 
 A verification that finds both descriptions in agreement reports one line:
 
 ```text
-Golden equation holds: State(schema) == State(Checkpoint + migrations) (hash 4f1d9c2e..., schema `public`, scratch `:memory:`)
+Golden equation holds: State(schema) == State(Checkpoint + migrations) (hash 4f1d9c2e..., schemas `public`, scratch `:memory:`)
 ```
 
 The line names the stage directory, the tail directory, the digest the stage
@@ -229,7 +231,7 @@ no scratch database URL provided: pass `--scratch-url <url>` (or `--database-url
   the `CREATEDB` privilege for the duration.
 - Neither side runs inside a transaction block of its own, so a statement such as
   `CREATE INDEX CONCURRENTLY` stays replayable.
-- A selected schema that holds no relation while the scratch keeps user relations
+- A selection whose schemas hold no relation while the scratch keeps user relations
   elsewhere contributes the vacuous-selection warning to the report, so a
   comparison over an empty catalog is never certified silently.
 
@@ -309,15 +311,17 @@ The two gates answer different failures, so both belong in the pipeline:
 - the golden gate catches a declarative stage that no longer matches the tail,
   including a migration that was written but never reflected in `schema/`.
 
-A project that keeps its relations in a schema of its own names it for both
-commands, and the same selection reaches every digest they compare:
+A project that keeps its relations outside `public` declares its primary schema
+with `primary_schema` in `rurqe.toml` (or names it with `--schema`), declares the
+remaining schemas in `schemas`, and the same selection reaches every digest the
+commands compare:
 
 ```bash
 cargo db-verify --schema-path src/schema.rs --schema app
 cargo rurqe stage verify --scratch-url :memory: --schema app
 ```
 
-When the configuration file already names the schema, the flags are unnecessary.
+When the configuration file already names the schemas, the flags are unnecessary.
 A malformed `rurqe.toml` aborts either command instead of being partially applied.
 
 ## What each gate establishes

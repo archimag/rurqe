@@ -18,16 +18,20 @@ the application, and what the snapshot records.
 
 ## What the catalog provides
 
-The generator introspects one schema of the target database. The name comes from
-`--schema`, otherwise from the `schema` key of the project configuration,
-otherwise it is `public`. A SQLite database holds a single unnamed catalog, so
-the name is ignored there and the whole file is described.
+The generator introspects the schemas a project declares: one primary schema,
+and any number of secondary schemas beside it. The primary schema comes from
+`--schema`, otherwise from the `primary_schema` key of the project configuration
+(or its legacy `schema` alias), otherwise it is `public`; the secondary schemas
+come from the `schemas` array of the same file. Every entity the catalog reports
+carries the schema it belongs to, so a project declaring several schemas
+describes all of them in one snapshot. A SQLite database holds a single unnamed
+catalog, so the names are ignored there and the whole file is described.
 
 PostgreSQL:
 
-* tables — every base table of the selected schema; a view is described on its own;
+* tables — every base table of the selected schemas; a view is described on its own;
 * columns — the declared type, the nullability, and the default expression. A column declared over a domain is described by the base type the domain wraps, and a chain of domains is followed to its end;
-* enum types — every enum type of the schema together with its labels, in the order the engine sorts them;
+* enum types — every enum type of the selected schemas together with its labels, in the order the engine sorts them;
 * primary keys — the key columns in key order;
 * foreign keys — the constrained columns, the referenced columns, and both referential actions;
 * indexes — every secondary index with its uniqueness, its access method, its partial predicate, and the expressions it computes. Attributes an index only includes are not part of it, and the index a primary key builds is left out because the key already describes it;
@@ -43,6 +47,9 @@ SQLite:
 * indexes — every secondary index with its uniqueness, its indexed columns, the expressions it computes, and the predicate of a partial index;
 * check constraints — every `CHECK` clause that is not an enum declaration;
 * enums — a `CHECK (<column> IN (...))` clause closing the value set of a column becomes an enum type named after that column, and the column is typed as that enum. A column of the same name in another table that accepts a different set of values is distinguished as `<table>_<column>_enum`, so two value sets never collapse into one type.
+Every object of both lists is attributed to the schema it belongs to, so two
+relations of one name in two schemas stay distinguishable in the snapshot and in
+the generated module.
 
 The history table the migration engine keeps is not a relation of the application
 schema, so it never reaches the generated module or the snapshot;
@@ -50,15 +57,18 @@ engine-internal relations of SQLite are skipped the same way.
 
 The selection unit is the schema. There is no per-table include or exclude list,
 because a table kept out of the generated module would also be kept out of the
-snapshot, and the snapshot has to describe the schema a verification compares. A
+snapshot, and the snapshot has to describe the schemas a verification compares. A
 relation that must not be generated is kept in a schema of its own, which the run
-describes instead.
+does not select.
 
 A selection that describes nothing is reported instead of silently producing an
-empty catalog: when the selected schema holds no table and no view while the
-database keeps relations in other schemas, the run states which schemas do hold
-them, so an empty digest is never mistaken for a clean one. A SQLite file holds
-one catalog, so the selection always describes it and no such notice arises.
+empty catalog: when none of the selected schemas holds a table or a view while
+the database keeps relations in other schemas, the run states the whole selection
+and names the schemas that do hold them, so an empty digest is never mistaken for
+a clean one. The notice points at `--schema` for the primary schema and at the
+`primary_schema` key of the configuration file, while the remaining schemas are
+declared in `schemas`. A SQLite file holds one catalog, so the selection always
+describes it and no such notice arises.
 
 ## Running the generator
 
@@ -72,7 +82,7 @@ cargo db-codegen --database-url postgres://app@localhost:5432/app
 | `--output <path>`, `-o <path>` | The file receiving the generated module. Defaults to `src/schema.rs`. |
 | `--lock-path <path>` | The file receiving the snapshot. Defaults to `schema.lock`. |
 | `--domain-types` | Maps the engine-neutral types onto their domain types. |
-| `--schema <name>` | The schema to describe. Wins over the `schema` key of the configuration. |
+| `--schema <name>` | The primary schema to describe. Wins over the `primary_schema` key of the configuration, and the secondary schemas come from `schemas`. |
 
 Neither output path is configurable in the project file: both default and are
 overridden by their own flags. The directory receiving an artifact is created if
@@ -168,6 +178,53 @@ through its bare marker (`UsersId`), exactly as a hand-written declaration is
 addressed. A variant whose database label the Rust identifier cannot spell keeps
 the label through `#[sql(rename = "...")]`, so the value the database stores is
 preserved exactly.
+### Tables of a secondary schema
+
+The entities of the primary schema are rendered flat at the top level of the
+module, which is what lets a single-schema project address them through the bare
+markers. The entities of a secondary schema are grouped into a `schema!` block:
+the block states the SQL name of the schema once, declares the marker the schema
+is addressed through, and keeps the markers of its tables inside the module of
+that schema.
+
+For a secondary schema of one table the block has this shape:
+
+```text
+schema! {
+    /// The `auth` schema.
+    Auth => "auth" as auth {
+        table! {
+            /// The `sessions` table.
+            Sessions => "sessions" {
+                SessionsExpiresAt => "expires_at": chrono::NaiveDateTime,
+                SessionsId => "id": i64,
+                SessionsUserId => "user_id": i64,
+            }
+        }
+
+        @items {
+            // The module owns its own type namespace, so the prelude its items
+            // are written against is imported here rather than inherited.
+            #[allow(unused_imports)]
+            use rurqe::prelude::*;
+
+            /// Strongly typed row record for `sessions`.
+            #[derive(Debug, Clone, PartialEq)]
+            pub struct SessionsRecord {
+                pub expires_at: chrono::NaiveDateTime,
+                pub id: i64,
+                pub user_id: i64,
+            }
+        }
+    }
+}
+```
+
+A table of the primary schema keeps rendering its bare name (`FROM "users"`),
+while a table of a secondary schema renders its qualifier
+(`FROM "auth"."sessions"`). The query surface is otherwise identical: a column
+of a secondary schema is addressed as `Auth.Sessions.SessionsId` as a value, and
+as `auth::SessionsId` where a signature has to name the type.
 
 ### Naming
 
@@ -175,6 +232,7 @@ preserved exactly.
 * A column marker is the table marker followed by the column name in PascalCase: `users.id` becomes `UsersId`, and `2fa enabled` in the `user.profiles` table becomes `UserProfiles_2faEnabled`.
 * A row record is the table marker followed by `Record`: `Users` becomes `UsersRecord`.
 * A record field is the column name reduced to snake case: characters outside `[A-Za-z0-9]` become `_`, and a name beginning with a digit is prefixed with `_`. A Rust keyword is spelled as a raw identifier (`type` becomes `r#type`), and the keywords that cannot be raw identifiers (`crate`, `self`, `super`, `_`) are suffixed with `_` instead.
+* A schema marker is the schema name in PascalCase: `auth` becomes `Auth`, and `user.profiles` becomes `UserProfiles`. The module of a schema is the same name reduced to a snake-case identifier: `auth` stays `auth`, `user.profiles` becomes `user_profiles`, and a keyword keeps its raw spelling.
 
 The generated items share one type namespace inside the module, so two schema
 names that reduce to the same identifier are refused instead of rendering a
@@ -184,6 +242,15 @@ module with duplicate definitions:
 failed to generate schema code: schema names collide on the generated Rust
 identifier `UsersRecord`: column `users.record`, record of table `users`; rename
 them so they differ by more than characters that are invalid in Rust identifiers
+```
+A schema marker and its module are claimed in the top-level namespace beside the
+flat items of the primary schema and beside every other schema marker, so a
+schema named after a primary table is refused the same way:
+
+```text
+failed to generate schema code: schema names collide on the generated Rust
+identifier `Auth`: table `auth`, schema `auth`; rename them so they differ by
+more than characters that are invalid in Rust identifiers
 ```
 
 Record fields need to be unique only within their own record, because each record
@@ -226,10 +293,11 @@ ecosystem types directly, so the application enables the matching features
 ## Project configuration
 
 The optional `rurqe.toml` is read from the working directory and carries the
-schema a project describes and the per-column Rust types the generator emits:
+schemas a project describes and the per-column Rust types the generator emits:
 
 ```toml
-schema = "app"
+primary_schema = "app"
+schemas = ["auth", "billing"]
 
 [codegen]
 domain_types = true
@@ -237,6 +305,7 @@ domain_types = true
 [codegen.type_overrides]
 "users.id" = "uuid::Uuid"
 users.created_at = "chrono::NaiveDateTime"
+"auth.users.id" = "uuid::Uuid"
 ```
 
 An override may equally be nested one level deeper, which keeps a table with many
@@ -246,19 +315,28 @@ overrides readable:
 [codegen.type_overrides.orders]
 total = "rust_decimal::Decimal"
 shipped_at = "chrono::NaiveDateTime"
+
+[codegen.type_overrides.auth.users]
+id = "uuid::Uuid"
 ```
+
+The first table belongs to the primary schema, so its keys name the column under
+the table it lives in. The second belongs to a secondary schema, so the schema
+comes first and the path carries three segments.
 
 The rules the file obeys:
 
-* `schema` names the database schema the project's catalogs describe. The value is trimmed, a blank one is refused, and `--schema` wins over it.
+* `primary_schema` names the database schema the project's catalogs describe — the one its relations render without a qualifier. The value is trimmed, a blank one is refused, and `--schema` wins over it.
+* `schemas` names the secondary schemas declared beside the primary one. An entry is trimmed, a blank one is refused, a name may appear once, and no entry may repeat the primary schema — the declared one or the `public` default — because the selection would then describe the same catalog twice.
+* `schema` is the legacy spelling of `primary_schema` and names the same setting. Declaring both is refused, with the position of each key in the diagnostic, so one file never selects two primary schemas.
 * `codegen.domain_types` is a boolean. The `--domain-types` flag enables the same mapping, so a project states the choice once in the file and a one-off run enables it on the command line.
-* Every override maps a `table.column` path onto the Rust type generated for that column. The quoted (`"users.id"`), dotted (`users.id`), and nested (`[codegen.type_overrides.users]`) spellings name the same entry.
+* Every override maps a schema path onto the Rust type generated for that column: `table.column` for a column of the primary schema, `schema.table.column` for a column of a secondary one. The quoted (`"users.id"`), dotted (`users.id`), and nested (`[codegen.type_overrides.users]`) spellings name the same entry.
 * The value is emitted verbatim as the column type, so it must be a syntactically valid Rust type. An override survives every later regeneration, because the generator never edits the configuration.
 * The nullability of the column still applies: a nullable column wraps the override in `Option<...>` unless the value already spells an optional type. The value is parsed as a Rust type to decide, so `Option<T>`, `std::option::Option<T>`, and `core::option::Option<T>` are all recognised.
-* A value that is not a string, an entry whose path lacks one of its two components, an empty type, and a repeated declaration of the same path are refused. The quoted and the dotted spelling of one path collide even though TOML treats them as distinct keys.
+* A value that is not a string, a path that is neither `table.column` nor `schema.table.column` (an empty segment included), an empty type, and a repeated declaration of the same path are refused. The quoted and the dotted spelling of one path collide even though TOML treats them as distinct keys.
 * A key the format does not define is refused at the root and inside the `codegen` section alike, and the diagnostic names the line and the column of the declared key rather than a guessed offset.
 
-The two diagnostics a misspelled file produces:
+The diagnostics a misspelled file produces:
 
 ```text
 invalid configuration at line 2, column 1: unknown configuration section `workspace`
@@ -268,11 +346,15 @@ invalid configuration at line 2, column 1: unknown configuration section `worksp
 invalid configuration at line 3, column 1: duplicate type override `users.id`
 ```
 
+```text
+invalid configuration at line 3, column 1: `schema` and `primary_schema` both configure the primary schema; keep `primary_schema` (line 1, column 1) and remove the legacy `schema` key
+```
+
 A file that is malformed in any of these ways aborts the run instead of being
 partially applied: a misspelled key would generate a module with the wrong types,
 and a misspelled schema would describe a catalog the project never targeted. A
 project without the file keeps the defaults, and every command that compares
-catalogs resolves the schema name the same way.
+catalogs resolves the schema selection the same way.
 
 ## The snapshot
 

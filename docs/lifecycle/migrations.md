@@ -280,11 +280,14 @@ PostgreSQL. PostgreSQL sessions of this build are cleartext, so a connection
 string demanding TLS is refused on every host, and a remote host reached without
 `sslmode=disable` is refused as a silent downgrade.
 
-`--schema <name>` selects the PostgreSQL schema whose catalog digest the history
-describes: `migrate up` compares the catalog of that schema against a checkpoint
-boundary, so a project keeping its tables outside `public` names its schema here.
-The flag wins over the `schema` key of `rurqe.toml`, which wins over `public`.
-`baseline` records no catalog digest and takes no schema selection.
+`--schema <name>` selects the primary PostgreSQL schema whose catalog digest the
+history describes, and the secondary schemas declared in `schemas` of
+`rurqe.toml` are described beside it: `migrate up` compares the summed catalog of
+the whole selection against a checkpoint boundary, so a project keeping its tables
+outside `public` names its primary schema here and the rest of the set in the
+configuration file. The flag wins over the `primary_schema` key of `rurqe.toml`
+(and its legacy `schema` alias), which wins over `public`. `baseline` records no
+catalog digest and takes no schema selection.
 
 ## Applying pending migrations
 
@@ -315,7 +318,7 @@ A run that finds nothing pending reports `Applied 0 migration(s) in 0 ms`.
 |---|---|
 | `--migrations-dir <dir>` | The directory the scripts are read from. Defaults to `migrations`. |
 | `--database-url <url>` | The database to advance. Falls back to `DATABASE_URL`. |
-| `--schema <name>` | The PostgreSQL schema whose catalog digest the checkpoint guard compares. |
+| `--schema <name>` | The primary schema whose catalog digest the checkpoint guard compares; the secondary schemas come from `schemas` in `rurqe.toml`. |
 | `--checkpoint-path <path>` | The checkpoint marker that arms the outdated-target guard. Defaults to `checkpoint.toml`. |
 
 The checkpoint marker belongs to the stage-based lifecycle: a project that pruned
