@@ -83,6 +83,8 @@ An absent branch adds no clause, and the statement keeps its type, so nothing do
 
 The clause writes back into the rewritten row, so it accepts only a projection of that row: a column of another relation names something the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.
 
+The clause reports each rewritten row on its own, so an aggregate or a window call in the projection is refused while the statement is assembled, before any SQL reaches the engine: an aggregate collapses the rows the statement produced, and a window call reads a row set, while `RETURNING` hands back one rewritten row at a time.
+
 ## Dialect capability gates
 
 | Clause or feature | PostgreSQL | SQLite |
@@ -99,6 +101,7 @@ On a target below the stated threshold the clause does not exist: `.from_table(.
 - An `UPDATE` that restricts no row is not executable and not buildable. `.where_(...)` — or one of its dynamic spellings — moves the statement out of that state, and `.allow_all()` is the explicit way to say that every row is intended.
 - An `UPDATE` that records no assignment is not executable either: `.set(...)` is what makes the statement buildable.
 - An assignment set that collapses to zero assignments is rejected while the statement is assembled, so the statement never renders a `SET` clause with nothing to assign.
+- A `RETURNING` projection that reads an aggregate or a window call is rejected while the statement is assembled, as `BuildError::AggregateInRowClause` or `BuildError::WindowInRowClause`, before any SQL reaches the engine; project the columns of the rewritten row instead.
 
 The guards are diagnostics, not runtime checks:
 

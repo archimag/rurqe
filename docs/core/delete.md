@@ -68,6 +68,8 @@ The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(..
 
 The clause writes back into the removed row, so it accepts only a projection of that row: a column of another relation names something the clause cannot address, and a computed value is a value the clause cannot write back. Both are refused at the call site, before any SQL is rendered.
 
+The clause reports each removed row on its own, so an aggregate or a window call in the projection is refused while the statement is assembled, before any SQL reaches the engine: an aggregate collapses the rows the statement produced, and a window call reads a row set, while `RETURNING` hands back one removed row at a time.
+
 ## Dialect capability gates
 
 | Clause or feature | PostgreSQL | SQLite |
@@ -83,6 +85,7 @@ The clause writes back into the removed row, so it accepts only a projection of 
 
 - A `DELETE` that restricts no row is not executable and not buildable: `.where_(...)` — or one of its dynamic spellings — moves the statement out of that state, and `.allow_all()` is the explicit way to say that every row is intended.
 - A `RETURNING` column of another relation, and a computed value, are refused at the call site.
+- A `RETURNING` projection that reads an aggregate or a window call is rejected while the statement is assembled, as `BuildError::AggregateInRowClause` or `BuildError::WindowInRowClause`, before any SQL reaches the engine; project the columns of the removed row instead.
 
 The guard is a diagnostic, not a runtime check:
 

@@ -100,8 +100,8 @@ The source projection is a tuple that has to match the target column list in ari
 INSERT INTO "users" ("id", "name") VALUES ($1, $2) ON CONFLICT DO NOTHING
 ```
 
-- `.on_conflict_do_nothing()` appends the policy without naming a constraint.
-- `.on_conflict(columns)` names the conflict target; the returned builder offers `.do_nothing()` and `.do_update(assignments)`.
+- `.on_conflict_do_nothing()` appends the policy without naming a constraint: the bare `DO NOTHING` is the only form the grammar accepts without a target column list.
+- `.on_conflict(columns)` names the conflict target — the columns of the unique index the clause conflicts on — and the returned builder offers `.do_nothing()` and `.do_update(assignments)`.
 - `.target_where(pred)` narrows the target to a partial unique index, rendering `ON CONFLICT (...) WHERE ...`.
 - `.update_where(pred)` adds the `WHERE` of `DO UPDATE`, so only the rows the predicate matches are overwritten.
 - `excluded(Col)` references the rejected row's proposed value as a typed column: it renders `EXCLUDED."name"` and is checked against the column it wraps, so an assignment can never read the wrong kind of value from the rejected row.
@@ -111,6 +111,8 @@ Both conflict predicates render natively. There is no `CASE WHEN` emulation and 
 ### `RETURNING`
 
 `returning(...)` accepts the same named lists as a projection — single columns, tuples, or whole record selections. The clause addresses the written row alone, which is why `.returning(cols!(UserId))` above yields the generated key rather than a row count, and why a column of another relation is not part of what it can project.
+
+The clause reports each written row on its own, so an aggregate or a window call in the projection is refused while the statement is assembled, before any SQL reaches the engine: an aggregate collapses the rows the statement produced, and a window call reads a row set, while `RETURNING` hands back one written row at a time.
 
 ## Dialect capability gates
 
@@ -130,6 +132,8 @@ Below the stated threshold the clause does not exist on the target, so the metho
 - A row source known to be empty yields an error instead of a query, so the statement can never render `VALUES ()`.
 - A row that assigns nothing, or a row that disagrees with the first row on the number of values or on the column at a position, is rejected while the statement is assembled — before any SQL reaches the engine.
 - A `DO UPDATE` branch whose assignment set collapses to no column at all is rejected while the statement is assembled, so a predicate recorded for the branch is never dropped by silently turning the action into `DO NOTHING`.
+- A `DO UPDATE` branch or a target predicate recorded without a conflict target is rejected while the statement is assembled, as `BuildError::MissingConflictTarget`, before any SQL is rendered; name the target columns through `.on_conflict((...))`, or record the bare `DO NOTHING` through `.on_conflict_do_nothing()`.
+- A `RETURNING` projection that reads an aggregate or a window call is rejected while the statement is assembled, as `BuildError::AggregateInRowClause` or `BuildError::WindowInRowClause`, before any SQL is rendered; project the columns of the written row instead, and compute the aggregate in a statement that reads rows.
 
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
