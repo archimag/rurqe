@@ -7,9 +7,11 @@ use rurqe_examples::example_pool;
 schema! {
     /// The `auth` schema.
     Auth => "auth" as auth {
-        Sessions => "sessions" {
-            SessionsId => "id": i64,
-            SessionsUserId => "user_id": i64,
+        table! {
+            Sessions => "sessions" {
+                SessionsId => "id": i64,
+                SessionsUserId => "user_id": i64,
+            }
         }
     }
 }

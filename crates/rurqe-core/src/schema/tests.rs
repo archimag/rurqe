@@ -407,9 +407,11 @@ fn a_combined_scope_is_checked_against_the_query_scope() {
 crate::schema! {
     /// The `auth` schema.
     Auth => "auth" as auth {
-        Sessions => "sessions" {
-            SessionsId => "id": i64,
-            SessionsUserId => "user_id": i64,
+        table! {
+            Sessions => "sessions" {
+                SessionsId => "id": i64,
+                SessionsUserId => "user_id": i64,
+            }
         }
 
         @items {
@@ -424,8 +426,10 @@ crate::schema! {
 crate::schema! {
     /// The `public` schema, declared without a trailing item block.
     Public => "public" as public {
-        Accounts => "accounts" {
-            AccountsId => "id": i64,
+        table! {
+            Accounts => "accounts" {
+                AccountsId => "id": i64,
+            }
         }
     }
 }
@@ -453,6 +457,36 @@ fn a_schema_accessor_addresses_the_markers_of_its_module() {
 fn a_schema_declared_without_items_exposes_its_tables() {
     assert_eq!(<public::Accounts as Table>::SCHEMA, Some("public"));
     assert_eq!(Public.Accounts, public::Accounts);
+}
+crate::schema! {
+    /// The `billing` schema.
+    Billing => "billing" as billing {
+        table! {
+            Invoices => "invoices" {
+                InvoicesId => "id": i64,
+            }
+        }
+
+        table! {
+            /// The `payments` table.
+            Payments => "payments" {
+                PaymentsId => "id": i64,
+                PaymentsInvoiceId => "invoice_id": i64,
+            }
+        }
+    }
+}
+
+#[test]
+fn a_schema_declares_every_table_of_its_body() {
+    assert_eq!(Billing.Invoices, billing::Invoices);
+    assert_eq!(Billing.Payments, billing::Payments);
+    assert_eq!(<billing::Payments as Table>::SCHEMA, Some("billing"));
+    assert_eq!(
+        billing::Payments.PaymentsInvoiceId,
+        billing::PaymentsInvoiceId
+    );
+    assert_eq!(core::mem::size_of::<Billing>(), 0);
 }
 
 #[test]

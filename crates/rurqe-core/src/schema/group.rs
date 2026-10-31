@@ -13,8 +13,10 @@
 /// rurqe_core::schema! {
 ///     /// The `auth` schema.
 ///     Auth => "auth" as auth {
-///         Sessions => "sessions" {
-///             SessionsId => "id": i64,
+///         table! {
+///             Sessions => "sessions" {
+///                 SessionsId => "id": i64,
+///             }
 ///         }
 ///     }
 /// }
@@ -33,9 +35,11 @@
 /// identifier: the marker stays in `PascalCase` (`Auth`) while the module
 /// follows the naming convention of modules (`auth`).
 ///
-/// Every table is forwarded to [`table!`](crate::table) with the schema name
-/// attached, so its columns keep the shape a plain declaration produces while
-/// the relation renders `"auth"."sessions"` in `FROM` and `JOIN` clauses.
+/// Every table of the schema is declared with a [`table!`](crate::table) block
+/// written inside the schema body. The macro attaches the schema name to each
+/// of them, so neither the `in` clause nor the module the declaration lands in
+/// is restated, while the columns keep the shape a plain declaration produces
+/// and the relation renders `"auth"."sessions"` in `FROM` and `JOIN` clauses.
 ///
 /// Items that belong next to the tables — an enumeration, a record, an
 /// import, or a table alias — are declared in a trailing `@items` block,
@@ -45,8 +49,10 @@
 /// rurqe_core::schema! {
 ///     /// The `audit` schema.
 ///     Audit => "audit" as audit {
-///         Events => "events" {
-///             EventId => "id": i64,
+///         table! {
+///             Events => "events" {
+///                 EventId => "id": i64,
+///             }
 ///         }
 ///
 ///         @items {
@@ -70,8 +76,10 @@ macro_rules! schema {
         $(#[$schema_meta:meta])*
         $schema:ident => $schema_name:literal as $module:ident {
             $(
-                $(#[$table_meta:meta])*
-                $table:ident => $table_name:literal { $($columns:tt)* }
+                table! {
+                    $(#[$table_meta:meta])*
+                    $table:ident => $table_name:literal { $($columns:tt)* }
+                }
             )*
             $(@items { $($items:tt)* })?
         }

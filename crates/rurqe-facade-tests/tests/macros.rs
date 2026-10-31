@@ -77,9 +77,11 @@ impl_sql_text_newtype!(Nonce);
 schema! {
     /// The `audit` schema.
     Audit => "audit" as audit {
-        Events => "events" {
-            EventId => "id": i64,
-            EventKind => "kind": String,
+        table! {
+            Events => "events" {
+                EventId => "id": i64,
+                EventKind => "kind": String,
+            }
         }
 
         @items {
