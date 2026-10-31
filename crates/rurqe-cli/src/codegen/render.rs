@@ -1,18 +1,26 @@
-//! Rendering of a validated table plan into Rust source text.
+//! Rendering of a validated section plan into Rust source text.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use super::naming::{doc_text, escape_literal};
-use super::plan::{build_plan, EnumPlan, TablePlan};
+use super::plan::{build_plan, EnumPlan, SecondarySchemaPlan, TablePlan};
 use super::{CodegenError, CodegenOptions};
 
 /// Generates Rust schema source code from an engine-neutral [`SchemaCatalog`].
 ///
+/// The entities of the primary schema are rendered flat at the top level of the
+/// generated module, so a query addresses them through the bare markers exactly
+/// as a single-schema catalog produces them. The entities of every secondary
+/// schema are grouped into a `schema!` block declaring the marker of that schema
+/// next to the module holding its type namespace, so a table of a secondary
+/// schema is addressed as `Auth.Users` while its markers stay in the `auth`
+/// module.
+///
 /// Names are sanitized into valid Rust identifiers (`2fa` becomes `_2fa`,
 /// `user.email` becomes `user_email`) and every generated item is registered in
-/// its namespace, so two schema names that reduce to the same identifier are
-/// reported as [`CodegenError::IdentifierCollision`] instead of emitting a
-/// module with duplicate definitions.
+/// the namespace of its section, so two schema names that reduce to the same
+/// identifier are reported as [`CodegenError::IdentifierCollision`] instead of
+/// emitting a module with duplicate definitions.
 pub fn generate_schema_rs(
     catalog: &SchemaCatalog,
     options: &CodegenOptions,
@@ -41,19 +49,95 @@ pub fn generate_schema_rs(
     out.push_str(&catalog.hash_const());
     out.push_str("\n\n");
 
-    for enum_plan in &plan.enums {
-        write_enum(&mut out, enum_plan);
+    for enum_plan in &plan.primary.enums {
+        out.push_str(&render_enum(enum_plan));
     }
 
-    for table in &plan.tables {
-        write_table(&mut out, table, options);
+    for table in &plan.primary.tables {
+        out.push_str(&render_table_block(table));
+        out.push_str(&render_record(table, options));
+    }
+
+    for schema in &plan.secondary {
+        push_block(&mut out, &render_schema(schema, options), "");
     }
 
     Ok(out)
 }
 
+/// Renders one secondary schema as a `schema!` block.
+///
+/// The block states the SQL name of the schema once and forwards every table to
+/// `table!` with the `in` clause, so the relation renders its qualifier while
+/// the type namespace of the schema stays inside the module the block declares.
+fn render_schema(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> String {
+    let mut out = String::new();
+
+    out.push_str("schema! {\n");
+    out.push_str("    /// The `");
+    out.push_str(&doc_text(schema.name));
+    out.push_str("` schema.\n");
+    out.push_str("    ");
+    out.push_str(&schema.ident);
+    out.push_str(" => \"");
+    out.push_str(&escape_literal(schema.name));
+    out.push_str("\" as ");
+    out.push_str(&schema.module);
+    out.push_str(" {\n");
+
+    for table in &schema.section.tables {
+        push_block(&mut out, &render_table_block(table), "        ");
+    }
+
+    let items = render_items(schema, options);
+    if !items.is_empty() {
+        out.push_str("        @items {\n");
+        push_block(&mut out, &items, "            ");
+        out.push_str("        }\n");
+    }
+
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+
+    out
+}
+
+/// Renders the items a secondary schema declares inside its own module.
+///
+/// The module owns its type namespace, so it imports the prelude its items are
+/// written against instead of inheriting the import of the module around it.
+fn render_items(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> String {
+    let mut body = String::new();
+
+    for enum_plan in &schema.section.enums {
+        body.push_str(&render_enum(enum_plan));
+    }
+
+    for table in &schema.section.tables {
+        body.push_str(&render_record(table, options));
+    }
+
+    // Nothing is declared inside the module, so the block is left out entirely
+    // instead of carrying an import no item needs.
+    if body.is_empty() {
+        return body;
+    }
+
+    let mut out = String::new();
+
+    out.push_str("// The module owns its own type namespace, so the prelude its items\n");
+    out.push_str("// are written against is imported here rather than inherited.\n");
+    out.push_str("#[allow(unused_imports)]\n");
+    out.push_str("use rurqe::prelude::*;\n\n");
+    out.push_str(&body);
+
+    out
+}
+
 /// Renders one `#[derive(SqlType)]` enum definition.
-fn write_enum(out: &mut String, enum_plan: &EnumPlan<'_>) {
+fn render_enum(enum_plan: &EnumPlan<'_>) -> String {
+    let mut out = String::new();
+
     out.push_str("/// The `");
     out.push_str(&doc_text(enum_plan.name));
     out.push_str("` enum.\n");
@@ -74,10 +158,14 @@ fn write_enum(out: &mut String, enum_plan: &EnumPlan<'_>) {
     }
 
     out.push_str("}\n\n");
+
+    out
 }
 
-/// Renders one `table!` block and its optional row record.
-fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions) {
+/// Renders the `table!` invocation declaring one table and its column markers.
+fn render_table_block(table: &TablePlan<'_>) -> String {
+    let mut out = String::new();
+
     out.push_str("table! {\n");
     out.push_str("    /// The `");
     out.push_str(&doc_text(table.name));
@@ -101,9 +189,19 @@ fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions
     out.push_str("    }\n");
     out.push_str("}\n\n");
 
+    out
+}
+
+/// Renders the row record of one table together with its `FromRow` implementation.
+///
+/// The record is omitted when record generation is disabled, so the caller can
+/// ask for it unconditionally.
+fn render_record(table: &TablePlan<'_>, options: &CodegenOptions) -> String {
     if !options.generate_records {
-        return;
+        return String::new();
     }
+
+    let mut out = String::new();
 
     out.push_str("/// Strongly typed row record for `");
     out.push_str(&doc_text(table.name));
@@ -160,6 +258,21 @@ fn write_table(out: &mut String, table: &TablePlan<'_>, options: &CodegenOptions
     out.push_str("        })\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
+
+    out
+}
+
+/// Appends `block` to `out`, prefixing every non-empty line with `indent`.
+fn push_block(out: &mut String, block: &str, indent: &str) {
+    for line in block.lines() {
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(indent);
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
 }
 
 #[cfg(test)]
@@ -295,5 +408,114 @@ mod tests {
 
         assert!(code.contains("Users => \"users\""));
         assert!(!code.contains("pub struct UsersRecord"));
+    }
+    /// The generated module with its header and schema hash removed.
+    fn body_after_hash(code: &str) -> &str {
+        let hash = code
+            .find("pub const SCHEMA_HASH")
+            .expect("the module declares the hash");
+        let offset = code[hash..]
+            .find("\n\n")
+            .expect("the hash constant is its own paragraph");
+
+        &code[hash + offset + 2..]
+    }
+
+    #[test]
+    fn secondary_schemas_render_as_schema_blocks() {
+        let catalog = SchemaCatalog::new(vec![
+            TableDef::new(
+                "users",
+                vec![
+                    ColumnDef::new("id", TypeKind::Int64, false),
+                    ColumnDef::new("email", TypeKind::Text, true),
+                ],
+                vec!["id".to_owned()],
+            ),
+            TableDef::new(
+                "sessions",
+                vec![ColumnDef::new("id", TypeKind::Int64, false)],
+                Vec::new(),
+            )
+            .with_schema("auth"),
+        ])
+        .with_enums(vec![
+            EnumDef::new("mood", vec!["happy".to_owned()]).with_schema("auth"),
+        ]);
+
+        let code =
+            generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
+
+        // The primary table stays a flat item of the module.
+        assert!(code.contains("table! {\n    /// The `users` table.\n    Users => \"users\" {"));
+
+        // The secondary schema declares the marker it is addressed through next
+        // to the module holding its type namespace.
+        assert!(code.contains("schema! {\n    /// The `auth` schema.\n    Auth => \"auth\" as auth {\n"));
+        assert!(code.contains(
+            "        table! {\n            /// The `sessions` table.\n            Sessions => \"sessions\" {\n                SessionsId => \"id\": i64,\n            }\n        }\n"
+        ));
+        assert!(code.contains("        @items {\n"));
+
+        // The items of the schema land in its module, where the prelude they are
+        // written against is imported.
+        assert!(code.contains("            use rurqe::prelude::*;\n"));
+        // The label `happy` is not the variant identifier `Happy`, so the
+        // rendered variant keeps the stored label through the rename attribute.
+        assert!(code.contains(
+            "            pub enum Mood {\n                #[sql(rename = \"happy\")]\n                Happy,\n            }\n"
+        ));
+        assert!(code.contains("            pub struct SessionsRecord {\n                pub id: i64,\n            }\n"));
+        assert!(code.contains("            impl FromRow for SessionsRecord {\n"));
+    }
+
+    #[test]
+    fn the_primary_section_renders_exactly_as_a_flat_catalog() {
+        let flat_tables = vec![
+            TableDef::new(
+                "users",
+                vec![
+                    ColumnDef::new("id", TypeKind::Int64, false),
+                    ColumnDef::new("email", TypeKind::Text, true),
+                ],
+                vec!["id".to_owned()],
+            ),
+            TableDef::new(
+                "orders",
+                vec![ColumnDef::new("total", TypeKind::Float64, false)],
+                Vec::new(),
+            ),
+        ];
+
+        let flat = generate_schema_rs(
+            &SchemaCatalog::new(flat_tables.clone()),
+            &CodegenOptions::default(),
+        )
+        .expect("codegen succeeds");
+
+        let mut mixed_tables = flat_tables;
+        mixed_tables.push(
+            TableDef::new(
+                "sessions",
+                vec![ColumnDef::new("id", TypeKind::Int64, false)],
+                Vec::new(),
+            )
+            .with_schema("auth"),
+        );
+
+        let mixed = generate_schema_rs(
+            &SchemaCatalog::new(mixed_tables),
+            &CodegenOptions::default(),
+        )
+        .expect("codegen succeeds");
+
+        let flat_body = body_after_hash(&flat);
+        let mixed_body = body_after_hash(&mixed);
+
+        assert!(
+            mixed_body.starts_with(flat_body),
+            "the flat primary section changed:\n{mixed_body}"
+        );
+        assert!(mixed_body[flat_body.len()..].starts_with("schema! {\n"));
     }
 }

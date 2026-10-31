@@ -1,9 +1,16 @@
 //! Assignment of Rust identifiers to every generated schema item.
 //!
-//! The plan is built before any text is rendered, so two schema names that
-//! reduce to the same identifier are reported as
-//! [`CodegenError::IdentifierCollision`] instead of emitting a module with
-//! duplicate definitions.
+//! The plan is partitioned by database schema. The entities of the primary
+//! schema, the ones carrying no attribution, stay flat items of the generated
+//! module, so a query addresses them through the bare markers exactly as a
+//! single-schema catalog does. The entities of every secondary schema are
+//! grouped into a section rendered as a `schema!` block, and each section owns
+//! its type namespace while the marker and the module of a secondary schema are
+//! claimed at the top level.
+//!
+//! The plan is built before any text is rendered, so two names that reduce to
+//! the same identifier are reported as [`CodegenError::IdentifierCollision`]
+//! instead of emitting a module with duplicate definitions.
 
 use std::collections::BTreeMap;
 
@@ -15,8 +22,30 @@ use super::{CodegenError, CodegenOptions};
 /// The full generation plan for a schema.
 #[derive(Debug)]
 pub(super) struct SchemaPlan<'a> {
+    /// The primary schema, rendered flat at the top level of the module.
+    pub(super) primary: SectionPlan<'a>,
+    /// The secondary schemas, in canonical name order.
+    pub(super) secondary: Vec<SecondarySchemaPlan<'a>>,
+}
+
+/// The items of one schema section.
+#[derive(Debug)]
+pub(super) struct SectionPlan<'a> {
     pub(super) enums: Vec<EnumPlan<'a>>,
     pub(super) tables: Vec<TablePlan<'a>>,
+}
+
+/// A secondary schema together with the identifiers it claims at the top level.
+#[derive(Debug)]
+pub(super) struct SecondarySchemaPlan<'a> {
+    /// The SQL name of the schema.
+    pub(super) name: &'a str,
+    /// The zero-sized marker every table of the schema is addressed through.
+    pub(super) ident: String,
+    /// The module holding the type namespace of the schema.
+    pub(super) module: String,
+    /// The items declared inside [`SecondarySchemaPlan::module`].
+    pub(super) section: SectionPlan<'a>,
 }
 
 /// An enum rendered into its Rust identifiers and variants.
@@ -57,17 +86,99 @@ pub(super) fn build_plan<'a>(
     catalog: &'a SchemaCatalog,
     options: &CodegenOptions,
 ) -> Result<SchemaPlan<'a>, CodegenError> {
-    // The type namespace is global: enum types, table markers, column markers, and records
-    // share one module, so every generated type name must be unique.
-    let mut types: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // The type namespace of the top level: the flat items of the primary schema
+    // share it with the marker and the module of every secondary schema, because
+    // a schema is addressed from the very same module level.
+    let mut top: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    let mut enums: Vec<&'a EnumDef> = catalog.enums.iter().collect();
+    let mut primary_enums: Vec<&'a EnumDef> = Vec::new();
+    let mut secondary_enums: BTreeMap<&'a str, Vec<&'a EnumDef>> = BTreeMap::new();
+    for enum_def in &catalog.enums {
+        match enum_def.schema.as_deref() {
+            Some(schema) => secondary_enums.entry(schema).or_default().push(enum_def),
+            None => primary_enums.push(enum_def),
+        }
+    }
+
+    let mut primary_tables: Vec<&'a TableDef> = Vec::new();
+    let mut secondary_tables: BTreeMap<&'a str, Vec<&'a TableDef>> = BTreeMap::new();
+    for table in &catalog.tables {
+        match table.schema.as_deref() {
+            Some(schema) => secondary_tables.entry(schema).or_default().push(table),
+            None => primary_tables.push(table),
+        }
+    }
+
+    // The primary section is rendered flat, so its items claim the top-level
+    // namespace directly and keep the collision rules a single-schema catalog
+    // already had.
+    let primary = build_section(&mut top, primary_enums, primary_tables, None, options)?;
+
+    let mut names: Vec<&'a str> = secondary_tables
+        .keys()
+        .copied()
+        .chain(secondary_enums.keys().copied())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+
+    let mut secondary = Vec::with_capacity(names.len());
+
+    for name in names {
+        let ident = table_type_ident(name);
+        claim(&mut top, &ident, format!("schema `{name}`"));
+
+        let module = to_safe_ident(name);
+        claim(&mut top, &module, format!("module of schema `{name}`"));
+
+        let mut namespace: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let section = build_section(
+            &mut namespace,
+            secondary_enums.remove(name).unwrap_or_default(),
+            secondary_tables.remove(name).unwrap_or_default(),
+            Some(name),
+            options,
+        )?;
+
+        // The section owns its type namespace, so the collision rules apply
+        // within it exactly as they apply to the flat primary section.
+        if let Some((ident, sources)) = first_collision(&namespace) {
+            return Err(CodegenError::IdentifierCollision { ident, sources });
+        }
+
+        secondary.push(SecondarySchemaPlan {
+            name,
+            ident,
+            module,
+            section,
+        });
+    }
+
+    if let Some((ident, sources)) = first_collision(&top) {
+        return Err(CodegenError::IdentifierCollision { ident, sources });
+    }
+
+    Ok(SchemaPlan { primary, secondary })
+}
+
+/// Assigns the identifiers of one schema section into its own `namespace`.
+///
+/// The caller decides which namespace the section claims: the primary section
+/// claims the top-level one, while every secondary schema claims a namespace of
+/// its own, which is what keeps equal table names of two schemas apart.
+fn build_section<'a>(
+    namespace: &mut BTreeMap<String, Vec<String>>,
+    mut enums: Vec<&'a EnumDef>,
+    mut tables: Vec<&'a TableDef>,
+    schema: Option<&str>,
+    options: &CodegenOptions,
+) -> Result<SectionPlan<'a>, CodegenError> {
     enums.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut enum_plans = Vec::with_capacity(enums.len());
     for enum_def in enums {
         let ident = table_type_ident(&enum_def.name);
-        claim(&mut types, &ident, format!("enum `{}`", enum_def.name));
+        claim(namespace, &ident, format!("enum `{}`", enum_def.name));
 
         let mut variant_plans = Vec::with_capacity(enum_def.variants.len());
         let mut variant_idents: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -103,19 +214,18 @@ pub(super) fn build_plan<'a>(
         });
     }
 
-    let mut tables: Vec<&'a TableDef> = catalog.tables.iter().collect();
     tables.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let mut plan = Vec::with_capacity(tables.len());
+    let mut table_plans = Vec::with_capacity(tables.len());
 
     for table in tables {
         let ident = table_type_ident(&table.name);
-        claim(&mut types, &ident, format!("table `{}`", table.name));
+        claim(namespace, &ident, format!("table `{}`", table.name));
 
         let record_ident = format!("{ident}Record");
         if options.generate_records {
             claim(
-                &mut types,
+                namespace,
                 &record_ident,
                 format!("record of table `{}`", table.name),
             );
@@ -134,7 +244,7 @@ pub(super) fn build_plan<'a>(
             let source = format!("column `{}.{}`", table.name, column.name);
 
             let marker_ident = format!("{ident}{}", to_pascal_case(&column.name));
-            claim(&mut types, &marker_ident, source.clone());
+            claim(namespace, &marker_ident, source.clone());
 
             let field_ident = to_safe_ident(&column.name);
             claim(&mut fields, &field_ident, source);
@@ -143,7 +253,7 @@ pub(super) fn build_plan<'a>(
                 name: column.name.as_str(),
                 marker_ident,
                 field_ident,
-                rust_type: column_rust_type(table.name.as_str(), column, options),
+                rust_type: column_rust_type(schema, table.name.as_str(), column, options),
             });
         }
 
@@ -151,7 +261,7 @@ pub(super) fn build_plan<'a>(
             return Err(CodegenError::IdentifierCollision { ident, sources });
         }
 
-        plan.push(TablePlan {
+        table_plans.push(TablePlan {
             name: table.name.as_str(),
             ident,
             record_ident,
@@ -159,13 +269,9 @@ pub(super) fn build_plan<'a>(
         });
     }
 
-    if let Some((ident, sources)) = first_collision(&types) {
-        return Err(CodegenError::IdentifierCollision { ident, sources });
-    }
-
-    Ok(SchemaPlan {
+    Ok(SectionPlan {
         enums: enum_plans,
-        tables: plan,
+        tables: table_plans,
     })
 }
 
@@ -184,11 +290,23 @@ fn first_collision(namespace: &BTreeMap<String, Vec<String>>) -> Option<(String,
 
 /// Resolves the Rust type generated for `column`, honouring project overrides.
 ///
+/// A column of the primary schema is overridden through its `table.column`
+/// path, while a column of a secondary schema is overridden through the
+/// `schema.table.column` path the configuration file produces for it.
+///
 /// An override replaces the mapped type entirely and keeps the column's
 /// nullability, so `uuid::Uuid` stays `uuid::Uuid` for a `NOT NULL` column and
 /// becomes `Option<uuid::Uuid>` for a nullable one.
-fn column_rust_type(table: &str, column: &ColumnDef, options: &CodegenOptions) -> String {
-    let path = format!("{table}.{}", column.name);
+fn column_rust_type(
+    schema: Option<&str>,
+    table: &str,
+    column: &ColumnDef,
+    options: &CodegenOptions,
+) -> String {
+    let path = match schema {
+        Some(schema) => format!("{schema}.{table}.{}", column.name),
+        None => format!("{table}.{}", column.name),
+    };
 
     match options
         .type_overrides
@@ -300,7 +418,7 @@ mod tests {
     }
 
     fn rust_type_of(column: &ColumnDef, options: &CodegenOptions) -> String {
-        column_rust_type("users", column, options)
+        column_rust_type(None, "users", column, options)
     }
 
     #[test]
@@ -596,5 +714,85 @@ mod tests {
             ),
             "core::option::Option<chrono::NaiveDateTime>"
         );
+    }
+    #[test]
+    fn a_secondary_schema_keeps_its_own_type_namespace() {
+        // Both sections declare the very same table name, so the markers are
+        // equal; only the section they are registered in keeps them apart.
+        let catalog = SchemaCatalog::new(vec![
+            table(
+                "users",
+                vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            ),
+            table(
+                "users",
+                vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            )
+            .with_schema("auth"),
+        ]);
+
+        let plan = build_plan(&catalog, &CodegenOptions::default())
+            .expect("sections own their namespaces, so equal markers never collide");
+
+        assert_eq!(plan.primary.tables.len(), 1);
+        assert_eq!(plan.primary.tables[0].ident, "Users");
+
+        assert_eq!(plan.secondary.len(), 1);
+        let auth = &plan.secondary[0];
+        assert_eq!(auth.name, "auth");
+        assert_eq!(auth.ident, "Auth");
+        assert_eq!(auth.module, "auth");
+        assert_eq!(auth.section.tables.len(), 1);
+        assert_eq!(auth.section.tables[0].ident, "Users");
+    }
+
+    #[test]
+    fn a_secondary_column_is_overridden_through_its_schema_path() {
+        let mut options = CodegenOptions::default();
+        options
+            .type_overrides
+            .insert("auth.users.id".to_owned(), "uuid::Uuid".to_owned());
+        options
+            .type_overrides
+            .insert("users.email".to_owned(), "Email".to_owned());
+
+        let id = ColumnDef::new("id", TypeKind::Int64, false);
+        assert_eq!(
+            column_rust_type(Some("auth"), "users", &id, &options),
+            "uuid::Uuid"
+        );
+        // A two-segment path names a column of the primary schema, so it never
+        // reaches the column of a secondary one.
+        assert_eq!(column_rust_type(None, "users", &id, &options), "i64");
+
+        let email = ColumnDef::new("email", TypeKind::Text, false);
+        assert_eq!(
+            column_rust_type(Some("auth"), "users", &email, &options),
+            "String"
+        );
+        assert_eq!(column_rust_type(None, "users", &email, &options), "Email");
+    }
+
+    #[test]
+    fn a_schema_marker_colliding_with_a_primary_table_is_rejected() {
+        let catalog = SchemaCatalog::new(vec![
+            table("auth", vec![ColumnDef::new("id", TypeKind::Int64, false)]),
+            table("users", vec![ColumnDef::new("id", TypeKind::Int64, false)]).with_schema("auth"),
+        ]);
+
+        let error = build_plan(&catalog, &CodegenOptions::default())
+            .expect_err("a schema marker colliding with a primary table is rejected");
+
+        match &error {
+            CodegenError::IdentifierCollision { ident, sources } => {
+                assert_eq!(ident, "Auth");
+                assert_eq!(
+                    sources,
+                    &vec!["table `auth`".to_owned(), "schema `auth`".to_owned()]
+                );
+            }
+        }
+        assert!(error.to_string().contains("Auth"));
+        assert!(error.to_string().contains("schema `auth`"));
     }
 }
