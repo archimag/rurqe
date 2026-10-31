@@ -32,19 +32,25 @@ impl Checksum {
     }
 
     /// Decodes a hexadecimal digest produced by [`Checksum::to_hex`].
+    ///
+    /// The input must be exactly 64 hexadecimal digits. Lowercase and uppercase
+    /// digits decode to the same digest, while [`Checksum::to_hex`] always emits
+    /// the lowercase spelling, which stays the canonical form. Every other
+    /// character, including the `+` sign a numeric parser tolerates, is rejected
+    /// with [`Error::InvalidChecksum`].
     pub fn from_hex(hex: &str) -> Result<Self, Error> {
         let invalid = || Error::InvalidChecksum {
             checksum: hex.to_owned(),
         };
 
-        if hex.len() != CHECKSUM_LEN * 2 {
+        let digits = hex.as_bytes();
+        if digits.len() != CHECKSUM_LEN * 2 {
             return Err(invalid());
         }
 
         let mut digest = [0u8; CHECKSUM_LEN];
-        for (byte, pair) in digest.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-            let pair = core::str::from_utf8(pair).map_err(|_| invalid())?;
-            *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
+        for (byte, pair) in digest.iter_mut().zip(digits.chunks_exact(2)) {
+            *byte = hex_byte(pair).ok_or_else(invalid)?;
         }
 
         Ok(Self(digest))
@@ -68,6 +74,28 @@ impl Checksum {
     }
 }
 
+/// Decodes one hexadecimal digit, accepting both letter cases.
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decodes one two-digit pair into a byte.
+///
+/// The digits are read from their bytes instead of through `u8::from_str_radix`,
+/// whose sign handling admits `+`-prefixed pairs and lets text that is not
+/// hexadecimal decode as a valid digest. A pair that is not exactly two digits
+/// or that holds a non-hexadecimal byte yields `None`.
+fn hex_byte(pair: &[u8]) -> Option<u8> {
+    match pair {
+        [high, low] => Some((hex_digit(*high)? << 4) | hex_digit(*low)?),
+        _ => None,
+    }
+}
 impl fmt::Display for Checksum {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_hex())
@@ -192,5 +220,36 @@ mod tests {
         let not_hex = "z".repeat(64);
         let rejected = Checksum::from_hex(&not_hex);
         assert_eq!(rejected, Err(Error::InvalidChecksum { checksum: not_hex }));
+    }
+
+    #[test]
+    fn sign_bearing_pairs_are_rejected() {
+        let signed = "+0+1+2+3+4+5+6+7+8+9+a+b+c+d+e+f".repeat(2);
+        assert_eq!(signed.len(), 64);
+
+        let rejected = Checksum::from_hex(&signed);
+        assert_eq!(rejected, Err(Error::InvalidChecksum { checksum: signed }));
+
+        let canonical = Checksum::of(b"sign-bearing").to_hex();
+        for position in (0..canonical.len()).step_by(2) {
+            let mut digits = canonical.clone().into_bytes();
+            let slot = digits
+                .get_mut(position)
+                .expect("the position stays inside the digest");
+            *slot = b'+';
+
+            let signed = String::from_utf8(digits).expect("hexadecimal digits stay ASCII");
+            let rejected = Checksum::from_hex(&signed);
+            assert_eq!(rejected, Err(Error::InvalidChecksum { checksum: signed }));
+        }
+    }
+
+    #[test]
+    fn uppercase_digits_decode_to_the_canonical_digest() {
+        let checksum = Checksum::of(b"CREATE TABLE users ();");
+        let uppercase = checksum.to_hex().to_uppercase();
+
+        assert_eq!(Checksum::from_hex(&uppercase), Ok(checksum));
+        assert_eq!(checksum.to_hex(), uppercase.to_lowercase());
     }
 }
