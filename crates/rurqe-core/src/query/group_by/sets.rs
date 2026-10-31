@@ -237,12 +237,12 @@ impl<Prev, C: Column, Target: Column, P> ColumnInGroupBy<Target, Next<P>> for Gr
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the window orders by `total`, which the query does not

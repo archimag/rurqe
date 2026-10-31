@@ -32,19 +32,19 @@ impl Dialect for MockDialect {
 
 impl crate::dialect::SupportsWindowFunctions for MockDialect {}
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderUserId => "user_id": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 
 #[test]
 fn coalesce_keeps_the_scope_of_its_column() {

@@ -81,12 +81,12 @@ where
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
@@ -161,12 +161,12 @@ where
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the CASE branch reads `total`, which is not grouped.
@@ -206,12 +206,12 @@ where
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the expression still reads `total`, which is not grouped.
@@ -267,12 +267,12 @@ where
 ///
 /// impl SupportsWindowFunctions for MockDialect {}
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the window reads `total` of every row of the group,
@@ -317,12 +317,12 @@ where
 ///
 /// impl SupportsWindowFunctions for MockDialect {}
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     let aggregated = SelectQuery::<MockDialect>::new()
@@ -506,12 +506,12 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     let built = SelectQuery::<MockDialect>::new()
@@ -548,12 +548,12 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
@@ -583,17 +583,17 @@ impl<D: Dialect, Tables: TableScope, GroupByCols>
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: `OrderUserId` belongs to `Order`, which the query
@@ -654,11 +654,11 @@ impl<D: Dialect, Tables, GroupByCols> GroupedQuery<D, Tables, (), GroupByCols, N
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     let _ = SelectQuery::<MockDialect>::new()
@@ -718,11 +718,11 @@ impl<D: Dialect, Tables, Output, GroupByCols, Projected>
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: the query never grouped its rows, so it has no
