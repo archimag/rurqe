@@ -1,8 +1,5 @@
 //! Static compatibility between a column type and a value stored in it.
 
-use crate::dialect::Dialect;
-use crate::query::{HasProjection, SelectQuery, TableScope};
-
 use crate::expr::builder::Expr;
 
 /// Statically asserts that a value of type `ValType` may be stored in a column
@@ -13,7 +10,7 @@ use crate::expr::builder::Expr;
 /// type cannot reach a `SET` clause or an `INSERT` row. Beside the exact type
 /// match it admits the borrowed forms a caller naturally holds — a string literal
 /// for a `String` column, a byte slice for a `Vec<u8>` column — together with the
-/// expressions and single-column subqueries an assignment may store.
+/// expressions an assignment may store.
 ///
 /// Comparison operands are checked by [`IntoExpr`](crate::expr::IntoExpr)
 /// instead, so the two contracts stay orthogonal.
@@ -31,18 +28,6 @@ impl<'a> SqlCompatible<String, &'a str> for &'a str {}
 impl<'a> SqlCompatible<Vec<u8>, &'a [u8]> for &'a [u8] {}
 
 impl<T, Scope, Aggr, D> SqlCompatible<T, Expr<T, Scope, Aggr, D>> for Expr<T, Scope, Aggr, D> {}
-
-// A single-column query projects exactly one value, so it is comparable with a
-// column of that value's type. Queries projecting several columns have no
-// `(T,)` output and therefore no such implementation, which is what rejects
-// them as operands at the call site.
-impl<D, Tables, T> SqlCompatible<T, SelectQuery<D, Tables, (T,), HasProjection>>
-    for SelectQuery<D, Tables, (T,), HasProjection>
-where
-    D: Dialect,
-    Tables: TableScope,
-{
-}
 
 #[cfg(feature = "decimal")]
 impl SqlCompatible<rust_decimal::Decimal, &rust_decimal::Decimal> for &rust_decimal::Decimal {}

@@ -335,6 +335,32 @@ where
 /// `UserId::default_value()` are available without extra boilerplate.
 pub trait ColumnAssign: Column + Sized {
     /// Assigns `value` to the column, checking operand compatibility.
+    ///
+    /// The value is bound as a query parameter, so it has to be a scalar the
+    /// driver can encode. A query is no such value, even when it projects a
+    /// single column: a computed value is stored through `set_expr`, which
+    /// renders an expression, and `set_expr(Expr::subquery(query))` stores the
+    /// result of a scalar subquery.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dml::ColumnAssign;
+    /// # use rurqe_core::dialect::Dialect;
+    /// # use rurqe_core::query::SelectQuery;
+    /// # struct MockDialect;
+    /// # impl Dialect for MockDialect {
+    /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
+    /// #     fn push_placeholder(_: &mut String, _: usize) {}
+    /// # }
+    /// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
+    /// # rurqe_core::table!(Order => "orders" { OrderUserId => "user_id": i64, });
+    /// // Fails to compile: the right-hand side projects rows instead of naming
+    /// // a parameter value, so the assignment rejects it.
+    /// let _ = UserId::set(
+    ///     SelectQuery::<MockDialect>::new()
+    ///         .from::<Order>()
+    ///         .select((OrderUserId,)),
+    /// );
+    /// ```
     fn set<V>(value: V) -> Assignment<Self, V, ()>
     where
         V: SqlCompatible<Self::RustType, V> + Into<SqlVal>,
