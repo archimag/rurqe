@@ -191,11 +191,11 @@ where
     ///
     /// impl SupportsOnConflict for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the recorded update predicate cannot apply to a
     /// // `DO NOTHING` clause.
@@ -324,17 +324,17 @@ where
     ///
     /// impl SupportsOnConflict for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Account => "accounts" {
     ///         AccountId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the branch reads `Account`, which it cannot reach.
     /// let _ = InsertQuery::<MockDialect, User>::new()

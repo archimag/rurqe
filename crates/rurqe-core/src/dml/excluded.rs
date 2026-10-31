@@ -47,11 +47,11 @@ pub struct Excluded<T>(PhantomData<fn() -> T>);
 /// use rurqe_core::dml::excluded;
 /// use rurqe_core::expr::ExprKind;
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserName => "name": String,
 ///     }
-/// }
+/// );
 ///
 /// let value = excluded(UserName);
 ///
@@ -156,17 +156,17 @@ mod tests {
     use super::*;
     use crate::expr::Merged;
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserName => "name": String,
         }
-    }
+    );
 
-    crate::table! {
+    crate::table!(
         Order => "orders" {
             OrderId => "id": i64,
         }
-    }
+    );
 
     fn assert_merged<L: MergeScope<R, Output = Expected>, R, Expected>() {}
 

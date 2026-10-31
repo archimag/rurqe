@@ -42,17 +42,17 @@ use super::Assignment;
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Account => "accounts" {
 ///         AccountId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: the assigned expression reads `Account`, which the
 /// // statement does not address.
@@ -83,12 +83,12 @@ use super::Assignment;
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserScore => "score": i64,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: `greatest` requires a dialect implementing `SupportsGreatest`.
 /// let _ = InsertQuery::<MockDialect, User>::new()
@@ -343,17 +343,17 @@ where
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Account => "accounts" {
 ///         AccountId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: the assignment reads `Account`, and dropping the scope
 /// // states so explicitly — the `VALUES` list declares no relation to read it
@@ -375,18 +375,18 @@ mod tests {
     use super::*;
     use crate::expr::Expr;
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
-    }
+    );
 
-    crate::table! {
+    crate::table!(
         Account => "accounts" {
             AccountId => "id": i64,
         }
-    }
+    );
 
     fn assert_scope<S: AssignmentScope<Scope = Expected>, Expected>() {}
 

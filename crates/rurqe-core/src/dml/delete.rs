@@ -39,7 +39,7 @@ use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
 /// #     fn push_placeholder(_: &mut String, _: usize) {}
 /// # }
-/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
 /// // Fails to compile because the query is Unfiltered and .allow_all() was not called:
 /// let query = DeleteQuery::<MockDialect, User>::new();
 /// query.build();
@@ -419,12 +419,12 @@ mod tests {
 
     impl SupportsDeleteUsing for MockDialect {}
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
-    }
+    );
 
     #[test]
     fn filtered_delete_renders_table_and_where() {
@@ -547,12 +547,12 @@ mod tests {
         assert_eq!(built.params, vec![SqlVal::I64(5)]);
     }
 
-    crate::table! {
+    crate::table!(
         Account => "accounts" {
             AccountId => "id": i64,
             AccountActive => "active": bool,
         }
-    }
+    );
 
     #[test]
     fn delete_using_renders_using_clause() {

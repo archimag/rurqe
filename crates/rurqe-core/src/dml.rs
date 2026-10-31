@@ -56,7 +56,7 @@ pub struct Filtered;
 /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
 /// #     fn push_placeholder(_: &mut String, _: usize) {}
 /// # }
-/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
 /// // Fails to compile: the mutation is unfiltered and `.allow_all()` was not called:
 /// let query = UpdateQuery::<MockDialect, User>::new().set(UserId::set(1i64));
 /// query.build();
@@ -100,7 +100,7 @@ pub struct HasAssignments;
 /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
 /// #     fn push_placeholder(_: &mut String, _: usize) {}
 /// # }
-/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
 /// // Fails to compile: the mutation records no assignment and cannot be built:
 /// let query = UpdateQuery::<MockDialect, User>::new().allow_all();
 /// query.build();
@@ -235,11 +235,11 @@ impl AssignValue {
 /// use rurqe_core::dml::{AssignValue, ColumnAssign};
 /// use rurqe_core::expr::SqlVal;
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let assignment = UserId::set(1i64);
 /// assert_eq!(assignment.column_name(), "id");
@@ -464,12 +464,12 @@ impl_assignment_set_for_tuple!(
 mod tests {
     use super::*;
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
-    }
+    );
 
     fn collect_columns<T: Table, S: AssignmentSet<T>>(set: &S) -> Vec<&'static str> {
         let mut out = Vec::new();

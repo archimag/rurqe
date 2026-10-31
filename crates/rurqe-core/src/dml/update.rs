@@ -45,7 +45,7 @@ use crate::schema::{ExprInScope, ExtendScope, Table, TableRef};
 /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
 /// #     fn push_placeholder(_: &mut String, _: usize) {}
 /// # }
-/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
 /// // Fails to compile because the query is Unfiltered and .allow_all() was not called:
 /// let query = UpdateQuery::<MockDialect, User>::new();
 /// query.build();
@@ -178,12 +178,12 @@ impl<D: Dialect, T: Table, State, Returning, Scope, Assignments>
     /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
     /// #     fn push_placeholder(_: &mut String, _: usize) {}
     /// # }
-    /// # rurqe_core::table! {
+    /// # rurqe_core::table!(
     /// #     User => "users" {
     /// #         UserId => "id": i64,
     /// #         UserName => "name": String,
     /// #     }
-    /// # }
+    /// # );
     /// # rurqe_core::table_alias! { U => "u" }
     /// use rurqe_core::schema::Aliased;
     ///
@@ -545,13 +545,13 @@ mod tests {
 
     impl SupportsUpdateFrom for MockDialect {}
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
             UserActive => "active": bool,
         }
-    }
+    );
 
     #[test]
     fn single_assignment_update_renders_set_and_where() {
@@ -845,12 +845,12 @@ mod tests {
         );
     }
 
-    crate::table! {
+    crate::table!(
         Account => "accounts" {
             AccountId => "id": i64,
             AccountActive => "active": bool,
         }
-    }
+    );
 
     #[test]
     fn update_from_renders_from_clause() {

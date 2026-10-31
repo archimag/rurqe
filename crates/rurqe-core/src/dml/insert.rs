@@ -114,7 +114,7 @@ impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7, C8);
 /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
 /// #     fn push_placeholder(_: &mut String, _: usize) {}
 /// # }
-/// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
 /// // Fails to compile: no rows and no source SELECT were supplied:
 /// let query = InsertQuery::<MockDialect, User>::new();
 /// query.build();
@@ -232,8 +232,8 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
     /// #     fn push_placeholder(_: &mut String, _: usize) {}
     /// # }
-    /// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
-    /// # rurqe_core::table! { Account => "accounts" { AccountId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
+/// # rurqe_core::table!(Account => "accounts" { AccountId => "id": i64, });
     /// // Fails to compile: the assigned expression reads `Account`, which the
     /// // `VALUES` list cannot reference.
     /// let _ = InsertQuery::<MockDialect, User>::new()
@@ -252,8 +252,8 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
     /// #     fn push_placeholder(_: &mut String, _: usize) {}
     /// # }
-    /// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
-    /// # rurqe_core::table! { Account => "accounts" { AccountId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
+/// # rurqe_core::table!(Account => "accounts" { AccountId => "id": i64, });
     /// // Fails to compile: dropping the scope keeps the reference to `Account`,
     /// // which the `VALUES` list still cannot declare.
     /// let _ = InsertQuery::<MockDialect, User>::new()
@@ -382,7 +382,7 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     /// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
     /// #     fn push_placeholder(_: &mut String, _: usize) {}
     /// # }
-    /// # rurqe_core::table! { User => "users" { UserId => "id": i64, } }
+/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
     /// // Fails to compile because `MockDialect` does not implement `SupportsOnConflict`:
     /// let query = InsertQuery::<MockDialect, User>::new().on_conflict_do_nothing();
     /// ```
@@ -724,19 +724,19 @@ mod tests {
 
     impl SupportsOnConflict for MockDialect {}
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
-    }
+    );
 
-    crate::table! {
+    crate::table!(
         ArchiveUser => "archive_users" {
             ArchiveId => "old_id": i64,
             ArchiveName => "old_name": String,
         }
-    }
+    );
 
     #[test]
     fn tuple_with_duplicate_column_normalizes_to_last_value() {
