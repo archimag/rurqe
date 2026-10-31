@@ -6,13 +6,13 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderId => "id": i64,
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! let average = select_from::<Postgres<Pg16>, Order>()
 //!     .select((Expr::avg::<OrderTotal>(),));
@@ -35,13 +35,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderId => "id": i64,
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the nested query projects two columns, not a single value.
 //! let _ = select_from::<Postgres<Pg16>, Order>()
@@ -57,19 +57,19 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>().select((UserId, OrderTotal));
@@ -80,19 +80,19 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of a table in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -105,11 +105,11 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `group_by` must be established before `select`.
 //! let _ = select_from::<Postgres, User>()
@@ -120,19 +120,19 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of a table in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -146,17 +146,17 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -169,17 +169,17 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderId` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -192,13 +192,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderId => "id": i64,
 //!         OrderUserId => "user_id": i64,
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` is neither grouped nor an aggregate.
 //! let _ = select_from::<Postgres, Order>()
@@ -211,17 +211,17 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderUserId => "user_id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -233,17 +233,17 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -256,23 +256,23 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Profile => "profiles" {
 //!         ProfileUserId => "user_id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderUserId => "user_id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderUserId` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -285,17 +285,17 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, which is not in scope.
 //! let _ = select_from::<Postgres, User>()
@@ -311,12 +311,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the query records no projection yet.
 //! let _ = select_from::<Postgres, User>().build();
@@ -328,12 +328,12 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `jobs` table.
 //!     Job => "jobs" {
 //!         JobId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! let built = select_from::<Postgres, Job>()
 //!     .select((JobId,))
@@ -351,12 +351,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `jobs` table.
 //!     Job => "jobs" {
 //!         JobId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: SQLite has no `FOR UPDATE` clause.
 //! let _ = select_from::<Sqlite, Job>()
@@ -370,12 +370,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `jobs` table.
 //!     Job => "jobs" {
 //!         JobId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the query does not request a lock yet.
 //! let _ = select_from::<Postgres<Pg16>, Job>()
@@ -392,13 +392,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderUserId => "user_id": i64,
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the predicate compares an aggregate with a bare column, so
 //! // it computes one value per row instead of one value per group.
@@ -414,13 +414,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderUserId => "user_id": i64,
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the comparison computes one value per row, so it is neither
 //! // grouped nor an aggregate.
@@ -435,13 +435,13 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderUserId => "user_id": i64,
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! let built = select_from::<Postgres<Pg16>, Order>()
 //!     .group_by(OrderUserId)
@@ -466,12 +466,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: a column reference aggregates nothing, so there is no call
 //! // for the `DISTINCT` modifier to restrict.
@@ -481,12 +481,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `COALESCE(SUM("total"), $1)` is a scalar function over the
 //! // call, so it takes no `FILTER` clause of its own.
@@ -499,12 +499,12 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! let distinct = select_from::<Postgres<Pg16>, Order>()
 //!     .select((sum_distinct(OrderTotal),))
