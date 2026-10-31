@@ -9,13 +9,13 @@ use rurqe_sqlite::rurqe_core::table;
 use rurqe_sqlite::rusqlite::Connection;
 use rurqe_sqlite::{Sqlite, Sqlite3_35, SqliteConnection};
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
 /// DDL for the `users` fixture table.
 const CREATE_USERS: &str =

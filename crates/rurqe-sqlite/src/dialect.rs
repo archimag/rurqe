@@ -210,12 +210,12 @@ mod tests {
     use rurqe_core::expr::{render_expr, Expr, SqlVal};
     use rurqe_core::table;
 
-    table! {
+    table!(
         /// The `users` fixture table used by the rendering regression test.
         User => "users" {
             UserName => "name": String,
         }
-    }
+    );
 
     #[test]
     fn quotes_standard_and_escaped_identifiers() {

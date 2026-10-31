@@ -112,11 +112,11 @@ impl<T> PgJsonValue for Option<rurqe_core::expr::Json<T>> {}
 /// ```compile_fail
 /// use rurqe_postgres::PgRegexExpressions;
 ///
-/// rurqe_postgres::rurqe_core::table! {
+/// rurqe_postgres::rurqe_core::table!(
 ///     Doc => "docs" {
 ///         DocRank => "rank": i64,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: `rank` holds numbers, not text.
 /// let _ = DocRank.regex_match("^1");
@@ -171,11 +171,11 @@ where
 /// ```compile_fail
 /// use rurqe_postgres::PgJsonExpressions;
 ///
-/// rurqe_postgres::rurqe_core::table! {
+/// rurqe_postgres::rurqe_core::table!(
 ///     Doc => "docs" {
 ///         DocContent => "content": String,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: `content` holds text, not a JSON document.
 /// let _ = DocContent.json_contains("{\"a\": 1}");
@@ -248,11 +248,11 @@ where
 /// ```compile_fail
 /// use rurqe_postgres::PgTextSearchExpressions;
 ///
-/// rurqe_postgres::rurqe_core::table! {
+/// rurqe_postgres::rurqe_core::table!(
 ///     Doc => "docs" {
 ///         DocRank => "rank": i64,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: full-text search matches text.
 /// let _ = DocRank.matches_tsquery("rust");
@@ -444,11 +444,11 @@ impl<T: SqlArrayElement> PgArrayElements<T> for Option<Vec<T>> {}
 ///     }
 /// }
 ///
-/// rurqe_postgres::rurqe_core::table! {
+/// rurqe_postgres::rurqe_core::table!(
 ///     Post => "posts" {
 ///         PostTags => "tags": Vec<String>,
 ///     }
-/// }
+/// );
 ///
 /// let operand = Expr::<String, (), NonAggregate, OtherDialect>::from_kind(
 ///     ExprKind::Value(SqlVal::Text("rust".to_owned())),
@@ -617,20 +617,20 @@ mod tests {
     use rurqe_core::schema::{AliasedCol, Column, TableRef};
     use rurqe_core::table;
 
-    table! {
+    table!(
         Doc => "docs" {
             DocContent => "content": String,
             DocMetadata => "metadata": PgJson,
             DocQuoted => "a\"b": String,
         }
-    }
+    );
 
-    table! {
+    table!(
         Post => "posts" {
             PostTags => "tags": Vec<String>,
             PostScores => "scores": Option<Vec<i64>>,
         }
-    }
+    );
 
     rurqe_core::table_alias! {
         /// The `d` alias.
