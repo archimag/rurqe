@@ -58,8 +58,15 @@ fn parses_baseline_command() {
 }
 
 #[test]
-fn parses_cargo_db_migrate_invocation() {
-    let cmd = parse_args(&["cargo-db-migrate".into(), "db-migrate".into()]).unwrap();
+fn parses_the_cargo_rurqe_migrate_invocation() {
+    // `cargo rurqe migrate up` reaches the toolchain as `cargo-rurqe rurqe migrate up`.
+    let cmd = parse_args(&[
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "migrate".into(),
+        "up".into(),
+    ])
+    .unwrap();
     assert_eq!(
         cmd,
         CliCommand::MigrateUp {
@@ -121,10 +128,11 @@ fn status_and_repair_reject_the_checkpoint_path() {
 }
 
 #[test]
-fn parses_cargo_db_codegen_invocation() {
+fn parses_the_cargo_rurqe_codegen_invocation() {
     let cmd = parse_args(&[
-        "cargo-db-codegen".into(),
-        "db-codegen".into(),
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "codegen".into(),
         "--output".into(),
         "src/db/schema.rs".into(),
     ])
@@ -143,7 +151,13 @@ fn parses_cargo_db_codegen_invocation() {
 
 #[test]
 fn parses_codegen_domain_types_flag() {
-    let cmd = parse_args(&["cargo-db-codegen".into(), "--domain-types".into()]).unwrap();
+    let cmd = parse_args(&[
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "codegen".into(),
+        "--domain-types".into(),
+    ])
+    .unwrap();
 
     assert_eq!(
         cmd,
@@ -158,8 +172,8 @@ fn parses_codegen_domain_types_flag() {
 }
 
 #[test]
-fn parses_cargo_db_verify_invocation() {
-    let cmd = parse_args(&["cargo-db-verify".into(), "db-verify".into()]).unwrap();
+fn parses_the_cargo_rurqe_verify_invocation() {
+    let cmd = parse_args(&["cargo-rurqe".into(), "rurqe".into(), "verify".into()]).unwrap();
     assert_eq!(
         cmd,
         CliCommand::Verify {
@@ -174,7 +188,9 @@ fn parses_cargo_db_verify_invocation() {
 #[test]
 fn parses_explicit_verify_schema_path() {
     let cmd = parse_args(&[
-        "cargo-db-verify".into(),
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "verify".into(),
         "--schema-path".into(),
         "custom/schema.rs".into(),
     ])
@@ -191,10 +207,11 @@ fn parses_explicit_verify_schema_path() {
 }
 
 #[test]
-fn parses_cargo_db_baseline_invocation() {
+fn parses_the_cargo_rurqe_baseline_invocation() {
     let cmd = parse_args(&[
-        "cargo-db-baseline".into(),
-        "db-baseline".into(),
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "baseline".into(),
         "--version".into(),
         "1.0.0".into(),
     ])
@@ -740,7 +757,9 @@ fn stage_and_prune_require_their_boundaries() {
 #[test]
 fn parses_codegen_command() {
     let cmd = parse_args(&[
-        "cargo-db-codegen".into(),
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "codegen".into(),
         "--output".into(),
         "src/db/schema.rs".into(),
     ])
@@ -759,26 +778,38 @@ fn parses_codegen_command() {
 }
 
 #[test]
-fn cargo_entrypoints_answer_the_universal_flags() {
-    // The cargo-dispatched binaries force their subcommand from the executable
-    // name, so `cargo db-migrate --help` must still print the help instead of
-    // failing with `unknown option `--help` for migrate`.
+fn the_single_entrypoint_answers_the_universal_flags() {
+    // The toolchain ships one binary, so `cargo rurqe --help` must print the
+    // command tree of the whole project instead of failing with an unknown
+    // option, and the program version answers whichever way cargo spells the
+    // dispatch.
     assert_eq!(
-        parse_args(&["cargo-db-migrate".into(), "--help".into()]).unwrap(),
+        parse_args(&["cargo-rurqe".into(), "--help".into()]).unwrap(),
         CliCommand::Help
     );
     assert_eq!(
-        parse_args(&["cargo-db-codegen".into(), "-h".into()]).unwrap(),
+        parse_args(&["cargo-rurqe".into(), "rurqe".into(), "-h".into()]).unwrap(),
         CliCommand::Help
     );
     assert_eq!(
-        parse_args(&["cargo-db-verify".into(), "--version".into()]).unwrap(),
+        parse_args(&["cargo-rurqe".into(), "--version".into()]).unwrap(),
         CliCommand::Version
     );
     assert_eq!(
-        parse_args(&["cargo-db-baseline".into(), "-V".into()]).unwrap(),
+        parse_args(&["cargo-rurqe".into(), "rurqe".into(), "-V".into()]).unwrap(),
         CliCommand::Version
     );
+}
+
+#[test]
+fn a_bare_invocation_of_the_single_entrypoint_answers_the_help() {
+    // The unified entrypoint names no default command, so an invocation without
+    // a subcommand describes what it can run instead of silently migrating.
+    assert_eq!(
+        parse_args(&["cargo-rurqe".into(), "rurqe".into()]).unwrap(),
+        CliCommand::Help
+    );
+    assert_eq!(parse_args(&["cargo-rurqe".into()]).unwrap(), CliCommand::Help);
 }
 
 #[test]
@@ -790,7 +821,7 @@ fn help_flags_answer_after_the_action_token() {
         for args in [
             vec!["rurqe", "migrate", flag],
             vec!["rurqe", "migrate", "up", flag],
-            vec!["cargo-db-migrate", "db-migrate", "up", flag],
+            vec!["cargo-rurqe", "rurqe", "migrate", "up", flag],
             vec!["rurqe", "baseline", flag],
             vec!["rurqe", "codegen", "--output", "src/db/schema.rs", flag],
             vec!["rurqe", "verify", "--lock-path", "custom.lock", flag],
@@ -818,7 +849,7 @@ fn version_flags_answer_after_the_action_token() {
         for args in [
             vec!["rurqe", "migrate", "up", flag],
             vec!["rurqe", "migrate", "status", flag],
-            vec!["cargo-db-verify", "db-verify", flag],
+            vec!["cargo-rurqe", "rurqe", "verify", flag],
             vec!["rurqe", "codegen", flag],
             vec!["rurqe", "verify", flag],
             vec!["rurqe", "prune", "--before", "3.2", flag],
@@ -861,7 +892,9 @@ fn universal_flags_beside_a_subcommand_version_argument() {
     // A trailing help flag answers while the baseline version argument keeps
     // its own meaning instead of turning into the program version.
     let help = parse_args(&[
-        "cargo-db-baseline".into(),
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "baseline".into(),
         "--version".into(),
         "1.0.0".into(),
         "-h".into(),
@@ -871,10 +904,12 @@ fn universal_flags_beside_a_subcommand_version_argument() {
 }
 
 #[test]
-fn baseline_keeps_its_version_argument_under_a_cargo_entrypoint() {
-    // `--version` on the baseline entrypoint names the baseline, not the program.
+fn baseline_keeps_its_version_argument_under_the_single_entrypoint() {
+    // `--version` after the `baseline` subcommand names the baseline, not the program.
     let cmd = parse_args(&[
-        "cargo-db-baseline".into(),
+        "cargo-rurqe".into(),
+        "rurqe".into(),
+        "baseline".into(),
         "--version".into(),
         "1.0.0".into(),
     ])
@@ -1132,7 +1167,7 @@ fn a_universal_flag_in_value_position_is_answered() {
         vec!["rurqe", "codegen", "--lock-path", "--help"],
         vec!["rurqe", "verify", "--schema-path", "--help"],
         vec!["rurqe", "stage", "verify", "--migrations-dir", "-h"],
-        vec!["cargo-db-codegen", "--output", "--help"],
+        vec!["cargo-rurqe", "rurqe", "codegen", "--output", "--help"],
     ] {
         let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
 

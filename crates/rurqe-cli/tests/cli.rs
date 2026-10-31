@@ -14,6 +14,28 @@ use rurqe_cli::run_cli;
 use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
 use rurqe_migrate::migration::Migration;
 
+/// The argv a `cargo rurqe ...` invocation reaches the toolchain with.
+///
+/// Cargo dispatches the subcommand as `cargo-rurqe rurqe <command>`, so every
+/// command-level test drives the argument list the one shipped binary receives
+/// instead of naming a program of its own.
+fn cargo_argv(args: &[&str]) -> Vec<String> {
+    std::iter::once("cargo-rurqe")
+        .chain(std::iter::once("rurqe"))
+        .chain(args.iter().copied())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Runs one `cargo rurqe ...` invocation of the shipped binary.
+fn run_binary(args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rurqe"))
+        .arg("rurqe")
+        .args(args)
+        .output()
+        .expect("the shipped binary runs")
+}
+
 #[test]
 fn codegen_creates_valid_rust_code_with_schema_hash() {
     let catalog = SchemaCatalog::new(vec![
@@ -54,12 +76,14 @@ fn codegen_creates_valid_rust_code_with_schema_hash() {
 #[test]
 fn codegen_renders_array_columns_as_vectors() {
     let tables = vec![RawTableMetadata {
-        schema: None,        name: "posts".to_owned(),
+        schema: None,
+        name: "posts".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
             schema: None,
-            udt_schema: None,            table_name: "posts".to_owned(),
+            udt_schema: None,
+            table_name: "posts".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -68,7 +92,8 @@ fn codegen_renders_array_columns_as_vectors() {
         },
         RawColumnMetadata {
             schema: None,
-            udt_schema: None,            table_name: "posts".to_owned(),
+            udt_schema: None,
+            table_name: "posts".to_owned(),
             column_name: "tags".to_owned(),
             data_type: "ARRAY".to_owned(),
             is_nullable: false,
@@ -77,7 +102,8 @@ fn codegen_renders_array_columns_as_vectors() {
         },
         RawColumnMetadata {
             schema: None,
-            udt_schema: None,            table_name: "posts".to_owned(),
+            udt_schema: None,
+            table_name: "posts".to_owned(),
             column_name: "ratings".to_owned(),
             data_type: "ARRAY".to_owned(),
             is_nullable: true,
@@ -152,12 +178,14 @@ fn drift_verification_catches_divergence_with_actionable_error() {
 #[test]
 fn catalog_introspected_from_raw_metadata() {
     let tables = vec![RawTableMetadata {
-        schema: None,        name: "customers".to_owned(),
+        schema: None,
+        name: "customers".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
             schema: None,
-            udt_schema: None,            table_name: "customers".to_owned(),
+            udt_schema: None,
+            table_name: "customers".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -166,7 +194,8 @@ fn catalog_introspected_from_raw_metadata() {
         },
         RawColumnMetadata {
             schema: None,
-            udt_schema: None,            table_name: "customers".to_owned(),
+            udt_schema: None,
+            table_name: "customers".to_owned(),
             column_name: "created_at".to_owned(),
             data_type: "timestamp with time zone".to_owned(),
             is_nullable: false,
@@ -175,7 +204,8 @@ fn catalog_introspected_from_raw_metadata() {
         },
     ];
     let pks = vec![RawPrimaryKeyMetadata {
-        schema: None,        table_name: "customers".to_owned(),
+        schema: None,
+        table_name: "customers".to_owned(),
         column_name: "id".to_owned(),
     }];
 
@@ -209,13 +239,7 @@ fn a_schema_qualified_introspection_reads_the_single_sqlite_catalog() {
 
 #[test]
 fn cli_argument_dispatch() {
-    let args = vec![
-        "cargo-rurqe".into(),
-        "migrate".into(),
-        "status".into(),
-        "--migrations-dir".into(),
-        "sql_migrations".into(),
-    ];
+    let args = cargo_argv(&["migrate", "status", "--migrations-dir", "sql_migrations"]);
 
     let cmd = parse_args(&args).expect("valid args");
     assert_eq!(
@@ -241,18 +265,17 @@ fn a_named_schema_reaches_codegen_and_verify() {
     let schema = workspace.join("src").join("schema.rs");
     let lock = workspace.join("schema.lock");
 
-    run_cli(vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-        "--schema".to_owned(),
-        "tenant_a".to_owned(),
-    ])
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+        "--schema",
+        "tenant_a",
+    ]))
     .expect("codegen accepts a selected schema");
 
     // A SQLite file keeps one unnamed catalog, so a selected schema still
@@ -263,18 +286,17 @@ fn a_named_schema_reaches_codegen_and_verify() {
     assert_eq!(parsed.tables.len(), 1);
     assert_eq!(parsed.tables[0].name, "users");
 
-    run_cli(vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--schema-path".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-        "--schema".to_owned(),
-        "tenant_a".to_owned(),
-    ])
+    run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--schema-path",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+        "--schema",
+        "tenant_a",
+    ]))
     .expect("verification passes for the selected schema");
 
     // Drift inside the selected schema is still reported rather than compared
@@ -285,16 +307,15 @@ fn a_named_schema_reaches_codegen_and_verify() {
             .expect("mutate schema");
     }
 
-    let drift = run_cli(vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-        "--schema".to_owned(),
-        "tenant_a".to_owned(),
-    ])
+    let drift = run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--lock-path",
+        &path_string(&lock),
+        "--schema",
+        "tenant_a",
+    ]))
     .expect_err("drift is reported for the selected schema");
 
     let message = drift.to_string();
@@ -364,15 +385,14 @@ fn run_cli_migrate_up_and_status_handle_versioned_and_repeatable_scripts() {
     )
     .expect("write repeatable");
 
-    let up = vec![
-        "rurqe".to_owned(),
-        "migrate".to_owned(),
-        "up".to_owned(),
-        "--migrations-dir".to_owned(),
-        path_string(&migrations),
-        "--database-url".to_owned(),
-        path_string(&db),
-    ];
+    let up = cargo_argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &path_string(&migrations),
+        "--database-url",
+        &path_string(&db),
+    ]);
     run_cli(up.clone()).expect("first migrate up applies scripts");
     run_cli(up).expect("second migrate up is idempotent");
 
@@ -385,15 +405,14 @@ fn run_cli_migrate_up_and_status_handle_versioned_and_repeatable_scripts() {
         ]
     );
 
-    let status = vec![
-        "rurqe".to_owned(),
-        "migrate".to_owned(),
-        "status".to_owned(),
-        "--migrations-dir".to_owned(),
-        path_string(&migrations),
-        "--database-url".to_owned(),
-        path_string(&db),
-    ];
+    let status = cargo_argv(&[
+        "migrate",
+        "status",
+        "--migrations-dir",
+        &path_string(&migrations),
+        "--database-url",
+        &path_string(&db),
+    ]);
     run_cli(status).expect("migrate status reports applied history");
 }
 
@@ -402,16 +421,15 @@ fn run_cli_baseline_records_a_baseline_marker() {
     let workspace = temp_workspace("baseline");
     let db = workspace.join("app.db");
 
-    let args = vec![
-        "rurqe".to_owned(),
-        "baseline".to_owned(),
-        "--version".to_owned(),
-        "2.0.0".to_owned(),
-        "--description".to_owned(),
-        "import legacy schema".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-    ];
+    let args = cargo_argv(&[
+        "baseline",
+        "--version",
+        "2.0.0",
+        "--description",
+        "import legacy schema",
+        "--database-url",
+        &path_string(&db),
+    ]);
     run_cli(args).expect("baseline records a marker");
 
     let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
@@ -437,16 +455,15 @@ fn run_cli_migrate_repair_rewrites_the_recorded_checksum() {
     let script_path = migrations.join("V1__init.sql");
     fs::write(&script_path, "CREATE TABLE users (id INTEGER PRIMARY KEY);").expect("write V1");
 
-    let up = vec![
-        "rurqe".to_owned(),
-        "migrate".to_owned(),
-        "up".to_owned(),
-        "--migrations-dir".to_owned(),
-        path_string(&migrations),
-        "--database-url".to_owned(),
-        path_string(&db),
-    ];
-    run_cli(up).expect("apply initial migration");
+    run_cli(cargo_argv(&[
+        "migrate",
+        "up",
+        "--migrations-dir",
+        &path_string(&migrations),
+        "--database-url",
+        &path_string(&db),
+    ]))
+    .expect("apply initial migration");
 
     fs::write(
         &script_path,
@@ -454,16 +471,15 @@ fn run_cli_migrate_repair_rewrites_the_recorded_checksum() {
     )
     .expect("edit V1");
 
-    let repair = vec![
-        "rurqe".to_owned(),
-        "migrate".to_owned(),
-        "repair".to_owned(),
-        "--migrations-dir".to_owned(),
-        path_string(&migrations),
-        "--database-url".to_owned(),
-        path_string(&db),
-    ];
-    run_cli(repair).expect("repair rewrites checksum");
+    run_cli(cargo_argv(&[
+        "migrate",
+        "repair",
+        "--migrations-dir",
+        &path_string(&migrations),
+        "--database-url",
+        &path_string(&db),
+    ]))
+    .expect("repair rewrites checksum");
 
     let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
     let stored: String = conn
@@ -502,17 +518,16 @@ fn run_cli_codegen_writes_schema_and_lock_from_live_sqlite() {
     let schema = workspace.join("src").join("schema.rs");
     let lock = workspace.join("schema.lock");
 
-    let args = vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ];
-    run_cli(args).expect("codegen succeeds");
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
+    .expect("codegen succeeds");
 
     let code = fs::read_to_string(&schema).expect("read generated schema");
     let snapshot = fs::read_to_string(&lock).expect("read schema lock");
@@ -554,18 +569,17 @@ fn run_cli_codegen_with_domain_types_flag_enables_domain_mapping() {
     let schema = workspace.join("src").join("schema.rs");
     let lock = workspace.join("schema.lock");
 
-    let args = vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-        "--domain-types".to_owned(),
-    ];
-    run_cli(args).expect("codegen succeeds with domain types");
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+        "--domain-types",
+    ]))
+    .expect("codegen succeeds with domain types");
 
     let code = fs::read_to_string(&schema).expect("read generated schema");
     assert!(code.contains("EventsCreatedAt => \"created_at\": chrono::NaiveDateTime"));
@@ -590,18 +604,17 @@ fn run_cli_codegen_with_domain_types_maps_decimal_columns_and_verifies_cleanly()
     let schema = workspace.join("src").join("schema.rs");
     let lock = workspace.join("schema.lock");
 
-    let args = vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-        "--domain-types".to_owned(),
-    ];
-    run_cli(args).expect("codegen succeeds with decimal columns");
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+        "--domain-types",
+    ]))
+    .expect("codegen succeeds with decimal columns");
 
     let code = fs::read_to_string(&schema).expect("read generated schema");
     assert!(code.contains("InvoicesTotal => \"total\": rust_decimal::Decimal"));
@@ -625,17 +638,16 @@ fn run_cli_codegen_with_domain_types_maps_decimal_columns_and_verifies_cleanly()
         "the discount column survives the snapshot: {columns:?}"
     );
 
-    let verify_args = vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--schema-path".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ];
-    run_cli(verify_args).expect("verification passes for the decimal columns");
+    run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--schema-path",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
+    .expect("verification passes for the decimal columns");
 }
 
 #[test]
@@ -651,28 +663,26 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
     let schema = workspace.join("schema.rs");
     let lock = workspace.join("schema.lock");
 
-    run_cli(vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ])
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
     .expect("codegen succeeds");
 
-    let verify_with_schema = vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--schema-path".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ];
+    let verify_with_schema = cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--schema-path",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]);
     run_cli(verify_with_schema.clone()).expect("verify passes when schema matches");
 
     {
@@ -689,15 +699,14 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
 
     // No `--schema-path`: the implicit default is absent, so verification falls
     // back to the lock snapshot alone and still reports the drift.
-    let verify_lock_only = vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ];
-    let drift_err = run_cli(verify_lock_only).expect_err("drift is reported");
+    let drift_err = run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
+    .expect_err("drift is reported");
     let message = drift_err.to_string();
     assert!(
         message.contains("Schema drift detected!"),
@@ -729,17 +738,16 @@ fn run_cli_codegen_and_verify_handles_check_enums_end_to_end() {
     let schema = workspace.join("src").join("schema.rs");
     let lock = workspace.join("schema.lock");
 
-    let args = vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ];
-    run_cli(args).expect("codegen succeeds for check enums");
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
+    .expect("codegen succeeds for check enums");
 
     let snapshot = fs::read_to_string(&lock).expect("read schema lock");
     let parsed = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
@@ -775,17 +783,16 @@ fn run_cli_codegen_and_verify_handles_check_enums_end_to_end() {
     assert!(code.contains("TasksStatus => \"status\": Status"));
     assert!(code.contains("pub status: Status,"));
 
-    let verify_args = vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--schema-path".to_owned(),
-        path_string(&schema),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ];
-    run_cli(verify_args).expect("verification passes for matched check enums");
+    run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--schema-path",
+        &path_string(&schema),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
+    .expect("verification passes for matched check enums");
 }
 
 #[test]
@@ -799,29 +806,27 @@ fn run_cli_verify_rejects_a_missing_explicit_schema_path() {
     }
 
     let lock = workspace.join("schema.lock");
-    run_cli(vec![
-        "rurqe".to_owned(),
-        "codegen".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--output".to_owned(),
-        path_string(&workspace.join("schema.rs")),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ])
+    run_cli(cargo_argv(&[
+        "codegen",
+        "--database-url",
+        &path_string(&db),
+        "--output",
+        &path_string(&workspace.join("schema.rs")),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
     .expect("codegen succeeds");
 
     let missing = workspace.join("missing-schema.rs");
-    let err = run_cli(vec![
-        "rurqe".to_owned(),
-        "verify".to_owned(),
-        "--database-url".to_owned(),
-        path_string(&db),
-        "--schema-path".to_owned(),
-        path_string(&missing),
-        "--lock-path".to_owned(),
-        path_string(&lock),
-    ])
+    let err = run_cli(cargo_argv(&[
+        "verify",
+        "--database-url",
+        &path_string(&db),
+        "--schema-path",
+        &path_string(&missing),
+        "--lock-path",
+        &path_string(&lock),
+    ]))
     .expect_err("missing explicit schema path is rejected");
 
     let message = err.to_string();
@@ -829,4 +834,89 @@ fn run_cli_verify_rejects_a_missing_explicit_schema_path() {
         message.contains("failed to read schema code"),
         "unexpected error: {message}"
     );
+}
+
+#[test]
+fn the_single_binary_dispatches_every_subcommand() {
+    let workspace = temp_workspace("entrypoint");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);")
+            .expect("create schema");
+    }
+
+    let migrations = workspace.join("migrations");
+    fs::create_dir_all(&migrations).expect("create the migrations directory");
+
+    let stage_dir = workspace.join("schema");
+    fs::create_dir_all(&stage_dir).expect("create the declarative stage");
+    fs::write(
+        stage_dir.join("users.sql"),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);",
+    )
+    .expect("write the declarative stage");
+
+    let schema = workspace.join("src").join("schema.rs");
+    let lock = workspace.join("schema.lock");
+    let cold = workspace.join("cold.db");
+
+    let database = path_string(&db);
+    let migrations_dir = path_string(&migrations);
+    let stage = path_string(&stage_dir);
+    let schema_path = path_string(&schema);
+    let lock_path = path_string(&lock);
+    let cold_database = path_string(&cold);
+
+    // One binary, one argv: `cargo rurqe <command>` reaches the toolchain as
+    // `cargo-rurqe rurqe <command>`, and every subsystem answers through it.
+    for args in [
+        vec!["--help"],
+        vec!["--version"],
+        vec![
+            "migrate",
+            "status",
+            "--migrations-dir",
+            migrations_dir.as_str(),
+            "--database-url",
+            database.as_str(),
+        ],
+        vec![
+            "codegen",
+            "--database-url",
+            database.as_str(),
+            "--output",
+            schema_path.as_str(),
+            "--lock-path",
+            lock_path.as_str(),
+        ],
+        vec![
+            "verify",
+            "--database-url",
+            database.as_str(),
+            "--schema-path",
+            schema_path.as_str(),
+            "--lock-path",
+            lock_path.as_str(),
+        ],
+        vec![
+            "stage",
+            "init",
+            "--version",
+            "1",
+            "--stage-dir",
+            stage.as_str(),
+            "--database-url",
+            cold_database.as_str(),
+        ],
+        vec!["stage", "cleanup", "--help"],
+    ] {
+        let output = run_binary(&args);
+        assert!(
+            output.status.success(),
+            "`cargo rurqe {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

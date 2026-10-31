@@ -62,7 +62,8 @@ fn path_string(path: &Path) -> String {
 
 /// Builds the argv a `cargo rurqe ...` invocation maps onto.
 fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("rurqe")
+    std::iter::once("cargo-rurqe")
+        .chain(std::iter::once("rurqe"))
         .chain(args.iter().copied())
         .map(str::to_owned)
         .collect()

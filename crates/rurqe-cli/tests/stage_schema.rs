@@ -14,7 +14,8 @@
 //! multi-schema scenario runs the shipped binary inside a directory holding the
 //! project configuration, because that file is what declares the secondary
 //! schemas a command line cannot name.
-//!//! The PostgreSQL scenarios need a live database and the `CREATEDB` privilege —
+//!
+//! The PostgreSQL scenarios need a live database and the `CREATEDB` privilege —
 //! the golden equation builds its replay in a scratch database — and are skipped
 //! with an `eprintln!` reason when either is missing. Scratch databases are
 //! dropped by the sandbox itself; the live fixture schema is dropped by its guard.
@@ -59,7 +60,8 @@ fn path_string(path: &Path) -> String {
 
 /// Builds the argv a `cargo rurqe ...` invocation maps onto.
 fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("rurqe")
+    std::iter::once("cargo-rurqe")
+        .chain(std::iter::once("rurqe"))
         .chain(args.iter().copied())
         .map(str::to_owned)
         .collect()
