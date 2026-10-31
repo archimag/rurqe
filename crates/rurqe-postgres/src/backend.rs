@@ -6,6 +6,9 @@ pub mod types;
 #[cfg(feature = "tokio-postgres")]
 pub mod async_conn;
 
+#[cfg(feature = "tokio-postgres")]
+pub mod async_scope;
+
 #[cfg(feature = "postgres")]
 pub mod sync_conn;
 

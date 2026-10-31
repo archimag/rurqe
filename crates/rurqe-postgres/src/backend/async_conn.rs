@@ -4,9 +4,10 @@ use core::future::Future;
 
 use futures_core::Stream;
 use rurqe_core::expr::SqlVal;
-use rurqe_core::query::{AsyncQueryBackend, BuiltQuery};
+use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 use tokio_postgres::types::ToSql;
 
+use super::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
 use super::types::{rows_to_sql_vals, PgError, SqlValParam};
 
 /// Executes `query` through an asynchronous client without decoding rows.
@@ -124,14 +125,115 @@ impl PgAsyncConnection {
     /// Begins a transaction over the connection.
     ///
     /// The returned [`PgAsyncTransaction`] issues `COMMIT` only when
-    /// [`commit`](PgAsyncTransaction::commit) is called and rolls the
-    /// transaction back when it is dropped, so a returned error, a panic, and
-    /// a cancelled future all leave the connection without an open
-    /// transaction.
+    /// [`commit`](PgAsyncTransaction::commit) is called. Dropping the handle
+    /// without committing requests a rollback through the driver's `Drop`, which
+    /// is a fire-and-forget statement the driver neither awaits nor reports, so a
+    /// cancelled or panicking block is rolled back only as far as the driver
+    /// manages.
+    ///
+    /// The guard borrows the connection mutably for as long as it lives, so a
+    /// second call while the first guard is open is rejected by the borrow
+    /// checker, and the guard offers no savepoint nesting. The closure form
+    /// [`transaction_with_isolation`](PgAsyncConnection::transaction_with_isolation)
+    /// opens the transaction with an isolation level, nests through
+    /// [`PgAsyncScope::transaction`], and awaits both the commit and the
+    /// rollback.
     pub async fn transaction(&mut self) -> Result<PgAsyncTransaction<'_>, PgError> {
         tracing::info!("beginning transaction");
         let inner = self.client.transaction().await?;
         Ok(PgAsyncTransaction { inner })
+    }
+
+    /// Runs `f` inside a transaction at the requested `isolation` level,
+    /// committing on `Ok` and rolling back on `Err`.
+    ///
+    /// The method mirrors [`transaction`](PgAsyncConnection::transaction) and
+    /// differs in the statement that opens the block and in who closes it: the
+    /// block runs between `BEGIN ISOLATION LEVEL <level>` and `COMMIT`, with the
+    /// level text taken from `IsolationLevel::as_str`, and the statements of `f`
+    /// execute through a [`PgAsyncScope`], so the adapter itself awaits the
+    /// commit of a block that returned `Ok` and the rollback of a block that
+    /// returned `Err`.
+    ///
+    /// ```text
+    /// connection
+    ///     .transaction_with_isolation(IsolationLevel::Serializable, |mut scope| {
+    ///         Box::pin(async move {
+    ///             insert_into::<Postgres, User>()
+    ///                 .values((UserId::set(1i64),))
+    ///                 .execute(&scope)
+    ///                 .await?;
+    ///
+    ///             // A nested block is a savepoint: its rollback undoes only
+    ///             // its own statements.
+    ///             scope
+    ///                 .transaction(|nested| {
+    ///                     Box::pin(async move {
+    ///                         insert_into::<Postgres, User>()
+    ///                             .values((UserId::set(2i64),))
+    ///                             .execute(&nested)
+    ///                             .await?;
+    ///                         Ok(())
+    ///                     })
+    ///                 })
+    ///                 .await?;
+    ///
+    ///             Ok(())
+    ///         })
+    ///     })
+    ///     .await?;
+    /// ```
+    ///
+    /// The closure is erased into a boxed [`Send`] future, because an
+    /// asynchronous terminal call returns an opaque `impl Future` that a closure
+    /// return type cannot name on stable Rust. `E` is the error of `f` and has to
+    /// absorb the driver error: the dialect error alias over `PgError` does, so a
+    /// terminal call propagates with `?` unchanged inside the block.
+    ///
+    /// Both endings are awaited, so a block that returns `Err` has its statements
+    /// rolled back before the error reaches the caller. A rollback the driver
+    /// refuses is traced instead of replacing that error, and the connection must
+    /// then be discarded rather than reused. A block that returns `Ok` while one
+    /// of its statements was cancelled still commits the statements that
+    /// completed, so a task that has to be atomic under cancellation lets the
+    /// closure return the failure instead of dropping it.
+    ///
+    /// The method borrows the connection mutably, so no second transaction can
+    /// start on it while the block runs; a nested block opens a savepoint through
+    /// [`PgAsyncScope::transaction`] instead.
+    pub async fn transaction_with_isolation<T, E, F>(
+        &mut self,
+        isolation: IsolationLevel,
+        f: F,
+    ) -> Result<T, E>
+    where
+        E: From<PgError>,
+        F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
+    {
+        let client = &self.client;
+
+        let mut begin = String::from("BEGIN ISOLATION LEVEL ");
+        begin.push_str(isolation.as_str());
+        execute_control(client, begin).await.map_err(E::from)?;
+
+        match f(PgAsyncScope::new(client)).await {
+            Ok(value) => {
+                execute_control(client, String::from("COMMIT")).await.map_err(E::from)?;
+                tracing::info!("committed transaction");
+                Ok(value)
+            }
+            Err(error) => {
+                let rolled_back = execute_control(client, String::from("ROLLBACK")).await;
+                match rolled_back {
+                    Ok(()) => tracing::warn!("rolled back transaction"),
+                    Err(failure) => tracing::error!(
+                        failure = %failure,
+                        "rolling back the transaction failed; the connection must be discarded"
+                    ),
+                }
+                Err(error)
+            }
+        }
     }
 }
 
@@ -162,10 +264,25 @@ impl AsyncQueryBackend for PgAsyncConnection {
 ///
 /// The wrapper runs the query helpers on the transactional connection and
 /// keeps the transaction alive across `await` points. Committing is explicit:
-/// dropping the handle without calling [`commit`](PgAsyncTransaction::commit)
-/// rolls the transaction back, so a cancelled future or a panicking block
-/// never leaves partial work behind — the driver issues the `ROLLBACK` from
-/// `Drop` without awaiting anything.
+/// [`commit`](PgAsyncTransaction::commit) persists the work, while dropping the
+/// handle without calling it requests a rollback through the driver's own
+/// `Drop`, which is a fire-and-forget statement the driver neither awaits nor
+/// reports.
+///
+/// That drop-time rollback is best effort, so the guard alone cannot promise
+/// that a cancelled block leaves nothing behind: `tokio-postgres` does not make
+/// an in-flight statement cancel-safe, and a future dropped in the middle of a
+/// statement can leave the connection waiting for a response, in which case the
+/// rollback requested by the drop never reaches the server. The work of the
+/// statements that completed stays pending in the open transaction until the
+/// connection is discarded.
+///
+/// The guard borrows the connection mutably for as long as it lives and does not
+/// nest: a second [`transaction`](PgAsyncConnection::transaction) call while the
+/// first guard is alive is rejected by the borrow checker. A block that has to
+/// select an isolation level, nest inside a savepoint, or have its rollback
+/// awaited by the adapter belongs in
+/// [`transaction_with_isolation`](PgAsyncConnection::transaction_with_isolation).
 ///
 /// The handle implements the same asynchronous
 /// [`AsyncQueryBackend`](rurqe_core::query::AsyncQueryBackend) contract as the

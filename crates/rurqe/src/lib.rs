@@ -664,7 +664,7 @@ pub mod prelude {
     pub use rurqe_postgres::PgConnection;
 
     #[cfg(feature = "tokio-postgres")]
-    pub use rurqe_postgres::PgAsyncConnection;
+    pub use rurqe_postgres::{PgAsyncConnection, PgAsyncScope};
 
     #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
     pub use rurqe_postgres::PgError;

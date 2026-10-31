@@ -15,6 +15,8 @@ pub use expressions::{
 
 #[cfg(feature = "tokio-postgres")]
 pub use backend::async_conn::{PgAsyncConnection, PgAsyncTransaction};
+#[cfg(feature = "tokio-postgres")]
+pub use backend::async_scope::{PgAsyncScope, ScopeFuture};
 #[cfg(feature = "deadpool-postgres")]
 pub use backend::pools::PgAsyncPool;
 #[cfg(feature = "r2d2")]
