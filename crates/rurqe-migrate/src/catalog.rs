@@ -4,8 +4,8 @@
 //! generation, and drift verification: it records enum types, tables, columns,
 //! primary keys, foreign keys, and secondary or unique indexes in an
 //! engine-independent form and renders them into a deterministic snapshot —
-//! the versioned TOML v4 document, while snapshots of the legacy v1–v3 text
-//! formats remain readable.
+//! the versioned TOML v5 document, while snapshots of the previous v4 and the
+//! legacy v1–v3 text formats remain readable.
 //!
 //! Determinism is achieved by sorting enum types, tables, columns, foreign keys,
 //! and indexes by name, so two catalogs built in a different declaration order
@@ -28,9 +28,9 @@
 //!
 //! let lock = catalog.to_lock();
 //!
-//! // The snapshot is the versioned TOML v4 document: the first line carries
+//! // The snapshot is the versioned TOML v5 document: the first line carries
 //! // the format version and the reader accepts the document straight back.
-//! assert!(lock.starts_with("version = 4"));
+//! assert!(lock.starts_with("version = 5"));
 //! assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 //! assert_eq!(catalog.schema_hash().len(), 64);
 //! ```

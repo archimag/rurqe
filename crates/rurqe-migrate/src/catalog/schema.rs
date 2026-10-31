@@ -53,11 +53,18 @@ impl SchemaCatalog {
 
     /// Renders the canonical `schema.lock` snapshot.
     ///
-    /// The snapshot is the versioned TOML v4 document serialized through the
-    /// strongly typed DTOs of the `lock_toml` module. Enum sections, tables,
-    /// views, and triggers — and each table's columns, checks, foreign keys,
-    /// and indexes — are emitted sorted by name, so the snapshot depends only
-    /// on the schema content and never on declaration order.
+    /// The snapshot is the versioned TOML v5 document serialized through the
+    /// strongly typed DTOs of the `lock_toml` module. Enum types, tables,
+    /// views, and triggers are emitted sorted by the composite `(schema, name)`
+    /// key — entities of the primary schema first, then every attributed schema
+    /// in name order — while each table's columns, checks, foreign keys, and
+    /// indexes are sorted by name and the labels of an enum keep their declared
+    /// order.
+    ///
+    /// The schema attribution of every entity, and of every foreign key target,
+    /// is part of the document, so two tables sharing one name in different
+    /// schemas stay distinguishable and the snapshot depends only on the schema
+    /// content, never on declaration order.
     pub fn to_lock(&self) -> String {
         lock_toml::render_lock_toml(self)
     }
@@ -86,19 +93,27 @@ impl SchemaCatalog {
     ///   representation the retired v3 writer produced;
     /// * anything else — including every snapshot the current
     ///   [`SchemaCatalog::to_lock`] writer emits — is read as a versioned TOML
-    ///   v4 snapshot through the strongly typed DTOs of the `lock_toml`
-    ///   module, whose `#[serde(deny_unknown_fields)]` structs reject unknown
-    ///   keys instead of silently ignoring them.
+    ///   snapshot through the strongly typed DTOs of the `lock_toml` module,
+    ///   whose `#[serde(deny_unknown_fields)]` structs reject unknown keys
+    ///   instead of silently ignoring them.
     ///
-    /// Both readers return the catalog sorted by enum name, table name, column
-    /// name, foreign-key name, and index name, so the result equals the catalog
-    /// that generated the snapshot. The labels of an enum keep the order they
-    /// were rendered in.
+    /// The TOML reader accepts the current `version = 5` document and the
+    /// previous `version = 4` one, and rejects every other version with a
+    /// diagnostic naming both. A v4 snapshot predates the schema layer, so
+    /// every entity it declares is read as belonging to the primary schema
+    /// (`schema = None`) whatever else the document carries; a v5 snapshot
+    /// keeps the attribution it records.
+    ///
+    /// Both readers return the catalog sorted canonically — the TOML reader by
+    /// the composite `(schema, name)` key, the legacy parser by name — so the
+    /// result equals the catalog that generated the snapshot. The labels of an
+    /// enum keep the order they were rendered in, and each table's columns,
+    /// checks, foreign keys, and indexes keep the name order of the snapshot.
     ///
     /// A legacy v1 snapshot differs only in writing the SQL text of a column
     /// default verbatim, without the quotes and escapes the current format
     /// applies.
-    pub fn from_lock(lock: &str) -> Result<SchemaCatalog, Error> {
+    pub fn from_lock(lock: &str) -> Result<Self, Error> {
         match lock.lines().next().unwrap_or_default() {
             lock::LOCK_HEADER | lock::V2_LOCK_HEADER | lock::LEGACY_LOCK_HEADER => {
                 parser::parse_lock(lock)

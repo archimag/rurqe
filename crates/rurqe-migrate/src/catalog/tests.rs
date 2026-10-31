@@ -43,7 +43,7 @@ fn lock_renders_tables_columns_and_keys() {
 
     let lock = catalog.to_lock();
 
-    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert!(lock.starts_with("version = 5"), "got: {lock}");
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), canonical);
 }
 
@@ -76,7 +76,7 @@ fn lock_is_independent_of_declaration_order() {
 fn an_empty_catalog_renders_a_versioned_empty_snapshot() {
     let lock = SchemaCatalog::default().to_lock();
 
-    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert!(lock.starts_with("version = 5"), "got: {lock}");
     assert_eq!(
         SchemaCatalog::from_lock(&lock).unwrap(),
         SchemaCatalog::default()
@@ -207,7 +207,7 @@ fn numeric_columns_round_trip_through_the_lock() {
 
     let lock = catalog.to_lock();
 
-    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert!(lock.starts_with("version = 5"), "got: {lock}");
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }
 
@@ -311,7 +311,7 @@ fn lock_renders_enum_sections_before_tables() {
 
     let lock = catalog.to_lock();
 
-    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert!(lock.starts_with("version = 5"), "got: {lock}");
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
     assert!(
         lock.find("mood").expect("the enum is rendered")
@@ -369,7 +369,7 @@ fn quoted_defaults_survive_quotes_backslashes_and_line_breaks() {
 
     let lock = catalog.to_lock();
 
-    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert!(lock.starts_with("version = 5"), "got: {lock}");
     // The default is carried as TOML string data: quotes, backslashes, and
     // line breaks stay escaped, whatever form the serializer picks.
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
@@ -426,7 +426,7 @@ fn snapshots_round_trip_checks_views_triggers_and_index_attributes() {
 
     let lock = catalog.to_lock();
 
-    assert!(lock.starts_with("version = 4"), "got: {lock}");
+    assert!(lock.starts_with("version = 5"), "got: {lock}");
     assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), catalog);
 }
 
@@ -608,21 +608,105 @@ fn foreign_keys_differing_only_in_the_referenced_schema_are_distinct() {
 }
 
 #[test]
-fn the_schema_layer_belongs_to_the_catalog_identity() {
+fn the_schema_layer_belongs_to_the_snapshot() {
     let attributed = SchemaCatalog::new(vec![users().with_schema("app")]);
     let flat = SchemaCatalog::new(vec![users()]);
 
     assert_ne!(attributed, flat);
-    // The v4 document does not render the schema layer yet, so both catalogs
-    // serialize into the very same snapshot and therefore the same hash.
-    assert_eq!(attributed.to_lock(), flat.to_lock());
-    assert_eq!(attributed.schema_hash(), flat.schema_hash());
+    // The v5 document renders the schema layer, so the two catalogs serialize
+    // into different snapshots and therefore different hashes.
+    assert_ne!(attributed.to_lock(), flat.to_lock());
+    assert_ne!(attributed.schema_hash(), flat.schema_hash());
 }
 
 #[test]
-fn a_parsed_snapshot_carries_no_schema_attribution() {
-    let rendered = SchemaCatalog::new(vec![users().with_schema("app")]).to_lock();
-    let parsed = SchemaCatalog::from_lock(&rendered).expect("the snapshot parses");
+fn a_parsed_snapshot_keeps_the_schema_attribution() {
+    let catalog = SchemaCatalog::new(vec![users().with_schema("app")]);
 
-    assert_eq!(parsed.tables[0].schema, None);
+    let parsed = SchemaCatalog::from_lock(&catalog.to_lock()).expect("the snapshot parses");
+
+    assert_eq!(parsed.tables[0].schema.as_deref(), Some("app"));
+    assert_eq!(parsed, catalog);
+}
+
+/// A table named `users` that belongs to the secondary schema `tenant_a`.
+///
+/// The name collides with the `users` fixture on purpose: two schemas address
+/// their own `users` table under the very same SQL identifier, and the snapshot
+/// has to keep them apart.
+fn tenant_users() -> TableDef {
+    TableDef::new(
+        "users",
+        vec![
+            ColumnDef::new("email", TypeKind::Text, false),
+            ColumnDef::new("id", TypeKind::Int64, false),
+        ],
+        vec!["id".to_owned()],
+    )
+    .with_schema("tenant_a")
+}
+
+#[test]
+fn a_multi_schema_snapshot_round_trips_both_schemas() {
+    let catalog = SchemaCatalog::new(vec![tenant_users(), users()]);
+    let canonical = SchemaCatalog::new(vec![users(), tenant_users()]);
+
+    let reparsed = SchemaCatalog::from_lock(&catalog.to_lock()).unwrap();
+
+    // The primary table sorts before the attributed one, so the reader
+    // reproduces the catalog whatever order it was declared in.
+    assert_eq!(reparsed, canonical);
+    assert_eq!(reparsed.tables[1].schema.as_deref(), Some("tenant_a"));
+}
+
+#[test]
+fn a_multi_schema_snapshot_hash_ignores_declaration_order() {
+    let declared = SchemaCatalog::new(vec![users(), tenant_users()]);
+    let reordered = SchemaCatalog::new(vec![tenant_users(), users()]);
+
+    assert_eq!(declared.to_lock(), reordered.to_lock());
+    assert_eq!(declared.schema_hash(), reordered.schema_hash());
+}
+
+#[test]
+fn a_snapshot_keeps_the_schema_of_entities_and_foreign_keys() {
+    let orders = TableDef::new(
+        "orders",
+        vec![
+            ColumnDef::new("id", TypeKind::Int64, false),
+            ColumnDef::new("user_id", TypeKind::Int64, false),
+        ],
+        vec!["id".to_owned()],
+    )
+    .with_schema("tenant_a")
+    .with_foreign_key(
+        ForeignKeyDef::new(
+            "orders_user_id_fkey",
+            vec!["user_id".to_owned()],
+            "users",
+            vec!["id".to_owned()],
+        )
+        .with_referenced_schema("public"),
+    );
+
+    let catalog = SchemaCatalog::new(vec![users(), orders])
+        .with_enums(vec![
+            EnumDef::new("mood", vec!["happy".to_owned()]),
+            EnumDef::new("mood", vec!["calm".to_owned()]).with_schema("tenant_a"),
+        ])
+        .with_views(vec![
+            ViewDef::new("active_users", "SELECT id FROM users"),
+            ViewDef::new("active_tenants", "SELECT id FROM users").with_schema("tenant_a"),
+        ])
+        .with_triggers(vec![TriggerDef::new("users_touch", "users", "BEGIN; END;")]);
+
+    let reparsed = SchemaCatalog::from_lock(&catalog.to_lock()).expect("the snapshot parses");
+
+    assert_eq!(reparsed, catalog);
+    assert_eq!(
+        reparsed.tables[1].foreign_keys[0]
+            .referenced_schema
+            .as_deref(),
+        Some("public")
+    );
 }

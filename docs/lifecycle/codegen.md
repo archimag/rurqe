@@ -281,7 +281,7 @@ generated module:
 
 | Section | Content |
 |---|---|
-| `version` | The format version, `4`. |
+| `version` | The format version, `5`.
 | `[[enums]]` | One enum type with its labels, in declaration order. |
 | `[[tables]]` | One table with its columns, primary key, check constraints, foreign keys, and indexes. |
 | `[[views]]` | One view with the query defining it. |
@@ -293,7 +293,7 @@ spelled as a named variant, an array as its element type, and an engine type
 outside the built-in set as its declared spelling:
 
 ```toml
-version = 4
+version = 5
 
 [[enums]]
 name = "mood"
@@ -320,11 +320,11 @@ reported it in. The orders that carry meaning are kept: the labels of an enum
 stand in declaration order, and the columns of a primary key, of a foreign key,
 and of an index remain in the order they were declared.
 
-A snapshot written by an earlier release, one that opens with the header of the
-older text format, is still read, so upgrading the toolchain does not invalidate
-a committed snapshot. A snapshot of the current format is read strictly: a key
-the format does not define and a version the reader does not know are both
-refused, so a snapshot is never read halfway.
+A snapshot written by an earlier release — the previous TOML version, or one that
+opens with the header of the older text format — is still read, so upgrading the
+toolchain does not invalidate a committed snapshot. A snapshot of the current
+format is read strictly: a key the format does not define and a version the reader
+does not know are both refused, so a snapshot is never read halfway.
 
 ## The schema digest
 

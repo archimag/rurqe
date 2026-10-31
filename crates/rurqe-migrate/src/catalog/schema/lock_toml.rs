@@ -1,14 +1,18 @@
-//! Versioned TOML v4 DTOs for the `schema.lock` snapshot.
+//! Versioned TOML v5 DTOs for the `schema.lock` snapshot.
 //!
-//! The v4 format replaces the bespoke text grammar of the v1–v3 snapshots with
-//! strongly typed TOML: every section is a struct carrying
+//! The TOML format replaces the bespoke text grammar of the v1–v3 snapshots
+//! with strongly typed sections: every section is a struct carrying
 //! `#[serde(deny_unknown_fields)]`, so an unrecognized key or a misspelled
-//! field is rejected instead of silently ignored. [`render_lock_toml`]
+//! field is rejected instead of silently ignored. The current version is 5,
+//! which records the SQL schema of every entity — tables, enum types, views,
+//! triggers, and the targets of foreign keys — while the previous version 4,
+//! which carries no schema layer, stays readable. [`render_lock_toml`]
 //! serializes a [`SchemaCatalog`] into the document and [`parse_lock_toml`]
-//! reads one back, and both apply the same canonical ordering — enums, tables,
-//! views, and triggers sorted by name, and each table's columns, checks,
-//! foreign keys, and indexes sorted by name as well — so a snapshot depends
-//! only on the schema content and never on declaration order.
+//! reads one back, and both apply the same canonical ordering — enum types,
+//! tables, views, and triggers sorted by the composite `(schema, name)` key,
+//! and each table's columns, checks, foreign keys, and indexes sorted by
+//! name — so a snapshot depends only on the schema content and never on
+//! declaration order.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,19 +24,27 @@ use crate::error::Error;
 
 use super::SchemaCatalog;
 
-/// The version of the TOML lock format accepted by this reader.
-const LOCK_VERSION: u32 = 4;
+/// The version of the TOML lock format this writer emits.
+const LOCK_VERSION: u32 = 5;
 
-/// The root of a v4 `schema.lock` snapshot.
+/// The version of the previous TOML lock format, still accepted on read.
+///
+/// A v4 snapshot predates the schema layer, so every entity it declares is
+/// read as belonging to the primary schema.
+const LEGACY_LOCK_VERSION: u32 = 4;
+
+/// The root of a versioned `schema.lock` snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockFile {
-    /// The version of the lock format, always `4`.
+    /// The version of the lock format, always `5`.
     version: u32,
     /// The enum types declared by the schema.
     ///
     /// The section collections default to empty, so a snapshot that omits an
-    /// empty section instead of writing it out still round-trips.
+    /// empty section instead of writing it out still round-trips. The writer
+    /// emits every collection in the canonical `(schema, name)` order, and the
+    /// reader applies the same order.
     #[serde(default)]
     enums: Vec<EnumLock>,
     /// The tables of the schema.
@@ -52,6 +64,12 @@ struct LockFile {
 struct TableLock {
     /// The SQL identifier of the table.
     name: String,
+    /// The SQL schema the table belongs to.
+    ///
+    /// The key is absent for a table of the primary schema, and a v4 snapshot
+    /// carries no attribution at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
     /// The columns of the table.
     columns: Vec<ColumnLock>,
     /// The columns forming the primary key, empty when the table has none.
@@ -140,6 +158,13 @@ struct ForeignKeyLock {
     referenced_table: String,
     /// The referenced columns of `referenced_table`.
     referenced_columns: Vec<String>,
+    /// The SQL schema of `referenced_table`.
+    ///
+    /// The key is absent when the reference carries no attribution: the
+    /// referenced table lives in the primary schema, or the snapshot is a
+    /// legacy v4 document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    referenced_schema: Option<String>,
     /// The action taken when the referenced row is deleted.
     on_delete: FkActionLock,
     /// The action taken when the referenced row is updated.
@@ -204,6 +229,12 @@ struct IndexLock {
 struct EnumLock {
     /// The SQL identifier of the enum type.
     name: String,
+    /// The SQL schema the enum type belongs to.
+    ///
+    /// The key is absent for an enum type of the primary schema, and a v4
+    /// snapshot carries no attribution at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
     /// The labels of the enum, in declaration order.
     variants: Vec<String>,
 }
@@ -214,6 +245,12 @@ struct EnumLock {
 struct ViewLock {
     /// The SQL identifier of the view.
     name: String,
+    /// The SQL schema the view belongs to.
+    ///
+    /// The key is absent for a view of the primary schema, and a v4 snapshot
+    /// carries no attribution at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
     /// The SQL query defining the view.
     definition: String,
 }
@@ -224,6 +261,12 @@ struct ViewLock {
 struct TriggerLock {
     /// The SQL identifier of the trigger.
     name: String,
+    /// The SQL schema the trigger belongs to.
+    ///
+    /// The key is absent for a trigger of the primary schema, and a v4
+    /// snapshot carries no attribution at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
     /// The table the trigger is attached to.
     table: String,
     /// The SQL definition or body of the trigger.
@@ -325,6 +368,7 @@ impl From<&ForeignKeyDef> for ForeignKeyLock {
             columns: foreign_key.columns.clone(),
             referenced_table: foreign_key.referenced_table.clone(),
             referenced_columns: foreign_key.referenced_columns.clone(),
+            referenced_schema: foreign_key.referenced_schema.clone(),
             on_delete: FkActionLock::from(foreign_key.on_delete),
             on_update: FkActionLock::from(foreign_key.on_update),
         }
@@ -348,6 +392,7 @@ impl From<&EnumDef> for EnumLock {
     fn from(definition: &EnumDef) -> Self {
         Self {
             name: definition.name.clone(),
+            schema: definition.schema.clone(),
             variants: definition.variants.clone(),
         }
     }
@@ -357,6 +402,7 @@ impl From<&ViewDef> for ViewLock {
     fn from(view: &ViewDef) -> Self {
         Self {
             name: view.name.clone(),
+            schema: view.schema.clone(),
             definition: view.definition.clone(),
         }
     }
@@ -366,6 +412,7 @@ impl From<&TriggerDef> for TriggerLock {
     fn from(trigger: &TriggerDef) -> Self {
         Self {
             name: trigger.name.clone(),
+            schema: trigger.schema.clone(),
             table: trigger.table_name.clone(),
             definition: trigger.definition.clone(),
         }
@@ -395,6 +442,7 @@ impl From<&TableDef> for TableLock {
 
         Self {
             name: table.name.clone(),
+            schema: table.schema.clone(),
             columns,
             primary_key: table.primary_key.clone(),
             checks,
@@ -405,23 +453,24 @@ impl From<&TableDef> for TableLock {
 }
 
 impl From<&SchemaCatalog> for LockFile {
-    /// Converts a catalog into its TOML DTO, sorting the enums, tables, views,
-    /// and triggers by name — the canonical order the reader applies as well.
-    /// The labels of an enum keep their declaration order, because the order
-    /// of the labels is part of the enum type itself.
+    /// Converts a catalog into its TOML DTO, sorting the enum types, tables,
+    /// views, and triggers by the composite `(schema, name)` key — the
+    /// canonical order the reader applies as well. The labels of an enum keep
+    /// their declaration order, because the order of the labels is part of the
+    /// enum type itself.
     fn from(catalog: &SchemaCatalog) -> Self {
         let mut enums: Vec<EnumLock> = catalog.enums.iter().map(EnumLock::from).collect();
-        enums.sort_by(|left, right| left.name.cmp(&right.name));
+        sort_canonically(&mut enums);
 
         let mut tables: Vec<TableLock> = catalog.tables.iter().map(TableLock::from).collect();
-        tables.sort_by(|left, right| left.name.cmp(&right.name));
+        sort_canonically(&mut tables);
 
         let mut views: Vec<ViewLock> = catalog.views.iter().map(ViewLock::from).collect();
-        views.sort_by(|left, right| left.name.cmp(&right.name));
+        sort_canonically(&mut views);
 
         let mut triggers: Vec<TriggerLock> =
             catalog.triggers.iter().map(TriggerLock::from).collect();
-        triggers.sort_by(|left, right| left.name.cmp(&right.name));
+        sort_canonically(&mut triggers);
 
         Self {
             version: LOCK_VERSION,
@@ -433,13 +482,14 @@ impl From<&SchemaCatalog> for LockFile {
     }
 }
 
-/// Renders the canonical versioned TOML v4 `schema.lock` snapshot.
+/// Renders the canonical versioned TOML v5 `schema.lock` snapshot.
 ///
 /// The catalog is serialized through the strongly typed DTOs above, which
 /// apply the same canonical ordering [`parse_lock_toml`] applies while
-/// reading, so two catalogs that differ only in declaration order render the
-/// very same document — and therefore the very same
-/// [`SchemaCatalog::schema_hash`].
+/// reading — every section sorted by the composite `(schema, name)` key, and
+/// each table's inner lists sorted by name — so two catalogs that differ only
+/// in declaration order render the very same document, and therefore the very
+/// same [`SchemaCatalog::schema_hash`].
 ///
 /// Serializing the DTOs is total in practice: every value is a string, a
 /// number, a boolean, or a table of those, none of which the `toml` writer
@@ -454,58 +504,161 @@ pub(super) fn render_lock_toml(catalog: &SchemaCatalog) -> String {
         .unwrap_or_else(|error| format!("# schema lock rendering failed: {error}\n"))
 }
 
-/// Parses a versioned TOML v4 `schema.lock` snapshot into a catalog.
+/// Parses a versioned TOML `schema.lock` snapshot into a catalog.
 ///
 /// The snapshot is deserialized through the strongly typed DTOs above, so a
 /// key the format does not define is rejected by
 /// `#[serde(deny_unknown_fields)]` instead of being silently ignored, and the
 /// positioned diagnostic of the `toml` reader is preserved inside
-/// [`Error::InvalidLockFormat`]. The built catalog applies the same canonical
-/// ordering the legacy reader produces: enums, tables, views, and triggers are
-/// sorted by name, and each table's columns, checks, foreign keys, and indexes
-/// are sorted by name as well.
+/// [`Error::InvalidLockFormat`].
+///
+/// The current `version = 5` document and the previous `version = 4` one are
+/// accepted, and any other version is rejected by a diagnostic naming both of
+/// them. A v4 snapshot predates the schema layer, so every entity it declares
+/// is read as belonging to the primary schema (`schema = None`) whatever else
+/// the document carries; a v5 snapshot keeps the attribution it records.
+///
+/// The built catalog applies the same canonical ordering the writer applies:
+/// enum types, tables, views, and triggers are sorted by the composite
+/// `(schema, name)` key, and each table's columns, checks, foreign keys, and
+/// indexes are sorted by name as well.
 pub(super) fn parse_lock_toml(contents: &str) -> Result<SchemaCatalog, Error> {
-    let file: LockFile = toml::from_str(contents).map_err(|error| Error::InvalidLockFormat {
+    let mut file: LockFile = toml::from_str(contents).map_err(|error| Error::InvalidLockFormat {
         message: error.to_string(),
     })?;
 
-    if file.version != LOCK_VERSION {
+    if file.version != LOCK_VERSION && file.version != LEGACY_LOCK_VERSION {
         return Err(Error::InvalidLockFormat {
             message: format!(
-                "unsupported schema lock version `{}`: expected `version = {LOCK_VERSION}`",
+                "unsupported schema lock version `{}`: expected `version = {LOCK_VERSION}` or \
+                 the legacy `version = {LEGACY_LOCK_VERSION}`",
                 file.version
             ),
         });
     }
 
-    let mut enums: Vec<EnumDef> = file
+    // A v4 snapshot predates the schema layer, so the version — never the
+    // payload — decides the attribution: every entity belongs to the primary
+    // schema, whatever `schema` keys the document happens to carry.
+    if file.version == LEGACY_LOCK_VERSION {
+        for table in &mut file.tables {
+            table.schema = None;
+            for foreign_key in &mut table.foreign_keys {
+                foreign_key.referenced_schema = None;
+            }
+        }
+        for definition in &mut file.enums {
+            definition.schema = None;
+        }
+        for definition in &mut file.views {
+            definition.schema = None;
+        }
+        for definition in &mut file.triggers {
+            definition.schema = None;
+        }
+    }
+
+    sort_canonically(&mut file.enums);
+    sort_canonically(&mut file.tables);
+    sort_canonically(&mut file.views);
+    sort_canonically(&mut file.triggers);
+
+    let enums: Vec<EnumDef> = file
         .enums
         .into_iter()
-        .map(|parsed| EnumDef::new(parsed.name, parsed.variants))
+        .map(|parsed| EnumDef {
+            name: parsed.name,
+            schema: parsed.schema,
+            variants: parsed.variants,
+        })
         .collect();
-    enums.sort_by(|left, right| left.name.cmp(&right.name));
-
-    let mut tables: Vec<TableDef> = file.tables.into_iter().map(table_def).collect();
-    tables.sort_by(|left, right| left.name.cmp(&right.name));
-
-    let mut views: Vec<ViewDef> = file
+    let tables: Vec<TableDef> = file.tables.into_iter().map(table_def).collect();
+    let views: Vec<ViewDef> = file
         .views
         .into_iter()
-        .map(|parsed| ViewDef::new(parsed.name, parsed.definition))
+        .map(|parsed| ViewDef {
+            name: parsed.name,
+            schema: parsed.schema,
+            definition: parsed.definition,
+        })
         .collect();
-    views.sort_by(|left, right| left.name.cmp(&right.name));
-
-    let mut triggers: Vec<TriggerDef> = file
+    let triggers: Vec<TriggerDef> = file
         .triggers
         .into_iter()
-        .map(|parsed| TriggerDef::new(parsed.name, parsed.table, parsed.definition))
+        .map(|parsed| TriggerDef {
+            name: parsed.name,
+            schema: parsed.schema,
+            table_name: parsed.table,
+            definition: parsed.definition,
+        })
         .collect();
-    triggers.sort_by(|left, right| left.name.cmp(&right.name));
 
     Ok(SchemaCatalog::new(tables)
         .with_enums(enums)
         .with_views(views)
         .with_triggers(triggers))
+}
+
+/// The canonical ordering key of a snapshot section entry.
+///
+/// The key is the composite `(schema, name)` pair: the entries of the primary
+/// schema — the ones carrying no attribution — come first, then every
+/// attributed schema in name order, and the entries of one schema follow in
+/// name order. An `Option` orders `None` before every `Some`, which is exactly
+/// the "primary schema first" rule.
+trait SchemaNamed {
+    /// The SQL schema the entry belongs to, `None` for the primary schema.
+    fn schema_of(&self) -> Option<&str>;
+
+    /// The SQL identifier of the entry.
+    fn entity_name(&self) -> &str;
+}
+
+impl SchemaNamed for TableLock {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl SchemaNamed for EnumLock {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl SchemaNamed for ViewLock {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl SchemaNamed for TriggerLock {
+    fn schema_of(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    fn entity_name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Sorts a snapshot section by the canonical `(schema, name)` key.
+fn sort_canonically<T: SchemaNamed>(entries: &mut [T]) {
+    entries.sort_by(|left, right| {
+        (left.schema_of(), left.entity_name()).cmp(&(right.schema_of(), right.entity_name()))
+    });
 }
 
 /// Converts a parsed table into its catalog definition, sorting the columns,
@@ -542,7 +695,7 @@ fn table_def(table: TableLock) -> TableDef {
 
     TableDef {
         name: table.name,
-        schema: None,
+        schema: table.schema,
         columns,
         primary_key: table.primary_key,
         checks,
@@ -558,7 +711,7 @@ fn foreign_key_def(foreign_key: ForeignKeyLock) -> ForeignKeyDef {
         columns: foreign_key.columns,
         referenced_table: foreign_key.referenced_table,
         referenced_columns: foreign_key.referenced_columns,
-        referenced_schema: None,
+        referenced_schema: foreign_key.referenced_schema,
         on_delete: foreign_key.on_delete.into(),
         on_update: foreign_key.on_update.into(),
     }
@@ -618,6 +771,53 @@ table = "orders"
 definition = "EXECUTE FUNCTION log_order_update()"
 "#;
 
+    const V5_SNAPSHOT: &str = r#"version = 5
+
+[[enums]]
+name = "mood"
+variants = ["happy", "sad"]
+
+[[enums]]
+name = "mood"
+schema = "tenant_a"
+variants = ["calm"]
+
+[[tables]]
+name = "users"
+columns = [
+  { name = "email", type = "text", nullable = false },
+  { name = "id", type = "int64", nullable = false },
+]
+primary_key = ["id"]
+checks = []
+foreign_keys = []
+indexes = []
+
+[[tables]]
+name = "users"
+schema = "tenant_a"
+columns = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "user_id", type = "int64", nullable = false },
+]
+primary_key = ["id"]
+checks = []
+foreign_keys = [
+  { name = "tenant_users_user_id_fkey", columns = ["user_id"], referenced_table = "users", referenced_columns = ["id"], referenced_schema = "public", on_delete = "cascade", on_update = "no action" },
+]
+indexes = []
+
+[[views]]
+name = "active_users"
+schema = "tenant_a"
+definition = "SELECT id FROM users"
+
+[[triggers]]
+name = "users_touch"
+schema = "tenant_a"
+table = "users"
+definition = "EXECUTE FUNCTION touch()"
+"#;
     #[test]
     fn type_lock_conversions_round_trip_every_kind() {
         let kinds = [
@@ -712,13 +912,25 @@ definition = "EXECUTE FUNCTION log_order_update()"
             "EXECUTE FUNCTION log_order_update()",
         )]);
 
+        assert!(
+            catalog.tables.iter().all(|table| table.schema.is_none()),
+            "a v4 snapshot attributes no table to a schema"
+        );
+        assert!(
+            catalog
+                .enums
+                .iter()
+                .all(|definition| definition.schema.is_none()),
+            "a v4 snapshot attributes no enum type to a schema"
+        );
+
         assert_eq!(catalog, expected);
     }
 
     #[test]
     fn parsing_applies_the_canonical_ordering() {
         let snapshot = concat!(
-            "version = 4\n",
+            "version = 5\n",
             "\n",
             "enums = []\n",
             "views = []\n",
@@ -747,7 +959,7 @@ definition = "EXECUTE FUNCTION log_order_update()"
     #[test]
     fn unknown_fields_are_rejected() {
         let snapshot = concat!(
-            "version = 4\n",
+            "version = 5\n",
             "\n",
             "enums = []\n",
             "views = []\n",
@@ -764,8 +976,42 @@ definition = "EXECUTE FUNCTION log_order_update()"
         let error = parse_lock_toml(snapshot).expect_err("unknown keys are rejected");
         assert!(error.to_string().contains("unknown field `nonsense`"));
 
+        let attributed = parse_lock_toml(concat!(
+            "version = 5\n",
+            "\n",
+            "enums = []\n",
+            "views = []\n",
+            "triggers = []\n",
+            "[[tables]]\n",
+            "name = \"users\"\n",
+            "schema = \"tenant_a\"\n",
+            "nonsense = 1\n",
+            "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+            "checks = []\n",
+            "foreign_keys = []\n",
+            "indexes = []\n",
+        ))
+        .expect_err("an unknown key next to the schema attribution is rejected");
+        assert!(attributed.to_string().contains("unknown field `nonsense`"));
+
+        let foreign = parse_lock_toml(concat!(
+            "version = 5\n",
+            "\n",
+            "enums = []\n",
+            "views = []\n",
+            "triggers = []\n",
+            "[[tables]]\n",
+            "name = \"orders\"\n",
+            "columns = [{ name = \"user_id\", type = \"int64\", nullable = false }]\n",
+            "checks = []\n",
+            "foreign_keys = [{ name = \"fk\", columns = [\"user_id\"], referenced_table = \"users\", referenced_columns = [\"id\"], referenced_schema = \"auth\", mystery = 1 }]\n",
+            "indexes = []\n",
+        ))
+        .expect_err("an unknown key next to the referenced schema is rejected");
+        assert!(foreign.to_string().contains("unknown field `mystery`"));
+
         let root_level = parse_lock_toml(concat!(
-            "version = 4\n",
+            "version = 5\n",
             "mystery = 1\n",
             "enums = []\n",
             "tables = []\n",
@@ -781,10 +1027,10 @@ definition = "EXECUTE FUNCTION log_order_update()"
         let snapshot = "version = 3\n\nenums = []\ntables = []\nviews = []\ntriggers = []\n";
         let error = parse_lock_toml(snapshot).expect_err("an unsupported version is rejected");
 
-        assert!(error
-            .to_string()
-            .contains("unsupported schema lock version `3`"));
-        assert!(error.to_string().contains("version = 4"));
+        let message = error.to_string();
+        assert!(message.contains("unsupported schema lock version `3`"), "got: {message}");
+        assert!(message.contains("version = 5"), "got: {message}");
+        assert!(message.contains("version = 4"), "got: {message}");
     }
 
     #[test]
@@ -915,10 +1161,142 @@ definition = "EXECUTE FUNCTION log_order_update()"
 
         let lock = render_lock_toml(&catalog);
 
-        assert!(lock.starts_with("version = 4"), "got: {lock}");
+        assert!(lock.starts_with("version = 5"), "got: {lock}");
         assert_eq!(
             SchemaCatalog::from_lock(&lock).expect("the rendering reparses"),
             catalog
+        );
+    }
+    #[test]
+    fn a_v5_snapshot_parses_two_schemas_sharing_a_table_name() {
+        let catalog = parse_lock_toml(V5_SNAPSHOT).expect("the fixture parses");
+
+        let names: Vec<(Option<&str>, &str)> = catalog
+            .tables
+            .iter()
+            .map(|table| (table.schema.as_deref(), table.name.as_str()))
+            .collect();
+        assert_eq!(names, [(None, "users"), (Some("tenant_a"), "users")]);
+
+        let tenant = &catalog.tables[1];
+        assert_eq!(tenant.columns.len(), 2);
+        assert_eq!(
+            tenant.foreign_keys[0].referenced_schema.as_deref(),
+            Some("public")
+        );
+
+        assert!(catalog.enums[0].schema.is_none());
+        assert_eq!(catalog.enums[1].schema.as_deref(), Some("tenant_a"));
+        assert_eq!(catalog.enums[1].variants, ["calm"]);
+        assert_eq!(catalog.views[0].schema.as_deref(), Some("tenant_a"));
+        assert_eq!(catalog.triggers[0].schema.as_deref(), Some("tenant_a"));
+    }
+
+    #[test]
+    fn parsing_sorts_sections_by_schema_then_name() {
+        let snapshot = concat!(
+            "version = 5\n",
+            "\n",
+            "[[tables]]\n",
+            "name = \"users\"\n",
+            "schema = \"tenant_b\"\n",
+            "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+            "primary_key = [\"id\"]\n",
+            "checks = []\n",
+            "foreign_keys = []\n",
+            "indexes = []\n",
+            "[[tables]]\n",
+            "name = \"users\"\n",
+            "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+            "primary_key = [\"id\"]\n",
+            "checks = []\n",
+            "foreign_keys = []\n",
+            "indexes = []\n",
+            "[[tables]]\n",
+            "name = \"audit\"\n",
+            "schema = \"tenant_a\"\n",
+            "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+            "primary_key = [\"id\"]\n",
+            "checks = []\n",
+            "foreign_keys = []\n",
+            "indexes = []\n",
+        );
+
+        let catalog = parse_lock_toml(snapshot).expect("the snapshot parses");
+        let names: Vec<(Option<&str>, &str)> = catalog
+            .tables
+            .iter()
+            .map(|table| (table.schema.as_deref(), table.name.as_str()))
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                (None, "users"),
+                (Some("tenant_a"), "audit"),
+                (Some("tenant_b"), "users"),
+            ]
+        );
+    }
+
+    #[test]
+    fn rendering_keeps_two_schemas_apart_and_ignores_declaration_order() {
+        let declared = parse_lock_toml(V5_SNAPSHOT).expect("the fixture parses");
+
+        let mut reversed = declared.clone();
+        reversed.enums.reverse();
+        reversed.tables.reverse();
+
+        assert_eq!(
+            SchemaCatalog::from_lock(&declared.to_lock()).expect("the rendering reparses"),
+            declared
+        );
+        assert_eq!(declared.to_lock(), reversed.to_lock());
+        assert_eq!(declared.schema_hash(), reversed.schema_hash());
+    }
+
+    #[test]
+    fn a_v4_snapshot_reads_flat_even_when_a_schema_key_is_present() {
+        let snapshot = concat!(
+            "version = 4\n",
+            "\n",
+            "[[tables]]\n",
+            "name = \"users\"\n",
+            "schema = \"tenant_a\"\n",
+            "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+            "primary_key = [\"id\"]\n",
+            "checks = []\n",
+            "foreign_keys = [{ name = \"users_parent_fkey\", columns = [\"id\"], referenced_table = \"users\", referenced_columns = [\"id\"], referenced_schema = \"tenant_a\", on_delete = \"no action\", on_update = \"no action\" }]\n",
+            "indexes = []\n",
+        );
+
+        let catalog = parse_lock_toml(snapshot).expect("the snapshot parses");
+
+        assert_eq!(catalog.tables[0].schema, None);
+        assert_eq!(catalog.tables[0].foreign_keys[0].referenced_schema, None);
+    }
+
+    #[test]
+    fn a_flat_snapshot_omits_the_schema_key() {
+        let catalog = parse_lock_toml(concat!(
+            "version = 5\n",
+            "\n",
+            "[[tables]]\n",
+            "name = \"users\"\n",
+            "columns = [{ name = \"id\", type = \"int64\", nullable = false }]\n",
+            "primary_key = [\"id\"]\n",
+            "checks = []\n",
+            "foreign_keys = []\n",
+            "indexes = []\n",
+        ))
+        .expect("the snapshot parses");
+
+        let lock = render_lock_toml(&catalog);
+
+        assert!(
+            lock.lines()
+                .all(|line| !line.trim_start().starts_with("schema =")),
+            "a primary-schema snapshot carries no schema key: {lock}"
         );
     }
 }

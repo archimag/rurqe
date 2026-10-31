@@ -512,9 +512,9 @@ fn run_cli_codegen_writes_schema_and_lock_from_live_sqlite() {
     let code = fs::read_to_string(&schema).expect("read generated schema");
     let snapshot = fs::read_to_string(&lock).expect("read schema lock");
 
-    // The snapshot is the versioned TOML v4 document, and it reads back into
+    // The snapshot is the versioned TOML v5 document, and it reads back into
     // the catalog the live database produced.
-    assert!(snapshot.starts_with("version = 4"));
+    assert!(snapshot.starts_with("version = 5"));
     let parsed = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
     assert_eq!(parsed.tables.len(), 1);
     assert_eq!(parsed.tables[0].name, "users");
