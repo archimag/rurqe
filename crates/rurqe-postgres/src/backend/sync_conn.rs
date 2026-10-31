@@ -1,4 +1,6 @@
-//! Synchronous execution adapter over [`postgres::Client`].
+//! Synchronous execution adapter over a [`postgres::Client`] handle.
+
+use std::borrow::{Borrow, BorrowMut};
 
 use postgres::fallible_iterator::FallibleIterator;
 use postgres::types::ToSql;
@@ -71,18 +73,26 @@ pub(crate) fn fetch_raw_limited_sync(
     }
 }
 
-/// A [`postgres::Client`] executing RURQE queries through the synchronous driver.
+/// A synchronous PostgreSQL handle executing RURQE queries.
+///
+/// The adapter is generic over the handle it executes through, and the default
+/// type parameter is an owned [`postgres::Client`]: `PgConnection` therefore
+/// keeps naming the adapter that owns its connection. [`PgConnection::borrowed`]
+/// builds the same adapter over a handle the caller keeps owning, so a
+/// connection checked out of a pool is driven through the identical contracts —
+/// guarded `BEGIN`/`COMMIT`, `SAVEPOINT` nesting, and rollback on error — and
+/// returns to its pool once the adapter is dropped.
 ///
 /// The adapter implements the RURQE
 /// [`QueryBackend`](rurqe_core::query::QueryBackend) contract, so the
 /// `fetch_all`, `fetch_one`, `fetch_optional`, and `execute` helpers of
 /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available.
-pub struct PgConnection {
-    client: postgres::Client,
+pub struct PgConnection<B = postgres::Client> {
+    client: B,
     status: TransactionStatus<PgError>,
 }
 
-impl PgConnection {
+impl PgConnection<postgres::Client> {
     /// Wraps an existing synchronous PostgreSQL client.
     pub fn new(client: postgres::Client) -> Self {
         Self {
@@ -91,19 +101,39 @@ impl PgConnection {
         }
     }
 
-    /// Returns a shared reference to the wrapped client.
-    pub fn client(&self) -> &postgres::Client {
-        &self.client
-    }
-
-    /// Returns a mutable reference to the wrapped client.
-    pub fn client_mut(&mut self) -> &mut postgres::Client {
-        &mut self.client
-    }
-
     /// Consumes the adapter, returning the wrapped client.
     pub fn into_inner(self) -> postgres::Client {
         self.client
+    }
+}
+
+impl PgConnection<&mut postgres::Client> {
+    /// Wraps a borrowed client handle with fresh transaction bookkeeping.
+    ///
+    /// The handle stays owned by the caller, which is what makes the adapter
+    /// usable over a connection checked out of a pool: the handle is borrowed
+    /// for the lifetime of the adapter and returns to its owner once the
+    /// adapter is dropped. The bookkeeping starts clean, because such a handle
+    /// may have executed statements before it was checked out.
+    pub fn borrowed(client: &mut postgres::Client) -> PgConnection<&mut postgres::Client> {
+        PgConnection {
+            client,
+            status: TransactionStatus::new(),
+        }
+    }
+}
+
+impl<B: Borrow<postgres::Client>> PgConnection<B> {
+    /// Returns a shared reference to the wrapped client.
+    pub fn client(&self) -> &postgres::Client {
+        self.client.borrow()
+    }
+}
+
+impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
+    /// Returns a mutable reference to the wrapped client.
+    pub fn client_mut(&mut self) -> &mut postgres::Client {
+        self.client.borrow_mut()
     }
 
     /// Runs `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
@@ -117,7 +147,7 @@ impl PgConnection {
     /// unwinding never leaves an open transaction or savepoint behind.
     pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
     where
-        F: FnOnce(&mut PgConnection) -> Result<T, E>,
+        F: FnOnce(&mut PgConnection<B>) -> Result<T, E>,
         E: From<PgError>,
     {
         let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
@@ -168,7 +198,7 @@ impl PgConnection {
         f: F,
     ) -> Result<T, E>
     where
-        F: FnOnce(&mut PgConnection) -> Result<T, E>,
+        F: FnOnce(&mut PgConnection<B>) -> Result<T, E>,
         E: From<PgError>,
     {
         let mut guard = TransactionGuard::begin_with(self, Some(isolation)).map_err(E::from)?;
@@ -178,11 +208,11 @@ impl PgConnection {
     }
 }
 
-impl QueryBackend for PgConnection {
+impl<B: BorrowMut<postgres::Client>> QueryBackend for PgConnection<B> {
     type Error = PgError;
 
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
-        fetch_raw_sync(&mut self.client, query)
+        fetch_raw_sync(self.client.borrow_mut(), query)
     }
 
     fn fetch_raw_limited(
@@ -190,17 +220,17 @@ impl QueryBackend for PgConnection {
         query: &BuiltQuery,
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, PgError> {
-        fetch_raw_limited_sync(&mut self.client, query, limit)
+        fetch_raw_limited_sync(self.client.borrow_mut(), query, limit)
     }
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, PgError> {
-        execute_raw_sync(&mut self.client, query)
+        execute_raw_sync(self.client.borrow_mut(), query)
     }
 }
 
-impl TransactionBackend for PgConnection {}
+impl<B: BorrowMut<postgres::Client>> TransactionBackend for PgConnection<B> {}
 
-impl TransactionalConnection for PgConnection {
+impl<B: BorrowMut<postgres::Client>> TransactionalConnection for PgConnection<B> {
     fn transaction_status(&mut self) -> &mut TransactionStatus<PgError> {
         &mut self.status
     }
