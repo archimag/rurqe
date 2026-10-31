@@ -21,6 +21,7 @@ use std::fmt;
 
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
+use rurqe_core::query::BuiltQuery;
 
 use self::compat::value_fits;
 use self::driver::types::{FromSql, IsNull, Kind, ToSql, Type};
@@ -162,6 +163,50 @@ fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chron
 /// A [`SqlVal`] bound to the parameter type expected by the PostgreSQL driver.
 #[derive(Debug)]
 pub(crate) struct SqlValParam<'a>(pub(crate) &'a SqlVal);
+
+/// The parameters of one statement, prepared once for a driver call.
+///
+/// A statement binds its parameters in two steps: every [`SqlVal`] is wrapped in
+/// the [`SqlValParam`] that implements the driver's parameter trait, and the
+/// wrapped values are handed to the driver as references to it. Both steps live
+/// here, so every entry point of the adapters prepares its parameters through
+/// one implementation, and a different buffer strategy — keeping the low
+/// parameter counts on the stack, for instance — is applied in one place
+/// instead of being replayed in each entry point.
+pub(crate) struct BoundParams<'a> {
+    /// The wrapper of every bound parameter, which the driver references.
+    bound: Vec<SqlValParam<'a>>,
+}
+
+impl<'a> BoundParams<'a> {
+    /// Prepares the parameters of `query`.
+    pub(crate) fn of(query: &'a BuiltQuery) -> Self {
+        Self {
+            bound: query.params.iter().map(SqlValParam).collect(),
+        }
+    }
+
+    /// Borrows the parameters as the references a driver call accepts.
+    ///
+    /// The driver takes the bound list as an iterator, so the references are
+    /// yielded one at a time: collecting them into a buffer of their own would
+    /// add a second allocation to every statement before it reaches the server.
+    pub(crate) fn bindings(&self) -> impl ExactSizeIterator<Item = &(dyn ToSql + Sync)> + '_ {
+        self.bound.iter().map(|param| param as &(dyn ToSql + Sync))
+    }
+
+    /// Collects the parameters into the reference buffer a slice-based driver
+    /// call accepts.
+    ///
+    /// The statement API of the synchronous driver takes its parameters as one
+    /// slice rather than as an iterator, so the references are collected into
+    /// the single buffer that call requires. Every other driver call borrows
+    /// the wrappers through [`bindings`](BoundParams::bindings) and allocates
+    /// nothing beyond the buffer of wrappers itself.
+    pub(crate) fn references(&self) -> Vec<&(dyn ToSql + Sync)> {
+        self.bindings().collect()
+    }
+}
 
 impl ToSql for SqlValParam<'_> {
     fn to_sql(

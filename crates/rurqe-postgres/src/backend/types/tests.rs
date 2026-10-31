@@ -4,13 +4,63 @@
 //! for a column, so the wire representation of a column the code generator maps
 //! onto `String` stays pinned without a running database.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
+use rurqe_core::query::BuiltQuery;
 
 use super::driver::types::{IsNull, Kind, ToSql, Type};
 use super::wire::{wire_of, Wire};
-use super::{decode_value, SqlValParam};
+use super::{decode_value, BoundParams, SqlValParam};
 
+// The binding layer sits on the hot path of every statement, so its allocation
+// count is observed rather than assumed. The counter is thread-local because
+// the test harness runs scenarios concurrently in one process: a thread that
+// never armed the counter allocates through the system allocator exactly as it
+// did before, so only the measuring test contributes to the count.
+thread_local! {
+    // Whether the current thread counts its allocations.
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    // How many allocations the current thread made while counting was armed.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// A global allocator that counts the allocations of an armed thread.
+struct CountingAllocator;
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        record_allocation();
+        System.alloc(layout)
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        record_allocation();
+        System.alloc_zeroed(layout)
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        record_allocation();
+        System.realloc(ptr, layout, new_size)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        System.dealloc(ptr, layout);
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+/// Counts one allocation of the current thread while counting is armed.
+fn record_allocation() {
+    let armed = COUNTING.try_with(|counting| counting.get()).unwrap_or(false);
+    if armed {
+        let _ = ALLOCATIONS.try_with(|allocations| allocations.set(allocations.get() + 1));
+    }
+}
 /// Builds a type the way the server would report it.
 fn synthetic(name: &str, oid: u32, kind: Kind) -> Type {
     Type::new(name.to_owned(), oid, kind, "public".to_owned())
@@ -623,4 +673,27 @@ fn text_parameters_bind_to_uuid_json_and_temporal_types() {
         date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
         IsNull::No
     ));
+}
+
+#[test]
+fn a_statement_prepares_its_parameters_once() {
+    let query = BuiltQuery {
+        sql: "select 1 where id = $1".to_owned(),
+        params: vec![SqlVal::I64(1)],
+    };
+
+    ALLOCATIONS.with(|allocations| allocations.set(0));
+    COUNTING.with(|counting| counting.set(true));
+    let params = BoundParams::of(&query);
+    let bound = params.bindings().count();
+    COUNTING.with(|counting| counting.set(false));
+    let allocations = ALLOCATIONS.with(|allocations| allocations.get());
+
+    assert_eq!(bound, 1);
+    // The statement pays for one buffer of wrappers. A second buffer of
+    // driver references would raise this count and fail the test.
+    assert_eq!(
+        allocations, 1,
+        "binding one parameter must allocate one buffer of its bound values"
+    );
 }

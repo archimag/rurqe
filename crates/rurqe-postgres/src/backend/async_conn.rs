@@ -5,16 +5,16 @@ use core::future::Future;
 use futures_core::Stream;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
-use tokio_postgres::types::ToSql;
 
 use super::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
-use super::types::{rows_to_sql_vals, PgError, SqlValParam};
+use super::types::{rows_to_sql_vals, BoundParams, PgError};
 
 /// Executes `query` through an asynchronous client without decoding rows.
 ///
 /// The helper accepts any [`tokio_postgres::GenericClient`] — a plain client, a
 /// pooled client, or an open transaction — so the parameter binding logic is
-/// shared by every asynchronous adapter.
+/// shared by every asynchronous adapter. The whole result set is drained; the
+/// bounded form of the same call is [`fetch_raw_limited_async`].
 pub(crate) async fn fetch_raw_async<C>(
     client: &C,
     query: &BuiltQuery,
@@ -22,18 +22,7 @@ pub(crate) async fn fetch_raw_async<C>(
 where
     C: tokio_postgres::GenericClient + Sync,
 {
-    // The driver takes its parameters as one slice of borrowed trait objects, so
-    // the wrappers around the bound values are re-borrowed instead of their
-    // payloads being copied into a buffer of their own.
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let bound: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    // The statement yields its whole result set at once, so every payload is
-    // decoded straight from the borrowed row buffer.
-    let rows = client.query(query.sql.as_str(), &bound).await?;
-    rows_to_sql_vals(rows)
+    fetch_raw_limited_async(client, query, None).await
 }
 
 /// Executes `query` through an asynchronous client and returns affected rows.
@@ -41,12 +30,12 @@ pub(crate) async fn execute_raw_async<C>(client: &C, query: &BuiltQuery) -> Resu
 where
     C: tokio_postgres::GenericClient,
 {
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
+    // The parameters are prepared once and handed over as references, so the
+    // statement pays for one buffer of its own values and never for a copy of
+    // them.
+    let params = BoundParams::of(query);
     let affected = client
-        .execute_raw(
-            query.sql.as_str(),
-            params.iter().map(|param| param as &(dyn ToSql + Sync)),
-        )
+        .execute_raw(query.sql.as_str(), params.bindings())
         .await?;
     Ok(affected)
 }
@@ -64,33 +53,29 @@ pub(crate) async fn fetch_raw_limited_async<C>(
 where
     C: tokio_postgres::GenericClient + Sync,
 {
-    match limit {
-        None => fetch_raw_async(client, query).await,
-        Some(limit) => {
-            let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-            let stream = client
-                .query_raw(
-                    query.sql.as_str(),
-                    params.iter().map(|param| param as &(dyn ToSql + Sync)),
-                )
-                .await?;
-            rows_from_stream(stream, limit).await
-        }
-    }
+    // The parameters are prepared once and handed over as references, so the
+    // statement pays for one buffer of its own values and never for a copy of
+    // them.
+    let params = BoundParams::of(query);
+    let stream = client
+        .query_raw(query.sql.as_str(), params.bindings())
+        .await?;
+    rows_from_stream(stream, limit).await
 }
 
 /// Collects at most `limit` rows from the row stream of a `query_raw` call.
 ///
 /// The stream is polled row by row and the loop stops as soon as `limit` rows
-/// have been collected, so the remaining rows of an unbounded result set are
-/// never read from the socket.
+/// have been collected, so the remaining rows of a bounded result set are never
+/// read from the socket. Without a limit the stream is drained to its end.
 async fn rows_from_stream(
     stream: tokio_postgres::RowStream,
-    limit: usize,
+    limit: Option<usize>,
 ) -> Result<Vec<Vec<SqlVal>>, PgError> {
     let mut stream = std::pin::pin!(stream);
     let mut rows = Vec::new();
-    while rows.len() < limit {
+    let ceiling = limit.unwrap_or(usize::MAX);
+    while rows.len() < ceiling {
         let next = std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
         match next {
             Some(row) => rows.push(row?),

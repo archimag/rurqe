@@ -3,32 +3,20 @@
 use std::borrow::{Borrow, BorrowMut};
 
 use postgres::fallible_iterator::FallibleIterator;
-use postgres::types::ToSql;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
     BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionGuard,
     TransactionStatus, TransactionalConnection,
 };
 
-use super::types::{rows_to_sql_vals, PgError, SqlValParam};
+use super::types::{rows_to_sql_vals, BoundParams, PgError};
 
 /// Executes `query` through a synchronous client without decoding rows.
 pub(crate) fn fetch_raw_sync(
     client: &mut postgres::Client,
     query: &BuiltQuery,
 ) -> Result<Vec<Vec<SqlVal>>, PgError> {
-    // The driver takes its parameters as one slice of borrowed trait objects, so
-    // the wrappers around the bound values are re-borrowed instead of their
-    // payloads being copied into a buffer of their own.
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    let bound: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    // The statement yields its whole result set at once, so every payload is
-    // decoded straight from the borrowed row buffer.
-    let rows = client.query(query.sql.as_str(), &bound)?;
-    rows_to_sql_vals(rows)
+    fetch_raw_limited_sync(client, query, None)
 }
 
 /// Executes `query` through a synchronous client and returns affected rows.
@@ -36,14 +24,15 @@ pub(crate) fn execute_raw_sync(
     client: &mut postgres::Client,
     query: &BuiltQuery,
 ) -> Result<u64, PgError> {
-    let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-    // This driver offers no iterator form of `execute`, so the bound values are
-    // handed over as one slice of borrowed parameters.
-    let bound: Vec<&(dyn ToSql + Sync)> = params
-        .iter()
-        .map(|param| param as &(dyn ToSql + Sync))
-        .collect();
-    let affected = client.execute(query.sql.as_str(), &bound)?;
+    // The parameters are prepared once and handed over as references, so the
+    // statement pays for one buffer of its own values and never for a copy of
+    // them. The statement API of the synchronous driver takes those references
+    // as one slice, so this is the one entry point that collects the reference
+    // buffer that call itself requires; a statement without parameters
+    // collects an empty buffer and allocates nothing at all.
+    let params = BoundParams::of(query);
+    let references = params.references();
+    let affected = client.execute(query.sql.as_str(), &references)?;
     Ok(affected)
 }
 
@@ -57,20 +46,20 @@ pub(crate) fn fetch_raw_limited_sync(
     query: &BuiltQuery,
     limit: Option<usize>,
 ) -> Result<Vec<Vec<SqlVal>>, PgError> {
-    match limit {
-        None => fetch_raw_sync(client, query),
-        Some(limit) => {
-            let params: Vec<SqlValParam<'_>> = query.params.iter().map(SqlValParam).collect();
-            let rows = client
-                .query_raw(
-                    query.sql.as_str(),
-                    params.iter().map(|param| param as &(dyn ToSql + Sync)),
-                )?
-                .take(limit)
-                .collect::<Vec<_>>()?;
-            rows_to_sql_vals(rows)
+    // The parameters are prepared once and handed over as references, so the
+    // statement pays for one buffer of its own values and never for a copy of
+    // them.
+    let params = BoundParams::of(query);
+    let mut rows = Vec::new();
+    let mut stream = client.query_raw(query.sql.as_str(), params.bindings())?;
+    let ceiling = limit.unwrap_or(usize::MAX);
+    while rows.len() < ceiling {
+        match stream.next()? {
+            Some(row) => rows.push(row),
+            None => break,
         }
     }
+    rows_to_sql_vals(rows)
 }
 
 /// A synchronous PostgreSQL handle executing RURQE queries.
