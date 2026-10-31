@@ -106,7 +106,7 @@ postgres://app_user:secret@localhost:5432/mydb?options=-csearch_path%3Dapp,publi
 
 ### CLI Tooling and Verification Sandboxes
 
-Unlike runtime execution, `rurqe-cli` actively isolates database environments during verification workflows (`stage verify`, `cargo db-verify`, and `stage commit`):
+Unlike runtime execution, `rurqe-cli` actively isolates database environments during verification workflows (`stage verify`, `cargo rurqe verify`, and `stage commit`):
 
 * Verification sandboxes create ephemeral scratch databases (`PostgresSandbox`) to evaluate declarative DDL from `schema/`.
 * In these isolated scratch environments, the CLI explicitly configures `search_path` to point to the resolved `primary_schema`.
@@ -132,4 +132,4 @@ schemas = ["public", "auth", "billing"]
 * `schemas`: Complete list of all schemas subject to introspection, drift verification, and code generation.
 * `[codegen.type_overrides]`: Supports both two-segment paths (`table.column` for the primary schema) and three-segment paths (`schema.table.column` for secondary schemas).
 
-During `cargo db-codegen`, `rurqe-cli` emits tables of the primary schema as flat top-level markers, while wrapping each secondary schema into a dedicated `schema!` block. The accompanying `schema.lock` records all entities with their respective `schema` attributes, sorting catalog entries deterministically across all configured schemas.
+During `cargo rurqe codegen`, `rurqe-cli` emits tables of the primary schema as flat top-level markers, while wrapping each secondary schema into a dedicated `schema!` block. The accompanying `schema.lock` records all entities with their respective `schema` attributes, sorting catalog entries deterministically across all configured schemas.

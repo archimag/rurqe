@@ -286,16 +286,15 @@ catalog digest and takes no schema selection.
 ## Applying pending migrations
 
 ```bash
-cargo db-migrate up
+cargo rurqe migrate up
 ```
 
 The command reads the directory, refuses an unusable history — a recorded
 failure, an edited applied script, two scripts declaring one version — and
 applies what is pending in run order: versioned scripts in ascending version
 order, then the repeatable scripts whose contents differ from the recorded
-digest. An invocation that names no action, `cargo db-migrate`, applies pending
-migrations as well, and `cargo rurqe migrate up` is the same command reached
-through the toolchain's own entry point.
+digest. An invocation that names no action, `cargo rurqe migrate`, applies
+pending migrations as well.
 
 The report states how many scripts ran and how long they took in total, and lists
 every one of them:
@@ -329,7 +328,7 @@ unknown option `--checkpoint-path` for `migrate status` (`--checkpoint-path` gua
 ## Inspecting the status
 
 ```bash
-cargo db-migrate status
+cargo rurqe migrate status
 ```
 
 The command compares every script of the directory with the recorded history and
@@ -361,7 +360,7 @@ No migrations found in migrations
 ## Repairing the history
 
 ```bash
-cargo db-migrate repair
+cargo rurqe migrate repair
 ```
 
 The command does not execute a single script. It purges every unsuccessful entry
@@ -382,7 +381,7 @@ it twice.
 ## Baselining an existing database
 
 ```bash
-cargo db-baseline --version 1.0.0
+cargo rurqe baseline --version 1.0.0
 ```
 
 A database that already carries the schema, and a project that squashed a long

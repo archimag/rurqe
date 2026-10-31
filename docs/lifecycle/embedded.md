@@ -155,10 +155,10 @@ algorithm, and the history table; they differ in what each one can reach.
 | Concern | Command line | Embedded collection |
 |---|---|---|
 | Where the scripts come from | `migrations/` on disk, read at run time | compiled into the binary, parsed at startup |
-| Applying the pending scripts | `cargo db-migrate up` | `migrate` / `migrate_async` |
-| Inspecting the status | `cargo db-migrate status` | `status` / `status_async` |
-| Repairing the history | `cargo db-migrate repair` | `repair` / `repair_async` |
-| Recording a baseline | `cargo db-baseline --version <version>` | `baseline` / `baseline_async` |
+| Applying the pending scripts | `cargo rurqe migrate up` | `migrate` / `migrate_async` |
+| Inspecting the status | `cargo rurqe migrate status` | `status` / `status_async` |
+| Repairing the history | `cargo rurqe migrate repair` | `repair` / `repair_async` |
+| Recording a baseline | `cargo rurqe baseline --version <version>` | `baseline` / `baseline_async` |
 | Cold start from the declarative stage | `cargo rurqe stage init --version <version>` | not available |
 | Sealing a boundary | `cargo rurqe stage commit --version <version>` | not available |
 | Verifying both descriptions | `cargo rurqe stage verify` | not available |

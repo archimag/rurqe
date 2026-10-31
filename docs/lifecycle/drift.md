@@ -13,7 +13,7 @@ Two questions are answered by two gates:
 
 - **Does the database still match the code the project ships?** The snapshot
   gate (`cargo db-verify`) reads the catalog of a live database and compares it
-  with `schema.lock` and with the digest embedded in the generated module.
+  gate (`cargo rurqe verify`) reads the catalog of a live database and compares it
 - **Do the two descriptions of the schema still converge?** The golden gate
   (`cargo rurqe stage verify`) replays the declarative stage and the checkpoint
   plus migration tail into disposable scratch databases and compares the two
@@ -76,8 +76,8 @@ environment that holds data.
 ```bash
 export DATABASE_URL=postgres://app@localhost:5432/app_ci
 
-cargo db-migrate up
-cargo db-verify --schema-path src/schema.rs --lock-path schema.lock
+cargo rurqe migrate up
+cargo rurqe verify --schema-path src/schema.rs --lock-path schema.lock
 
 cargo rurqe stage verify --checkpoint-path checkpoint.toml \
     --scratch-url postgres://app@localhost:5432/app_ci
@@ -96,7 +96,7 @@ remaining schemas in `schemas`, and the same selection reaches every digest the
 commands compare:
 
 ```bash
-cargo db-verify --schema-path src/schema.rs --schema app
+cargo rurqe verify --schema-path src/schema.rs --schema app
 cargo rurqe stage verify --scratch-url :memory: --schema app
 ```
 
@@ -106,7 +106,7 @@ A malformed `rurqe.toml` aborts either command instead of being partially applie
 ## The snapshot gate
 
 ```bash
-cargo db-verify --schema-path src/schema.rs --lock-path schema.lock
+cargo rurqe verify --schema-path src/schema.rs --lock-path schema.lock
 ```
 
 | Option | Effect |
@@ -126,7 +126,8 @@ Schema verification passed against schema.lock
 
 A failing verification ends the process with a non-zero status, so a pipeline
 stop is the default outcome and no separate check is needed around the command.
-The command is reachable as `cargo rurqe verify` as well.
+`cargo rurqe verify` is the snapshot gate; the golden gate below is `cargo rurqe
+stage verify`.
 
 ### The generated module is optional, the flag is not
 
@@ -161,7 +162,7 @@ Live schema hash:     8a3b1f40...
   - Table `products`: index `products_sku_idx` is in snapshot but missing from database.
   - View `active_users` definition differs between database and snapshot.
 
-Hint: Run `cargo db-codegen` to update code and snapshot.
+Hint: Run `cargo rurqe codegen` to update code and snapshot.
 ```
 
 The finding wording follows the kind of object:
@@ -177,7 +178,7 @@ The finding wording follows the kind of object:
 
 The remedy depends on which side is right. When the database carries the intended
 schema — a column was added by a migration that has not been generated yet — the
-snapshot and the module are stale, and `cargo db-codegen` refreshes both. When
+snapshot and the module are stale, and `cargo rurqe codegen` refreshes both. When
 the snapshot is right, the database was advanced by hand or by a migration the
 repository does not contain, and the missing migration is what the run has to
 add.
@@ -191,7 +192,7 @@ reported:
 SCHEMA_HASH mismatch in schema code: expected 8a3b1f40..., found 4f1d9c2e...
   - Table `products`: column `sku` exists in database but is missing from snapshot.
 
-Hint: Run `cargo db-codegen` to update code and snapshot.
+Hint: Run `cargo rurqe codegen` to update code and snapshot.
 ```
 
 The expected digest is the one the live catalog produces, the found one is the
@@ -207,7 +208,7 @@ so it is refused instead of passing the gate by omission:
 ```text
 The schema code declares no `SCHEMA_HASH` constant, so it cannot be verified against the live database.
 
-Hint: Run `cargo db-codegen` to regenerate the schema code and snapshot.
+Hint: Run `cargo rurqe codegen` to regenerate the schema code and snapshot.
 ```
 
 A hand-written schema module reaches this diagnostic. The generated module always

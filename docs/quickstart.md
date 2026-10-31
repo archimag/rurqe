@@ -32,7 +32,7 @@ Schema definitions are represented by zero-sized marker types implementing the `
 {{#rustdoc_include examples/quickstart.rs:schema}}
 ```
 
-In standard workflows, these markers are generated automatically by `cargo db-codegen` from the live database catalog.
+In standard workflows, these markers are generated automatically by `cargo rurqe codegen` from the live database catalog.
 
 ## 3. Typed Read Queries
 

@@ -192,7 +192,7 @@ A database that holds data is never re-initialised; it is advanced. `migrate up`
 `migrate up` takes one further flag that belongs to the stage lifecycle:
 
 ```bash
-cargo db-migrate up --checkpoint-path checkpoint.toml
+cargo rurqe migrate up --checkpoint-path checkpoint.toml
 ```
 
 The marker arms the fail-safe protection of a pruned history. A target whose newest recorded version sits below `pruned_up_to_version` cannot be advanced by the remaining tail, so the run is refused before a single script executes with a diagnostic naming the version the database stopped at and the boundary it fell below, and pointing at `schema/` as the way back: the database is re-initialised from the stage, or brought forward by hand, never migrated by a partial script sequence. A database whose recorded stage marker carries a digest different from the marker's `schema_hash` is refused the same way, because the database was initialised from a stage the checkpoint does not describe.
@@ -430,7 +430,7 @@ Only versioned scripts strictly below `--before` are deleted. The script at the 
 With the boundary committed and the history pruned, both routes describe the same schema and each one serves the environments it fits.
 
 - A clean environment is cold-started from the stage: `cargo rurqe stage init --version 5.0`. The run records the stage version as a baseline, so the tail above the boundary still applies on the next `migrate up`, and the environment never replays the pruned history.
-- A database that holds data is advanced by the tail: `cargo db-migrate up --checkpoint-path checkpoint.toml`. The marker arms the fail-safe, so a target whose newest recorded version sits below the boundary, and a target that records no version at all, are both refused before a single script executes instead of being advanced by a partial tail. Once the history below the boundary is pruned, the cold start is the only route left for an empty database, because the scripts that would have advanced it are exactly the ones the prune removed.
+- A database that holds data is advanced by the tail: `cargo rurqe migrate up --checkpoint-path checkpoint.toml`. The marker arms the fail-safe, so a target whose newest recorded version sits below the boundary, and a target that records no version at all, are both refused before a single script executes instead of being advanced by a partial tail. Once the history below the boundary is pruned, the cold start is the only route left for an empty database, because the scripts that would have advanced it are exactly the ones the prune removed.
 - A change is written twice, and the two descriptions are made to agree: the DDL of `schema/` states the new state, and a `V...` or `R...` script in `migrations/` carries the same change as a delta for the databases that already exist. `stage verify` fails while the two disagree, which is what keeps the pair honest between commits.
 - A release every deployed database has passed seals the next boundary with `stage commit` at the new version and prunes the scripts below it, so the tail stays as short as the releases no database has passed yet.
 
