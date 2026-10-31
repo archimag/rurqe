@@ -8,13 +8,13 @@
 
 use rurqe::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserEmail => "email": String,
     }
-}
+);
 
 /// A dialect rendering bare identifiers and `$N` placeholders.
 ///
@@ -74,17 +74,17 @@ impl core::str::FromStr for Nonce {
 
 impl_sql_text_newtype!(Nonce);
 
-schema! {
+schema!(
     /// The `audit` schema.
     Audit => "audit" as audit {
-        // The schema name above reaches every nested `table!` declaration, so
+        // The schema name above reaches every nested `table!` invocation, so
         // the table states its SQL name without an `in` clause.
-        table! {
+        table!(
             Events => "events" {
                 EventId => "id": i64,
                 EventKind => "kind": String,
             }
-        }
+        );
 
         @items {
             use rurqe::prelude::table_alias;
@@ -95,7 +95,7 @@ schema! {
             }
         }
     }
-}
+);
 #[test]
 fn capability_traits_are_in_scope_via_prelude() {
     #[allow(dead_code)]

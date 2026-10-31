@@ -398,15 +398,15 @@ fn a_combined_scope_is_checked_against_the_query_scope() {
     require_combined_in_scope::<User, Order, (User, Order), _>();
 }
 
-crate::schema! {
+crate::schema!(
     /// The `auth` schema.
     Auth => "auth" as auth {
-        table! {
+        table!(
             Sessions => "sessions" {
                 SessionsId => "id": i64,
                 SessionsUserId => "user_id": i64,
             }
-        }
+        );
 
         @items {
             crate::table_alias! {
@@ -415,18 +415,18 @@ crate::schema! {
             }
         }
     }
-}
+);
 
-crate::schema! {
+crate::schema!(
     /// The `public` schema, declared without a trailing item block.
     Public => "public" as public {
-        table! {
+        table!(
             Accounts => "accounts" {
                 AccountsId => "id": i64,
             }
-        }
+        );
     }
-}
+);
 
 #[test]
 fn a_schema_declaration_carries_its_name_to_every_table() {
@@ -452,24 +452,24 @@ fn a_schema_declared_without_items_exposes_its_tables() {
     assert_eq!(<public::Accounts as Table>::SCHEMA, Some("public"));
     assert_eq!(Public.Accounts, public::Accounts);
 }
-crate::schema! {
+crate::schema!(
     /// The `billing` schema.
     Billing => "billing" as billing {
-        table! {
+        table!(
             Invoices => "invoices" {
                 InvoicesId => "id": i64,
             }
-        }
+        );
 
-        table! {
+        table!(
             /// The `payments` table.
             Payments => "payments" {
                 PaymentsId => "id": i64,
                 PaymentsInvoiceId => "invoice_id": i64,
             }
-        }
+        );
     }
-}
+);
 
 #[test]
 fn a_schema_declares_every_table_of_its_body() {

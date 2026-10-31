@@ -10,16 +10,16 @@
 /// ```
 /// use rurqe_core::schema::{Column, Table};
 ///
-/// rurqe_core::schema! {
+/// rurqe_core::schema!(
 ///     /// The `auth` schema.
 ///     Auth => "auth" as auth {
-///         table! {
+///         table!(
 ///             Sessions => "sessions" {
 ///                 SessionsId => "id": i64,
 ///             }
-///         }
+///         );
 ///     }
-/// }
+/// );
 ///
 /// // The module carries the type namespace of the schema.
 /// assert_eq!(<auth::Sessions as Table>::SCHEMA, Some("auth"));
@@ -35,10 +35,11 @@
 /// identifier: the marker stays in `PascalCase` (`Auth`) while the module
 /// follows the naming convention of modules (`auth`).
 ///
-/// Every table of the schema is declared with a [`table!`](crate::table) block
-/// written inside the schema body. The macro attaches the schema name to each
-/// of them, so neither the `in` clause nor the module the declaration lands in
-/// is restated, while the columns keep the shape a plain declaration produces
+/// Every table of the schema is declared with a [`table!`](crate::table)
+/// invocation written inside the schema body. The macro attaches the schema
+/// name to each of them, so neither the `in` clause nor the module the
+/// declaration lands in is restated, while the columns keep the shape a plain
+/// declaration produces
 /// and the relation renders `"auth"."sessions"` in `FROM` and `JOIN` clauses.
 ///
 /// Items that belong next to the tables — an enumeration, a record, an
@@ -46,14 +47,14 @@
 /// which is written into the generated module verbatim:
 ///
 /// ```
-/// rurqe_core::schema! {
+/// rurqe_core::schema!(
 ///     /// The `audit` schema.
 ///     Audit => "audit" as audit {
-///         table! {
+///         table!(
 ///             Events => "events" {
 ///                 EventId => "id": i64,
 ///             }
-///         }
+///         );
 ///
 ///         @items {
 ///             use rurqe_core::table_alias;
@@ -64,7 +65,7 @@
 ///             }
 ///         }
 ///     }
-/// }
+/// );
 ///
 /// use rurqe_core::schema::TableAlias;
 ///
@@ -76,10 +77,10 @@ macro_rules! schema {
         $(#[$schema_meta:meta])*
         $schema:ident => $schema_name:literal as $module:ident {
             $(
-                table! {
+                table!(
                     $(#[$table_meta:meta])*
                     $table:ident => $table_name:literal { $($columns:tt)* }
-                }
+                );
             )*
             $(@items { $($items:tt)* })?
         }
@@ -87,12 +88,12 @@ macro_rules! schema {
         $(#[$schema_meta])*
         pub mod $module {
             $(
-                $crate::table! {
+                $crate::table!(
                     $(#[$table_meta])*
                     $table => $table_name in $schema_name {
                         $($columns)*
                     }
-                }
+                );
             )*
 
             $($($items)*)?

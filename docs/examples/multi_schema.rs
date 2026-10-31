@@ -6,36 +6,36 @@ use rurqe_examples::example_pool;
 // ANCHOR: schema_declaration
 // The schema name is stated once, and every nested `table!` inherits it, so
 // the table declaration below carries no `in` clause of its own.
-schema! {
+schema!(
     /// The `auth` schema.
     Auth => "auth" as auth {
-        table! {
+        table!(
             Sessions => "sessions" {
                 SessionsId => "id": i64,
                 SessionsUserId => "user_id": i64,
             }
-        }
+        );
     }
-}
+);
 // ANCHOR_END: schema_declaration
 
 // ANCHOR: primary_declaration
-table! {
+table!(
     /// The `users` table of the primary schema.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 // ANCHOR_END: primary_declaration
 
 // ANCHOR: table_in_clause
-table! {
+table!(
     /// The `audit_events` table of the `audit` schema.
     AuditEvent => "audit_events" in "audit" {
         AuditEventId => "id": i64,
     }
-}
+);
 // ANCHOR_END: table_in_clause
 
 #[tokio::main]
