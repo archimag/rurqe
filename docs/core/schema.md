@@ -10,7 +10,7 @@ The `table!` macro declares zero-sized table and column markers:
 {{#rustdoc_include ../examples/schema.rs:declaration}}
 ```
 
-The macro generates a unit struct for the table and one unit struct per column marker. Because unit structs serve simultaneously as types and as values in Rust, a column marker is passed directly as a value in a predicate — no turbofish generic syntax, no wrapper expression — as the addressing form written below shows.
+Each invocation declares exactly one table and ends with a semicolon, so a declaration is a single statement rather than the opening of a block that could hold several. The macro generates a unit struct for the table and one unit struct per column marker. Because unit structs serve simultaneously as types and as values in Rust, a column marker is passed directly as a value in a predicate — no turbofish generic syntax, no wrapper expression — as the addressing form written below shows.
 
 ## Value-Based Column Addressing
 

@@ -7,15 +7,15 @@ use rurqe::postgres::pg16;
 use rurqe::postgres::prelude::*;
 use rurqe::sqlite::{sqlite3_0, sqlite3_24, sqlite3_35};
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `profiles` table, read through the PostgreSQL extensions.
     Profile => "profiles" {
         ProfileId => "id": i64,
@@ -23,7 +23,7 @@ table! {
         ProfileMetadata => "metadata": PgJson,
         ProfileTags => "tags": Vec<String>,
     }
-}
+);
 
 fn main() -> Result<(), BuildError> {
     // ANCHOR: postgres

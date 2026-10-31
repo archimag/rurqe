@@ -2,22 +2,22 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `events` table.
     Event => "events" {
         EventId => "id": i64,
         EventCreatedAt => "created_at": i64,
         EventData => "data": String,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

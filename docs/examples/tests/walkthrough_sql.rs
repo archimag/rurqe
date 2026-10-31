@@ -17,16 +17,16 @@
 
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserManagerId => "manager_id": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
@@ -34,18 +34,17 @@ table! {
         OrderStatus => "status": String,
         OrderUserId => "user_id": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `products` table.
     Product => "products" {
         ProductId => "id": i64,
         ProductName => "name": String,
         ProductPrice => "price": f64,
     }
-}
-
-table! {
+);
+table!(
     /// The `profiles` table.
     Profile => "profiles" {
         ProfileId => "id": i64,
@@ -53,7 +52,7 @@ table! {
         ProfileMetadata => "metadata": PgJson,
         ProfileTags => "tags": Vec<String>,
     }
-}
+);
 
 /// The chapter comparing the two engines.
 const COMPARISON: &str = include_str!("../../core/dialects/comparison.md");

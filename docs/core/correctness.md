@@ -25,17 +25,17 @@ Compiler error messages describe the violated SQL rule directly rather than leak
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-table! {
+table!(
     Order => "orders" {
         OrderTotal => "total": f64,
     }
-}
+);
 
 // Rejected by the compiler: `OrderTotal` belongs to a table the query never introduces
 let _ = select_from(User).select(cols!(UserId, OrderTotal));

@@ -149,14 +149,14 @@ pub enum Mood {
     Happy,
 }
 
-table! {
+table!(
     /// The `users` table.
     Users => "users" {
         UsersEmail => "email": String,
         UsersId => "id": i64,
         UsersMood => "mood": Option<Mood>,
     }
-}
+);
 
 /// Strongly typed row record for `users`.
 #[derive(Debug, Clone, PartialEq)]
@@ -190,17 +190,17 @@ that schema.
 For a secondary schema of one table the block has this shape:
 
 ```text
-schema! {
+schema!(
     /// The `auth` schema.
     Auth => "auth" as auth {
-        table! {
+        table!(
             /// The `sessions` table.
             Sessions => "sessions" {
                 SessionsExpiresAt => "expires_at": chrono::NaiveDateTime,
                 SessionsId => "id": i64,
                 SessionsUserId => "user_id": i64,
             }
-        }
+        );
 
         @items {
             // The module owns its own type namespace, so the prelude its items
@@ -217,7 +217,7 @@ schema! {
             }
         }
     }
-}
+);
 ```
 
 A table of the primary schema keeps rendering its bare name (`FROM "users"`),

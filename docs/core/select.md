@@ -173,11 +173,11 @@ Below the stated threshold the feature does not exist on the target, so the meth
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 fn main() {
     // Rejected: nothing is projected, so there is no statement to build.
@@ -194,17 +194,17 @@ The accepted form projects first — `select_from(User).select(cols!(UserId)).bu
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-table! {
+table!(
     Order => "orders" {
         OrderTotal => "total": f64,
     }
-}
+);
 
 fn main() {
     // Rejected: `OrderTotal` belongs to `orders`, a relation this query never reads.

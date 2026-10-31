@@ -99,11 +99,11 @@ A clause introduced after the pinned release has no builder method at that modul
 ```rust,compile_fail
 use rurqe::sqlite::sqlite3_24::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 // Rejected at compile time: RETURNING requires SQLite 3.35+.
 let _ = delete_from(User).allow_all().returning(cols!(UserId));
@@ -170,11 +170,11 @@ SQLite locks the database file for the duration of a write instead of claiming i
 ```rust,compile_fail
 use rurqe::sqlite::prelude::*;
 
-table! {
+table!(
     Job => "jobs" {
         JobId => "id": i64,
     }
-}
+);
 
 // Rejected at compile time: SQLite has no per-row locking, so the clause has
 // no builder method.

@@ -2,7 +2,7 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
@@ -10,7 +10,7 @@ table! {
         OrderTotal => "total": f64,
         OrderTax => "tax": f64,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

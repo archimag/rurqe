@@ -3,30 +3,30 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
         OrderAmount => "amount": f64,
         OrderUserId => "user_id": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `user_totals` relation the aggregate is published under.
     UserTotals => "user_totals" {
         TotalsOwnerId => "owner_id": i64,
         TotalsTotal => "total": f64,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -2,30 +2,30 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserManagerId => "manager_id": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
         OrderUserId => "user_id": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `latest_order` lateral relation marker.
     LatestOrder => "latest_order" {
         LatestOrderTotal => "total": f64,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

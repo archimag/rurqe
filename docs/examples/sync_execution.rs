@@ -7,12 +7,12 @@
 
 use rurqe::sqlite::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 // ANCHOR: load_user
 /// Reads the identifier of one user through a blocking terminal call.

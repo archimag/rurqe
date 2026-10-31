@@ -131,14 +131,14 @@ Below the stated threshold the clause does not exist on the target, so the metho
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserEmail => "email": String,
     }
-}
+);
 
 fn main() {
     // Rejected: the statement names a table but records no row to insert.

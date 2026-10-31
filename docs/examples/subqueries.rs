@@ -2,29 +2,29 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `products` table.
     Product => "products" {
         ProductId => "id": i64,
         ProductName => "name": String,
         ProductPrice => "price": f64,
     }
-}
+);
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderUserId => "user_id": i64,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

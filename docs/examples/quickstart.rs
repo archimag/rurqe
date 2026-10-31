@@ -8,14 +8,14 @@
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
 // ANCHOR: schema
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserEmail => "email": String,
     }
-}
+);
 // ANCHOR_END: schema
 
 // ANCHOR: dto

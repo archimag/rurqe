@@ -2,23 +2,23 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `employees` table.
     Employee => "employees" {
         EmployeeId => "id": i64,
         DepartmentId => "department_id": i64,
         Salary => "salary": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
         OrderCreatedAt => "created_at": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

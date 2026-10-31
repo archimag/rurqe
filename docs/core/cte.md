@@ -137,18 +137,18 @@ A left-joined derived table lifts its columns to `Option<T>` exactly like a left
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-table! {
+table!(
     UserTotals => "user_totals" {
         TotalsOwnerId => "owner_id": i64,
         TotalsTotal => "total": f64,
     }
-}
+);
 
 fn main() {
     // Rejected: `user_totals` is named by the marker, but this statement records
@@ -168,18 +168,18 @@ The accepted form projects the statement first — `select_from(Order).group_by(
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-table! {
+table!(
     UserTotals => "user_totals" {
         TotalsOwnerId => "owner_id": i64,
         TotalsTotal => "total": f64,
     }
-}
+);
 
 fn main() {
     // Rejected: the query never reads `user_totals`, so the column is out of scope.

@@ -2,14 +2,14 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserManagerId => "manager_id": i64,
     }
-}
+);
 
 // ANCHOR: aliases
 table_alias! {

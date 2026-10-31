@@ -96,11 +96,11 @@ The clause binds after the inserted values and before any `RETURNING` projection
 ```rust,compile_fail
 use rurqe::sqlite::sqlite3_0::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 // Rejected at compile time: ON CONFLICT requires SQLite 3.24+.
 let _ = insert_into(User)
@@ -125,11 +125,11 @@ The clause hands the affected rows back in the same statement, so a mutation ret
 ```rust,compile_fail
 use rurqe::sqlite::sqlite3_24::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 // Rejected at compile time: RETURNING requires SQLite 3.35+.
 let _ = delete_from(User).allow_all().returning(cols!(UserId));
@@ -157,18 +157,18 @@ The document holds one object per child row, keyed by the field names of the nes
 ```rust,compile_fail
 use rurqe::sqlite::sqlite3_35::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-table! {
+table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderUserId => "user_id": i64,
     }
-}
+);
 
 // Rejected at compile time: the JSON functions a nested collection renders with
 // are part of a default build only from SQLite 3.38, so the projection is
@@ -213,11 +213,11 @@ Some clauses belong to a client-server engine and have no meaning in an embedded
 ```rust,compile_fail
 use rurqe::sqlite::prelude::*;
 
-table! {
+table!(
     Job => "jobs" {
         JobId => "id": i64,
     }
-}
+);
 
 // Rejected at compile time: SQLite has no per-row locking, so the clause has
 // no builder method.
@@ -232,11 +232,11 @@ let _ = select_from(Job)
 ```rust,compile_fail
 use rurqe::sqlite::prelude::*;
 
-table! {
+table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 // Rejected at compile time: DISTINCT ON is not a clause SQLite implements.
 let _ = select_from(User).select(cols!(UserId)).distinct_on(UserId);

@@ -6,30 +6,30 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserEmail => "email": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `archived_users` table.
     ArchivedUser => "archived_users" {
         ArchivedUserId => "id": i64,
         ArchivedUserName => "name": String,
         ArchivedUserEmail => "email": String,
     }
-}
+);
 
-table! {
+table!(
     /// The `accounts` table.
     Account => "accounts" {
         AccountId => "id": i64,
     }
-}
+);
 
 #[tokio::main]
 async fn main() -> Result<()> {

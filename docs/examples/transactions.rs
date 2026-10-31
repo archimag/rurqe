@@ -4,13 +4,13 @@
 use rurqe::postgres::prelude::*;
 use rurqe::postgres::PgAsyncConnection;
 
-table! {
+table!(
     /// The `accounts` table.
     Account => "accounts" {
         AccountId => "id": i64,
         AccountBalance => "balance": i64,
     }
-}
+);
 
 // ANCHOR: transaction
 /// Records both opening balances in one transaction.

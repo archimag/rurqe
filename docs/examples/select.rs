@@ -2,7 +2,7 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
@@ -10,16 +10,16 @@ table! {
         UserEmail => "email": String,
         UserActive => "active": bool,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
         OrderTax => "tax": f64,
     }
-}
+);
 
 // ANCHOR: dto_declaration
 dto! {

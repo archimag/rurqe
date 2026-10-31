@@ -6,13 +6,13 @@
 
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     /// The `accounts` table.
     Account => "accounts" {
         AccountId => "id": i64,
         AccountBalance => "balance": i64,
     }
-}
+);
 
 // ANCHOR: isolation
 /// Adjusts a balance inside a `SERIALIZABLE` transaction.

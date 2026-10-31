@@ -29,7 +29,7 @@ A column reference in `SELECT` projections, predicates, and ordering clauses rem
 
 ## Grouping Tables with `schema!`
 
-The `schema!` macro declares a secondary schema and the tables belonging to it. Each table of the schema is written as an ordinary `table!` declaration, so its columns keep exactly the shape a table of the primary schema has:
+The `schema!` macro declares a secondary schema and the tables belonging to it. One invocation declares exactly one schema and ends with a semicolon, so the declaration reads as a single statement rather than as the opening of a block that could hold several. Each table of the schema is written as an ordinary `table!` declaration, so its columns keep exactly the shape a table of the primary schema has:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/multi_schema.rs:schema_declaration}}

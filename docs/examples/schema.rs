@@ -3,14 +3,14 @@
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
 // ANCHOR: declaration
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
     }
-}
+);
 // ANCHOR_END: declaration
 
 #[tokio::main]
