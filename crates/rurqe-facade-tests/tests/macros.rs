@@ -74,6 +74,24 @@ impl core::str::FromStr for Nonce {
 
 impl_sql_text_newtype!(Nonce);
 
+schema! {
+    /// The `audit` schema.
+    Audit => "audit" as audit {
+        Events => "events" {
+            EventId => "id": i64,
+            EventKind => "kind": String,
+        }
+
+        @items {
+            use rurqe::prelude::table_alias;
+
+            table_alias! {
+                /// The `e` alias.
+                EventAlias => Events as "e"
+            }
+        }
+    }
+}
 #[test]
 fn capability_traits_are_in_scope_via_prelude() {
     #[allow(dead_code)]
@@ -184,4 +202,12 @@ fn returning_accepts_a_projection_of_the_mutated_table() {
         built.params,
         vec![SqlVal::I64(1), SqlVal::Text("root@example.com".to_owned())]
     );
+}
+
+#[test]
+fn schema_expands_through_the_facade() {
+    assert_eq!(<audit::Events as Table>::SCHEMA, Some("audit"));
+    assert_eq!(Audit.Events, audit::Events);
+    assert_eq!(Audit.Events.EventId, audit::EventId);
+    assert_eq!(<audit::EventAlias as TableAlias>::NAME, "e");
 }

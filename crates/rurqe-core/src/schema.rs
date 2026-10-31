@@ -18,9 +18,14 @@
 //! * bare: the column marker type of the table declaration, which stays the
 //!   short spelling every simple statement uses.
 //!
+//! Tables of one database schema are grouped with the `schema!` macro, which
+//! emits the module of the schema together with the accessor that addresses
+//! its tables by the schema they belong to.
+//!
 
 mod alias;
 mod arithmetic;
+mod group;
 mod scope;
 mod table;
 

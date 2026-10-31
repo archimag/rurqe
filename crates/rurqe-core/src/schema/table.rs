@@ -278,11 +278,70 @@ impl<C: Column> ColumnBelongsTo<C::Table> for C {}
 /// // The accessor carries markers only, so it stays zero-sized.
 /// assert_eq!(core::mem::size_of::<User>(), 0);
 /// ```
+///
+/// A table of a secondary schema states the schema it lives in with the `in`
+/// clause. The rest of the declaration is unchanged, so the markers and the
+/// columns keep the shape a plain table produces while the relation renders
+/// its qualifier:
+///
+/// ```
+/// rurqe_core::table! {
+///     /// The `sessions` table of the `auth` schema.
+///     Session => "sessions" in "auth" {
+///         SessionId => "id": i64,
+///     }
+/// }
+///
+/// use rurqe_core::schema::{Table, TableRef};
+///
+/// assert_eq!(<Session as Table>::SCHEMA, Some("auth"));
+/// assert_eq!(
+///     <Session as Table>::table_ref(),
+///     TableRef::qualified("auth", "sessions")
+/// );
+/// ```
+///
+/// The `schema!` macro builds on the clause: it declares one database schema
+/// together with the module holding its tables.
 #[macro_export]
 macro_rules! table {
     (
         $(#[$table_meta:meta])*
         $table:ident => $table_name:literal {
+            $($table_body:tt)*
+        }
+    ) => {
+        $crate::table! {
+            @declare
+            [$(#[$table_meta])*]
+            $table,
+            $table_name,
+            [::core::option::Option::None]
+            { $($table_body)* }
+        }
+    };
+    (
+        $(#[$table_meta:meta])*
+        $table:ident => $table_name:literal in $schema_name:literal {
+            $($table_body:tt)*
+        }
+    ) => {
+        $crate::table! {
+            @declare
+            [$(#[$table_meta])*]
+            $table,
+            $table_name,
+            [::core::option::Option::Some($schema_name)]
+            { $($table_body)* }
+        }
+    };
+    (
+        @declare
+        [$(#[$table_meta:meta])*]
+        $table:ident,
+        $table_name:literal,
+        [$($schema:tt)*]
+        {
             $(
                 $(#[$column_meta:meta])*
                 $column:ident => $column_name:literal : $rust_type:ty,
@@ -307,6 +366,8 @@ macro_rules! table {
 
         impl $crate::schema::Table for $table {
             const NAME: &'static str = $table_name;
+
+            const SCHEMA: ::core::option::Option<&'static str> = $($schema)*;
         }
 
         $(

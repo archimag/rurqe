@@ -624,6 +624,8 @@ pub mod prelude {
 
     pub use rurqe_core::query::{lateral, CrossLateralJoined, Lateral, LeftLateralJoined};
 
+    pub use rurqe_core::schema;
+
     pub use rurqe_core::schema::{Aliased, AliasedCol, ExprScope, TableAlias};
 
     pub use rurqe_core::dml::insert::{

@@ -403,3 +403,93 @@ fn a_combined_scope_is_checked_against_the_query_scope() {
     require_combined_in_scope::<(), User, User, _>();
     require_combined_in_scope::<User, Order, (User, Order), _>();
 }
+
+crate::schema! {
+    /// The `auth` schema.
+    Auth => "auth" as auth {
+        Sessions => "sessions" {
+            SessionsId => "id": i64,
+            SessionsUserId => "user_id": i64,
+        }
+
+        @items {
+            crate::table_alias! {
+                /// The `s` alias.
+                SessionAlias => Sessions as "s"
+            }
+        }
+    }
+}
+
+crate::schema! {
+    /// The `public` schema, declared without a trailing item block.
+    Public => "public" as public {
+        Accounts => "accounts" {
+            AccountsId => "id": i64,
+        }
+    }
+}
+
+#[test]
+fn a_schema_declaration_carries_its_name_to_every_table() {
+    assert_eq!(<auth::Sessions as Table>::SCHEMA, Some("auth"));
+    assert_eq!(<auth::Sessions as Table>::NAME, "sessions");
+    assert_eq!(<auth::SessionsId as Column>::NAME, "id");
+    assert_eq!(
+        <<auth::SessionsId as Column>::Table as Table>::NAME,
+        "sessions"
+    );
+}
+
+#[test]
+fn a_schema_accessor_addresses_the_markers_of_its_module() {
+    assert_eq!(Auth.Sessions, auth::Sessions);
+    assert_eq!(Auth.Sessions.SessionsId, auth::SessionsId);
+    assert_eq!(Auth.Sessions.SessionsUserId, auth::SessionsUserId);
+    assert_eq!(core::mem::size_of::<Auth>(), 0);
+}
+
+#[test]
+fn a_schema_declared_without_items_exposes_its_tables() {
+    assert_eq!(<public::Accounts as Table>::SCHEMA, Some("public"));
+    assert_eq!(Public.Accounts, public::Accounts);
+}
+
+#[test]
+fn a_query_over_a_schema_table_qualifies_the_relation() {
+    use crate::query::SelectQuery;
+
+    let built = SelectQuery::<RelationDialect>::new()
+        .from_table(auth::Sessions)
+        .select((auth::SessionsId,))
+        .where_(crate::expr::Expr::column::<auth::SessionsId>().eq(7i64))
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "SELECT \"id\" FROM \"auth\".\"sessions\" WHERE (\"id\" = ?)"
+    );
+    assert_eq!(built.params, vec![crate::expr::SqlVal::I64(7)]);
+}
+
+#[test]
+fn a_table_alias_declared_inside_a_schema_module_mirrors_its_table() {
+    use crate::schema::{AliasedCol, TableAlias};
+
+    assert_eq!(<auth::SessionAlias as TableAlias>::NAME, "s");
+    assert_eq!(
+        Aliased::<auth::Sessions, auth::SessionAlias>::table_ref(),
+        TableRef::qualified_aliased("auth", "sessions", "s")
+    );
+
+    let aliased: AliasedCol<auth::SessionAlias, auth::SessionsId> = auth::SessionAlias.SessionsId;
+    assert_eq!(core::mem::size_of_val(&aliased), 0);
+    assert_eq!(
+        AliasedCol::<auth::SessionAlias, auth::SessionsId>::expr_kind(),
+        crate::expr::ExprKind::QualifiedColumn {
+            table: "s",
+            column: "id",
+        }
+    );
+}
