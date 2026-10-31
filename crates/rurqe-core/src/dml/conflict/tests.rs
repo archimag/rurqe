@@ -28,12 +28,12 @@ impl Dialect for MockDialect {
 
 impl SupportsOnConflict for MockDialect {}
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
 struct EmptyAssignments;
 

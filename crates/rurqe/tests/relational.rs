@@ -9,7 +9,7 @@
 use rurqe::__core::schema::{At, Next};
 use rurqe::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
@@ -17,31 +17,31 @@ table! {
         UserActive => "active": bool,
         UserManagerId => "manager_id": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The `orders` table.
     Order => "orders" {
         OrderId => "id": i64,
         OrderUserId => "user_id": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 
-table! {
+table!(
     /// Summary CTE table representation.
     UserSummary => "user_summary" {
         SummaryUserId => "user_id": i64,
         SummaryOrderCount => "order_count": i64,
     }
-}
+);
 
-table! {
+table!(
     /// The most recent order per user, produced by a LATERAL subquery.
     RecentOrder => "recent" {
         RecentTotal => "total": f64,
     }
-}
+);
 
 table_alias! {
     /// The `manager` alias.
@@ -969,23 +969,23 @@ fn a_filtered_aggregate_restricts_the_rows_it_reads() {
 mod value_based_dsl {
     use rurqe::postgres::prelude::*;
 
-    table! {
+    table!(
         /// The `users` table.
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
             UserActive => "active": bool,
         }
-    }
+    );
 
-    table! {
+    table!(
         /// The `orders` table.
         Order => "orders" {
             OrderId => "id": i64,
             OrderUserId => "user_id": i64,
             OrderTotal => "total": f64,
         }
-    }
+    );
 
     #[test]
     fn joins_render_without_table_or_dialect_turbofish() {
@@ -1259,7 +1259,7 @@ mod phase18_relational {
         Sad,
     }
 
-    table! {
+    table!(
         /// The `posts` table carrying an enum column and two array columns.
         Post => "posts" {
             PostId => "id": i64,
@@ -1267,23 +1267,23 @@ mod phase18_relational {
             PostTags => "tags": Vec<String>,
             PostScores => "scores": Option<Vec<i64>>,
         }
-    }
+    );
 
-    table! {
+    table!(
         /// The `comments` table read as the nested collection of its post.
         Comment => "comments" {
             CommentPostId => "post_id": i64,
             CommentBody => "body": String,
         }
-    }
+    );
 
-    table! {
+    table!(
         /// The number of comments of one post, produced by a derived table.
         CommentCount => "comment_count" {
             CountPostId => "post_id": i64,
             CountTotal => "total": i64,
         }
-    }
+    );
 
     dto! {
         /// One nested comment row decoded from the JSON aggregate of its post.
@@ -1484,14 +1484,14 @@ mod phase18_relational {
 mod postgres_extension_traits {
     use rurqe::prelude::*;
 
-    table! {
+    table!(
         /// The `docs` table holding a text column and a JSON document.
         Doc => "docs" {
             DocId => "id": i64,
             DocContent => "content": String,
             DocMetadata => "metadata": PgJson,
         }
-    }
+    );
 
     /// Renders `predicate` as the filter of a single-relation query.
     fn rendered(predicate: Expr<bool, Doc>) -> BuiltQuery {
@@ -1619,13 +1619,13 @@ mod postgres_extension_traits {
     }
 
     #[cfg(feature = "serde_json")]
-    table! {
+    table!(
         /// The `payloads` table holding a document of the optional JSON crate.
         Payload => "payloads" {
             PayloadId => "id": i64,
             PayloadData => "data": serde_json::Value,
         }
-    }
+    );
 
     #[cfg(feature = "serde_json")]
     #[test]

@@ -121,27 +121,27 @@ fn spawnable<F: core::future::Future + Send>(future: F) -> F {
     future
 }
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderUserId => "user_id": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 
-crate::table! {
+crate::table!(
     RecentOrder => "recent" {
         RecentId => "id": i64,
         RecentTotal => "total": f64,
     }
-}
+);
 
 crate::table_alias! {
     /// The `u` alias.

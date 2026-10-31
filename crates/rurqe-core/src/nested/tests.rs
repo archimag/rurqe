@@ -39,18 +39,18 @@ impl Dialect for SqliteMock {
 
 impl SupportsJsonAggregation for SqliteMock {}
 
-crate::table! {
+crate::table!(
     Owner => "owners" {
         OwnerId => "id": i64,
     }
-}
+);
 
-crate::table! {
+crate::table!(
     Line => "lines" {
         LineSku => "sku": String,
         LineQty => "qty": i64,
     }
-}
+);
 
 /// The child row a nested projection decodes into.
 type OrderLine = (String, i64);
