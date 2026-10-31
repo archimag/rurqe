@@ -241,6 +241,12 @@ where
     /// ```text
     /// ON CONFLICT ("id") WHERE (("id" > $1) AND ("tenant_id" = $2)) DO UPDATE ...
     /// ```
+    ///
+    /// The predicate selects the index the statement conflicts on, so it exists
+    /// only after the target column list: a clause whose selection yields no
+    /// target column is rejected while the statement is built, as
+    /// [`BuildError::MissingConflictTarget`](crate::query::BuildError::MissingConflictTarget),
+    /// because the grammar places the index-inference `WHERE` after the target.
     pub fn target_where<S, PredD>(mut self, predicate: Expr<bool, S, NonAggregate, PredD>) -> Self
     where
         S: ConflictTargetScope<T>,
@@ -352,6 +358,14 @@ where
     ///     .on_conflict((UserId,))
     ///     .do_update(UserId::set_expr(Expr::column::<AccountId>()));
     /// ```
+    ///
+    /// The branch rewrites the row whose violated constraint the clause names,
+    /// so it requires a conflict target: a clause whose selection yields no
+    /// target column is rejected while the statement is built, as
+    /// [`BuildError::MissingConflictTarget`](crate::query::BuildError::MissingConflictTarget),
+    /// because the grammar of every engine places the target column list before
+    /// `DO UPDATE`. The bare `ON CONFLICT DO NOTHING` clause is the one form
+    /// that needs no target.
     pub fn do_update<A>(self, assignments: A) -> InsertQuery<D, T, Values, Returning>
     where
         A: AssignmentSet<T> + AssignmentScope,

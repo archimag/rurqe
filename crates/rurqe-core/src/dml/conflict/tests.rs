@@ -9,8 +9,9 @@ use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::dml::{
     AssignColumn, AssignValue, AssignmentScope, AssignmentSet, ColumnAssign, Excluded, InsertQuery,
 };
-use crate::query::BuildError;
-use crate::expr::{Expression, SqlVal, Unscoped};
+use crate::query::{BuildError, Selection, TableSelection};
+use crate::expr::{ExprKind, Expression, SqlVal, Unscoped};
+use crate::schema::Column;
 use core::fmt::Write;
 
 struct MockDialect;
@@ -53,6 +54,25 @@ impl AssignmentScope for EmptyAssignments {
     type Scope = ();
     type Dialect = ();
 }
+
+/// A selection that records a projection while naming no target column.
+///
+/// The tuple implementations inside the crate always name at least one column,
+/// while the trait is public and `Selection::push_column_names` defaults to
+/// recording nothing, so a selection declared outside the crate can leave the
+/// conflict target empty while still providing a projection — the shape the
+/// missing-target rejection is written for.
+struct NamelessTarget;
+
+impl Selection for NamelessTarget {
+    type Row = (i64,);
+
+    fn push_projections(&self, out: &mut Vec<ExprKind>) {
+        out.push(UserId::expr_kind());
+    }
+}
+
+impl TableSelection<User> for NamelessTarget {}
 
 fn assert_target_scope<S: ConflictTargetScope<User>>() {}
 
@@ -258,4 +278,77 @@ fn the_empty_assignment_set_rejection_names_the_alternatives() {
     assert!(message.contains("DO UPDATE"));
     assert!(message.contains("DO NOTHING"));
     assert!(message.contains("update_where"));
+}
+
+#[test]
+fn a_do_update_branch_over_a_nameless_target_is_rejected() {
+    // `on_conflict` derives the target column list from the selection alone, so
+    // a selection naming no column leaves the clause without the target the
+    // grammar requires before `DO UPDATE`.
+    let built = InsertQuery::<MockDialect, User>::new()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict(NamelessTarget)
+        .do_update(UserName::set("upserted"))
+        .build();
+
+    assert_eq!(built, Err(BuildError::MissingConflictTarget));
+}
+
+#[test]
+fn a_target_predicate_over_a_nameless_target_is_rejected() {
+    // The index-inference predicate exists only after the target column list,
+    // so it cannot stand on an empty one, whichever action follows.
+    let built = InsertQuery::<MockDialect, User>::new()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict(NamelessTarget)
+        .target_where(UserId.gt(0i64))
+        .do_nothing()
+        .build();
+
+    assert_eq!(built, Err(BuildError::MissingConflictTarget));
+}
+
+#[test]
+fn the_missing_target_is_reported_before_the_content_checks() {
+    // Both the structural rule and the empty-assignment check reject this
+    // clause, so reporting the missing target pins that the structural defect
+    // is found before the expressions and assignments are audited.
+    let built = InsertQuery::<MockDialect, User>::new()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict(NamelessTarget)
+        .target_where(UserId.gt(0i64))
+        .do_update(EmptyAssignments)
+        .build();
+
+    assert_eq!(built, Err(BuildError::MissingConflictTarget));
+}
+
+#[test]
+fn a_nameless_target_still_builds_the_bare_do_nothing_clause() {
+    // The bare `ON CONFLICT DO NOTHING` is the one form the grammar accepts
+    // without a conflict target, so the rule leaves it legal.
+    let built = InsertQuery::<MockDialect, User>::new()
+        .values((UserId::set(1i64), UserName::set("root")))
+        .on_conflict(NamelessTarget)
+        .do_nothing()
+        .build()
+        .expect("valid query");
+
+    assert_eq!(
+        built.sql,
+        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT DO NOTHING"
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::I64(1), SqlVal::Text("root".to_owned())]
+    );
+}
+
+#[test]
+fn build_error_display_missing_conflict_target() {
+    let message = BuildError::MissingConflictTarget.to_string();
+
+    assert!(message.contains("ON CONFLICT"));
+    assert!(message.contains(".on_conflict("));
+    assert!(message.contains(".on_conflict_do_nothing"));
 }

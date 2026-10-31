@@ -395,6 +395,25 @@ pub enum BuildError {
     /// The emptiness is therefore rejected here, before a single character of
     /// the statement is rendered.
     EmptyConflictUpdateSet,
+    /// An `ON CONFLICT` clause records a `DO UPDATE` action or a target
+    /// predicate while naming no conflict target.
+    ///
+    /// The grammar of every engine places the target column list before the
+    /// action and before the index-inference predicate, so `DO UPDATE` has to
+    /// name the columns whose violation it rewrites, and the predicate
+    /// restricting the target exists only after that list. A clause recording
+    /// either without a target column therefore renders a statement the engine
+    /// rejects — PostgreSQL refuses `ON CONFLICT DO UPDATE` that names no
+    /// `conflict_target` outright. The bare `ON CONFLICT DO NOTHING` is the one
+    /// form the grammar accepts without a target.
+    ///
+    /// [`InsertQuery::on_conflict`](crate::dml::InsertQuery::on_conflict)
+    /// derives the target column list from the selection it is given, and
+    /// [`Selection::push_column_names`](crate::query::Selection::push_column_names)
+    /// records nothing by default, so a selection pushing projections while
+    /// naming no column leaves the clause without a target. The clause is
+    /// rejected here before a single character of it is rendered.
+    MissingConflictTarget,
     /// A statement records no projected column.
     ///
     /// The projection list sits between the `SELECT` keyword and the `FROM`
@@ -693,6 +712,16 @@ impl fmt::Display for BuildError {
                      or degrade into `DO NOTHING`, which drops the predicate recorded for it; \
                      record at least one assignment through `.do_update(...)`, \
                      or build the clause as `DO NOTHING` before recording a predicate through `.update_where(...)`"
+                )
+            }
+            BuildError::MissingConflictTarget => {
+                write!(
+                    f,
+                    "`ON CONFLICT` clause names no conflict target; \
+                     the grammar of every engine places the target column list before a `DO UPDATE` action \
+                     and before the predicate selecting the index the statement conflicts on, \
+                     so name the target columns through `.on_conflict((...))`, \
+                     or build the bare `ON CONFLICT DO NOTHING` clause through `.on_conflict_do_nothing()`"
                 )
             }
             BuildError::EmptyProjection => {

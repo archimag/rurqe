@@ -38,7 +38,13 @@ pub enum ConflictAction {
 /// An `ON CONFLICT` clause attached to an `INSERT` statement.
 ///
 /// An empty [`target`](Conflict::target) conflicts on any unique constraint of
-/// the table, which is the form used by a bare `DO NOTHING`.
+/// the table, which is the form used by a bare `DO NOTHING`. The target may stay
+/// empty only for that form: the grammar of every engine places the target
+/// column list before the action and before the predicate selecting the index
+/// the statement conflicts on, so a clause recording a `DO UPDATE` action or a
+/// [`target_predicate`](Conflict::target_predicate) while naming no target
+/// column is rejected while the statement is built, as
+/// [`BuildError::MissingConflictTarget`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conflict {
     /// The conflict target columns, empty when no target is given.
@@ -54,6 +60,14 @@ pub struct Conflict {
 
 impl Conflict {
     /// Validates the expressions and assignments embedded in the clause.
+    ///
+    /// The clause is audited structurally first: the grammar of every engine
+    /// places the conflict target before the action and before the predicate
+    /// selecting the index the statement conflicts on, so a clause recording a
+    /// `DO UPDATE` action or a target predicate while naming no target column
+    /// is rejected as [`BuildError::MissingConflictTarget`]. The bare
+    /// `ON CONFLICT DO NOTHING` is the one form the grammar accepts without a
+    /// target, so it is the only clause an empty target passes for.
     ///
     /// The target predicate, the update predicate, and an expression assignment
     /// of the `DO UPDATE` branch may all carry a nested statement, so the clause
@@ -77,6 +91,19 @@ impl Conflict {
     /// so the emptiness is reported as [`BuildError::EmptyConflictUpdateSet`]
     /// instead of silently dropping what the caller recorded.
     pub(crate) fn validate(&self, relations: &[TableRef]) -> Result<(), BuildError> {
+        // The grammar of every engine places the conflict target before the
+        // action and before the predicate selecting the index the statement
+        // conflicts on, so a clause recording either while naming no target
+        // column renders `ON CONFLICT DO UPDATE` or `ON CONFLICT WHERE (...)
+        // DO NOTHING` — statements every engine rejects. The bare
+        // `ON CONFLICT DO NOTHING` is the one form the grammar accepts without
+        // a target, so it stays the documented empty-target clause.
+        if self.target.is_empty()
+            && (self.target_predicate.is_some()
+                || matches!(self.action, ConflictAction::DoUpdate { .. }))
+        {
+            return Err(BuildError::MissingConflictTarget);
+        }
         if let Some(predicate) = &self.target_predicate {
             validate_qualifiers(predicate, relations, RowClause::ConflictTarget)?;
         }
