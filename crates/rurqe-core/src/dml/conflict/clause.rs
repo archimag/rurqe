@@ -23,6 +23,10 @@ pub enum ConflictAction {
     /// `DO NOTHING`, silently skipping the conflicting row.
     DoNothing,
     /// `DO UPDATE SET ...`, applying typed assignments to the existing row.
+    ///
+    /// The branch carries at least one assignment: a clause recording none is
+    /// rejected while the statement is built, so it can never be degraded into
+    /// a `DO NOTHING` that drops the recorded predicate.
     DoUpdate {
         /// The column assignments applied to the conflicting row.
         assignments: Vec<(&'static str, AssignValue)>,
@@ -66,6 +70,12 @@ impl Conflict {
     /// which conflicting row is rewritten and to which value — so an aggregate
     /// call inside one of them is rejected as
     /// [`BuildError::AggregateInRowClause`] before any SQL is rendered.
+    ///
+    /// A `DO UPDATE` branch records at least one assignment: a branch naming no
+    /// column to rewrite could only render `DO UPDATE SET` with nothing to
+    /// assign or degrade into a `DO NOTHING` that carries no predicate at all,
+    /// so the emptiness is reported as [`BuildError::EmptyConflictUpdateSet`]
+    /// instead of silently dropping what the caller recorded.
     pub(crate) fn validate(&self, relations: &[TableRef]) -> Result<(), BuildError> {
         if let Some(predicate) = &self.target_predicate {
             validate_qualifiers(predicate, relations, RowClause::ConflictTarget)?;
@@ -76,6 +86,15 @@ impl Conflict {
                 assignments,
                 predicate,
             } => {
+                // A branch that names no column to rewrite can only render
+                // `DO UPDATE SET` with nothing to assign, or be degraded into a
+                // `DO NOTHING` that carries no predicate at all — silently
+                // dropping what `update_where` recorded. The emptiness is
+                // rejected here instead, before a single character of the
+                // statement is rendered.
+                if assignments.is_empty() {
+                    return Err(BuildError::EmptyConflictUpdateSet);
+                }
                 for (_, value) in assignments {
                     value.validate()?;
                     value.validate_qualifiers(relations, &[])?;
@@ -126,25 +145,24 @@ impl Conflict {
                 assignments,
                 predicate,
             } => {
-                if assignments.is_empty() {
-                    sql.push_str(" DO NOTHING");
-                } else {
-                    sql.push_str(" DO UPDATE SET ");
-                    for (index, (name, value)) in assignments.iter().enumerate() {
-                        if index > 0 {
-                            sql.push_str(", ");
-                        }
-                        D::push_quoted_identifier(sql, name);
-                        sql.push_str(" = ");
-                        // The clause addresses the inserted row and its proposed
-                        // `EXCLUDED` row, both of which are referenced explicitly, so
-                        // a column of the target table stays unqualified.
-                        value.render::<D>(sql, params, &[])?;
+                // A branch records at least one assignment, because
+                // `Conflict::validate` rejects an empty one before the statement
+                // reaches the renderer.
+                sql.push_str(" DO UPDATE SET ");
+                for (index, (name, value)) in assignments.iter().enumerate() {
+                    if index > 0 {
+                        sql.push_str(", ");
                     }
-                    if let Some(predicate) = predicate {
-                        sql.push_str(" WHERE ");
-                        render_expr::<D>(sql, params, predicate, &[])?;
-                    }
+                    D::push_quoted_identifier(sql, name);
+                    sql.push_str(" = ");
+                    // The clause addresses the inserted row and its proposed
+                    // `EXCLUDED` row, both of which are referenced explicitly, so
+                    // a column of the target table stays unqualified.
+                    value.render::<D>(sql, params, &[])?;
+                }
+                if let Some(predicate) = predicate {
+                    sql.push_str(" WHERE ");
+                    render_expr::<D>(sql, params, predicate, &[])?;
                 }
             }
         }

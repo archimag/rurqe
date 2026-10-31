@@ -129,6 +129,7 @@ Below the stated threshold the clause does not exist on the target, so the metho
 - An `INSERT` without a row source is not executable, and not even buildable: `.build()` and the fetch helpers appear only after `.values(...)`, `.values_many(...)`, or `.from_select(...)` records one.
 - A row source known to be empty yields an error instead of a query, so the statement can never render `VALUES ()`.
 - A row that assigns nothing, or a row that disagrees with the first row on the number of values or on the column at a position, is rejected while the statement is assembled — before any SQL reaches the engine.
+- A `DO UPDATE` branch whose assignment set collapses to no column at all is rejected while the statement is assembled, so a predicate recorded for the branch is never dropped by silently turning the action into `DO NOTHING`.
 
 ```rust,compile_fail
 use rurqe::postgres::prelude::*;

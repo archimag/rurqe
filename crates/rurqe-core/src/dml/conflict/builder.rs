@@ -124,7 +124,10 @@ pub struct NoUpdatePredicate;
 ///
 /// The state is reached through [`OnConflict::update_where`], the only builder of
 /// the marker, so a `DO NOTHING` clause can never be built from a clause that
-/// records a predicate it would silently drop.
+/// records a predicate it would silently drop. The guarantee covers the update
+/// action as well: a `DO UPDATE` branch built from an assignment set that
+/// collapses to no assignment is rejected while the statement is assembled, so
+/// the predicate is never dropped by rewriting the branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HasUpdatePredicate;
 
@@ -298,6 +301,13 @@ where
     /// The assignments are typed column assignments of the target table `T`, so a
     /// conflicting row can only be updated through columns of that table.
     ///
+    /// The branch records exactly the assignments it is given, so an assignment
+    /// set that collapses to no assignment at all names no column to rewrite:
+    /// such a statement is rejected while it is built — as
+    /// [`BuildError::EmptyConflictUpdateSet`](crate::query::BuildError::EmptyConflictUpdateSet)
+    /// — instead of being rewritten into a `DO NOTHING` clause that would drop
+    /// the predicate recorded through [`update_where`](OnConflict::update_where).
+    ///
     /// The branch addresses the stored row of `T` and the row the statement
     /// proposed for it (`EXCLUDED`), so an expression assignment may read exactly
     /// those two relations — the same rule
@@ -354,19 +364,17 @@ where
         let mut deduped_assignments: Vec<(&'static str, AssignValue)> = Vec::new();
         merge_assignments(&mut deduped_assignments, incoming);
 
-        let action = if deduped_assignments.is_empty() {
-            ConflictAction::DoNothing
-        } else {
-            ConflictAction::DoUpdate {
-                assignments: deduped_assignments,
-                predicate: self.update_predicate,
-            }
-        };
-
+        // The recorded predicate moves into the branch whatever assignments it
+        // carries: an empty assignment set is rejected by `Conflict::validate`
+        // while the statement is built, so the action is never rewritten into a
+        // `DO NOTHING` clause that would drop the predicate.
         self.query.with_conflict(Conflict {
             target: self.target,
             target_predicate: self.target_predicate,
-            action,
+            action: ConflictAction::DoUpdate {
+                assignments: deduped_assignments,
+                predicate: self.update_predicate,
+            },
         })
     }
 }

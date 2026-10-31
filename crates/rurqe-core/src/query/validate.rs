@@ -368,6 +368,18 @@ pub enum BuildError {
         /// The SQL identifier of the relation whose assignment set is empty.
         table: &'static str,
     },
+    /// An `ON CONFLICT ... DO UPDATE` clause records no column assignment.
+    ///
+    /// The `DO UPDATE` branch of an upsert is chosen by the assignment set the
+    /// caller hands to `.do_update(...)`, and the clause records whatever that
+    /// set collapses to. A set that merges down to zero assignments leaves the
+    /// branch with no column to rewrite: rendering it could only emit
+    /// `DO UPDATE SET` with nothing to assign, or degrade the clause into
+    /// `DO NOTHING` — an action that carries no predicate at all, silently
+    /// dropping the predicate a caller recorded through `.update_where(...)`.
+    /// The emptiness is therefore rejected here, before a single character of
+    /// the statement is rendered.
+    EmptyConflictUpdateSet,
     /// A statement records no projected column.
     ///
     /// The projection list sits between the `SELECT` keyword and the `FROM`
@@ -640,6 +652,16 @@ impl fmt::Display for BuildError {
                     "the assignment set of this UPDATE against `{table}` records no column assignment; \
                      the statement would render `UPDATE \"{table}\" SET  WHERE ...`, which no engine accepts; \
                      record at least one value through `.set(...)` with an assignment set that yields a column assignment"
+                )
+            }
+            BuildError::EmptyConflictUpdateSet => {
+                write!(
+                    f,
+                    "the `DO UPDATE` branch of this upsert records no column assignment; \
+                     the branch would render `DO UPDATE SET` with nothing to assign, \
+                     or degrade into `DO NOTHING`, which drops the predicate recorded for it; \
+                     record at least one assignment through `.do_update(...)`, \
+                     or build the clause as `DO NOTHING` before recording a predicate through `.update_where(...)`"
                 )
             }
             BuildError::EmptyProjection => {

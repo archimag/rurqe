@@ -9,6 +9,7 @@ use crate::dialect::{Dialect, SupportsOnConflict};
 use crate::dml::{
     AssignColumn, AssignValue, AssignmentScope, AssignmentSet, ColumnAssign, Excluded, InsertQuery,
 };
+use crate::query::BuildError;
 use crate::expr::{Expression, SqlVal, Unscoped};
 use core::fmt::Write;
 
@@ -35,6 +36,12 @@ crate::table!(
     }
 );
 
+/// An assignment set that collapses to no assignment at all.
+///
+/// The tuple implementations inside the crate always describe at least one
+/// column, while the trait is public, so a set declared outside the crate can
+/// hand the builder an empty list — the shape the empty-set rejection is
+/// written for.
 struct EmptyAssignments;
 
 impl AssignmentSet<User> for EmptyAssignments {
@@ -214,33 +221,41 @@ fn both_predicate_kinds_accumulate_independently() {
 }
 
 #[test]
-fn empty_assignment_set_degrades_to_do_nothing() {
+fn an_empty_assignment_set_is_rejected_instead_of_degrading_the_action() {
+    // The branch names no column to rewrite, so it could only render
+    // `DO UPDATE SET` with nothing to assign or be rewritten into a
+    // `DO NOTHING` the caller never asked for.
     let built = InsertQuery::<MockDialect, User>::new()
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .do_update(EmptyAssignments)
-        .build()
-        .expect("valid query");
+        .build();
 
-    assert_eq!(
-        built.sql,
-        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") DO NOTHING"
-    );
+    assert_eq!(built, Err(BuildError::EmptyConflictUpdateSet));
 }
 
 #[test]
-fn empty_assignment_set_with_predicates_degrades_to_do_nothing() {
+fn an_empty_assignment_set_never_drops_the_recorded_update_predicate() {
+    // `update_where` moved the clause into `HasUpdatePredicate`, whose guarantee
+    // is that the predicate cannot be dropped silently. Degrading the action to
+    // `DO NOTHING` — which carries no predicate — would break exactly that
+    // guarantee, so the statement is refused instead.
     let built = InsertQuery::<MockDialect, User>::new()
         .values((UserId::set(1i64), UserName::set("root")))
         .on_conflict((UserId,))
         .target_where(UserId.gt(0i64))
         .update_where(UserName.ne("root"))
         .do_update(EmptyAssignments)
-        .build()
-        .expect("valid query");
+        .build();
 
-    assert_eq!(
-        built.sql,
-        "INSERT INTO \"users\" (\"id\", \"name\") VALUES ($1, $2) ON CONFLICT (\"id\") WHERE (\"id\" > $3) DO NOTHING"
-    );
+    assert_eq!(built, Err(BuildError::EmptyConflictUpdateSet));
+}
+
+#[test]
+fn the_empty_assignment_set_rejection_names_the_alternatives() {
+    let message = BuildError::EmptyConflictUpdateSet.to_string();
+
+    assert!(message.contains("DO UPDATE"));
+    assert!(message.contains("DO NOTHING"));
+    assert!(message.contains("update_where"));
 }

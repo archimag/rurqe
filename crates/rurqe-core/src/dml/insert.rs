@@ -499,7 +499,10 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// `VALUES` list without a column list, and a row assigning another column
     /// than the first one at the same position is rejected as
     /// [`BuildError::MismatchedRowColumns`], so a value can never be bound to a
-    /// column its own row did not name.
+    /// column its own row did not name. A `DO UPDATE` branch of the `ON CONFLICT`
+    /// clause that records no column assignment is rejected as
+    /// [`BuildError::EmptyConflictUpdateSet`], so the predicate recorded for the
+    /// branch is never dropped by degrading the action into a `DO NOTHING`.
     ///
     /// The source `SELECT` of an `INSERT INTO ... SELECT` supplies one value per
     /// target column, positionally, so a statement whose recorded projection list
