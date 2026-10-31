@@ -146,6 +146,17 @@ impl SqliteVersionAtLeast<3, 38> for Sqlite3_38 {}
 /// fn assert_json_aggregation<D: SupportsJsonAggregation>() {}
 /// assert_json_aggregation::<Sqlite<Sqlite3_35>>();
 /// ```
+///
+/// SQLite has no alias production on the target of an `INSERT`, so the
+/// `SupportsAliasedInsertTarget` capability is never implemented:
+///
+/// ```compile_fail
+/// use rurqe_core::dialect::SupportsAliasedInsertTarget;
+/// use rurqe_sqlite::{Sqlite, Sqlite3_35};
+///
+/// fn assert_aliased_insert<D: SupportsAliasedInsertTarget>() {}
+/// assert_aliased_insert::<Sqlite<Sqlite3_35>>();
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sqlite<V: SqliteVersion = Sqlite3_35>(PhantomData<fn() -> V>);
 
@@ -306,6 +317,10 @@ mod tests {
             assert!(
                 !D::SUPPORTS_JSONB_ROW_AGG,
                 "SQLite has no native JSON row aggregation"
+            );
+            assert!(
+                !D::SUPPORTS_ALIASED_INSERT_TARGET,
+                "SQLite has no alias production on the INSERT target"
             );
         }
 

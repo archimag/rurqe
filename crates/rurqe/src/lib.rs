@@ -603,9 +603,10 @@ pub mod prelude {
     pub use rurqe_core::{impl_sql_binary_newtype, impl_sql_text_newtype};
 
     pub use rurqe_core::dialect::{
-        SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctFrom, SupportsFullOuterJoin,
-        SupportsGreatest, SupportsJsonAggregation, SupportsLateralJoin, SupportsNullsOrdering,
-        SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
+        SupportsAggregateFilter, SupportsAliasedInsertTarget, SupportsDeleteUsing,
+        SupportsDistinctFrom, SupportsFullOuterJoin, SupportsGreatest, SupportsJsonAggregation,
+        SupportsLateralJoin, SupportsNullsOrdering, SupportsRowLocking, SupportsUpdateFrom,
+        SupportsWindowFunctions,
     };
 
     pub use rurqe_core::expr::{

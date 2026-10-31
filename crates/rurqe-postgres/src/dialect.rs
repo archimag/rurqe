@@ -4,10 +4,10 @@ use core::fmt::Write;
 use core::marker::PhantomData;
 
 use rurqe_core::dialect::{
-    Dialect, SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctFrom,
-    SupportsDistinctOn, SupportsFullOuterJoin, SupportsGreatest, SupportsJsonAggregation,
-    SupportsLateralJoin, SupportsNullsOrdering, SupportsOnConflict, SupportsReturning,
-    SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
+    Dialect, SupportsAggregateFilter, SupportsAliasedInsertTarget, SupportsDeleteUsing,
+    SupportsDistinctFrom, SupportsDistinctOn, SupportsFullOuterJoin, SupportsGreatest,
+    SupportsJsonAggregation, SupportsLateralJoin, SupportsNullsOrdering, SupportsOnConflict,
+    SupportsReturning, SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
 };
 
 /// Marker trait representing a PostgreSQL engine version.
@@ -38,6 +38,13 @@ impl<V: PgVersion> Dialect for Postgres<V> {
     // produced document.
     const SUPPORTS_JSONB_ROW_AGG: bool = true;
 
+    // `INSERT INTO "users" AS "u" ...` is an extension of the standard that
+    // PostgreSQL parses: the alias makes the inserted row reachable in the
+    // `RETURNING` clause and in the assignments of an `ON CONFLICT` clause.
+    // SQLite has no such production, so only this dialect states the
+    // capability.
+    const SUPPORTS_ALIASED_INSERT_TARGET: bool = true;
+
     fn push_quoted_identifier(out: &mut String, ident: &str) {
         out.push('"');
         for ch in ident.chars() {
@@ -58,6 +65,9 @@ impl<V: PgVersion> SupportsReturning for Postgres<V> {}
 impl<V: PgVersion> SupportsDistinctOn for Postgres<V> {}
 impl<V: PgVersion> SupportsOnConflict for Postgres<V> {}
 impl<V: PgVersion> SupportsLateralJoin for Postgres<V> {}
+// An alias on the target of an `INSERT` is an extension ISO SQL does not
+// define; PostgreSQL is the engine of this workspace that parses it.
+impl<V: PgVersion> SupportsAliasedInsertTarget for Postgres<V> {}
 impl<V: PgVersion> SupportsDeleteUsing for Postgres<V> {}
 impl<V: PgVersion> SupportsUpdateFrom for Postgres<V> {}
 impl<V: PgVersion> SupportsFullOuterJoin for Postgres<V> {}
@@ -72,6 +82,10 @@ impl<V: PgVersion> SupportsDistinctFrom for Postgres<V> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    use rurqe_core::expr::SqlVal;
+    use rurqe_core::schema::{Aliased, AliasedCol};
+    use rurqe_core::{table, table_alias};
 
     #[test]
     fn quotes_standard_and_escaped_identifiers() {
@@ -96,6 +110,7 @@ mod tests {
                 + SupportsDistinctOn
                 + SupportsOnConflict
                 + SupportsLateralJoin
+                + SupportsAliasedInsertTarget
                 + SupportsDeleteUsing
                 + SupportsUpdateFrom
                 + SupportsFullOuterJoin
@@ -135,5 +150,46 @@ mod tests {
         assert_locking::<Postgres<Pg15>>();
         assert_locking::<Postgres<Pg16>>();
         assert_locking::<Postgres>();
+    }
+
+    #[test]
+    fn an_aliased_insert_target_is_a_postgres_capability() {
+        fn assert_aliased_insert<D: Dialect + SupportsAliasedInsertTarget>() {
+            assert!(
+                D::SUPPORTS_ALIASED_INSERT_TARGET,
+                "a dialect accepting the alias states the capability as a constant too"
+            );
+        }
+
+        assert_aliased_insert::<Postgres<Pg14>>();
+        assert_aliased_insert::<Postgres<Pg15>>();
+        assert_aliased_insert::<Postgres<Pg16>>();
+        assert_aliased_insert::<Postgres>();
+    }
+
+    table!(
+        /// The `users` fixture table the aliased-insert test targets.
+        User => "users" {
+            UserId => "id": i64,
+        }
+    );
+
+    table_alias! {
+        /// The `u` alias of the users fixture table.
+        UserAlias => User as "u"
+    }
+
+    #[test]
+    fn an_aliased_insert_target_renders_its_as_clause_on_postgres() {
+        let built = InsertQuery::<Postgres<Pg16>, Aliased<User, UserAlias>>::into_aliased_table()
+            .values(AliasedCol::<UserAlias, UserId>::set(1i64))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" AS \"u\" (\"id\") VALUES ($1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
     }
 }
