@@ -1,9 +1,10 @@
 //! Headers of the legacy `schema.lock` snapshot formats.
 //!
-//! The current writer emits the versioned TOML v4 document of the `lock_toml`
-//! module; the headers below stay the dispatch keys that route a snapshot
-//! carrying a `schema lock v1`, `v2`, or `v3` first line to the legacy reader,
-//! so snapshots written by an older toolchain keep loading.
+//! The current writer emits the versioned TOML v5 document of the `lock_toml`
+//! module and keeps reading the previous v4 document. The headers below stay
+//! the dispatch keys that route a snapshot carrying a `schema lock v1`, `v2`,
+//! or `v3` first line to the legacy reader, so snapshots written by an older
+//! toolchain keep loading.
 
 /// Version marker of the retired v3 writer.
 ///
