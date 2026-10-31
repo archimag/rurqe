@@ -43,11 +43,18 @@
 //! name its own facade the way a declarative macro does with `$crate`, so the
 //! facade is the single anchor and a crate that depends only on `rurqe` compiles
 //! the expansion without listing `rurqe-core` itself.
+//!
+//! The record contract of the synthesized record — the row decode, the
+//! nested-row keys, and the JSON object arms — is rendered by
+//! [`crate::record`], the single emitter `dto!` uses as well, so the two macros
+//! cannot drift apart.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
+use syn::Visibility;
 
-use crate::parse::{ensure_unique_field_names, ProjectionList, ProjectionTarget};
+use crate::parse::{ensure_unique_field_names, field_key, ProjectionList, ProjectionTarget};
+use crate::record::{Record, RecordField};
 
 /// Expands a parsed `select!` input into the projection block expression.
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
@@ -58,10 +65,6 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> {
     ensure_unique_field_names(projections)?;
 
-    let mut field_defs = TokenStream::new();
-    let mut field_reads = TokenStream::new();
-    let mut document_writes = TokenStream::new();
-    let mut document_reads = TokenStream::new();
     let mut name_pushes = TokenStream::new();
     let mut projection_pushes = TokenStream::new();
     let mut selection_bounds = TokenStream::new();
@@ -81,14 +84,12 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut element_values = Vec::new();
     let mut position_params = Vec::new();
     let mut position_args = Vec::new();
-    let mut field_keys = Vec::new();
-    let arity = Literal::usize_unsuffixed(projections.len());
+    let mut record_fields = Vec::new();
 
     for (index, item) in projections.as_slice().iter().enumerate() {
         let field = item.field_ident()?;
 
         let key = Literal::string(&field_key(&field));
-        field_keys.push(key.clone());
 
         let element = format_ident!("E{index}");
         let record_param = format_ident!("T{index}");
@@ -100,24 +101,14 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         element_params.push(element.clone());
         record_params.push(record_param.clone());
 
-        field_defs.extend(quote! {
-            #field: #record_param,
-        });
-        field_reads.extend(quote! {
-            #field: ::rurqe::__core::row::FromSqlValue::from_sql_value(
-                values.get(#field_index).ok_or(
-                    ::rurqe::__core::row::RowDecodeError::ArityMismatch {
-                        expected: #arity,
-                        actual: values.len(),
-                    },
-                )?,
-            )?,
-        });
-        document_writes.extend(quote! {
-            (#key, ::rurqe::__core::expr::ToSqlVal::to_sql_val(self.#field)),
-        });
-        document_reads.extend(quote! {
-            #field: ::rurqe::__core::nested::nested_field(&document, #key)?,
+        // The record contract — the row decode, the nested-row keys, and the
+        // JSON object read and write — is shared with `dto!`, so a projection
+        // contributes its field name and its type and nothing else.
+        record_fields.push(RecordField {
+            attrs: TokenStream::new(),
+            vis: Visibility::Inherited,
+            ident: field,
+            ty: quote! { #record_param },
         });
         scope_bounds.extend(quote! {
             #element: ::rurqe::__core::query::SelectTargetInScope<Tables, #position, __D>,
@@ -215,80 +206,21 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
         TokenStream::new()
     };
 
+    let record_ident = format_ident!("__RurqeRecord");
+    let declaration = Record {
+        // The record is an implementation detail of the block expression, so it
+        // is private and silent about fields no caller names directly.
+        attrs: quote! { #[allow(dead_code)] },
+        vis: Visibility::Inherited,
+        ident: record_ident.clone(),
+        params: record_params,
+        fields: record_fields,
+    };
+    let record = declaration.expand();
+
     Ok(quote! {
         {
-            #[allow(dead_code)]
-            #[derive(Debug, Clone, PartialEq)]
-            struct __RurqeRecord<#(#record_params),*> {
-                #field_defs
-            }
-
-            impl<#(#record_params),*> ::rurqe::__core::row::FromRow
-                for __RurqeRecord<#(#record_params),*>
-            where
-                #(#record_params: ::rurqe::__core::row::FromSqlValue,)*
-            {
-                fn try_from_row(
-                    values: &[::rurqe::__core::expr::SqlVal],
-                ) -> ::core::result::Result<Self, ::rurqe::__core::row::RowDecodeError> {
-                    if values.len() != #arity {
-                        return ::core::result::Result::Err(
-                            ::rurqe::__core::row::RowDecodeError::ArityMismatch {
-                                expected: #arity,
-                                actual: values.len(),
-                            },
-                        );
-                    }
-
-                    ::core::result::Result::Ok(__RurqeRecord {
-                        #field_reads
-                    })
-                }
-            }
-
-            // The same record describes one row of a related collection: it is
-            // written back into the JSON object of its fields, read from the
-            // object the engine aggregated, and published as the array element of
-            // a nested projection.
-            impl<#(#record_params),*> ::rurqe::__core::expr::ToSqlVal
-                for __RurqeRecord<#(#record_params),*>
-            where
-                #(#record_params: ::rurqe::__core::expr::ToSqlVal,)*
-            {
-                fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
-                    ::rurqe::__core::nested::multiset_object(&[#document_writes])
-                }
-            }
-
-            impl<#(#record_params),*> ::rurqe::__core::row::FromSqlValue
-                for __RurqeRecord<#(#record_params),*>
-            where
-                #(#record_params: ::rurqe::__core::row::FromSqlValue,)*
-            {
-                fn from_sql_value(
-                    value: &::rurqe::__core::expr::SqlVal,
-                ) -> ::core::result::Result<Self, ::rurqe::__core::row::RowDecodeError> {
-                    let document = ::rurqe::__core::nested::json_object(value)?;
-                    ::core::result::Result::Ok(__RurqeRecord {
-                        #document_reads
-                    })
-                }
-            }
-
-            impl<#(#record_params),*> ::rurqe::__core::expr::SqlArrayElement
-                for __RurqeRecord<#(#record_params),*>
-            where
-                #(#record_params: ::rurqe::__core::expr::SqlArrayElement,)*
-            {
-            }
-
-            impl<#(#record_params),*> ::rurqe::__core::nested::MultisetRow
-                for __RurqeRecord<#(#record_params),*>
-            where
-                #(#record_params: ::rurqe::__core::expr::SqlArrayElement + 'static,)*
-            {
-                const FIELDS: &'static [&'static str] = &[#(#field_keys),*];
-            }
+            #record
 
             #[allow(dead_code)]
             struct __RurqeSelection<#(#element_params),*>(#(#element_params),*);
@@ -298,7 +230,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             where
                 #selection_bounds
             {
-                type Row = __RurqeRecord<#(#record_args),*>;
+                type Row = #record_ident<#(#record_args),*>;
 
                 #[allow(unused_variables)]
                 fn push_column_names(&self, out: &mut ::std::vec::Vec<&'static str>) {
@@ -379,19 +311,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             __RurqeSelection(#(#element_values),*)
         }
     })
-}
-
-/// Derives the JSON key of a projected field.
-///
-/// The key follows the field name, and a field named after a Rust keyword keeps
-/// the bare keyword: a projection aliased to `type` is named `r#type` in Rust and
-/// written as `type` in the document.
-fn field_key(field: &syn::Ident) -> String {
-    let name = field.to_string();
-    match name.strip_prefix("r#") {
-        Some(stripped) => stripped.to_owned(),
-        None => name,
-    }
 }
 
 #[cfg(test)]

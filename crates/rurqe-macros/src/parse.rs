@@ -32,6 +32,18 @@ pub fn to_snake_case(s: &str) -> String {
     result
 }
 
+/// Derives the JSON key of a projected field.
+///
+/// The key follows the field name, and a field named after a Rust keyword keeps
+/// the bare keyword: a projection named `r#type` in Rust is written as `type` in
+/// the JSON object of a nested row.
+pub fn field_key(field: &Ident) -> String {
+    let name = field.to_string();
+    if let Some(stripped) = name.strip_prefix("r#") {
+        return stripped.to_owned();
+    }
+    name
+}
 /// The SQL projection an item selects from.
 ///
 /// A projection is either a schema column marker path (`UserId`, `users::EMAIL`,
@@ -771,5 +783,13 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
         assert_eq!(list.items[1].field_ident().expect("named"), "email");
+    }
+    #[test]
+    fn field_keys_strip_the_raw_identifier_prefix() {
+        let plain: Ident = parse_str("user_id").expect("identifier");
+        assert_eq!(field_key(&plain), "user_id");
+
+        let keyword: Ident = parse_str("r#type").expect("identifier");
+        assert_eq!(field_key(&keyword), "type");
     }
 }

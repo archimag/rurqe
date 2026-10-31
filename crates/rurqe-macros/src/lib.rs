@@ -3,6 +3,7 @@
 mod dto;
 mod parse;
 mod raw_sql;
+mod record;
 mod select;
 mod sql_type;
 

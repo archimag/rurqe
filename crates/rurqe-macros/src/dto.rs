@@ -24,13 +24,18 @@
 //! projection renders. Writing a `select!` projection that names the same
 //! fields keeps its row type aligned with the declaration, so a row decodes
 //! into the DTO without an intermediate tuple.
+//!
+//! The row and nested-row contracts are rendered by [`crate::record`], the same
+//! emitter `select!` uses, so a `dto!` field list and a matching `select!`
+//! projection list decode identically and publish identical JSON keys.
 
-use proc_macro2::{Literal, TokenStream};
+use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Ident, Token, Visibility};
 
 use crate::parse::ProjectionList;
+use crate::record::{Record, RecordField};
 
 /// A parsed `dto!` declaration.
 struct Dto {
@@ -60,8 +65,8 @@ impl Parse for Dto {
     }
 }
 
-/// Expands a parsed `dto!` input into the struct declaration, its `FromRow` impl,
-/// and the nested-row contracts of the same declaration.
+/// Expands a parsed `dto!` input into the struct declaration and the record
+/// contract of its fields.
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let Dto {
         attrs,
@@ -72,16 +77,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     crate::parse::ensure_unique_field_names(&fields)?;
 
-    let mut field_defs = TokenStream::new();
-    let mut field_reads = TokenStream::new();
-    let mut document_writes = TokenStream::new();
-    let mut document_reads = TokenStream::new();
-    let mut field_keys = Vec::new();
-    let arity = Literal::usize_unsuffixed(fields.items.len());
-
-    for (index, item) in fields.items.iter().enumerate() {
-        let field_index = Literal::usize_unsuffixed(index);
-        let field_attrs = &item.attrs;
+    let mut record_fields = Vec::with_capacity(fields.len());
+    for item in &fields.items {
         let field = item.field_ident()?;
         let Some(column) = item.column_path() else {
             return Err(syn::Error::new_spanned(
@@ -90,92 +87,25 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                  use `select!` for computed projections",
             ));
         };
+        let field_attrs = &item.attrs;
 
-        let key = Literal::string(&field_key(&field));
-        field_keys.push(key.clone());
-
-        field_defs.extend(quote! {
-            #(#field_attrs)*
-            #vis #field: <#column as ::rurqe::__core::schema::Column>::RustType,
-        });
-        field_reads.extend(quote! {
-            #field: ::rurqe::__core::row::FromSqlValue::from_sql_value(
-                values.get(#field_index).ok_or(
-                    ::rurqe::__core::row::RowDecodeError::ArityMismatch {
-                        expected: #arity,
-                        actual: values.len(),
-                    },
-                )?,
-            )?,
-        });
-        document_writes.extend(quote! {
-            (#key, ::rurqe::__core::expr::ToSqlVal::to_sql_val(self.#field)),
-        });
-        document_reads.extend(quote! {
-            #field: ::rurqe::__core::nested::nested_field(&document, #key)?,
+        record_fields.push(RecordField {
+            attrs: quote! { #(#field_attrs)* },
+            vis: vis.clone(),
+            ident: field,
+            ty: quote! { <#column as ::rurqe::__core::schema::Column>::RustType },
         });
     }
 
-    Ok(quote! {
-        #(#attrs)*
-        #[derive(Debug, Clone, PartialEq)]
-        #vis struct #ident {
-            #field_defs
-        }
+    let declaration = Record {
+        attrs: quote! { #(#attrs)* },
+        vis,
+        ident,
+        params: Vec::new(),
+        fields: record_fields,
+    };
 
-        impl ::rurqe::__core::row::FromRow for #ident {
-            fn try_from_row(
-                values: &[::rurqe::__core::expr::SqlVal],
-            ) -> ::core::result::Result<Self, ::rurqe::__core::row::RowDecodeError> {
-                if values.len() != #arity {
-                    return ::core::result::Result::Err(
-                        ::rurqe::__core::row::RowDecodeError::ArityMismatch {
-                            expected: #arity,
-                            actual: values.len(),
-                        },
-                    );
-                }
-                ::core::result::Result::Ok(#ident {
-                    #field_reads
-                })
-            }
-        }
-
-        impl ::rurqe::__core::nested::MultisetRow for #ident {
-            const FIELDS: &'static [&'static str] = &[#(#field_keys),*];
-        }
-
-        impl ::rurqe::__core::expr::ToSqlVal for #ident {
-            fn to_sql_val(self) -> ::rurqe::__core::expr::SqlVal {
-                ::rurqe::__core::nested::multiset_object(&[#document_writes])
-            }
-        }
-
-        impl ::rurqe::__core::row::FromSqlValue for #ident {
-            fn from_sql_value(
-                value: &::rurqe::__core::expr::SqlVal,
-            ) -> ::core::result::Result<Self, ::rurqe::__core::row::RowDecodeError> {
-                let document = ::rurqe::__core::nested::json_object(value)?;
-                ::core::result::Result::Ok(#ident {
-                    #document_reads
-                })
-            }
-        }
-        impl ::rurqe::__core::expr::SqlArrayElement for #ident {}
-    })
-}
-
-/// Derives the JSON key of a projected field.
-///
-/// The key follows the field name, and a field named after a Rust keyword keeps
-/// the bare keyword: a field declared for the `Type` column is named `r#type` in
-/// Rust and written as `type` in the document.
-fn field_key(field: &Ident) -> String {
-    let name = field.to_string();
-    match name.strip_prefix("r#") {
-        Some(stripped) => stripped.to_owned(),
-        None => name,
-    }
+    Ok(declaration.expand())
 }
 
 #[cfg(test)]
