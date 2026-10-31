@@ -60,6 +60,7 @@ pub(super) fn sqlite_checks(
 
         for check in table_checks {
             checks.push(RawCheckMetadata {
+                schema: None,
                 table_name: table.name.clone(),
                 name: check.name,
                 expression: check.expression,

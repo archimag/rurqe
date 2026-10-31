@@ -1,22 +1,23 @@
 //! The catalog statements PostgreSQL introspection runs.
 //!
-//! Every statement binds the introspected schema name as its first parameter, so
-//! the same catalog text serves the user-facing `public` schema and the
-//! disposable scratch schema the golden equation is verified in. The normative
-//! doc comments of each statement stay next to the SQL it describes, so the
-//! reasoning behind a query is never separated from the text it justifies.
+//! Every statement binds the introspected schema list as its first parameter and
+//! filters the catalog through `ANY`, so the same catalog text serves the
+//! user-facing schemas and the disposable scratch schema the golden equation is
+//! verified in. The normative doc comments of each statement stay next to the SQL
+//! it describes, so the reasoning behind a query is never separated from the text
+//! it justifies.
 
-/// Query to fetch all user tables of the introspected schema.
+/// Query to fetch all user tables of the introspected schemas.
 pub(crate) const POSTGRES_TABLES: &str = r#"
-SELECT table_name
+SELECT table_schema, table_name
 FROM information_schema.tables
-WHERE table_schema = $1
+WHERE table_schema::text = ANY($1)
   AND table_type = 'BASE TABLE'
   AND table_name != '__rurqe_schema_history'
-ORDER BY table_name;
+ORDER BY table_schema, table_name;
 "#;
 
-/// Query to fetch all columns of the introspected schema.
+/// Query to fetch all columns of the introspected schemas.
 ///
 /// A domain is a type of its own, while a column declared over it stores the
 /// values of the type the domain wraps. `information_schema.columns` names the
@@ -25,6 +26,10 @@ ORDER BY table_name;
 /// then carries the type the column really holds rather than a name no
 /// introspection can classify. A column of a plain type is reported as it is,
 /// and a domain declared over another domain is followed to its end.
+///
+/// The schema of the type follows the same resolution: a domain declared over a
+/// type of another schema reports the schema of the type the column really
+/// holds, so a column is attributed to the schema of the type it stores.
 pub(crate) const POSTGRES_COLUMNS: &str = r#"
 WITH RECURSIVE type_chain AS (
     SELECT declared.oid AS declared, declared.oid AS resolved, 0 AS depth
@@ -43,6 +48,7 @@ resolved_type AS (
     ORDER BY declared, depth DESC
 )
 SELECT
+  column_row.table_schema,
   column_row.table_name,
   column_row.column_name,
   CASE
@@ -56,7 +62,12 @@ SELECT
     WHEN resolved_type.resolved IS NULL OR resolved_type.resolved = declared_type.oid
       THEN column_row.udt_name
     ELSE base_type.typname
-  END AS udt_name
+  END AS udt_name,
+  CASE
+    WHEN resolved_type.resolved IS NULL OR resolved_type.resolved = declared_type.oid
+      THEN column_row.udt_schema
+    ELSE base_type_namespace.nspname
+  END AS udt_schema
 FROM information_schema.columns column_row
 LEFT JOIN pg_namespace type_namespace
   ON type_namespace.nspname = column_row.udt_schema
@@ -67,37 +78,41 @@ LEFT JOIN resolved_type
   ON resolved_type.declared = declared_type.oid
 LEFT JOIN pg_type base_type
   ON base_type.oid = resolved_type.resolved
-WHERE column_row.table_schema = $1
+LEFT JOIN pg_namespace base_type_namespace
+  ON base_type_namespace.oid = base_type.typnamespace
+WHERE column_row.table_schema::text = ANY($1)
   AND column_row.table_name != '__rurqe_schema_history'
-ORDER BY column_row.table_name, column_row.ordinal_position;
+ORDER BY column_row.table_schema, column_row.table_name, column_row.ordinal_position;
 "#;
 
-/// Query to fetch all user enum types and their variants in sort order.
+/// Query to fetch the user enum types of the introspected schemas and their
+/// variants in declaration order.
 pub(crate) const POSTGRES_ENUMS: &str = r#"
 SELECT
+  n.nspname AS schema_name,
   t.typname AS enum_name,
   e.enumlabel AS variant_name
 FROM pg_type t
 JOIN pg_enum e ON t.oid = e.enumtypid
 JOIN pg_namespace n ON n.oid = t.typnamespace
-WHERE n.nspname = $1
-ORDER BY t.typname, e.enumsortorder;
+WHERE n.nspname::text = ANY($1)
+ORDER BY n.nspname, t.typname, e.enumsortorder;
 "#;
 
 /// Query to fetch all primary key constraint columns.
 pub(crate) const POSTGRES_PRIMARY_KEYS: &str = r#"
-SELECT kcu.table_name, kcu.column_name
+SELECT kcu.table_schema, kcu.table_name, kcu.column_name
 FROM information_schema.table_constraints tc
 JOIN information_schema.key_column_usage kcu
   ON tc.constraint_name = kcu.constraint_name
  AND tc.table_schema = kcu.table_schema
  AND tc.table_name = kcu.table_name
 WHERE tc.constraint_type = 'PRIMARY KEY'
-  AND tc.table_schema = $1
-ORDER BY kcu.table_name, kcu.ordinal_position;
+  AND tc.table_schema::text = ANY($1)
+ORDER BY kcu.table_schema, kcu.table_name, kcu.ordinal_position;
 "#;
 
-/// Query to fetch all foreign key columns in key order.
+/// Query to fetch the foreign key columns of the introspected schemas in key order.
 ///
 /// `information_schema.constraint_column_usage` loses the positional
 /// relationship between referencing and referenced columns, so the catalog is
@@ -108,24 +123,23 @@ ORDER BY kcu.table_name, kcu.ordinal_position;
 /// single letters, which are spelled out here so the catalog receives the action
 /// itself rather than a driver-level character code.
 ///
-/// The schema of the referenced table is reported only when the reference
-/// crosses into another schema. A key held inside the introspected schema would
-/// name that schema on every constraint, and the scratch schema a stage
-/// verification builds would record a name the live schema never carries, so
-/// the golden equation could not compare the two catalogs. A reference that
-/// crosses a schema boundary instead keeps the name of the schema it points
-/// into, which is the part of the reference the constraint really declares.
+/// The schema of the referenced table is reported for every reference, and the
+/// decoder reduces the primary schema to no attribution. A key held inside the
+/// primary schema would otherwise name that schema on every constraint, and the
+/// scratch schema a stage verification builds would record a name the live schema
+/// never carries, so the golden equation could not compare the two catalogs. A
+/// reference that crosses into another schema keeps the name of the schema it
+/// points into, which is the part of the reference the constraint really
+/// declares.
 pub(crate) const POSTGRES_FOREIGN_KEYS: &str = r#"
 SELECT
+  namespace.nspname AS table_schema,
   constraint_row.conname,
   owning.relname AS table_name,
   owning_column.attname AS column_name,
   referenced.relname AS referenced_table,
   referenced_column.attname AS referenced_column,
-  CASE
-    WHEN referenced_namespace.nspname = $1 THEN NULL
-    ELSE referenced_namespace.nspname
-  END AS referenced_schema,
+  referenced_namespace.nspname AS referenced_schema,
   CASE constraint_row.confdeltype
     WHEN 'c' THEN 'CASCADE'
     WHEN 'r' THEN 'RESTRICT'
@@ -154,11 +168,11 @@ JOIN pg_attribute referenced_column
   ON referenced_column.attrelid = constraint_row.confrelid
  AND referenced_column.attnum = constraint_row.confkey[position.index]
 WHERE constraint_row.contype = 'f'
-  AND namespace.nspname = $1
-ORDER BY owning.relname, constraint_row.conname, position.index;
+  AND namespace.nspname::text = ANY($1)
+ORDER BY namespace.nspname, owning.relname, constraint_row.conname, position.index;
 "#;
 
-/// Query to fetch the secondary indexes of the introspected schema.
+/// Query to fetch the secondary indexes of the introspected schemas.
 ///
 /// `pg_index.indkey` is an `int2vector`, so it is cast to `int2[]` before its
 /// subscripts are generated: an ordinary SQL array is one-based, which keeps the
@@ -179,6 +193,7 @@ ORDER BY owning.relname, constraint_row.conname, position.index;
 /// to every drift check.
 pub(crate) const POSTGRES_INDEXES: &str = r#"
 SELECT
+  namespace.nspname AS table_schema,
   index_table.relname AS table_name,
   index_class.relname AS index_name,
   index_row.indisunique AS is_unique,
@@ -195,19 +210,20 @@ JOIN generate_subscripts(index_row.indkey::int2[], 1) AS position(index) ON TRUE
 LEFT JOIN pg_attribute attribute
   ON attribute.attrelid = index_row.indrelid
  AND attribute.attnum = (index_row.indkey::int2[])[position.index]
-WHERE namespace.nspname = $1
+WHERE namespace.nspname::text = ANY($1)
   AND NOT index_row.indisprimary
   AND index_row.indnkeyatts >= position.index
-ORDER BY index_table.relname, index_class.relname, position.index;
+ORDER BY namespace.nspname, index_table.relname, index_class.relname, position.index;
 "#;
 
-/// Query to fetch the check constraints of the introspected schema.
+/// Query to fetch the check constraints of the introspected schemas.
 ///
 /// `pg_get_expr` renders the stored predicate without the `CHECK` keyword and
 /// its wrapping parentheses, so the catalog carries the boolean expression the
 /// constraint enforces, which is exactly what a declarative stage declares.
 pub(crate) const POSTGRES_CHECKS: &str = r#"
 SELECT
+  namespace.nspname AS table_schema,
   check_table.relname AS table_name,
   constraint_row.conname AS constraint_name,
   pg_get_expr(constraint_row.conbin, constraint_row.conrelid) AS expression
@@ -215,20 +231,20 @@ FROM pg_constraint constraint_row
 JOIN pg_class check_table ON check_table.oid = constraint_row.conrelid
 JOIN pg_namespace namespace ON namespace.oid = check_table.relnamespace
 WHERE constraint_row.contype = 'c'
-  AND namespace.nspname = $1
+  AND namespace.nspname::text = ANY($1)
   AND check_table.relname != '__rurqe_schema_history'
-ORDER BY check_table.relname, constraint_row.conname;
+ORDER BY namespace.nspname, check_table.relname, constraint_row.conname;
 "#;
 
-/// Query to fetch the views of the introspected schema.
+/// Query to fetch the views of the introspected schemas.
 pub(crate) const POSTGRES_VIEWS: &str = r#"
-SELECT view_name, view_definition
+SELECT table_schema, view_name, view_definition
 FROM information_schema.views
-WHERE table_schema = $1
-ORDER BY view_name;
+WHERE table_schema::text = ANY($1)
+ORDER BY table_schema, view_name;
 "#;
 
-/// Query to fetch the user-defined triggers of the introspected schema.
+/// Query to fetch the user-defined triggers of the introspected schemas.
 ///
 /// `tgisinternal` marks the triggers PostgreSQL creates for a constraint (a
 /// foreign key check, for instance); those are already described by the
@@ -236,16 +252,17 @@ ORDER BY view_name;
 /// `pg_get_triggerdef` renders the complete `CREATE TRIGGER` statement.
 pub(crate) const POSTGRES_TRIGGERS: &str = r#"
 SELECT
+  namespace.nspname AS table_schema,
   trigger_row.tgname AS trigger_name,
   trigger_table.relname AS table_name,
   pg_get_triggerdef(trigger_row.oid) AS definition
 FROM pg_trigger trigger_row
 JOIN pg_class trigger_table ON trigger_table.oid = trigger_row.tgrelid
 JOIN pg_namespace namespace ON namespace.oid = trigger_table.relnamespace
-WHERE namespace.nspname = $1
+WHERE namespace.nspname::text = ANY($1)
   AND NOT trigger_row.tgisinternal
   AND trigger_table.relname != '__rurqe_schema_history'
-ORDER BY trigger_table.relname, trigger_row.tgname;
+ORDER BY namespace.nspname, trigger_table.relname, trigger_row.tgname;
 "#;
 
 /// Query naming the schemas that hold user relations while the introspected one

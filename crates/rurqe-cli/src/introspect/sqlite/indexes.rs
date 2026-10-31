@@ -86,6 +86,7 @@ pub(super) fn sqlite_indexes(
             // An index over an expression searches no named column, so a single
             // row carries its expression into the catalog.
             rows.push(RawIndexMetadata {
+                schema: None,
                 table_name: table.to_owned(),
                 index_name,
                 column_name: None,
@@ -99,6 +100,7 @@ pub(super) fn sqlite_indexes(
 
         for column_name in names {
             rows.push(RawIndexMetadata {
+                schema: None,
                 table_name: table.to_owned(),
                 index_name: index_name.clone(),
                 column_name: Some(column_name),
@@ -275,6 +277,7 @@ pub(super) fn sqlite_views(conn: &rusqlite::Connection) -> Result<Vec<RawViewMet
     let views = statement
         .query_map([], |row| {
             Ok(RawViewMetadata {
+                schema: None,
                 name: row.get::<_, String>(0)?,
                 definition: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
             })
@@ -297,6 +300,7 @@ pub(super) fn sqlite_triggers(
     let triggers = statement
         .query_map([], |row| {
             Ok(RawTriggerMetadata {
+                schema: None,
                 name: row.get::<_, String>(0)?,
                 table_name: row.get::<_, String>(1)?,
                 definition: row.get::<_, Option<String>>(2)?.unwrap_or_default(),

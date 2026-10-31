@@ -39,11 +39,12 @@ fn a_selection_that_describes_the_database_produces_no_notice() {
 #[test]
 fn metadata_assembly_builds_catalog() {
     let tables = vec![RawTableMetadata {
-        name: "users".to_owned(),
+        schema: None,        name: "users".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
-            table_name: "users".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "users".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -51,7 +52,8 @@ fn metadata_assembly_builds_catalog() {
             udt_name: None,
         },
         RawColumnMetadata {
-            table_name: "users".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "users".to_owned(),
             column_name: "email".to_owned(),
             data_type: "character varying".to_owned(),
             is_nullable: true,
@@ -60,7 +62,7 @@ fn metadata_assembly_builds_catalog() {
         },
     ];
     let pks = vec![RawPrimaryKeyMetadata {
-        table_name: "users".to_owned(),
+        schema: None,        table_name: "users".to_owned(),
         column_name: "id".to_owned(),
     }];
 
@@ -77,11 +79,12 @@ fn metadata_assembly_builds_catalog() {
 #[test]
 fn composite_foreign_key_rows_fold_into_one_constraint() {
     let tables = vec![RawTableMetadata {
-        name: "order_items".to_owned(),
+        schema: None,        name: "order_items".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
-            table_name: "order_items".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "order_items".to_owned(),
             column_name: "order_id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -89,7 +92,8 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             udt_name: None,
         },
         RawColumnMetadata {
-            table_name: "order_items".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "order_items".to_owned(),
             column_name: "line_no".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -99,7 +103,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
     ];
     let fks = vec![
         RawForeignKeyMetadata {
-            name: "order_items_order_fkey".to_owned(),
+            schema: None,            name: "order_items_order_fkey".to_owned(),
             table_name: "order_items".to_owned(),
             column_name: "order_id".to_owned(),
             referenced_table: "orders".to_owned(),
@@ -109,7 +113,7 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
             on_update: rurqe_migrate::catalog::ForeignKeyAction::NoAction,
         },
         RawForeignKeyMetadata {
-            name: "order_items_order_fkey".to_owned(),
+            schema: None,            name: "order_items_order_fkey".to_owned(),
             table_name: "order_items".to_owned(),
             column_name: "line_no".to_owned(),
             referenced_table: "orders".to_owned(),
@@ -134,10 +138,10 @@ fn composite_foreign_key_rows_fold_into_one_constraint() {
 #[test]
 fn a_cross_schema_reference_keeps_its_referenced_schema() {
     let tables = vec![RawTableMetadata {
-        name: "invoices".to_owned(),
+        schema: None,        name: "invoices".to_owned(),
     }];
     let fks = vec![RawForeignKeyMetadata {
-        name: "invoices_country_fkey".to_owned(),
+        schema: None,        name: "invoices_country_fkey".to_owned(),
         table_name: "invoices".to_owned(),
         column_name: "country_code".to_owned(),
         referenced_table: "countries".to_owned(),
@@ -156,10 +160,10 @@ fn a_cross_schema_reference_keeps_its_referenced_schema() {
 #[test]
 fn a_reference_inside_the_schema_stays_schema_less() {
     let tables = vec![RawTableMetadata {
-        name: "invoices".to_owned(),
+        schema: None,        name: "invoices".to_owned(),
     }];
     let fks = vec![RawForeignKeyMetadata {
-        name: "invoices_country_fkey".to_owned(),
+        schema: None,        name: "invoices_country_fkey".to_owned(),
         table_name: "invoices".to_owned(),
         column_name: "country_code".to_owned(),
         referenced_table: "countries".to_owned(),
@@ -381,11 +385,12 @@ fn array_spellings_map_to_their_element_type() {
 #[test]
 fn postgres_array_columns_map_to_their_element_type() {
     let tables = vec![RawTableMetadata {
-        name: "posts".to_owned(),
+        schema: None,        name: "posts".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -393,7 +398,8 @@ fn postgres_array_columns_map_to_their_element_type() {
             udt_name: Some("int8".to_owned()),
         },
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "tags".to_owned(),
             data_type: "ARRAY".to_owned(),
             is_nullable: false,
@@ -401,7 +407,8 @@ fn postgres_array_columns_map_to_their_element_type() {
             udt_name: Some("_text".to_owned()),
         },
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "moods".to_owned(),
             data_type: "ARRAY".to_owned(),
             is_nullable: true,
@@ -411,11 +418,11 @@ fn postgres_array_columns_map_to_their_element_type() {
     ];
     let enums = vec![
         RawEnumMetadata {
-            name: "post_status".to_owned(),
+            schema: None,            name: "post_status".to_owned(),
             variant: "draft".to_owned(),
         },
         RawEnumMetadata {
-            name: "post_status".to_owned(),
+            schema: None,            name: "post_status".to_owned(),
             variant: "published".to_owned(),
         },
     ];
@@ -594,11 +601,11 @@ fn introspect_sqlite_handles_table_names_with_double_quotes() {
 #[test]
 fn index_rows_fold_into_composite_indexes() {
     let tables = vec![RawTableMetadata {
-        name: "users".to_owned(),
+        schema: None,        name: "users".to_owned(),
     }];
     let indexes = vec![
         RawIndexMetadata {
-            table_name: "users".to_owned(),
+            schema: None,            table_name: "users".to_owned(),
             index_name: "users_tenant_email_idx".to_owned(),
             column_name: Some("tenant".to_owned()),
             unique: false,
@@ -607,7 +614,7 @@ fn index_rows_fold_into_composite_indexes() {
             expression: None,
         },
         RawIndexMetadata {
-            table_name: "users".to_owned(),
+            schema: None,            table_name: "users".to_owned(),
             index_name: "users_tenant_email_idx".to_owned(),
             column_name: Some("email".to_owned()),
             unique: false,
@@ -629,13 +636,13 @@ fn index_rows_fold_into_composite_indexes() {
 #[test]
 fn an_index_expression_keeps_only_the_functional_terms() {
     let tables = vec![RawTableMetadata {
-        name: "users".to_owned(),
+        schema: None,        name: "users".to_owned(),
     }];
     let indexes = vec![
         // PostgreSQL renders the expression list of a mixed index with `NULL`
         // standing in for the key attribute that is a plain column.
         RawIndexMetadata {
-            table_name: "users".to_owned(),
+            schema: None,            table_name: "users".to_owned(),
             index_name: "users_email_lower_name_idx".to_owned(),
             column_name: Some("email".to_owned()),
             unique: false,
@@ -646,7 +653,7 @@ fn an_index_expression_keeps_only_the_functional_terms() {
         // An index computing no expression keeps none, even when the rendering it
         // reports carries nothing but placeholders.
         RawIndexMetadata {
-            table_name: "users".to_owned(),
+            schema: None,            table_name: "users".to_owned(),
             index_name: "users_email_idx".to_owned(),
             column_name: Some("email".to_owned()),
             unique: true,
@@ -712,11 +719,12 @@ fn sqlite_indexes_are_introspected_without_the_primary_key_index() {
 #[test]
 fn postgres_enum_metadata_assembly_maps_enum_columns() {
     let tables = vec![RawTableMetadata {
-        name: "posts".to_owned(),
+        schema: None,        name: "posts".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -724,7 +732,8 @@ fn postgres_enum_metadata_assembly_maps_enum_columns() {
             udt_name: Some("int8".to_owned()),
         },
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "status".to_owned(),
             data_type: "USER-DEFINED".to_owned(),
             is_nullable: false,
@@ -734,11 +743,11 @@ fn postgres_enum_metadata_assembly_maps_enum_columns() {
     ];
     let enums = vec![
         RawEnumMetadata {
-            name: "post_status".to_owned(),
+            schema: None,            name: "post_status".to_owned(),
             variant: "draft".to_owned(),
         },
         RawEnumMetadata {
-            name: "post_status".to_owned(),
+            schema: None,            name: "post_status".to_owned(),
             variant: "published".to_owned(),
         },
     ];
@@ -821,10 +830,11 @@ fn a_domain_column_is_reported_as_the_type_it_is_declared_over() {
     // The columns query resolves a domain through `pg_type.typbasetype`, so the
     // catalog receives the base type name and never the domain itself.
     let tables = vec![RawTableMetadata {
-        name: "users".to_owned(),
+        schema: None,        name: "users".to_owned(),
     }];
     let columns = vec![RawColumnMetadata {
-        table_name: "users".to_owned(),
+        schema: None,
+        udt_schema: None,        table_name: "users".to_owned(),
         column_name: "email".to_owned(),
         data_type: "USER-DEFINED".to_owned(),
         is_nullable: false,

@@ -1,5 +1,11 @@
 //! Engine-independent raw metadata rows, SQL type mapping, and catalog assembly.
-
+//!
+//! Every raw row carries the schema the object it describes belongs to. The
+//! catalog records a schema attribute only for a secondary schema, so a row of
+//! the primary schema reports `None` while a row of any other schema reports its
+//! name: the convention is the one the catalog and `schema.lock` already follow,
+//! which keeps a single-schema introspection byte-identical to the catalog
+//! recorded before schemas were read at all.
 use std::collections::BTreeMap;
 
 use rurqe_migrate::catalog::{
@@ -10,23 +16,30 @@ use rurqe_migrate::catalog::{
 /// Raw table metadata row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTableMetadata {
+    /// The schema holding the table, `None` for the primary schema.
+    pub schema: Option<String>,
     pub name: String,
 }
 
 /// Raw column metadata row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawColumnMetadata {
+    /// The schema holding the column's table, `None` for the primary schema.
+    pub schema: Option<String>,
     pub table_name: String,
     pub column_name: String,
     pub data_type: String,
     pub is_nullable: bool,
     pub column_default: Option<String>,
     pub udt_name: Option<String>,
-}
+    /// The schema of the column type, `None` for the primary schema.
+    pub udt_schema: Option<String>,}
 
 /// Raw enum metadata row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEnumMetadata {
+    /// The schema holding the enum type, `None` for the primary schema.
+    pub schema: Option<String>,
     pub name: String,
     pub variant: String,
 }
@@ -34,6 +47,8 @@ pub struct RawEnumMetadata {
 /// Raw primary key constraint row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawPrimaryKeyMetadata {
+    /// The schema holding the keyed table, `None` for the primary schema.
+    pub schema: Option<String>,
     pub table_name: String,
     pub column_name: String,
 }
@@ -48,6 +63,8 @@ pub struct RawPrimaryKeyMetadata {
 /// into another schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawForeignKeyMetadata {
+    /// The schema holding the owning table, `None` for the primary schema.
+    pub schema: Option<String>,
     pub name: String,
     pub table_name: String,
     pub column_name: String,
@@ -68,6 +85,8 @@ pub struct RawForeignKeyMetadata {
 /// [`fold_indexes`] reduces to the functional expressions alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawIndexMetadata {
+    /// The schema holding the indexed table, `None` for the primary schema.
+    pub schema: Option<String>,
     pub table_name: String,
     pub index_name: String,
     pub column_name: Option<String>,
@@ -80,6 +99,8 @@ pub struct RawIndexMetadata {
 /// Raw check constraint row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawCheckMetadata {
+    /// The schema holding the constrained table, `None` for the primary schema.
+    pub schema: Option<String>,
     pub table_name: String,
     pub name: String,
     pub expression: String,
@@ -88,6 +109,8 @@ pub struct RawCheckMetadata {
 /// Raw view definition row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawViewMetadata {
+    /// The schema holding the view, `None` for the primary schema.
+    pub schema: Option<String>,
     pub name: String,
     pub definition: String,
 }
@@ -95,6 +118,8 @@ pub struct RawViewMetadata {
 /// Raw trigger definition row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTriggerMetadata {
+    /// The schema holding the trigger, `None` for the primary schema.
+    pub schema: Option<String>,
     pub name: String,
     pub table_name: String,
     pub definition: String,

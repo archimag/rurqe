@@ -54,11 +54,12 @@ fn codegen_creates_valid_rust_code_with_schema_hash() {
 #[test]
 fn codegen_renders_array_columns_as_vectors() {
     let tables = vec![RawTableMetadata {
-        name: "posts".to_owned(),
+        schema: None,        name: "posts".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -66,7 +67,8 @@ fn codegen_renders_array_columns_as_vectors() {
             udt_name: Some("int8".to_owned()),
         },
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "tags".to_owned(),
             data_type: "ARRAY".to_owned(),
             is_nullable: false,
@@ -74,7 +76,8 @@ fn codegen_renders_array_columns_as_vectors() {
             udt_name: Some("_text".to_owned()),
         },
         RawColumnMetadata {
-            table_name: "posts".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "posts".to_owned(),
             column_name: "ratings".to_owned(),
             data_type: "ARRAY".to_owned(),
             is_nullable: true,
@@ -149,11 +152,12 @@ fn drift_verification_catches_divergence_with_actionable_error() {
 #[test]
 fn catalog_introspected_from_raw_metadata() {
     let tables = vec![RawTableMetadata {
-        name: "customers".to_owned(),
+        schema: None,        name: "customers".to_owned(),
     }];
     let cols = vec![
         RawColumnMetadata {
-            table_name: "customers".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "customers".to_owned(),
             column_name: "id".to_owned(),
             data_type: "bigint".to_owned(),
             is_nullable: false,
@@ -161,7 +165,8 @@ fn catalog_introspected_from_raw_metadata() {
             udt_name: None,
         },
         RawColumnMetadata {
-            table_name: "customers".to_owned(),
+            schema: None,
+            udt_schema: None,            table_name: "customers".to_owned(),
             column_name: "created_at".to_owned(),
             data_type: "timestamp with time zone".to_owned(),
             is_nullable: false,
@@ -170,7 +175,7 @@ fn catalog_introspected_from_raw_metadata() {
         },
     ];
     let pks = vec![RawPrimaryKeyMetadata {
-        table_name: "customers".to_owned(),
+        schema: None,        table_name: "customers".to_owned(),
         column_name: "id".to_owned(),
     }];
 
