@@ -10,7 +10,52 @@ State(schema/) == State(Checkpoint + migrations/)
 
 The left side states where the database has to end up. The right side states how a database written before the current stage reaches the same place. A migration pruned below the checkpoint is not lost by the pruning: it is folded into the boundary snapshot every later cold start begins from.
 
-This chapter covers the declarative stage, the cold start, the commit that seals a boundary, the checkpoint marker, the verification of the two sides, and the pruning of the history.
+This chapter covers the two lifecycles a schema can be maintained under, the declarative stage, the cold start, the commit that seals a boundary, the checkpoint marker, the verification of the two sides, and the pruning of the history.
+
+## Two lifecycles, one schema
+
+A schema reaches its current state along one of two routes, and a project is free to use either.
+
+- The **sequential lifecycle** describes the schema as a directory of migration scripts applied in order. What a database consists of is the accumulated result of every script applied to it.
+- The **stage lifecycle** describes the schema as a declarative directory holding the complete DDL of the target schema, beside a short tail of scripts that advances a database written before the current stage.
+
+The two routes are not rival implementations of one idea; they differ in what each one is asked to be good at. A sequential history is a record of changes, and that record is exactly what an upgrade of a live database needs. A stage is a description of the current state, and that description is what a reader, a fresh environment, or a verification needs. Both routes end on the same schema, and both share one history table, one script naming grammar, and one checksum algorithm, so a project that outgrows the first adopts the second without rewriting a single entry that already ran.
+
+### Why a project starts with the sequential route
+
+A young project holds a handful of scripts, and at that size the sequential description is exact and cheap to live with:
+
+- The whole history is read in one sitting, so nothing has to be reconstructed from memory.
+- A clean database replays the handful of scripts in the time the handful takes, so a CI container started from scratch does not spend its first minutes replaying releases that predate the code under test.
+- Every script runs once against a live database together with the checksum and the history entry that record it, which is the audit trail a production upgrade is expected to leave.
+- Nothing has to be decided about a boundary, because no history is old enough to fold away.
+
+### The cost that grows with the history
+
+The cost of the same description follows the number of releases rather than the size of the schema:
+
+- **The schema is written nowhere.** Learning what a table consists of means reading every script that ever touched it, in version order, because the statement that created a column and the statement that altered it three releases later are equally part of the answer.
+- **A clean environment pays for the whole history.** Every CI container, fixture, and development machine starts at the first script and applies its way forward, so reaching the current schema costs what the number of releases costs instead of what the size of the schema costs.
+- **The history only grows.** An applied script is bound to its recorded checksum, so editing it is a refusal rather than a change, while deleting it removes the only description of that change for every database which has not applied it yet; recording a baseline by hand names a starting point without proving anything about it.
+- **Ordering constrains the design.** A correction of an earlier script has to be a new script, so the directory accumulates steps whose only purpose is to preserve the order the history was written in, even where no database is expected to pass through the intermediate state again.
+- **The tail and the record are one thing.** There is no point at which a script stops being required by a live database and becomes a record alone, so nothing is pruned without a guess about which databases still have to apply it.
+
+None of this is a defect. A script applied once against a live database, carrying its checksum and its history entry, is precisely the record a production upgrade needs. The cost is paid by everything that does not need the record: the clean environment, the reviewer, and any tool that has to reason about the schema as a whole.
+
+### What the stage adds
+
+The stage lifecycle separates the two jobs the directory carries at once. The stage states what the schema is, the tail states how a database written before the current stage reaches it, and the checkpoint records where the two meet.
+
+- **The stage is the description.** It holds the complete DDL of the target schema rather than a delta, so it is the one document a reader consults to learn what the schema is, and no history has to be replayed in the head to answer a question about a column.
+- **The tail is the road.** It holds the versioned and repeatable scripts that a database which already exists and holds data still has to apply, and it stays short because everything below the boundary has been folded into the stage — which is what lets the history be pruned without a squash.
+- **The checkpoint is the seam.** It records the version below which the history has been folded, together with the digest of the catalog the stage produced at that point, so both sides of the seam can be rebuilt and compared, and a target that stopped below the recorded version is refused instead of being advanced by a partial tail.
+
+The split is what buys the two properties the sequential route cannot offer once the history is long:
+
+- A clean environment is initialised from the stage in one pass, so reaching the current schema costs the size of the schema rather than the length of the history. The run records the stage version as its starting point, and the next `migrate up` skips every versioned script at or below that version, because the stage already describes that state.
+- A database that holds data is never re-initialised. It is advanced by the tail alone, script by script, each one recorded in the history table as it is applied, so a shortcut taken for an environment that carries nothing never reaches a database that carries something.
+
+Neither property rests on trust. Both descriptions are materialised side by side and their catalogs compared, so `State(schema/) == State(Checkpoint + migrations/)` is proven for a project rather than assumed for it, and a divergence is caught before a release instead of by a database that can no longer be advanced.
 
 ## Project layout
 
