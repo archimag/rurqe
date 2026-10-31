@@ -11,7 +11,11 @@
 //! output, so a connection that cannot be shared across threads stays usable after
 //! the run. A panic inside the blocking task — which this crate never produces —
 //! surfaces as [`Error::Backend`] instead of unwinding the caller.
+//! surfaces as [`Error::Backend`] instead of unwinding the caller.
 //!
+//! The script slice is copied exactly once per call: the `'static` bound of the
+//! blocking task requires an owned list, and the lifecycle core orders that list
+//! by reference, so the script bodies are never duplicated a second time.
 //! Under the `strict-async` feature these wrappers are the sanctioned way to drive
 //! the lifecycle from inside a runtime: the synchronous entry points then refuse to
 //! run there, while the wrappers keep working because they call the guard-free

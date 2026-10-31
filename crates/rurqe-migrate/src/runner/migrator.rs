@@ -54,19 +54,31 @@ impl Migrator {
 
     /// Sorts and queues migrations: versioned migrations in ascending version order,
     /// followed by repeatable migrations sorted by script name.
+    ///
+    /// The values are cloned because the caller asks for an owned ordering — a
+    /// collection that owns the list it hands on. A lifecycle run needs the order
+    /// alone and borrows it through `ordered_migrations` instead.
     pub fn sort_migrations(migrations: &[Migration]) -> Vec<Migration> {
-        let mut versioned: Vec<Migration> = migrations
-            .iter()
-            .filter(|m| m.is_versioned())
+        Self::ordered_migrations(migrations)
+            .into_iter()
             .cloned()
-            .collect();
+            .collect()
+    }
+
+    /// Orders the migrations of a run without copying their script bodies.
+    ///
+    /// Versioned migrations come first in ascending version order, followed by
+    /// repeatable migrations sorted by script name — exactly the order
+    /// [`sort_migrations`](Self::sort_migrations) materialises. A lifecycle run
+    /// reads the order only, so it borrows the entries it was handed rather than
+    /// cloning every script name, description, and SQL body on each invocation.
+    fn ordered_migrations(migrations: &[Migration]) -> Vec<&Migration> {
+        let mut versioned: Vec<&Migration> =
+            migrations.iter().filter(|m| m.is_versioned()).collect();
         versioned.sort_by(|a, b| a.version.cmp(&b.version));
 
-        let mut repeatable: Vec<Migration> = migrations
-            .iter()
-            .filter(|m| m.is_repeatable())
-            .cloned()
-            .collect();
+        let mut repeatable: Vec<&Migration> =
+            migrations.iter().filter(|m| m.is_repeatable()).collect();
         repeatable.sort_by(|a, b| a.script.cmp(&b.script));
 
         let mut result = versioned;
@@ -103,7 +115,7 @@ impl Migrator {
         self.validate_catalog_hash(&mut guard, &history)?;
         tracing::debug!(history_entries = history.len(), "validated schema history");
 
-        let sorted = Self::sort_migrations(migrations);
+        let sorted = Self::ordered_migrations(migrations);
         let baseline_version = history
             .iter()
             .filter(|e| e.kind == MigrationKind::Baseline && e.success)
@@ -126,7 +138,7 @@ impl Migrator {
 
         let mut report = MigrationReport::default();
 
-        for migration in &sorted {
+        for migration in sorted {
             let should_run = match migration.kind {
                 MigrationKind::Versioned => {
                     if let Some(ref base) = baseline_version {
@@ -314,15 +326,14 @@ impl Migrator {
             }
         }
 
-        let sorted = Self::sort_migrations(migrations);
         let mut statuses = Vec::new();
 
-        for migration in sorted {
+        for migration in Self::ordered_migrations(migrations) {
             let (status, installed_rank) = match entries_by_script.get(migration.script.as_str()) {
                 Some(entry) => {
                     if !entry.success {
                         (MigrationStatusKind::Failed, Some(entry.installed_rank))
-                    } else if entry.is_modified(&migration) {
+                    } else if entry.is_modified(migration) {
                         (MigrationStatusKind::Modified, Some(entry.installed_rank))
                     } else {
                         (MigrationStatusKind::Applied, Some(entry.installed_rank))
@@ -346,8 +357,8 @@ impl Migrator {
             };
 
             statuses.push(MigrationStatus {
-                script: migration.script,
-                version: migration.version,
+                script: migration.script.clone(),
+                version: migration.version.clone(),
                 kind: migration.kind,
                 status,
                 installed_rank,
