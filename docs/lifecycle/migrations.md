@@ -463,3 +463,76 @@ Because the collection is baked in, the binary and the scripts it carries cannot
 drift apart: the digests are computed from the same text the binary runs, and the
 entries a container writes match the entries the command line would have written
 for the same files.
+
+## Where a linear history reaches its limits
+
+The command line and the embedded collection apply the same scripts, so a project
+describes its schema as the sum of every script ever applied. That description is
+exact, and while a project is young it is also comfortable: a handful of scripts
+is read in one sitting, and a fresh database built from them takes as long as the
+handful takes.
+
+The cost of the same description grows with the history rather than with the
+schema:
+
+- The schema is written nowhere. Learning what a table consists of means reading
+  every script that ever touched it, in version order, and holding the accumulated
+  result in mind, because the statement that created a column and the statement
+  that altered it three releases later are equally part of the answer. A change
+  touching one table is reviewed against the whole history of the database.
+- A clean database replays the whole history. Every CI container, every fixture,
+  and every development machine starts at the first script and applies its way
+  forward, so reaching the current schema costs what the number of releases costs
+  rather than what the size of the schema costs.
+- The history cannot be shortened. A script that already ran is bound to its
+  recorded checksum, so editing it is a refusal rather than a change, and deleting
+  it removes the only description of that change for every database that has not
+  applied it yet. The remaining options are a baseline recorded by hand, which
+  names a starting point without proving anything about it, and a renumbered
+  history that the databases already carrying the old one do not follow.
+- Ordering constrains the design. A correction of an earlier script is a new
+  script, so the directory accumulates pairs of steps whose only purpose is to
+  preserve the order the history was written in, even where no database is
+  expected to pass through the intermediate state again.
+- The tail and the record are one thing. There is no point at which a script stops
+  being required by a live database and becomes a record alone, so nothing can be
+  pruned without a guess about which databases still have to apply it.
+
+None of this is a defect of the sequential lifecycle: a script applied once
+against a live database, with its checksum and its entry, is precisely the record
+a production upgrade needs. The cost is the one paid by everything that does not
+need the record — the clean environment, the reviewer, and any tool that has to
+reason about the schema as a whole.
+
+### The declarative stage beside the tail
+
+A stage-based lifecycle separates the two jobs the directory holds at once. The
+complete DDL of the target schema moves into a declarative stage directory, while
+the migrations directory keeps only the active tail — the scripts that advance a
+database which already exists and holds data:
+
+```text
+schema/          complete DDL of the target schema
+migrations/      active tail, applied on top of a recorded boundary
+checkpoint.toml  boundary: the folded version and the stage digest
+```
+
+The stage states what the schema is; the tail states how a database written before
+the current stage reaches it. A clean database is initialised from the stage
+directly — its transactional scripts in one transaction — and records the stage
+version as its starting point, so a container reaches the current schema in the
+time the stage takes rather than in the time the history takes. A database that
+already holds data is advanced by the tail, exactly as before.
+
+The two descriptions are proven equal rather than assumed to be: `stage verify`
+replays the boundary the checkpoint records together with the tail on one side and
+the stage on the other, and compares the resulting catalogs. `stage commit`
+records the boundary — the version below which the history has been folded into
+the stage, with the digest of the catalog the stage produced — and once it is
+recorded, `prune --before <version>` deletes the versioned scripts the boundary
+covers and leaves the repeatable ones in place.
+
+The stage lifecycle is an addition rather than a replacement. A project whose
+history never accumulates the weight the stage exists to remove keeps the plain
+directory described in this chapter, and both lifecycles meet at the same history
+table, the same naming grammar, and the same checksum algorithm.
