@@ -53,5 +53,14 @@ uuid = [
     "tokio-postgres?/with-uuid-1",
 ]
 
+[dev-dependencies]
+# The pooled and asynchronous transaction scenarios check `postgres::Client`
+# handles out of an `r2d2` pool and await the asynchronous closures, so the
+# suite needs the manager of the synchronous driver and a runtime for the
+# asynchronous one. Every scenario is gated on the adapter feature it
+# exercises, so a build without those features compiles no test module.
+r2d2_postgres = "0.18"
+tokio = { version = "1", features = ["rt", "macros"] }
+
 [lints]
 workspace = true

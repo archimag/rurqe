@@ -885,6 +885,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "r2d2_postgres"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efd4b47636dbca581cd057e2f27a5d39be741ea4f85fd3c29e415c55f71c7595"
+dependencies = [
+ "postgres",
+ "r2d2",
+]
+
+[[package]]
 name = "r2d2_sqlite"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1074,9 +1084,11 @@ dependencies = [
  "futures-core",
  "postgres",
  "r2d2",
+ "r2d2_postgres",
  "rurqe-core",
  "rust_decimal",
  "serde_json",
+ "tokio",
  "tokio-postgres",
  "tracing",
  "uuid",
