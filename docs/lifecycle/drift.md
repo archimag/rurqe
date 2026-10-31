@@ -1,31 +1,30 @@
 # Schema drift verification
 
-Drift verification answers one question: does the state the repository describes
-still equal the state the database holds? A schema is described several times
-over — the machine-readable catalog snapshot `schema.lock`, the `SCHEMA_HASH`
-constant embedded in the generated Rust module, the live database itself, and,
-once the stage lifecycle is in use, the declarative stage together with the
-checkpoint plus migration tail. A verification compares those descriptions with
-one another, so a divergence is caught before it is merged instead of surfacing
-at runtime.
+A schema is described several times over its lifetime, and each description can
+fall behind the others. `schema.lock` is the catalog snapshot the repository
+commits, the `SCHEMA_HASH` constant embedded in the generated Rust module states
+the same identity in code, the live database holds the schema that actually
+exists, and a project on the stage lifecycle adds the declarative stage together
+with the checkpoint plus migration tail. Drift is any disagreement among them,
+and the point of checking it in a pipeline is to catch that disagreement before
+a merge instead of at runtime.
 
-Two gates cover the cycle:
+Two questions are answered by two gates:
 
-- **The snapshot gate** (`cargo db-verify`) reads the catalog of a live database
-  and compares it with `schema.lock` and with the digest embedded in the
-  generated module. It answers whether the database still matches the code the
-  project ships.
-- **The golden gate** (`cargo rurqe stage verify`) replays the declarative stage
-  and the checkpoint plus migration tail into disposable scratch databases and
-  compares the two catalogs they produce. It answers whether the two
-descriptions of the schema still converge.
+- **Does the database still match the code the project ships?** The snapshot
+  gate (`cargo db-verify`) reads the catalog of a live database and compares it
+  with `schema.lock` and with the digest embedded in the generated module.
+- **Do the two descriptions of the schema still converge?** The golden gate
+  (`cargo rurqe stage verify`) replays the declarative stage and the checkpoint
+  plus migration tail into disposable scratch databases and compares the two
+  catalogs they produce.
 
 Neither gate needs a database that already carries the schema. The snapshot gate
 compares against whatever database it is pointed at, and a pipeline points it at
 a throwaway database it has just built from the repository; the golden gate
 builds both of its sides from nothing.
 
-## What the snapshot pins down
+## What a verification compares
 
 `schema.lock` is the canonical rendering of the catalogs the project declares:
 its enums, views, triggers, and tables with their columns, primary keys, check
@@ -59,6 +58,51 @@ A comparison is structural, and covers:
 - views — the query defining the view;
 - triggers — the table a trigger is attached to and its definition.
 
+## Verifying a schema in a pipeline
+
+Both gates run against targets the pipeline creates, so a check never touches an
+environment that holds data.
+
+1. Provision a throwaway database. A PostgreSQL service or a SQLite file is
+   enough; nothing in it has to exist beforehand.
+2. Build it from the repository alone, with the lifecycle the project uses — the
+   migration tail, or the declarative stage for a cold start.
+3. Run the snapshot gate against the database the repository just produced. Any
+   difference from `schema.lock` or from `SCHEMA_HASH` means the generated
+   artifacts and the migrations disagree.
+4. Run the golden gate. It builds its own sides, so it needs only a target it may
+   create databases on, or `:memory:`.
+
+```bash
+export DATABASE_URL=postgres://app@localhost:5432/app_ci
+
+cargo db-migrate up
+cargo db-verify --schema-path src/schema.rs --lock-path schema.lock
+
+cargo rurqe stage verify --checkpoint-path checkpoint.toml \
+    --scratch-url postgres://app@localhost:5432/app_ci
+```
+
+The two gates answer different failures, so both belong in the pipeline:
+
+- the snapshot gate catches a database advanced by something the repository does
+  not describe, and a generated module left behind by a schema change;
+- the golden gate catches a declarative stage that no longer matches the tail,
+  including a migration that was written but never reflected in `schema/`.
+
+A project that keeps its relations outside `public` declares its primary schema
+with `primary_schema` in `rurqe.toml` (or names it with `--schema`), declares the
+remaining schemas in `schemas`, and the same selection reaches every digest the
+commands compare:
+
+```bash
+cargo db-verify --schema-path src/schema.rs --schema app
+cargo rurqe stage verify --scratch-url :memory: --schema app
+```
+
+When the configuration file already names the schemas, the flags are unnecessary.
+A malformed `rurqe.toml` aborts either command instead of being partially applied.
+
 ## The snapshot gate
 
 ```bash
@@ -85,6 +129,7 @@ stop is the default outcome and no separate check is needed around the command.
 The command is reachable as `cargo rurqe verify` as well.
 
 ### The generated module is optional, the flag is not
+
 The `--schema-path` flag is what decides whether the digest embedded in the code
 is part of the gate:
 
@@ -98,12 +143,13 @@ is part of the gate:
   verification still runs, but the module is no longer tied to the catalog, so a
   pipeline that ships generated code names the path explicitly.
 
-## Reading a drift diagnostic
+### Reading a drift diagnostic
 
 Every failure says which of the two sides the command treats as the expectation:
 the snapshot is the expected state and the database is the state being measured.
 
-### The catalog no longer matches the snapshot
+#### The catalog no longer matches the snapshot
+
 The live catalog and the snapshot describe different schemas. Both digests are
 printed, followed by one line per finding:
 
@@ -136,7 +182,8 @@ the snapshot is right, the database was advanced by hand or by a migration the
 repository does not contain, and the missing migration is what the run has to
 add.
 
-### The generated module carries a different digest
+#### The generated module carries a different digest
+
 The module and the live catalog disagree before the structural comparison is
 reported:
 
@@ -152,7 +199,8 @@ constant in the module. The structural findings are carried along, so a stale
 constant still names exactly what drifted instead of hiding it behind a digest
 comparison. Regenerating the module and the snapshot together is the remedy.
 
-### The generated module carries no digest
+#### The generated module carries no digest
+
 A module that declares no `SCHEMA_HASH` constant cannot be tied to any catalog,
 so it is refused instead of passing the gate by omission:
 
@@ -165,7 +213,8 @@ Hint: Run `cargo db-codegen` to regenerate the schema code and snapshot.
 A hand-written schema module reaches this diagnostic. The generated module always
 carries the constant.
 
-### The snapshot itself is unreadable
+#### The snapshot itself is unreadable
+
 A snapshot that is malformed, or one written in a format version the reader does
 not know, fails the run before any comparison:
 
@@ -278,51 +327,6 @@ The direction of the fix follows the same reasoning as the snapshot gate. When
 the tail is right, the declarative stage has fallen behind the migrations and
 `schema/` is updated. When the stage is right, a migration is missing from the
 tail, and adding it is what closes the gap.
-
-## Running the gates in a pipeline
-
-Both gates run against targets the pipeline creates, so the check never touches an
-environment that holds data.
-
-1. Provision a throwaway database. A PostgreSQL service or a SQLite file is
-   enough; nothing in it has to exist beforehand.
-2. Build it from the repository alone, with the lifecycle the project uses — the
-   migration tail, or the declarative stage for a cold start.
-3. Run the snapshot gate against the database the repository just produced. Any
-   difference from `schema.lock` or from `SCHEMA_HASH` means the generated
-   artifacts and the migrations disagree.
-4. Run the golden gate. It builds its own sides, so it needs only a target it may
-   create databases on, or `:memory:`.
-
-```bash
-export DATABASE_URL=postgres://app@localhost:5432/app_ci
-
-cargo db-migrate up
-cargo db-verify --schema-path src/schema.rs --lock-path schema.lock
-
-cargo rurqe stage verify --checkpoint-path checkpoint.toml \
-    --scratch-url postgres://app@localhost:5432/app_ci
-```
-
-The two gates answer different failures, so both belong in the pipeline:
-
-- the snapshot gate catches a database advanced by something the repository does
-  not describe, and a generated module left behind by a schema change;
-- the golden gate catches a declarative stage that no longer matches the tail,
-  including a migration that was written but never reflected in `schema/`.
-
-A project that keeps its relations outside `public` declares its primary schema
-with `primary_schema` in `rurqe.toml` (or names it with `--schema`), declares the
-remaining schemas in `schemas`, and the same selection reaches every digest the
-commands compare:
-
-```bash
-cargo db-verify --schema-path src/schema.rs --schema app
-cargo rurqe stage verify --scratch-url :memory: --schema app
-```
-
-When the configuration file already names the schemas, the flags are unnecessary.
-A malformed `rurqe.toml` aborts either command instead of being partially applied.
 
 ## What each gate establishes
 

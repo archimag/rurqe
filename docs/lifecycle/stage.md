@@ -269,50 +269,49 @@ schema_hash = "4f1d9c2e..."
 The document is read strictly. An unknown section, a misspelled or repeated key, a version that does not parse, and a hash that is not a full SHA-256 digest are all refused with the location of the offending declaration, so a marker is never read halfway. An absent marker means "no boundary" and leaves the tail unaffected; a marker that is present but malformed stays an error, because silently ignoring it would let the tail run against a database that can no longer be advanced.
 
 The boundary snapshot is a sibling of the marker named after its stem: `checkpoint.toml` describes `checkpoint-stage/`, while `--checkpoint-path prod.toml` describes `prod-stage/`. Two markers in one directory therefore never share the snapshot a commit installs. The snapshot is written verbatim — the scripts keep their names and their comments, which is where the verification re-reads their transactionality from.
-
 ## Verifying the golden equation
 
-The two descriptions are proven equal by materialising both of them and comparing the resulting catalogs:
+The two descriptions are proven equal by materialising both of them and
+comparing the resulting catalogs. The verification is the gate a pipeline runs
+before a merge:
 
 ```bash
 cargo rurqe stage verify --scratch-url :memory:
 ```
 
-| Option | Effect |
-|---|---|
-| `--stage-dir <dir>` | The declarative stage to replay. Defaults to `schema`. |
-| `--base-stage-dir <dir>` | Overrides the boundary snapshot the marker records. |
-| `--migrations-dir <dir>` | The active tail to replay. Defaults to `migrations`. |
-| `--checkpoint-path <path>` | The boundary marker. Defaults to `checkpoint.toml`. |
-| `--scratch-url <url>` | The disposable target both sides are built in. `--database-url` is the fallback. |
-| `--schema <name>` | The primary schema both sides are materialised into and introspected over. The secondary schemas come from `schemas` in `rurqe.toml`. |
+The scratch target a verification builds in is always named explicitly, either
+with `--scratch-url` or with `--database-url` as its fallback; `DATABASE_URL` is
+deliberately never consulted, because the verification creates and drops
+databases as the connected role and an implicit target routinely names the
+server that variable points at.
 
-The verification first repairs an interrupted commit inside the exclusive section of the marker and reads the marker, the tail, and the boundary snapshot there. An explicit `--base-stage-dir` wins; without it, the snapshot `stage commit` recorded next to the marker is loaded.
+The verification first repairs an interrupted commit inside the exclusive section
+of the marker and reads the marker, the tail, and the boundary snapshot there. An
+explicit `--base-stage-dir` wins; without it, the snapshot `stage commit` recorded
+next to the marker is loaded.
 
 The two sides are then built:
 
-- the anchored side replays the boundary snapshot, verifies its catalog against `schema_hash` before a single tail script runs, and continues with the tail on the same sandbox, skipping the scripts at or below `pruned_up_to_version` because the boundary snapshot already folds them in;
+- the anchored side replays the boundary snapshot, verifies its catalog against
+  `schema_hash` before a single tail script runs, and continues with the tail on
+  the same sandbox, skipping the scripts at or below `pruned_up_to_version`
+  because the boundary snapshot already folds them in;
 - the declarative side replays `schema/` and nothing else.
 
-Both catalogs are introspected over the selected schemas and compared structurally: tables, columns, types, nullability, defaults, primary and foreign keys, check constraints, indexes, enums, views, and triggers. A difference is reported as a divergence naming every finding, and the command fails; equivalence is reported as one line:
+Both catalogs are introspected over the selected schemas and compared
+structurally: tables, columns, types, nullability, defaults, primary and foreign
+keys, check constraints, indexes, enums, views, and triggers. A difference is
+reported as a divergence naming every finding, and the command fails; equivalence
+is reported as one line:
 
 ```text
 Golden equation holds: State(schema) == State(Checkpoint + migrations) (hash 4f1d9c2e..., schemas `public`, scratch `:memory:`)
 ```
 
-A checkpoint whose boundary describes a non-empty schema requires a boundary snapshot. Without one the tail would be replayed over an empty database and a consistent project would be reported as diverged, so the verification refuses the equation and names the boundary version instead. An empty boundary is the exception: an empty scratch database reproduces it on its own.
-
-### The scratch database
-
-The scratch is named explicitly. `--scratch-url` wins, `--database-url` is its fallback, and `DATABASE_URL` is deliberately never consulted: the verification creates and drops databases as the connected role, so an implicit target routinely names the server that variable points at in CI. No implicit sandbox is chosen either, because replaying schema DDL into a target different from the one the project addresses would hide the substitution.
-
-```text
-no scratch database URL provided: pass `--scratch-url <url>` (or `--database-url <url>`); the golden equation needs a disposable target such as `:memory:`, an empty SQLite file, or a PostgreSQL URL, and never reads DATABASE_URL
-```
-
-- `:memory:` runs both sides in memory, and a SQLite file is used only while it is empty and is deleted when its side ends, so no object, setting, or database-header field reaches the next side.
-- A PostgreSQL URL creates a throwaway `rurqe_scratch_…` database on the server behind it and drops it once the verification ends, so the connected role needs the `CREATEDB` privilege for the duration. Neither side runs inside a transaction block of its own, so statements such as `CREATE INDEX CONCURRENTLY` stay replayable.
-- A selection whose schemas hold no relation while the scratch keeps user relations elsewhere contributes the vacuous-selection warning to the report, so an equation over an empty catalog is never certified silently.
+A checkpoint whose boundary describes a non-empty schema requires a boundary
+snapshot, because replaying the tail over an empty database would report a
+consistent project as diverged. An empty boundary is the exception: an empty
+scratch database reproduces it on its own.
 
 ## Pruning the history
 
