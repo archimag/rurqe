@@ -11,24 +11,50 @@ use rurqe_core::dialect::{
 };
 
 /// Marker trait representing a PostgreSQL engine version.
+///
+/// The marker currently gates nothing: no capability trait, associated constant,
+/// method, or version-threshold trait consults the parameter it binds, and all
+/// three pinned releases — [`Pg14`], [`Pg15`], [`Pg16`] — support every
+/// capability this crate implements. The same chain therefore composes under each
+/// of them and renders identical SQL.
+///
+/// It is reserved for the first capability whose engine support genuinely varies
+/// between releases: the release that does not provide the capability is what
+/// introduces a version threshold, in the shape `SqliteVersionAtLeast` gives the
+/// SQLite dialect. Until such a divergence is found the capability impls stay
+/// unconditional, because a gate written ahead of a real difference would claim a
+/// compile-time check that no accepted statement depends on.
 pub trait PgVersion: 'static + Send + Sync {}
 
 /// PostgreSQL 14 marker.
+///
+/// Supports every capability this crate implements; see [`PgVersion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pg14;
 impl PgVersion for Pg14 {}
 
 /// PostgreSQL 15 marker.
+///
+/// Supports every capability this crate implements; see [`PgVersion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pg15;
 impl PgVersion for Pg15 {}
 
 /// PostgreSQL 16 marker.
+///
+/// Supports every capability this crate implements, and is the release the
+/// dialect targets by default; see [`PgVersion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pg16;
 impl PgVersion for Pg16 {}
 
 /// PostgreSQL dialect parameterised by engine version (defaulting to [`Pg16`]).
+///
+/// The parameter records the release a statement targets and changes no rendered
+/// SQL today: the capability impls below are written for every `V: PgVersion`, so
+/// [`Pg14`], [`Pg15`], and [`Pg16`] accept the same clauses and emit the same
+/// text. It narrows that set only once a release is found that does not provide a
+/// capability — see [`PgVersion`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Postgres<V: PgVersion = Pg16>(PhantomData<fn() -> V>);
 
@@ -61,6 +87,13 @@ impl<V: PgVersion> Dialect for Postgres<V> {
     }
 }
 
+// Every capability below is implemented for every pinned release, which is why
+// each impl is written for `V: PgVersion` alone rather than for a single release
+// marker: PostgreSQL 14, 15, and 16 all accept the clauses these capabilities
+// admit, so a threshold on any of them would reject a statement the engine
+// parses. A threshold belongs on the first capability whose support genuinely
+// varies between releases; until one is found, the parameter records the target
+// and gates nothing.
 impl<V: PgVersion> SupportsReturning for Postgres<V> {}
 impl<V: PgVersion> SupportsDistinctOn for Postgres<V> {}
 impl<V: PgVersion> SupportsOnConflict for Postgres<V> {}
@@ -100,6 +133,17 @@ mod tests {
     fn formats_numbered_placeholders() {
         assert_eq!(Postgres::<Pg16>::placeholder(1), "$1");
         assert_eq!(Postgres::<Pg16>::placeholder(42), "$42");
+    }
+
+    #[test]
+    fn the_default_version_resolves_to_the_newest_marker() {
+        // The struct declares `Pg16` as its default type parameter, so a type
+        // that names no release resolves to the newest marker. Comparing the
+        // bare name against `Postgres<Pg16>` stops compiling the moment the
+        // default stops naming it — first of all when a newer release marker
+        // is introduced and the default is left behind.
+        let newest: Postgres = Postgres::<Pg16>::default();
+        let _: Postgres<Pg16> = newest;
     }
 
     #[test]

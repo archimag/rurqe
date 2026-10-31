@@ -10,7 +10,7 @@ The engine releases are exposed as modules, and each one carries the builder ent
 - `pg15`
 - `pg16`
 
-The dialect itself defaults to PostgreSQL 16, so a query written under the unversioned prelude targets the modern capability set until a pinned module narrows it:
+The dialect itself defaults to PostgreSQL 16, so a query written under the unversioned prelude targets the newest pinned release; a pinned module names the release explicitly:
 
 ```rust,no_run
 {{#rustdoc_include ../../examples/dialects.rs:postgres}}
@@ -22,13 +22,15 @@ The statement renders:
 SELECT "id" AS "user_id" FROM "users" WHERE ("id" = $1)
 ```
 
-A pinned module records the release the statement targets. The same chain composes for any pinned release, and only the clauses that release does not support stay unreachable:
+A pinned module records the release the statement targets. The same chain composes for any pinned release:
 
 ```rust,no_run
 {{#rustdoc_include ../../examples/dialects.rs:pg_versions}}
 ```
 
-Both pinned statements render the same text as the unversioned query above: the pinned release decides which clauses the chain can name, not how the named clauses render.
+Both pinned statements render the text of the unversioned query above: the pinned release never changes how a clause renders.
+
+All three pinned releases — PostgreSQL 14, 15, and 16 — provide every clause this book documents for PostgreSQL, so no capability is version-gated yet. A pinned module therefore narrows the set of reachable clauses only once a release does not provide one; until then, the same chain composes under every pinned module.
 
 PostgreSQL 16 is the newest release the dialect pins. A later server release joins the set as another module carrying the same entry points, and the capabilities that release introduces become reachable under that module alone.
 
