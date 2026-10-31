@@ -10,12 +10,6 @@ Versioned scripts carry an ordered version and run in that order exactly once.
 Repeatable scripts carry no version and run again whenever their contents
 change, which is the shape a view or a function definition takes.
 
-The same scripts are applied from two places: the toolchain runs them from the
-command line, and an application binary can carry them inside itself and apply
-them at startup. Both paths share one naming grammar, one checksum algorithm,
-and one history table, so a database advanced by a container start ends up
-exactly where a command-line run would have left it.
-
 ## The migrations directory
 
 Scripts are read from `migrations/` by default. `--migrations-dir <dir>` points a
@@ -416,61 +410,12 @@ cannot baseline database: history already contains migration or baseline version
   they run, and run again whenever their contents change.
 * The entry carries no digest, so it is never reported as modified.
 
-## The embedded migrator
-
-The command line is one caller of the migration engine; an application binary can
-be another. The `embed_migrations!` macro bakes the scripts into the binary at
-compile time, so a container start needs no `migrations/` directory mounted, no
-reading of files, and no write access to a scripts directory:
-
-```rust,no_run
-{{#rustdoc_include ../examples/migrations.rs:embed}}
-```
-
-It takes pairs of script name and script text — the same names, the same version
-grammar, and the same SHA-256 digests as the directory — and yields a fallible
-collection, so a malformed embedded script is a startup error rather than a
-silently missing migration. The collection is sorted once, the way the directory
-loader sorts, and exposes the scripts it holds as a slice and by reference
-iteration. An empty collection, and a collection assembled from already parsed
-scripts, are available as well.
-
-| Operation | Blocking method | Method on a dedicated blocking thread |
-|---|---|---|
-| Apply the pending scripts | `migrate` | `migrate_async` |
-| Inspect the status | `status` | `status_async` |
-| Repair the history | `repair` | `repair_async` |
-| Record a baseline | `baseline` | `baseline_async` |
-
-Every blocking method drives the backend on the calling thread and returns the
-report the command line prints. The asynchronous counterparts are available with
-the crate's `tokio` feature: the backend is moved into a dedicated blocking
-thread and handed back together with the report, so a connection that cannot be
-shared across threads stays usable after the run, and a panic inside the task
-surfaces as a backend error instead of unwinding the caller.
-
-The blocking methods stay callable from an asynchronous runtime by default: a
-call that blocks where blocking is illegal is reported as a warning and
-proceeds. Compiling the crate with the `strict-async` feature turns that warning
-into a refusal at the blocking entry points, because a worker thread and a
-blocking-pool thread cannot be told apart from inside the thread; the `*_async`
-wrappers run the same work on the blocking thread and are unaffected by the
-feature. A startup path that has to apply migrations inside an asynchronous
-runtime therefore awaits the asynchronous counterpart, or runs the blocking one
-on a plain thread.
-
-Because the collection is baked in, the binary and the scripts it carries cannot
-drift apart: the digests are computed from the same text the binary runs, and the
-entries a container writes match the entries the command line would have written
-for the same files.
-
 ## Where a linear history reaches its limits
 
-The command line and the embedded collection apply the same scripts, so a project
-describes its schema as the sum of every script ever applied. That description is
-exact, and while a project is young it is also comfortable: a handful of scripts
-is read in one sitting, and a fresh database built from them takes as long as the
-handful takes.
+A project describes its schema as the sum of every script ever applied. That
+description is exact, and while a project is young it is also comfortable: a
+handful of scripts is read in one sitting, and a fresh database built from them
+takes as long as the handful takes.
 
 The cost of the same description grows with the history rather than with the
 schema:
