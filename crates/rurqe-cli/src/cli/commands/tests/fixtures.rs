@@ -7,6 +7,9 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::version::MigrationVersion;
 use rurqe_migrate::Checksum;
 
+use crate::config::SchemaSelection;
+use crate::introspect::DEFAULT_SCHEMA;
+
 /// A process id no process can carry.
 ///
 /// Unix caps process ids well below this value — Linux below 4_194_304, macOS
@@ -26,6 +29,17 @@ pub(super) fn current_nonce() -> u128 {
 pub(super) fn staged_sibling(artifact: &str, pid: u32, nonce: u128, sequence: u64) -> String {
     format!(".{artifact}.{pid}.{nonce}.{sequence}.tmp")
 }
+
+/// The schema selection every single-schema command regression describes.
+///
+/// The command regressions run on an in-memory SQLite database, which holds one
+/// unnamed catalog and ignores the selection, so the selection they hand a
+/// command states the shape of the call a PostgreSQL project writes: one primary
+/// schema and no secondary one.
+pub(super) fn selection() -> SchemaSelection {
+    SchemaSelection::single(DEFAULT_SCHEMA)
+}
+
 pub(super) fn workspace(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("rurqe-commands-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);

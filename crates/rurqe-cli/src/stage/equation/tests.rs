@@ -497,6 +497,16 @@ fn a_file_scratch_database_resets_with_foreign_keys_enabled() {
     GoldenEquation::new(&stage, &tail)
         .verify(&url)
         .expect("both sides converge with foreign keys enabled");
+    // A SQLite scratch holds one unnamed catalog, so a selection naming several
+    // schemas describes it whole: the equation is decided by the relations the
+    // replay produced and never by the schema names the project declares.
+    let report = GoldenEquation::new(&stage, &tail)
+        .with_schemas(SchemaSelection::new("app", vec!["auth".to_owned()]))
+        .verify(":memory:")
+        .expect("a SQLite scratch describes its whole catalog");
+
+    assert!(report.is_equivalent());
+    assert!(report.is_equivalent());
 
     let _ = std::fs::remove_file(&path);
 }

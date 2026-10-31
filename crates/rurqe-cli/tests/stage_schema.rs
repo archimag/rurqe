@@ -7,7 +7,14 @@
 //! verify` report, and the `stage commit` parity gate read against a committed
 //! checkpoint.
 //!
-//! The PostgreSQL scenarios need a live database and the `CREATEDB` privilege —
+//! A project may also declare several schemas — one primary schema whose
+//! relations render without a qualifier plus any number of secondary schemas —
+//! so a digest has to cover the summed catalog of all of them, and a selection
+//! that names fewer schemas has to be caught instead of certified. The
+//! multi-schema scenario runs the shipped binary inside a directory holding the
+//! project configuration, because that file is what declares the secondary
+//! schemas a command line cannot name.
+//!//! The PostgreSQL scenarios need a live database and the `CREATEDB` privilege —
 //! the golden equation builds its replay in a scratch database — and are skipped
 //! with an `eprintln!` reason when either is missing. Scratch databases are
 //! dropped by the sandbox itself; the live fixture schema is dropped by its guard.
@@ -157,6 +164,27 @@ fn report_text(output: &CommandOutput) -> String {
     String::from_utf8(buffer).expect("the report channel writes UTF-8")
 }
 
+/// Runs the shipped CLI binary inside `dir`.
+///
+/// The project configuration a command reads is the `rurqe.toml` of the process
+/// working directory, so a scenario declaring more than one schema runs the
+/// command from a directory of its own instead of writing a configuration file
+/// into the package root every test of the workspace shares.
+fn run_binary(dir: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rurqe"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("the shipped CLI binary runs")
+}
+
+/// The text a spawned command wrote to its operator channel.
+///
+/// A command reports what it did and the failure that ended it through the one
+/// channel `rurqe_cli::operator_channel` declares, which is standard error.
+fn binary_report(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
 /// Runs `stage verify` over a project, selecting `schema` when one is named.
 fn stage_verify(
     scratch_url: &str,
@@ -513,4 +541,194 @@ fn stage_commit_and_verify_agree_over_the_selected_schema() {
             "got {error}"
         ),
     }
+}
+
+#[test]
+fn stage_commit_and_verify_cover_every_declared_schema() {
+    let Some(url) = postgres_url() else {
+        return;
+    };
+
+    let primary = unique_schema_name("summed_primary");
+    let secondary = unique_schema_name("summed_secondary");
+
+    let Some(mut primary_live) = LiveSchema::create(&url, &primary, "summed") else {
+        return;
+    };
+    let Some(_secondary_live) = LiveSchema::create(&url, &secondary, "summed") else {
+        return;
+    };
+
+    // The live database holds the very relations the declarative stage declares:
+    // one table in the primary schema and one in the schema of its own.
+    let live_ddl = format!(
+        "CREATE TABLE {primary}.users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);\n\
+         CREATE TABLE {secondary}.accounts (id INTEGER PRIMARY KEY, label TEXT NOT NULL);",
+        primary = quote_ident(&primary),
+        secondary = quote_ident(&secondary)
+    );
+    if let Err(error) = primary_live.admin.batch_execute(&live_ddl) {
+        eprintln!("skipping the PostgreSQL scenario: cannot create the fixture tables: {error}");
+        return;
+    }
+
+    // The declarative stage creates the primary schema first, so the unqualified
+    // table that follows lands in it — the replay pins the `search_path` of its
+    // scratch connection to the primary schema — and qualifies the table of the
+    // secondary schema it creates itself.
+    let stage_ddl = format!(
+        "CREATE SCHEMA IF NOT EXISTS {primary};\n\
+         CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);\n\
+         CREATE SCHEMA IF NOT EXISTS {secondary};\n\
+         CREATE TABLE {secondary}.accounts (id INTEGER PRIMARY KEY, label TEXT NOT NULL);",
+        primary = quote_ident(&primary),
+        secondary = quote_ident(&secondary)
+    );
+
+    let project = temp_workspace("summed-catalog");
+    let stage_dir = project.join("schema");
+    let migrations_dir = project.join("migrations");
+    let lock_path = project.join("schema.lock");
+    let checkpoint_path = project.join("checkpoint.toml");
+    write_scripts(&stage_dir, &[("users.sql", stage_ddl.as_str())]);
+    fs::create_dir_all(&migrations_dir).expect("create the empty migration directory");
+
+    // Both schemas are declared by the project configuration, so the commands
+    // describe and seal the summed catalog without naming a schema on the
+    // command line.
+    fs::write(
+        project.join("rurqe.toml"),
+        format!("primary_schema = \"{primary}\"\nschemas = [\"{secondary}\"]\n"),
+    )
+    .expect("write the project configuration");
+
+    let stage = path_string(&stage_dir);
+    let migrations = path_string(&migrations_dir);
+    let lock = path_string(&lock_path);
+    let checkpoint = path_string(&checkpoint_path);
+
+    let output = run_binary(
+        &project,
+        &[
+            "stage",
+            "commit",
+            "--version",
+            "1",
+            "--stage-dir",
+            stage.as_str(),
+            "--database-url",
+            url.as_str(),
+            "--lock-path",
+            lock.as_str(),
+            "--checkpoint-path",
+            checkpoint.as_str(),
+        ],
+    );
+    let report = binary_report(&output);
+    if is_createdb_missing(&report) || is_transport_refused(&report) {
+        eprintln!("skipping the PostgreSQL scenario: {report}");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "the summed catalog is committed: {report}"
+    );
+
+    // The snapshot carries both tables together with the schema each lives in,
+    // and the checkpoint anchors its digest instead of the digest of one schema.
+    let snapshot = fs::read_to_string(&lock_path).expect("read the snapshot");
+    let catalog = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
+    let mut described: Vec<(Option<&str>, &str)> = catalog
+        .tables
+        .iter()
+        .map(|table| (table.schema.as_deref(), table.name.as_str()))
+        .collect();
+    described.sort();
+
+    assert_eq!(
+        described,
+        vec![(None, "users"), (Some(secondary.as_str()), "accounts")],
+        "the snapshot describes both schemas: {:?}",
+        catalog.tables
+    );
+
+    let marker = Checkpoint::load(&checkpoint_path)
+        .expect("the checkpoint is readable")
+        .expect("the checkpoint exists");
+    assert_eq!(marker.schema_hash(), catalog.checksum());
+
+    // The same selection materialises both sides, so the equation holds over the
+    // summed catalog and names every schema it described.
+    let output = run_binary(
+        &project,
+        &[
+            "stage",
+            "verify",
+            "--stage-dir",
+            stage.as_str(),
+            "--migrations-dir",
+            migrations.as_str(),
+            "--checkpoint-path",
+            checkpoint.as_str(),
+            "--scratch-url",
+            url.as_str(),
+        ],
+    );
+    let report = binary_report(&output);
+    if is_createdb_missing(&report) || is_transport_refused(&report) {
+        eprintln!("skipping the PostgreSQL scenario: {report}");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "the summed catalog satisfies the equation: {report}"
+    );
+    assert!(
+        report.contains("Golden equation holds"),
+        "the verification certifies the summed catalog: {report}"
+    );
+    assert!(
+        report.contains(&secondary),
+        "the certification names every schema it described: {report}"
+    );
+
+    // A project declaring only the primary schema reads less of the database on
+    // both sides, and the boundary digest of the committed checkpoint catches the
+    // omission instead of certifying a pass over the relations it never read.
+    let narrow = temp_workspace("summed-catalog-narrow");
+    fs::write(
+        narrow.join("rurqe.toml"),
+        format!("primary_schema = \"{primary}\"\n"),
+    )
+    .expect("write the narrow project configuration");
+
+    let output = run_binary(
+        &narrow,
+        &[
+            "stage",
+            "verify",
+            "--stage-dir",
+            stage.as_str(),
+            "--migrations-dir",
+            migrations.as_str(),
+            "--checkpoint-path",
+            checkpoint.as_str(),
+            "--scratch-url",
+            url.as_str(),
+        ],
+    );
+    let report = binary_report(&output);
+    if is_createdb_missing(&report) || is_transport_refused(&report) {
+        eprintln!("skipping the PostgreSQL scenario: {report}");
+        return;
+    }
+
+    assert!(
+        !output.status.success(),
+        "a selection that dropped a schema cannot certify the boundary: {report}"
+    );
+    assert!(
+        report.contains("base stage catalog hash mismatch"),
+        "the refusal names the boundary the narrow selection missed: {report}"
+    );
 }

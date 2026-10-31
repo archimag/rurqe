@@ -9,7 +9,7 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 
 use super::super::{commit_stage, initialise_stage};
-use super::fixtures::{apply_live_ddl, directory_names, version, workspace};
+use super::fixtures::{apply_live_ddl, directory_names, selection, version, workspace};
 
 #[test]
 fn the_stage_is_applied_from_the_declarative_directory() {
@@ -74,7 +74,7 @@ fn committing_the_stage_anchors_the_checkpoint() {
     commit_stage(
         version("3.2"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -111,7 +111,7 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     commit_stage(
         version("3.2"),
         &database.to_string_lossy(),
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -141,7 +141,7 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     commit_stage(
         version("4"),
         &database.to_string_lossy(),
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -189,7 +189,7 @@ fn the_committed_boundary_is_never_rewound() {
     commit_stage(
         version("5"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -199,7 +199,7 @@ fn the_committed_boundary_is_never_rewound() {
     let error = commit_stage(
         version("3"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -240,7 +240,7 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
     let error = commit_stage(
         version("3.2"),
         &database.to_string_lossy(),
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -299,7 +299,7 @@ fn two_sequential_commits_converge_to_the_last_one() {
     commit_stage(
         version("3"),
         &database.to_string_lossy(),
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -308,7 +308,7 @@ fn two_sequential_commits_converge_to_the_last_one() {
     commit_stage(
         version("4"),
         &database.to_string_lossy(),
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -377,7 +377,7 @@ fn a_stage_rejected_by_the_parity_gate_leaves_an_interrupted_commit_parked() {
     let error = commit_stage(
         version("3.2"),
         &database.to_string_lossy(),
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,

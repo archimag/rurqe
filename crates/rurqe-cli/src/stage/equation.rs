@@ -8,6 +8,7 @@ use rurqe_migrate::migration::Migration;
 use rurqe_migrate::runner::Migrator;
 use rurqe_migrate::stage::DeclarativeStage;
 
+use crate::config::SchemaSelection;
 use crate::drift::{compute_catalog_diff, DiffWording, SchemaDiff};
 use crate::introspect::DEFAULT_SCHEMA;
 
@@ -19,14 +20,14 @@ mod tests;
 
 /// One side of the Golden Equation: the declarative stage and the tail that must
 /// reproduce it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct GoldenEquation<'a> {
     base: Option<&'a DeclarativeStage>,
     checkpoint: Option<&'a Checkpoint>,
     stage: &'a DeclarativeStage,
     tail: &'a [Migration],
-    /// The PostgreSQL schema both sides are materialised and introspected over.
-    schema: &'a str,
+    /// The database schemas both sides are materialised and introspected over.
+    schemas: SchemaSelection,
 }
 
 impl<'a> GoldenEquation<'a> {
@@ -34,13 +35,15 @@ impl<'a> GoldenEquation<'a> {
     ///
     /// `stage` is the declarative state (`schema/`) and `tail` the active
     /// migration scripts above the checkpoint, in whatever order they were read.
+    /// The equation describes [`DEFAULT_SCHEMA`] until [`Self::with_schemas`] or
+    /// [`Self::with_schema`] selects the schemas the project declares.
     pub fn new(stage: &'a DeclarativeStage, tail: &'a [Migration]) -> Self {
         Self {
             base: None,
             checkpoint: None,
             stage,
             tail,
-            schema: DEFAULT_SCHEMA,
+            schemas: SchemaSelection::single(DEFAULT_SCHEMA),
         }
     }
 
@@ -66,22 +69,35 @@ impl<'a> GoldenEquation<'a> {
         self
     }
 
-    /// Selects the PostgreSQL schema both sides are materialised and read over.
+    /// Selects the database schemas both sides are materialised and read over.
     ///
-    /// The CLI threads the selection it resolved — `--schema`, the `schema` key of
-    /// `rurqe.toml`, or [`DEFAULT_SCHEMA`] — so the digests the equation compares
-    /// describe the schema the project declares instead of an assumed `public`. A
-    /// SQLite scratch holds a single unnamed catalog, so it ignores the name.
-    pub fn with_schema(mut self, schema: &'a str) -> Self {
-        self.schema = schema;
+    /// The whole selection is described at once — the primary schema plus every
+    /// secondary schema the project declares — so the equation holds exactly when
+    /// both descriptions cover the same relations of the same schemas. The CLI
+    /// threads the selection it resolved — `--schema`, the `primary_schema` and
+    /// `schemas` keys of `rurqe.toml`, or [`DEFAULT_SCHEMA`] — so the digests the
+    /// equation compares describe what the project declares instead of an assumed
+    /// `public`. A SQLite scratch holds a single unnamed catalog, so it ignores
+    /// the selection.
+    pub fn with_schemas(mut self, schemas: SchemaSelection) -> Self {
+        self.schemas = schemas;
         self
+    }
+
+    /// Selects the single schema both sides are materialised and read over.
+    ///
+    /// The single schema is the selection [`Self::with_schemas`] takes, so a
+    /// project managing one schema runs the very materialisation a multi-schema
+    /// project runs.
+    pub fn with_schema(self, schema: &str) -> Self {
+        self.with_schemas(SchemaSelection::single(schema))
     }
 
     /// Materialises both sides of the equation and compares their catalogs.
     ///
     /// Both states are built in the scratch database named by `scratch_url` and
     /// introspected through the same engine adapter the codegen toolchain uses over
-    /// [`schema`](Self::with_schema), so the comparison is bit-for-bit at the
+    /// [`schemas`](Self::with_schemas), so the comparison is bit-for-bit at the
     /// catalog level and describes the schema the project declares rather than an
     /// empty `public`. A file-backed scratch
     /// database has to be empty before the verification starts and is deleted again
@@ -112,7 +128,7 @@ impl<'a> GoldenEquation<'a> {
         // the boundary was replayed in a sandbox of its own.
         let (tail_catalog, tail_notice) = self.materialise_tail(scratch_url)?;
         let (stage_catalog, stage_notice) =
-            materialise(scratch_url, &stage_scripts(self.stage), self.schema)?;
+            materialise(scratch_url, &stage_scripts(self.stage), &self.schemas)?;
 
         let diff = compute_catalog_diff(&tail_catalog, &stage_catalog);
         let report = GoldenReport {
@@ -142,7 +158,7 @@ impl<'a> GoldenEquation<'a> {
         &self,
         scratch_url: &str,
     ) -> Result<(SchemaCatalog, Option<String>), StageError> {
-        let mut sandbox = SandboxKind::open(scratch_url, self.schema)?;
+        let mut sandbox = SandboxKind::open(scratch_url, &self.schemas)?;
 
         let replay = match self.replay_tail(&mut sandbox) {
             Ok(()) => materialised_side(&mut sandbox),
@@ -276,19 +292,35 @@ impl GoldenReport {
 /// Materialises the declarative `stage` in the disposable scratch database
 /// addressed by `scratch_url` and introspects the resulting catalog.
 ///
-/// `schema` names the PostgreSQL schema the scripts are replayed into and the
-/// catalog is read from, so the returned digest describes the relations the stage
-/// actually declares there; a SQLite scratch holds a single unnamed catalog and
-/// ignores the name. A side that describes nothing while its scratch database
-/// keeps user relations elsewhere still returns its catalog, because this entry
-/// point answers with the digest alone: the vacuous-selection warning reaches the
-/// operator through [`GoldenReport::schema_notices`] instead.
+/// `schema` names the single PostgreSQL schema the scripts are replayed into and
+/// the catalog is read from, so the returned digest describes the relations the
+/// stage declares there; a project declaring secondary schemas names the whole
+/// selection with [`materialise_stage_selection`]. A SQLite scratch holds a single
+/// unnamed catalog and ignores the name. A side that describes nothing while its
+/// scratch database keeps user relations elsewhere still returns its catalog,
+/// because this entry point answers with the digest alone: the vacuous-selection
+/// warning reaches the operator through [`GoldenReport::schema_notices`] instead.
 pub fn materialise_stage(
     stage: &DeclarativeStage,
     scratch_url: &str,
     schema: &str,
 ) -> Result<SchemaCatalog, StageError> {
-    materialise(scratch_url, &stage_scripts(stage), schema).map(|(catalog, _notice)| catalog)
+    materialise_stage_selection(stage, scratch_url, &SchemaSelection::single(schema))
+}
+
+/// Materialises the declarative `stage` over `schemas` and introspects the result.
+///
+/// The whole selection is replayed and read at once — the primary schema the
+/// unqualified DDL of the stage lands in, plus every secondary schema the project
+/// declares — so the returned digest describes every relation of the project
+/// instead of the ones of a single schema. A SQLite scratch holds a single
+/// unnamed catalog and ignores the selection.
+pub fn materialise_stage_selection(
+    stage: &DeclarativeStage,
+    scratch_url: &str,
+    schemas: &SchemaSelection,
+) -> Result<SchemaCatalog, StageError> {
+    materialise(scratch_url, &stage_scripts(stage), schemas).map(|(catalog, _notice)| catalog)
 }
 
 /// Compares the declarative `stage` against `live`, the catalog of the database
@@ -298,14 +330,31 @@ pub fn materialise_stage(
 /// the declarative DDL is never replayed over the live catalog itself. `live` is
 /// the catalog the caller already introspected for its own artifacts, so the
 /// comparison describes the very database the commit is sealing; the returned
-/// diff is empty exactly when both descriptions agree.
+/// diff is empty exactly when both descriptions agree. `schema` is the single
+/// schema both sides describe; a project declaring several schemas names the
+/// whole selection with [`compare_stage_with_live_selection`].
 pub fn compare_stage_with_live(
     stage: &DeclarativeStage,
     live: &SchemaCatalog,
     scratch_url: &str,
     schema: &str,
 ) -> Result<SchemaDiff, StageError> {
-    let stage_catalog = materialise_stage(stage, scratch_url, schema)?;
+    compare_stage_with_live_selection(stage, live, scratch_url, &SchemaSelection::single(schema))
+}
+
+/// Compares the declarative `stage` against `live` over the whole `schemas` selection.
+///
+/// The comparison describes the summed catalog of the selection on both sides —
+/// the live catalog the caller read over the same selection and the stage
+/// materialised over it — so a project declaring secondary schemas is compared on
+/// the relations of every schema it declares.
+pub fn compare_stage_with_live_selection(
+    stage: &DeclarativeStage,
+    live: &SchemaCatalog,
+    scratch_url: &str,
+    schemas: &SchemaSelection,
+) -> Result<SchemaDiff, StageError> {
+    let stage_catalog = materialise_stage_selection(stage, scratch_url, schemas)?;
 
     Ok(compute_catalog_diff(live, &stage_catalog))
 }
@@ -323,7 +372,7 @@ fn stage_scripts(stage: &DeclarativeStage) -> Vec<Script<'_>> {
         .collect()
 }
 
-/// Materialises `scripts` in the scratch state and introspects `schema`.
+/// Materialises `scripts` in the scratch state and introspects the selected schemas.
 ///
 /// A file-backed scratch database is deleted afterwards, so the next side of the
 /// equation starts from a fresh file: no object, `PRAGMA`, or database-header
@@ -332,9 +381,9 @@ fn stage_scripts(stage: &DeclarativeStage) -> Vec<Script<'_>> {
 fn materialise(
     scratch_url: &str,
     scripts: &[Script<'_>],
-    schema: &str,
+    schemas: &SchemaSelection,
 ) -> Result<(SchemaCatalog, Option<String>), StageError> {
-    let mut sandbox = SandboxKind::open(scratch_url, schema)?;
+    let mut sandbox = SandboxKind::open(scratch_url, schemas)?;
 
     let replay = match apply_scripts(&mut sandbox, scripts) {
         Ok(()) => materialised_side(&mut sandbox),

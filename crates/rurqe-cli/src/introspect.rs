@@ -204,19 +204,6 @@ pub(crate) fn report_vacuous_selection(
     }
 }
 
-/// Reports a single selected PostgreSQL schema that holds no relation while
-/// relations live elsewhere.
-///
-/// The single schema is the selection [`report_vacuous_postgres_selection`]
-/// analyses, so the stage sandbox — which materialises one schema at a time —
-/// runs the very detection the live side runs.
-pub(crate) fn report_vacuous_postgres_schema(
-    client: &mut ::postgres::Client,
-    schema: &str,
-) -> Result<Option<String>, CliError> {
-    report_vacuous_postgres_selection(client, &SchemaSelection::single(schema))
-}
-
 /// Reports a selected PostgreSQL selection whose schemas hold no relation while
 /// relations live elsewhere.
 ///

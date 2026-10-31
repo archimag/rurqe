@@ -7,7 +7,7 @@ use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::materialise_stage;
 
 use super::super::stage::{lock::simulate_section_holder, verify_stage};
-use super::fixtures::{directory_names, version, workspace};
+use super::fixtures::{directory_names, selection, version, workspace};
 
 #[test]
 fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
@@ -44,7 +44,7 @@ fn verifying_an_interrupted_commit_restores_the_parked_boundary() {
         None,
         &migrations_dir,
         &checkpoint_path,
-        DEFAULT_SCHEMA,
+        &selection(),
         ":memory:",
     )
     .expect("the repaired checkpoint verifies");
@@ -110,7 +110,7 @@ fn a_concurrent_command_never_preempts_a_live_writer() {
         None,
         &migrations_dir,
         &checkpoint_path,
-        DEFAULT_SCHEMA,
+        &selection(),
         ":memory:",
     )
     .expect_err("a live writer keeps its section");
@@ -152,7 +152,7 @@ fn a_concurrent_command_never_preempts_a_live_writer() {
         None,
         &migrations_dir,
         &checkpoint_path,
-        DEFAULT_SCHEMA,
+        &selection(),
         ":memory:",
     )
     .expect("the released section verifies");
@@ -210,7 +210,7 @@ fn a_failed_verification_reports_the_interrupted_commit_it_repaired() {
         None,
         &migrations_dir,
         &checkpoint_path,
-        DEFAULT_SCHEMA,
+        &selection(),
         ":memory:",
     )
     .expect_err("the diverging stage cannot satisfy the golden equation");

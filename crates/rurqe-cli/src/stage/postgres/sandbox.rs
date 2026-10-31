@@ -11,7 +11,8 @@
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::{best_effort, connect, redact_database_url, Connection};
-use crate::introspect::{introspect_postgres_schema, report_vacuous_postgres_schema};
+use crate::config::SchemaSelection;
+use crate::introspect::{introspect_postgres_selection, report_vacuous_postgres_selection};
 
 use super::naming::{current_owner_tag, scratch_database_name};
 use super::sweep::sweep_opportunistically;
@@ -26,6 +27,8 @@ const RESET_TIMEOUT_SQL: &str = "SET statement_timeout = '0'; SET lock_timeout =
 ///
 /// The names it generates are timestamped, so a verification that dies without
 /// dropping its database leaves something the next run can date and remove.
+/// The selection it pins is the one its catalog is read over, so one sandbox
+/// describes the summed catalog of every schema the project declares.
 pub(crate) struct PostgresSandbox {
     /// The server-level connection the scratch database is created and dropped through.
     admin: postgres::Client,
@@ -33,8 +36,8 @@ pub(crate) struct PostgresSandbox {
     client: Option<postgres::Client>,
     /// The generated name of the scratch database.
     database: String,
-    /// The schema the replay connection pins and the catalog is read from.
-    schema: String,
+    /// The schemas the replay connection pins and the catalog is read from.
+    schemas: SchemaSelection,
     /// The connection URL, credentials redacted, the sandbox was created through.
     redacted_url: String,
 }
@@ -42,10 +45,13 @@ pub(crate) struct PostgresSandbox {
 impl PostgresSandbox {
     /// Connects to `url` and creates the scratch database the verification runs in.
     ///
-    /// `schema` is pinned on the replay connection and introspected afterwards, so
-    /// the materialised catalog describes the very schema the project resolved for
-    /// its own digests instead of an assumed `public`.
-    pub(crate) fn connect(url: &str, schema: &str) -> Result<Self, String> {
+    /// `schemas` is pinned on the replay connection and introspected afterwards:
+    /// its primary schema receives the unqualified DDL of the replay through the
+    /// `search_path`, the qualified statements of the replay reach the secondary
+    /// schemas of their own, and the materialised catalog then describes the very
+    /// selection the project resolved for its own digests instead of an assumed
+    /// `public`.
+    pub(crate) fn connect(url: &str, schemas: &SchemaSelection) -> Result<Self, String> {
         let mut admin = match connect(url).map_err(|error| error.to_string())? {
             Connection::Postgres(client) => *client,
             Connection::Sqlite(_) => {
@@ -73,13 +79,12 @@ impl PostgresSandbox {
 
         let redacted_url = redact_database_url(url);
         let database = create_scratch_database(&mut admin, &redacted_url)?;
-
-        match attach_scratch_database(config, &database, schema) {
+        match attach_scratch_database(config, &database, schemas.primary()) {
             Ok(client) => Ok(Self {
                 admin,
                 client: Some(client),
                 database,
-                schema: schema.to_owned(),
+                schemas: schemas.clone(),
                 redacted_url,
             }),
             Err(message) => {
@@ -124,19 +129,20 @@ impl PostgresSandbox {
             .map_err(|error| error.to_string())
     }
 
-    /// Introspects the selected schema of the scratch database only.
+    /// Introspects the selected schemas of the scratch database only.
     ///
-    /// The catalog is read over the very schema the replay connection pinned and
-    /// the replayed DDL landed in, so a project keeping its relations outside
+    /// The catalog is read over the very selection the replay connection pinned
+    /// and the replayed DDL landed in, so a project keeping its relations outside
     /// `public` is compared on the relations it declares instead of on an empty
-    /// `public` catalog.
+    /// `public` catalog, and a project declaring secondary schemas is compared on
+    /// their relations as well.
     pub(crate) fn catalog(&mut self) -> Result<SchemaCatalog, String> {
         // The connection is borrowed mutably while the schema is read, so the
         // fields are destructured once instead of cloning the name per call.
         let Self {
             client,
             database,
-            schema,
+            schemas,
             ..
         } = self;
 
@@ -144,14 +150,14 @@ impl PostgresSandbox {
             .as_mut()
             .ok_or_else(|| format!("the scratch database `{database}` is already closed"))?;
 
-        introspect_postgres_schema(client, schema).map_err(|error| error.to_string())
+        introspect_postgres_selection(client, schemas).map_err(|error| error.to_string())
     }
 
     /// The vacuous-selection notice the materialised scratch catalog produced.
     ///
     /// The detection is the one the live side runs, so a scratch side is
     /// analysed exactly like the database it stands in for: when the selected
-    /// schema holds no table or view while the scratch database keeps user
+    /// schemas hold no table or view while the scratch database keeps user
     /// relations in another schema, the warning names those schemas and the
     /// `--schema` remedy instead of letting an empty catalog certify
     /// equivalence.
@@ -167,7 +173,7 @@ impl PostgresSandbox {
         let Self {
             client,
             database,
-            schema,
+            schemas,
             ..
         } = self;
 
@@ -175,7 +181,7 @@ impl PostgresSandbox {
             .as_mut()
             .ok_or_else(|| format!("the scratch database `{database}` is already closed"))?;
 
-        report_vacuous_postgres_schema(client, schema).map_err(|error| error.to_string())
+        report_vacuous_postgres_selection(client, schemas).map_err(|error| error.to_string())
     }
 
     /// The still-open replay connection.
@@ -377,9 +383,11 @@ fn is_duplicate_database(error: &postgres::Error) -> bool {
 
 /// Opens the replay connection to the freshly created scratch database.
 ///
-/// The search path pins `schema` alone, rendered as one quoted and escaped
-/// identifier, so the unqualified DDL of a stage lands exactly in the schema the
-/// catalog is read from and never in a schema named after the connected role.
+/// The search path pins the primary schema of the selection alone, rendered as
+/// one quoted and escaped identifier, so the unqualified DDL of a stage lands
+/// exactly in the schema the catalog is read from and never in a schema named
+/// after the connected role, while the qualified statements of the replay reach
+/// the secondary schemas of their own.
 /// There is no `public` fallback behind the pin: a stage that manages its own
 /// schema keeps working because its `CREATE SCHEMA` precedes every unqualified
 /// reference, while a stage that references the schema before creating it fails

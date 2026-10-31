@@ -30,7 +30,7 @@ pub use report::CommandOutput;
 
 use self::commands::{
     apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage, help_text,
-    initialise_stage, load_config, prune_migrations, repair_history, report_status, resolve_schema,
+    initialise_stage, load_config, prune_migrations, repair_history, report_status,
     resolve_schema_code, resolve_selection, selection_of, verify_stage, write_file,
 };
 use self::connection::resolve_database_url;
@@ -135,11 +135,8 @@ pub(crate) fn run_cli_with_config(
 
     // Every catalog-digest arm below resolves its schemas against the
     // configuration file this run was pointed at, so the path is bound once here
-    // and the arms keep naming only the schema selection. The two stage arms that
-    // still thread one schema through their entry points derive it from the same
-    // selection.
+    // and the arms keep naming only the schema selection.
     let resolve_selection = |explicit: Option<&str>| resolve_selection(explicit, config_path);
-    let resolve_schema = |explicit: Option<&str>| resolve_schema(explicit, config_path);
 
     match cmd {
         CliCommand::Help => {
@@ -261,19 +258,19 @@ pub(crate) fn run_cli_with_config(
             schema,
         } => {
             // The equation materialises both sides in a scratch database and reads
-            // their catalogs over the selected schema, so the selection is resolved
+            // their catalogs over the selected schemas, so the selection is resolved
             // before that database is opened: a project keeping its relations
-            // outside `public` describes the schema it declares instead of an empty
-            // `public`, and a malformed configuration aborts the verification
-            // exactly like every other catalog-digest command.
-            let schema = resolve_schema(schema.as_deref())?;
+            // outside `public` — or declaring secondary schemas — describes what it
+            // declares instead of an empty `public`, and a malformed configuration
+            // aborts the verification exactly like every other catalog-digest command.
+            let selection = resolve_selection(schema.as_deref())?;
             let url = resolve_equation_url(scratch_url.or(database_url))?;
             verify_stage(
                 &stage_dir,
                 base_stage_dir.as_deref(),
                 &migrations_dir,
                 &checkpoint_path,
-                &schema,
+                &selection,
                 &url,
             )
         }
@@ -285,12 +282,12 @@ pub(crate) fn run_cli_with_config(
             checkpoint_path,
             schema,
         } => {
-            let schema = resolve_schema(schema.as_deref())?;
+            let selection = resolve_selection(schema.as_deref())?;
             let url = resolve_database_url(database_url)?;
             commit_stage(
                 version,
                 &url,
-                &schema,
+                &selection,
                 &stage_dir,
                 &lock_path,
                 &checkpoint_path,

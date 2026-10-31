@@ -65,19 +65,6 @@ pub(super) fn resolve_selection(
     selection_of(explicit, &load_config(config_path)?)
 }
 
-/// Resolves the primary schema a command's catalog digests describe.
-///
-/// The value is the primary schema of [`resolve_selection`], so the commands that
-/// still thread one schema through their entry points keep the selection
-/// resolution — including the refusal of a secondary schema that repeats the
-/// effective primary one — while the selection itself is assembled in one place.
-pub(super) fn resolve_schema(
-    explicit: Option<&str>,
-    config_path: &Path,
-) -> Result<String, CliError> {
-    resolve_selection(explicit, config_path).map(|selection| selection.primary().to_owned())
-}
-
 /// Builds the schema selection of an already loaded configuration.
 ///
 /// The primary schema is the explicit argument with its surrounding whitespace

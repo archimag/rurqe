@@ -2,9 +2,6 @@
 
 use std::time::Duration;
 
-#[cfg(unix)]
-use crate::introspect::DEFAULT_SCHEMA;
-
 use super::super::{
     staged_owner_may_live, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE,
 };
@@ -17,7 +14,7 @@ use super::fixtures::{backdate, current_nonce, futuredate, staged_sibling, works
 #[cfg(unix)]
 use super::super::commit_stage;
 #[cfg(unix)]
-use super::fixtures::{directory_names, version};
+use super::fixtures::{directory_names, selection, version};
 
 #[test]
 fn a_written_artifact_leaves_no_staged_sibling_behind() {
@@ -235,7 +232,7 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
     commit_stage(
         version("3.2"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,

@@ -12,7 +12,7 @@ use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::commands::{cli_error, sweep_stale_temporaries, STALE_TEMPORARY_AGE};
 use crate::cli::{redact_database_url, CliError, CommandOutput};
-use crate::loader::load_migrations_from_dir;
+use crate::config::SchemaSelection;use crate::loader::load_migrations_from_dir;
 use crate::stage::GoldenEquation;
 
 use super::lock::CheckpointLock;
@@ -20,11 +20,13 @@ use super::{boundary_dir, carry_recovery, load_stage, path_exists};
 
 /// Verifies the golden equation between the declarative stage and the tail.
 ///
-/// `schema` names the PostgreSQL schema both sides are materialised into and
-/// introspected over, so a project keeping its relations outside `public`
-/// compares the catalogs it really declares instead of an empty `public`; the
-/// selection is the one the surrounding commands resolve, and a SQLite scratch
-/// holds a single unnamed catalog that ignores it.
+/// `selection` names the PostgreSQL schemas both sides are materialised into and
+/// introspected over — the primary schema that receives the unqualified DDL plus
+/// every secondary schema the project declares — so a project keeping its
+/// relations outside `public` compares the summed catalogs it really declares
+/// instead of an empty `public`; the selection is the one the surrounding
+/// commands resolve, and a SQLite scratch holds a single unnamed catalog that
+/// ignores it.
 ///
 /// `scratch_url` names the scratch database both sides are materialised in; see
 /// [`GoldenEquation`] for its emptiness contract. A commit an interrupted process
@@ -48,7 +50,7 @@ pub(crate) fn verify_stage(
     base_stage_dir: Option<&Path>,
     migrations_dir: &Path,
     checkpoint_path: &Path,
-    schema: &str,
+    selection: &SchemaSelection,
     scratch_url: &str,
 ) -> Result<CommandOutput, CliError> {
     // The section guards the repair and the reads of the marker, the boundary,
@@ -96,9 +98,9 @@ pub(crate) fn verify_stage(
 
     let mut equation = match &base {
         Some(base) => GoldenEquation::new(&stage, &tail)
-            .with_schema(schema)
+            .with_schemas(selection.clone())
             .with_base(base),
-        None => GoldenEquation::new(&stage, &tail).with_schema(schema),
+        None => GoldenEquation::new(&stage, &tail).with_schemas(selection.clone()),
     };
     if let Some(checkpoint) = &checkpoint {
         equation = equation.with_checkpoint(checkpoint);
@@ -117,11 +119,12 @@ pub(crate) fn verify_stage(
     output.notice(recovery);
     output.notices(report.schema_notices.iter().cloned());
     output.line(format!(
-        "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {}, schema `{schema}`, \
+        "Golden equation holds: State({}) == State(Checkpoint + {}) (hash {}, schemas `{}`, \
          scratch `{}`)",
         stage_dir.display(),
         migrations_dir.display(),
         report.stage_hash(),
+        selection.all().join(", "),
         redact_database_url(scratch_url)
     ));
     Ok(output)

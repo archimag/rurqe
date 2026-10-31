@@ -3,7 +3,7 @@
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::redact_database_url;
-use crate::introspect::introspect_sqlite;
+use crate::config::SchemaSelection;use crate::introspect::introspect_sqlite;
 use crate::target::DatabaseTarget;
 
 use super::error::StageError;
@@ -47,17 +47,20 @@ pub(super) enum SandboxKind {
 }
 
 impl SandboxKind {
-    /// Opens the scratch state addressed by `scratch_url`, introspecting `schema`.
+    /// Opens the scratch state addressed by `scratch_url`, introspecting `schemas`.
     ///
-    /// A SQLite scratch holds a single unnamed catalog, so the schema name is
-    /// ignored there and reaches only the PostgreSQL side, mirroring
-    /// [`introspect_database_schema`](crate::introspect::introspect_database_schema).
+    /// The whole selection is described at once — the primary schema plus every
+    /// secondary schema the project declares — so one side materialises the summed
+    /// catalog of the project. A SQLite scratch holds a single unnamed catalog, so
+    /// the selection is ignored there and reaches only the PostgreSQL side,
+    /// mirroring
+    /// [`introspect_database_selection`](crate::introspect::introspect_database_selection).
     ///
     /// A file-backed SQLite scratch has to be empty, so a misconfigured
     /// `--scratch-url` never replays schema DDL on top of somebody's data.
-    pub(super) fn open(scratch_url: &str, schema: &str) -> Result<Self, StageError> {
+    pub(super) fn open(scratch_url: &str, schemas: &SchemaSelection) -> Result<Self, StageError> {
         match DatabaseTarget::parse(scratch_url) {
-            Ok(DatabaseTarget::Postgres) => PostgresSandbox::connect(scratch_url, schema)
+            Ok(DatabaseTarget::Postgres) => PostgresSandbox::connect(scratch_url, schemas)
                 .map(Box::new)
                 .map(SandboxKind::Postgres)
                 .map_err(|message| StageError::Sandbox { message }),
@@ -129,8 +132,8 @@ impl SandboxKind {
     ///
     /// A SQLite scratch holds a single unnamed catalog, so no selection can
     /// describe nothing and the notice is always absent, mirroring
-    /// `crate::introspect::report_vacuous_schema`. The PostgreSQL side delegates
-    /// to the sandbox, so a scratch database whose selected schema holds no
+    /// `crate::introspect::report_vacuous_selection`. The PostgreSQL side delegates
+    /// to the sandbox, so a scratch database whose selected schemas hold no
     /// relation while it keeps user relations elsewhere reports the schemas that
     /// do and the `--schema` remedy instead of certifying equivalence.
     pub(super) fn vacuous_schema_notice(&mut self) -> Result<Option<String>, String> {
@@ -290,8 +293,8 @@ mod tests {
     fn a_failed_transactional_script_rolls_back_its_statements() {
         // A SQLite scratch holds one unnamed catalog, so the schema name is
         // accepted and ignored instead of selecting anything.
-        let mut sandbox =
-            SandboxKind::open(":memory:", "reporting").expect("an in-memory scratch opens");
+        let mut sandbox = SandboxKind::open(":memory:", &SchemaSelection::single("reporting"))
+            .expect("an in-memory scratch opens");
 
         let error = sandbox
             .apply(HALF_BROKEN, true)
@@ -308,8 +311,8 @@ mod tests {
 
     #[test]
     fn a_failed_non_transactional_script_keeps_what_it_committed() {
-        let mut sandbox =
-            SandboxKind::open(":memory:", "reporting").expect("an in-memory scratch opens");
+        let mut sandbox = SandboxKind::open(":memory:", &SchemaSelection::single("reporting"))
+            .expect("an in-memory scratch opens");
 
         sandbox
             .apply(HALF_BROKEN, false)

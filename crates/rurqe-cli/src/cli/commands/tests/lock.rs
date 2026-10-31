@@ -11,7 +11,7 @@ use crate::stage::materialise_stage;
 use super::super::commit_stage;
 use super::super::stage::lock::{plant_record, CheckpointLock, WriterId};
 use super::super::stage::{recover_interrupted_commit, verify_stage};
-use super::fixtures::{directory_names, version, workspace};
+use super::fixtures::{directory_names, selection, version, workspace};
 
 #[test]
 fn a_commit_that_cannot_take_the_section_writes_no_artifact() {
@@ -30,7 +30,7 @@ fn a_commit_that_cannot_take_the_section_writes_no_artifact() {
     let error = commit_stage(
         version("3.2"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -171,7 +171,7 @@ fn a_commit_takes_over_the_section_of_a_crashed_writer() {
     commit_stage(
         version("3.2"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
@@ -229,7 +229,7 @@ fn a_verification_takes_over_the_section_of_a_crashed_writer() {
         None,
         &migrations_dir,
         &checkpoint_path,
-        DEFAULT_SCHEMA,
+        &selection(),
         ":memory:",
     )
     .expect("the section of the crashed writer is acquired");
@@ -294,7 +294,7 @@ fn two_markers_commit_independently_in_one_directory() {
     commit_stage(
         version("3.2"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &dir.join("schema.lock"),
         &checkpoint_path,
@@ -303,7 +303,7 @@ fn two_markers_commit_independently_in_one_directory() {
     commit_stage(
         version("4"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &dir.join("prod-schema.lock"),
         &prod_path,

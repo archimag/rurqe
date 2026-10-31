@@ -17,9 +17,10 @@ use crate::cli::commands::{
     STALE_TEMPORARY_AGE,
 };
 use crate::cli::{CliError, CommandOutput};
+use crate::config::SchemaSelection;
 use crate::drift::{DiffWording, SchemaDiff};
-use crate::introspect::introspect_database_schema_notice;
-use crate::stage::compare_stage_with_live;
+use crate::introspect::introspect_database_selection_notice;
+use crate::stage::compare_stage_with_live_selection;
 use crate::target::DatabaseTarget;
 
 use super::lock::CheckpointLock;
@@ -34,9 +35,11 @@ use super::{
 /// is snapshotted verbatim into the boundary directory beside the marker —
 /// `<stem>-stage/`, so `checkpoint.toml` keeps its `checkpoint-stage/` — and
 /// the scripts keep their names and their comments, which is where the
-/// replay re-reads their transactionality from. `schema` names the catalog the
-/// committed snapshot and the anchored hash describe, so a project keeping its
-/// relations outside `public` commits the digest of its own tables.
+/// replay re-reads their transactionality from. `selection` names the catalogs
+/// the committed snapshot and the anchored hash describe — the primary schema
+/// plus every secondary schema the project declares — so a project keeping its
+/// relations outside `public` commits the digest of its own tables, and one
+/// declaring secondary schemas commits the summed digest of all of them.
 ///
 /// The declarative stage and the live catalog are compared before anything is
 /// written: the lock and the marker describe the database while the boundary
@@ -75,7 +78,7 @@ use super::{
 pub(crate) fn commit_stage(
     version: MigrationVersion,
     database_url: &str,
-    schema: &str,
+    selection: &SchemaSelection,
     stage_dir: &Path,
     lock_path: &Path,
     checkpoint_path: &Path,
@@ -86,19 +89,25 @@ pub(crate) fn commit_stage(
     // but writes no workspace artifact, and it takes as long as the server and the
     // disk take.
     let stage = load_stage(stage_dir)?;
-    let (catalog, notice) = introspect_database_schema_notice(database_url, schema)?;
+    let (catalog, notice) = introspect_database_selection_notice(database_url, selection)?;
 
     // The parity gate runs before the section is ever taken: the lock and the
     // marker describe the live database while the boundary snapshot replays the
     // declarative stage, so a stage that drifted from the database would seal a
     // triple that contradicts itself and make `stage verify` fail on a checkpoint
     // no later commit could repair.
-    // The live catalog was read over the selected schema, so the stage has to be
-    // materialised and introspected over the very same one: comparing a stage
-    // built in `public` against a catalog read elsewhere would reject a
-    // consistent non-public project for a drift it never had.
-    let diff = compare_stage_with_live(&stage, &catalog, parity_scratch_url(database_url), schema)
-        .map_err(cli_error)?;
+    // The live catalog was read over the selected schemas, so the stage has to be
+    // materialised and introspected over the very same selection: comparing a stage
+    // built in `public` against a catalog read elsewhere would reject a consistent
+    // non-public project for a drift it never had, and comparing a single schema
+    // against a summed catalog would report every secondary relation as missing.
+    let diff = compare_stage_with_live_selection(
+        &stage,
+        &catalog,
+        parity_scratch_url(database_url),
+        selection,
+    )
+    .map_err(cli_error)?;
     if !diff.is_empty() {
         return Err(stage_parity_failure(stage_dir, &diff));
     }
@@ -199,12 +208,13 @@ pub(crate) fn commit_stage(
     output.notices(swap_notices);
     output.line(format!(
         "Committed the stage to {}, snapshotted the boundary to {}, and anchored `{}` up to \
-         version {} (hash {}, schema `{schema}`)",
+         version {} (hash {}, schemas `{}`)",
         lock_path.display(),
         boundary.display(),
         checkpoint_path.display(),
         checkpoint.pruned_up_to_version(),
-        catalog.schema_hash()
+        catalog.schema_hash(),
+        selection.all().join(", ")
     ));
     Ok(output)
 }

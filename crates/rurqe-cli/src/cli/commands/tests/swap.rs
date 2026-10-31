@@ -5,14 +5,12 @@ use std::time::Duration;
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::{Checksum, DeclarativeStage, StageScript};
 
-use crate::introspect::DEFAULT_SCHEMA;
-
 use super::super::commit_stage;
 use super::super::stage::lock::{CheckpointLock, WriterId};
 use super::super::stage::{
     flush_boundary_parent, move_failure, recover_interrupted_commit, write_staged_boundary,
 };
-use super::fixtures::{directory_names, lock_entry, version, workspace};
+use super::fixtures::{directory_names, lock_entry, selection, version, workspace};
 
 #[test]
 fn a_failed_staged_write_keeps_the_committed_boundary() {
@@ -176,7 +174,7 @@ fn a_cycle_over_one_marker_leaves_the_parked_pair_of_another_untouched() {
     commit_stage(
         version("3.2"),
         ":memory:",
-        DEFAULT_SCHEMA,
+        &selection(),
         &stage_dir,
         &lock_path,
         &checkpoint_path,
