@@ -1554,7 +1554,7 @@ mod postgres_extension_traits {
 
         assert_eq!(
             built.sql,
-            "SELECT \"id\" FROM \"docs\" WHERE (\"content\" @@ to_tsquery($1))"
+            "SELECT \"id\" FROM \"docs\" WHERE (to_tsvector(\"content\") @@ to_tsquery($1))"
         );
         assert_eq!(built.params, vec![SqlVal::Text("rust & sql".to_owned())]);
     }

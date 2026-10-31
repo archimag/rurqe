@@ -42,7 +42,7 @@ A text column matches POSIX regular expressions and full-text search queries. Th
 | `"bio" ~* $1` | `regex_match_ci(pattern)` | case-insensitive regular expression |
 | `"bio" !~ $1` | `regex_not_match(pattern)` | negated case-sensitive match |
 | `"bio" !~* $1` | `regex_not_match_ci(pattern)` | negated case-insensitive match |
-| `"bio" @@ to_tsquery($1)` | `matches_tsquery(query)` | full-text search query |
+| `to_tsvector("bio") @@ to_tsquery($1)` | `matches_tsquery(query)` | full-text search query |
 
 The pattern or the query binds as one text parameter. In a statement addressing several relations the column reference is qualified, so the same predicate renders as `("profiles"."bio" ~ $1)`.
 
@@ -65,9 +65,11 @@ A full-text search compares a query against a text document. Three helpers build
 | `to_tsvector($1)` | `to_tsvector(text)` | the search document of a text |
 | `to_tsquery($1)` | `to_tsquery(query)` | a query spelled with the operators of the query language |
 | `plainto_tsquery($1)` | `plainto_tsquery(text)` | a query folded from plain words |
-| `"bio" @@ to_tsquery($1)` | `matches_tsquery(query)` | the predicate matching a column against a query |
+| `to_tsvector("bio") @@ to_tsquery($1)` | `matches_tsquery(query)` | the predicate matching a column against a query |
 
-`matches_tsquery` wraps its argument in `to_tsquery` itself, so a predicate over a text column renders `("bio" @@ to_tsquery($1))` with the whole query bound as one parameter. The three helpers are what a statement uses when the document or the query has to stand on its own: projected, compared, or nested inside another expression.
+`matches_tsquery` builds both sides of the comparison itself, because PostgreSQL defines `@@` only between a `tsvector` document and a `tsquery`. The predicate converts the column into the document it is searched as and the query into the query language, so a predicate over a text column renders `(to_tsvector("bio") @@ to_tsquery($1))` with the whole query bound as one parameter. The column reference stays symbolic inside the call, so a statement addressing several relations qualifies it exactly like a bare reference: `(to_tsvector("profiles"."bio") @@ to_tsquery($1))`.
+
+The three helpers are what a statement uses when the document or the query has to stand on its own: projected, compared, or nested inside another expression.
 
 ## JSON and JSONB Documents
 

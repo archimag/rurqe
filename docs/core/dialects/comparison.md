@@ -124,7 +124,7 @@ PostgreSQL additionally matches a POSIX regular expression, and the pattern bind
 SELECT "id" AS "profile_id" FROM "profiles" WHERE ("bio" ~ $1)
 ```
 
-The negated forms render `!~` and `!~*`, and a full-text predicate renders `("bio" @@ to_tsquery($1))` against a query built by `to_tsquery` or `plainto_tsquery`. SQLite implements neither operator, so the methods are absent from that dialect.
+The negated forms render `!~` and `!~*`. A full-text predicate converts the text column into the document it is searched as, because PostgreSQL defines `@@` only between a `tsvector` and a `tsquery`: the predicate renders `(to_tsvector("bio") @@ to_tsquery($1))`, with the query bound as one parameter. SQLite implements neither operator, so the methods are absent from that dialect.
 
 ## JSON Documents and Array Columns
 

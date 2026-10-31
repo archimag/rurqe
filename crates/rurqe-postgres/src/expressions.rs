@@ -25,8 +25,12 @@ impl PgTextValue for Option<&'static str> {}
 
 /// A column value the PostgreSQL full-text search operators read.
 ///
-/// Full-text search matches a `tsquery` against text, so it is offered for the
-/// same value kinds as the regex operators.
+/// Full-text search compares a `tsquery` against a `tsvector` document, so the
+/// column supplies the text the document is built from: it is offered for the
+/// same value kinds as the regex operators, and the predicate converts it with
+/// `to_tsvector` before the comparison. PostgreSQL defines `@@` only between a
+/// `tsvector` and a `tsquery`, so the document is built from the column itself
+/// and the predicate renders `(to_tsvector(<column>) @@ to_tsquery($1))`.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a PostgreSQL text value",
     label = "full-text search matches text",
@@ -242,8 +246,21 @@ where
 
 /// PostgreSQL full-text search operators.
 ///
-/// Full-text search matches a `tsquery` against text, so a column of another
-/// value kind has no such operator:
+/// A full-text search compares a `tsquery` against a `tsvector` document, so the
+/// text column is converted into the document it is searched as:
+///
+/// ```text
+/// (to_tsvector("content") @@ to_tsquery($1))     matches_tsquery
+/// ```
+///
+/// PostgreSQL defines `@@` only between a `tsvector` and a `tsquery`, so a bare
+/// text operand would render `text @@ tsquery` and the server would reject the
+/// statement with `operator does not exist: text @@ tsquery`. The document is
+/// built from the symbolic reference of the column, so the enclosing statement
+/// still qualifies it against its relations and the dialect still quotes the
+/// identifiers.
+///
+/// A column of another value kind has no such operator:
 ///
 /// ```compile_fail
 /// use rurqe_postgres::PgTextSearchExpressions;
@@ -261,7 +278,7 @@ pub trait PgTextSearchExpressions {
     /// The scope of the table the column belongs to.
     type Scope;
 
-    /// Full-text search match (`@@ to_tsquery(?)`).
+    /// Full-text search match (`to_tsvector(<column>) @@ to_tsquery(?)`).
     fn matches_tsquery(self, query: &str) -> Expr<bool, Self::Scope>;
 }
 
@@ -273,9 +290,15 @@ where
     type Scope = C::Table;
 
     fn matches_tsquery(self, query: &str) -> Expr<bool, C::Table> {
-        // The operator inherits the scope of the searched column, so the
-        // predicate references the table of that column and nothing else.
-        Expr::column::<C>().dialect_op::<String, bool, _>("@@", to_tsquery(query))
+        // `@@` relates a `tsvector` document to a `tsquery`, so the text column
+        // is converted into the document it is searched as. The call keeps the
+        // column reference symbolic: the enclosing statement qualifies it
+        // against its relations, an aliased column keeps its alias prefix, and
+        // the dialect quotes the identifiers. The predicate inherits the scope
+        // of the searched column, so it references the table of that column and
+        // nothing else.
+        Expr::column_function::<C>("to_tsvector")
+            .dialect_op::<String, bool, _>("@@", to_tsquery(query))
     }
 }
 
@@ -738,8 +761,28 @@ mod tests {
     fn matches_tsquery_binds_the_query_as_a_nested_function_call() {
         let expr = DocContent.matches_tsquery("english & rust");
         let (sql, params) = render(expr.kind(), &[TableRef::plain("docs")]);
-        assert_eq!(sql, "(\"content\" @@ to_tsquery($1))");
+        assert_eq!(sql, "(to_tsvector(\"content\") @@ to_tsquery($1))");
         assert_eq!(params, vec![SqlVal::Text("english & rust".to_owned())]);
+    }
+
+    #[test]
+    fn matches_tsquery_qualifies_the_wrapped_column_reference() {
+        let expr = DocContent.matches_tsquery("english & rust");
+
+        // The document is built from the column reference, so a statement
+        // addressing several relations qualifies it inside the call exactly
+        // like a bare reference of the same column.
+        let (qualified, params) = render(
+            expr.kind(),
+            &[TableRef::plain("docs"), TableRef::plain("other")],
+        );
+        assert_eq!(qualified, "(to_tsvector(\"docs\".\"content\") @@ to_tsquery($1))");
+        assert_eq!(params, vec![SqlVal::Text("english & rust".to_owned())]);
+
+        // An aliased column keeps its alias prefix inside the call.
+        let aliased = AliasedCol::<DocAlias, DocContent>::new().matches_tsquery("rust");
+        let (sql, _) = render(aliased.kind(), &[TableRef::aliased("docs", "d")]);
+        assert_eq!(sql, "(to_tsvector(\"d\".\"content\") @@ to_tsquery($1))");
     }
 
     #[test]
