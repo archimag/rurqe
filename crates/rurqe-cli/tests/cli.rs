@@ -40,7 +40,7 @@ fn codegen_creates_valid_rust_code_with_schema_hash() {
     let code = generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
 
     assert!(code.contains(&catalog.hash_const()));
-    assert!(code.contains("table! {"));
+    assert!(code.contains("table!("));
     assert!(code.contains("Users => \"users\""));
     assert!(code.contains("Orders => \"orders\""));
     assert!(code.contains("UsersEmail => \"email\": String"));

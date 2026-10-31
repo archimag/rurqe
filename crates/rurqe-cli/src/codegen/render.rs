@@ -77,7 +77,7 @@ pub fn generate_schema_rs(
 fn render_schema(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> String {
     let mut out = String::new();
 
-    out.push_str("schema! {\n");
+    out.push_str("schema!(\n");
     out.push_str("    /// The `");
     out.push_str(&doc_text(schema.name));
     out.push_str("` schema.\n");
@@ -101,7 +101,7 @@ fn render_schema(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> 
     }
 
     out.push_str("    }\n");
-    out.push_str("}\n\n");
+    out.push_str(");\n\n");
 
     out
 }
@@ -170,7 +170,7 @@ fn render_enum(enum_plan: &EnumPlan<'_>) -> String {
 fn render_table_block(table: &TablePlan<'_>) -> String {
     let mut out = String::new();
 
-    out.push_str("table! {\n");
+    out.push_str("table!(\n");
     out.push_str("    /// The `");
     out.push_str(&doc_text(table.name));
     out.push_str("` table.\n");
@@ -191,7 +191,7 @@ fn render_table_block(table: &TablePlan<'_>) -> String {
     }
 
     out.push_str("    }\n");
-    out.push_str("}\n\n");
+    out.push_str(");\n\n");
 
     out
 }
@@ -451,15 +451,15 @@ mod tests {
             generate_schema_rs(&catalog, &CodegenOptions::default()).expect("codegen succeeds");
 
         // The primary table stays a flat item of the module.
-        assert!(code.contains("table! {\n    /// The `users` table.\n    Users => \"users\" {"));
+        assert!(code.contains("table!(\n    /// The `users` table.\n    Users => \"users\" {"));
 
         // The secondary schema declares the marker it is addressed through next
         // to the module holding its type namespace.
-        assert!(code.contains("schema! {\n    /// The `auth` schema.\n    Auth => \"auth\" as auth {\n"));
+        assert!(code.contains("schema!(\n    /// The `auth` schema.\n    Auth => \"auth\" as auth {\n"));
         // The table is declared with the ordinary `table!` grammar inside the
         // schema block, so the renderer keeps no table syntax of its own.
         assert!(code.contains(
-            "        table! {\n            /// The `sessions` table.\n            Sessions => \"sessions\" {\n                SessionsId => \"id\": i64,\n            }\n        }\n"
+            "        table!(\n            /// The `sessions` table.\n            Sessions => \"sessions\" {\n                SessionsId => \"id\": i64,\n            }\n        );\n"
         ));
         // The block states the schema once and `schema!` attaches it, so the
         // nested declaration never repeats it through an `in` clause.
@@ -525,6 +525,6 @@ mod tests {
             mixed_body.starts_with(flat_body),
             "the flat primary section changed:\n{mixed_body}"
         );
-        assert!(mixed_body[flat_body.len()..].starts_with("schema! {\n"));
+        assert!(mixed_body[flat_body.len()..].starts_with("schema!(\n"));
     }
 }
