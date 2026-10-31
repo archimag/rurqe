@@ -7,8 +7,8 @@
 //! the public AST surface, where the tier-1 typestate cannot reach.
 
 use super::super::{Order, OrderId, OrderTotal, RecentId, RecentTotal};
-use super::{relation_statement, scalar_subquery, UpsertDialect};
-use crate::expr::{Expr, ExprKind, JoinAst, JoinKind, SelectAst, SqlVal};
+use super::{count_star, relation_statement, scalar_subquery, sum_of, UpsertDialect};
+use crate::expr::{BinaryOp, Expr, ExprKind, JoinAst, JoinKind, SelectAst, SqlVal, WindowExprKind};
 use crate::query::*;
 use crate::schema::TableRef;
 
@@ -342,4 +342,189 @@ fn a_returning_projection_repeating_the_mutated_target_is_accepted() {
         "UPDATE \"orders\" SET \"total\" = $1 WHERE (\"id\" = $2) RETURNING \"total\""
     );
     assert_eq!(built.params, vec![SqlVal::F64(2.5), SqlVal::I64(1)]);
+}
+
+/// The rejection a `RETURNING` projection carrying an aggregate is reported as.
+fn aggregate_in_returning() -> BuildError {
+    BuildError::AggregateInRowClause {
+        clause: RowClause::Returning,
+        aggregate: "COUNT",
+    }
+}
+
+/// The rejection a `RETURNING` projection carrying a window call is reported as.
+fn window_in_returning() -> BuildError {
+    BuildError::WindowInRowClause {
+        clause: RowClause::Returning,
+    }
+}
+
+/// A `ROW_NUMBER()` window call, which a `RETURNING` clause cannot evaluate.
+///
+/// The call reads the rows a statement produced, while a mutation hands its rows
+/// back one at a time, so the clause offers it no row set to read.
+fn row_number_window() -> ExprKind {
+    ExprKind::Window {
+        kind: Box::new(WindowExprKind::RowNumber),
+        partition_by: Vec::new(),
+        order_by: Vec::new(),
+        frame: None,
+    }
+}
+
+#[test]
+fn an_insert_returning_projection_carrying_an_aggregate_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The clause reports each inserted row on its own, so an aggregate written
+    // into it would collapse the rows the statement is handing back.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .returning(TrunkReturning(count_star()))
+        .build();
+
+    assert_eq!(built, Err(aggregate_in_returning()));
+}
+
+#[test]
+fn an_update_returning_projection_carrying_an_aggregate_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(count_star()))
+        .build();
+
+    assert_eq!(built, Err(aggregate_in_returning()));
+}
+
+#[test]
+fn a_delete_returning_projection_carrying_an_aggregate_is_rejected() {
+    use crate::dml::DeleteQuery;
+
+    let built = DeleteQuery::<UpsertDialect, Order>::new()
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(count_star()))
+        .build();
+
+    assert_eq!(built, Err(aggregate_in_returning()));
+}
+
+#[test]
+fn an_insert_returning_projection_carrying_a_window_call_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The window rule is a branch of its own: a window call is not an aggregate,
+    // so only that branch reports it, and the aggregate branch stays silent.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .returning(TrunkReturning(row_number_window()))
+        .build();
+
+    assert_eq!(built, Err(window_in_returning()));
+}
+
+#[test]
+fn an_update_returning_projection_carrying_a_window_call_is_rejected() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(row_number_window()))
+        .build();
+
+    assert_eq!(built, Err(window_in_returning()));
+}
+
+#[test]
+fn a_delete_returning_projection_carrying_a_window_call_is_rejected() {
+    use crate::dml::DeleteQuery;
+
+    let built = DeleteQuery::<UpsertDialect, Order>::new()
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(row_number_window()))
+        .build();
+
+    assert_eq!(built, Err(window_in_returning()));
+}
+
+#[test]
+fn a_returning_projection_reports_its_aggregate_before_an_invalid_embedded_statement() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The projection is both an aggregate and a statement the pre-flight pass
+    // refuses, so the two rules meet on one clause: the row-clause rule runs
+    // first, which is what `validate_row_clause` preceding `validate_expr`
+    // records.
+    let projection = ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(count_star()),
+        rhs: Box::new(scalar_subquery(duplicated_relation_statement())),
+    };
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values((OrderId::set(1i64), OrderTotal::set(2.5f64)))
+        .returning(TrunkReturning(projection))
+        .build();
+
+    assert_eq!(built, Err(aggregate_in_returning()));
+}
+
+#[test]
+fn a_returning_projection_reading_an_aggregating_subquery_is_accepted() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The aggregate belongs to the nested statement, which collapses its own rows
+    // into the one value the projection reads: the rule stops at the statement
+    // boundary.
+    let mut inner = relation_statement("orders", "total");
+    inner.projections = vec![sum_of("orders", "total")];
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(scalar_subquery(inner)))
+        .build()
+        .expect("a scalar subquery aggregates its own scope");
+
+    assert_eq!(
+        built.sql,
+        "UPDATE \"orders\" SET \"total\" = $1 WHERE (\"id\" = $2) \
+         RETURNING (SELECT SUM(\"total\") FROM \"orders\")"
+    );
+    assert_eq!(built.params, vec![SqlVal::F64(2.5), SqlVal::I64(1)]);
+}
+
+#[test]
+fn a_returning_projection_reading_a_window_subquery_is_accepted() {
+    use crate::dml::DeleteQuery;
+
+    // The window call belongs to the nested statement, which reads its own row
+    // set: the `RETURNING` clause offers the projection one modified row, while
+    // the call reads the rows the subquery produced.
+    let mut inner = relation_statement("orders", "id");
+    inner.projections = vec![row_number_window()];
+
+    let built = DeleteQuery::<UpsertDialect, Order>::new()
+        .where_(Expr::column::<OrderId>().eq(1i64))
+        .returning(TrunkReturning(scalar_subquery(inner)))
+        .build()
+        .expect("a window subquery reads its own row set");
+
+    assert_eq!(
+        built.sql,
+        "DELETE FROM \"orders\" WHERE (\"id\" = $1) \
+         RETURNING (SELECT ROW_NUMBER() OVER () FROM \"orders\")"
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
+fn build_error_display_window_in_row_clause() {
+    let msg = window_in_returning().to_string();
+    assert!(msg.contains("window function"));
+    assert!(msg.contains("the `RETURNING` clause"));
+    assert!(msg.contains("one modified row at a time"));
 }

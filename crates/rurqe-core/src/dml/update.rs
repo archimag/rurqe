@@ -424,6 +424,12 @@ where
     /// clause expressions are pre-flighted against the registered relations:
     /// a reference qualified through a name the rendered statement does not
     /// declare is reported as [`BuildError::UnresolvedQualifier`].
+    ///
+    /// The `RETURNING` clause reports one modified row at a time, so a projected
+    /// aggregate — which would collapse the rows the statement is handing back —
+    /// is rejected as [`BuildError::AggregateInRowClause`], and a projected
+    /// window call — which reads a row set the clause does not offer — as
+    /// [`BuildError::WindowInRowClause`], each before any SQL is rendered.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The `AssignmentsPresent` typestate states that the statement recorded
         // its column values, while the vector itself is filled by
@@ -467,6 +473,10 @@ where
             reject_unresolved_qualifiers(filter, &relations, &[])?;
         }
         for projection in &self.returning {
+            // The clause reports each modified row on its own, so an aggregate
+            // and a window call are both refused here, before any other rule of
+            // the projection runs.
+            validate_row_clause(projection, RowClause::Returning)?;
             validate_expr(projection)?;
             reject_unresolved_qualifiers(projection, &relations, &[])?;
         }

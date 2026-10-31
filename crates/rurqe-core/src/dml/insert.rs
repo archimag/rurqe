@@ -19,8 +19,9 @@ use crate::dialect::{Dialect, SupportsAliasedInsertTarget, SupportsOnConflict, S
 use crate::dml::render_expr;
 use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
 use crate::query::{
-    reject_columns_without_relations, reject_unresolved_qualifiers, validate_expr, BuildError,
-    BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
+    reject_columns_without_relations, reject_unresolved_qualifiers, validate_expr,
+    validate_row_clause, BuildError, BuiltQuery, HasProjection, RowClause, SelectQuery, Selection,
+    TableScope, TableSelection,
 };
 use crate::schema::{Aliased, Column, ColumnBelongsTo, Table, TableAlias};
 
@@ -504,6 +505,12 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// [`BuildError::EmptyConflictUpdateSet`], so the predicate recorded for the
     /// branch is never dropped by degrading the action into a `DO NOTHING`.
     ///
+    /// The `RETURNING` clause reports one modified row at a time, so a projected
+    /// aggregate — which would collapse the rows the statement is handing back —
+    /// is rejected as [`BuildError::AggregateInRowClause`], and a projected
+    /// window call — which reads a row set the clause does not offer — as
+    /// [`BuildError::WindowInRowClause`], each before any SQL is rendered.
+    ///
     /// The source `SELECT` of an `INSERT INTO ... SELECT` supplies one value per
     /// target column, positionally, so a statement whose recorded projection list
     /// disagrees with the column list is rejected as
@@ -628,6 +635,10 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
         // expression of the statement like any other, so the same pass audits the
         // statements it embeds.
         for projection in &self.returning {
+            // The clause reports each modified row on its own, so an aggregate
+            // and a window call are both refused here, before any other rule of
+            // the projection runs.
+            validate_row_clause(projection, RowClause::Returning)?;
             validate_expr(projection)?;
             reject_unresolved_qualifiers(projection, &relations, &[])?;
         }
