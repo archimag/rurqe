@@ -9,7 +9,8 @@ use rurqe_migrate::history::{create_schema_history_table_sql, SchemaHistoryEntry
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, Sleeper, ThreadSleeper};
 
-use crate::introspect::{introspect_postgres_schema, DEFAULT_SCHEMA};
+use crate::config::SchemaSelection;
+use crate::introspect::{introspect_postgres_selection, DEFAULT_SCHEMA};
 
 use super::history_sql::{
     backend_error, delete_entry_sql, insert_entry_sql, select_history_sql, update_checksum_sql,
@@ -152,7 +153,7 @@ fn advisory_lock_not_held(lock_id: i64) -> Error {
 /// dropped.
 pub struct PostgresMigrationBackend {
     client: postgres::Client,
-    schema: String,
+    selection: SchemaSelection,
     lock_held: bool,
     lock_timeout: Duration,
 }
@@ -167,29 +168,42 @@ impl PostgresMigrationBackend {
     pub fn new(client: postgres::Client) -> Self {
         Self {
             client,
-            schema: DEFAULT_SCHEMA.to_owned(),
+            selection: SchemaSelection::single(DEFAULT_SCHEMA),
             lock_held: false,
             lock_timeout: DEFAULT_ADVISORY_LOCK_TIMEOUT,
         }
     }
 
-    /// Selects the PostgreSQL schema the recorded catalog digest describes.
+    /// Selects the PostgreSQL schemas the recorded catalog digest describes.
     ///
     /// `public` suits a deployment keeping its tables in the default schema,
-    /// while a project owning a schema of its own names it here, so the digest a
+    /// while a project owning schemas of its own names them here, so the digest a
     /// migration records describes the very tables the declarative stage
     /// declares instead of an unrelated `public` catalog. The CLI threads the
-    /// selection its commands resolved — `--schema`, the `schema` key of
-    /// `rurqe.toml`, or `public` — through this selector, so the checkpoint guard
-    /// compares the same schema the codegen snapshot and the drift gate read.
-    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
-        self.schema = schema.into();
+    /// selection its commands resolved — `--schema`, the `primary_schema` key of
+    /// `rurqe.toml`, and the secondary `schemas` — through this selector, so the
+    /// checkpoint guard compares the same schemas the codegen snapshot and the
+    /// drift gate read.
+    pub fn with_schemas(mut self, selection: SchemaSelection) -> Self {
+        self.selection = selection;
         self
     }
 
-    /// The PostgreSQL schema the recorded catalog digest describes.
+    /// Selects the one PostgreSQL schema the recorded catalog digest describes.
+    ///
+    /// The single name becomes a selection holding no secondary schema, so a
+    /// project describing one schema records the same catalog through either
+    /// selector.
+    pub fn with_schema(self, schema: impl Into<String>) -> Self {
+        self.with_schemas(SchemaSelection::single(schema))
+    }
+
+    /// The primary PostgreSQL schema the recorded catalog digest describes.
+    ///
+    /// The primary schema is the one relations render without a qualifier; the
+    /// secondary schemas of the selection are recorded beside it.
     pub fn schema(&self) -> &str {
-        &self.schema
+        self.selection.primary()
     }
 
     /// Overrides how long a run waits for the advisory lock before giving up.
@@ -202,10 +216,13 @@ impl PostgresMigrationBackend {
         self
     }
 
-    /// Introspects the schema catalog of the selected schema.
+    /// Introspects the schema catalog of the selected schemas.
+    ///
+    /// The selection is bound as one array parameter, so the returned catalog
+    /// describes the primary schema and every secondary schema the project
+    /// declares, and the recorded digest covers all of them.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
-        let schema = self.schema.clone();
-        introspect_postgres_schema(&mut self.client, &schema).map_err(backend_error)
+        introspect_postgres_selection(&mut self.client, &self.selection).map_err(backend_error)
     }
 }
 
@@ -249,11 +266,11 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
-        let schema = self.schema.clone();
+        let selection = self.selection.clone();
         let tx = self.client.transaction().map_err(backend_error)?;
         Ok(PostgresMigrationTransaction {
             tx: Some(tx),
-            schema,
+            selection,
         })
     }
 
@@ -351,7 +368,7 @@ impl Drop for PostgresMigrationBackend {
 /// Transactional boundary of a [`PostgresMigrationBackend`] step.
 pub struct PostgresMigrationTransaction<'a> {
     tx: Option<postgres::Transaction<'a>>,
-    schema: String,
+    selection: SchemaSelection,
 }
 
 impl<'a> PostgresMigrationTransaction<'a> {
@@ -361,14 +378,15 @@ impl<'a> PostgresMigrationTransaction<'a> {
         })
     }
 
-    /// Introspects the selected schema as the open transaction sees it.
+    /// Introspects the selected schemas as the open transaction sees it.
     ///
     /// The catalog statements run over the transaction itself, so a step reads
     /// the changes it has applied so far and nobody else observes them until the
-    /// transaction commits.
+    /// transaction commits, and the digest the step records covers every selected
+    /// schema exactly like the one its connection records.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
-        let schema = self.schema.clone();
-        introspect_postgres_schema(self.transaction()?, &schema).map_err(backend_error)
+        let selection = self.selection.clone();
+        introspect_postgres_selection(self.transaction()?, &selection).map_err(backend_error)
     }
 }
 

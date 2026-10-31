@@ -78,21 +78,11 @@ pub(super) fn resolve_schema(
     resolve_selection(explicit, config_path).map(|selection| selection.primary().to_owned())
 }
 
-/// Picks the schema out of an already loaded configuration.
-pub(super) fn schema_of(explicit: Option<&str>, config: &CodegenConfig) -> String {
-    explicit
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .or_else(|| config.schema())
-        .unwrap_or(DEFAULT_SCHEMA)
-        .to_owned()
-}
-
 /// Builds the schema selection of an already loaded configuration.
 ///
-/// The primary schema is resolved by [`schema_of`], so an explicit argument wins
-/// over the configured `primary_schema` (or its legacy `schema` alias) and the
-/// `public` default applies when neither names one; the `schemas` array
+/// The primary schema is the explicit argument with its surrounding whitespace
+/// trimmed, then the configured `primary_schema` (or its legacy `schema` alias),
+/// and the `public` default when neither names one; the `schemas` array
 /// contributes the secondary schemas in declaration order.
 ///
 /// A secondary schema that repeats the effective primary one is refused here
@@ -104,7 +94,12 @@ pub(super) fn selection_of(
     explicit: Option<&str>,
     config: &CodegenConfig,
 ) -> Result<SchemaSelection, CliError> {
-    let primary = schema_of(explicit, config);
+    let primary = explicit
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .or_else(|| config.schema())
+        .unwrap_or(DEFAULT_SCHEMA)
+        .to_owned();
 
     if let Some(collision) = config
         .schemas()

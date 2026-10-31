@@ -31,7 +31,7 @@ pub use report::CommandOutput;
 use self::commands::{
     apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage, help_text,
     initialise_stage, load_config, prune_migrations, repair_history, report_status, resolve_schema,
-    resolve_schema_code, schema_of, verify_stage, write_file,
+    resolve_schema_code, resolve_selection, selection_of, verify_stage, write_file,
 };
 use self::connection::resolve_database_url;
 
@@ -39,7 +39,7 @@ use crate::codegen::generate_schema_rs;
 use crate::config::DEFAULT_CONFIG_PATH;
 use crate::drift::verify_drift;
 use crate::driver::{PostgresMigrationBackend, SqliteMigrationBackend};
-use crate::introspect::{introspect_database_schema_notice, report_vacuous_postgres_schema};
+use crate::introspect::{introspect_database_selection_notice, report_vacuous_postgres_selection};
 
 /// Opens the migration backend for `database_url` and evaluates `$run` against it.
 ///
@@ -47,15 +47,16 @@ use crate::introspect::{introspect_database_schema_notice, report_vacuous_postgr
 /// constructed once per command through the shared connection helper instead of
 /// repeating the dialect match and connection logic by hand.
 ///
-/// `$schema` is a `Result` resolved before the engine is known, so the project
+/// `$selection` is a `Result` resolved before the engine is known, so the project
 /// configuration behind it is loaded and validated for every engine: a malformed
 /// `rurqe.toml` fails a SQLite command exactly like a PostgreSQL one, instead of
-/// being tolerated on the engine whose backend never reads the resolved name.
-/// Only that name is engine-conditional — a SQLite database holds one unnamed
-/// catalog the selection would never select, so the SQLite arm drops it — while
-/// the PostgreSQL arm passes it to `PostgresMigrationBackend::with_schema`, so the
-/// recorded catalog digest — and the checkpoint guard comparing it — describes
-/// the same schema the codegen snapshot and the drift gate read.
+/// being tolerated on the engine whose backend never reads the resolved schemas.
+/// Only that selection is engine-conditional — a SQLite database holds one
+/// unnamed catalog the selection would never describe, so the SQLite arm drops
+/// it — while the PostgreSQL arm hands it to
+/// `PostgresMigrationBackend::with_schemas`, so the recorded catalog digest — and
+/// the checkpoint guard comparing it — describes the same schemas the codegen
+/// snapshot and the drift gate read.
 ///
 /// The two-argument form serves the one command that records no catalog digest:
 /// `baseline` only writes a history marker, so it carries no schema selection and
@@ -74,16 +75,16 @@ macro_rules! with_migration_backend {
             }
         }
     }};
-    ($database_url:expr, $schema:expr, |$backend:ident| $run:expr) => {{
+    ($database_url:expr, $selection:expr, |$backend:ident| $run:expr) => {{
         let url = resolve_database_url($database_url)?;
 
         // The selection is resolved before the engine is known, so the project
         // configuration behind it is validated for a SQLite target as well: a file
         // skipped on that engine would let a typo pass on the very commands that
-        // record a catalog digest. Only the resolved name is engine-conditional,
-        // because a SQLite database holds one unnamed catalog the selection would
-        // never select.
-        let schema = $schema?;
+        // record a catalog digest. Only the resolved selection is
+        // engine-conditional, because a SQLite database holds one unnamed catalog
+        // the selection would never describe.
+        let selection = $selection?;
 
         match connect(&url)? {
             Connection::Sqlite(conn) => {
@@ -92,11 +93,11 @@ macro_rules! with_migration_backend {
             }
             Connection::Postgres(client) => {
                 let mut client = *client;
-                let notice = report_vacuous_postgres_schema(&mut client, &schema)?;
-                let mut $backend = PostgresMigrationBackend::new(client).with_schema(schema);
+                let notice = report_vacuous_postgres_selection(&mut client, &selection)?;
+                let mut $backend = PostgresMigrationBackend::new(client).with_schemas(selection);
 
                 // The notice travels in the report of the command, so a digest
-                // computed over a schema that describes nothing reaches the
+                // computed over a selection that describes nothing reaches the
                 // operator whether or not a tracing sink is installed.
                 let mut output = $run?;
                 output.notice(notice);
@@ -132,9 +133,12 @@ pub(crate) fn run_cli_with_config(
 ) -> Result<CommandOutput, CliError> {
     let cmd = parse_args(&args)?;
 
-    // Every catalog-digest arm below resolves its schema against the
+    // Every catalog-digest arm below resolves its schemas against the
     // configuration file this run was pointed at, so the path is bound once here
-    // and the arms keep naming only the schema selection.
+    // and the arms keep naming only the schema selection. The two stage arms that
+    // still thread one schema through their entry points derive it from the same
+    // selection.
+    let resolve_selection = |explicit: Option<&str>| resolve_selection(explicit, config_path);
     let resolve_schema = |explicit: Option<&str>| resolve_schema(explicit, config_path);
 
     match cmd {
@@ -152,21 +156,21 @@ pub(crate) fn run_cli_with_config(
             checkpoint_path,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_schema(schema.as_deref()), |backend| {
+        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
             apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
         }),
         CliCommand::MigrateStatus {
             migrations_dir,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_schema(schema.as_deref()), |backend| {
+        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
             report_status(&mut backend, &migrations_dir)
         }),
         CliCommand::MigrateRepair {
             migrations_dir,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_schema(schema.as_deref()), |backend| {
+        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
             repair_history(&mut backend, &migrations_dir)
         }),
         CliCommand::Baseline {
@@ -186,9 +190,9 @@ pub(crate) fn run_cli_with_config(
             schema,
         } => {
             let config = load_config(config_path)?;
-            let schema = schema_of(schema.as_deref(), &config);
+            let selection = selection_of(schema.as_deref(), &config)?;
             let url = resolve_database_url(database_url)?;
-            let (catalog, notice) = introspect_database_schema_notice(&url, &schema)?;
+            let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
             let mut options = codegen_options(config);
             if domain_types {
                 options.domain_types = true;
@@ -214,7 +218,7 @@ pub(crate) fn run_cli_with_config(
             lock_path,
             schema,
         } => {
-            let schema = resolve_schema(schema.as_deref())?;
+            let selection = resolve_selection(schema.as_deref())?;
             let url = resolve_database_url(database_url)?;
             let expected_lock = std::fs::read_to_string(&lock_path).map_err(|e| {
                 CliError(format!(
@@ -223,7 +227,7 @@ pub(crate) fn run_cli_with_config(
                 ))
             })?;
             let schema_code = resolve_schema_code(schema_path)?;
-            let (catalog, notice) = introspect_database_schema_notice(&url, &schema)?;
+            let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
             verify_drift(&catalog, &expected_lock, schema_code.as_deref())
                 .map_err(|err| CliError(err.to_string()))?;
 
@@ -244,7 +248,7 @@ pub(crate) fn run_cli_with_config(
             description,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_schema(schema.as_deref()), |backend| {
+        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
             initialise_stage(&mut backend, &stage_dir, version, &description)
         }),
         CliCommand::StageVerify {

@@ -6,17 +6,25 @@ use crate::config::CodegenConfig;
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{current_owner_tag, ScratchAdminSession, ScratchCatalogEntry};
 
-use super::super::schema_of;
-use super::super::selection_of;use super::super::stage::cleanup_scratch_catalog;
+use super::super::selection_of;
+use super::super::stage::cleanup_scratch_catalog;
 
 #[test]
 fn the_command_line_schema_wins_over_the_configured_one() {
     let configured = CodegenConfig::parse("schema = \"app\"\n").expect("the schema key parses");
 
-    assert_eq!(schema_of(Some("reporting"), &configured), "reporting");
-    assert_eq!(schema_of(Some("   "), &configured), "app");
-    assert_eq!(schema_of(None, &configured), "app");
-    assert_eq!(schema_of(None, &CodegenConfig::default()), DEFAULT_SCHEMA);
+    let selection = selection_of(Some("reporting"), &configured).expect("the selection resolves");
+    assert_eq!(selection.primary(), "reporting");
+    assert!(selection.secondary().is_empty());
+
+    let selection = selection_of(Some("   "), &configured).expect("a blank argument names none");
+    assert_eq!(selection.primary(), "app");
+
+    let selection = selection_of(None, &configured).expect("the configured schema is selected");
+    assert_eq!(selection.primary(), "app");
+
+    let selection = selection_of(None, &CodegenConfig::default()).expect("the default resolves");
+    assert_eq!(selection.primary(), DEFAULT_SCHEMA);
 }
 
 /// A scratch admin session recording the catalog scans and drops it performs.
@@ -219,4 +227,15 @@ fn a_secondary_schema_colliding_with_the_effective_primary_is_refused() {
     assert!(message.contains("`auth`"), "got {message}");
     assert!(message.contains("primary"), "got {message}");
     assert!(message.contains("secondary"), "got {message}");
+}
+
+#[test]
+fn the_explicit_schema_is_trimmed_before_it_is_compared_with_the_secondaries() {
+    let configured = CodegenConfig::parse("schemas = [\"auth\"]\n").expect("the keys parse");
+
+    let error = selection_of(Some("  auth  "), &configured)
+        .expect_err("the trimmed argument names the declared secondary schema");
+
+    let message = error.to_string();
+    assert!(message.contains("`auth`"), "got {message}");
 }
