@@ -68,8 +68,8 @@ budget_tokens = 20000  # session history token budget before compaction is trigg
 # tail_turns = 10        # number of recent turns kept uncompressed in original form (default: 10)
 
 [context]
-max_discovery_rounds = 8     # maximum rounds for autonomous context discovery
-files_token_budget = 900000  # token budget for files in active context (default: 300000)
+max_discovery_rounds = 12     # maximum rounds for autonomous context discovery
+files_token_budget = 1000000  # token budget for files in active context (default: 300000)
 repomap_token_budget = 40000 # token budget for the repository map (default: 4000)
 # max_pattern_batch = 150     # maximum files admitted by one glob request (default: 150)
 pinned = [
@@ -78,3 +78,63 @@ pinned = [
     "ROADMAP.md",
     "docs/Conventions.md"
 ]
+
+[[review.presets]]
+name = "workspace"
+title = "Workspace and Documentation Audit"
+post_analysis = "manual"
+
+[[review.presets.groups]]
+name = "crates"
+paths = ["crates/"]
+prompt = "Audit Rust workspace crates against Conventions.md and Vision.md: panic-free invariants (no unwrap/expect in production code), module sizing (<800 LOC, target 150-400), no mod.rs, compile-time SQL correctness, typed errors (ExecutionError without Box<dyn Error>), and zero clippy warnings."
+
+[[review.presets.groups]]
+name = "docs"
+paths = ["docs/"]
+prompt = "Audit mdBook documentation and examples against docs/Conventions.md: plain technical English, standard industry terminology without invented jargon, self-contained chapters without cross-chapter markdown links, five-part canonical structure for SQL statements, code-as-SSOT (all snippets included from docs/examples/ via {{#rustdoc_include}} within ```rust,no_run blocks), no hidden scaffolding lines, and living parity between SQL and Rust builders."
+
+[[review.presets]]
+name = "crates"
+title = "Workspace Crates Audit"
+post_analysis = "manual"
+
+[[review.presets.groups]]
+name = "core"
+paths = ["crates/rurqe-core/src", "crates/rurqe/src"]
+prompt = "Audit typed query builder, relational AST, expression engine, and facade entry points. Verify compile-time SQL correctness, zero-cost monomorphization, panic-free typestates, no unwrap/expect in production code, module size limits (<800 LOC), and adherence to Conventions.md."
+
+[[review.presets.groups]]
+name = "dialects"
+paths = ["crates/rurqe-postgres/src", "crates/rurqe-sqlite/src"]
+prompt = "Audit dialect renderers, capability marker traits, version gates, and execution backends (sync and async). Verify error mapping to ExecutionError, proper transaction rollback handling, and dialect-specific expression extensions."
+
+[[review.presets.groups]]
+name = "migrate"
+paths = ["crates/rurqe-migrate/src"]
+prompt = "Audit migration runner, catalog schema representation, checkpoint verification, and embedded migrations. Verify SHA-256 checksum integrity, transactional execution, and panic-free error propagation."
+
+[[review.presets.groups]]
+name = "cli"
+paths = ["crates/rurqe-cli/src"]
+prompt = "Audit CLI toolchain commands (migrate, codegen, verify, stage, prune), catalog introspection, and drift detection. Verify unified `cargo rurqe` invocation handling and robust error diagnostics."
+
+[[review.presets.groups]]
+name = "macros"
+paths = ["crates/rurqe-macros/src"]
+prompt = "Audit procedural and declarative macros (select!, dto!, table!, sql_type!). Verify hygiene, actionable compile-error diagnostics, and clean break syntax."
+
+[[review.presets]]
+name = "docs"
+title = "Documentation Audit"
+post_analysis = "manual"
+
+[[review.presets.groups]]
+name = "book"
+paths = ["docs/core", "docs/lifecycle", "docs/intro.md", "docs/quickstart.md", "docs/SUMMARY.md"]
+prompt = "Audit mdBook chapters against docs/Conventions.md: plain technical English, standard industry terminology without invented jargon, self-contained chapters without cross-chapter markdown links, five-part canonical structure for SQL statement chapters, and no inline API code."
+
+[[review.presets.groups]]
+name = "examples"
+paths = ["docs/examples"]
+prompt = "Audit living documentation examples: verified compilation under `just check`, proper anchor definitions (// ANCHOR / // ANCHOR_END), async-first tokio entry points, typed error signatures (no Box<dyn Error>), and living parity between SQL and Rust builder fragments."
