@@ -10,10 +10,10 @@ pub mod row;
 pub mod schema;
 
 pub use dialect::{
-    Dialect, SupportsAggregateFilter, SupportsDeleteUsing, SupportsDistinctFrom,
-    SupportsDistinctOn, SupportsFullOuterJoin, SupportsGreatest, SupportsJsonAggregation,
-    SupportsLateralJoin, SupportsNullsOrdering, SupportsOnConflict, SupportsReturning,
-    SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
+    Dialect, SupportsAggregateFilter, SupportsAliasedInsertTarget, SupportsDeleteUsing,
+    SupportsDistinctFrom, SupportsDistinctOn, SupportsFullOuterJoin, SupportsGreatest,
+    SupportsJsonAggregation, SupportsLateralJoin, SupportsNullsOrdering, SupportsOnConflict,
+    SupportsReturning, SupportsRowLocking, SupportsUpdateFrom, SupportsWindowFunctions,
 };
 pub use dml::{
     excluded, AssignColumn, AssignValue, Assignment, AssignmentScope, AssignmentSet, ColumnAssign,
