@@ -400,12 +400,16 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
     // names the program version unambiguously, while `--version` stays available
     // to `baseline`, which demands it as its own argument.
     if let Some(first) = rest.first().copied() {
-        match first {
-            "--help" | "-h" => return Ok(CliCommand::Help),
-            "-V" => return Ok(CliCommand::Version),
-            "--version" if entrypoint == Entrypoint::CargoDbBaseline => {}
-            "--version" | "-v" => return Ok(CliCommand::Version),
-            _ => {}
+        // The universal flags are answered through the same tables the
+        // per-action flag loops and `take_value` consult, so the leading
+        // position and every other one agree by construction.
+        let answered = if entrypoint == Entrypoint::CargoDbBaseline {
+            universal_flag_beside_version(first)
+        } else {
+            universal_flag(first)
+        };
+        if let Some(command) = answered {
+            return Ok(command);
         }
     }
 
