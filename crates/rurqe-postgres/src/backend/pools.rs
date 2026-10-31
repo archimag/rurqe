@@ -1,4 +1,13 @@
 //! Connection pool integrations for PostgreSQL drivers.
+//!
+//! The synchronous `PgPool` carries the transactional guarantees of the
+//! connection-level adapter to the pooled surface: `PgPool::transaction` and
+//! `PgPool::transaction_with_isolation` keep one connection checked out for the
+//! whole block, so the guarded `BEGIN`/`COMMIT`, the `SAVEPOINT` nesting of a
+//! block opened inside another one, the selected isolation level, and the
+//! rollback of a failing or unwinding block behave exactly as they do on an
+//! owned connection. The pooled handle itself returns to the pool on every exit
+//! path, because the checkout guard is dropped however the block ends.
 
 #[cfg(feature = "deadpool-postgres")]
 mod deadpool_impl {
@@ -72,9 +81,11 @@ mod r2d2_impl {
 
     use r2d2::ManageConnection;
     use rurqe_core::expr::SqlVal;
-    use rurqe_core::query::{BuiltQuery, QueryBackend};
+    use rurqe_core::query::{BuiltQuery, IsolationLevel, QueryBackend};
 
-    use crate::backend::sync_conn::{execute_raw_sync, fetch_raw_limited_sync, fetch_raw_sync};
+    use crate::backend::sync_conn::{
+        execute_raw_sync, fetch_raw_limited_sync, fetch_raw_sync, PgConnection,
+    };
     use crate::backend::types::PgError;
 
     /// An `r2d2` pool of synchronous PostgreSQL connections.
@@ -98,6 +109,63 @@ mod r2d2_impl {
         /// Checks a connection out of the pool.
         pub fn get(&self) -> Result<r2d2::PooledConnection<M>, r2d2::Error> {
             self.pool.get()
+        }
+
+        /// Runs `f` inside a transaction on a pooled connection, committing on
+        /// `Ok` and rolling back on `Err`.
+        ///
+        /// The connection stays checked out for the whole block, so every
+        /// statement of `f` runs on one physical connection and the block is
+        /// atomic exactly as it is on an owned connection: the outermost call
+        /// runs between `BEGIN` and `COMMIT`, a call made while a transaction
+        /// is already open nests inside a `SAVEPOINT` through
+        /// [`PgConnection::transaction`], and a block returning `Err` or
+        /// panicking is rolled back. The pooled handle returns to the pool
+        /// however the block ends, because the checkout guard is dropped on
+        /// every exit path.
+        ///
+        /// A checkout failure surfaces as [`PgPoolError::Pool`]; a failure
+        /// raised by `BEGIN`, by `f`, or by `COMMIT` surfaces as
+        /// [`PgPoolError::Query`].
+        pub fn transaction<T, F>(&self, f: F) -> Result<T, PgPoolError>
+        where
+            F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
+        {
+            let mut pooled = self.pool.get().map_err(PgPoolError::Pool)?;
+            PgConnection::borrowed(&mut *pooled)
+                .transaction(f)
+                .map_err(PgPoolError::Query)
+        }
+
+        /// Runs `f` inside a transaction at the requested `isolation` level,
+        /// committing on `Ok` and rolling back on `Err`.
+        ///
+        /// The helper mirrors [`PgPool::transaction`] and differs only in the
+        /// statement that opens the outermost block: the block runs between
+        /// `BEGIN ISOLATION LEVEL <level>` and `COMMIT`, with the level text
+        /// coming from [`IsolationLevel::as_str`], so every statement of `f`
+        /// observes the isolation the caller asked for. A call made while a
+        /// transaction is already open nests inside a `SAVEPOINT` and the
+        /// requested level is ignored for that nested block, because SQL
+        /// defines no per-savepoint isolation and the enclosing transaction
+        /// keeps the level it was opened with.
+        ///
+        /// The error mapping is the same as for [`PgPool::transaction`]: a
+        /// checkout failure surfaces as [`PgPoolError::Pool`], while a failure
+        /// raised by `BEGIN`, by `f`, or by `COMMIT` surfaces as
+        /// [`PgPoolError::Query`].
+        pub fn transaction_with_isolation<T, F>(
+            &self,
+            isolation: IsolationLevel,
+            f: F,
+        ) -> Result<T, PgPoolError>
+        where
+            F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
+        {
+            let mut pooled = self.pool.get().map_err(PgPoolError::Pool)?;
+            PgConnection::borrowed(&mut *pooled)
+                .transaction_with_isolation(isolation, f)
+                .map_err(PgPoolError::Query)
         }
     }
 

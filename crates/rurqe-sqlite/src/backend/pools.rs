@@ -1,4 +1,13 @@
 //! The `r2d2` connection pool adapter.
+//!
+//! The pool carries the transactional guarantees of the connection-level
+//! adapter to the pooled surface: `SqlitePool::transaction` keeps one
+//! connection checked out for the whole block, so the guarded
+//! `BEGIN`/`COMMIT`, the `SAVEPOINT` nesting of a block opened inside another
+//! one, and the rollback of a failing or unwinding block behave exactly as they
+//! do on an owned connection. The pooled handle itself returns to the pool on
+//! every exit path, because the checkout guard is dropped however the block
+//! ends.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -7,7 +16,7 @@ use r2d2::ManageConnection;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{BuiltQuery, QueryBackend};
 
-use super::rusqlite::{execute_raw_with, fetch_raw_limited_with, fetch_raw_with};
+use super::rusqlite::{execute_raw_with, fetch_raw_limited_with, fetch_raw_with, SqliteConnection};
 
 /// An `r2d2` pool of SQLite connections.
 ///
@@ -45,6 +54,35 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
     /// Checks a connection out of the pool.
     pub fn get(&self) -> Result<r2d2::PooledConnection<M>, r2d2::Error> {
         self.pool.get()
+    }
+
+    /// Runs `f` inside a transaction on a pooled connection, committing on
+    /// `Ok` and rolling back on `Err`.
+    ///
+    /// The connection stays checked out for the whole block, so every statement
+    /// of `f` runs on one physical connection and the block is atomic exactly
+    /// as it is on an owned connection: the block runs between `BEGIN` and
+    /// `COMMIT`, a call made while a transaction is already open nests inside a
+    /// `SAVEPOINT` through [`SqliteConnection::transaction`], and a block
+    /// returning `Err` or panicking is rolled back. The pooled handle returns
+    /// to the pool however the block ends, because the checkout guard is
+    /// dropped on every exit path.
+    ///
+    /// No isolation-level variant exists on purpose: SQLite serialises access
+    /// through database-level locking, so the adapter's `BEGIN` ignores an
+    /// isolation level by design.
+    ///
+    /// A checkout failure surfaces as [`SqlitePoolError::Pool`]; a failure
+    /// raised by `BEGIN`, by `f`, or by `COMMIT` surfaces as
+    /// [`SqlitePoolError::Query`].
+    pub fn transaction<T, F>(&self, f: F) -> Result<T, SqlitePoolError>
+    where
+        F: FnOnce(&mut SqliteConnection<&mut ::rusqlite::Connection>) -> Result<T, ::rusqlite::Error>,
+    {
+        let mut pooled = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        SqliteConnection::borrowed(&mut *pooled)
+            .transaction(f)
+            .map_err(SqlitePoolError::Query)
     }
 }
 
@@ -95,5 +133,88 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
         let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
         execute_raw_with(&mut *connection, query).map_err(SqlitePoolError::Query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    use super::SqlitePool;
+
+    /// Builds a one-connection pool over a shared in-memory database.
+    fn pool() -> SqlitePool<SqliteConnectionManager> {
+        // A single connection keeps the in-memory database alive across
+        // checkouts, so every block observes the work the previous one
+        // committed.
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .expect("a one-connection in-memory pool builds");
+        SqlitePool::new(pool)
+    }
+
+    #[test]
+    fn transaction_commits_the_block_and_returns_the_connection() {
+        let pool = pool();
+
+        pool.transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TABLE account (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL)",
+            )
+        })
+        .expect("the schema block commits");
+
+        pool.transaction(|tx| tx.execute_batch("INSERT INTO account (balance) VALUES (10)"))
+            .expect("the committed block returns its connection");
+
+        let rolled_back = pool.transaction(|tx| {
+            tx.execute_batch("INSERT INTO account (balance) VALUES (20)")?;
+            Err::<(), _>(::rusqlite::Error::InvalidQuery)
+        });
+        assert!(rolled_back.is_err(), "a failing block reports its own error");
+
+        let count = pool
+            .transaction(|tx| {
+                tx.query_row("SELECT count(*) FROM account", ::rusqlite::params![], |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .expect("the counting block commits");
+        assert_eq!(count, 1, "the rolled back insert stayed out of the table");
+    }
+
+    #[test]
+    fn nested_block_rolls_back_to_its_savepoint() {
+        let pool = pool();
+
+        pool.transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TABLE account (id INTEGER PRIMARY KEY, balance INTEGER NOT NULL)",
+            )
+        })
+        .expect("the schema block commits");
+
+        pool.transaction(|tx| {
+            tx.execute_batch("INSERT INTO account (balance) VALUES (10)")?;
+
+            let nested = tx.transaction(|inner| {
+                inner.execute_batch("INSERT INTO account (balance) VALUES (20)")?;
+                Err::<(), _>(::rusqlite::Error::InvalidQuery)
+            });
+            assert!(nested.is_err(), "the nested block reports its own error");
+
+            Ok(())
+        })
+        .expect("the enclosing block commits");
+
+        let count = pool
+            .transaction(|tx| {
+                tx.query_row("SELECT count(*) FROM account", ::rusqlite::params![], |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .expect("the counting block commits");
+        assert_eq!(count, 1, "only the enclosing insert survived");
     }
 }
