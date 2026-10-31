@@ -7,13 +7,13 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!         UserName => "name": String,
 //!     }
-//! }
+//! );
 //!
 //! let built = insert_into::<Postgres<Pg16>, User>()
 //!     .values((UserId::set(1i64), UserName::set("root")))
@@ -39,13 +39,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!         UserName => "name": String,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `EXCLUDED."name"` reads a string, not an `i64`.
 //! let _ = insert_into::<Postgres<Pg16>, User>()
@@ -60,13 +60,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!         UserName => "name": String,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the statement records no row source.
 //! let _ = insert_into::<Postgres, User>().build();
@@ -79,12 +79,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `values_many` yields a `Result`, which has no `build`.
 //! let _ = insert_into::<Postgres, User>()
@@ -98,19 +98,19 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` belongs to `Order`, not to `User`.
 //! let _ = update::<Postgres, User>().set(OrderTotal::set(1.0));
@@ -121,19 +121,19 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of `User`.
 //! let _ = update::<Postgres, User>()
@@ -149,13 +149,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!         UserName => "name": String,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the statement is still unfiltered.
 //! let _ = update::<Postgres, User>()
@@ -171,13 +171,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!         UserName => "name": String,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: an absent optional filter grants no permission to rewrite
 //! // every row.
@@ -190,12 +190,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: an absent optional filter grants no permission to empty
 //! // every row.
@@ -211,13 +211,13 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!         UserName => "name": String,
 //!     }
-//! }
+//! );
 //!
 //! let confirmed = update::<Postgres, User>()
 //!     .set(UserName::set("root"))
@@ -241,12 +241,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: the statement is still unfiltered.
 //! let _ = delete_from::<Postgres, User>().build();
@@ -261,19 +261,19 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `OrderTotal` is not a column of `User`, so the selection
 //! // is no `TableSelection<User>`.
@@ -289,12 +289,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `users` table.
 //!     User => "users" {
 //!         UserId => "id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: a computed projection is not a column of `User`.
 //! let _ = update::<Postgres, User>()
@@ -310,12 +310,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `SUM("total")` collapses the rows of a group, so it is no
 //! // per-row value the `SET` clause could assign.
@@ -330,12 +330,12 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! let built = update::<Postgres<Pg16>, Order>()
 //!     .set(OrderTotal::set_expr(Expr::column::<OrderTotal>() + 1.0f64))
@@ -355,12 +355,12 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: `"total"` is a stored column rather than an aggregate
 //! // call, so there is no call for the `DISTINCT` modifier to restrict.
@@ -376,12 +376,12 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderTotal => "total": f64,
 //!     }
-//! }
+//! );
 //!
 //! let distinct = sum(OrderTotal).distinct();
 //! assert!(matches!(

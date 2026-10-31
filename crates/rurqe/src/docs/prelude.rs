@@ -6,13 +6,13 @@
 //! ```
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderId => "id": i64,
 //!         OrderUserId => "user_id": i64,
 //!     }
-//! }
+//! );
 //!
 //! let built = select_from::<Postgres<Pg16>, Order>()
 //!     .select((OrderId,))
@@ -37,13 +37,13 @@
 //! ```compile_fail
 //! use rurqe::prelude::*;
 //!
-//! table! {
+//! table!(
 //!     /// The `orders` table.
 //!     Order => "orders" {
 //!         OrderId => "id": i64,
 //!         OrderUserId => "user_id": i64,
 //!     }
-//! }
+//! );
 //!
 //! // Fails to compile: a two-column row is not comparable with three values.
 //! let _ = select_from::<Postgres<Pg16>, Order>()

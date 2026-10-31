@@ -340,12 +340,12 @@ crate::pin_dialect_version! {
 /// ```
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let built = select_from::<Postgres, User>()
 ///     .select(cols!(UserId))
@@ -377,13 +377,13 @@ pub fn select_from<D: Dialect, T: Table>() -> SelectQuery<D, T, (), NoProjection
 /// ```
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserName => "name": String,
 ///     }
-/// }
+/// );
 ///
 /// let built = insert_into::<Postgres, User>()
 ///     .values((UserId::set(1i64), UserName::set("root")))
@@ -414,13 +414,13 @@ pub fn insert_into<D: Dialect, T: Table>() -> InsertQuery<D, T, (), ()> {
 /// ```
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserName => "name": String,
 ///     }
-/// }
+/// );
 ///
 /// let built = update::<Postgres, User>()
 ///     .set(UserName::set("root"))
@@ -450,12 +450,12 @@ pub fn update<D: Dialect, T: Table>() -> UpdateQuery<D, T, Unfiltered, ()> {
 /// ```
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let built = delete_from::<Postgres, User>()
 ///     .where_(Expr::column::<UserId>().eq(1i64))
@@ -473,12 +473,12 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// ```
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let built = SelectQuery::<Postgres>::new()
 ///     .from::<User>()
@@ -512,11 +512,11 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// ```compile_fail
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: a statement that deduplicated its rows cannot lock
@@ -531,11 +531,11 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// ```compile_fail
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: a statement that already locked its rows cannot
@@ -554,11 +554,11 @@ pub fn delete_from<D: Dialect, T: Table>() -> DeleteQuery<D, T, Unfiltered, ()> 
 /// ```compile_fail
 /// use rurqe::prelude::*;
 ///
-/// table! {
+/// table!(
 ///     Order => "orders" {
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the sum is combined with a constant, so the
