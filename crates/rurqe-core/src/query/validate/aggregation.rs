@@ -11,7 +11,11 @@
 //! row — the `WHERE` predicate, a `GROUP BY` entry, the `ON` condition of a join, a
 //! column assignment, and a predicate of an `ON CONFLICT` clause — cannot read an
 //! aggregate at all, because the rows such an aggregate would collapse are exactly
-//! the rows that clause decides.
+//! the rows that clause decides. The `RETURNING` clause of a mutation belongs to
+//! that family from the other side: it reports each modified row on its own, so an
+//! aggregate written there would collapse the rows the statement is handing back.
+//! The same clause accepts no window call either, because a window reads the rows a
+//! statement produced while the clause offers it one row at a time.
 
 use crate::expr::{AggregateFunc, ExprKind, StatementRef, WindowExprKind};
 
@@ -180,28 +184,98 @@ impl StatementRef<'_> {
     }
 }
 
-/// Rejects an aggregate call written into the per-row clause `clause`.
+/// Rejects a call written into the per-row clause `clause`.
 ///
 /// The clauses an engine evaluates row by row are the ones that decide which rows
 /// take part in the statement — the `WHERE` predicate, a `GROUP BY` entry, the `ON`
 /// condition of a join, the column assignment of an `INSERT` or `UPDATE`, and the
-/// predicates of an `ON CONFLICT` clause. An aggregate written there names a value
-/// no single row carries, so every engine refuses the statement — PostgreSQL
-/// answers `aggregate functions are not allowed in ...`. The rule is stated once,
-/// here, and the DML builders call it beside their own structural checks, so a
-/// mutation is audited exactly like a `SELECT` statement.
+/// predicates of an `ON CONFLICT` clause — together with the `RETURNING` clause of a
+/// mutation, which reports each modified row on its own. An aggregate written there
+/// names a value no single row carries, so every engine refuses the statement —
+/// PostgreSQL answers `aggregate functions are not allowed in ...`.
+///
+/// The `RETURNING` clause carries one further rule: a window call reads the rows a
+/// statement produced, while a mutation hands its rows back one at a time, so the
+/// clause offers no row set to read — PostgreSQL answers `window functions are not
+/// allowed in RETURNING`. The reading clauses leave a window call unreported, since
+/// the rule they carry is the aggregate placement stated above.
+///
+/// The rule is stated once, here, and the DML builders call it beside their own
+/// structural checks, so a mutation is audited exactly like a `SELECT` statement.
 ///
 /// The reported aggregate is the SQL name of the function that was placed in the
 /// clause, so the diagnostic names what the engine refused instead of a rendering
-/// detail.
+/// detail. It is reported first, because a clause naming an aggregate is refused for
+/// that reason whatever else it contains.
 pub(crate) fn validate_row_clause(expr: &ExprKind, clause: RowClause) -> Result<(), BuildError> {
-    match first_aggregate(expr) {
-        Some(aggregate) => Err(BuildError::AggregateInRowClause {
+    if let Some(aggregate) = first_aggregate(expr) {
+        return Err(BuildError::AggregateInRowClause {
             clause,
             aggregate: aggregate.as_str(),
-        }),
-        None => Ok(()),
+        });
     }
+    if clause == RowClause::Returning && contains_window_call(expr) {
+        return Err(BuildError::WindowInRowClause { clause });
+    }
+    Ok(())
+}
+
+/// Whether the expression reads a window call outside an embedded statement.
+///
+/// The walk mirrors the traversal of `first_aggregate`, so both rules observe the
+/// same expression shapes: it answers `true` at a window call, `false` at a leaf
+/// node, and it stops at an aggregate — the caller reports one before this rule runs
+/// — and at a nested collection, which aggregates the rows of its own statement. An
+/// embedded statement is followed through its operand alone, because the nested
+/// query reads its own rows: a window call of its projection list belongs to it
+/// rather than to the clause this rule audits.
+fn contains_window_call(expr: &ExprKind) -> bool {
+    match expr {
+        ExprKind::Window { .. } => true,
+        ExprKind::Column { .. }
+        | ExprKind::QualifiedColumn { .. }
+        | ExprKind::Excluded { .. }
+        | ExprKind::Value(_)
+        | ExprKind::Raw { .. }
+        | ExprKind::Aggregate { .. }
+        | ExprKind::Multiset { .. } => false,
+        ExprKind::Row { values } => any_window_call_in(values),
+        ExprKind::InList { operand, values, .. } => {
+            contains_window_call(operand) || any_window_call_in(values)
+        }
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
+            contains_window_call(lhs) || contains_window_call(rhs)
+        }
+        ExprKind::DistinctFrom { lhs, rhs, .. } => {
+            contains_window_call(lhs) || contains_window_call(rhs)
+        }
+        ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
+            contains_window_call(operand)
+        }
+        ExprKind::Like { operand, pattern, .. } => {
+            contains_window_call(operand) || contains_window_call(pattern)
+        }
+        ExprKind::Between { operand, low, high } => {
+            contains_window_call(operand)
+                || contains_window_call(low)
+                || contains_window_call(high)
+        }
+        ExprKind::Function { args, .. } => any_window_call_in(args),
+        ExprKind::Case { branches, else_branch } => {
+            branches.iter().any(|branch| {
+                contains_window_call(&branch.condition) || contains_window_call(&branch.result)
+            }) || else_branch.as_deref().is_some_and(contains_window_call)
+        }
+        ExprKind::Subquery { operand, .. } => {
+            operand.as_deref().is_some_and(contains_window_call)
+        }
+        ExprKind::Aliased { expr, .. } => contains_window_call(expr),
+    }
+}
+
+/// Whether any expression of a list reads a window call, in list order.
+fn any_window_call_in(expressions: &[ExprKind]) -> bool {
+    expressions.iter().any(contains_window_call)
 }
 
 /// The first aggregate call the expression evaluates, in walk order.

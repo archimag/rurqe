@@ -42,7 +42,7 @@ pub(crate) use self::rules::reject_columns_without_relations;
 #[cfg(test)]
 pub(crate) use self::rules::reject_shadowed_derived;
 
-/// The per-row clause an aggregate call was written into.
+/// The per-row clause a call was written into.
 ///
 /// An aggregate collapses the rows a statement produced into one value per group,
 /// so the engine evaluates it once those rows are known. A clause that decides
@@ -51,6 +51,12 @@ pub(crate) use self::rules::reject_shadowed_derived;
 /// clause — is evaluated row by row, before that collapse, so an aggregate written
 /// there names a value no single row carries and every engine rejects the
 /// statement.
+///
+/// The `RETURNING` clause of a mutation reaches the same rule from the other side:
+/// it reports the rows the statement already modified, one row at a time, so an
+/// aggregate written there would collapse the rows the statement is handing back.
+/// The clause accepts no window call either, because a window reads a set of rows
+/// where the clause offers one modified row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowClause {
     /// The `WHERE` predicate of a statement.
@@ -66,6 +72,14 @@ pub enum RowClause {
     ConflictTarget,
     /// The predicate restricting the rows an `ON CONFLICT` clause rewrites.
     ConflictUpdate,
+    /// The `RETURNING` clause of a mutation.
+    ///
+    /// The clause reports each modified row on its own, so the engine evaluates it
+    /// one row at a time: neither an aggregate nor a window call can name a value a
+    /// single modified row carries — PostgreSQL answers `aggregate functions are
+    /// not allowed in RETURNING` and `window functions are not allowed in
+    /// RETURNING`.
+    Returning,
 }
 
 impl RowClause {
@@ -78,6 +92,7 @@ impl RowClause {
             RowClause::Assignment => "a column assignment",
             RowClause::ConflictTarget => "the conflict target predicate of an `ON CONFLICT` clause",
             RowClause::ConflictUpdate => "the update predicate of an `ON CONFLICT` clause",
+            RowClause::Returning => "the `RETURNING` clause",
         }
     }
 }
@@ -448,13 +463,29 @@ pub enum BuildError {
     /// of an `ON CONFLICT` clause — is evaluated before that collapse, so an
     /// aggregate written there names a value no single row carries: PostgreSQL
     /// answers `aggregate functions are not allowed in ...`, and every other
-    /// engine rejects the statement alike. The placement is therefore reported
-    /// before any SQL is rendered.
+    /// engine rejects the statement alike. The `RETURNING` clause of a mutation is
+    /// evaluated per modified row for the same reason, and an aggregate written
+    /// there is refused as `aggregate functions are not allowed in RETURNING`. The
+    /// placement is therefore reported before any SQL is rendered.
     AggregateInRowClause {
         /// The per-row clause the call was written into.
         clause: RowClause,
         /// The SQL name of the aggregate function that was placed there.
         aggregate: &'static str,
+    },
+    /// A window call appears in a clause the engine evaluates one modified row at
+    /// a time.
+    ///
+    /// A window function reads the rows a statement produced rather than one value
+    /// of one row, so the engine evaluates it over a row set — the rows a `SELECT`
+    /// statement produced. A mutation hands its rows back one at a time, so the
+    /// `RETURNING` clause offers a window call no row set to read: PostgreSQL
+    /// answers `window functions are not allowed in RETURNING`, and SQLite refuses
+    /// the statement alike. The placement is therefore reported before any SQL is
+    /// rendered.
+    WindowInRowClause {
+        /// The per-row clause the call was written into.
+        clause: RowClause,
     },
     /// A raw SQL expression binds a number of parameters other than its
     /// fragments declare.
@@ -706,6 +737,15 @@ impl fmt::Display for BuildError {
                      an aggregate collapses the rows of a statement, so it may only appear in the projection \
                      list, in `HAVING`, or in the `ORDER BY` of a grouped statement; \
                      compute the aggregate in a subquery and compare against its result instead",
+                    clause.as_str()
+                )
+            }
+            BuildError::WindowInRowClause { clause } => {
+                write!(
+                    f,
+                    "window function appears in {}, which the engine evaluates one modified row at a time; \
+                     a window reads the rows a statement produced, so it may only appear in the projection list \
+                     or the `ORDER BY` of a statement that reads rows",
                     clause.as_str()
                 )
             }
