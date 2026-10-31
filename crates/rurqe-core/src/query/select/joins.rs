@@ -45,11 +45,11 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the statement already addresses `users`, so joining
     /// // the bare marker again would name one relation twice. The second

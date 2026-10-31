@@ -38,17 +38,17 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: the query already introduces `User`, so a second
@@ -86,17 +86,17 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: the second call would discard `User` from the
@@ -124,18 +124,18 @@ impl<D: Dialect, Output, Projected> SelectQuery<D, (), Output, Projected> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderId => "id": i64,
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: the join already introduced `orders` against

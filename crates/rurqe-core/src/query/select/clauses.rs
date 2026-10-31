@@ -45,11 +45,11 @@ impl<D: Dialect, Tables> SelectQuery<D, Tables, (), NoProjection, NoLock> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: calling `group_by` after `select` is rejected.
     /// let _ = SelectQuery::<MockDialect>::new()
@@ -107,11 +107,11 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// impl SupportsRowLocking for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: a deduplicated statement cannot be locked.
@@ -170,11 +170,11 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     ///
     /// impl SupportsRowLocking for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: a statement that already locked its rows cannot
@@ -236,12 +236,12 @@ impl<D: Dialect + SupportsDistinctOn, Tables, Output, Projected>
     ///
     /// impl SupportsRowLocking for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///         UserTenant => "tenant_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: extending the DISTINCT ON clause keeps the
@@ -301,11 +301,11 @@ impl<D: Dialect, Tables, Output, Projected, Lock: ProjectionOpen>
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn base() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
     ///     SelectQuery::<MockDialect>::new()
