@@ -360,6 +360,83 @@ A directory with nothing to delete reports it instead of rendering an empty run:
 No migration below version 5.0 to prune in migrations
 ```
 
+## Moving an existing project onto the stage
+
+A project that already runs the sequential lifecycle adopts the stage lifecycle without rewriting its history. The migrations directory keeps its scripts, every database keeps its recorded entries, and the tail stays where it is: the stage is added beside it, and the boundary is sealed once.
+
+The steps are ordered, because each one is the check on the step before it. The boundary is sealed only when the stage describes the live database, and the history is pruned only when the boundary and the tail still reproduce the stage.
+
+```text
+schema/ written ──▶ stage commit ──▶ stage verify ──▶ prune ──▶ stage init
+                         │                 │               │
+                         │                 │               └─ scripts below the boundary deleted
+                         │                 └─ State(schema/) == State(Checkpoint + migrations/)
+                         └─ schema.lock, checkpoint-stage/, checkpoint.toml
+```
+
+### 1. Write the declarative stage
+
+`schema/` has to hold the complete DDL of the schema the database holds now: the tables with their columns, constraints, and defaults, the indexes and views over them, the triggers, and the enum types the columns use. The applied history is the description it is assembled from — replaying `migrations/` in version order produces exactly the schema to state — so the stage states that result once, as the description a reader consults instead of the history.
+
+The directory obeys the rules stated above: only `*.sql` files are scripts, they are applied in file-name order, and a script runs inside a transaction unless it declares otherwise.
+
+No command writes `schema/` from a database. The stage is the description a project commits to, so the toolchain reads it and never produces it, and what checks the description is the commit below: it materialises the stage in a disposable scratch state and compares the result against the live catalog.
+
+### 2. Seal the boundary
+
+```bash
+cargo rurqe stage commit --version 5.0
+```
+
+`--version` is the newest version every deployed database has already applied, not the newest script in the directory. A target that stopped below the boundary cannot be advanced by a pruned tail, so the marker is cut where the slowest environment already stands, and `checkpoint.toml` records that version together with the digest of the catalog the live database reports.
+
+The commit gates on parity. The stage is materialised in a disposable scratch state and compared with the live catalog read over the selected schemas, so a stage that does not describe the database is refused before a single artifact is written:
+
+```text
+the declarative stage `schema` does not describe the database this commit would anchor:
+  ...
+Hint: bring `schema/` and the database back into agreement — apply the migration that closes the gap, or re-init the stage from the live catalog — then re-run `stage commit`.
+```
+
+Both remedies are named because either side may be the one that is right: a column the database gained from a migration the stage does not carry is fixed in `schema/`, while a stage that states the intended schema a database has not reached is closed by the migration.
+
+The tail is untouched at this point. Every script stays in `migrations/`, and every database still advances through it.
+
+### 3. Verify the equation
+
+```bash
+cargo rurqe stage verify --scratch-url :memory:
+```
+
+No `--base-stage-dir` is passed: the verification loads the boundary snapshot the commit recorded next to the marker, checks its catalog against `schema_hash` before a single tail script runs, and skips the tail scripts at or below the boundary, because the snapshot already folds them in. Both sides are then materialised and compared, so the run states whether the declarative stage and the anchored tail still converge. A SQLite project verifies against `:memory:`, while a PostgreSQL project passes a disposable URL whose role holds the `CREATEDB` privilege for the duration of the run.
+
+### 4. Prune the folded history
+
+A dry run lists what the boundary covers:
+
+```bash
+cargo rurqe prune --before 5.0 --dry-run
+```
+
+The run without the flag removes it:
+
+```bash
+cargo rurqe prune --before 5.0
+```
+
+Only versioned scripts strictly below `--before` are deleted. The script at the boundary version itself stays, and it is inert: every runner and the verification skip what the boundary has folded in. Repeatable scripts are never pruned, because removing one would change the schema a cold start produces. The marker is not rewritten, and no baseline is recomputed.
+
+### 5. Run the two lifecycles side by side
+
+With the boundary committed and the history pruned, both routes describe the same schema and each one serves the environments it fits.
+
+- A clean environment is cold-started from the stage: `cargo rurqe stage init --version 5.0`. The run records the stage version as a baseline, so the tail above the boundary still applies on the next `migrate up`, and the environment never replays the pruned history.
+- A database that holds data is advanced by the tail: `cargo db-migrate up --checkpoint-path checkpoint.toml`. The marker arms the fail-safe, so a target whose newest recorded version sits below the boundary, and a target that records no version at all, are both refused before a single script executes instead of being advanced by a partial tail. Once the history below the boundary is pruned, the cold start is the only route left for an empty database, because the scripts that would have advanced it are exactly the ones the prune removed.
+- A change is written twice, and the two descriptions are made to agree: the DDL of `schema/` states the new state, and a `V...` or `R...` script in `migrations/` carries the same change as a delta for the databases that already exist. `stage verify` fails while the two disagree, which is what keeps the pair honest between commits.
+- A release every deployed database has passed seals the next boundary with `stage commit` at the new version and prunes the scripts below it, so the tail stays as short as the releases no database has passed yet.
+
+The marker is the only record of the boundary. While the history is complete, deleting `checkpoint.toml` returns the project to the plain sequential lifecycle; after a prune the same deletion leaves the tail without a starting point, because the scripts that would advance a database below the boundary are gone and no verification can rebuild the state they produced.
+
 ## Sweeping abandoned scratch databases
 
 A verification drops the PostgreSQL scratch database it created, but a process killed mid-verification cannot, so the server accumulates `rurqe_scratch_…` databases nobody owns any more. The sweep removes them:
