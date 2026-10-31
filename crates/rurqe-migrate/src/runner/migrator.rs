@@ -10,7 +10,7 @@ use crate::sleeper::guard_blocking_entry;
 use crate::version::MigrationVersion;
 
 use super::apply::apply_migration;
-use super::backend::{MigrationBackend, MigrationTransaction};
+use super::backend::{with_transaction, MigrationBackend, MigrationTransaction};
 use super::guard::LockGuard;
 use super::report::{MigrationReport, MigrationStatus, MigrationStatusKind, RepairReport};
 use super::time::current_timestamp;
@@ -204,9 +204,7 @@ impl Migrator {
         let entry =
             SchemaHistoryEntry::baseline(next_rank, version, description, current_timestamp());
 
-        let mut tx = guard.begin()?;
-        tx.record_entry(&entry)?;
-        tx.commit()?;
+        with_transaction(&mut guard, |tx| tx.record_entry(&entry))?;
 
         Ok(entry)
     }
@@ -236,23 +234,24 @@ impl Migrator {
         let migrations_by_script: BTreeMap<&str, &Migration> =
             migrations.iter().map(|m| (m.script.as_str(), m)).collect();
 
-        let mut tx = guard.begin()?;
-
-        for entry in &history {
-            if !entry.success {
-                tx.delete_entry(entry.installed_rank)?;
-                tracing::info!(script = %entry.script, "purging failed history entry");
-                report.removed_failed_entries += 1;
-            } else if let Some(m) = migrations_by_script.get(entry.script.as_str()) {
-                if m.is_versioned() && entry.is_modified(m) {
-                    tx.update_checksum(&entry.script, &m.checksum)?;
-                    tracing::info!(script = %entry.script, "updating recorded checksum");
-                    report.updated_checksums.push(entry.script.clone());
+        with_transaction(&mut guard, |tx| {
+            for entry in &history {
+                if !entry.success {
+                    tx.delete_entry(entry.installed_rank)?;
+                    tracing::info!(script = %entry.script, "purging failed history entry");
+                    report.removed_failed_entries += 1;
+                } else if let Some(m) = migrations_by_script.get(entry.script.as_str()) {
+                    if m.is_versioned() && entry.is_modified(m) {
+                        tx.update_checksum(&entry.script, &m.checksum)?;
+                        tracing::info!(script = %entry.script, "updating recorded checksum");
+                        report.updated_checksums.push(entry.script.clone());
+                    }
                 }
             }
-        }
 
-        tx.commit()?;
+            Ok(())
+        })?;
+
         Ok(report)
     }
 
