@@ -7,9 +7,17 @@ license.workspace = true
 repository.workspace = true
 description = "Developer toolchain for schema introspection, code generation, migrations, and drift verification"
 
+# The package ships a single entry point: `cargo rurqe <command>` (installed as
+# `cargo-rurqe`), also reachable as `rurqe <command>`. Every CLI subsystem —
+# migrations, codegen, drift verification, baseline, stages, and pruning — is a
+# subcommand of it.
 [[bin]]
 name = "rurqe"
 path = "src/main.rs"
+
+[[bin]]
+name = "cargo-rurqe"
+path = "src/bin/cargo-rurqe.rs"
 
 [dependencies]
 fs4 = "0.9"
