@@ -161,6 +161,13 @@ pub struct ForeignKeyDef {
     pub referenced_table: String,
     /// The referenced columns of [`ForeignKeyDef::referenced_table`].
     pub referenced_columns: Vec<String>,
+    /// The SQL schema of [`ForeignKeyDef::referenced_table`].
+    ///
+    /// `None` means the reference carries no attribution: the referenced table
+    /// lives in the primary schema, or the catalog was read from a snapshot
+    /// format that carries no schema layer. The distinction matters because a
+    /// bare table name is ambiguous across schemas.
+    pub referenced_schema: Option<String>,
     /// The action taken when the referenced row is deleted.
     pub on_delete: ForeignKeyAction,
     /// The action taken when the referenced row is updated.
@@ -180,9 +187,16 @@ impl ForeignKeyDef {
             columns,
             referenced_table: referenced_table.into(),
             referenced_columns,
+            referenced_schema: None,
             on_delete: ForeignKeyAction::NoAction,
             on_update: ForeignKeyAction::NoAction,
         }
+    }
+
+    /// Attributes the referenced table to the SQL schema `schema`.
+    pub fn with_referenced_schema(mut self, schema: impl Into<String>) -> Self {
+        self.referenced_schema = Some(schema.into());
+        self
     }
 
     /// Sets the action taken when the referenced row is deleted.
@@ -296,6 +310,12 @@ impl IndexDef {
 pub struct TableDef {
     /// The SQL identifier of the table.
     pub name: String,
+    /// The SQL schema the table belongs to.
+    ///
+    /// `None` means the catalog records no attribution: the table belongs to the
+    /// primary schema, or it was read from a snapshot format that carries no
+    /// schema layer.
+    pub schema: Option<String>,
     /// The columns of the table.
     pub columns: Vec<ColumnDef>,
     /// The columns forming the primary key, empty when the table has none.
@@ -313,12 +333,19 @@ impl TableDef {
     pub fn new(name: impl Into<String>, columns: Vec<ColumnDef>, primary_key: Vec<String>) -> Self {
         Self {
             name: name.into(),
+            schema: None,
             columns,
             primary_key,
             checks: Vec::new(),
             foreign_keys: Vec::new(),
             indexes: Vec::new(),
         }
+    }
+
+    /// Attributes the table to the SQL schema `schema`.
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
     }
 
     /// Appends `check` constraint to the table.
@@ -348,6 +375,12 @@ impl TableDef {
 pub struct EnumDef {
     /// The SQL identifier of the enum type.
     pub name: String,
+    /// The SQL schema the enum type belongs to.
+    ///
+    /// `None` means the catalog records no attribution: the enum belongs to the
+    /// primary schema, or it was read from a snapshot format that carries no
+    /// schema layer.
+    pub schema: Option<String>,
     /// The labels of the enum, in declaration order.
     pub variants: Vec<String>,
 }
@@ -357,8 +390,15 @@ impl EnumDef {
     pub fn new(name: impl Into<String>, variants: Vec<String>) -> Self {
         Self {
             name: name.into(),
+            schema: None,
             variants,
         }
+    }
+
+    /// Attributes the enum type to the SQL schema `schema`.
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
     }
 }
 
@@ -367,6 +407,12 @@ impl EnumDef {
 pub struct ViewDef {
     /// The SQL identifier of the view.
     pub name: String,
+    /// The SQL schema the view belongs to.
+    ///
+    /// `None` means the catalog records no attribution: the view belongs to the
+    /// primary schema, or it was read from a snapshot format that carries no
+    /// schema layer.
+    pub schema: Option<String>,
     /// The SQL query defining the view.
     pub definition: String,
 }
@@ -376,8 +422,15 @@ impl ViewDef {
     pub fn new(name: impl Into<String>, definition: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            schema: None,
             definition: definition.into(),
         }
+    }
+
+    /// Attributes the view to the SQL schema `schema`.
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
     }
 }
 
@@ -386,6 +439,12 @@ impl ViewDef {
 pub struct TriggerDef {
     /// The SQL identifier of the trigger.
     pub name: String,
+    /// The SQL schema the trigger belongs to.
+    ///
+    /// `None` means the catalog records no attribution: the trigger belongs to
+    /// the primary schema, or it was read from a snapshot format that carries no
+    /// schema layer.
+    pub schema: Option<String>,
     /// The table the trigger is attached to.
     pub table_name: String,
     /// The SQL definition or body of the trigger.
@@ -401,9 +460,16 @@ impl TriggerDef {
     ) -> Self {
         Self {
             name: name.into(),
+            schema: None,
             table_name: table_name.into(),
             definition: definition.into(),
         }
+    }
+
+    /// Attributes the trigger to the SQL schema `schema`.
+    pub fn with_schema(mut self, schema: impl Into<String>) -> Self {
+        self.schema = Some(schema.into());
+        self
     }
 }
 

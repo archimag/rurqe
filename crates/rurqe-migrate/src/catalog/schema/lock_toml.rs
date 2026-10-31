@@ -542,6 +542,7 @@ fn table_def(table: TableLock) -> TableDef {
 
     TableDef {
         name: table.name,
+        schema: None,
         columns,
         primary_key: table.primary_key,
         checks,
@@ -557,6 +558,7 @@ fn foreign_key_def(foreign_key: ForeignKeyLock) -> ForeignKeyDef {
         columns: foreign_key.columns,
         referenced_table: foreign_key.referenced_table,
         referenced_columns: foreign_key.referenced_columns,
+        referenced_schema: None,
         on_delete: foreign_key.on_delete.into(),
         on_update: foreign_key.on_update.into(),
     }

@@ -524,3 +524,105 @@ fn from_lock_rejects_an_empty_snapshot_through_the_toml_reader() {
 
     assert!(error.to_string().contains("version"));
 }
+
+#[test]
+fn constructors_leave_the_schema_layer_unattributed() {
+    assert_eq!(users().schema, None);
+    assert_eq!(EnumDef::new("mood", vec!["happy".to_owned()]).schema, None);
+    assert_eq!(
+        ViewDef::new("active_users", "SELECT id FROM users").schema,
+        None
+    );
+    assert_eq!(
+        TriggerDef::new("users_audit", "users", "BEGIN; END;").schema,
+        None
+    );
+    assert_eq!(
+        ForeignKeyDef::new(
+            "orders_user_id_fkey",
+            vec!["user_id".to_owned()],
+            "users",
+            vec!["id".to_owned()],
+        )
+        .referenced_schema,
+        None
+    );
+}
+
+#[test]
+fn builders_attribute_entities_to_a_schema() {
+    assert_eq!(users().with_schema("app").schema.as_deref(), Some("app"));
+    assert_eq!(
+        EnumDef::new("mood", vec!["happy".to_owned()])
+            .with_schema("app")
+            .schema
+            .as_deref(),
+        Some("app")
+    );
+    assert_eq!(
+        ViewDef::new("active_users", "SELECT id FROM users")
+            .with_schema("app")
+            .schema
+            .as_deref(),
+        Some("app")
+    );
+    assert_eq!(
+        TriggerDef::new("users_audit", "users", "BEGIN; END;")
+            .with_schema("app")
+            .schema
+            .as_deref(),
+        Some("app")
+    );
+    assert_eq!(
+        ForeignKeyDef::new(
+            "orders_user_id_fkey",
+            vec!["user_id".to_owned()],
+            "users",
+            vec!["id".to_owned()],
+        )
+        .with_referenced_schema("auth")
+        .referenced_schema
+        .as_deref(),
+        Some("auth")
+    );
+}
+
+#[test]
+fn foreign_keys_differing_only_in_the_referenced_schema_are_distinct() {
+    let reference = |schema: Option<&str>| {
+        let definition = ForeignKeyDef::new(
+            "orders_user_id_fkey",
+            vec!["user_id".to_owned()],
+            "users",
+            vec!["id".to_owned()],
+        );
+        match schema {
+            Some(schema) => definition.with_referenced_schema(schema),
+            None => definition,
+        }
+    };
+
+    assert_eq!(reference(Some("auth")), reference(Some("auth")));
+    assert_ne!(reference(Some("auth")), reference(Some("billing")));
+    assert_ne!(reference(Some("auth")), reference(None));
+}
+
+#[test]
+fn the_schema_layer_belongs_to_the_catalog_identity() {
+    let attributed = SchemaCatalog::new(vec![users().with_schema("app")]);
+    let flat = SchemaCatalog::new(vec![users()]);
+
+    assert_ne!(attributed, flat);
+    // The v4 document does not render the schema layer yet, so both catalogs
+    // serialize into the very same snapshot and therefore the same hash.
+    assert_eq!(attributed.to_lock(), flat.to_lock());
+    assert_eq!(attributed.schema_hash(), flat.schema_hash());
+}
+
+#[test]
+fn a_parsed_snapshot_carries_no_schema_attribution() {
+    let rendered = SchemaCatalog::new(vec![users().with_schema("app")]).to_lock();
+    let parsed = SchemaCatalog::from_lock(&rendered).expect("the snapshot parses");
+
+    assert_eq!(parsed.tables[0].schema, None);
+}

@@ -102,6 +102,7 @@ impl TableBuilder {
             .sort_by(|left, right| left.name.cmp(&right.name));
         TableDef {
             name: self.name,
+            schema: None,
             columns: self.columns,
             primary_key: self.primary_key,
             checks: self.checks,
@@ -263,6 +264,7 @@ fn parse_foreign_key(item: &str) -> Result<ForeignKeyDef, Error> {
         columns,
         referenced_table,
         referenced_columns,
+        referenced_schema: None,
         on_delete,
         on_update,
     })
