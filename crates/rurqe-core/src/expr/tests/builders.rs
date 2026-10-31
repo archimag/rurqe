@@ -1,12 +1,12 @@
 use super::*;
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderTotal => "total": f64,
         OrderTax => "tax": f64,
         OrderQty => "qty": i64,
     }
-}
+);
 
 #[test]
 fn column_expression_carries_static_name() {
@@ -527,12 +527,12 @@ fn expressions_carry_table_scopes_across_operators() {
     let marker_eq: Expr<bool, User> = UserId.eq(42i64);
     assert_eq!(marker_eq, eq_expr);
 
-    crate::table! {
+    crate::table!(
         Order => "orders" {
             OrderId => "id": i64,
             OrderUserId => "user_id": i64,
         }
-    }
+    );
 
     // Cross-table comparison merges scopes into a tuple
     let cross_eq: Expr<bool, (User, Order)> =
@@ -1401,12 +1401,12 @@ fn the_valid_aggregate_forms_render_verbatim() {
 
 #[test]
 fn a_column_marker_is_a_right_hand_operand_of_every_comparison() {
-    crate::table! {
+    crate::table!(
         Order => "orders" {
             OrderId => "id": i64,
             OrderUserId => "user_id": i64,
         }
-    }
+    );
 
     // The marker converts into the very node `Expr::column::<C>()` builds, and
     // the merged scope claims the tables of both operands, so the shorthand and
@@ -1452,12 +1452,12 @@ fn a_column_marker_is_a_right_hand_operand_of_every_comparison() {
 
 #[test]
 fn a_column_marker_is_a_between_bound_and_a_membership_candidate() {
-    crate::table! {
+    crate::table!(
         Order => "orders" {
             OrderId => "id": i64,
             OrderUserId => "user_id": i64,
         }
-    }
+    );
 
     // Bounds written as markers claim their table just like the tested column
     // does, so the range references all three relations of the shown form.

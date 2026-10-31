@@ -33,19 +33,19 @@ use crate::schema::Column;
 /// ```
 /// use rurqe_core::expr::{Expr, Expression};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `orders` table.
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///     }
-/// }
+/// );
 ///
 /// assert_eq!(
 ///     OrderUserId.eq(UserId),
@@ -59,13 +59,13 @@ use crate::schema::Column;
 /// ```compile_fail
 /// use rurqe_core::expr::Expression;
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserName => "name": String,
 ///     }
-/// }
+/// );
 ///
 /// // Fails to compile: the compared column holds an `i64`, while the marker
 /// // carries a `String`, so the marker implements no `IntoExpr<i64>`.
@@ -401,12 +401,12 @@ impl<T: serde::Serialize> IntoExpr<crate::expr::Json<T>> for &crate::expr::Json<
 /// ```
 /// use rurqe_core::expr::{ExprKind, Expression};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let predicate = UserId.in_list(vec![1i64, 2i64]);
 ///

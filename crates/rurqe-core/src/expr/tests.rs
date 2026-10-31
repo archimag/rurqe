@@ -2,13 +2,13 @@
 
 use super::*;
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
     }
-}
+);
 
 struct MockDialect;
 

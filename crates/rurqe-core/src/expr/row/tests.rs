@@ -5,19 +5,19 @@ use crate::expr::{render_expr, SqlVal};
 use crate::query::SelectQuery;
 use crate::schema::TableRef;
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
     }
-}
+);
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderName => "name": String,
     }
-}
+);
 
 struct MockDialect;
 

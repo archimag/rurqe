@@ -47,12 +47,12 @@ use crate::schema::Column;
 /// ```
 /// use rurqe_core::expr::{Expr, ExprKind, FunctionOperand, SqlVal};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `orders` table.
 ///     Order => "orders" {
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// assert_eq!(7i64.into_operand_kind(), ExprKind::Value(SqlVal::I64(7)));
 /// assert_eq!(
@@ -221,12 +221,12 @@ mod tests {
         AggregateFunc, DirectAggregate, Expr, ExprKind, FilteredAggregate, NonAggregate,
     };
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
             UserName => "name": String,
         }
-    }
+    );
 
     /// Asserts the marker triple the operand `operand` carries for the result type
     /// `T` of a function call.

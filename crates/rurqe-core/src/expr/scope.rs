@@ -133,17 +133,17 @@ impl_merged_tuple_scopes!(R1, R2, R3, R4);
 mod tests {
     use super::*;
 
-    crate::table! {
+    crate::table!(
         User => "users" {
             UserId => "id": i64,
         }
-    }
+    );
 
-    crate::table! {
+    crate::table!(
         Order => "orders" {
             OrderId => "id": i64,
         }
-    }
+    );
 
     fn assert_merged<L: MergeScope<R, Output = Expected>, R, Expected>() {}
 

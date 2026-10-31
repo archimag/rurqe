@@ -5,12 +5,12 @@ use super::*;
 use crate::expr::{LockClause, LockStrength, LockWait, OrderCriterion};
 use crate::schema::{Column, TableRef};
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderUserId => "user_id": i64,
     }
-}
+);
 
 /// Builds a statement selecting `projections` from the `users` table.
 fn select(projections: Vec<ExprKind>) -> SelectAst {

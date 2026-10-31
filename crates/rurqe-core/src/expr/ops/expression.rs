@@ -18,12 +18,12 @@ use super::InSubquery;
 /// ```
 /// use rurqe_core::expr::{Expr, Expression};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let predicate = UserId.gt(10i64);
 ///
@@ -265,19 +265,19 @@ pub trait Expression<T> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `users` table.
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// let buyers = SelectQuery::<MockDialect>::new()
     ///     .from::<Order>()

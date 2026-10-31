@@ -123,12 +123,12 @@ pub fn max<C: Column>(_col: C) -> Expr<C::RustType, C::Table, DirectAggregate> {
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: `coalesce` reads `total`, which is not grouped.
@@ -418,18 +418,18 @@ mod tests {
         }
     }
 
-    crate::table! {
+    crate::table!(
         Order => "orders" {
             OrderId => "id": i64,
             OrderTotal => "total": f64,
         }
-    }
+    );
 
-    crate::table! {
+    crate::table!(
         Line => "lines" {
             LineTotal => "total": f64,
         }
-    }
+    );
 
     /// Renders `expr` against a statement addressing the `orders` table.
     fn render(expr: &ExprKind) -> (String, Vec<SqlVal>) {

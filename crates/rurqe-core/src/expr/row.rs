@@ -53,13 +53,13 @@ use super::val::BinaryOp;
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserName => "name": String,
 ///     }
-/// }
+/// );
 ///
 /// let predicate = (UserId, UserName).gt((10i64, "root"));
 ///
@@ -259,21 +259,21 @@ pub trait RowExpr<Row> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `users` table.
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///         UserName => "name": String,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderId => "id": i64,
     ///         OrderName => "name": String,
     ///     }
-    /// }
+    /// );
     ///
     /// let pairs = SelectQuery::<MockDialect>::new()
     ///     .from::<Order>()
