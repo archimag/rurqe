@@ -199,6 +199,24 @@ pub enum BuildError {
         /// The alias the relation is addressed by.
         name: &'static str,
     },
+    /// An `INSERT` names its target under an alias the dialect does not accept.
+    ///
+    /// An aliased target renders `INSERT INTO "users" AS "u" (...)`, and ISO SQL
+    /// defines no alias production for the `INSERT` target: PostgreSQL parses the
+    /// statement, while SQLite has no such production and rejects it. The alias is
+    /// a value-level property of the rendered
+    /// [`TableRef`](crate::schema::TableRef), which the phantom-marker typestate
+    /// of the statement cannot observe, so a statement assembled through the
+    /// generic constructor of [`InsertQuery`](crate::dml::InsertQuery) is rejected
+    /// here — before a single character of it is rendered — unless the dialect
+    /// declares
+    /// [`SUPPORTS_ALIASED_INSERT_TARGET`](crate::dialect::Dialect::SUPPORTS_ALIASED_INSERT_TARGET).
+    AliasedInsertTarget {
+        /// The SQL identifier of the inserted table.
+        table: &'static str,
+        /// The alias the target is addressed under.
+        alias: &'static str,
+    },
     /// A column reference appears in a clause that addresses no relation.
     ///
     /// The `VALUES` list of an `INSERT` renders the values of one row, and the
@@ -534,6 +552,17 @@ impl fmt::Display for BuildError {
                     "derived relation is addressed as `{name}` but its subquery is registered under another name; \
                      rendering the statement would read the stored table the relation names instead of the rows of the subquery, \
                      so a derived table has to be registered under the alias it is referenced by"
+                )
+            }
+            BuildError::AliasedInsertTarget { table, alias } => {
+                write!(
+                    f,
+                    "INSERT target `{table}` is addressed under the alias `{alias}`, \
+                     which renders `INSERT INTO \"{table}\" AS \"{alias}\"`; \
+                     ISO SQL defines no alias production for the INSERT target, \
+                     so the statement is only valid on an engine that accepts it; \
+                     drop the alias from the target, or pin a dialect that declares \
+                     `SUPPORTS_ALIASED_INSERT_TARGET`"
                 )
             }
             BuildError::ColumnWithoutRelation { table, column } => {

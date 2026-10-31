@@ -15,14 +15,14 @@ use core::marker::PhantomData;
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::scope::ValuesScope;
 use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
-use crate::dialect::{Dialect, SupportsOnConflict, SupportsReturning};
+use crate::dialect::{Dialect, SupportsAliasedInsertTarget, SupportsOnConflict, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
 use crate::query::{
     reject_columns_without_relations, reject_unresolved_qualifiers, validate_expr, BuildError,
     BuiltQuery, HasProjection, SelectQuery, Selection, TableScope, TableSelection,
 };
-use crate::schema::{Column, ColumnBelongsTo, Table};
+use crate::schema::{Aliased, Column, ColumnBelongsTo, Table, TableAlias};
 
 /// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -208,6 +208,61 @@ impl<D: Dialect, T: Table> InsertQuery<D, T, (), ()> {
 impl<D: Dialect, T: Table> Default for InsertQuery<D, T, (), ()> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<D: Dialect + SupportsAliasedInsertTarget, T: Table, A: TableAlias>
+    InsertQuery<D, Aliased<T, A>, (), ()>
+{
+    /// Starts an `INSERT` into `T`, addressed under the alias `A`.
+    ///
+    /// PostgreSQL accepts an alias on the target of an `INSERT`, which makes the
+    /// columns of the inserted row reachable under that alias: a `RETURNING`
+    /// clause projects `"u"."id"` rather than a bare column, and the assignments
+    /// of an `ON CONFLICT` clause address the stored row the same way. The
+    /// statement renders `INSERT INTO "users" AS "u" (...) VALUES (...)`.
+    ///
+    /// ISO SQL defines no alias production for the `INSERT` target, so the
+    /// constructor is reachable only on a dialect that declares
+    /// [`SupportsAliasedInsertTarget`]. A statement assembled through the generic
+    /// [`InsertQuery::new`] on a dialect without the capability is rejected while
+    /// it is built, as
+    /// [`BuildError::AliasedInsertTarget`](crate::query::BuildError::AliasedInsertTarget).
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::Dialect;
+    /// use rurqe_core::dml::InsertQuery;
+    /// use rurqe_core::schema::Aliased;
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// rurqe_core::table!(
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// );
+    ///
+    /// rurqe_core::table_alias! {
+    ///     U => "u"
+    /// }
+    ///
+    /// // Fails to compile: `MockDialect` does not implement
+    /// // `SupportsAliasedInsertTarget`, so the aliased constructor does not exist
+    /// // for that dialect.
+    /// let _ = InsertQuery::<MockDialect, Aliased<User, U>>::into_aliased_table();
+    /// ```
+    pub fn into_aliased_table() -> Self {
+        InsertQuery::new()
     }
 }
 
@@ -452,11 +507,35 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     /// [`BuildError::InsertSelectArity`] instead of being rendered into a
     /// statement every engine answers with `INSERT has more expressions than
     /// target columns`.
+    ///
+    /// An aliased target renders `INSERT INTO "users" AS "u" (...)`, a
+    /// production ISO SQL does not define for the `INSERT` target, so a dialect
+    /// that does not accept the alias rejects the statement as
+    /// [`BuildError::AliasedInsertTarget`] before any SQL is rendered.
     pub fn build(&self) -> Result<BuiltQuery, BuildError> {
         // The target renders through its `Table::table_ref`, so a target
         // referenced under an alias renders its `AS "alias"` clause and is
         // addressed under that alias.
         let target = T::table_ref();
+        // An alias on the target renders `INSERT INTO "users" AS "u" (...)`, a
+        // production ISO SQL does not define for the `INSERT` target: PostgreSQL
+        // parses the statement, while SQLite has no such production at all. The
+        // alias is a value-level property of the rendered reference, which the
+        // phantom-marker typestate of the statement cannot observe, so the
+        // capability is checked here rather than at the constructor: a statement
+        // assembled through the generic `new` is rejected before a single
+        // character of it is rendered.
+        let aliased_target = if D::SUPPORTS_ALIASED_INSERT_TARGET {
+            None
+        } else {
+            target.alias
+        };
+        if let Some(alias) = aliased_target {
+            return Err(BuildError::AliasedInsertTarget {
+                table: target.name,
+                alias,
+            });
+        }
         // The statement addresses the inserted table only, so an assigned
         // expression reads its columns unqualified while a reference to any
         // other relation keeps naming that relation.
@@ -702,8 +781,9 @@ pub(crate) fn merge_assignments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dml::{AssignColumn, Assignment, ColumnAssign};
-    use crate::expr::SqlVal;
+    use crate::dml::{AssignColumn, Assignment, ColumnAssign, DeleteQuery, UpdateQuery};
+    use crate::expr::{Expr, SqlVal};
+    use crate::schema::AliasedCol;
     use core::fmt::Write;
 
     struct MockDialect;
@@ -737,6 +817,104 @@ mod tests {
             ArchiveName => "old_name": String,
         }
     );
+
+    /// The accepting engine of the aliased-target tests.
+    ///
+    /// PostgreSQL renders an alias on the `INSERT` target, so the dialect states
+    /// the capability both as the constant the builder reads while it assembles
+    /// the statement and as the marker the aliased constructor is gated on.
+    struct AliasedInsertMockDialect;
+
+    impl Dialect for AliasedInsertMockDialect {
+        const SUPPORTS_ALIASED_INSERT_TARGET: bool = true;
+
+        fn push_quoted_identifier(out: &mut String, ident: &str) {
+            out.push('"');
+            out.push_str(ident);
+            out.push('"');
+        }
+
+        fn push_placeholder(out: &mut String, index: usize) {
+            let _ = write!(out, "${index}");
+        }
+    }
+
+    impl SupportsAliasedInsertTarget for AliasedInsertMockDialect {}
+
+    impl SupportsReturning for AliasedInsertMockDialect {}
+
+    crate::table_alias! {
+        /// The `u` alias of the users table.
+        UserAlias => User as "u"
+    }
+
+    #[test]
+    fn an_aliased_target_renders_the_alias_on_a_supporting_dialect() {
+        let query: InsertQuery<AliasedInsertMockDialect, Aliased<User, UserAlias>> =
+            InsertQuery::into_aliased_table();
+        let built = query
+            .values(AliasedCol::<UserAlias, UserId>::set(1i64))
+            .returning((UserAlias.UserId,))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "INSERT INTO \"users\" AS \"u\" (\"id\") VALUES ($1) RETURNING \"u\".\"id\""
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1)]);
+    }
+
+    #[test]
+    fn an_aliased_target_is_rejected_on_a_dialect_without_the_capability() {
+        // The alias is a property of the value the statement targets, so the
+        // generic constructor stays reachable on every dialect: the statement is
+        // rejected while it is built, before a single character of it is
+        // rendered.
+        let built = InsertQuery::<MockDialect, Aliased<User, UserAlias>>::new()
+            .values(AliasedCol::<UserAlias, UserId>::set(1i64))
+            .build();
+
+        assert_eq!(
+            built,
+            Err(BuildError::AliasedInsertTarget {
+                table: "users",
+                alias: "u",
+            })
+        );
+    }
+
+    #[test]
+    fn an_aliased_update_target_keeps_rendering_its_alias() {
+        // PostgreSQL and SQLite both accept an alias on the target of an
+        // `UPDATE`, so the clause is independent of the aliased-insert
+        // capability: the non-supporting dialect renders it unchanged.
+        let built = UpdateQuery::<MockDialect, Aliased<User, UserAlias>>::new()
+            .set(AliasedCol::<UserAlias, UserId>::set(1i64))
+            .where_(Expr::column::<AliasedCol<UserAlias, UserId>>().eq(2i64))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "UPDATE \"users\" AS \"u\" SET \"id\" = $1 WHERE (\"u\".\"id\" = $2)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(1), SqlVal::I64(2)]);
+    }
+
+    #[test]
+    fn an_aliased_delete_target_keeps_rendering_its_alias() {
+        let built = DeleteQuery::<MockDialect, Aliased<User, UserAlias>>::new()
+            .where_(Expr::column::<AliasedCol<UserAlias, UserId>>().eq(2i64))
+            .build()
+            .expect("valid query");
+
+        assert_eq!(
+            built.sql,
+            "DELETE FROM \"users\" AS \"u\" WHERE (\"u\".\"id\" = $1)"
+        );
+        assert_eq!(built.params, vec![SqlVal::I64(2)]);
+    }
 
     #[test]
     fn tuple_with_duplicate_column_normalizes_to_last_value() {

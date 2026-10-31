@@ -20,8 +20,25 @@ pub trait Dialect: 'static + Send + Sync {
     /// assembles every object field by field with `json_object` and collects the
     /// objects with `json_group_array`. Both forms produce the same JSON
     /// document, so a client decodes one representation whichever engine
-    /// produced it.
     const SUPPORTS_JSONB_ROW_AGG: bool = false;
+
+    /// Whether the dialect accepts an alias on the target of an `INSERT`.
+    ///
+    /// An aliased target renders `INSERT INTO "users" AS "u" (...)`, which makes
+    /// the columns of the inserted row reachable under the alias in a
+    /// `RETURNING` clause and in the assignments of an `ON CONFLICT` clause. ISO
+    /// SQL defines no alias production for the `INSERT` target, so whether the
+    /// statement is accepted depends on the engine rather than on the standard:
+    /// PostgreSQL parses it, while SQLite has no such production at all.
+    ///
+    /// The alias follows from the table marker the statement targets, which is a
+    /// value-level property the phantom-marker typestate cannot observe, so the
+    /// builders read this constant while they assemble the statement and reject
+    /// the alias before rendering a single character of it.
+    /// [`SupportsAliasedInsertTarget`] states the same capability as a bound,
+    /// which keeps the aliased constructor of an `INSERT` unreachable at compile
+    /// time.
+    const SUPPORTS_ALIASED_INSERT_TARGET: bool = false;
 
     /// Appends a quoted identifier to the output SQL buffer.
     fn push_quoted_identifier(out: &mut String, ident: &str);
@@ -101,6 +118,24 @@ pub trait SupportsDeleteUsing: Dialect {}
     note = "updating rows from another relation requires a dialect that implements `SupportsUpdateFrom` (such as PostgreSQL or SQLite 3.35+)"
 )]
 pub trait SupportsUpdateFrom: Dialect {}
+
+/// Marker trait for dialects accepting an alias on the target of an `INSERT`.
+///
+/// `INSERT INTO "users" AS "u" ...` names the inserted relation under an alias,
+/// which makes its columns reachable through that alias in the `RETURNING`
+/// clause and in the assignments of an `ON CONFLICT` clause. ISO SQL defines no
+/// alias production for the `INSERT` target, so the clause is an extension of
+/// the standard: PostgreSQL parses the statement, while SQLite has no such
+/// production and rejects it. A dialect declaring the capability also sets
+/// [`Dialect::SUPPORTS_ALIASED_INSERT_TARGET`] to `true`, which is what the
+/// builder reads when it assembles a statement from a target it cannot inspect
+/// at compile time.
+#[diagnostic::on_unimplemented(
+    message = "dialect `{Self}` does not support an alias on the INSERT target",
+    label = "an aliased INSERT target is not supported by this dialect",
+    note = "an aliased INSERT target requires a dialect that implements `SupportsAliasedInsertTarget` (such as PostgreSQL)"
+)]
+pub trait SupportsAliasedInsertTarget: Dialect {}
 
 /// Marker trait for dialects supporting `FULL OUTER JOIN`.
 ///
