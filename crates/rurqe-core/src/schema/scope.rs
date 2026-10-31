@@ -27,13 +27,13 @@ pub struct Next<P>(pub(crate) core::marker::PhantomData<P>);
 /// ```compile_fail
 /// use rurqe_core::schema::{Table, TableInScope};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" { UserId => "id": i64, }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" { OrderId => "id": i64, }
-/// }
+/// );
 ///
 /// fn require_in_scope<T: Table, S: TableInScope<T, P>, P>() {}
 ///
@@ -156,13 +156,13 @@ impl_tuple_expr_scope!(T1, T2, T3, T4, T5, T6, T7, T8);
 /// ```compile_fail
 /// use rurqe_core::schema::{ExprInScope, Table, TableInScope};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" { UserId => "id": i64, }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" { OrderId => "id": i64, }
-/// }
+/// );
 ///
 /// fn require_in_scope<S, Tables, P>()
 /// where
@@ -227,13 +227,13 @@ impl_tuple_expr_in_scope!(T1: P1, T2: P2, T3: P3, T4: P4, T5: P5, T6: P6, T7: P7
 /// ```
 /// use rurqe_core::schema::CombineScope;
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" { UserId => "id": i64, }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" { OrderId => "id": i64, }
-/// }
+/// );
 ///
 /// fn assert_combined<A: CombineScope<B, Combined = C>, B, C>() {}
 ///

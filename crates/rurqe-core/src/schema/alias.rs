@@ -44,11 +44,11 @@ pub trait TableAlias: Sized {
     /// ```
     /// use rurqe_core::schema::{AliasedCol, Column, TableAlias};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// rurqe_core::table_alias! {
     ///     /// The `u` alias.
@@ -86,12 +86,12 @@ pub trait TableAlias: Sized {
 /// ```
 /// use rurqe_core::schema::{AliasedCol, Column, TableAlias};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///         UserEmail => "email": String,
 ///     }
-/// }
+/// );
 ///
 /// rurqe_core::table_alias! {
 ///     /// The `u` alias.
@@ -114,7 +114,7 @@ macro_rules! table_alias {
         $(#[$alias_meta:meta])*
         $alias:ident => $table:ident as $alias_name:literal
     ) => {
-        $table! { @alias [$(#[$alias_meta])*] $alias, $alias_name }
+        $table!(@alias [$(#[$alias_meta])*] $alias, $alias_name);
     };
     (
         $(#[$alias_meta:meta])*
