@@ -65,12 +65,12 @@ fn multiple_ctes_render_comma_separated_clauses() {
 
 #[test]
 fn cte_binds_to_table_marker_and_participates_in_joins() {
-    crate::table! {
+    crate::table!(
         ActiveSummary => "active_summary" {
             SummaryUserId => "user_id": i64,
             SummaryTotal => "total": f64,
         }
-    }
+    );
 
     let summary_query = SelectQuery::<MockDialect>::new()
         .from::<Order>()

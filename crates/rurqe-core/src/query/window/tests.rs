@@ -2,12 +2,12 @@
 
 use super::*;
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
         UserScore => "score": i64,
     }
-}
+);
 
 struct MockDialect;
 

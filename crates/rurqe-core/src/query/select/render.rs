@@ -226,11 +226,11 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output, HasP
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     // Fails to compile: the query records no projection, so there is no
@@ -289,12 +289,12 @@ mod tests {
         }
     }
 
-    crate::table! {
+    crate::table!(
         /// The `users` table.
         User => "users" {
             UserId => "id": i64,
         }
-    }
+    );
 
     /// A query recording one projection, the shape every conversion below starts from.
     fn user_ids() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {

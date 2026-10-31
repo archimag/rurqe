@@ -30,17 +30,17 @@ impl Dialect for MockDialect {
     }
 }
 
-crate::table! {
+crate::table!(
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderId => "id": i64,
     }
-}
+);
 
 /// The everyday statement the transitions start from.
 fn user_ids() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
