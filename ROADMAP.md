@@ -968,7 +968,12 @@ The following capabilities represent valuable, high-utility SQL features that re
    - Extension to `cargo db stage verify` validating that the committed `schema.lock` snapshot matches the declarative stage catalog bit-for-bit without requiring a separate drift step.
 10. **PostgreSQL 17 Dialect & Version Marker (`Pg17`):**
     - Dedicated version marker `Pg17` with updated default `Postgres<Pg17>`, gating new engine capabilities including SQL/JSON standard expressions (`JSON_TABLE`, etc.) and `MERGE ... RETURNING`.
----
+11. **Constraint-Targeted Upsert (`ON CONFLICT ON CONSTRAINT`):**
+    - First-class support for explicit unique constraint and index targets in `ON CONFLICT` clauses via `.on_conflict_constraint("uq_constraint_name")` in addition to column inference and partial index predicates (`target_where`). Native to PostgreSQL.
+12. **Materialized Views Lifecycle & Read-Only Querying:**
+    - Live catalog introspection of PostgreSQL materialized views (`pg_matviews`, `pg_class.relkind = 'm'`) into `schema.lock` (`MaterializedViewDef`).
+    - Toolchain and migration lifecycle commands (`REFRESH MATERIALIZED VIEW [CONCURRENTLY]`).
+    - Codegen integration as read-only relations (`Table` marker enabling typed `select_from`, while statically forbidding DML mutation builders `insert_into`, `update`, and `delete_from` via compile-time trait bounds).---
 
 ## Architectural Exclusions & Anti-Patterns [Won't Do / YAGNI]
 
