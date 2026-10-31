@@ -57,6 +57,7 @@ Every clause is either implemented by a dialect or absent from it, and inside SQ
 |---|---|---|
 | `RETURNING` | Supported | From 3.35 (`sqlite3_35`) |
 | `ON CONFLICT` (`DO NOTHING`, `DO UPDATE`) | Supported | From 3.24 (`sqlite3_24`) |
+| Aliased INSERT target (`INSERT INTO ... AS ...`) | Supported | Unavailable |
 | `UPDATE ... FROM` | Supported | From 3.35 (`sqlite3_35`) |
 | `DELETE ... USING` | Supported | Unavailable |
 | `DISTINCT ON` | Supported | Unavailable |

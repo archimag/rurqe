@@ -66,6 +66,7 @@ A clause or expression is either implemented by some release of the engine or ab
 | `LATERAL` joins | Unavailable |
 | `FULL OUTER JOIN` | Unavailable |
 | `DELETE ... USING` | Unavailable |
+| Aliased INSERT target | Unavailable |
 | `GREATEST` / `LEAST` | Unavailable |
 | `IS DISTINCT FROM` / `IS NOT DISTINCT FROM` | Unavailable |
 | JSON document operators (`@>`, `?`, `->`, `->>`) | Unavailable |
@@ -242,4 +243,4 @@ table!(
 let _ = select_from(User).select(cols!(UserId)).distinct_on(UserId);
 ```
 
-The same holds for `LATERAL` joins, `FULL OUTER JOIN`, `DELETE ... USING`, `GREATEST` / `LEAST`, the null-safe `IS DISTINCT FROM` comparisons, the JSON document operators, array columns, regular expressions, and full-text search; the capability summary above records each of them as unavailable.
+The same holds for `LATERAL` joins, `FULL OUTER JOIN`, `DELETE ... USING`, `GREATEST` / `LEAST`, the null-safe `IS DISTINCT FROM` comparisons, the JSON document operators, array columns, regular expressions, full-text search, and an alias on the target of an `INSERT`; the capability summary above records each of them as unavailable. The alias is an extension of the standard rather than a production of ISO SQL, so this dialect has no grammar for it and no constructor starts such a statement.
