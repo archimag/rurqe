@@ -14,7 +14,10 @@ table!(
         UserName => "name": String,
     }
 );
-
+table_alias! {
+    /// The `u` alias of the `users` table.
+    UserAlias => User as "u"
+}
 table!(
     /// The `profiles` table, read through the PostgreSQL extensions.
     Profile => "profiles" {
@@ -110,6 +113,18 @@ fn main() -> Result<(), BuildError> {
         .build()?;
     // ANCHOR_END: for_update
     println!("{}", claimed.sql);
+
+    // ANCHOR: aliased_insert
+    // PostgreSQL accepts an alias on the target of an `INSERT`, so the inserted
+    // row stays reachable through it. The constructor exists only where the
+    // engine accepts the form, so the aliased relation is named as the target
+    // type of the pinned release.
+    let aliased = InsertQuery::<Postgres<Pg16>, Aliased<User, UserAlias>>::into_aliased_table()
+        .values(AliasedCol::<UserAlias, UserId>::set(7i64))
+        .returning((UserAlias.UserId,))
+        .build()?;
+    // ANCHOR_END: aliased_insert
+    println!("{}", aliased.sql);
 
     // ANCHOR: sqlite_upsert
     // `ON CONFLICT` arrived in SQLite 3.24, so the release the statement is

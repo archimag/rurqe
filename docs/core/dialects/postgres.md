@@ -149,6 +149,22 @@ The statement renders:
 SELECT "id" AS "user_id" FROM "users" WHERE ("id" = $1) FOR UPDATE SKIP LOCKED
 ```
 
+## Aliased INSERT targets
+
+An alias on the target of an `INSERT` is a PostgreSQL extension of the standard rather than a production of ISO SQL: the statement renders the table under the alias, and the written row becomes reachable through it, both in the `RETURNING` projection and in the assignments of an `ON CONFLICT` clause.
+
+```rust,no_run
+{{#rustdoc_include ../../examples/dialects.rs:aliased_insert}}
+```
+
+The statement renders:
+
+```sql
+INSERT INTO "users" AS "u" ("id") VALUES ($1) RETURNING "u"."id"
+```
+
+Whether the alias is accepted is a property of the target the statement addresses rather than of the clauses it records, so the capability is stated twice. Such a statement starts from the constructor `into_aliased_table` rather than from `insert_into`, and the constructor exists only on a dialect that accepts the form, which keeps the statement unwritable on a target that cannot parse it; a statement assembled through the generic constructor is rejected while it is built — `BuildError::AliasedInsertTarget` — before a single character of SQL is rendered. An `UPDATE` and a `DELETE` accept an alias on their target on both engines; only the `INSERT` target is the extension.
+
 ## Connections and Pools
 
 The dialect renders a statement; an adapter executes it. PostgreSQL ships two adapters, and the chain that assembles a statement is identical for both — the adapter is named at the terminal call alone:

@@ -1,11 +1,11 @@
 # The INSERT statement
 
-An `INSERT` writes rows into exactly one table. The chain names the target table, then the row source — literal rows or a `SELECT` — and optionally the policy for a row that collides with a unique constraint and the projection of the written rows. Every fragment on this page is included from `examples/crud.rs`, so the page cannot drift from the code it documents.
+An `INSERT` writes rows into exactly one table. The chain names the target table, then the row source — literal rows or a `SELECT` — and optionally the policy for a row that collides with a unique constraint and the projection of the written rows. Every fragment on this page is included from the compiled example crate, so the page cannot drift from the code it documents.
 
 ## Clause anatomy
 
 ```sql
-INSERT INTO table (column, ...)
+INSERT INTO table [ AS alias ] (column, ...)
     { VALUES (value, ...) [, (value, ...)]
     | SELECT ... }
     [ ON CONFLICT [ (column, ...) [ WHERE condition ] ]
@@ -17,6 +17,7 @@ INSERT INTO table (column, ...)
 | Clause | Purpose | Optional | What it changes |
 |---|---|---|---|
 | `INSERT INTO table (columns)` | the table written and the columns filled | no | fixes the table and the column list every row has to match |
+| `AS alias` | the name the written row is referenced under | yes | makes the written row reachable through the alias in `RETURNING` and in the assignments of `ON CONFLICT` |
 | `VALUES (...)` | rows supplied by the client | one row source is required | records one literal row, or many rows in one statement |
 | `SELECT ...` | rows copied from another relation | the alternative to `VALUES` | reads and writes in a single round trip |
 | `ON CONFLICT` | the policy for a colliding row | yes | turns the statement into an upsert |
@@ -29,6 +30,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 | SQL clause | Builder method | Effect on the statement |
 |---|---|---|
 | `INSERT INTO "users"` | `insert_into(User)` | names the table; the statement still has no row source, so it is not executable and cannot be built |
+| `AS "u"` | `InsertQuery::<Postgres<Pg16>, Aliased<User, UserAlias>>::into_aliased_table()` | starts the statement on an aliased target; the constructor exists only on a dialect that accepts the form |
 | `("id", "name", "email")` | the column list of `.values(...)`, `.values_many(...)`, or `.from_select(...)` | the written columns; each value is checked against its column type |
 | `VALUES (...)` | `.values(row)` | records one row and makes the statement executable |
 | `VALUES (...), (...)` | `.values_many([row, row])` | records many rows; an empty list yields an error instead of a query |
@@ -120,7 +122,7 @@ Both conflict predicates render natively. There is no `CASE WHEN` emulation and 
 | `ON CONFLICT ... DO NOTHING` | every declared version | from 3.24 |
 | `ON CONFLICT (...) DO UPDATE`, `EXCLUDED` | every declared version | from 3.24 |
 
-Below the stated threshold the clause does not exist on the target, so the method cannot even be named there: the compiler refuses the call and the diagnostic names the unsupported clause instead of a trait resolution cascade.
+Below the stated threshold the clause does not exist on the target, so the method cannot even be named there: the compiler refuses the call and the diagnostic names the unsupported clause instead of a trait resolution cascade. A row marked unavailable sits outside that progression: no version of SQLite parses an alias on the `INSERT` target, so the constructor stays unreachable on every version the dialect declares.
 
 ## Compile-time and typestate guards
 
@@ -157,3 +159,30 @@ error[E0277]: refusing to build an INSERT without rows
 ```
 
 The accepted form records the rows first — `.values((UserId::set(1i64), UserName::set("root")))` — and only then builds or executes the statement.
+
+An alias on the target is a separate guard. `INSERT INTO "users" AS "u" (...)` is a PostgreSQL extension of the standard rather than a production of ISO SQL, so the constructor that starts such a statement is offered by that dialect alone: on a target without the capability the constructor cannot be named, and the capability states the reason.
+
+```rust,compile_fail
+use rurqe::sqlite::prelude::*;
+
+fn assert_aliased_insert<D: Dialect + SupportsAliasedInsertTarget>() {}
+
+fn main() {
+    // Rejected: SQLite renders no alias production on the INSERT target.
+    assert_aliased_insert::<Sqlite<Sqlite3_35>>();
+}
+```
+
+```text
+error[E0277]: dialect `Sqlite<Sqlite3_35>` does not support an alias on the INSERT target
+    = note: an aliased INSERT target is not supported by this dialect
+    = note: an aliased INSERT target requires a dialect that implements `SupportsAliasedInsertTarget` (such as PostgreSQL)
+```
+
+The accepted form takes the capability-gated constructor, which names the aliased relation as the target type:
+
+```rust,no_run
+{{#rustdoc_include ../examples/dialects.rs:aliased_insert}}
+```
+
+A target that carries an alias but was handed to the generic constructor on a dialect without the capability is rejected while the statement is built — as `BuildError::AliasedInsertTarget` — before a single character of SQL is rendered.

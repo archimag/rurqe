@@ -46,3 +46,9 @@ Both occurrences of `"users"` carry their own effective name, so the statement d
 ## Aliases and scopes
 
 An aliased table is a table like any other: it enters the scope, joins, and nullability checking exactly like a stored relation, and a column addressed through the alias keeps its owning table. An outer-joined aliased relation lifts its columns to `Option<T>` through the same rule that governs a stored relation.
+
+## Aliases on mutation targets
+
+A mutation names its target under an alias the same way a query does, and the alias carries through to the rows the statement reports back: an `UPDATE` renders its `SET` clause beside the alias and addresses the assigned columns through it, a `DELETE` filters through it, and an `INSERT` returns its written rows qualified through it, which reads as `"u"."id"` rather than a bare column.
+
+Both engines the library ships accept an alias on the target of an `UPDATE` and of a `DELETE`. The target of an `INSERT` — `INSERT INTO "users" AS "u" (...)` — is the one place where the form is an extension rather than the standard: ISO SQL defines no alias production there, and only PostgreSQL parses it, so the constructor that starts an aliased insert exists on that dialect alone. A target that carries an alias but was handed to the generic constructor on a dialect without the capability is rejected while the statement is built — as `BuildError::AliasedInsertTarget` — instead of being rendered for an engine that cannot parse it.
