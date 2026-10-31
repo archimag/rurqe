@@ -7,29 +7,29 @@
 
 use rurqe::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
     }
-}
+);
 
-table! {
+table!(
     /// The `audit_log` table read by the capability-gated mutation clauses.
     AuditLog => "audit_log" {
         AuditUserId => "user_id": i64,
         AuditNote => "note": String,
     }
-}
+);
 
-table! {
+table!(
     /// The alias exposing the latest audit entry of every user.
     LatestAudit => "latest_audit" {
         LatestAuditNote => "note": String,
     }
-}
+);
 
 dto! {
     /// A user projection returned by repository functions.

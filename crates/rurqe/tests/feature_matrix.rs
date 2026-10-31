@@ -20,12 +20,12 @@
 
 use rurqe::postgres::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
     }
-}
+);
 
 #[test]
 fn the_dialect_stays_nameable_without_the_synchronous_driver() {

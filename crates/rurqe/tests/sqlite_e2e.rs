@@ -15,7 +15,7 @@
 use rurqe::prelude::*;
 use rurqe::sqlite::rusqlite::Connection;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
@@ -23,7 +23,7 @@ table! {
         UserActive => "active": bool,
         UserScore => "score": i32,
     }
-}
+);
 
 /// DDL of the `users` fixture table.
 const CREATE_USERS: &str = "CREATE TABLE users (

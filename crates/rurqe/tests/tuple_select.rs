@@ -6,14 +6,14 @@
 
 use rurqe::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
     }
-}
+);
 
 #[test]
 fn builds_parameterised_select_for_postgres() {

@@ -8,14 +8,14 @@
 
 use rurqe::prelude::*;
 
-table! {
+table!(
     /// The `users` table.
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
         UserActive => "active": bool,
     }
-}
+);
 
 dto! {
     /// A user projection returned by mutating statements.
@@ -26,14 +26,14 @@ dto! {
     }
 }
 
-table! {
+table!(
     /// Archived copies of users, the source of `INSERT INTO ... SELECT` statements.
     ArchivedUser => "archived_users" {
         ArchivedId => "id": i64,
         ArchivedName => "name": String,
         ArchivedActive => "active": bool,
     }
-}
+);
 
 /// Decodes `values` into the row type of the anonymous selection `S`.
 fn decode<S>(_selection: &S, values: &[SqlVal]) -> Option<S::Row>
