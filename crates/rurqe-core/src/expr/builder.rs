@@ -77,12 +77,12 @@ type ExprMarker<T, Scope, Aggr, D> = PhantomData<fn() -> (T, Scope, Aggr, D)>;
 /// ```
 /// use rurqe_core::expr::{BinaryOp, Expr, ExprKind, SqlVal};
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     /// The `users` table.
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// let predicate = Expr::column::<UserId>().gt(10i64);
 ///
@@ -181,12 +181,12 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// ```
     /// use rurqe_core::expr::{Expr, ExprKind};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// let text = Expr::column::<OrderTotal>().cast::<String>();
     ///
@@ -311,12 +311,12 @@ impl<T, D> Expr<T, (), NonAggregate, D> {
     /// ```compile_fail
     /// use rurqe_core::expr::{Expr, ExprKind};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: `from_kind` builds an expression that references no
     /// // table, so its scope stays `()`. A column reference carries the table of
@@ -338,12 +338,12 @@ impl<T, D> Expr<T, (), NonAggregate, D> {
     /// ```compile_fail
     /// use rurqe_core::expr::{DirectAggregate, Expr, ExprKind};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the tree is a column reference, not an aggregate
     /// // call, so the `DirectAggregate` marker cannot be named on the
@@ -420,12 +420,12 @@ impl<T> Expr<T, ()> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///         UserName => "name": String,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the subquery projects two columns, not a single value.
     /// let _ = Expr::<i64>::subquery(

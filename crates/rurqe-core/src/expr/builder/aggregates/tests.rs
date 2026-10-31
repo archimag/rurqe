@@ -5,12 +5,12 @@ use crate::dialect::{Dialect, SupportsAggregateFilter};
 use crate::expr::{count_distinct, render_expr, sum, ExprKind, SqlVal};
 use crate::schema::TableRef;
 
-crate::table! {
+crate::table!(
     Order => "orders" {
         OrderId => "id": i64,
         OrderTotal => "total": f64,
     }
-}
+);
 
 struct MockDialect;
 

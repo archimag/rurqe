@@ -62,19 +62,19 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `users` table.
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// let buyers = SelectQuery::<MockDialect>::new()
     ///     .from::<Order>()
@@ -142,19 +142,19 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// ```
     /// use rurqe_core::expr::{Aggregate, Expr, NonAggregate};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `users` table.
     ///     User => "users" {
     ///         UserId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     /// The `orders` table.
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn assert_aggregate<T, Scope, D>(_: &Expr<T, Scope, Aggregate, D>) {}
     /// fn assert_per_row<T, Scope, D>(_: &Expr<T, Scope, NonAggregate, D>) {}

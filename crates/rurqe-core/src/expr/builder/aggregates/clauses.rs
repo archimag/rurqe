@@ -53,11 +53,11 @@ where
     /// ```compile_fail
     /// use rurqe_core::expr::Expr;
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: a column reference aggregates nothing, so there is
     /// // no call the `DISTINCT` modifier could restrict.
@@ -70,11 +70,11 @@ where
     /// ```
     /// use rurqe_core::expr::{sum, ExprKind};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// let distinct = sum(OrderTotal).distinct();
     ///
@@ -152,11 +152,11 @@ where
     /// ```compile_fail
     /// use rurqe_core::expr::Expr;
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: a column reference aggregates nothing, so there is
     /// // no call for the `FILTER` clause to restrict.
@@ -179,12 +179,11 @@ where
     /// ```
     /// use rurqe_core::expr::{sum, Expr, ExprKind};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
-    ///
+    /// );
     /// let filtered = sum(OrderTotal)
     ///     .filter_where(Expr::column::<OrderTotal>().gt(10.0))
     ///     .filter_where(Expr::column::<OrderTotal>().lt(100.0));
@@ -201,11 +200,11 @@ where
     /// ```compile_fail
     /// use rurqe_core::expr::{sum, Expr};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the arithmetic combination is an `Aggregate`, not the
     /// // aggregate call itself, so it takes no `FILTER` clause.
@@ -219,11 +218,11 @@ where
     /// ```compile_fail
     /// use rurqe_core::expr::{sum, Expr};
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// // Fails to compile: the scaled filtered call is an `Aggregate` as well,
     /// // so the `FILTER` clause it would take names no call to restrict.
