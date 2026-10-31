@@ -113,6 +113,10 @@ name = "schema"
 path = "schema.rs"
 
 [[example]]
+name = "multi_schema"
+path = "multi_schema.rs"
+
+[[example]]
 name = "sync_execution"
 path = "sync_execution.rs"
 

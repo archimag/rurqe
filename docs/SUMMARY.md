@@ -7,6 +7,7 @@
 
 - [Two-tier SQL correctness](core/correctness.md)
 - [Database schema](core/schema.md)
+- [Multi-schema databases](core/multi_schema.md)
 - [Projections and typed rows](core/projections.md)
 - [SQL execution: sync vs async](core/execution.md)
 - [Transactions](core/transactions.md)

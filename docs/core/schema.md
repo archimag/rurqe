@@ -24,54 +24,6 @@ Both forms refer to the identical zero-sized marker, generate identical SQL AST 
 ```rust,no_run
 {{#rustdoc_include ../examples/schema.rs:addressing}}
 ```
-## Grouping Tables by Schema
-
-A database keeps its relations in schemas, and the DSL mirrors that structure. The `schema!` macro declares one schema together with the tables it contains:
-
-```rust,no_run
-{{#rustdoc_include ../examples/schema.rs:schema_declaration}}
-```
-
-The declaration states the SQL name of the schema once and forwards every table to `table!` with that name attached, so the tables and the columns keep the shape a plain declaration produces. The identifier after `as` is the module holding the type namespace: a declarative macro cannot change the case of an identifier, so the marker stays in PascalCase (`Auth`) while the module follows the naming convention of modules (`auth`).
-
-The macro occupies both namespaces, exactly as a table declaration does:
-
-* the module `auth` carries the table and column markers as types, so a signature spells `auth::Sessions` or `auth::SessionsId`;
-* the struct `Auth` carries one field per table, and the constant `Auth` of that type carries the same markers as values, so a column is addressed as `Auth.Sessions.SessionsId`.
-
-Items that belong next to the tables — a record, an enumeration, a table alias — are declared in a trailing `@items` block, which is written into the module verbatim.
-
-A table declared outside a schema block states the schema it lives in with the `in` clause:
-
-```rust,no_run
-{{#rustdoc_include ../examples/schema.rs:table_in_clause}}
-```
-
-## Primary and Secondary Schemas
-
-A project names one schema as its primary schema, and every other schema a table belongs to is a secondary schema. The distinction is visible in the SQL a relation produces:
-
-| Declaration | Rendered relation |
-|---|---|
-| `User => "users"` — a table of the primary schema | `"users"` |
-| `Sessions => "sessions" in "auth"` — a table of a secondary schema | `"auth"."sessions"` |
-
-A table of the primary schema renders its bare name, so a statement over it reads exactly as it would without the schema layer. A table of a secondary schema renders its qualifier, which is what keeps two relations of one name in two schemas apart. A column reference stays qualified by the table name or by an alias alone: the relation reference is already unambiguous, so no column is spelled with its schema.
-
-## Querying a Table of a Secondary Schema
-
-A schema value addresses the tables it declares, and a table value addresses its columns, so a secondary relation is named the same way a primary one is — no path, no turbofish:
-
-```rust,no_run
-{{#rustdoc_include ../examples/schema.rs:schema_addressing}}
-```
-
-The statement the fragment assembles:
-
-```sql
-SELECT "id" AS "sessions_id" FROM "auth"."sessions" WHERE ("id" = $1)
-```
-
 ## Rust Type to SQL Type Mapping
 
 Column types declared in `table!` map directly to database types and SQL `CAST` representations:
