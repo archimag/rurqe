@@ -6,6 +6,7 @@
 //! [`SqlVal`]s RURQE rows are built from.
 
 mod array;
+mod compat;
 mod driver;
 mod fallback;
 mod network;
@@ -21,6 +22,7 @@ use std::fmt;
 use bytes::BytesMut;
 use rurqe_core::expr::SqlVal;
 
+use self::compat::value_fits;
 use self::driver::types::{FromSql, IsNull, Kind, ToSql, Type};
 use self::driver::{Error as DriverError, Row};
 use self::wire::{base_type, wire_of, Wire};
@@ -187,6 +189,15 @@ impl ToSql for SqlValParam<'_> {
             // variant of its own, so the textual value is encoded into the binary
             // representation the server expects for the column type.
             Some(wire) => return encode_wire(wire, self.0, ty, out),
+        }
+
+        // The column whitelist decides whether a parameter may be bound at all,
+        // not whether this value belongs in that column: a value of an unrelated
+        // kind would otherwise reach the wire and be reported by the server as an
+        // encoding failure. Refusing it here keeps the failure in the diagnostic
+        // of the adapter itself and leaves the buffer untouched.
+        if !value_fits(column_ty, self.0) {
+            return Err(unusable_value(self.0, ty));
         }
 
         match self.0 {

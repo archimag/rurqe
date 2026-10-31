@@ -186,6 +186,64 @@ fn unusable_column_types_are_rejected_with_a_clear_message() {
 }
 
 #[test]
+fn binary_octets_are_rejected_for_a_textual_column() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::Bytes(b"raw".to_vec()))
+        .to_sql_checked(&Type::TEXT, &mut buffer)
+    {
+        Ok(_) => panic!("binary octets cannot fill a text column"),
+        Err(error) => error,
+    };
+
+    // The octets are valid UTF-8, so the server would accept them as text instead
+    // of reporting the mismatch this binding is.
+    assert!(error.to_string().contains("cannot bind a SQL `bytes` value"));
+    assert!(error.to_string().contains("text"));
+    assert!(buffer.is_empty());
+}
+
+#[test]
+fn a_boolean_is_rejected_for_a_textual_column() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::Bool(true)).to_sql_checked(&Type::VARCHAR, &mut buffer)
+    {
+        Ok(_) => panic!("a boolean cannot fill a textual column"),
+        Err(error) => error,
+    };
+
+    // `bool` writes a single octet, which no textual column can read.
+    assert!(error.to_string().contains("cannot bind a SQL `boolean` value"));
+    assert!(error.to_string().contains("varchar"));
+    assert!(buffer.is_empty());
+}
+
+#[test]
+fn an_integer_is_rejected_for_a_binary_column() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::BYTEA, &mut buffer) {
+        Ok(_) => panic!("an integer cannot fill a binary column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("cannot bind a SQL `int64` value"));
+    assert!(error.to_string().contains("bytea"));
+    assert!(buffer.is_empty());
+}
+
+#[test]
+fn a_floating_point_value_is_rejected_for_an_integer_column() {
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::F64(1.5)).to_sql_checked(&Type::INT8, &mut buffer) {
+        Ok(_) => panic!("a floating point value cannot fill an integer column"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("float64"));
+    assert!(error.to_string().contains("int8"));
+    assert!(buffer.is_empty());
+}
+
+#[test]
 fn null_binds_to_columns_outside_the_supported_types() {
     let mut buffer = BytesMut::new();
 
