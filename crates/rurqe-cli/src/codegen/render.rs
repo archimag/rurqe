@@ -67,9 +67,13 @@ pub fn generate_schema_rs(
 
 /// Renders one secondary schema as a `schema!` block.
 ///
-/// The block states the SQL name of the schema once and forwards every table to
-/// `table!` with the `in` clause, so the relation renders its qualifier while
-/// the type namespace of the schema stays inside the module the block declares.
+/// Every table of the schema is written inside the block as a nested `table!`
+/// declaration, so the renderer restates no table grammar of its own and the
+/// generated module keeps exactly the shape a hand-written declaration has.
+/// The block states the SQL name of the schema once, and `schema!` attaches it
+/// to each nested declaration, so a table never repeats the schema through an
+/// `in` clause while the relation still renders its qualifier and the type
+/// namespace stays inside the module the block declares.
 fn render_schema(schema: &SecondarySchemaPlan<'_>, options: &CodegenOptions) -> String {
     let mut out = String::new();
 
@@ -452,9 +456,14 @@ mod tests {
         // The secondary schema declares the marker it is addressed through next
         // to the module holding its type namespace.
         assert!(code.contains("schema! {\n    /// The `auth` schema.\n    Auth => \"auth\" as auth {\n"));
+        // The table is declared with the ordinary `table!` grammar inside the
+        // schema block, so the renderer keeps no table syntax of its own.
         assert!(code.contains(
             "        table! {\n            /// The `sessions` table.\n            Sessions => \"sessions\" {\n                SessionsId => \"id\": i64,\n            }\n        }\n"
         ));
+        // The block states the schema once and `schema!` attaches it, so the
+        // nested declaration never repeats it through an `in` clause.
+        assert!(!code.contains("\"sessions\" in"));
         assert!(code.contains("        @items {\n"));
 
         // The items of the schema land in its module, where the prelude they are
