@@ -191,10 +191,10 @@ Eliminate manual schema maintenance and guarantee total synchronization between 
   - Forward-only, sequential SQL migration files (`migrations/0001_init.sql`, `migrations/0002_add_orders.sql`).
   - Checksum validation: stores SHA-256 hashes in `__schema_migrations` to catch retroactive edits to already applied migrations.
   - Dual execution:
-    - CLI commands: `cargo db-migrate up`, `cargo db-migrate status`.
+    - CLI commands: `cargo rurqe migrate up`, `cargo rurqe migrate status`.
     - Embedded migrator: `embed_migrations!()` macro for zero-dependency runtime execution on container startup.
 - **Baseline Support (Legacy & Squash):**
-  - Ability to baseline existing databases: `cargo db-baseline --version 1.0.0` records the current state as a starting point without running historical migrations.
+  - Ability to baseline existing databases: `cargo rurqe baseline --version 1.0.0` records the current state as a starting point without running historical migrations.
   - Enables squashing large migration histories into a clean foundation.
 - **Database Introspection Engine:**
   - Direct introspection of `pg_catalog` and `information_schema`.
@@ -202,7 +202,7 @@ Eliminate manual schema maintenance and guarantee total synchronization between 
   - Generates zero-sized column and table markers, strongly typed `Record` structs, and foreign key relations.
 - **Schema Snapshot (`schema.lock`) & Deterministic Drift Detection:**
   - Emits a normalized canonical schema snapshot (`schema.lock`) and embeds a compile-time checksum (`pub const SCHEMA_HASH: &str = "...";`) inside generated Rust schema code.
-  - **CI Drift Verification (`cargo db-verify`):** runs migrations on an ephemeral test database and verifies that the live database matches `schema.lock` and `SCHEMA_HASH` bit-for-bit.
+  - **CI Drift Verification (`cargo rurqe verify`):** runs migrations on an ephemeral test database and verifies that the live database matches `schema.lock` and `SCHEMA_HASH` bit-for-bit.
   - Fail-fast error reporting when code and database diverge:
     ```text
     Error: Schema drift detected!
@@ -213,13 +213,13 @@ Eliminate manual schema maintenance and guarantee total synchronization between 
 ### Example Usage
 ```bash
 # 1. Apply pending migrations
-cargo db-migrate up
+cargo rurqe migrate up
 
 # 2. Introspect database, generate Rust schema, and create schema.lock
-cargo db-codegen --database-url postgres://localhost:5432/mydb --output src/db/schema.rs
+cargo rurqe codegen --database-url postgres://localhost:5432/mydb --output src/db/schema.rs
 
 # 3. Verify in CI that migrations, live DB, and generated Rust code are 100% in sync
-cargo db-verify --database-url postgres://localhost:5432/testdb
+cargo rurqe verify --database-url postgres://localhost:5432/testdb
 ```
 
 ---
@@ -616,15 +616,15 @@ Unify declarative schema design with sequential migration safety in a **Grand Un
   - Freedom to delete historical migration files prior to the checkpoint (`rm -f migrations/V001..V050*.sql`) without rewriting baselines or invalidating checksums.
   - Fail-safe guard: migration runner aborts with an actionable error if an existing target database version is older than the pruned checkpoint boundary.
   - Boundary snapshots recorded by the toolchain: `stage commit` copies the declarative stage verbatim into a `checkpoint-stage/` directory next to `checkpoint.toml`, `stage verify` loads it as the base stage when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has no base stage is rejected with `StageError::BaseStageMissing` instead of replaying the tail over an empty scratch database.
-- [x] **Golden Equation Verification Engine (`cargo db-verify`):**
+- [x] **Golden Equation Verification Engine (`cargo rurqe verify`):**
   - Verification workflow asserting $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$:
     1. Spin up ephemeral DB 1 $\to$ apply `schema/` DDL $\to$ snapshot catalog $K_{stage}$.
     2. Spin up ephemeral DB 2 $\to$ apply Checkpoint base + active `migrations/` $\to$ snapshot catalog $K_{tail}$.
     3. Compare $K_{stage}$ and $K_{tail}$ bit-for-bit using `SchemaDiff`. Fail with exact divergence report on mismatch.
 - [x] **Stage & Pruning Developer Tooling in `rurqe-cli`:**
-  - `cargo db stage init`: bootstrap declarative `schema/` and `schema.lock` from an existing database or migration set.
-  - `cargo db stage commit -m "..."`: introspect differences, generate next migration draft in `migrations/`, and synchronize `schema/`.
-  - `cargo db prune --before <version>`: create or advance the checkpoint marker and prune obsolete migration files safely.
+  - `cargo rurqe stage init`: bootstrap declarative `schema/` and `schema.lock` from an existing database or migration set.
+  - `cargo rurqe stage commit --version <version>`: introspect differences, generate next migration draft in `migrations/`, and synchronize `schema/`.
+  - `cargo rurqe prune --before <version>`: create or advance the checkpoint marker and prune obsolete migration files safely.
 
 ### Conceptual Layout
 ```text
@@ -965,7 +965,7 @@ The following capabilities represent valuable, high-utility SQL features that re
 8. **TLS / SSL Connection Support in CLI (`rurqe-cli`):**
    - Modular TLS support (`postgres-rustls` or `postgres-native-tls`) behind an optional Cargo feature flag, enabling encrypted connections when `sslmode=require` or `sslmode=verify-full` is specified.
 9. **Automated `schema.lock` Parity in Stage Verification:**
-   - Extension to `cargo db stage verify` validating that the committed `schema.lock` snapshot matches the declarative stage catalog bit-for-bit without requiring a separate drift step.
+   - Extension to `cargo rurqe stage verify` validating that the committed `schema.lock` snapshot matches the declarative stage catalog bit-for-bit without requiring a separate drift step.
 10. **PostgreSQL 17 Dialect & Version Marker (`Pg17`):**
     - Dedicated version marker `Pg17` with updated default `Postgres<Pg17>`, gating new engine capabilities including SQL/JSON standard expressions (`JSON_TABLE`, etc.) and `MERGE ... RETURNING`.
 11. **Constraint-Targeted Upsert (`ON CONFLICT ON CONSTRAINT`):**

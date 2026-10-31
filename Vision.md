@@ -106,7 +106,7 @@ Preventing the cryptic, 50-line compiler errors notorious in existing Rust ORMs:
 ### 3.3 Stage-Based Evolution & Deterministic Drift Verification
 1. **Unified Stage + Migration Tail Architecture:** Combines a clean declarative target schema (`schema/`) with an active sequence of delta migrations (`migrations/`) anchored by a checkpoint marker.
 2. **AI-First Single Source of Truth:** LLMs and developers reason about a single declarative schema snapshot, eliminating token waste and contextual fragmentation from dozens of historical migration scripts.
-3. **Continuous Golden Verification (`cargo db-verify`):** CI spins up ephemeral databases to verify that $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$ bit-for-bit against `schema.lock` and catalog diffs.
+3. **Continuous Golden Verification (`cargo rurqe verify`):** CI spins up ephemeral databases to verify that $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$ bit-for-bit against `schema.lock` and catalog diffs.
 4. **Zero-Pain History Pruning:** Teams safely delete obsolete migrations once all deployed environments have progressed past the checkpoint version, without rewriting baseline checksums.
 5. **Fail-Safe Checkpoint Protection:** If a legacy database lags behind the active checkpoint, the migration engine rejects execution with an actionable remediation guide rather than silently corrupting state.
 6. **Flyway-Grade Traditional Compatibility:** Teams preferring classic sequential migrations continue using versioned (`V...`) and repeatable (`R...`) scripts with SHA-256 audit trails, repair, and baseline facilities.
