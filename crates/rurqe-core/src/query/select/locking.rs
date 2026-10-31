@@ -41,11 +41,11 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     ///
     /// impl SupportsRowLocking for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Job => "jobs" {
     ///         JobId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// let built = SelectQuery::<MockDialect>::new()
     ///     .from::<Job>()
@@ -92,11 +92,11 @@ impl<D: Dialect + SupportsRowLocking, Tables, Output>
     ///
     /// impl rurqe_core::dialect::SupportsRowLocking for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Job => "jobs" {
     ///         JobId => "id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// let built = SelectQuery::<MockDialect>::new()
     ///     .from::<Job>()

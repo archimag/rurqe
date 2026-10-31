@@ -42,17 +42,17 @@ use crate::schema::{At, Column, ExprInScope, TableInScope};
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: `OrderId` belongs to `Order`, which the query does not
@@ -86,11 +86,11 @@ use crate::schema::{At, Column, ExprInScope, TableInScope};
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// fn base() -> SelectQuery<MockDialect, User, (i64,), HasProjection> {
 ///     SelectQuery::<MockDialect>::new()
@@ -175,17 +175,17 @@ impl_order_by!(C1 P1, C2 P2, C3 P3, C4 P4, C5 P5, C6 P6, C7 P7, C8 P8);
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     User => "users" {
 ///         UserId => "id": i64,
 ///     }
-/// }
+/// );
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderTotal => "total": f64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the ordering reads `OrderTotal`, whose table the
@@ -243,11 +243,11 @@ pub trait OrderExprTarget<Tables, P = At<0>, D = ()> {
 ///     }
 /// }
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Order => "orders" {
 ///         OrderUserId => "user_id": i64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: an aggregate orders the groups of a grouped query,

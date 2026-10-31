@@ -58,11 +58,11 @@ pub struct Locked;
 ///
 /// impl SupportsRowLocking for MockDialect {}
 ///
-/// rurqe_core::table! {
+/// rurqe_core::table!(
 ///     Job => "jobs" {
 ///         JobId => "id": i64,
 ///     }
-/// }
+/// );
 ///
 /// fn main() {
 ///     // Fails to compile: the lock already fixed its wait behaviour, so it cannot

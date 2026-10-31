@@ -155,12 +155,12 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     ///     }
     /// }
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///         OrderTotal => "total": f64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     let built = SelectQuery::<MockDialect>::new()
@@ -198,11 +198,11 @@ impl<D: Dialect, Tables, Output, Projected, Lock> SelectQuery<D, Tables, Output,
     ///
     /// impl SupportsWindowFunctions for MockDialect {}
     ///
-    /// rurqe_core::table! {
+    /// rurqe_core::table!(
     ///     Order => "orders" {
     ///         OrderUserId => "user_id": i64,
     ///     }
-    /// }
+    /// );
     ///
     /// fn main() {
     ///     let built = SelectQuery::<MockDialect>::new()
