@@ -22,16 +22,23 @@ publish = false
 # without opening a connection, and the bootstrap file (`migrations.rs`) bakes
 # migration scripts into the binary. The facade's default features stay enabled
 # — they carry the projection macros and the ecosystem column types the
-# examples also compile against — and `postgres`, `sqlite`, `macros`, and
-# `migrate` are named here as well, so no target depends on a default that may
+# examples also compile against — and `postgres`, `sqlite`, `macros`, `r2d2`,
+# and `migrate` are named here as well, so no target depends on a default that
 # change.
 [dependencies]
-rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres", "migrate"] }
+rurqe = { path = "../../crates/rurqe", version = "0.1.0", features = ["postgres", "sqlite", "macros", "deadpool-postgres", "r2d2", "migrate"] }
 # The pool is configured through the adapter itself and terminates TLS with the
 # driver's `NoTls` connector, so both crates are named directly.
 deadpool-postgres = "0.14"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tokio-postgres = "0.7"
+# The synchronous pooled file builds its pool from the manager of the SQLite
+# driver and wraps it in the adapter, so the pool crate and its SQLite manager
+# are named directly. The versions are the ones the adapter itself is built
+# against, so the manager's connection type is the `rusqlite::Connection` the
+# pool adapter is generic over.
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
 
 [dev-dependencies]
 # The coverage guard reads this manifest into a typed DTO instead of scanning
@@ -131,3 +138,11 @@ path = "sync_transaction_isolation.rs"
 [[example]]
 name = "migrations"
 path = "migrations.rs"
+
+[[example]]
+name = "pool_transactions"
+path = "pool_transactions.rs"
+
+[[example]]
+name = "sync_pool_transactions"
+path = "sync_pool_transactions.rs"

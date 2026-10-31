@@ -80,7 +80,7 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
         F: FnOnce(&mut SqliteConnection<&mut ::rusqlite::Connection>) -> Result<T, ::rusqlite::Error>,
     {
         let mut pooled = self.pool.get().map_err(SqlitePoolError::Pool)?;
-        SqliteConnection::borrowed(&mut *pooled)
+        SqliteConnection::borrowed(&mut pooled)
             .transaction(f)
             .map_err(SqlitePoolError::Query)
     }
@@ -118,7 +118,7 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for 
 
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
         let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
-        fetch_raw_with(&mut *connection, query).map_err(SqlitePoolError::Query)
+        fetch_raw_with(&mut connection, query).map_err(SqlitePoolError::Query)
     }
 
     fn fetch_raw_limited(
@@ -127,12 +127,12 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> QueryBackend for 
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
         let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
-        fetch_raw_limited_with(&mut *connection, query, limit).map_err(SqlitePoolError::Query)
+        fetch_raw_limited_with(&mut connection, query, limit).map_err(SqlitePoolError::Query)
     }
 
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
         let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
-        execute_raw_with(&mut *connection, query).map_err(SqlitePoolError::Query)
+        execute_raw_with(&mut connection, query).map_err(SqlitePoolError::Query)
     }
 }
 

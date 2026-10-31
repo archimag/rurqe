@@ -301,7 +301,7 @@ mod r2d2_impl {
             F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
         {
             let mut pooled = self.pool.get().map_err(PgPoolError::Pool)?;
-            PgConnection::borrowed(&mut *pooled)
+            PgConnection::borrowed(&mut pooled)
                 .transaction(f)
                 .map_err(PgPoolError::Query)
         }
@@ -332,7 +332,7 @@ mod r2d2_impl {
             F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
         {
             let mut pooled = self.pool.get().map_err(PgPoolError::Pool)?;
-            PgConnection::borrowed(&mut *pooled)
+            PgConnection::borrowed(&mut pooled)
                 .transaction_with_isolation(isolation, f)
                 .map_err(PgPoolError::Query)
         }
@@ -370,7 +370,7 @@ mod r2d2_impl {
 
         fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
             let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
-            fetch_raw_sync(&mut *connection, query).map_err(PgPoolError::Query)
+            fetch_raw_sync(&mut connection, query).map_err(PgPoolError::Query)
         }
 
         /// Reads at most `limit` rows from the checked-out connection.
@@ -384,12 +384,12 @@ mod r2d2_impl {
             limit: Option<usize>,
         ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
             let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
-            fetch_raw_limited_sync(&mut *connection, query, limit).map_err(PgPoolError::Query)
+            fetch_raw_limited_sync(&mut connection, query, limit).map_err(PgPoolError::Query)
         }
 
         fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
             let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
-            execute_raw_sync(&mut *connection, query).map_err(PgPoolError::Query)
+            execute_raw_sync(&mut connection, query).map_err(PgPoolError::Query)
         }
     }
 }

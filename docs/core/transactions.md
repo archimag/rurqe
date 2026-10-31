@@ -1,16 +1,33 @@
 # Transactions
 
-RURQE provides RAII-managed transactions with explicit commit on success, automatic rollback on drop, and transparent nesting via SQL savepoints on the synchronous adapters.
+RURQE offers two transactional surfaces, and the difference between them is what closes the transaction.
 
-## RAII Transaction Scopes
+- A **closure-scoped block** lends the transaction to a closure. The adapter opens the block, nests a block opened inside it through a SQL savepoint, awaits the commit of a block that returned `Ok`, awaits the rollback of a block that returned `Err`, and returns the connection on either ending. The synchronous connections and pools offer this form, and so do the asynchronous connection and pool.
+- A **transaction guard** lends the transaction itself to the caller. Opening one on the asynchronous connection hands back a handle that owns the transaction until its commit is awaited; the handle neither nests nor selects an isolation level, and dropping it without a commit asks the driver for a rollback the adapter never observes.
 
-The primary form is asynchronous: a transaction is opened on a live connection through `.transaction()`, which hands back a handle that owns the transaction for the whole block:
+Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block, while a guard is closed by its own `Drop`.
+
+## Asynchronous Transaction Guards
+
+The guard is the asynchronous handle form: a transaction is opened on a live connection through `.transaction()`, which hands back a handle that owns the transaction for the whole block:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/transactions.rs:transaction}}
 ```
 
-The handle implements the standard asynchronous terminal calls — `.fetch_all(&tx).await?`, `.fetch_one(&tx).await?`, `.execute(&tx).await?` — so queries and mutations run inside the active transaction. Committing is explicit: `commit().await?` persists the work and ends the transaction. Dropping the handle without committing rolls the transaction back, so a returned error or a cancelled future leaves no partial work behind.
+The handle implements the standard asynchronous terminal calls — `.fetch_all(&tx).await?`, `.fetch_one(&tx).await?`, `.execute(&tx).await?` — so queries and mutations run inside the active transaction. Committing is explicit: `commit().await?` persists the work and ends the transaction.
+
+The handle neither selects an isolation level nor nests. It borrows the connection mutably for as long as it lives, so a second `.transaction()` call on the same connection is rejected by the borrow checker instead of opening a nested transaction, and no savepoint is opened for a block started through the handle. The closure-scoped forms of the same adapters offer both, and the rest of this chapter presents them.
+
+### Failure mode of a dropped guard
+
+Dropping the handle without committing requests a rollback, and that request is best effort rather than a guarantee:
+
+- The rollback is issued from `Drop`, which cannot await a statement, so the driver neither awaits it nor reports its outcome.
+- The driver does not make an in-flight statement cancel-safe. A future dropped in the middle of a statement can leave the connection waiting for a response, and the rollback the drop requested then never reaches the server.
+- The work of the statements that completed stays pending in the open transaction until the connection is discarded.
+
+A block that has to survive a cancelled future therefore closes itself through a closure-scoped form, which awaits the commit or the rollback before the result reaches the caller.
 
 ## Nested Transactions and Savepoints
 
@@ -29,13 +46,24 @@ When the savepoint rollback itself fails, the work of the enclosing scope is not
 - The enclosing scope's own rollback on drop is what finally closes the transaction. Once the enclosing scope is abandoned — by a returned error or by unwinding — the transaction is rolled back and the connection returns to a clean state for the next transaction.
 
 The guarantee this establishes is one-directional: a failed nested scope is never recovered by rolling back the enclosing transaction. A nested block can lose its own work and nothing else, and the work of the enclosing scope is closed only by the enclosing scope itself.
+
 ```rust,no_run
 {{#rustdoc_include ../examples/sync_transactions.rs:transaction}}
 ```
 
+## Asynchronous Savepoint Nesting
+
+The asynchronous closure form nests the same way, one awaited statement at a time. A block opened through the scope of an open transaction is a SQL savepoint of that transaction: the adapter issues `SAVEPOINT savepoint_N` before the nested closure runs, awaits `RELEASE SAVEPOINT savepoint_N` when the nested block returns `Ok`, and awaits `ROLLBACK TO SAVEPOINT savepoint_N` when it returns `Err`. The enclosing transaction stays open, so a nested block loses its own work and nothing else, and nesting works the same way one savepoint deeper.
+
+```rust,no_run
+{{#rustdoc_include ../examples/pool_transactions.rs:nesting}}
+```
+
+A release or a rollback the driver refuses is traced instead of replacing the error of the block, and the connection then has to be discarded rather than reused, because the statements of the nested block stay pending inside the enclosing transaction.
+
 ## Transaction Isolation Levels
 
-This section documents the synchronous runtime form of an isolated transaction boundary. Transaction blocks can be configured with explicit SQL isolation levels:
+This section documents the synchronous runtime form of an isolated transaction boundary, followed by the asynchronous closure form. Transaction blocks can be configured with explicit SQL isolation levels:
 
 * `ReadCommitted`: Prevents dirty reads (default in PostgreSQL).
 * `RepeatableRead`: Prevents non-repeatable reads and phantom reads.
@@ -46,6 +74,49 @@ Isolation levels are configured at the transaction boundary:
 ```rust,no_run
 {{#rustdoc_include ../examples/sync_transaction_isolation.rs:isolation}}
 ```
+
+The level reaches the statement that opens the outermost block — `BEGIN ISOLATION LEVEL <level>` — so every statement of the block observes it. A block opened while a transaction is already open nests inside a savepoint, and SQL defines no per-savepoint isolation, so the enclosing transaction keeps the level it was opened with and the requested one applies to the outermost block alone.
+
+The asynchronous closure form takes the level the same way and awaits the boundary it opens:
+
+```rust,no_run
+{{#rustdoc_include ../examples/pool_transactions.rs:isolation}}
+```
+
+The adapter awaits the commit of a block that returned `Ok` and the rollback of a block that returned `Err`, so the isolation boundary is closed before the result reaches the caller. SQLite offers no isolation-level boundary at all: the engine serialises access through database-level locking, so the adapter's `BEGIN` ignores an isolation level by design.
+
+## Pooled Transactions
+
+A pool executes a single statement by checking a connection out, running it in autocommit, and returning the connection. Several statements become one atomic block through the closure form, which keeps one connection checked out for the whole duration of the block:
+
+```rust,no_run
+{{#rustdoc_include ../examples/pool_transactions.rs:transaction}}
+```
+
+- The outermost block of a pooled transaction runs between `BEGIN` and `COMMIT`; a block opened while a transaction is already open nests inside a `SAVEPOINT`.
+- A block that returns `Err` has its statements rolled back before that error reaches the caller.
+- A checkout failure surfaces as `PgError::Pool`, while a failure raised by `BEGIN`, by the block, or by `COMMIT` surfaces as `PgError`.
+- The connection returns to the pool on every completed path, because the checkout guard is dropped however the block ends, so several transactions of a shared pool run concurrently, each on its own connection.
+
+A block that is cancelled or unwound never reaches the end of the call, so neither `COMMIT` nor `ROLLBACK` is awaited for it: the connection returns to the pool with the transaction of the abandoned block still open. The asynchronous pool recycles a connection by checking that it is not closed, not by checking that it holds no open transaction, so a pool that observed an abandoned block has to be rebuilt rather than reused. The synchronous pools differ here: their guard performs the rollback in its `Drop`, before the connection returns to the pool.
+
+### The synchronous pool
+
+This section documents the synchronous runtime form. The synchronous pool hands its closure the checked-out connection, and the closure reports the driver error of that runtime. The pool reports a failure of the block as `SqlitePoolError::Query` and a failure to check a connection out as `SqlitePoolError::Pool`; the synchronous PostgreSQL pool reports the same pair as `PgPoolError::Query` and `PgPoolError::Pool`, over a closure that reports `PgError`.
+
+```rust,no_run
+{{#rustdoc_include ../examples/sync_pool_transactions.rs:transaction}}
+```
+
+The block commits when the closure returns `Ok` and rolls back when the closure returns `Err` or unwinds, exactly as the owned connection does, and the checkout returns to the pool on every one of those paths.
+
+A block opened inside a pooled transaction nests the same way:
+
+```rust,no_run
+{{#rustdoc_include ../examples/sync_pool_transactions.rs:nesting}}
+```
+
+Returning `Ok` releases the savepoint of the nested block; returning `Err` or unwinding rolls it back, and the enclosing block stays open to commit its own work.
 
 ## Raw Handle Escape Hatch
 
