@@ -111,9 +111,11 @@ it.
 ### Stage-based schema evolution
 
 The stage lifecycle separates the two jobs the migrations directory carries at
-once. A declarative `schema/` directory holds the complete DDL of the target
-schema, the `migrations/` directory keeps only the active tail, and a checkpoint
-marker records the boundary where the two meet.
+once. A declarative `rurqe/schema/` directory holds the complete DDL of the target
+schema, the `rurqe/migrations/` directory keeps only the active tail, and a
+checkpoint marker records the boundary where the two meet. Both directories sit
+beneath the artifact directory `rurqe/`, which a single key of `rurqe.toml`
+relocates.
 
 - A clean database is initialised from the stage in one pass and records the stage
   version as its starting point, so a container reaches the current schema in the
@@ -134,7 +136,7 @@ sequential migrations
     V1 -> V2 -> V3 -> V4          a clean database replays every script
 
 stage-based schema evolution
-    schema/                       a clean database starts at the stage
+    rurqe/schema/                 a clean database starts at the stage
     boundary + V4 -> V5           an existing database advances through the tail
 ```
 

@@ -12,8 +12,8 @@ a merge instead of at runtime.
 Two questions are answered by two gates:
 
 - **Does the database still match the code the project ships?** The snapshot
-  gate (`cargo db-verify`) reads the catalog of a live database and compares it
   gate (`cargo rurqe verify`) reads the catalog of a live database and compares it
+  against `rurqe/schema.lock` and the `SCHEMA_HASH` of the generated module.
 - **Do the two descriptions of the schema still converge?** The golden gate
   (`cargo rurqe stage verify`) replays the declarative stage and the checkpoint
   plus migration tail into disposable scratch databases and compares the two
@@ -77,10 +77,9 @@ environment that holds data.
 export DATABASE_URL=postgres://app@localhost:5432/app_ci
 
 cargo rurqe migrate up
-cargo rurqe verify --schema-path src/schema.rs --lock-path schema.lock
+cargo rurqe verify --schema-path src/schema.rs
 
-cargo rurqe stage verify --checkpoint-path checkpoint.toml \
-    --scratch-url postgres://app@localhost:5432/app_ci
+cargo rurqe stage verify --scratch-url postgres://app@localhost:5432/app_ci
 ```
 
 The two gates answer different failures, so both belong in the pipeline:
@@ -112,9 +111,10 @@ cargo rurqe verify --schema-path src/schema.rs --lock-path schema.lock
 | Option | Effect |
 |---|---|
 | `--database-url <url>` | The database to read. Falls back to the `DATABASE_URL` environment variable. |
-| `--schema-path <path>` | The generated module carrying `SCHEMA_HASH`. Defaults to `src/schema.rs` when the flag is omitted. |
-| `--lock-path <path>` | The snapshot to compare against. Defaults to `schema.lock`. |
+| `--schema-path <path>` | The generated module carrying `SCHEMA_HASH`. Wins over `codegen.output`; the conventional `src/schema.rs` applies when neither names a file. |
+| `--lock-path <path>` | The snapshot to compare against. Defaults to `rurqe/schema.lock`. |
 | `--schema <name>` | The primary schema the catalog digest describes. Wins over the `primary_schema` key of `rurqe.toml`, and the secondary schemas come from `schemas`. |
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The command introspects the live catalog over the selected schemas, reads the
 snapshot, and reads the generated module. A run that finds everything in
@@ -131,16 +131,19 @@ stage verify`.
 
 ### The generated module is optional, the flag is not
 
-The `--schema-path` flag is what decides whether the digest embedded in the code
-is part of the gate:
+The module the gate reads is decided by the same cascade `codegen` writes with,
+and the declaration decides whether the digest embedded in the code is part of
+the gate:
 
 - The flag names a file, and that file must be readable. A missing or misspelled
   path fails the run with `failed to read schema code`; it can never pass
-  silently because the code was absent.
-- Without the flag, the conventional `src/schema.rs` is used when it exists.
-- Without the flag and without that file, the run falls back to the snapshot
-  alone and reports `schema code not found; verifying against the lock snapshot
-  only (pass `--schema-path` to require the generated code)` as a warning. The
+  silently because the code was absent. A module named by `codegen.output` of the
+  configuration file is required in the same way.
+- Without the flag, `codegen.output` names the module.
+- Without either, the conventional `src/schema.rs` is used when it exists.
+- Without either and without that file, the run falls back to the snapshot alone
+  and reports `schema code not found; verifying against the lock snapshot only
+  (pass `--schema-path` to require the generated code)` as a warning. The
   verification still runs, but the module is no longer tied to the catalog, so a
   pipeline that ships generated code names the path explicitly.
 
@@ -242,14 +245,14 @@ cargo rurqe stage verify --checkpoint-path checkpoint.toml --scratch-url :memory
 
 | Option | Effect |
 |---|---|
-| `--stage-dir <dir>` | The declarative stage to replay. Defaults to `schema`. |
+| `--stage-dir <dir>` | The declarative stage to replay. Defaults to `rurqe/schema`. |
 | `--base-stage-dir <dir>` | Overrides the boundary snapshot the marker records. |
-| `--migrations-dir <dir>` | The active migration tail to replay. Defaults to `migrations`. |
-| `--checkpoint-path <path>` | The boundary marker. Defaults to `checkpoint.toml`. |
+| `--migrations-dir <dir>` | The active migration tail to replay. Defaults to `rurqe/migrations`. |
+| `--checkpoint-path <path>` | The boundary marker. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--scratch-url <url>` | The disposable target both sides are built in. `--database-url` is the fallback. |
 | `--database-url <url>` | The fallback for `--scratch-url`. |
 | `--schema <name>` | The primary schema both sides are materialised into and introspected over. The secondary schemas come from `schemas` in `rurqe.toml`. |
-
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 A verification that finds both descriptions in agreement reports one line:
 
 ```text

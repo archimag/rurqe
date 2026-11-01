@@ -25,16 +25,17 @@ CREATE INDEX users_email_idx ON users (email);
 
 ```text
 project/
-├── schema/                    # declarative stage (default `--stage-dir`)
-│   ├── billing.sql
-│   └── users.sql
-├── migrations/                # active tail (default `--migrations-dir`)
-│   ├── V6__add_credits.sql
-│   └── R__active_users.sql
-├── checkpoint.toml            # boundary marker (default `--checkpoint-path`)
-├── checkpoint-stage/          # boundary snapshot, named after the marker
-├── schema.lock                # catalog snapshot of the committed stage
-└── rurqe.toml                 # schema selection and codegen settings
+├── rurqe.toml                 # schema selection, artifact layout, codegen settings
+└── rurqe/                     # artifact directory (default `root`)
+    ├── schema/                # declarative stage (default `--stage-dir`)
+    │   ├── billing.sql
+    │   └── users.sql
+    ├── migrations/            # active tail (default `--migrations-dir`)
+    │   ├── V6__add_credits.sql
+    │   ├── R__active_users.sql
+    │   ├── checkpoint.toml    # boundary marker (default `--checkpoint-path`)
+    │   └── checkpoint-stage/  # boundary snapshot, named after the marker
+    └── schema.lock            # catalog snapshot of the committed stage
 ```
 
 The rules the directory obeys:
@@ -51,7 +52,10 @@ CREATE INDEX CONCURRENTLY users_email_idx ON users (email);
 
 The directive accepts the keys `executeInTransaction`, `execute_in_transaction`, and `transactional`, and the value `false`. Only alphanumeric characters are kept and lowercased before the comparison, so spacing, underscores, the case of the key, and comment decoration change nothing; a line carrying leftover words after the key and the value stays an ordinary remark. Directives are read from comments alone: text inside a string literal, a quoted identifier, a dollar-quoted body, or a nested block comment is data.
 
-- The directory is the default. `--stage-dir <dir>` points a command at a stage kept somewhere else, and every command of the lifecycle accepts it.
+- `rurqe/schema` is the default. `--stage-dir <dir>` points one invocation at a
+  stage kept somewhere else, `[stage].dir` of `rurqe.toml` names one for the
+  project, and every command of the lifecycle resolves the directory through the
+  same cascade.
 
 ### Application order
 
@@ -119,12 +123,11 @@ cargo rurqe stage init --version 5.0
 
 | Option | Effect |
 |---|---|
-| `--version <version>` | The version the stage initialisation is recorded at. Required. |
-| `--stage-dir <dir>` | The directory holding the declarative DDL. Defaults to `schema`. |
+| `--stage-dir <dir>` | The directory holding the declarative DDL. Defaults to `rurqe/schema`. |
 | `--description <desc>` | The description recorded in the history row. Defaults to `stage`. |
 | `--database-url <url>` | The database to initialise. Falls back to `DATABASE_URL`. |
 | `--schema <name>` | The primary schema the recorded catalog digest describes. The secondary schemas come from `schemas` in `rurqe.toml`. |
-
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 The run applies the scripts in file-name order. Every transactional script shares one transaction, so a failure among them leaves the database exactly as it was, while a script declaring itself non-transactional runs outside that transaction, statement by statement, because the engine would refuse it inside a block.
 
 The run ends by recording one baseline entry in `__rurqe_schema_history`. The entry carries the stage version, the description, and the digest of the catalog the stage produced — the digest `schema.lock` records, because it is derived from the catalog through the engine that really executed the DDL. A backend that cannot introspect itself anchors the digest of the stage directory instead.
@@ -164,11 +167,11 @@ A backend that cannot execute a script outside a transaction at all refuses it b
 The two refusals of the directory itself are reported before any connection is opened:
 
 ```text
-declarative stage `schema` does not exist; it holds the `*.sql` DDL of the target schema
+declarative stage `rurqe/schema` does not exist; it holds the `*.sql` DDL of the target schema
 ```
 
 ```text
-declarative stage `schema` holds no `*.sql` script to apply
+declarative stage `rurqe/schema` holds no `*.sql` script to apply
 ```
 
 ## Verifying the equation
@@ -183,11 +186,12 @@ cargo rurqe stage verify --scratch-url :memory:
 |---|---|
 | `--scratch-url <url>` | The target a verification builds both sides in. |
 | `--database-url <url>` | The fallback target when `--scratch-url` is not given. |
-| `--stage-dir <dir>` | The declarative stage. Defaults to `schema`. |
+| `--stage-dir <dir>` | The declarative stage. Defaults to `rurqe/schema`. |
 | `--base-stage-dir <dir>` | An explicit boundary snapshot, in place of the one recorded beside the marker. |
-| `--migrations-dir <dir>` | The tail. Defaults to `migrations`. |
-| `--checkpoint-path <path>` | The boundary marker. Defaults to `checkpoint.toml`. |
+| `--migrations-dir <dir>` | The tail. Defaults to `rurqe/migrations`. |
+| `--checkpoint-path <path>` | The boundary marker. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--schema <name>` | The primary schema compared. The secondary schemas come from `schemas` in `rurqe.toml`. |
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The scratch target is always named explicitly, either with `--scratch-url` or with `--database-url` as its fallback; `DATABASE_URL` is deliberately never consulted, because the verification creates and drops databases as the connected role and an implicit target routinely names the server that variable points at.
 

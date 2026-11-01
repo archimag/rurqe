@@ -16,9 +16,11 @@ which is the shape a view, a function, or a set of reference rows takes.
 
 ## The migrations directory
 
-Scripts are read from `migrations/` by default. `--migrations-dir <dir>` points a
-command at another directory, for a project that keeps its scripts somewhere
-else.
+Scripts are read from `rurqe/migrations/` by default. `--migrations-dir <dir>`
+points one invocation at another directory, and `[migrations].dir` of `rurqe.toml`
+names one for the project; `--config <path>` selects the configuration file the
+key is read from, and the declared directory resolves against the directory
+holding that file.
 
 * Only files ending in `.sql` are scripts. Every other file and every
   subdirectory of the directory is ignored.
@@ -87,7 +89,7 @@ duplicate migration version 2.1: `V2_1__add_orders.sql` and `V2.1__orders.sql` d
 The loop is short, and each step of it is one command:
 
 ```text
-write     migrations/V7__add_orders_total.sql     one script for one change
+write     rurqe/migrations/V7__add_orders_total.sql  one script for one change
 apply     cargo rurqe migrate up                  the pending scripts run in order
 inspect   cargo rurqe migrate status              one row per script of the directory
 commit    the script and the code that needs it   one commit, so the two never drift
@@ -418,10 +420,11 @@ A run that finds nothing pending reports `Applied 0 migration(s) in 0 ms`.
 
 | Option | Effect |
 |---|---|
-| `--migrations-dir <dir>` | The directory the scripts are read from. Defaults to `migrations`. |
+| `--migrations-dir <dir>` | The directory the scripts are read from. Defaults to `rurqe/migrations`. |
 | `--database-url <url>` | The database to advance. Falls back to `DATABASE_URL`. |
 | `--schema <name>` | The primary schema whose catalog digest the checkpoint guard compares; the secondary schemas come from `schemas` in `rurqe.toml`. |
-| `--checkpoint-path <path>` | The checkpoint marker that arms the outdated-target guard. Defaults to `checkpoint.toml`. |
+| `--checkpoint-path <path>` | The checkpoint marker that arms the outdated-target guard. Defaults to `rurqe/migrations/checkpoint.toml`. |
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The checkpoint marker belongs to the stage-based lifecycle: a project that pruned
 migrations below a boundary records that boundary in a marker file, and the flag
@@ -463,7 +466,7 @@ creates it under the run lock and reports every script as `Pending`. A directory
 without scripts is reported rather than rendered as an empty table:
 
 ```text
-No migrations found in migrations
+No migrations found in rurqe/migrations
 ```
 
 ## Repairing the history
@@ -520,8 +523,8 @@ cannot baseline database: history already contains migration or baseline version
 
 ## Shipping the scripts with the application
 
-The command line reads `migrations/` as a process of its own, which is what a
-development loop and a deployment step need. A binary can carry the same scripts
+The command line reads `rurqe/migrations/` as a process of its own, which is what
+a development loop and a deployment step need.
 inside itself instead: the scripts are compiled in, parsed and digested at
 startup, and applied through the connection the application already opens.
 

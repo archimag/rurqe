@@ -1,22 +1,46 @@
 # Project configuration
 
-`rurqe.toml` is the optional file that states what the toolchain has to know about a project before it opens a database: the schemas its catalog digests describe, and the Rust type the generator emits for a column whose engine type maps onto a domain type of the application.
+`rurqe.toml` is the optional file that states what the toolchain has to know about a project before it opens a database: the directory its lifecycle artifacts live under, the schemas its catalog digests describe, and the Rust type the generator emits for a column whose engine type maps onto a domain type of the application.
 
-The file is read from the working directory a command runs in, and its name is fixed: no flag of the toolchain points a command at another path. A project without the file keeps the defaults — no schema is named, so `public` applies, the secondary list is empty, no override exists, and the generated module carries no domain types.
+## Choosing the file
 
-The document is read strictly, because a misspelled key would generate a module with the wrong types and a misspelled schema would describe a catalog the project never targeted. An unknown key, a value of the wrong shape, a blank name, and a repeated declaration are each refused with the line and the column of the declaration that caused it, and a file that is malformed in any way aborts the command instead of being partially applied.
+Two things decide which file a command reads.
+
+- `--config <path>` names it explicitly, and every command of the toolchain accepts the flag: `migrate up`, `migrate status`, `migrate repair`, `baseline`, `codegen`, `verify`, `stage init`, `stage verify`, `stage commit`, `stage cleanup`, and `prune`.
+- Without the flag, the conventional `rurqe.toml` of the working directory is read when it exists.
+
+The two tiers are deliberately asymmetric, because a path the operator named is a path the operator meant:
+
+```text
+configuration file `config/rurqe.toml` named by `--config` does not exist; a path the flag names is required, while the conventional `rurqe.toml` is optional
+```
+
+```text
+configuration file `config` named by `--config` is not a regular file
+```
+
+The conventional file stays optional, and a project without one keeps the defaults: no schema is named, so `public` applies, the secondary list is empty, no column carries an override, every artifact sits beneath the directory `rurqe`, and the generated module carries no domain types.
+
+Every declared path resolves against the directory holding the file, never against the working directory of the command, so `--config db/production.toml` reads and writes the artifacts of `db/` wherever the command was started. The conventional file of the working directory resolves them there, which is the same rule with the current directory as its anchor.
+
+The document is read strictly, because a misspelled key would resolve an artifact into a directory the project never intended, generate a module with the wrong types, or describe a catalog the project never targeted. An unknown key, a value of the wrong shape, a blank name, and a repeated declaration are each refused with the line and the column of the declaration that caused it, and a file that is malformed in any way aborts the command instead of being partially applied — a command that consumes no artifact path at all, `stage cleanup` included, validates the file it accepted just the same.
 
 ## The whole surface
 
 | Key | Shape | Effect |
 |---|---|---|
+| `root` | string | The directory every lifecycle artifact lives beneath. |
 | `primary_schema` | string | The schema the project's catalog digests describe. |
 | `schema` | string | The legacy spelling of the same setting. |
 | `schemas` | array of strings | The secondary schemas described beside the primary one. |
+| `migrations.dir` | string | The directory holding the migration tail. |
+| `stage.dir` | string | The directory holding the declarative stage. |
+| `stage.checkpoint` | string | The file holding the boundary marker. |
+| `codegen.output` | string | The module `codegen` writes and `verify` reads. |
 | `codegen.domain_types` | boolean | Whether the generator emits the application's domain types. |
 | `codegen.type_overrides` | table | The Rust type generated for a named column. |
 
-Nothing else is accepted, at the root and inside `[codegen]` alike, and the refusal lands on the declaration:
+Nothing else is accepted, at the root and inside the sections alike, and the refusal lands on the declaration:
 
 ```text
 invalid configuration at line 1, column 1: unknown configuration section `primary_schemas`
@@ -26,26 +50,116 @@ invalid configuration at line 1, column 1: unknown configuration section `primar
 invalid configuration at line 6, column 1: unknown key `record_format` in the `codegen` section
 ```
 
-The wording of the first refusal covers every undeclared root key, a near-miss of a real one included. A `[codegen]` value that is not a table is refused the same way:
+The wording of the first refusal covers every undeclared root key, a near-miss of a real one included. A section that is not a table is refused the same way:
 
 ```text
 invalid configuration at line 4, column 1: `codegen` must be a table
 ```
 
-The generator's own defaults — the module doc comment and the row records — are not settings of this file: the file parameterises types, not the shape of what is rendered.
+The generator's own defaults — the module doc comment and the row records — are not settings of this file: the file parameterises paths and types, not the shape of what is rendered.
 
 ## A complete file
 
 ```toml
+root = "rurqe"
 primary_schema = "app"
 schemas = ["auth", "billing"]
 
+[migrations]
+dir = "rurqe/migrations"
+
+[stage]
+dir = "rurqe/schema"
+checkpoint = "rurqe/migrations/checkpoint.toml"
+
 [codegen]
+output = "src/db/schema.rs"
 domain_types = true
 
 [codegen.type_overrides]
 "users.id" = "uuid::Uuid"
-"auth.sessions.id" = "uuid::Uuid"
+"users.created_at" = "chrono::NaiveDateTime"
+"wallets.address" = "bitcoin::Address"
+"transactions.txid" = "bitcoin::Txid"
+```
+
+Every path in it spells a conventional one except the generated module, so the file states the whole arrangement in one place and a project that relocates one artifact states only the key that moved.
+
+## The artifact directory
+
+```toml
+root = "artifacts"
+```
+
+`root` names the directory every lifecycle artifact lives beneath, `rurqe` by default. One key relocates the whole layout: the declarative stage, the migration tail, the boundary marker, the boundary snapshot, and the catalog snapshot all follow it, and no project restates them path by path.
+
+```text
+project/
+├── rurqe.toml                  the configuration itself
+├── rurqe/                      the artifact directory
+│   ├── schema/                 declarative stage: the target DDL
+│   ├── migrations/             active migration tail
+│   │   ├── checkpoint.toml     boundary marker
+│   │   └── checkpoint-stage/   boundary snapshot, named after the marker
+│   └── schema.lock             catalog snapshot of the committed stage
+└── src/
+    └── schema.rs               generated module, `src/schema.rs` by default
+```
+
+The value is a string and is trimmed, and a blank one is refused:
+
+```text
+invalid configuration at line 1, column 1: `root` requires a non-empty value
+```
+
+A value that is not a string at all is refused in its place, with `` `root` must be a string ``.
+
+## The migration tail
+
+```toml
+[migrations]
+dir = "rurqe/migrations"
+```
+
+`dir` names the directory the migration scripts are read from. The value resolves against the directory of the configuration file, and `rurqe/migrations` beneath that directory when the key is absent.
+
+## The declarative stage
+
+```toml
+[stage]
+dir = "rurqe/schema"
+checkpoint = "rurqe/migrations/checkpoint.toml"
+```
+
+`dir` names the directory holding the declarative DDL of the target schema, `rurqe/schema` by default.
+
+`checkpoint` names the boundary marker. When the key is absent the marker is `checkpoint.toml` inside the resolved migration directory, so relocating the tail relocates its marker with it. The boundary snapshot is named after the stem of the marker and sits beside it: `checkpoint.toml` describes `checkpoint-stage/`, and `prod.toml` describes `prod-stage/`.
+
+Both keys are strings and are trimmed, and a blank one is refused:
+
+```text
+invalid configuration at line 1, column 1: `stage.checkpoint` requires a non-empty value
+```
+
+## The path cascade
+
+Every path of a command is resolved through the same three tiers: the explicit flag of the invocation, the key of the configuration file, and the conventional path beneath the artifact directory. A path the document carries no key for keeps two tiers — the flag, then the convention.
+
+| Path | Flag | Key | Conventional |
+|---|---|---|---|
+| Migration tail | `--migrations-dir` | `migrations.dir` | `rurqe/migrations` |
+| Declarative stage | `--stage-dir` | `stage.dir` | `rurqe/schema` |
+| Boundary marker | `--checkpoint-path` | `stage.checkpoint` | `rurqe/migrations/checkpoint.toml` |
+| Catalog snapshot | `--lock-path` | — | `rurqe/schema.lock` |
+| Generated module | `--output`, `-o` | `codegen.output` | `src/schema.rs` |
+| Module `verify` reads | `--schema-path` | `codegen.output` | `src/schema.rs` when it exists |
+
+`codegen` writes and `verify` reads the same module, so the two share a cascade: `--output` of `codegen` and `--schema-path` of `verify` both win over `codegen.output`, and the key wins over the built-in default of the generator. The last tier differs on purpose — `codegen` falls back to `src/schema.rs` and writes it, while `verify` treats the conventional module as optional and falls back to the snapshot alone when neither the flag nor the key names a file.
+
+`--checkpoint-path` is accepted by `migrate up` alone, where it arms the guard that refuses a target older than the pruned history. `migrate status` and `migrate repair` read the history table alone, so they reject the flag instead of accepting it and ignoring it:
+
+```text
+unknown option `--checkpoint-path` for `migrate status` (`--checkpoint-path` guards `migrate up` against a target older than the pruned boundary)
 ```
 
 ## Schema selection
@@ -112,7 +226,7 @@ The resolved selection is what every catalog statement binds, so the snapshot th
 
 ## Code generation settings
 
-The `[codegen]` table holds the two settings the generator reads.
+The `[codegen]` table holds the three settings the generator reads.
 
 ### `domain_types`
 
@@ -133,6 +247,8 @@ The `type_overrides` table maps a schema path onto the Rust type generated for t
 [codegen.type_overrides]
 "users.id" = "uuid::Uuid"
 users.created_at = "chrono::NaiveDateTime"
+wallets.address = "bitcoin::Address"
+"transactions.txid" = "bitcoin::Txid"
 ```
 
 A path names a column of the primary schema as `table.column` and a column of a secondary schema as `schema.table.column`, so it carries two or three segments. One path may be written in three equivalent spellings:
@@ -150,6 +266,8 @@ All three flatten onto the same entry, and the table form keeps a table with man
 id = "uuid::Uuid"
 created_at = "chrono::NaiveDateTime"
 ```
+
+An override is what keeps a domain newtype in place. A binary column would otherwise be generated as `Vec<u8>` and a text column as `String`, so `bitcoin::Txid` and `bitcoin::Address` name the types the application really binds; the newtype itself declares its conversions once, through `impl_sql_binary_newtype!` or `#[derive(SqlType)]`, in the module that declares the type.
 
 The rules the entries obey:
 
@@ -187,6 +305,17 @@ invalid configuration at line 5, column 1: `codegen.type_overrides.users` must b
 
 An override survives every later regeneration, because the generator reads the file and never edits it: the type is declared once and applied each time the module is written.
 
+### `output`
+
+```toml
+[codegen]
+output = "src/db/schema.rs"
+```
+
+Names the module code generation writes and verification reads, resolved against the directory of the configuration file. The key is not an artifact of the toolchain: it addresses generated application sources, so the artifact directory never contributes to it.
+
+`--output` of `codegen` and `--schema-path` of `verify` win over the key, and the built-in `src/schema.rs` closes the cascade when neither names a file. `codegen` writes that default; `verify` treats it as optional and falls back to the catalog snapshot alone when the conventional module does not exist.
+
 ## The connection target
 
 The file holds no connection setting — no key of it names a database — so the target of a command that opens one is always taken from its arguments or from the environment:
@@ -207,14 +336,16 @@ no database URL provided: pass `--database-url <url>` or set the DATABASE_URL en
 
 ## Reading a configuration diagnostic
 
-Three failures are possible before any key is accepted:
+Four failures are possible before any key is accepted:
 
 | Failure | Diagnostic |
 |---|---|
+| The file named by `--config` does not exist | `configuration file <path> named by `--config` does not exist; a path the flag names is required, while the conventional `rurqe.toml` is optional` |
+| The path named by `--config` is not a regular file | `configuration file <path> named by `--config` is not a regular file` |
 | The file cannot be read | `failed to read configuration `rurqe.toml`: <operating-system error>` |
 | The document is not valid TOML | `invalid configuration at line <line>, column <column>: malformed TOML section or entry: <parser diagnostic>` |
 | A declaration is refused | `invalid configuration at line <line>, column <column>: <what is wrong>` |
 
 The position is the one of the declaration that caused the refusal, taken from the parsed document rather than from a scan of its text, so a key spelled inside a comment or inside a multi-line string is never mistaken for the declaration itself. A repeated path is reported at the second spelling, which is the entry to remove.
 
-An absent file is not a failure. Nothing is read, nothing is reported, and the defaults apply: the primary schema is `public`, the secondary list is empty, and no column carries an override.
+An absent conventional file is not a failure. Nothing is read, nothing is reported, and the defaults apply: the primary schema is `public`, the secondary list is empty, no column carries an override, and every artifact lives beneath `rurqe/`.

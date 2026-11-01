@@ -11,7 +11,7 @@
 - **Typestate Protection:** Unfiltered `UPDATE` and `DELETE` operations fail at compile time unless explicitly scoped via `.where_(...)` or confirmed via `.allow_all()`.
 - **Database-First Single Source of Truth:** Live database catalogs (PostgreSQL and SQLite) are introspected directly into strongly typed schemas, canonical `schema.lock` snapshots, and compile-time `SCHEMA_HASH` constants.
 - **Flyway Lifecycle Integrity:** Migration runner supporting versioned (`V1__...`) and repeatable (`R__...`) scripts, standalone SHA-256 checksum audits, baseline onboarding, repair, and drift verification.
-- **Stage + Migration Tail Lifecycle:** A declarative `schema/` stage is the single source of truth for the target schema while the active `migrations/` tail advances existing databases. A `checkpoint.toml` marker records the pruned boundary and the stage hash, so folded history can be deleted without squashing, and `State(schema/) == State(Checkpoint + migrations/)` is verified in CI by the golden equation.
+- **Stage + Migration Tail Lifecycle:** A declarative `rurqe/schema/` stage is the single source of truth for the target schema while the active `rurqe/migrations/` tail advances existing databases. A `rurqe/migrations/checkpoint.toml` marker records the pruned boundary and the stage hash, so folded history can be deleted without squashing, and `State(schema/) == State(Checkpoint + migrations/)` is verified in CI by the golden equation. One root-level `root` key of `rurqe.toml` (`rurqe` by default) relocates the whole artifact directory, and every path the document declares resolves against the directory holding the configuration file.
 
 ---
 
@@ -25,12 +25,12 @@
   - Feature `r2d2`: enables connection pooling for sync SQLite and sync PostgreSQL.
   - Feature `deadpool`: enables async connection pooling for `tokio-postgres`.
 - **`rurqe-core`**: AST, expressions, schema markers (`Table`, `Column`, `ExprScope`), dialects, DML typestates, execution contracts (`QueryBackend`, `TransactionBackend`).
-- **`rurqe-macros`**: Declarative and procedural macros (`table!`, `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`) and the `#[derive(SqlType)]` domain newtype derive.
+- **`rurqe-macros`**: Declarative and procedural macros (`table!`, `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `embed_migrations!`) and the `#[derive(SqlType)]` domain newtype derive. `embed_migrations!` scans a migrations directory at compile time and bakes every `*.sql` script of it into the binary through `include_str!`.
 - **`rurqe-postgres`**: PostgreSQL dialect (`Postgres<V>`), version markers (`Pg14`, `Pg15`, `Pg16`), sync `PgConnection`, async `PgAsyncConnection`, and pool adapters.
 - **`rurqe-sqlite`**: SQLite dialect (`Sqlite<V>`), version bounds (`Sqlite3_0`, `Sqlite3_24`, `Sqlite3_35`), sync `SqliteConnection`, and `r2d2` pool.
-- **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `embed_migrations!`, `SchemaCatalog`, checkpoint markers (`Checkpoint`), and cold start from the declarative stage (`DeclarativeStage`, `cold_start`).
-- **`rurqe-cli`**: CLI toolchain (`cargo db-migrate`, `cargo db-codegen`, `cargo db-verify`, `cargo db-baseline`, plus the `cargo rurqe stage init|verify|commit` and `cargo rurqe prune` lifecycle) with dual PostgreSQL and SQLite catalog introspection parity and golden-equation verification.
-- **`rurqe-cli`**: CLI toolchain (`cargo rurqe migrate`, `cargo rurqe codegen`, `cargo rurqe verify`, `cargo rurqe baseline`, plus the `cargo rurqe stage init|verify|commit` and `cargo rurqe prune` lifecycle) with dual PostgreSQL and SQLite catalog introspection parity and golden-equation verification.
+- **`rurqe-migrate`**: Flyway-compatible migration runner, in-memory SHA-256, `__rurqe_schema_history`, `EmbeddedMigrations`, `SchemaCatalog`, checkpoint markers (`Checkpoint`), and cold start from the declarative stage (`DeclarativeStage`, `cold_start`).
+- **`rurqe-project`**: The single copy of the `rurqe.toml` model — its strict `toml_edit` parser with positional diagnostics, `SchemaSelection`, `ConfigError`, the resolution of every declared path, and the discovery of the file itself — shared by the toolchain and the procedural macro crate.
+- **`rurqe-cli`**: CLI toolchain (`cargo rurqe migrate`, `cargo rurqe codegen`, `cargo rurqe verify`, `cargo rurqe baseline`, plus the `cargo rurqe stage init|verify|commit|cleanup` and `cargo rurqe prune` lifecycle) with dual PostgreSQL and SQLite catalog introspection parity and golden-equation verification.
 ---
 
 ## Comprehensive Code Patterns
@@ -817,15 +817,28 @@ let users = pool.fetch_all(&select_from::<Postgres, User>().select((UserId, User
 Migrations support Flyway conventions (`V` for versioned, `R` for repeatable):
 
 ```rust
-use rurqe::migrate::{embed_migrations, EmbeddedMigrations};
+use rurqe::migrate::Error;
+use rurqe::prelude::embed_migrations;
 
-let migrations = embed_migrations!(
-    "V1__init.sql" => "CREATE TABLE users (id BIGINT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN NOT NULL);",
-    "V2__orders.sql" => "CREATE TABLE orders (id BIGINT PRIMARY KEY, user_id BIGINT NOT NULL, total DOUBLE PRECISION NOT NULL);",
-    "R__views.sql" => "CREATE VIEW active_users AS SELECT * FROM users WHERE active = true;",
-).expect("valid migrations");
+fn main() -> Result<(), Error> {
+    // Without an argument the macro starts at `CARGO_MANIFEST_DIR`, walks its
+    // ancestors for `rurqe.toml`, and resolves `[migrations].dir` — or
+    // `<root>/migrations` when the file declares none.
+    let migrations = embed_migrations!()?;
 
-migrations.migrate(&mut backend)?;
+    // One optional argument replaces the walk: a directory is the migrations
+    // directory itself, while a file is a `rurqe.toml` resolved against the
+    // directory holding it. Only the `*.sql` files of the directory itself are
+    // baked in, so `checkpoint.toml` and `checkpoint-stage/` stay artifacts.
+    let explicit = embed_migrations!("rurqe/migrations")?;
+
+    println!(
+        "{} and {} embedded migration(s)",
+        migrations.len(),
+        explicit.len()
+    );
+    Ok(())
+}
 ```
 
 ---
@@ -836,20 +849,22 @@ A project may describe its schema twice instead of replaying the whole history: 
 
 ```text
 project/
-├── schema/                       # Declarative target DDL (single source of truth)
-│   ├── users.sql
-│   └── orders.sql
-├── migrations/                   # Active tail above the checkpoint boundary
-│   ├── V051__add_credits.sql     # DDL + DML delta
-│   └── V052__index_billing.sql
-├── checkpoint.toml               # pruned_up_to_version + schema_hash of the base stage
-├── checkpoint-stage/             # Verbatim DDL snapshot of the checkpoint boundary
-└── schema.lock                   # Versioned TOML v4 catalog snapshot (SCHEMA_HASH)
+├── rurqe.toml                    # Schemas, artifact layout, codegen settings
+└── rurqe/                        # Artifact directory (`root`, default `rurqe`)
+    ├── schema/                   # Declarative target DDL (single source of truth)
+    │   ├── users.sql
+    │   └── orders.sql
+    ├── migrations/               # Active tail above the checkpoint boundary
+    │   ├── V051__add_credits.sql # DDL + DML delta
+    │   ├── V052__index_billing.sql
+    │   ├── checkpoint.toml       # pruned_up_to_version + schema_hash of the base stage
+    │   └── checkpoint-stage/     # Verbatim DDL snapshot of the checkpoint boundary
+    └── schema.lock               # Versioned TOML v5 catalog snapshot (SCHEMA_HASH)
 ```
 
-The `schema.lock` snapshot is the versioned TOML v4 document (`version = 4`): the writer serializes the engine-neutral `SchemaCatalog` through strongly typed `#[serde(deny_unknown_fields)]` DTOs, and enums, tables, views, and triggers — as well as each table's columns, checks, foreign keys, and indexes — are sorted by name, so the snapshot and its `SCHEMA_HASH` depend only on the schema content. Snapshots of the legacy v1–v3 text formats remain readable; a project upgrading from a pre-v4 snapshot re-runs `cargo rurqe codegen` (or `cargo rurqe stage commit`) once, because the snapshot bytes — and with them `SCHEMA_HASH` and the checkpoint hashes — change with the format.
+The `schema.lock` snapshot is the versioned TOML v5 document (`version = 5`): the writer serializes the engine-neutral `SchemaCatalog` through strongly typed `#[serde(deny_unknown_fields)]` DTOs, and enums, tables, views, and triggers — as well as each table's columns, checks, foreign keys, and indexes — are sorted by name while every entity carries the schema it belongs to, so the snapshot and its `SCHEMA_HASH` depend only on the schema content. Snapshots of the legacy v1–v3 text formats and of the previous v4 TOML document remain readable; a project upgrading from a pre-v4 snapshot re-runs `cargo rurqe codegen` (or `cargo rurqe stage commit`) once, because the snapshot bytes — and with them `SCHEMA_HASH` and the checkpoint hashes — change with the format.
 
-Absent `schema/` and `checkpoint.toml`, the runner keeps the classic sequential Flyway behaviour with no configuration at all.
+Absent `rurqe/schema/` and `rurqe/migrations/checkpoint.toml`, the runner keeps the classic sequential Flyway behaviour with no configuration at all.
 
 ### Cold Start from the Declarative Stage
 
@@ -870,7 +885,7 @@ let marker = StageMarker::from_catalog("3.2".parse().expect("a valid version"), 
 let report = cold_start(&mut backend, &stage, &marker)?;
 ```
 
-- `DeclarativeStage::load(Path::new("schema"))` reads every `*.sql` file in name order, so the applied DDL is deterministic; a missing directory is reported as `Ok(None)`.
+- `DeclarativeStage::load(Path::new("rurqe/schema"))` reads every `*.sql` file in name order, so the applied DDL is deterministic; a missing directory is reported as `Ok(None)`.
 - Every script runs inside one transaction and a synthetic `<< Stage >>` baseline marker is recorded, so migrations at or below the marker version are already applied while the tail above it still runs.
 - Repeating the same stage (same version and digest) is a no-op; a diverged digest or an already initialised database fails with `Error::BaselineAlreadyExists` instead of overwriting the schema.
 
@@ -885,7 +900,7 @@ let report = Migrator::with_checkpoint(checkpoint).migrate(&mut backend, &tail)?
 
 - `Checkpoint::parse` / `Checkpoint::load` read the `[checkpoint]` table (`pruned_up_to_version`, `schema_hash`), while `Checkpoint::render` writes it back canonically.
 - `Checkpoint::validate_history` compares the newest recorded version with the boundary: a target at or above it is advanced by the tail, while a target below it — or one that recorded no version at all — fails with `Error::OutdatedCheckpoint` carrying an actionable remedy instead of a partial replay.
-- Because the marker anchors the base stage, migration files below the boundary can be deleted freely (`rm -f migrations/V001...V050*.sql`) without rewriting baselines or invalidating checksums.
+- Because the marker anchors the base stage, migration files below the boundary can be deleted freely (`rm -f rurqe/migrations/V001...V050*.sql`) without rewriting baselines or invalidating checksums.
 
 ### Golden Equation Verification
 
@@ -915,13 +930,14 @@ The boundary the checkpoint anchors is recorded by the toolchain itself: `stage 
 
 The `rurqe-cli` toolchain manages database lifecycles for both PostgreSQL and SQLite:
 
-- `cargo rurqe migrate up [--database-url <URL>] [--migrations-dir <DIR>]` — Apply pending versioned and modified repeatable migrations.
-- `cargo rurqe migrate status` — Inspect migration statuses against `__rurqe_schema_history`.
-- `cargo rurqe migrate repair` — Realign checksums and purge failed attempts.
-- `cargo rurqe baseline --version <V>` — Baseline pre-existing schemas without historical replay.
-- `cargo rurqe codegen --output src/db/schema.rs [--database-url <URL>]` — Introspect live database (`postgres://...`, `postgresql://...`, `sqlite://...`, or local file), generate Rust schema, and create `schema.lock`. Schema names are sanitized into valid Rust identifiers (`2fa` → `_2fa`, `user.email` → `user_email`), Rust keywords are escaped (`type` → `r#type`, `self` → `self_`), and two names that reduce to the same identifier fail codegen with an error listing the conflicting names instead of emitting duplicate definitions. `Uuid`, `Json`, `Timestamp`, `Date` and engine-specific columns are generated as `String`, matching the text decoding of the execution adapters. The optional `rurqe.toml` `[codegen.type_overrides]` table maps a `table.column` schema path onto the Rust type generated for that column (`"users.id" = "uuid::Uuid"`), so domain newtypes survive code generation; the declared nullability still applies, wrapping a nullable override into `Option<T>` and never wrapping an already optional type twice.
-- `cargo rurqe verify [--database-url <URL>] [--lock-path schema.lock]` — CI drift verification: verifies bit-for-bit parity between the live database catalog, `schema.lock`, and the embedded `pub const SCHEMA_HASH`.
-- `cargo rurqe stage init --version <V> [--stage-dir schema] [--description <desc>] [--database-url <URL>]` — Cold start an empty database from the declarative stage in one transaction and record the synthetic `<< Stage >>` baseline marker.
-- `cargo rurqe stage verify [--stage-dir schema] [--base-stage-dir <DIR>] [--migrations-dir migrations] [--database-url <URL>] [--schema <name>]` — Verify the golden equation `State(schema/) == State(Checkpoint + migrations/)` in a disposable scratch database; the boundary snapshot recorded by `stage commit` is used as the base stage when `--base-stage-dir` is omitted, and divergence is reported per table and column.
-- `cargo rurqe stage commit --version <V> [--stage-dir schema] [--lock-path schema.lock] [--checkpoint-path checkpoint.toml] [--database-url <URL>]` — Introspect the live database, write `schema.lock`, snapshot the boundary stage verbatim into `checkpoint-stage/` next to `checkpoint.toml`, and anchor the marker; the boundary can never be rewound to an older version.
-- `cargo rurqe prune --before <V> [--migrations-dir migrations] [--checkpoint-path checkpoint.toml] [--dry-run]` — Delete migration scripts below the committed checkpoint boundary; the command refuses to drop anything above it, because the active tail still needs those scripts.
+- `cargo rurqe migrate up [--database-url <URL>] [--migrations-dir <DIR>] [--checkpoint-path <PATH>] [--schema <NAME>] [--config <PATH>]` — Apply pending versioned and modified repeatable migrations; `--checkpoint-path` (default `rurqe/migrations/checkpoint.toml`) arms the guard that refuses a target older than the pruned boundary.
+- `cargo rurqe migrate status [--migrations-dir <DIR>] [--schema <NAME>] [--config <PATH>]` — Inspect migration statuses against `__rurqe_schema_history`.
+- `cargo rurqe migrate repair [--migrations-dir <DIR>] [--schema <NAME>] [--config <PATH>]` — Realign checksums and purge failed attempts.
+- `cargo rurqe baseline --version <V> [--description <DESC>] [--config <PATH>]` — Baseline pre-existing schemas without historical replay.
+- `cargo rurqe codegen [--output <PATH>] [--lock-path <PATH>] [--domain-types] [--schema <NAME>] [--config <PATH>] [--database-url <URL>]` — Introspect the live database (`postgres://...`, `postgresql://...`, `sqlite://...`, or a local file), generate the Rust schema, and write the catalog snapshot (default `rurqe/schema.lock`). The module goes to `--output`, otherwise to `[codegen].output` of `rurqe.toml`, otherwise to `src/schema.rs`. Schema names are sanitized into valid Rust identifiers (`2fa` → `_2fa`, `user.email` → `user_email`), Rust keywords are escaped (`type` → `r#type`, `self` → `self_`), and two names that reduce to the same identifier fail codegen with an error listing the conflicting names instead of emitting duplicate definitions. `Uuid`, `Json`, `Timestamp`, `Date`, and engine-specific columns are generated as `String` unless `[codegen].domain_types` or `--domain-types` maps them onto the ecosystem types. The optional `[codegen.type_overrides]` table maps a `table.column` (or `schema.table.column`) path onto the Rust type generated for that column, so domain newtypes survive code generation: `"users.id" = "uuid::Uuid"`, `users.created_at = "chrono::NaiveDateTime"`, and `"wallets.address" = "bitcoin::Address"` next to `"transactions.txid" = "bitcoin::Txid"`; the declared nullability still applies, wrapping a nullable override into `Option<T>` and never wrapping an already optional type twice.
+- `cargo rurqe verify [--schema-path <PATH>] [--lock-path <PATH>] [--schema <NAME>] [--config <PATH>] [--database-url <URL>]` — CI drift verification: verifies bit-for-bit parity between the live database catalog, the catalog snapshot (default `rurqe/schema.lock`), and the embedded `pub const SCHEMA_HASH`.
+- `cargo rurqe stage init --version <V> [--stage-dir <DIR>] [--description <DESC>] [--schema <NAME>] [--config <PATH>] [--database-url <URL>]` — Cold start an empty database from the declarative stage (default `rurqe/schema`) in one transaction and record the synthetic `<< Stage >>` baseline marker.
+- `cargo rurqe stage verify [--stage-dir <DIR>] [--base-stage-dir <DIR>] [--migrations-dir <DIR>] [--checkpoint-path <PATH>] [--scratch-url <URL>] [--schema <NAME>] [--config <PATH>]` — Verify the golden equation `State(schema/) == State(Checkpoint + migrations/)` in a disposable scratch database; the boundary snapshot recorded by `stage commit` is used as the base stage when `--base-stage-dir` is omitted, and divergence is reported per table and column.
+- `cargo rurqe stage commit --version <V> [--stage-dir <DIR>] [--lock-path <PATH>] [--checkpoint-path <PATH>] [--schema <NAME>] [--config <PATH>] [--database-url <URL>]` — Introspect the live database, write the catalog snapshot (default `rurqe/schema.lock`), snapshot the boundary stage verbatim into `<stem>-stage/` next to the marker — `checkpoint-stage/` beside `checkpoint.toml` — and anchor the marker; the parity gate refuses a stage that does not describe the database, and the boundary can never be rewound to an older version.
+- `cargo rurqe stage cleanup [--scratch-url <URL>] [--older-than <SECS>] [--yes|--force] [--config <PATH>]` — Drop the PostgreSQL scratch databases abandoned by earlier verifications.
+- `cargo rurqe prune --before <V> [--migrations-dir <DIR>] [--checkpoint-path <PATH>] [--dry-run] [--config <PATH>]` — Delete migration scripts below the committed checkpoint boundary; the command refuses to drop anything above it, because the active tail still needs those scripts.

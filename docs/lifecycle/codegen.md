@@ -6,9 +6,9 @@ module declaring one marker per table and one marker per column, each carrying
 the Rust type the column decodes into, so a query addresses a schema the
 database actually has rather than a schema somebody remembered to update.
 
-A normalized snapshot of the same catalog is written beside the generated code
-as `schema.lock`, and the generated module embeds the digest of that snapshot as
-`SCHEMA_HASH`. The two artifacts are therefore two views of one catalog, and a
+A normalized snapshot of the same catalog is written into the artifact directory
+as `rurqe/schema.lock`, and the generated module embeds the digest of that snapshot
+as `SCHEMA_HASH`. The two artifacts are therefore two views of one catalog, and a
 module that no longer matches its snapshot is detectable without opening a
 database.
 
@@ -79,17 +79,21 @@ cargo rurqe codegen --database-url postgres://app@localhost:5432/app
 | Option | Effect |
 |---|---|
 | `--database-url <url>` | The database to introspect. Falls back to the `DATABASE_URL` environment variable. |
-| `--output <path>`, `-o <path>` | The file receiving the generated module. Defaults to `src/schema.rs`. |
-| `--lock-path <path>` | The file receiving the snapshot. Defaults to `schema.lock`. |
+| `--output <path>`, `-o <path>` | The file receiving the generated module. Wins over `codegen.output`; defaults to `src/schema.rs`. |
+| `--lock-path <path>` | The file receiving the snapshot. Defaults to `rurqe/schema.lock`. |
 | `--domain-types` | Maps the engine-neutral types onto their domain types. |
 | `--schema <name>` | The primary schema to describe. Wins over the `primary_schema` key of the configuration, and the secondary schemas come from `schemas`. |
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
-Neither output path is configurable in the project file: both default and are
-overridden by their own flags. The directory receiving an artifact is created if
-it does not exist.
+The generated module is the middle tier of its own cascade: `--output` wins over
+`[codegen].output`, which wins over the built-in `src/schema.rs`. The snapshot
+carries no key of the document, so its cascade is the flag followed by the
+conventional `rurqe/schema.lock` beneath the artifact directory. The directory
+receiving an artifact is created if it does not exist.
 
-A project that exports `DATABASE_URL` and declares its schema and its overrides
-in `rurqe.toml` regenerates both artifacts with the bare command:
+A project that exports `DATABASE_URL` and declares its schema, its module path,
+and its overrides in `rurqe.toml` regenerates both artifacts with the bare
+command:
 
 ```bash
 cargo rurqe codegen
@@ -98,7 +102,7 @@ cargo rurqe codegen
 The run reports what it wrote:
 
 ```text
-Generated schema to src/schema.rs and snapshot to schema.lock (hash 4f1d9c2e...)
+Generated schema to src/schema.rs and snapshot to rurqe/schema.lock (hash 4f1d9c2e...)
 ```
 
 Each artifact is written through a hidden sibling and renamed into place, and the
@@ -294,8 +298,9 @@ ecosystem types directly, so the application enables the matching features
 ## Project configuration
 
 The optional `rurqe.toml` is read from the working directory and carries the
-schemas a project describes and the per-column Rust types the generator emits:
-
+The optional `rurqe.toml` is read from the working directory when no `--config`
+names another file, and it carries the schemas a project describes and the
+per-column Rust types the generator emits:
 ```toml
 primary_schema = "app"
 schemas = ["auth", "billing"]
@@ -306,6 +311,8 @@ domain_types = true
 [codegen.type_overrides]
 "users.id" = "uuid::Uuid"
 users.created_at = "chrono::NaiveDateTime"
+"wallets.address" = "bitcoin::Address"
+"transactions.txid" = "bitcoin::Txid"
 "auth.users.id" = "uuid::Uuid"
 ```
 
@@ -325,13 +332,19 @@ The first table belongs to the primary schema, so its keys name the column under
 the table it lives in. The second belongs to a secondary schema, so the schema
 comes first and the path carries three segments.
 
+An override is what keeps a domain newtype in place: a binary column would
+otherwise be generated as `Vec<u8>` and a text column as `String`, so
+`bitcoin::Txid` and `bitcoin::Address` name the types the application really
+binds, and the newtype declares its conversions once through
+`impl_sql_binary_newtype!` or `#[derive(SqlType)]`.
+
 The rules the file obeys:
 
 * `primary_schema` names the database schema the project's catalogs describe — the one its relations render without a qualifier. The value is trimmed, a blank one is refused, and `--schema` wins over it.
 * `schemas` names the secondary schemas declared beside the primary one. An entry is trimmed, a blank one is refused, a name may appear once, and no entry may repeat the primary schema — the declared one or the `public` default — because the selection would then describe the same catalog twice.
 * `schema` is the legacy spelling of `primary_schema` and names the same setting. Declaring both is refused, with the position of each key in the diagnostic, so one file never selects two primary schemas.
 * `codegen.domain_types` is a boolean. The `--domain-types` flag enables the same mapping, so a project states the choice once in the file and a one-off run enables it on the command line.
-* Every override maps a schema path onto the Rust type generated for that column: `table.column` for a column of the primary schema, `schema.table.column` for a column of a secondary one. The quoted (`"users.id"`), dotted (`users.id`), and nested (`[codegen.type_overrides.users]`) spellings name the same entry.
+* `codegen.output` names the generated module `codegen` writes and `verify` reads. `--output` of `codegen` and `--schema-path` of `verify` win over it, and `src/schema.rs` closes the cascade when neither names a file.
 * The value is emitted verbatim as the column type, so it must be a syntactically valid Rust type. An override survives every later regeneration, because the generator never edits the configuration.
 * The nullability of the column still applies: a nullable column wraps the override in `Option<...>` unless the value already spells an optional type. The value is parsed as a Rust type to decide, so `Option<T>`, `std::option::Option<T>`, and `core::option::Option<T>` are all recognised.
 * A value that is not a string, a path that is neither `table.column` nor `schema.table.column` (an empty segment included), an empty type, and a repeated declaration of the same path are refused. The quoted and the dotted spelling of one path collide even though TOML treats them as distinct keys.

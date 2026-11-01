@@ -1,10 +1,9 @@
 # Running migrations in production
 
 A migration reaches a database from one of two places. The command line reads the
-scripts from `migrations/` and applies them as a process of its own. An
+scripts from `rurqe/migrations/` and applies them as a process of its own. An
 application binary carries the same scripts inside itself and applies them while
-it starts. The second arrangement is the one a container needs: no scripts
-directory has to be mounted into the image, no file has to be readable at run
+it starts.
 time, and the scripts a binary runs are exactly the scripts it was built from.
 This chapter calls that arrangement embedded migrations.
 
@@ -22,24 +21,41 @@ first request.
 
 ## Embedding the scripts
 
-`embed_migrations!` takes pairs of script name and script text and yields a
-fallible collection:
+`embed_migrations!` bakes the migration scripts of one directory into the binary
+and yields a fallible collection:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/migrations.rs:embed}}
 ```
 
-Every pair is parsed and digested when the collection is built, so a script whose
-name follows no convention, a version that does not parse, and two entries sharing
-one script name stop the process at startup instead of leaving a gap in the
-recorded history. The collection is sorted at construction, the way a directory of
-scripts is sorted: versioned scripts in ascending version order, followed by the
-repeatable scripts ordered by script name.
+The directory it scans is decided in one of two ways.
 
-The macro accepts two spellings of a pair — `"<name>" => "<sql>"` and
-`("<name>", "<sql>")` — and a call without a pair yields an empty collection.
-Both spellings reach the same constructor, so the choice is a matter of how the
-script reads beside the code that carries it.
+- A call without an argument starts at the manifest directory of the crate being
+  compiled, climbs its ancestors for a `rurqe.toml`, and resolves the migration
+  directory through that configuration: its `[migrations].dir` key when the file
+  declares one, `<root>/migrations` otherwise. Without a configuration on that
+  walk the conventional `<manifest>/rurqe/migrations` applies.
+- One optional argument replaces that walk with a path resolved against the
+  manifest directory. The filesystem decides what the path means: a directory is
+  the migration directory itself, while a file is a `rurqe.toml` whose keys
+  resolve the directory against the directory holding that file.
+
+Only the `*.sql` files of that directory are baked in. The `checkpoint-stage/`
+snapshot and the `checkpoint.toml` marker sit beside the scripts and stay
+artifacts of the toolchain, so neither reaches the collection. Every script is
+included from its absolute path, which registers it as an input of the
+compilation: editing a script recompiles the binary that carries it.
+
+A directory holding no `*.sql` script, a path naming neither a directory nor a
+configuration file, and a configuration the strict parser rejects each stop the
+compilation with an error naming the path and the remedy.
+
+The collection parses the script names and digests the SQL text when it is built,
+so a script whose name follows no convention, a version that does not parse, and
+two entries sharing one script name stop the process at startup instead of
+leaving a gap in the recorded history. The collection is sorted at construction,
+the way the directory is sorted: versioned scripts in ascending version order,
+followed by the repeatable scripts ordered by script name.
 
 ## The embedded collection
 
@@ -205,7 +221,7 @@ algorithm, and the history table; they differ in what each one can reach.
 
 | Concern | Command line | Embedded collection |
 |---|---|---|
-| Where the scripts come from | `migrations/` on disk, read at run time | compiled into the binary, parsed at startup |
+| Where the scripts come from | `rurqe/migrations/` on disk, read at run time | compiled into the binary, parsed at startup |
 | Applying the pending scripts | `cargo rurqe migrate up` | `migrate` / `migrate_async` |
 | Inspecting the status | `cargo rurqe migrate status` | `status` / `status_async` |
 | Repairing the history | `cargo rurqe migrate repair` | `repair` / `repair_async` |
