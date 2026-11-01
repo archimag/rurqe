@@ -1,16 +1,20 @@
 //! Embedded migration collection and runner ergonomics.
 //!
 //! [`EmbeddedMigrations`] encapsulates a statically bundled set of migration scripts,
-//! allowing migrations to be embedded directly into application binaries via
-//! [`embed_migrations!`] without runtime filesystem dependencies.
+//! allowing migrations to run from an application binary without reading a script
+//! directory at run time. The collection is assembled from `(script name, SQL text)`
+//! pairs: the `embed_migrations!` procedural macro of the `rurqe-macros` crate reads
+//! those pairs from a migrations directory at compile time and expands into this
+//! constructor, so the text a binary carries is the text it was built from.
 //!
 //! ```
-//! use rurqe_migrate::{embed_migrations, EmbeddedMigrations, InMemoryBackend};
+//! use rurqe_migrate::{EmbeddedMigrations, InMemoryBackend};
 //!
-//! let embedded = embed_migrations!(
-//!     "V1__init.sql" => "CREATE TABLE users (id INT);",
-//!     "R__view.sql" => "CREATE VIEW users_v AS SELECT * FROM users;",
-//! ).expect("valid migrations");
+//! let embedded = EmbeddedMigrations::new(&[
+//!     ("V1__init.sql", "CREATE TABLE users (id INT);"),
+//!     ("R__view.sql", "CREATE VIEW users_v AS SELECT * FROM users;"),
+//! ])
+//! .expect("valid migrations");
 //!
 //! assert_eq!(embedded.len(), 2);
 //!
@@ -297,40 +301,6 @@ impl<'a> IntoIterator for &'a EmbeddedMigrations {
     fn into_iter(self) -> Self::IntoIter {
         self.migrations.iter()
     }
-}
-
-/// Macro for embedding migration scripts directly into the application binary.
-///
-/// Supports either arrow notation (`"script.sql" => "sql content"`) or tuple notation
-/// (`("script.sql", "sql content")`).
-///
-/// Returns a `Result<EmbeddedMigrations, Error>`.
-///
-/// ```
-/// use rurqe_migrate::embed_migrations;
-///
-/// let embedded = embed_migrations!(
-///     "V1__init.sql" => "CREATE TABLE users (id INT);",
-///     "V2__orders.sql" => "CREATE TABLE orders (id INT);",
-/// ).unwrap();
-///
-/// assert_eq!(embedded.len(), 2);
-/// ```
-#[macro_export]
-macro_rules! embed_migrations {
-    () => {
-        Ok($crate::EmbeddedMigrations::empty())
-    };
-    ($(($script:expr, $sql:expr)),* $(,)?) => {
-        $crate::EmbeddedMigrations::new(&[
-            $(($script, $sql)),*
-        ])
-    };
-    ($($script:expr => $sql:expr),* $(,)?) => {
-        $crate::EmbeddedMigrations::new(&[
-            $(($script, $sql)),*
-        ])
-    };
 }
 
 #[cfg(test)]

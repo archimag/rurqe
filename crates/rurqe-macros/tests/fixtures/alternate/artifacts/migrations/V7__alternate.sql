@@ -1,0 +1,1 @@
+CREATE TABLE alternate (id BIGINT PRIMARY KEY);

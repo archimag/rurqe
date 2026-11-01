@@ -1,0 +1,5 @@
+# The artifact directory the fixture scripts live under: the configuration
+# argument form resolves `[migrations].dir` and `root` against the directory
+# holding this file, so a relocation like this one is reachable without a
+# discovery walk.
+root = "artifacts"

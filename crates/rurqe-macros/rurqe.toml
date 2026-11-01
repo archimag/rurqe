@@ -1,0 +1,6 @@
+# The project configuration the `embed_migrations!` discovery test reads. The
+# macro starts at the manifest directory of the crate being compiled, so the
+# fixture scripts have to be reachable from this file the way a real project
+# reaches its migration tail.
+[migrations]
+dir = "tests/fixtures/migrations"

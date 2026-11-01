@@ -1,6 +1,7 @@
 //! Procedural macros for RURQE query builder and relational execution engine.
 
 mod dto;
+mod embed_migrations;
 mod parse;
 mod raw_sql;
 mod record;
@@ -132,6 +133,49 @@ pub fn raw_sql(input: TokenStream) -> TokenStream {
 pub fn sql_type(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::DeriveInput);
     crate::sql_type::expand(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Bakes the migration scripts of a directory into the calling binary.
+///
+/// # Resolution
+///
+/// Without an argument the macro starts at the manifest directory of the calling
+/// crate, walks its ancestors for a `rurqe.toml`, and resolves the migrations
+/// directory through that configuration: its `[migrations].dir` key when the file
+/// declares one, `<root>/migrations` otherwise. No configuration on that walk
+/// leaves the conventional `<manifest>/rurqe/migrations`.
+///
+/// One optional argument replaces that walk with a path resolved against the
+/// manifest directory. The filesystem decides what the path means: a directory is
+/// the migrations directory itself, while a file is a `rurqe.toml` whose keys
+/// resolve the directory against the directory holding that file.
+///
+/// # What the binary carries
+///
+/// Only the `*.sql` files of the directory itself. A `checkpoint-stage/` snapshot
+/// and the `checkpoint.toml` marker beside them stay artifacts of the toolchain and
+/// never become scripts of the run.
+///
+/// Every script reaches the collection through `include_str!` over its absolute
+/// path, so it is an input of the compilation: editing a script recompiles the
+/// binary that carries it. The collection parses the script names and digests the
+/// SQL text at run time, so a malformed script name stops the process at startup
+/// instead of leaving a gap in the recorded history.
+///
+/// A directory holding no `*.sql` script, a path naming neither a directory nor a
+/// configuration file, and a configuration the strict parser rejects all stop the
+/// compilation with an error naming the path and the remedy.
+///
+/// ```ignore
+/// let embedded = embed_migrations!()?;
+/// let embedded = embed_migrations!("../db/migrations")?;
+/// let embedded = embed_migrations!("../rurqe.toml")?;
+/// ```
+#[proc_macro]
+pub fn embed_migrations(input: TokenStream) -> TokenStream {
+    crate::embed_migrations::expand(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

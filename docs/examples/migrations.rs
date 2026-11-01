@@ -3,16 +3,17 @@
 //! The file assembles the collection and stops there: it names no dialect and
 //! opens no connection, because applying the collection names a backend that
 //! the chapter describes in prose.
+//!
+//! The macro resolves the path it is given against the manifest directory of this
+//! package, so every script reaches the binary through `include_str!` and is an
+//! input of the compilation.
 
 use rurqe::migrate::Error;
 use rurqe::prelude::embed_migrations;
 
 fn main() -> Result<(), Error> {
     // ANCHOR: embed
-    let embedded = embed_migrations!(
-        "V1__create_users.sql" => "CREATE TABLE users (id BIGINT PRIMARY KEY);",
-        "R__active_users.sql" => "CREATE VIEW active_users AS SELECT id FROM users;",
-    )?;
+    let embedded = embed_migrations!("tests/fixtures/migrations")?;
 
     // The names, the version grammar, and the digests are the ones the
     // migration directory holds, so a malformed script stops the process at

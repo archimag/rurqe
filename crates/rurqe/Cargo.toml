@@ -26,6 +26,9 @@ macros = ["dep:rurqe-macros"]
 postgres = ["dep:rurqe-postgres", "rurqe-postgres/postgres"]
 tokio-postgres = ["dep:rurqe-postgres", "rurqe-postgres/tokio-postgres", "rurqe-migrate?/tokio"]
 sqlite = ["dep:rurqe-sqlite"]
+# `migrate` brings the migration crate: the embedded collection, the runner, and
+# the backend contracts. The `embed_migrations!` macro additionally needs
+# `macros`, because the expansion itself is compiled by the proc-macro crate.
 migrate = ["dep:rurqe-migrate"]
 tokio = ["rurqe-migrate?/tokio"]
 # `r2d2` pools the synchronous drivers, so it enables the `postgres` adapter it

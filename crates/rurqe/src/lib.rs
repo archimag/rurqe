@@ -52,6 +52,25 @@ pub use rurqe_macros as macros;
 #[cfg(feature = "macros")]
 pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
+/// Bakes the migration scripts of a directory into the calling binary.
+///
+/// The macro is compiled by the `macros` feature and expands into the embedded
+/// collection of the `migrate` feature, so it is reachable exactly where both are
+/// enabled:
+///
+/// ```text
+/// use rurqe::prelude::*;
+///
+/// let embedded = embed_migrations!()?;
+/// ```
+///
+/// The migrations directory resolves the way the command line resolves its own:
+/// from the `rurqe.toml` found above the manifest of the calling crate, or from
+/// the path the call names. See the `embed_migrations!` documentation of the
+/// macro crate for the resolution order and for the files the collection carries.
+#[cfg(all(feature = "macros", feature = "migrate"))]
+pub use rurqe_macros::embed_migrations;
+
 pub use rurqe_core::dml::{excluded, Excluded, ExecutableDelete, ExecutableUpdate};
 pub use rurqe_core::expr::{RowExpr, RowValues};
 pub use rurqe_core::query::{LockedQuery, Query, TableSelection};
@@ -642,6 +661,13 @@ pub mod prelude {
     #[cfg(feature = "macros")]
     pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 
+    /// Bakes the migration scripts of a directory into the calling binary.
+    ///
+    /// The macro requires both the `macros` feature that compiles it and the
+    /// `migrate` feature whose collection its expansion constructs.
+    #[cfg(all(feature = "macros", feature = "migrate"))]
+    pub use rurqe_macros::embed_migrations;
+
     // The dialect items reach the prelude with any PostgreSQL adapter feature, so
     // an asynchronous or pooled build names `Postgres` without the synchronous
     // driver; the driver items below keep their own feature.
@@ -686,8 +712,8 @@ pub mod prelude {
 
     #[cfg(feature = "migrate")]
     pub use rurqe_migrate::{
-        embed_migrations, warn_if_in_tokio_runtime, Checksum, EmbeddedMigrations, Migration,
-        MigrationKind, MigrationStatus, MigrationStatusKind, MigrationVersion, NoopSleeper,
-        SchemaCatalog, Sleeper, ThreadSleeper,
+        warn_if_in_tokio_runtime, Checksum, EmbeddedMigrations, Migration, MigrationKind,
+        MigrationStatus, MigrationStatusKind, MigrationVersion, NoopSleeper, SchemaCatalog,
+        Sleeper, ThreadSleeper,
     };
 }

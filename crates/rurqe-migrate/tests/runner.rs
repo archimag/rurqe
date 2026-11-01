@@ -241,14 +241,14 @@ fn failed_migration_triggers_rollback_and_prevents_subsequent_runs() {
 }
 
 #[test]
-fn embedded_migrations_macro_and_lifecycle_execution() {
-    use rurqe_migrate::{embed_migrations, EmbeddedMigrations};
+fn embedded_migrations_apply_in_canonical_order() {
+    use rurqe_migrate::EmbeddedMigrations;
 
-    let embedded: EmbeddedMigrations = embed_migrations!(
-        "V2__add_items.sql" => "CREATE TABLE items (id INT);",
-        "V1__init.sql" => "CREATE TABLE users (id INT);",
-        "R__users_view.sql" => "CREATE VIEW users_v AS SELECT * FROM users;",
-    )
+    let embedded = EmbeddedMigrations::new(&[
+        ("V2__add_items.sql", "CREATE TABLE items (id INT);"),
+        ("V1__init.sql", "CREATE TABLE users (id INT);"),
+        ("R__users_view.sql", "CREATE VIEW users_v AS SELECT * FROM users;"),
+    ])
     .expect("valid embedded migrations");
 
     assert_eq!(embedded.len(), 3);
@@ -275,13 +275,13 @@ fn embedded_migrations_macro_and_lifecycle_execution() {
 }
 
 #[test]
-fn embedded_migrations_tuple_syntax_and_deref_coercion() {
-    use rurqe_migrate::embed_migrations;
+fn embedded_migrations_deref_coercion() {
+    use rurqe_migrate::EmbeddedMigrations;
 
-    let embedded = embed_migrations!(
+    let embedded = EmbeddedMigrations::new(&[
         ("V1__init.sql", "CREATE TABLE users (id INT);"),
         ("R__view.sql", "CREATE VIEW v AS SELECT 1;"),
-    )
+    ])
     .expect("valid migrations");
 
     let mut backend = InMemoryBackend::new();
@@ -296,12 +296,10 @@ fn embedded_migrations_tuple_syntax_and_deref_coercion() {
 
 #[test]
 fn embedded_migrations_rejects_invalid_script_names() {
-    use rurqe_migrate::embed_migrations;
+    use rurqe_migrate::EmbeddedMigrations;
 
-    let err = embed_migrations!(
-        "invalid_name.sql" => "SELECT 1;",
-    )
-    .expect_err("must reject invalid script name");
+    let err = EmbeddedMigrations::new(&[("invalid_name.sql", "SELECT 1;")])
+        .expect_err("must reject invalid script name");
 
     match err {
         Error::InvalidScriptName { script } => assert_eq!(script, "invalid_name.sql"),
