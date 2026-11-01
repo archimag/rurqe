@@ -107,7 +107,10 @@ impl ProjectionItem {
     /// become a field identifier at all — a keyword with no raw-identifier form
     /// such as `crate` or `self`, or a name that is not an identifier — and a
     /// computed projection with no column to be named after are reported as
-    /// errors instead of panicking, and each of them names the alias remedy.
+    /// errors instead of panicking, and each of them names the alias remedy. A
+    /// marker whose type arguments admit no naming rule (`Blob::<[u8; 4]>`) is
+    /// reported on its own path the same way, instead of being named after an
+    /// invented fallback that hides the offending projection.
     pub fn field_ident(&self) -> syn::Result<Ident> {
         if let Some(alias) = &self.alias {
             return Ok(alias.clone());
@@ -296,16 +299,33 @@ fn alias_ident(alias: &Ident) -> syn::Result<Ident> {
 }
 
 /// Derives the field identifier of a schema column marker path.
+/// Derives the field identifier of a schema column marker path.
+///
+/// A marker whose type arguments admit no naming rule — an array or a slice
+/// argument such as `Blob<[u8; 4]>` — names no field: inventing one would
+/// detach the field from the marker it projects and hide the offending
+/// projection behind an unrelated name. Such a marker is reported on its own
+/// path instead, with the alias remedy that always works.
 fn column_field_ident(path: &Path) -> syn::Result<Ident> {
-    match path.segments.last() {
-        Some(segment) => match segment_label(segment) {
-            Some(label) => to_ident(&label, segment.ident.span()),
-            None => to_ident("column", Span::call_site()),
-        },
-        None => to_ident("column", Span::call_site()),
-    }
+    let Some(segment) = path.segments.last() else {
+        return Err(unnamable_marker(path));
+    };
+
+    let Some(label) = segment_label(segment) else {
+        return Err(unnamable_marker(path));
+    };
+
+    to_ident(&label, segment.ident.span())
 }
 
+/// Reports a marker whose type arguments admit no field name.
+fn unnamable_marker(path: &Path) -> syn::Error {
+    syn::Error::new_spanned(
+        path,
+        "the field name of this marker cannot be derived; \
+         name the projection explicitly with `as <alias>` or `alias: <target>`",
+    )
+}
 /// Derives the field identifier of an expression, if it names a column.
 fn expr_field_ident(expr: &Expr) -> syn::Result<Option<Ident>> {
     match expr {
@@ -328,6 +348,10 @@ fn expr_field_ident(expr: &Expr) -> syn::Result<Option<Ident>> {
 /// A plain segment (`UserId`) labels itself, a transparent wrapper with a single
 /// type argument (`Nullable<C>`) labels as its inner column, and a wrapper
 /// carrying an alias and a column (`AliasedCol<A, C>`) labels as both.
+///
+/// A type argument that is not a type path has no naming rule, so the segment
+/// reports no label and its caller rejects the marker instead of naming the
+/// field after a fallback.
 fn segment_label(segment: &PathSegment) -> Option<String> {
     let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return Some(to_snake_case(&segment.ident.to_string()));
@@ -347,6 +371,11 @@ fn segment_label(segment: &PathSegment) -> Option<String> {
     })
 }
 
+/// Labels a type argument of a marker.
+///
+/// Only a type path has a naming rule. Every other type — an array, a slice, a
+/// reference, a tuple, a pointer — has none, so it reports no label and the
+/// marker is rejected by its caller rather than named after an invented one.
 fn type_label(ty: &Type) -> Option<String> {
     match ty {
         Type::Path(path) => path.path.segments.last().and_then(segment_label),

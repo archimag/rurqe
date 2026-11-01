@@ -215,6 +215,48 @@ fn labels_that_are_not_identifiers_are_reported() {
         );
     }
 }
+
+#[test]
+fn markers_with_type_arguments_that_admit_no_name_are_reported() {
+    for source in ["Blob::<[u8; 4]>", "Blob::<&[u8]>", "Nested::<Blob<[u8; 4]>>"] {
+        let item: ProjectionItem = parse_str(source).expect("valid projection");
+        let error = item.field_ident().expect_err("the marker cannot name a field");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("cannot be derived"),
+            "unexpected message for `{source}`: {message}"
+        );
+        assert!(
+            message.contains("as <alias>"),
+            "no remedy in `{source}`: {message}"
+        );
+    }
+}
+
+#[test]
+fn two_unnamable_markers_are_reported_instead_of_sharing_a_fallback_name() {
+    let list: ProjectionList =
+        parse_str("Blob::<[u8; 4]>, Blob::<&[u8]>").expect("valid projection list");
+
+    let error = ensure_unique_field_names(&list).expect_err("neither marker can name a field");
+
+    assert!(error.to_string().contains("cannot be derived"), "unexpected message: {error}");
+    assert!(
+        !error.to_string().contains("more than one projection"),
+        "the derivation is reported before any duplicate: {error}"
+    );
+}
+
+#[test]
+fn an_unnamable_marker_accepts_an_explicit_alias() {
+    let item: ProjectionItem = parse_str("payload: Blob::<[u8; 4]>").expect("valid projection");
+    assert_eq!(item.field_ident().expect("the alias names the field"), "payload");
+
+    let item: ProjectionItem = parse_str("Blob::<[u8; 4]> as payload").expect("valid projection");
+    assert_eq!(item.field_ident().expect("the alias names the field"), "payload");
+}
+
 #[test]
 fn generic_argument_lists_do_not_split_an_item() {
     let list: ProjectionList = parse_str("AliasedCol::<Manager, UserId>, users::EMAIL")
