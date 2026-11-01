@@ -54,6 +54,13 @@ pub enum PgError {
         /// Why the value does not decode.
         reason: String,
     },
+    /// A catalog query or one of its columns could not be read.
+    ///
+    /// The message names the catalog section — `tables`, `columns`, `indexes` —
+    /// and, when a single column is at fault, that column, so an operator knows
+    /// which introspection statement produced the failure instead of reading a
+    /// driver error stripped of its context.
+    Catalog(String),
     /// The connection is poisoned and refuses to execute further statements.
     ///
     /// A poison record is written when the adapter can no longer prove that the
@@ -99,6 +106,7 @@ impl fmt::Display for PgError {
                 f,
                 "invalid value for PostgreSQL column type `{column_type}`: {reason}"
             ),
+            PgError::Catalog(reason) => write!(f, "PostgreSQL catalog error: {reason}"),
             PgError::ConnectionPoisoned { reason } => {
                 write!(f, "the PostgreSQL connection is poisoned: {reason}")
             }
@@ -118,6 +126,7 @@ impl StdError for PgError {
             PgError::Driver(error) => Some(error),
             PgError::UnsupportedType(_) => None,
             PgError::InvalidValue { .. } => None,
+            PgError::Catalog(_) => None,
             PgError::ConnectionPoisoned { .. } => None,
             PgError::AbandonedTransaction { .. } => None,
             #[cfg(feature = "deadpool-postgres")]

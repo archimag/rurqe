@@ -1,10 +1,16 @@
 //! PostgreSQL dialect implementation and runtime adapters for RURQE.
 
 pub use rurqe_core;
+#[cfg(feature = "migrate")]
+pub use rurqe_migrate;
 
 mod backend;
 mod dialect;
 mod expressions;
+#[cfg(feature = "migrate")]
+pub mod introspect;
+#[cfg(feature = "migrate")]
+pub mod migrate;
 
 pub use dialect::{Pg14, Pg15, Pg16, PgVersion, Postgres};
 pub use expressions::{

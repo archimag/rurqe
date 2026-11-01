@@ -9,6 +9,7 @@ description = "PostgreSQL dialect implementation and runtime adapters for RURQE"
 
 [dependencies]
 rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
+rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0", optional = true }
 tracing = "0.1"
 bytes = { version = "1", optional = true }
 chrono = { version = "0.4", optional = true }
@@ -36,6 +37,11 @@ tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "dep:futures-core", "chrono
 # coupling is declared here and enforced at the module that depends on it.
 deadpool-postgres = ["dep:deadpool-postgres", "tokio-postgres"]
 r2d2 = ["dep:r2d2", "postgres"]
+# The migration protocol of the crate — the history statements, the advisory
+# lock, the backend the runner drives, and the catalog introspection behind it —
+# executes through the synchronous driver, so the feature carries that driver
+# instead of leaving the implication implicit.
+migrate = ["dep:rurqe-migrate", "postgres"]
 # A value family is forwarded to the drivers that are compiled in, so a driver
 # receives the encodings of exactly the families this crate enables.
 decimal = ["dep:rust_decimal", "rurqe-core/decimal"]

@@ -1089,6 +1089,7 @@ dependencies = [
  "r2d2",
  "r2d2_postgres",
  "rurqe-core",
+ "rurqe-migrate",
  "rust_decimal",
  "serde_json",
  "tokio",
