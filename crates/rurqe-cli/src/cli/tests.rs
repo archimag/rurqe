@@ -1554,3 +1554,31 @@ fn a_value_position_never_binds_another_option() {
         .expect_err("the output path is required");
     assert_eq!(missing.to_string(), "option `--output` requires a value");
 }
+
+#[test]
+fn a_missing_conventional_stage_is_reported_at_the_artifact_directory() {
+    let dir = scratch("conventional-stage");
+    let absent = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+
+    // No configuration and no flag: the cold start reads the declarative stage
+    // of the built-in conventions and names the path it looked at verbatim.
+    let error = run_cli_with_config(
+        vec![
+            "rurqe".to_owned(),
+            "stage".to_owned(),
+            "init".to_owned(),
+            "--version".to_owned(),
+            "1".to_owned(),
+            "--database-url".to_owned(),
+            ":memory:".to_owned(),
+        ],
+        &absent,
+    )
+    .expect_err("the conventional stage directory is missing");
+
+    let expected = dir.join("rurqe").join("schema").display().to_string();
+    assert!(
+        error.to_string().contains(&expected),
+        "the diagnostic names the conventional stage `{expected}`: {error}"
+    );
+}

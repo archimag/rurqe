@@ -12,8 +12,8 @@ use rurqe_cli::introspect::{
 };
 use rurqe_cli::run_cli;
 use rurqe_migrate::catalog::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
+use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::migration::Migration;
-
 /// The argv a `cargo rurqe ...` invocation reaches the toolchain with.
 ///
 /// Cargo dispatches the subcommand as `cargo-rurqe rurqe <command>`, so every
@@ -32,6 +32,21 @@ fn run_binary(args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rurqe"))
         .arg("rurqe")
         .args(args)
+        .output()
+        .expect("the shipped binary runs")
+}
+
+/// Runs one `cargo rurqe ...` invocation inside `directory`.
+///
+/// The built-in conventions resolve against the working directory the binary
+/// runs in and the `rurqe.toml` it holds, so a regression of those conventions
+/// runs the shipped binary inside a project of its own instead of the checkout
+/// the test binary was built in.
+fn run_binary_in(directory: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_cargo-rurqe"))
+        .arg("rurqe")
+        .args(args)
+        .current_dir(directory)
         .output()
         .expect("the shipped binary runs")
 }
@@ -920,4 +935,234 @@ fn the_single_binary_dispatches_every_subcommand() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// The declarative definition of the `users` table used by the layout regressions.
+const CONVENTIONAL_USERS: &str =
+    "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);";
+
+#[test]
+fn the_built_in_conventions_place_every_artifact_under_rurqe() {
+    let workspace = temp_workspace("conventional-layout");
+    let stage_dir = workspace.join("rurqe").join("schema");
+    fs::create_dir_all(&stage_dir).expect("create the conventional stage");
+    fs::write(stage_dir.join("users.sql"), CONVENTIONAL_USERS).expect("write the stage script");
+
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch(CONVENTIONAL_USERS).expect("create schema");
+    }
+
+    // No artifact path is named on the command line: each one is resolved from
+    // the built-in conventions beneath the artifact directory of the project.
+    let output = run_binary_in(
+        &workspace,
+        &[
+            "stage",
+            "commit",
+            "--version",
+            "4",
+            "--database-url",
+            "app.db",
+        ],
+    );
+    let report = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "`stage commit` failed: {report}");
+
+    // The report and the filesystem agree on the one layout.
+    for artifact in [
+        "rurqe/schema.lock",
+        "rurqe/migrations/checkpoint.toml",
+        "rurqe/migrations/checkpoint-stage",
+    ] {
+        assert!(
+            report.contains(artifact),
+            "the report does not name `{artifact}`: {report}"
+        );
+    }
+
+    let lock = workspace.join("rurqe").join("schema.lock");
+    let checkpoint = workspace
+        .join("rurqe")
+        .join("migrations")
+        .join("checkpoint.toml");
+    let boundary = workspace
+        .join("rurqe")
+        .join("migrations")
+        .join("checkpoint-stage");
+
+    assert!(
+        lock.is_file(),
+        "the snapshot lands under the artifact directory"
+    );
+    assert!(
+        checkpoint.is_file(),
+        "the marker lands in the conventional migration directory"
+    );
+    assert_eq!(
+        fs::read_to_string(boundary.join("users.sql")).expect("read the boundary snapshot"),
+        CONVENTIONAL_USERS,
+        "the boundary is derived from the stem of the conventional marker"
+    );
+
+    // The marker anchors the digest of the snapshot beside it.
+    let snapshot = fs::read_to_string(&lock).expect("read the snapshot");
+    let catalog = SchemaCatalog::from_lock(&snapshot).expect("the snapshot is canonical");
+    let marker = Checkpoint::load(&checkpoint)
+        .expect("the marker is readable")
+        .expect("the marker exists");
+
+    assert_eq!(marker.pruned_up_to_version().to_string(), "4");
+    assert_eq!(marker.schema_hash(), catalog.checksum());
+}
+
+#[test]
+fn the_generated_module_keeps_its_source_path_while_the_snapshot_follows_the_conventions() {
+    let workspace = temp_workspace("conventional-codegen");
+    let db = workspace.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY);")
+            .expect("create schema");
+    }
+
+    // Neither `--output` nor `--lock-path` is named: the generated module keeps
+    // the built-in path in the application sources, and the catalog snapshot
+    // lands among the lifecycle artifacts like every other one.
+    let output = run_binary_in(&workspace, &["codegen", "--database-url", "app.db"]);
+    assert!(
+        output.status.success(),
+        "`codegen` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lock = workspace.join("rurqe").join("schema.lock");
+    let module = workspace.join("src").join("schema.rs");
+
+    assert!(
+        lock.is_file(),
+        "the snapshot follows the artifact conventions"
+    );
+    assert!(
+        module.is_file(),
+        "the module keeps the built-in source path"
+    );
+    assert!(
+        !workspace.join("rurqe").join("schema.rs").exists(),
+        "the module never lands among the artifacts"
+    );
+    SchemaCatalog::from_lock(&fs::read_to_string(&lock).expect("read the snapshot"))
+        .expect("the snapshot is canonical");
+
+    // `verify` reads the very same pair through the same cascade.
+    let output = run_binary_in(&workspace, &["verify", "--database-url", "app.db"]);
+    assert!(
+        output.status.success(),
+        "`verify` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn the_conventional_paths_carry_a_verification_and_an_applied_tail() {
+    let workspace = temp_workspace("conventional-lifecycle");
+    let stage_dir = workspace.join("rurqe").join("schema");
+    fs::create_dir_all(&stage_dir).expect("create the conventional stage");
+    fs::write(
+        stage_dir.join("users.sql"),
+        "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+    )
+    .expect("write the stage script");
+
+    // A project that committed no marker is told which conventional marker the
+    // prune looked for.
+    let output = run_binary_in(&workspace, &["prune", "--before", "1"]);
+    assert!(
+        !output.status.success(),
+        "pruning a project without a checkpoint fails"
+    );
+    let failure = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        failure.contains("rurqe/migrations/checkpoint.toml"),
+        "the diagnostic names the conventional marker: {failure}"
+    );
+
+    // The cold start initialises the database straight from the conventional
+    // declarative stage, and the commit seals the very same pair of artifacts.
+    let output = run_binary_in(
+        &workspace,
+        &[
+            "stage",
+            "init",
+            "--version",
+            "1",
+            "--database-url",
+            "cold.db",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "`stage init` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = run_binary_in(
+        &workspace,
+        &[
+            "stage",
+            "commit",
+            "--version",
+            "1",
+            "--database-url",
+            "cold.db",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "`stage commit` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The verification replays the boundary snapshot the commit recorded beside
+    // the conventional marker without naming a single path.
+    let output = run_binary_in(&workspace, &["stage", "verify", "--scratch-url", ":memory:"]);
+    assert!(
+        output.status.success(),
+        "`stage verify` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The active tail lives in the conventional migration directory as well:
+    // `migrate up` reads it and its marker without a path flag.
+    fs::write(
+        workspace
+            .join("rurqe")
+            .join("migrations")
+            .join("V2__orders.sql"),
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY);",
+    )
+    .expect("write the tail script");
+
+    let output = run_binary_in(&workspace, &["migrate", "up", "--database-url", "cold.db"]);
+    assert!(
+        output.status.success(),
+        "`migrate up` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let db = workspace.join("cold.db");
+    let conn = rusqlite::Connection::open(&db).expect("open the cold database");
+    let applied: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'orders'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the catalog");
+
+    assert_eq!(
+        applied, 1,
+        "the tail above the conventional checkpoint was applied"
+    );
 }
