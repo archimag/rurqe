@@ -363,7 +363,7 @@ fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Ta
         // overload before any parameter is encoded. The literal is built from an
         // `i32`, so it holds nothing but digits and a sign.
         JsonKey::Index(index) => {
-            let path: Expr<i32> = Expr::raw_fragments(vec![index.to_string()], Vec::new());
+            let path: Expr<i32> = Expr::raw_owned_fragments(vec![index.to_string()], Vec::new());
             column.dialect_op::<i32, String, _>(op, path)
         }
     }
@@ -384,26 +384,20 @@ fn column_binary_op<C: Column>(op: &'static str, val: &str) -> Expr<bool, C::Tab
 
 /// Builds a `to_tsvector(?)` expression.
 pub fn to_tsvector(text: &str) -> Expr<String> {
-    Expr::raw_fragments(
-        vec!["to_tsvector(".to_owned(), ")".to_owned()],
-        vec![SqlVal::Text(text.to_owned())],
-    )
+    let params = vec![SqlVal::Text(text.to_owned())];
+    Expr::raw_fragments(&["to_tsvector(", ")"], params)
 }
 
 /// Builds a `to_tsquery(?)` expression.
 pub fn to_tsquery(query: &str) -> Expr<String> {
-    Expr::raw_fragments(
-        vec!["to_tsquery(".to_owned(), ")".to_owned()],
-        vec![SqlVal::Text(query.to_owned())],
-    )
+    let params = vec![SqlVal::Text(query.to_owned())];
+    Expr::raw_fragments(&["to_tsquery(", ")"], params)
 }
 
 /// Builds a `plainto_tsquery(?)` expression.
 pub fn plainto_tsquery(query: &str) -> Expr<String> {
-    Expr::raw_fragments(
-        vec!["plainto_tsquery(".to_owned(), ")".to_owned()],
-        vec![SqlVal::Text(query.to_owned())],
-    )
+    let params = vec![SqlVal::Text(query.to_owned())];
+    Expr::raw_fragments(&["plainto_tsquery(", ")"], params)
 }
 
 /// The array value a column holds, together with the element type it carries.

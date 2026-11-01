@@ -275,7 +275,7 @@ fn an_aggregate_trunk_orders_by_an_aggregate_and_a_constant() {
         .push(OrderCriterion::new(count_star(), OrderDirection::Desc));
     ast.order_by.push(OrderCriterion::new(
         ExprKind::Raw {
-            fragments: vec!["1".to_owned()],
+            fragments: vec!["1".to_owned()].into(),
             params: Vec::new(),
         },
         OrderDirection::Asc,

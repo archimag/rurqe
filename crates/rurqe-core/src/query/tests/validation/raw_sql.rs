@@ -28,7 +28,7 @@ fn an_unbalanced_raw_expression_is_rejected_before_rendering() {
     // statement is rejected before a single character of it is rendered.
     let mut ast = empty_ast();
     ast.projections.push(ExprKind::Raw {
-        fragments: vec!["1".to_owned(), " + 1".to_owned()],
+        fragments: vec!["1".to_owned(), " + 1".to_owned()].into(),
         params: Vec::new(),
     });
 

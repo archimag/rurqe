@@ -85,13 +85,16 @@ fn a_forged_marker_keeps_the_dropped_modifier_visible() {
     // silently should such a tree ever appear.
     let forged: Expr<i64, (), DirectAggregate> = Expr::new(ExprKind::Value(SqlVal::I64(1)));
 
+    let marked = forged.distinct();
+
+    let ExprKind::Raw { fragments, params } = marked.kind() else {
+        panic!("expected the diagnostic placeholder, got {:?}", marked.kind());
+    };
     assert_eq!(
-        forged.distinct().kind(),
-        &ExprKind::Raw {
-            fragments: vec!["/* invalid aggregate marker: DISTINCT modifier dropped */".to_owned()],
-            params: Vec::new(),
-        }
+        fragments.first(),
+        Some("/* invalid aggregate marker: DISTINCT modifier dropped */")
     );
+    assert!(params.is_empty());
 }
 
 #[test]
@@ -104,13 +107,14 @@ fn a_forged_marker_keeps_the_dropped_filter_visible() {
         name: "total",
     });
 
+    let marked = forged.filter_where(Expr::column::<OrderId>().gt(10i64));
+
+    let ExprKind::Raw { fragments, params } = marked.kind() else {
+        panic!("expected the diagnostic placeholder, got {:?}", marked.kind());
+    };
     assert_eq!(
-        forged
-            .filter_where(Expr::column::<OrderId>().gt(10i64))
-            .kind(),
-        &ExprKind::Raw {
-            fragments: vec!["/* invalid aggregate marker: FILTER predicate dropped */".to_owned()],
-            params: Vec::new(),
-        }
+        fragments.first(),
+        Some("/* invalid aggregate marker: FILTER predicate dropped */")
     );
+    assert!(params.is_empty());
 }

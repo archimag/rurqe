@@ -65,7 +65,8 @@ impl Parse for RawSqlInput {
 /// fragments as literal `?`, `{`, and `}` — a JSON object written as
 /// `'{{"role": ?}}'` therefore binds the parameter without its braces being read as
 /// placeholders. The split happens once, at compile time; the generated code only
-/// binds the parameters and hands the ready-made fragments to `Expr::raw_fragments`.
+/// binds the parameters and hands the ready-made fragments to `Expr::raw_fragments`
+/// as borrowed constant data, so an evaluation copies no fragment text.
 ///
 /// Every argument is bound through [`ToSqlVal::to_sql_val`], the same conversion
 /// contract the rest of the query builder encodes parameters with, so the macro
@@ -100,9 +101,12 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 #( ::rurqe::__core::expr::ToSqlVal::to_sql_val(#args) ),*
             ];
             ::rurqe::__core::expr::Expr::<#ty>::raw_fragments(
-                ::std::vec![ #( ::std::string::String::from(#fragments) ),* ],
+                &[ #( #fragments ),* ],
                 __rurqe_params,
             )
         }
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -7,7 +7,7 @@ fn sql_macro_constructs_parameterless_expression() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["1 = 1".into()],
+            fragments: vec!["1 = 1".into()].into(),
             params: vec![],
         }
     );
@@ -19,7 +19,7 @@ fn sql_macro_accepts_explicit_type_and_question_marks() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["strftime('%Y-%m', created_at) = ".into(), "".into()],
+            fragments: vec!["strftime('%Y-%m', created_at) = ".into(), "".into()].into(),
             params: vec![SqlVal::Text("2024-01".into())],
         }
     );
@@ -31,7 +31,7 @@ fn sql_macro_accepts_angle_bracket_type() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["COUNT(*)".into()],
+            fragments: vec!["COUNT(*)".into()].into(),
             params: vec![],
         }
     );
@@ -43,7 +43,7 @@ fn sql_macro_handles_escaped_question_marks_and_multiple_arguments() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["data ? 'role' AND age >= ".into(), "".into()],
+            fragments: vec!["data ? 'role' AND age >= ".into(), "".into()].into(),
             params: vec![SqlVal::I64(18)],
         }
     );
@@ -55,7 +55,7 @@ fn raw_sql_macro_alias_functions_identically() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["foo = ".into(), " AND bar = ".into(), "".into()],
+            fragments: vec!["foo = ".into(), " AND bar = ".into(), "".into()].into(),
             params: vec![SqlVal::I64(1), SqlVal::Bool(true)],
         }
     );
@@ -67,7 +67,7 @@ fn sql_macro_binds_optional_parameters_through_to_sql_val() {
     assert_eq!(
         present.kind(),
         &ExprKind::Raw {
-            fragments: vec!["age = ".into(), "".into()],
+            fragments: vec!["age = ".into(), "".into()].into(),
             params: vec![SqlVal::I64(18)],
         }
     );
@@ -76,7 +76,7 @@ fn sql_macro_binds_optional_parameters_through_to_sql_val() {
     assert_eq!(
         absent.kind(),
         &ExprKind::Raw {
-            fragments: vec!["age = ".into(), "".into()],
+            fragments: vec!["age = ".into(), "".into()].into(),
             params: vec![SqlVal::Null],
         }
     );
@@ -85,7 +85,7 @@ fn sql_macro_binds_optional_parameters_through_to_sql_val() {
     assert_eq!(
         owned.kind(),
         &ExprKind::Raw {
-            fragments: vec!["name = ".into(), "".into()],
+            fragments: vec!["name = ".into(), "".into()].into(),
             params: vec![SqlVal::Text("root".into())],
         }
     );
@@ -101,7 +101,7 @@ fn sql_macro_binds_json_parameters_through_to_sql_val() {
     assert_eq!(
         owned.kind(),
         &ExprKind::Raw {
-            fragments: vec!["payload @> ".into(), "".into()],
+            fragments: vec!["payload @> ".into(), "".into()].into(),
             params: vec![SqlVal::Json(serde_json::json!({ "role": "admin" }))],
         }
     );
@@ -111,7 +111,7 @@ fn sql_macro_binds_json_parameters_through_to_sql_val() {
     assert_eq!(
         borrowed.kind(),
         &ExprKind::Raw {
-            fragments: vec!["payload @> ".into(), "".into()],
+            fragments: vec!["payload @> ".into(), "".into()].into(),
             params: vec![SqlVal::Json(serde_json::json!([1, 2, 3]))],
         }
     );
@@ -125,7 +125,7 @@ fn sql_macro_binds_borrowed_values_without_moving_them() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["name = ".into(), " AND parent = ".into(), "".into()],
+            fragments: vec!["name = ".into(), " AND parent = ".into(), "".into()].into(),
             params: vec![SqlVal::Text("root".into()), SqlVal::Text("root".into()),],
         }
     );
@@ -138,7 +138,7 @@ fn sql_macro_unescapes_braces_in_json_literals() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["payload @> '{\"role\": \"admin\"}'::jsonb".into()],
+            fragments: vec!["payload @> '{\"role\": \"admin\"}'::jsonb".into()].into(),
             params: vec![],
         }
     );
@@ -150,7 +150,7 @@ fn sql_macro_unescapes_braces_around_parameters() {
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
-            fragments: vec!["payload @> '{\"role\": ".into(), "}'::jsonb".into(),],
+            fragments: vec!["payload @> '{\"role\": ".into(), "}'::jsonb".into(),].into(),
             params: vec![SqlVal::Text("admin".into())],
         }
     );

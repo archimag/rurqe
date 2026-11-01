@@ -11,6 +11,7 @@
 
 use super::Expr;
 use crate::expr::ast::{ExprKind, MergeDialect, MergedDialect, SubqueryOp};
+use crate::expr::fragments::RawFragments;
 use crate::expr::ops::{CombineAggr, CombinedAggr, InSubquery, IntoExpr, IntoExprList};
 use crate::expr::scope::{MergeScope, Merged, Merged3};
 use crate::expr::val::BinaryOp;
@@ -368,8 +369,13 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
             // `x IN ()` is a syntax error in every dialect, so an empty
             // membership degrades into a constant predicate: nothing is a member
             // of an empty set, and everything is absent from it.
+            let fragments = if negated {
+                RawFragments::Static(&["1 = 1"])
+            } else {
+                RawFragments::Static(&["1 = 0"])
+            };
             return Expr::new(ExprKind::Raw {
-                fragments: vec![String::from(if negated { "1 = 1" } else { "1 = 0" })],
+                fragments,
                 params: Vec::new(),
             });
         }

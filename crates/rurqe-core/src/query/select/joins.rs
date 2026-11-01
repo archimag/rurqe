@@ -5,7 +5,7 @@
 //! join is expressed by the return type instead of by the rendered clause.
 
 use crate::dialect::{Dialect, SupportsFullOuterJoin, SupportsLateralJoin};
-use crate::expr::{DialectInScope, Expr, ExprKind, JoinAst, JoinKind};
+use crate::expr::{DialectInScope, Expr, ExprKind, JoinAst, JoinKind, RawFragments};
 use crate::query::cte::{DerivedTable, Lateral};
 use crate::query::scope::{
     CrossJoined, CrossLateralJoined, FullOuterJoined, Joined, LeftJoined, LeftLateralJoined,
@@ -222,7 +222,7 @@ impl<D: Dialect + SupportsLateralJoin, Tables: TableScope, Output, Projected>
             kind: JoinKind::LeftLateral,
             table: T::table_ref(),
             on: Some(ExprKind::Raw {
-                fragments: vec!["true".to_owned()],
+                fragments: RawFragments::Static(&["true"]),
                 params: Vec::new(),
             }),
             lateral: Some(lateral.query),

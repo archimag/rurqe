@@ -4,6 +4,7 @@
 use core::marker::PhantomData;
 
 use super::builder::{Aggregate, DirectAggregate, Expr, NonAggregate};
+use super::fragments::RawFragments;
 use super::operand::FunctionOperand;
 use super::ops::{AnySubquery, CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
@@ -88,8 +89,8 @@ pub enum ExprKind {
     },
     /// A raw SQL expression with bound parameters and dialect-aware placeholder rendering.
     Raw {
-        /// The SQL fragments separated by parameter placeholders.
-        fragments: Vec<String>,
+        /// The literal fragments separated by parameter placeholders.
+        fragments: RawFragments,
         /// The bound parameter values to insert between fragments.
         params: Vec<SqlVal>,
     },

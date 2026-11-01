@@ -115,7 +115,7 @@ fn exists_subquery(inner: SelectAst) -> ExprKind {
 /// A raw expression whose fragment/parameter census does not balance.
 fn unbalanced_raw() -> ExprKind {
     ExprKind::Raw {
-        fragments: vec!["1".to_owned(), " + 1".to_owned()],
+        fragments: vec!["1".to_owned(), " + 1".to_owned()].into(),
         params: Vec::new(),
     }
 }

@@ -182,7 +182,7 @@ fn a_distinct_ordering_matches_an_aliased_projection_and_a_bare_position() {
     ));
     ast.order_by.push(OrderCriterion::new(
         ExprKind::Raw {
-            fragments: vec!["1".to_owned()],
+            fragments: vec!["1".to_owned()].into(),
             params: Vec::new(),
         },
         OrderDirection::Asc,

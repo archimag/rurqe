@@ -149,7 +149,7 @@ fn sql_expands_through_the_facade() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::Raw {
-            fragments: vec!["age >= ".into(), "".into()],
+            fragments: vec!["age >= ".into(), "".into()].into(),
             params: vec![SqlVal::I64(18)],
         }
     );
@@ -162,7 +162,7 @@ fn raw_sql_expands_through_the_facade() {
     assert_eq!(
         predicate.kind(),
         &ExprKind::Raw {
-            fragments: vec!["active = ".into(), "".into()],
+            fragments: vec!["active = ".into(), "".into()].into(),
             params: vec![SqlVal::Bool(true)],
         }
     );

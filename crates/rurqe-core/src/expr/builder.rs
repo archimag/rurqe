@@ -23,6 +23,7 @@ pub use aggregates::{AcceptsAggregateClause, AggregateMarker, DirectAggregate, F
 use core::marker::PhantomData;
 
 use super::ast::{CaseBuilder, ExprKind, MergeDialect, MergedDialect};
+use super::fragments::RawFragments;
 use super::functions::SqlCastTarget;
 use super::ops::IntoExpr;
 use super::qualify::qualify_references;
@@ -454,15 +455,21 @@ impl<T> Expr<T, ()> {
     /// rendered into invalid SQL.
     pub fn raw(template: &str, params: Vec<SqlVal>) -> Result<Self, RawSqlError> {
         let fragments = parse_raw_sql(template, params.len())?;
-        Ok(Self::new(ExprKind::Raw { fragments, params }))
+        Ok(Self::new(ExprKind::Raw {
+            fragments: fragments.into(),
+            params,
+        }))
     }
 
-    /// Builds a raw SQL expression from fragments split by the `sql!` macro.
+    /// Builds a raw SQL expression from fragments fixed at compile time.
     ///
     /// The `sql!` and `raw_sql!` macros validate the placeholder census of their
     /// template at compile time and split it into literal text fragments, so the
     /// constructor only binds the parameters and the runtime never re-parses the
-    /// template on each call.
+    /// template on each call. The fragments are borrowed from the constant data of
+    /// the program, so evaluating the produced expression copies no fragment text;
+    /// a template split at run time goes through
+    /// [`raw_owned_fragments`](Self::raw_owned_fragments) instead.
     ///
     /// The fragments interleave with the parameters: the renderer emits the
     /// fragments in order and binds one parameter after every fragment except
@@ -477,8 +484,26 @@ impl<T> Expr<T, ()> {
     /// reaches its buffers. A template that still needs splitting goes through
     /// [`raw`](Self::raw), which validates the census and returns a typed error.
     #[doc(hidden)]
-    pub fn raw_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
-        Self::new(ExprKind::Raw { fragments, params })
+    pub fn raw_fragments(fragments: &'static [&'static str], params: Vec<SqlVal>) -> Self {
+        Self::new(ExprKind::Raw {
+            fragments: RawFragments::Static(fragments),
+            params,
+        })
+    }
+
+    /// Builds a raw SQL expression from fragments assembled at run time.
+    ///
+    /// The constructor serves the expressions whose fragments are only known once
+    /// the statement is built, an array index carried as an integer literal being
+    /// the example this crate uses. The fragments interleave with the parameters
+    /// exactly as those of [`raw_fragments`](Self::raw_fragments) do, and the
+    /// produced expression owns the text it was given.
+    #[doc(hidden)]
+    pub fn raw_owned_fragments(fragments: Vec<String>, params: Vec<SqlVal>) -> Self {
+        Self::new(ExprKind::Raw {
+            fragments: fragments.into(),
+            params,
+        })
     }
 }
 

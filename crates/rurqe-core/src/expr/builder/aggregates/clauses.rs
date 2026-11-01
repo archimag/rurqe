@@ -6,6 +6,7 @@
 
 use super::markers::{AcceptsAggregateClause, FilteredAggregate};
 use crate::expr::ast::{ExprKind, MergeDialect, MergedDialect};
+use crate::expr::fragments::RawFragments;
 use crate::expr::scope::{MergeScope, Merged};
 use crate::expr::Expr;
 
@@ -120,7 +121,7 @@ where
                 "an expression marked as an aggregate call does not hold one; its DISTINCT modifier is replaced by a diagnostic placeholder"
             );
             return Expr::new(ExprKind::Raw {
-                fragments: vec![DROPPED_DISTINCT_PLACEHOLDER.to_owned()],
+                fragments: RawFragments::Static(&[DROPPED_DISTINCT_PLACEHOLDER]),
                 params: Vec::new(),
             });
         };
@@ -265,7 +266,7 @@ where
                 "an expression marked as an aggregate call does not hold one; its FILTER predicate is replaced by a diagnostic placeholder"
             );
             return Expr::new(ExprKind::Raw {
-                fragments: vec![DROPPED_FILTER_PLACEHOLDER.to_owned()],
+                fragments: RawFragments::Static(&[DROPPED_FILTER_PLACEHOLDER]),
                 params: Vec::new(),
             });
         };

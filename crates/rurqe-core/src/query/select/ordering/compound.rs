@@ -21,7 +21,7 @@ use crate::schema::{Column, Table};
 /// assembled statement checks it against the projection list.
 fn compound_order_position(index: u32) -> ExprKind {
     ExprKind::Raw {
-        fragments: vec![index.to_string()],
+        fragments: vec![index.to_string()].into(),
         params: Vec::new(),
     }
 }

@@ -653,7 +653,7 @@ fn borrowed_newtypes_bind_as_parameters() {
     assert_eq!(
         from_macro.kind(),
         &ExprKind::Raw {
-            fragments: vec!["\"accounts\".\"id\" = ".to_owned(), String::new()],
+            fragments: vec!["\"accounts\".\"id\" = ".into(), String::new()].into(),
             params: vec![SqlVal::I64(7)],
         }
     );
@@ -668,7 +668,7 @@ fn borrowed_newtypes_bind_as_parameters() {
     assert_eq!(
         from_macro.kind(),
         &ExprKind::Raw {
-            fragments: vec!["\"wallets\".\"address\" = ".to_owned(), String::new()],
+            fragments: vec!["\"wallets\".\"address\" = ".into(), String::new()].into(),
             params: vec![SqlVal::Text("addr_1".to_owned())],
         }
     );

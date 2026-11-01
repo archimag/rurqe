@@ -82,7 +82,7 @@ fn a_compound_ordering_by_a_multi_fragment_raw_expression_is_rejected() {
     });
     ast.compound_order_by.push(OrderCriterion::new(
         ExprKind::Raw {
-            fragments: vec!["1".to_owned(), " + 1".to_owned()],
+            fragments: vec!["1".to_owned(), " + 1".to_owned()].into(),
             params: Vec::new(),
         },
         OrderDirection::Asc,
@@ -101,7 +101,7 @@ fn a_compound_ordering_by_a_single_fragment_position_is_accepted() {
     });
     ast.compound_order_by.push(OrderCriterion::new(
         ExprKind::Raw {
-            fragments: vec!["1".to_owned()],
+            fragments: vec!["1".to_owned()].into(),
             params: Vec::new(),
         },
         OrderDirection::Asc,
@@ -180,7 +180,7 @@ fn a_compound_statement_embedded_in_an_assignment_orders_by_an_output_position()
     let mut compound = labelled_compound();
     compound.compound_order_by.push(OrderCriterion::new(
         ExprKind::Raw {
-            fragments: vec!["1".to_owned()],
+            fragments: vec!["1".to_owned()].into(),
             params: Vec::new(),
         },
         OrderDirection::Desc,
@@ -239,7 +239,7 @@ fn a_compound_statement_ordering_by_a_position_outside_its_arity_is_rejected() {
     let mut compound = labelled_compound();
     compound.compound_order_by.push(OrderCriterion::new(
         ExprKind::Raw {
-            fragments: vec!["2".to_owned()],
+            fragments: vec!["2".to_owned()].into(),
             params: Vec::new(),
         },
         OrderDirection::Asc,

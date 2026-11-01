@@ -234,7 +234,7 @@ fn empty_membership_lists_degrade_into_a_constant_predicate() {
     assert_eq!(
         nothing.kind(),
         &ExprKind::Raw {
-            fragments: vec!["1 = 0".to_owned()],
+            fragments: RawFragments::Static(&["1 = 0"]),
             params: Vec::new(),
         }
     );
@@ -243,7 +243,7 @@ fn empty_membership_lists_degrade_into_a_constant_predicate() {
     assert_eq!(
         everything.kind(),
         &ExprKind::Raw {
-            fragments: vec!["1 = 1".to_owned()],
+            fragments: RawFragments::Static(&["1 = 1"]),
             params: Vec::new(),
         }
     );
@@ -342,7 +342,7 @@ fn raw_templates_report_placeholder_mismatches() {
     assert_eq!(
         expression.kind(),
         &ExprKind::Raw {
-            fragments: vec!["COUNT(*)".to_owned()],
+            fragments: RawFragments::Static(&["COUNT(*)"]),
             params: Vec::new(),
         }
     );
@@ -955,7 +955,7 @@ fn a_forged_direct_aggregate_marker_reports_the_dropped_filter_in_every_profile(
         "the placeholder is a single fragment carrying no parameter"
     );
     assert!(
-        fragments[0].contains("FILTER"),
+        fragments.first().is_some_and(|fragment| fragment.contains("FILTER")),
         "the placeholder names the clause it replaced: {fragments:?}"
     );
     assert!(bound.is_empty());
@@ -963,7 +963,7 @@ fn a_forged_direct_aggregate_marker_reports_the_dropped_filter_in_every_profile(
     // The placeholder reaches the rendered statement, so the discarded predicate
     // surfaces in the SQL a caller inspects instead of vanishing in the build.
     let (sql, rendered_params) = render(marked.kind());
-    assert_eq!(sql, fragments[0]);
+    assert_eq!(sql, fragments.first().unwrap_or_default());
     assert!(rendered_params.is_empty());
 }
 
@@ -999,7 +999,7 @@ fn a_forged_filtered_aggregate_marker_reports_the_dropped_distinct_in_every_prof
         "the placeholder is a single fragment carrying no parameter"
     );
     assert!(
-        fragments[0].contains("DISTINCT"),
+        fragments.first().is_some_and(|fragment| fragment.contains("DISTINCT")),
         "the placeholder names the modifier it dropped: {fragments:?}"
     );
     assert!(bound.is_empty());
@@ -1007,7 +1007,7 @@ fn a_forged_filtered_aggregate_marker_reports_the_dropped_distinct_in_every_prof
     // The placeholder reaches the rendered statement, so the dropped modifier
     // surfaces in the SQL a caller inspects instead of vanishing in the build.
     let (sql, rendered_params) = render(marked.kind());
-    assert_eq!(sql, fragments[0]);
+    assert_eq!(sql, fragments.first().unwrap_or_default());
     assert!(rendered_params.is_empty());
 }
 
@@ -1017,10 +1017,7 @@ fn unbalanced_raw_fragments_are_rejected() {
     // a pair violating the interleaving invariant would dispatch SQL with a
     // missing or a misplaced placeholder; the mismatch is reported as a typed
     // error instead of dispatching broken SQL.
-    let expression = Expr::<i64>::raw_fragments(
-        vec!["qty > ".to_owned()],
-        vec![SqlVal::I64(1), SqlVal::I64(10)],
-    );
+    let expression = Expr::<i64>::raw_fragments(&["qty > "], vec![SqlVal::I64(1), SqlVal::I64(10)]);
 
     let mut sql = String::new();
     let mut params = Vec::new();
@@ -1044,7 +1041,7 @@ fn balanced_raw_fragments_bind_their_parameters_in_order() {
     // bound values, which is the shape `parse_raw_sql` splits a template into
     // and the shape the renderer binds correctly.
     let expr = Expr::<i64>::raw_fragments(
-        vec!["qty + ".to_owned(), " AND tax > ".to_owned(), String::new()],
+        &["qty + ", " AND tax > ", ""],
         vec![SqlVal::I64(1), SqlVal::I64(10)],
     );
 
@@ -1052,6 +1049,21 @@ fn balanced_raw_fragments_bind_their_parameters_in_order() {
 
     assert_eq!(sql, "qty + ? AND tax > ?");
     assert_eq!(params, vec![SqlVal::I64(1), SqlVal::I64(10)]);
+}
+
+#[test]
+fn borrowed_and_owned_fragments_compare_by_their_text() {
+    // The AST stays comparable by content: a template the macro split at compile
+    // time and the same template split at run time describe one expression, so
+    // the rules that match one expression against another keep observing the
+    // value it names rather than the storage it chose.
+    let borrowed = Expr::<i64>::raw_fragments(&["qty > ", ""], vec![SqlVal::I64(1)]);
+    let owned = Expr::<i64>::raw_owned_fragments(
+        vec!["qty > ".to_owned(), String::new()],
+        vec![SqlVal::I64(1)],
+    );
+
+    assert_eq!(borrowed.kind(), owned.kind());
 }
 
 #[test]
