@@ -137,40 +137,46 @@ pub fn sql_type(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Bakes the migration scripts of a directory into the calling binary.
+/// Bakes the lifecycle artifacts a project configuration declares into the binary.
 ///
 /// # Resolution
 ///
-/// Without an argument the macro starts at the manifest directory of the calling
-/// crate, walks its ancestors for a `rurqe.toml`, and resolves the migrations
-/// directory through that configuration: its `[migrations].dir` key when the file
-/// declares one, `<root>/migrations` otherwise. No configuration on that walk
-/// leaves the conventional `<manifest>/rurqe/migrations`.
+/// The single optional argument names a `rurqe.toml` resolved against the manifest
+/// directory of the calling crate. The filesystem decides what the path is: a file
+/// is the configuration, while a directory and a path naming nothing are rejected
+/// with an error naming the remedy.
 ///
-/// One optional argument replaces that walk with a path resolved against the
-/// manifest directory. The filesystem decides what the path means: a directory is
-/// the migrations directory itself, while a file is a `rurqe.toml` whose keys
-/// resolve the directory against the directory holding that file.
+/// Without an argument the macro starts at the manifest directory, walks its
+/// ancestors for a `rurqe.toml`, and falls back to the conventional
+/// `<manifest>/rurqe` artifact layout when no ancestor declares one.
 ///
-/// # What the binary carries
+/// # What is baked
 ///
-/// Only the `*.sql` files of the directory itself. A `checkpoint-stage/` snapshot
-/// and the `checkpoint.toml` marker beside them stay artifacts of the toolchain and
-/// never become scripts of the run.
+/// Only raw text: the `(file name, SQL text)` pairs of the top-level `*.sql`
+/// scripts of the migration directory, the text of the `checkpoint.toml` marker
+/// guarding that tail, the `(file name, DDL text)` pairs of the declarative stage,
+/// and the text of the `schema.lock` snapshot. An absent artifact leaves the
+/// lifecycle step it feeds switched off, while a `checkpoint-stage/` snapshot
+/// beside the marker is an artifact of the toolchain and never becomes a script.
 ///
-/// Every script reaches the collection through `include_str!` over its absolute
-/// path, so it is an input of the compilation: editing a script recompiles the
-/// binary that carries it. The collection parses the script names and digests the
-/// SQL text at run time, so a malformed script name stops the process at startup
-/// instead of leaving a gap in the recorded history.
+/// Nothing is parsed while the macro expands: the collection is assembled through
+/// `::rurqe::migrate::EmbeddedMigrations::from_artifacts` at startup, which parses
+/// the scripts, the marker, the stage, and the snapshot with the parsers of the
+/// migration crate, so a malformed artifact stops the process instead of leaving a
+/// gap in the recorded history.
 ///
-/// A directory holding no `*.sql` script, a path naming neither a directory nor a
-/// configuration file, and a configuration the strict parser rejects all stop the
-/// compilation with an error naming the path and the remedy.
+/// Every file reaches the collection through `include_str!` over its absolute
+/// path, so it is an input of the compilation: editing an artifact recompiles the
+/// binary that carries it.
+///
+/// # Rejections
+///
+/// A directory argument, a path naming nothing, a configuration the strict parser
+/// rejects, and a configuration holding neither a tail script nor a stage script
+/// stop the compilation with an error naming the path and the remedy.
 ///
 /// ```ignore
 /// let embedded = embed_migrations!()?;
-/// let embedded = embed_migrations!("../db/migrations")?;
 /// let embedded = embed_migrations!("../rurqe.toml")?;
 /// ```
 #[proc_macro]

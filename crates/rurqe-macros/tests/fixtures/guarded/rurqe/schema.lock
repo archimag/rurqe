@@ -1,0 +1,21 @@
+version = 5
+
+[[tables]]
+name = "orders"
+columns = [
+  { name = "id", type = "int64", nullable = false },
+]
+primary_key = ["id"]
+checks = []
+foreign_keys = []
+indexes = []
+
+[[tables]]
+name = "users"
+columns = [
+  { name = "id", type = "int64", nullable = false },
+]
+primary_key = ["id"]
+checks = []
+foreign_keys = []
+indexes = []

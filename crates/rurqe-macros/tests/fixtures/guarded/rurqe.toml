@@ -1,0 +1,12 @@
+# The guarded fixture the `embed_migrations!` integration tests read: the
+# configuration declares a migration tail, a declarative stage, and the
+# checkpoint marker of the boundary, while the catalog snapshot keeps its
+# conventional location beneath the artifact root.
+root = "rurqe"
+
+[migrations]
+dir = "migrations"
+
+[stage]
+dir = "schema"
+checkpoint = "rurqe/migrations/checkpoint.toml"

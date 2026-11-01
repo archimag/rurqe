@@ -1,0 +1,5 @@
+# The artifact layout the example crate bakes. The macro resolves
+# `[migrations].dir` against the directory holding this file, so the scripts it
+# reads are the `*.sql` files of the directory beside it.
+[migrations]
+dir = "migrations"
