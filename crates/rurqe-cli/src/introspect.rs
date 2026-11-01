@@ -1,48 +1,86 @@
 //! Catalog introspection facade.
 //!
 //! The engine-independent metadata rows, the SQL type mapping, and the catalog
-//! assembly live in [`rurqe_migrate::introspect`], SQLite `PRAGMA` introspection
-//! in [`sqlite`], and PostgreSQL `information_schema` / `pg_catalog`
-//! introspection in [`postgres`]. This facade re-exports that shared vocabulary
-//! together with the engine modules and keeps the engine-agnostic entry points
-//! (`detect_dialect`, `introspect_database`, `introspect_database_schema`) that
-//! open a connection from a database URL.
+//! assembly live in [`rurqe_migrate::introspect`]; the PostgreSQL catalog
+//! statements and the decoding of the rows they return live in
+//! `rurqe_postgres::introspect`, while the SQLite `PRAGMA` reader and its
+//! ratified DDL lexer live in `rurqe_sqlite::introspect`. This facade re-exports
+//! that shared vocabulary beside the engine entry points and keeps the
+//! engine-agnostic helpers (`detect_dialect`, `introspect_database`,
+//! `introspect_database_selection`) that open a connection from a database URL.
+//!
+//! The catalog protocol therefore exists in the workspace exactly once: the
+//! driver crates own introspection next to the migration protocol, and the
+//! toolchain consumes it. A failure an adapter describes — the statement it ran
+//! and the column it could not read — is translated into a [`CliError`] here, at
+//! the boundary, so no command restates that wording.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::{connect, CliError, Connection};
 use crate::config::SchemaSelection;
-mod postgres;
-mod sqlite;
 
 #[cfg(test)]
 mod tests;
 
 pub use crate::target::{detect_dialect, DatabaseDialect};
-pub use postgres::{
-    introspect_postgres, introspect_postgres_schema, introspect_postgres_selection,
-};
 pub use rurqe_migrate::introspect::{
     catalog_from_metadata, catalog_from_metadata_with_sections, map_sql_type_to_kind,
     map_sqlite_declared_type_to_kind, parse_foreign_key_action, RawCatalogSections,
     RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
     RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata,
 };
-pub use sqlite::{
+pub use rurqe_project::DEFAULT_SCHEMA;
+pub use rurqe_sqlite::introspect::{
     catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections, introspect_sqlite,
     parse_sqlite_check_enums, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
     RawSqliteTableMetadata,
 };
 
-/// Name of the schema introspected when the caller names none.
+/// Introspects the `public` schema of a live PostgreSQL database client.
+pub fn introspect_postgres(client: &mut ::postgres::Client) -> Result<SchemaCatalog, CliError> {
+    introspect_postgres_schema(client, DEFAULT_SCHEMA)
+}
+
+/// Introspects `schema` over any PostgreSQL connection.
 ///
-/// A PostgreSQL database keeps its tables in named schemas, and `public` is the
-/// one an ordinary single-schema deployment uses. SQLite has no schema layer at
-/// all, so the name is ignored there and the single catalog of the opened file is
-/// read. The value itself is declared by `rurqe_project` together with the rest
-/// of the project configuration surface, so the catalog statements of the
-/// toolchain and the model of `rurqe.toml` share one default.
-pub use rurqe_project::DEFAULT_SCHEMA;
+/// The single schema is the selection the multi-schema entry point introspects,
+/// so a session that reads one schema runs the very catalog statements a session
+/// describing several of them runs.
+///
+/// The connection is named through [`postgres::GenericClient`], so the same
+/// catalog statements run both on a bare client and inside an open transaction:
+/// a scratch schema can therefore be introspected before its transaction
+/// commits, and the golden equation reads it through the same queries.
+pub fn introspect_postgres_schema<C>(
+    client: &mut C,
+    schema: &str,
+) -> Result<SchemaCatalog, CliError>
+where
+    C: postgres::GenericClient,
+{
+    introspect_postgres_selection(client, &SchemaSelection::single(schema))
+}
+
+/// Introspects every schema of `selection` over any PostgreSQL connection.
+///
+/// The whole selection is bound as one array parameter rather than being rendered
+/// into the statement text, so no caller can smuggle SQL into the catalog queries
+/// and every catalog statement describes the primary schema and its secondary
+/// schemas in one round trip. A row of the primary schema carries no schema
+/// attribution while a row of a secondary schema carries its own, so a
+/// single-schema introspection reproduces the catalog recorded before schemas
+/// were read at all, byte for byte.
+pub(crate) fn introspect_postgres_selection<C>(
+    client: &mut C,
+    selection: &SchemaSelection,
+) -> Result<SchemaCatalog, CliError>
+where
+    C: postgres::GenericClient,
+{
+    rurqe_postgres::introspect::introspect_postgres_selection(client, selection)
+        .map_err(catalog_error)
+}
 
 /// Introspects the schema catalog of a live database identified by its connection URL or path.
 ///
@@ -165,7 +203,7 @@ pub(crate) fn introspect_connection_selection(
     selection: &SchemaSelection,
 ) -> Result<SchemaCatalog, CliError> {
     match connection {
-        Connection::Sqlite(conn) => introspect_sqlite(conn),
+        Connection::Sqlite(conn) => introspect_sqlite(conn).map_err(catalog_error),
         Connection::Postgres(client) => introspect_postgres_selection(client.as_mut(), selection),
     }
 }
@@ -216,7 +254,8 @@ pub(crate) fn report_vacuous_postgres_selection(
     client: &mut ::postgres::Client,
     selection: &SchemaSelection,
 ) -> Result<Option<String>, CliError> {
-    let neighbours = postgres::schema_neighbours(client, &selection.all())?;
+    let neighbours = rurqe_postgres::introspect::schema_neighbours(client, &selection.all())
+        .map_err(catalog_error)?;
 
     Ok(vacuous_selection_notice(selection, &neighbours))
 }
@@ -244,4 +283,13 @@ pub(crate) fn vacuous_selection_notice(
          keeps user relations in {names}; the catalog digest computed from the selection describes \
          nothing, so pass `--schema <name>` or set `primary_schema = \"<name>\"` in `rurqe.toml`"
     ))
+}
+
+/// Moves a catalog failure of an engine adapter into the CLI error type.
+///
+/// The adapter already names the statement it ran and the column it could not
+/// read, so the wording is carried over unchanged and only the error type changes
+/// at the boundary.
+fn catalog_error(error: impl std::fmt::Display) -> CliError {
+    CliError(error.to_string())
 }
