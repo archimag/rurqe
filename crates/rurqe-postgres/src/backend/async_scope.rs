@@ -11,9 +11,12 @@
 use core::future::Future;
 use core::pin::Pin;
 
+use rurqe_core::dialect::Dialect;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, SavepointName, TransactionContext};
 use tokio_postgres::Client;
+
+use crate::dialect::{Pg16, Postgres};
 
 use super::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
 use super::types::PgError;
@@ -41,6 +44,21 @@ pub(super) async fn execute_control(client: &Client, sql: String) -> Result<(), 
     };
     execute_raw_async(client, &statement).await?;
     Ok(())
+}
+
+/// Renders a savepoint name as a quoted PostgreSQL identifier.
+///
+/// A savepoint name cannot be bound as a parameter, so it is rendered into the
+/// statement text. [`SavepointName`] restricts the text to `[A-Za-z0-9_]`, but
+/// that invariant belongs to `rurqe-core` and is invisible here, so the name is
+/// quoted through the PostgreSQL identifier rule instead of being concatenated
+/// raw: an embedded `"` is doubled and the whole name stays a single token.
+/// PostgreSQL folds an unquoted identifier to lower case, and the names the
+/// adapter generates are already lower case, so the quoted spelling addresses
+/// the same savepoint the bare token would have created, and identifier
+/// escaping is identical across every declared PostgreSQL version.
+fn quoted_savepoint(name: &str) -> String {
+    Postgres::<Pg16>::quote_identifier(name)
 }
 
 /// An open asynchronous transaction, or a savepoint inside one, that statements
@@ -125,7 +143,8 @@ impl<'a> PgAsyncScope<'a> {
         F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
     {
         let savepoint = self.context.open_savepoint();
-        let opened = execute_control(self.client, format!("SAVEPOINT {savepoint}")).await;
+        let statement = format!("SAVEPOINT {}", quoted_savepoint(savepoint.as_str()));
+        let opened = execute_control(self.client, statement).await;
         if let Err(error) = opened {
             self.context.close_savepoint();
             return Err(E::from(error));
@@ -139,7 +158,8 @@ impl<'a> PgAsyncScope<'a> {
         match f(nested).await {
             Ok(value) => {
                 let name = savepoint.as_str();
-                match execute_control(self.client, format!("RELEASE SAVEPOINT {name}")).await {
+                let statement = format!("RELEASE SAVEPOINT {}", quoted_savepoint(name));
+                match execute_control(self.client, statement).await {
                     Ok(()) => {
                         tracing::debug!(savepoint = %name, "released savepoint");
                         self.context.close_savepoint();
@@ -167,7 +187,8 @@ impl<'a> PgAsyncScope<'a> {
     /// statements of the block stay pending inside the enclosing transaction.
     async fn roll_back(&self, savepoint: &SavepointName) {
         let name = savepoint.as_str();
-        match execute_control(self.client, format!("ROLLBACK TO SAVEPOINT {name}")).await {
+        let statement = format!("ROLLBACK TO SAVEPOINT {}", quoted_savepoint(name));
+        match execute_control(self.client, statement).await {
             Ok(()) => tracing::warn!(savepoint = %name, "rolled back to savepoint"),
             Err(failure) => tracing::error!(
                 savepoint = %name,
@@ -198,5 +219,27 @@ impl AsyncQueryBackend for PgAsyncScope<'_> {
 
     fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
         execute_raw_async(self.client, query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quoted_savepoint;
+
+    #[test]
+    fn a_generated_name_renders_as_a_quoted_identifier() {
+        assert_eq!(quoted_savepoint("rurqe_sp_7"), "\"rurqe_sp_7\"");
+    }
+
+    #[test]
+    fn metacharacters_stay_inside_the_quoted_identifier() {
+        // The validation of `SavepointName` rejects these characters, and the
+        // statements are still rendered so that a name which ever did carry one
+        // reaches PostgreSQL as a single escaped token instead of as SQL.
+        assert_eq!(
+            quoted_savepoint("sp\"; DROP TABLE users; --"),
+            "\"sp\"\"; DROP TABLE users; --\""
+        );
+        assert_eq!(quoted_savepoint("sp'or"), "\"sp'or\"");
     }
 }
