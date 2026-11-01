@@ -23,16 +23,21 @@ macros = ["dep:rurqe-macros"]
 # markers) as soon as one of them is on. The adapter items themselves stay on
 # the feature that owns the driver, so an asynchronous or pooled build never
 # pulls in a driver it does not use just to name a dialect.
-postgres = ["dep:rurqe-postgres", "rurqe-postgres/postgres"]
+# The driver's migration protocol travels with the driver itself, so the client
+# backend of a connection an application holds is reachable through
+# `rurqe::postgres::migrate` without naming the adapter crate.
+postgres = ["dep:rurqe-postgres", "rurqe-postgres/postgres", "rurqe-postgres/migrate"]
 tokio-postgres = ["dep:rurqe-postgres", "rurqe-postgres/tokio-postgres", "rurqe-migrate?/tokio"]
-sqlite = ["dep:rurqe-sqlite"]
+# The SQLite adapter carries its migration protocol under the feature that
+# compiles it, so `rurqe::sqlite::migrate` is reachable from an application.
+sqlite = ["dep:rurqe-sqlite", "rurqe-sqlite/migrate"]
 # `migrate` brings the migration crate: the embedded collection, the runner, and
 # the backend contracts. The `embed_migrations!` macro additionally needs
 # `macros`, because the expansion itself is compiled by the proc-macro crate.
 # Each driver crate carries its own `migrate` feature — the catalog introspection
 # and the migration backend of that engine — so a build bound to a driver compiles
 # the protocol of that driver alone instead of pulling a second one in.
-migrate = ["dep:rurqe-migrate", "rurqe-sqlite?/migrate"]
+migrate = ["dep:rurqe-migrate", "rurqe-postgres?/migrate", "rurqe-sqlite?/migrate"]
 tokio = ["rurqe-migrate?/tokio"]
 # `r2d2` pools the synchronous drivers, so it enables the `postgres` adapter it
 # pools; `deadpool-postgres` pools the asynchronous one.
