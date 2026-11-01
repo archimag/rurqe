@@ -14,31 +14,6 @@ Versioned scripts carry an ordered version and run in that order exactly once.
 Repeatable scripts carry no version and run again whenever their contents change,
 which is the shape a view, a function, or a set of reference rows takes.
 
-## Two ways to describe a schema
-
-A migration toolchain answers one question: where the schema of a database comes
-from. The industry answers it in two directions, and both have been in production
-for a long time.
-
-The first keeps an ordered directory of deltas. Every change is a script, and the
-schema of a database is the sum of the scripts applied to it; Flyway and Liquibase
-are the reference examples of that arrangement. The second keeps a declarative
-description of the target schema and generates the delta by comparing the
-description with what a database currently holds; Django, Prisma, and Atlas take
-that route.
-
-The two are not rivals: they differ in what each one makes cheap. A recorded delta
-is exactly what an upgrade of a live database needs — it ran, it is bound to its
-checksum, and its entry states when it ran and how long it took. A declarative
-description is exactly what a reader, a fresh environment, and a verification
-need: it states the schema once, instead of leaving the answer spread over every
-script that ever touched one table.
-
-This chapter documents the sequential lifecycle — the ordered directory of deltas
-— from the work of an ordinary developer through every command that maintains it.
-Its last two sections state where the arrangement starts to cost more than it
-returns, and what takes over when it does.
-
 ## The migrations directory
 
 Scripts are read from `migrations/` by default. `--migrations-dir <dir>` points a
@@ -131,9 +106,9 @@ directory may depend on the state of one developer's database.
 A release that already reached production is not part of the loop. Its scripts stay
 exactly as they were applied, and the next change is a new script.
 
-## One change per script
+## One migration per task
 
-A migration is written for the change in front of the developer, not for the
+A migration is written for the task in front of the developer, not for the
 release that will carry it. A task that adds a column and the index over it ships
 one script holding both statements; two unrelated tasks ship two scripts.
 
@@ -157,13 +132,34 @@ A description is read by a person, so it names the change rather than the ticket
 `add_orders_total`, not `fix`. Underscores become spaces in the history table and
 in the status report, which is exactly where those two are read.
 
+### Regenerating a draft
+
+While the task is open, its script is a draft under one version. Rework the
+change and rewrite the file as often as the change is reworked, keeping the
+version, the description, and the position the task was given: the reviewer of a
+finished task reads one script rather than the sequence of attempts that produced
+it, and the history table gains one entry rather than one per attempt.
+
+A draft that never ran is simply rewritten. A draft that has only reached a
+database of your own is rewritten together with that database: the database is
+dropped and rebuilt from the new draft, and `cargo rurqe migrate repair` brings
+the recorded digest in line with the rewritten file. No other command replays a
+versioned script — an entry that is already recorded keeps its rank, and the next
+run skips it.
+
+The draft stops being a draft the moment the script leaves your machine — merged
+into a shared branch, or applied to a database somebody else uses. From that
+point the file is fixed and a correction is a new script, for the reasons the
+next subsection states.
+
 ### Editing a script that already ran
 
 An applied script is a fact about every database that ran it, and editing the file
 makes it disagree with all of them. Three cases, three answers:
 
-* The script reached nothing but your own database: the file is yours to change,
-  and `cargo rurqe migrate repair` brings the recorded digest in line with it.
+* The script reached nothing but your own database and the task is still open: it
+  is the draft described above, so the file is rewritten freely and `repair`
+  brings the recorded digest in line with it.
 * The script reached a shared database: write a new script. The history keeps both,
   and the second one states the correction.
 * A repeatable script is never reported as modified, because a changed digest is
@@ -543,75 +539,3 @@ Embedding belongs to the runtime of an application, and it replaces neither the
 directory nor the toolchain: the directory is where a change is written and
 reviewed, and the binary is one of the places the reviewed scripts are applied
 from.
-
-## Where a linear history reaches its limits
-
-A project describes its schema as the sum of every script ever applied. That
-description is exact, and while a project is young it is also comfortable: a
-handful of scripts is read in one sitting, and a fresh database built from them
-takes as long as the handful takes.
-
-The cost of the same description grows with the history rather than with the
-schema:
-
-- The schema is written nowhere. Learning what a table consists of means reading
-  every script that ever touched it, in version order, and holding the accumulated
-  result in mind, because the statement that created a column and the statement
-  that altered it three releases later are equally part of the answer. A change
-  touching one table is reviewed against the whole history of the database.
-- A clean database replays the whole history. Every CI container, every fixture,
-  and every development machine starts at the first script and applies its way
-  forward, so reaching the current schema costs what the number of releases costs
-  rather than what the size of the schema costs.
-- The history cannot be shortened. A script that already ran is bound to its
-  recorded checksum, so editing it is a refusal rather than a change, and deleting
-  it removes the only description of that change for every database that has not
-  applied it yet. The remaining options are a baseline recorded by hand, which
-  names a starting point without proving anything about it, and a renumbered
-  history that the databases already carrying the old one do not follow.
-- Ordering constrains the design. A correction of an earlier script is a new
-  script, so the directory accumulates pairs of steps whose only purpose is to
-  preserve the order the history was written in, even where no database is
-  expected to pass through the intermediate state again.
-- The tail and the record are one thing. There is no point at which a script stops
-  being required by a live database and becomes a record alone, so nothing can be
-  pruned without a guess about which databases still have to apply it.
-
-None of this is a defect of the sequential lifecycle: a script applied once
-against a live database, with its checksum and its entry, is precisely the record
-a production upgrade needs. The cost is the one paid by everything that does not
-need the record — the clean environment, the reviewer, and any tool that has to
-reason about the schema as a whole.
-
-### The declarative stage beside the tail
-
-A stage-based lifecycle separates the two jobs the directory holds at once. The
-complete DDL of the target schema moves into a declarative stage directory, while
-the migrations directory keeps only the active tail — the scripts that advance a
-database which already exists and holds data:
-
-```text
-schema/          complete DDL of the target schema
-migrations/      active tail, applied on top of a recorded boundary
-checkpoint.toml  boundary: the folded version and the stage digest
-```
-
-The stage states what the schema is; the tail states how a database written before
-the current stage reaches it. A clean database is initialised from the stage
-directly — its transactional scripts in one transaction — and records the stage
-version as its starting point, so a container reaches the current schema in the
-time the stage takes rather than in the time the history takes. A database that
-already holds data is advanced by the tail, exactly as before.
-
-The two descriptions are proven equal rather than assumed to be: `stage verify`
-replays the boundary the checkpoint records together with the tail on one side and
-the stage on the other, and compares the resulting catalogs. `stage commit`
-records the boundary — the version below which the history has been folded into
-the stage, with the digest of the catalog the stage produced — and once it is
-recorded, `prune --before <version>` deletes the versioned scripts the boundary
-covers and leaves the repeatable ones in place.
-
-The stage lifecycle is an addition rather than a replacement. A project whose
-history never accumulates the weight the stage exists to remove keeps the plain
-directory described in this chapter, and both lifecycles meet at the same history
-table, the same naming grammar, and the same checksum algorithm.
