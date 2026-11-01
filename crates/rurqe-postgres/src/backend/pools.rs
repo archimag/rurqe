@@ -12,12 +12,17 @@
 //! The asynchronous `PgAsyncPool` exposes the same closure-scoped form: its
 //! `transaction` and `transaction_with_isolation` keep one pooled connection for
 //! the whole block, let the block nest through savepoints, and close it with an
-//! awaited `COMMIT` or `ROLLBACK`. A block that is cancelled or unwound cannot
-//! await either statement, so its connection returns to the pool with the
-//! transaction still open and the pool has to be rebuilt.
+//! awaited `COMMIT` or `ROLLBACK`. The checkout is never returned to the pool
+//! with its transaction open: a block that is cancelled, that unwinds, or whose
+//! control statement the driver refuses destroys its own connection, so the pool
+//! opens a fresh one for the next caller instead of recycling a session that
+//! still holds an abandoned transaction.
 //!
 //! Each pool is gated on the driver it pools, so the feature that enables a pool
 //! carries its driver and the module of that pool is compiled on the pair.
+
+#[cfg(all(feature = "deadpool-postgres", feature = "tokio-postgres"))]
+mod checkout;
 
 #[cfg(all(feature = "deadpool-postgres", feature = "tokio-postgres"))]
 mod deadpool_impl {
@@ -28,8 +33,10 @@ mod deadpool_impl {
 
     use crate::backend::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
     use crate::backend::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
-    use crate::backend::poison::PoisonCell;
+    use crate::backend::poison::{control_failure, PoisonCell};
     use crate::backend::types::PgError;
+
+    use super::checkout::Checkout;
 
     /// A `deadpool-postgres` pool executing RURQE queries asynchronously.
     ///
@@ -70,9 +77,9 @@ mod deadpool_impl {
         /// [`PgAsyncScope::transaction`], and a block returning `Err` has its
         /// statements rolled back before the error reaches the caller. The pool
         /// itself is shared, so several transactions can run concurrently: every
-        /// call checks its own connection out, and the handle returns to the
-        /// pool on every completed path, because the checkout guard is dropped
-        /// however the block ends.
+        /// call checks its own connection out, and the checkout is settled on
+        /// every exit path, because the guard that owns it is dropped however the
+        /// block ends.
         ///
         /// ```text
         /// pool
@@ -110,36 +117,41 @@ mod deadpool_impl {
         /// closure return type cannot name on stable Rust. `E` is the error of
         /// `f` and has to absorb the driver error, which the dialect error alias
         /// over [`PgError`] does, so a terminal call propagates with `?`
-        /// unchanged inside the block.
+        /// unchanged inside the block. The bound on `E` is the one the closure
+        /// form of [`crate::PgAsyncConnection::transaction_with_isolation`]
+        /// declares, so a block written against a connection runs on the pool
+        /// unchanged.
         ///
         /// A checkout failure surfaces as [`PgError::Pool`]; a failure raised by
         /// `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgError`]. A savepoint
-        /// rollback the driver refuses inside the block is traced and recorded on
-        /// the block's poison record, because the checkout that recycles the
-        /// connection keeps none of its own.
+        /// rollback the driver refuses inside the block is recorded on the poison
+        /// record of the connection, which is the record the guard reads, so the
+        /// connection is destroyed instead of being returned to the pool.
         ///
         /// # Abandoned blocks
         ///
         /// A block that is cancelled or unwound never reaches the end of this
         /// method, so neither `COMMIT` nor `ROLLBACK` is awaited for it: the
-        /// checkout guard is dropped on the way out, and the connection returns
-        /// to the pool with the transaction of the abandoned block still open.
-        /// `deadpool-postgres` recycles a connection by checking that it is not
-        /// closed, not by checking that it holds no open transaction, so the
-        /// next caller receives that connection in that state. The synchronous
-        /// pools differ here: their guard performs the rollback in its `Drop`
-        /// before the connection returns to the pool.
+        /// checkout guard is dropped on the way out, and it destroys the
+        /// connection instead of returning it to the pool. A refused `BEGIN`,
+        /// `COMMIT`, or `ROLLBACK` destroys the connection the same way, so a
+        /// session that still holds the abandoned transaction never reaches
+        /// another caller: dropping the client closes the socket, and the server
+        /// rolls the transaction back when the session ends.
+        ///
+        /// The synchronous pools differ here: their guard performs the rollback
+        /// in its `Drop` before the connection returns to the pool.
         ///
         /// A block that has to survive an abandoned future therefore belongs in
-        /// a task that finishes or reports its own cancellation, and a pool that
-        /// observed one has to be rebuilt rather than reused.
+        /// a task that finishes or reports its own cancellation; the pool itself
+        /// stays usable, because the connection it lost is replaced.
         pub async fn transaction<T, E, F>(&self, f: F) -> Result<T, E>
         where
             E: From<PgError>,
             F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
         {
             let object = self.pool.get().await.map_err(PgError::from)?;
-            run_transaction(&object, String::from("BEGIN"), f).await
+            run_transaction(object, String::from("BEGIN"), f).await
         }
 
         /// Runs `f` inside a transaction at the requested `isolation` level on a
@@ -158,9 +170,9 @@ mod deadpool_impl {
         /// The error mapping and the abandoned-block failure mode are the ones
         /// documented on [`PgAsyncPool::transaction`]: a checkout failure
         /// surfaces as [`PgError::Pool`], a failure raised by `BEGIN`, by `f`,
-        /// or by `COMMIT` surfaces as [`PgError`], and a cancelled or unwound
-        /// block returns its connection to the pool with the transaction still
-        /// open.
+        /// or by `COMMIT` surfaces as [`PgError`], and a cancelled, unwound, or
+        /// control-failed block destroys its connection instead of returning it
+        /// to the pool.
         pub async fn transaction_with_isolation<T, E, F>(
             &self,
             isolation: IsolationLevel,
@@ -174,28 +186,38 @@ mod deadpool_impl {
 
             let mut begin = String::from("BEGIN ISOLATION LEVEL ");
             begin.push_str(isolation.as_str());
-            run_transaction(&object, begin, f).await
+            run_transaction(object, begin, f).await
         }
     }
 
-    /// Opens the transaction `begin` denotes on `client`, runs `f` inside it,
-    /// and closes it once the closure returns.
+    /// Runs `f` inside the transaction `begin` opens on `object` and settles the
+    /// checkout once the closure returns.
     ///
     /// The commit of a block that returned `Ok` and the rollback of a block that
-    /// returned `Err` are both awaited, so the transaction is closed before the
-    /// result reaches the caller. A rollback the driver refuses is traced instead
-    /// of replacing the error of the block, and the connection must then be
-    /// discarded rather than reused, because the statements of the block stay
-    /// pending inside the transaction.
+    /// returned `Err` are both awaited, so the transaction is closed on the
+    /// server before the result reaches the caller. The checkout is then either
+    /// returned to the pool or destroyed:
     ///
-    /// The block receives a poison record of its own, because the checkout that
-    /// owns the connection keeps none: a savepoint rollback the driver refuses
-    /// inside the block is recorded on that cell, and the record is traced here
-    /// once the block has ended. The pooled connection is still returned to the
-    /// pool, so the record is a diagnostic of the block rather than a disposition
-    /// of the connection.
+    /// * a block that closed its transaction with an awaited statement and left
+    ///   the shared poison record clean returns its connection to the pool;
+    /// * a `BEGIN`, `COMMIT`, or `ROLLBACK` the driver refused, and a block whose
+    ///   savepoint could not be undone, destroy the connection, because the
+    ///   session still holds work the adapter cannot roll back;
+    /// * a block that unwound, or whose future was dropped, never reaches the end
+    ///   of this method at all, and the guard destroys the connection on the way
+    ///   out.
+    ///
+    /// A `ROLLBACK` the driver refuses supersedes the error of the block: the
+    /// refused statement is traced, and the caller receives
+    /// [`PgError::ConnectionPoisoned`] carrying it, because the transaction
+    /// state is unknown from that point on.
+    ///
+    /// The block shares the poison record of the checkout instead of receiving a
+    /// record of its own: a savepoint rollback the driver refuses is recorded on
+    /// the cell the guard reads, which turns that failure into a destroyed
+    /// connection rather than a diagnostic nobody acts on.
     async fn run_transaction<T, E, F>(
-        client: &tokio_postgres::Client,
+        object: deadpool_postgres::Object,
         begin: String,
         f: F,
     ) -> Result<T, E>
@@ -204,41 +226,51 @@ mod deadpool_impl {
         F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
     {
         let poison = Arc::new(PoisonCell::new());
-        execute_control(client, begin).await.map_err(E::from)?;
+        let mut checkout = Checkout::new(object, Arc::clone(&poison));
 
-        let outcome = match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
+        let Some(client) = checkout.client() else {
+            return Err(E::from(PgError::ConnectionPoisoned {
+                reason: String::from("the checked-out connection is already destroyed"),
+            }));
+        };
+
+        if let Err(failure) = execute_control(client, begin).await {
+            poison.mark(control_failure("BEGIN", &failure));
+            return Err(E::from(failure));
+        }
+
+        match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
             Ok(value) => match execute_control(client, String::from("COMMIT")).await {
                 Ok(()) => {
                     tracing::info!("committed transaction");
+                    checkout.recycle();
                     Ok(value)
                 }
-                Err(failure) => Err(E::from(failure)),
-            },
-            Err(error) => {
-                match execute_control(client, String::from("ROLLBACK")).await {
-                    Ok(()) => tracing::warn!("rolled back transaction"),
-                    Err(failure) => tracing::error!(
-                        failure = %failure,
-                        "rolling back the transaction failed; the pooled connection is \
-                         returned with its transaction open and must be discarded"
-                    ),
+                Err(failure) => {
+                    poison.mark(control_failure("COMMIT", &failure));
+                    Err(E::from(failure))
                 }
-                Err(error)
-            }
-        };
-
-        if poison.is_poisoned() {
-            let reason = poison
-                .poison_reason()
-                .unwrap_or_else(|| String::from("the block recorded no reason"));
-            tracing::error!(
-                reason = %reason,
-                "the transaction block poisoned its own record; the pooled connection \
-                 is returned without being disposed of"
-            );
+            },
+            Err(error) => match execute_control(client, String::from("ROLLBACK")).await {
+                Ok(()) => {
+                    tracing::warn!("rolled back transaction");
+                    checkout.recycle();
+                    Err(error)
+                }
+                Err(failure) => {
+                    poison.mark(control_failure("ROLLBACK", &failure));
+                    tracing::error!(
+                        failure = %failure,
+                        "rolling back the transaction failed; the connection is destroyed \
+                         and the failure of the block is superseded"
+                    );
+                    let reason = poison
+                        .poison_reason()
+                        .unwrap_or_else(|| String::from("the connection recorded no reason"));
+                    Err(E::from(PgError::ConnectionPoisoned { reason }))
+                }
+            },
         }
-
-        outcome
     }
 
     impl AsyncQueryBackend for PgAsyncPool {
