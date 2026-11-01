@@ -335,6 +335,10 @@ fn duplicate_versions_are_rejected_before_any_migration_runs() {
     }
 
     assert!(backend.history.is_empty());
+    assert!(
+        !backend.table_created,
+        "the metadata table is never created for a rejected run"
+    );
 }
 
 #[test]
@@ -401,4 +405,38 @@ fn a_failed_non_transactional_migration_is_recorded_and_released() {
     assert_eq!(backend.history.len(), 1);
     assert!(!backend.history[0].success);
     assert!(!backend.locked);
+}
+
+#[test]
+fn an_unwritable_in_progress_row_names_the_script() {
+    let mut backend = InMemoryBackend::new();
+    backend.fail_in_progress_entry = true;
+
+    let migration = Migration::parse(
+        "V1__index.notx.sql",
+        "CREATE INDEX CONCURRENTLY users_id ON users;",
+    )
+    .unwrap();
+
+    let error = Migrator::new()
+        .migrate(&mut backend, std::slice::from_ref(&migration))
+        .expect_err("the unwritable in-progress row stops the run");
+
+    match error {
+        Error::MigrationExecutionFailed { script, source } => {
+            assert_eq!(script, "V1__index.notx.sql");
+            assert!(
+                source.contains("V1__index.notx.sql"),
+                "the backend diagnostic travels inside the script-naming error: {source}"
+            );
+        }
+        other => panic!("expected MigrationExecutionFailed, got {other:?}"),
+    }
+
+    assert!(
+        backend.non_transactional_sql.is_empty(),
+        "the script never reached the backend"
+    );
+    assert!(backend.history.is_empty(), "the attempt is rolled back");
+    assert!(!backend.locked, "the lock is released on the way out");
 }

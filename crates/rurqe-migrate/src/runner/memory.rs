@@ -27,6 +27,11 @@ pub struct InMemoryBackend {
     pub fail_success_entry: bool,
     /// Fails the commit of a transaction that staged a successful history entry.
     pub fail_success_commit: bool,
+    /// Fails the transaction that records an unapplied history entry.
+    ///
+    /// The in-progress row a non-transactional script gets before it runs is
+    /// recorded with `success = false`, so `fail_success_entry` never covers it.
+    pub fail_in_progress_entry: bool,
     /// Number of history entries visible each time a script ran outside a transaction.
     pub history_len_at_execution: Vec<usize>,
 }
@@ -112,6 +117,12 @@ impl MigrationTransaction for InMemoryTransaction<'_> {
         if entry.success && self.backend.fail_success_entry {
             return Err(Error::Backend(format!(
                 "simulated failure recording the applied entry of `{}`",
+                entry.script
+            )));
+        }
+        if !entry.success && self.backend.fail_in_progress_entry {
+            return Err(Error::Backend(format!(
+                "simulated failure recording the in-progress entry of `{}`",
                 entry.script
             )));
         }

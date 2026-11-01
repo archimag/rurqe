@@ -495,13 +495,23 @@ impl From<&SchemaCatalog> for LockFile {
 /// number, a boolean, or a table of those, none of which the `toml` writer
 /// refuses. Should a serialization failure surface anyway, the fallback
 /// document below is emitted instead — a comment-only document the reader
-/// rejects, so a failed render can never silently publish an empty-but-valid
-/// catalog.
+/// rejects, and one whose cause is recorded through `tracing::error!`, so a
+/// failed render can neither publish an empty-but-valid catalog nor go
+/// undiagnosed.
 pub(super) fn render_lock_toml(catalog: &SchemaCatalog) -> String {
     let file = LockFile::from(catalog);
 
-    toml::to_string(&file)
-        .unwrap_or_else(|error| format!("# schema lock rendering failed: {error}\n"))
+    match toml::to_string(&file) {
+        Ok(document) => document,
+        Err(error) => {
+            // The fallback document is rejected by the reader, so a failed render
+            // reaches the caller as an invalid lock. Recording the cause here is
+            // what makes that diagnostic attributable instead of leaving it to a
+            // downstream digest mismatch.
+            tracing::error!(error = %error, "failed to render the schema lock document");
+            format!("# schema lock rendering failed: {error}\n")
+        }
+    }
 }
 
 /// Parses a versioned TOML `schema.lock` snapshot into a catalog.

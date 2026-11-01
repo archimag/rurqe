@@ -97,10 +97,12 @@ pub trait MigrationTransaction {
 
     /// Reports the canonical digest of the catalog the transaction sees.
     ///
-    /// A cold start reads it after the stage scripts ran inside the transaction,
-    /// so the marker anchors the digest of the schema the stage produced under
-    /// the very engine that executes it. The default reports `None`, which keeps
-    /// the digest the caller supplied.
+    /// A cold start reads it inside the very transaction that records the stage
+    /// marker, once every stage script has been applied, so the marker anchors
+    /// the digest of the schema the stage produced under the very engine that
+    /// executes it, and the row becomes visible together with the schema it
+    /// describes. The default reports `None`, which keeps the digest the caller
+    /// supplied.
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
         Ok(None)
     }

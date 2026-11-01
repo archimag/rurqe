@@ -29,10 +29,11 @@ pub struct ColdStartReport {
 /// [`StageMarker::version`] is reported as applied while the active tail above
 /// it still runs.
 ///
-/// The digest the marker anchors is the one the backend derives from the catalog
-/// the stage produced — see [`MigrationTransaction::catalog_checksum`] — so it
-/// matches the checkpoint `stage commit` writes whatever engine executed the
-/// DDL. A backend that cannot introspect itself keeps the digest of the marker.
+/// The digest the marker anchors is the one its own transaction derives from the
+/// catalog the stage produced — see [`MigrationTransaction::catalog_checksum`] —
+/// so the row and the schema it describes become visible together, and the digest
+/// matches the checkpoint `stage commit` writes whatever engine executed the DDL.
+/// A backend that cannot introspect itself keeps the digest of the marker.
 ///
 /// A database that already carries a stage marker for the same version and the
 /// same catalog digest is left untouched and reported as a no-op; any other
@@ -152,7 +153,7 @@ fn cold_start_core<B: MigrationBackend>(
         .any(|script| !script.is_transactional());
     let in_progress_rank = if in_progress {
         let entry = marker.entry(1, current_timestamp(), marker.checksum(), false);
-        record_marker(&mut guard, &entry, None)?;
+        record_marker(&mut guard, &entry)?;
         Some(entry.installed_rank)
     } else {
         None
@@ -164,17 +165,11 @@ fn cold_start_core<B: MigrationBackend>(
 
     // The marker anchors the digest of the catalog the stage produced, so the
     // checkpoint written by `stage commit` recognises the initialised database
-    // whatever engine executed the DDL. A backend that cannot introspect itself
+    // whatever engine executed the DDL. The digest is read inside the very
+    // transaction that records the marker, so the row and the schema it
+    // describes become visible together; a backend that cannot introspect itself
     // keeps the digest the caller supplied.
-    let checksum = match guard.catalog_checksum() {
-        Ok(Some(checksum)) => checksum,
-        Ok(None) => marker.checksum(),
-        Err(error) => return Err(error),
-    };
-
-    let entry = marker.entry(1, current_timestamp(), checksum, true);
-
-    record_marker(&mut guard, &entry, in_progress_rank)?;
+    let entry = record_applied_marker(&mut guard, marker, in_progress_rank)?;
 
     tracing::info!(
         version = %marker.version(),
@@ -232,15 +227,51 @@ pub async fn cold_start_async<B: MigrationBackend + Send + 'static>(
 
 /// Writes `entry` in a transaction of its own.
 ///
-/// `replaces` names the rank of the in-progress marker the write supersedes: both
-/// rows describe the same initialisation, so the superseded one is dropped inside
-/// the same transaction instead of leaving a failed entry next to the applied one.
+/// The in-progress marker of a stage holding a non-transactional script is
+/// committed before the first such script runs and replaced by the applied one
+/// afterwards, so an interrupted cold start stays visible in the history.
 fn record_marker<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     entry: &SchemaHistoryEntry,
-    replaces: Option<i64>,
 ) -> Result<(), Error> {
     let mut tx = guard.begin()?;
+
+    if let Err(error) = tx.record_entry(entry) {
+        let _ = tx.rollback();
+        return Err(error);
+    }
+
+    tx.commit()
+}
+
+/// Records the applied stage marker, anchoring the digest its transaction observes.
+///
+/// The catalog digest is read through
+/// [`MigrationTransaction::catalog_checksum`] inside the very transaction that
+/// writes the row, so the marker and the schema it describes become visible
+/// together. A backend that cannot introspect itself reports nothing, which
+/// keeps the digest of the marker.
+///
+/// `replaces` names the rank of the in-progress marker the write supersedes: both
+/// rows describe the same initialisation, so the superseded one is dropped inside
+/// the same transaction instead of leaving a failed entry next to the applied one.
+fn record_applied_marker<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    marker: &StageMarker,
+    replaces: Option<i64>,
+) -> Result<SchemaHistoryEntry, Error> {
+    let mut tx = guard.begin()?;
+
+    let checksum = match tx.catalog_checksum() {
+        Ok(Some(checksum)) => checksum,
+        Ok(None) => marker.checksum(),
+        Err(error) => {
+            let _ = tx.rollback();
+            return Err(error);
+        }
+    };
+
+    let entry = marker.entry(1, current_timestamp(), checksum, true);
 
     if let Some(installed_rank) = replaces {
         if let Err(error) = tx.delete_entry(installed_rank) {
@@ -249,12 +280,14 @@ fn record_marker<B: MigrationBackend>(
         }
     }
 
-    if let Err(error) = tx.record_entry(entry) {
+    if let Err(error) = tx.record_entry(&entry) {
         let _ = tx.rollback();
         return Err(error);
     }
 
-    tx.commit()
+    tx.commit()?;
+
+    Ok(entry)
 }
 
 /// Withdraws the in-progress marker of a stage the backend refused to run.

@@ -8,7 +8,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::{create_schema_history_table_sql, SchemaHistoryEntry};
 use crate::migration::{Migration, MigrationKind};
-use crate::runner::{InMemoryBackend, InMemoryTransaction, MigrationBackend};
+use crate::runner::{InMemoryBackend, InMemoryTransaction, MigrationBackend, MigrationTransaction};
 use crate::version::MigrationVersion;
 use std::path::PathBuf;
 
@@ -196,6 +196,96 @@ fn the_marker_carries_the_catalog_digest() {
     assert_eq!(marker.version().to_string(), "3.2");
     assert_eq!(marker.description(), StageMarker::DESCRIPTION);
     assert_eq!(marker.checksum(), catalog.checksum());
+}
+
+/// A backend whose transactions observe a catalog the connection never reports.
+///
+/// The connection reports no digest at all, so only the transaction hook can
+/// supply the anchor a cold start records: a cold start reading the digest
+/// through the connection would fall back to the digest of the stage marker.
+struct TransactionDigestBackend {
+    inner: InMemoryBackend,
+    observed: Checksum,
+}
+
+impl MigrationBackend for TransactionDigestBackend {
+    type Transaction<'a> = TransactionDigestTransaction<'a>;
+
+    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+        self.inner.ensure_schema_history_table()
+    }
+
+    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+        self.inner.read_history()
+    }
+
+    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        let observed = self.observed;
+        let inner = self.inner.begin()?;
+        Ok(TransactionDigestTransaction { inner, observed })
+    }
+}
+
+/// A transaction of [`TransactionDigestBackend`] reporting its own digest.
+struct TransactionDigestTransaction<'a> {
+    inner: InMemoryTransaction<'a>,
+    observed: Checksum,
+}
+
+impl MigrationTransaction for TransactionDigestTransaction<'_> {
+    fn execute(&mut self, sql: &str) -> Result<(), Error> {
+        self.inner.execute(sql)
+    }
+
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        Ok(Some(self.observed))
+    }
+
+    fn record_entry(&mut self, entry: &SchemaHistoryEntry) -> Result<(), Error> {
+        self.inner.record_entry(entry)
+    }
+
+    fn delete_entry(&mut self, installed_rank: i64) -> Result<(), Error> {
+        self.inner.delete_entry(installed_rank)
+    }
+
+    fn update_checksum(&mut self, script: &str, checksum: &Checksum) -> Result<(), Error> {
+        self.inner.update_checksum(script, checksum)
+    }
+
+    fn commit(self) -> Result<(), Error> {
+        self.inner.commit()
+    }
+
+    fn rollback(self) -> Result<(), Error> {
+        self.inner.rollback()
+    }
+}
+
+#[test]
+fn the_stage_marker_anchors_the_digest_its_transaction_observes() {
+    let observed = Checksum::of(b"catalog inside the marker transaction");
+    let mut backend = TransactionDigestBackend {
+        inner: InMemoryBackend::new(),
+        observed,
+    };
+
+    let report = cold_start(&mut backend, &stage(), &marker()).expect("the database is cold");
+
+    assert_eq!(report.installed_rank, Some(1));
+    assert_eq!(backend.inner.history.len(), 1);
+    let entry = &backend.inner.history[0];
+    assert_eq!(
+        entry.checksum,
+        Some(observed),
+        "the marker anchors the digest its own transaction observes"
+    );
+    assert_ne!(
+        entry.checksum,
+        Some(marker().checksum()),
+        "the marker row never inherits the digest of the stage marker"
+    );
+    assert!(entry.success);
 }
 
 #[test]

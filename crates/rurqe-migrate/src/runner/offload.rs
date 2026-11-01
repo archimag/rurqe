@@ -11,7 +11,6 @@
 //! output, so a connection that cannot be shared across threads stays usable after
 //! the run. A panic inside the blocking task — which this crate never produces —
 //! surfaces as [`Error::Backend`] instead of unwinding the caller.
-//! surfaces as [`Error::Backend`] instead of unwinding the caller.
 //!
 //! The script slice is copied exactly once per call: the `'static` bound of the
 //! blocking task requires an owned list, and the lifecycle core orders that list

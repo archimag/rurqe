@@ -106,10 +106,14 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<MigrationReport, Error> {
-        let mut guard = LockGuard::acquire(backend)?;
-        guard.ensure_schema_history_table()?;
+        // Both uniqueness checks read the migration list alone, so they run
+        // before the run touches the backend: a malformed run is rejected
+        // without taking the run lock and without creating the metadata table.
         Self::validate_script_uniqueness(migrations)?;
         self.validate_version_uniqueness(migrations)?;
+
+        let mut guard = LockGuard::acquire(backend)?;
+        guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
         self.validate_history(&history, migrations)?;
         self.validate_catalog_hash(&mut guard, &history)?;
