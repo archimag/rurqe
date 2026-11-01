@@ -21,6 +21,11 @@
 //! Rust identifier. Every variant needs a distinct label, and a `#[sql(rename)]`
 //! repeating the label of another variant is rejected at expansion time.
 //!
+//! The derive applies to a concrete type only: every emitted impl spells the
+//! self type as the bare type name, so an input carrying type, lifetime, or
+//! const parameters — or a `where` clause — is rejected at expansion time with
+//! a message naming the derive, instead of failing inside the generated code
+//! with a missing-generics error.
 //! Every mode emits `ToSqlVal`, `From<Self> for SqlVal`, `FromSqlValue`,
 //! `MakeNullable`, the expression-compatibility impls, and the matching
 //! scalar-function operand impls, so a derived type composes with the expression
@@ -94,6 +99,8 @@ struct EnumVariant {
 
 /// Expands a parsed `#[derive(SqlType)]` input into the conversion impls.
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
+    reject_generics(&input.generics)?;
+
     match &input.data {
         Data::Enum(data) => expand_enum(&input.ident, &input.attrs, data),
         Data::Struct(data) => expand_struct(&input.ident, &input.attrs, data),
@@ -102,6 +109,27 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             "`SqlType` derives only on a newtype struct or on an enum of unit variants",
         )),
     }
+}
+
+/// Rejects an input carrying type, lifetime, or const parameters, or a `where`
+/// clause.
+///
+/// Every emitted impl spells the self type as the bare type name: the derive has
+/// no bound set to give a parameter and no way to thread the parameters into the
+/// emitted self type. A generic input would therefore fail inside the generated
+/// code with a missing-generics error spanned on the type name, which tells the
+/// author nothing about the derive. Refusing the input up front names the derive
+/// and the concrete form it expects.
+fn reject_generics(generics: &syn::Generics) -> syn::Result<()> {
+    if generics.params.is_empty() && generics.where_clause.is_none() {
+        return Ok(());
+    }
+
+    Err(syn::Error::new_spanned(
+        generics,
+        "`SqlType` cannot be derived on a generic type; \
+         derive it on a concrete newtype or enum",
+    ))
 }
 
 /// Expands the derive on a newtype struct.
@@ -780,14 +808,15 @@ fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    //! Rejection of an enum whose variants repeat a label.
+    //! Rejection of an invalid derive input: a repeated enum label, or a
+    //! generic type.
 
     use super::*;
     use syn::parse_quote;
 
     /// The message the derive emits for `input`, which it has to reject.
     fn rejection(input: DeriveInput) -> String {
-        let error = expand(input).expect_err("a repeated label is rejected");
+        let error = expand(input).expect_err("the input is rejected");
         error.to_string()
     }
 
@@ -837,5 +866,76 @@ mod tests {
         };
 
         assert!(expand(input).is_ok(), "distinct labels are accepted");
+    }
+
+    /// The message the derive emits for a generic input.
+    const GENERIC_REJECTION: &str =
+        "`SqlType` cannot be derived on a generic type; \
+         derive it on a concrete newtype or enum";
+
+    #[test]
+    fn a_generic_tuple_newtype_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            #[sql(transparent)]
+            struct Wrapper<T>(T);
+        };
+
+        assert_eq!(rejection(input), GENERIC_REJECTION);
+    }
+
+    #[test]
+    fn a_generic_named_field_newtype_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            #[sql(transparent)]
+            struct Wrapper<T> {
+                inner: T,
+            }
+        };
+
+        assert_eq!(rejection(input), GENERIC_REJECTION);
+    }
+
+    #[test]
+    fn a_generic_enum_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            enum Mood<T> {
+                Happy,
+                Sad,
+            }
+        };
+
+        assert_eq!(rejection(input), GENERIC_REJECTION);
+    }
+
+    #[test]
+    fn a_const_generic_newtype_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            #[sql(as = Bytes)]
+            struct Digest<const N: usize>([u8; N]);
+        };
+
+        assert_eq!(rejection(input), GENERIC_REJECTION);
+    }
+
+    #[test]
+    fn a_lifetime_parameter_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            #[sql(as = Text)]
+            struct Borrowed<'a>(&'a str);
+        };
+
+        assert_eq!(rejection(input), GENERIC_REJECTION);
+    }
+
+    #[test]
+    fn a_where_clause_without_parameters_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            #[sql(as = Bytes)]
+            struct Digest([u8; 32])
+            where
+                [u8; 32]: Copy;
+        };
+
+        assert_eq!(rejection(input), GENERIC_REJECTION);
     }
 }
