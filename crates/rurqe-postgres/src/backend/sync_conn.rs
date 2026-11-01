@@ -37,10 +37,21 @@ pub(crate) fn execute_raw_sync(
 }
 
 /// Executes `query` through a synchronous client and decodes at most `limit`
-/// rows, stopping the statement's row iterator once the limit is reached.
+/// rows, stopping the adapter's iteration once the limit is reached.
 ///
 /// Without a limit the whole result set is fetched, exactly as
 /// [`fetch_raw_sync`] does.
+///
+/// The bound saves decoding and materialisation, never server work. The wire
+/// protocol requires the response of a statement to be consumed through
+/// `ReadyForQuery` before the connection can read the response of the next
+/// command, so the driver keeps reading the `DataRow` messages past the limit
+/// and discards them. The next statement on that connection therefore completes
+/// only after the drain, which matters for a pooled connection: a synchronous
+/// pooled handle (`PgPool`) returns to the pool as soon as the fetch completes,
+/// and the caller that checks the connection out next waits for the drain.
+/// Truncating the work the server performs would take an explicit cursor
+/// (`DECLARE` / `FETCH`), which this adapter does not open.
 ///
 /// Every row is decoded as it arrives instead of being collected first, so the
 /// message buffer of a row is released before the next one is read.

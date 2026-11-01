@@ -41,10 +41,21 @@ where
 }
 
 /// Executes `query` through an asynchronous client and decodes at most `limit`
-/// rows, stopping the row stream once the limit is reached.
+/// rows, stopping the poll loop once the limit is reached.
 ///
 /// Without a limit the whole result set is fetched, exactly as
 /// [`fetch_raw_async`] does.
+///
+/// The bound saves decoding and materialisation, never server work. The wire
+/// protocol requires the response of a statement to be consumed through
+/// `ReadyForQuery` before the connection can read the response of the next
+/// command, so the driver keeps reading the `DataRow` messages past the limit
+/// and discards them. The next statement on that connection therefore
+/// completes only after the drain, which matters for a pooled connection: an
+/// asynchronous pooled handle (`PgAsyncPool`) returns to the pool as soon as
+/// the fetch completes, and the caller that checks the connection out next
+/// waits for the drain. Truncating the work the server performs would take an
+/// explicit cursor (`DECLARE` / `FETCH`), which this adapter does not open.
 pub(crate) async fn fetch_raw_limited_async<C>(
     client: &C,
     query: &BuiltQuery,
@@ -66,8 +77,15 @@ where
 /// Collects at most `limit` rows from the row stream of a `query_raw` call.
 ///
 /// The stream is polled row by row and the loop stops as soon as `limit` rows
-/// have been collected, so the remaining rows of a bounded result set are never
-/// read from the socket. Without a limit the stream is drained to its end.
+/// have been collected, so a row past the limit is never decoded or
+/// materialised. Without a limit the stream is drained to its end.
+///
+/// Stopping the loop does not stop the statement: the server has already
+/// produced the rows it returns, and the wire protocol requires the response to
+/// be consumed through `ReadyForQuery` before the connection can read the
+/// response of the next command. The driver therefore reads the unread
+/// `DataRow` messages of a bounded result set and discards them, so the next
+/// statement on that connection completes only after the drain.
 ///
 /// Every row is decoded as it arrives instead of being collected first, so the
 /// message buffer of a row is released before the next one is read.
