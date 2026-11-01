@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::Checksum;
 
+use super::commands::Project;
 use super::*;
 use crate::{install_diagnostics, try_install_default_subscriber, write_message, MessageClass};
 
@@ -27,8 +28,9 @@ fn parses_migrate_up() {
     assert_eq!(
         cmd,
         CliCommand::MigrateUp {
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            config: None,
+            migrations_dir: None,
+            checkpoint_path: None,
             database_url: None,
             schema: None,
         }
@@ -50,6 +52,7 @@ fn parses_baseline_command() {
     assert_eq!(
         cmd,
         CliCommand::Baseline {
+            config: None,
             version: "1.0.0".parse().unwrap(),
             description: "initial".into(),
             database_url: None,
@@ -70,8 +73,9 @@ fn parses_the_cargo_rurqe_migrate_invocation() {
     assert_eq!(
         cmd,
         CliCommand::MigrateUp {
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            config: None,
+            migrations_dir: None,
+            checkpoint_path: None,
             database_url: None,
             schema: None,
         }
@@ -92,8 +96,9 @@ fn parses_migrate_up_checkpoint_path() {
     assert_eq!(
         cmd,
         CliCommand::MigrateUp {
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("deploy/checkpoint.toml"),
+            config: None,
+            migrations_dir: None,
+            checkpoint_path: Some(PathBuf::from("deploy/checkpoint.toml")),
             database_url: None,
             schema: None,
         }
@@ -140,9 +145,10 @@ fn parses_the_cargo_rurqe_codegen_invocation() {
     assert_eq!(
         cmd,
         CliCommand::Codegen {
+            config: None,
             database_url: None,
-            output: PathBuf::from("src/db/schema.rs"),
-            lock_path: PathBuf::from("schema.lock"),
+            output: Some(PathBuf::from("src/db/schema.rs")),
+            lock_path: None,
             domain_types: false,
             schema: None,
         }
@@ -162,9 +168,10 @@ fn parses_codegen_domain_types_flag() {
     assert_eq!(
         cmd,
         CliCommand::Codegen {
+            config: None,
             database_url: None,
-            output: PathBuf::from("src/schema.rs"),
-            lock_path: PathBuf::from("schema.lock"),
+            output: None,
+            lock_path: None,
             domain_types: true,
             schema: None,
         }
@@ -177,9 +184,10 @@ fn parses_the_cargo_rurqe_verify_invocation() {
     assert_eq!(
         cmd,
         CliCommand::Verify {
+            config: None,
             database_url: None,
             schema_path: None,
-            lock_path: PathBuf::from("schema.lock"),
+            lock_path: None,
             schema: None,
         }
     );
@@ -198,9 +206,10 @@ fn parses_explicit_verify_schema_path() {
     assert_eq!(
         cmd,
         CliCommand::Verify {
+            config: None,
             database_url: None,
             schema_path: Some(PathBuf::from("custom/schema.rs")),
-            lock_path: PathBuf::from("schema.lock"),
+            lock_path: None,
             schema: None,
         }
     );
@@ -219,6 +228,7 @@ fn parses_the_cargo_rurqe_baseline_invocation() {
     assert_eq!(
         cmd,
         CliCommand::Baseline {
+            config: None,
             version: "1.0.0".parse().unwrap(),
             description: "baseline".into(),
             database_url: None,
@@ -239,8 +249,9 @@ fn parses_the_schema_selection_of_each_catalog_command() {
     assert_eq!(
         migrate,
         CliCommand::MigrateUp {
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            config: None,
+            migrations_dir: None,
+            checkpoint_path: None,
             database_url: None,
             schema: Some("app".into()),
         }
@@ -256,9 +267,10 @@ fn parses_the_schema_selection_of_each_catalog_command() {
     assert_eq!(
         codegen,
         CliCommand::Codegen {
+            config: None,
             database_url: None,
-            output: PathBuf::from("src/schema.rs"),
-            lock_path: PathBuf::from("schema.lock"),
+            output: None,
+            lock_path: None,
             domain_types: false,
             schema: Some("app".into()),
         }
@@ -274,9 +286,10 @@ fn parses_the_schema_selection_of_each_catalog_command() {
     assert_eq!(
         verify,
         CliCommand::Verify {
+            config: None,
             database_url: None,
             schema_path: None,
-            lock_path: PathBuf::from("schema.lock"),
+            lock_path: None,
             schema: Some("app".into()),
         }
     );
@@ -294,11 +307,12 @@ fn parses_the_schema_selection_of_each_catalog_command() {
     assert_eq!(
         commit,
         CliCommand::StageCommit {
+            config: None,
             version: "3.2".parse().unwrap(),
             database_url: None,
-            stage_dir: PathBuf::from("schema"),
-            lock_path: PathBuf::from("schema.lock"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            stage_dir: None,
+            lock_path: None,
+            checkpoint_path: None,
             schema: Some("app".into()),
         }
     );
@@ -317,10 +331,11 @@ fn parses_the_schema_selection_of_each_catalog_command() {
     assert_eq!(
         stage_verify,
         CliCommand::StageVerify {
-            stage_dir: PathBuf::from("schema"),
+            config: None,
+            stage_dir: None,
             base_stage_dir: None,
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            migrations_dir: None,
+            checkpoint_path: None,
             scratch_url: None,
             database_url: None,
             schema: Some("app".into()),
@@ -516,7 +531,8 @@ fn parses_stage_commands() {
     assert_eq!(
         init,
         CliCommand::StageInit {
-            stage_dir: PathBuf::from("schema"),
+            config: None,
+            stage_dir: None,
             version: "3.2".parse().unwrap(),
             description: "stage".into(),
             database_url: None,
@@ -535,10 +551,11 @@ fn parses_stage_commands() {
     assert_eq!(
         verify,
         CliCommand::StageVerify {
-            stage_dir: PathBuf::from("schema"),
+            config: None,
+            stage_dir: None,
             base_stage_dir: Some(PathBuf::from("schema-base")),
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            migrations_dir: None,
+            checkpoint_path: None,
             scratch_url: None,
             database_url: None,
             schema: None,
@@ -556,11 +573,12 @@ fn parses_stage_commands() {
     assert_eq!(
         commit,
         CliCommand::StageCommit {
+            config: None,
             version: "3.2".parse().unwrap(),
             database_url: None,
-            stage_dir: PathBuf::from("schema"),
-            lock_path: PathBuf::from("schema.lock"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            stage_dir: None,
+            lock_path: None,
+            checkpoint_path: None,
             schema: None,
         }
     );
@@ -582,11 +600,12 @@ fn parses_stage_commit_stage_dir() {
     assert_eq!(
         cmd,
         CliCommand::StageCommit {
+            config: None,
             version: "3.2".parse().unwrap(),
             database_url: None,
-            stage_dir: PathBuf::from("stages/boundary"),
-            lock_path: PathBuf::from("schema.lock"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            stage_dir: Some(PathBuf::from("stages/boundary")),
+            lock_path: None,
+            checkpoint_path: None,
             schema: None,
         }
     );
@@ -606,10 +625,11 @@ fn parses_an_explicit_scratch_url() {
     assert_eq!(
         cmd,
         CliCommand::StageVerify {
-            stage_dir: PathBuf::from("schema"),
+            config: None,
+            stage_dir: None,
             base_stage_dir: None,
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            migrations_dir: None,
+            checkpoint_path: None,
             scratch_url: Some("postgres://db.internal:5432/scratch".into()),
             database_url: None,
             schema: None,
@@ -624,6 +644,7 @@ fn parses_stage_cleanup_with_its_defaults() {
     assert_eq!(
         cmd,
         CliCommand::StageCleanup {
+            config: None,
             scratch_url: None,
             database_url: None,
             older_than_secs: 3_600,
@@ -650,6 +671,7 @@ fn parses_stage_cleanup_options() {
     assert_eq!(
         cmd,
         CliCommand::StageCleanup {
+            config: None,
             scratch_url: Some("postgres://db.internal:5432/app".into()),
             database_url: Some("postgres://db.internal:5432/fallback".into()),
             older_than_secs: 600,
@@ -672,6 +694,7 @@ fn parses_stage_cleanup_with_a_single_url_flag() {
     assert_eq!(
         cmd,
         CliCommand::StageCleanup {
+            config: None,
             scratch_url: None,
             database_url: Some(":memory:".into()),
             older_than_secs: 3_600,
@@ -694,6 +717,7 @@ fn parses_stage_cleanup_with_confirmation_flags() {
         assert_eq!(
             cmd,
             CliCommand::StageCleanup {
+                config: None,
                 scratch_url: None,
                 database_url: None,
                 older_than_secs: 3_600,
@@ -731,9 +755,10 @@ fn parses_prune_command() {
     assert_eq!(
         prune,
         CliCommand::Prune {
+            config: None,
             before: "3.2".parse().unwrap(),
-            migrations_dir: PathBuf::from("migrations"),
-            checkpoint_path: PathBuf::from("checkpoint.toml"),
+            migrations_dir: None,
+            checkpoint_path: None,
             dry_run: true,
         }
     );
@@ -768,9 +793,10 @@ fn parses_codegen_command() {
     assert_eq!(
         cmd,
         CliCommand::Codegen {
+            config: None,
             database_url: None,
-            output: PathBuf::from("src/db/schema.rs"),
-            lock_path: PathBuf::from("schema.lock"),
+            output: Some(PathBuf::from("src/db/schema.rs")),
+            lock_path: None,
             domain_types: false,
             schema: None,
         }
@@ -918,11 +944,126 @@ fn baseline_keeps_its_version_argument_under_the_single_entrypoint() {
     assert_eq!(
         cmd,
         CliCommand::Baseline {
+            config: None,
             version: "1.0.0".parse().unwrap(),
             description: "baseline".into(),
             database_url: None,
         }
     );
+}
+
+#[test]
+fn parses_the_config_flag_of_every_action() {
+    // Every action accepts `--config`, including the sweep, which resolves no
+    // artifact path but still validates the file it was pointed at.
+    for args in [
+        vec!["rurqe", "migrate", "up", "--config", "project/rurqe.toml"],
+        vec![
+            "rurqe",
+            "migrate",
+            "status",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec![
+            "rurqe",
+            "migrate",
+            "repair",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec![
+            "rurqe",
+            "baseline",
+            "--version",
+            "1.0.0",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec!["rurqe", "codegen", "--config", "project/rurqe.toml"],
+        vec!["rurqe", "verify", "--config", "project/rurqe.toml"],
+        vec![
+            "rurqe",
+            "stage",
+            "init",
+            "--version",
+            "1",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec![
+            "rurqe",
+            "stage",
+            "verify",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec![
+            "rurqe",
+            "stage",
+            "commit",
+            "--version",
+            "1",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec![
+            "rurqe",
+            "stage",
+            "cleanup",
+            "--config",
+            "project/rurqe.toml",
+        ],
+        vec![
+            "rurqe",
+            "prune",
+            "--before",
+            "1",
+            "--config",
+            "project/rurqe.toml",
+        ],
+    ] {
+        let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+
+        let command = parse_args(&argv).expect("the config flag is accepted");
+
+        assert_eq!(
+            command.config_path(),
+            Some(Path::new("project/rurqe.toml")),
+            "argv {args:?}"
+        );
+    }
+
+    // Help and version describe the toolchain rather than one project, so they
+    // carry no configuration at all.
+    assert_eq!(
+        parse_args(&["rurqe".into(), "--help".into()])
+            .expect("the help is answered")
+            .config_path(),
+        None
+    );
+}
+
+#[test]
+fn an_explicit_configuration_that_is_missing_is_refused() {
+    let dir = scratch("missing-configuration");
+    let absent = dir.join("absent.toml");
+
+    let argv = vec![
+        "rurqe".to_owned(),
+        "stage".to_owned(),
+        "cleanup".to_owned(),
+        "--yes".to_owned(),
+        "--config".to_owned(),
+        absent.display().to_string(),
+    ];
+
+    let error = run_cli_with_config(argv, Path::new(crate::config::DEFAULT_CONFIG_PATH))
+        .expect_err("a configuration named by the flag has to exist");
+
+    let message = error.to_string();
+    assert!(message.contains("does not exist"), "got {message}");
+    assert!(message.contains("absent.toml"), "got {message}");
 }
 
 /// A `rurqe.toml` written into a directory of its own for one test.
@@ -962,44 +1103,232 @@ impl Drop for ProjectConfiguration {
     }
 }
 
-/// A malformed configuration fails every catalog-digest command on any engine,
-/// because each of them resolves the file it was pointed at instead of one shared
-/// by the working directory.
+/// A malformed configuration fails every command that accepted it, because each
+/// one resolves and validates the file it was pointed at before it consumes any
+/// artifact path.
 #[test]
-fn every_migration_command_validates_the_project_configuration() {
+fn every_command_validates_the_project_configuration() {
     let configuration = ProjectConfiguration::write(
         "# a section the toolchain does not know\n[workspace]\nmembers = [\"a\"]\n",
     );
 
-    // The migrations directory holds no script, so only the configuration stands
-    // between a command and an empty history.
-    let migrations_dir = std::env::temp_dir()
-        .join(format!("rurqe-absent-migrations-{}", std::process::id()))
-        .to_string_lossy()
-        .into_owned();
+    // The catalog-digest commands, the cold start, the commit, the sweep that
+    // resolves no artifact at all, the code generation, the drift gate, and the
+    // prune reach the configuration through one loader, so a single malformed
+    // file fails every one of them instead of being tolerated by the commands
+    // whose engine never reads the resolved name.
+    for args in [
+        vec!["rurqe", "migrate", "up"],
+        vec!["rurqe", "migrate", "status"],
+        vec!["rurqe", "migrate", "repair"],
+        vec!["rurqe", "baseline", "--version", "1"],
+        vec!["rurqe", "codegen", "--database-url", ":memory:"],
+        vec!["rurqe", "verify", "--database-url", ":memory:"],
+        vec![
+            "rurqe",
+            "stage",
+            "init",
+            "--version",
+            "1",
+            "--database-url",
+            ":memory:",
+        ],
+        vec!["rurqe", "stage", "verify"],
+        vec![
+            "rurqe",
+            "stage",
+            "commit",
+            "--version",
+            "1",
+            "--database-url",
+            ":memory:",
+        ],
+        vec!["rurqe", "stage", "cleanup", "--yes"],
+        vec!["rurqe", "prune", "--before", "1"],
+    ] {
+        let argv: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
 
-    // The catalog-digest commands reach the configuration through one macro, so a
-    // single malformed file fails every one of them on a SQLite target instead of
-    // being tolerated by the engine whose backend never reads the resolved name.
-    for action in ["up", "status", "repair"] {
-        let argv = vec![
-            "rurqe".to_owned(),
-            "migrate".to_owned(),
-            action.to_owned(),
-            "--migrations-dir".to_owned(),
-            migrations_dir.clone(),
-            "--database-url".to_owned(),
-            ":memory:".to_owned(),
-        ];
         let error = run_cli_with_config(argv, configuration.path())
             .expect_err("a malformed configuration aborts the command");
 
         assert!(
             error.to_string().contains("workspace"),
-            "migrate {action}: {error}"
+            "argv {args:?}: {error}"
         );
     }
+}
 
+#[test]
+fn the_project_cascades_every_artifact_path() {
+    let dir = scratch("project-cascade");
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    std::fs::write(
+        &configuration,
+        r#"root = "artifacts"
+
+[migrations]
+dir = "tail"
+
+[stage]
+dir = "declared-stage"
+checkpoint = "tail/anchored.toml"
+
+[codegen]
+output = "generated/schema.rs"
+"#,
+    )
+    .expect("write the project configuration");
+
+    let project = Project::load(Some(&configuration), &configuration)
+        .expect("the declared project loads");
+
+    // The declared keys win over the conventional layout beneath the root, and
+    // every declared path resolves against the directory holding the file.
+    assert_eq!(project.migrations_dir(None), dir.join("tail"));
+    assert_eq!(project.stage_dir(None), dir.join("declared-stage"));
+    assert_eq!(
+        project.checkpoint_path(None),
+        dir.join("tail").join("anchored.toml")
+    );
+    assert_eq!(
+        project.lock_path(None),
+        dir.join("artifacts").join("schema.lock")
+    );
+    assert_eq!(
+        project.codegen_output(None),
+        dir.join("generated").join("schema.rs")
+    );
+    // The explicit flag of the command wins over every declared key.
+    let tail = PathBuf::from("flag/tail");
+    let stage = PathBuf::from("flag/stage");
+    let checkpoint = PathBuf::from("flag/checkpoint.toml");
+    let lock = PathBuf::from("flag/schema.lock");
+    let module = PathBuf::from("flag/schema.rs");
+
+    assert_eq!(project.migrations_dir(Some(tail.clone())), tail);
+    assert_eq!(project.stage_dir(Some(stage.clone())), stage);
+    assert_eq!(project.checkpoint_path(Some(checkpoint.clone())), checkpoint);
+    assert_eq!(project.lock_path(Some(lock.clone())), lock);
+    assert_eq!(project.codegen_output(Some(module.clone())), module);
+}
+
+#[test]
+fn a_project_without_declarations_keeps_the_conventional_layout() {
+    let dir = scratch("project-layout");
+    let absent = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+
+    // The conventional `rurqe.toml` is absent, so every path falls back to the
+    // layout beneath the artifact directory and the generator default decides
+    // the module.
+    let project =
+        Project::load(None, &absent).expect("an absent configuration is the default project");
+
+    assert_eq!(
+        project.migrations_dir(None),
+        dir.join("rurqe").join("migrations")
+    );
+    assert_eq!(project.stage_dir(None), dir.join("rurqe").join("schema"));
+    assert_eq!(
+        project.checkpoint_path(None),
+        dir.join("rurqe").join("migrations").join("checkpoint.toml")
+    );
+    assert_eq!(
+        project.lock_path(None),
+        dir.join("rurqe").join("schema.lock")
+    );
+    assert_eq!(project.codegen_output(None), PathBuf::from("src/schema.rs"));
+    assert_eq!(
+        project
+            .selection(None)
+            .expect("the default selection")
+            .primary(),
+        crate::introspect::DEFAULT_SCHEMA
+    );
+}
+
+#[test]
+fn the_resolved_paths_reach_the_commands_that_consume_them() {
+    let dir = scratch("resolved-paths");
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    std::fs::write(
+        &configuration,
+        r#"[migrations]
+dir = "declared-tail"
+
+[stage]
+dir = "declared-stage"
+checkpoint = "declared-tail/anchored.toml"
+"#,
+    )
+    .expect("write the project configuration");
+
+    // The lock file lives beside the marker, so the directory holding the
+    // resolved marker exists before a command observes the marker missing.
+    std::fs::create_dir_all(dir.join("rurqe").join("migrations"))
+        .expect("create the conventional migration directory");
+    std::fs::create_dir_all(dir.join("declared-tail"))
+        .expect("create the declared migration directory");
+    std::fs::create_dir_all(dir.join("flagged")).expect("create the flagged migration directory");
+
+    let prune = |checkpoint: Option<&Path>, migrations: Option<&Path>| {
+        let mut argv = vec![
+            "rurqe".to_owned(),
+            "prune".to_owned(),
+            "--before".to_owned(),
+            "1".to_owned(),
+        ];
+
+        if let Some(checkpoint) = checkpoint {
+            argv.push("--checkpoint-path".to_owned());
+            argv.push(checkpoint.display().to_string());
+        }
+        if let Some(migrations) = migrations {
+            argv.push("--migrations-dir".to_owned());
+            argv.push(migrations.display().to_string());
+        }
+
+        argv
+    };
+
+    // The convention: an absent configuration resolves the marker beneath the
+    // default artifact directory.
+    let absent = dir.join("absent.toml");
+    let conventional = dir.join("rurqe").join("migrations").join("checkpoint.toml");
+    let error = run_cli_with_config(prune(None, None), &absent)
+        .expect_err("the conventional checkpoint is missing");
+    assert!(
+        error
+            .to_string()
+            .contains(&conventional.display().to_string()),
+        "the conventional marker resolves beneath the artifact directory: {error}"
+    );
+
+    // The declaration: the declared key wins over the conventional marker.
+    let declared = dir.join("declared-tail").join("anchored.toml");
+    let error = run_cli_with_config(prune(None, None), &configuration)
+        .expect_err("the declared checkpoint is missing");
+    assert!(
+        error
+            .to_string()
+            .contains(&declared.display().to_string()),
+        "the declared marker wins over the conventional one: {error}"
+    );
+
+    // The flag: an explicit path wins over the declared key.
+    let flagged = dir.join("flagged").join("checkpoint.toml");
+    let flagged_tail = dir.join("flagged-tail");
+    let error = run_cli_with_config(prune(Some(&flagged), Some(&flagged_tail)), &configuration)
+        .expect_err("the flagged checkpoint is missing");
+    assert!(
+        error
+            .to_string()
+            .contains(&flagged.display().to_string()),
+        "the explicit flag wins over the declared marker: {error}"
+    );
+
+    // The stage directory follows the same cascade, so the cold start reads the
+    // declared directory instead of the conventional `schema`.
+    let stage = dir.join("declared-stage");
     let argv = vec![
         "rurqe".to_owned(),
         "stage".to_owned(),
@@ -1009,12 +1338,11 @@ fn every_migration_command_validates_the_project_configuration() {
         "--database-url".to_owned(),
         ":memory:".to_owned(),
     ];
-    let error = run_cli_with_config(argv, configuration.path())
-        .expect_err("a malformed configuration aborts the cold start");
-
+    let error = run_cli_with_config(argv, &configuration)
+        .expect_err("the declared stage directory is missing");
     assert!(
-        error.to_string().contains("workspace"),
-        "stage init: {error}"
+        error.to_string().contains(&stage.display().to_string()),
+        "the declared stage directory wins over the conventional one: {error}"
     );
 }
 

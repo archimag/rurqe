@@ -1,11 +1,6 @@
 //! Parser of the `migrate` command and its actions.
 
-use std::path::PathBuf;
-
-use super::{
-    default_checkpoint_path, default_migrations_dir, take_schema, take_value, universal_flag,
-    CliCommand, CliError, Interrupt,
-};
+use super::{take_path, take_schema, take_value, universal_flag, CliCommand, CliError, Interrupt};
 
 /// The action a `migrate` invocation asks for.
 ///
@@ -53,8 +48,9 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
         _ => (MigrateAction::Up, tokens),
     };
 
-    let mut migrations_dir = default_migrations_dir();
-    let mut checkpoint_path = default_checkpoint_path();
+    let mut config = None;
+    let mut migrations_dir = None;
+    let mut checkpoint_path = None;
     let mut database_url = None;
     let mut schema = None;
 
@@ -65,14 +61,13 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             return Ok(command);
         }
         match flag {
-            "--migrations-dir" => {
-                migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
+            "--config" => config = Some(take_path(tokens, &mut idx, flag)?),
+            "--migrations-dir" => migrations_dir = Some(take_path(tokens, &mut idx, flag)?),
             "--checkpoint-path" => {
                 // The value is consumed before the action is consulted, so a
                 // universal flag standing in its place is still answered and a
                 // missing value keeps the diagnostic it carries everywhere.
-                let value = take_value(tokens, &mut idx, flag)?;
+                let value = take_path(tokens, &mut idx, flag)?;
 
                 // The checkpoint arms the outdated-target guard of `up` alone,
                 // so accepting the flag on the history actions would silently
@@ -86,7 +81,7 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                     .into());
                 }
 
-                checkpoint_path = PathBuf::from(value);
+                checkpoint_path = Some(value);
             }
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
@@ -102,17 +97,20 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
 
     match action {
         MigrateAction::Up => Ok(CliCommand::MigrateUp {
+            config,
             migrations_dir,
             checkpoint_path,
             database_url,
             schema,
         }),
         MigrateAction::Status => Ok(CliCommand::MigrateStatus {
+            config,
             migrations_dir,
             database_url,
             schema,
         }),
         MigrateAction::Repair => Ok(CliCommand::MigrateRepair {
+            config,
             migrations_dir,
             database_url,
             schema,

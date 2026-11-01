@@ -15,7 +15,7 @@ mod connection;
 mod redact;
 mod report;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[cfg(test)]
@@ -29,9 +29,8 @@ pub use redact::redact_database_url;
 pub use report::CommandOutput;
 
 use self::commands::{
-    apply_migrations, baseline_database, cleanup_stage, codegen_options, commit_stage, help_text,
-    initialise_stage, load_config, prune_migrations, repair_history, report_status,
-    resolve_schema_code, resolve_selection, selection_of, verify_stage, write_file,
+    apply_migrations, baseline_database, cleanup_stage, commit_stage, help_text, initialise_stage,
+    prune_migrations, repair_history, report_status, verify_stage, write_file, Project,
 };
 use self::connection::resolve_database_url;
 
@@ -120,23 +119,33 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
 
 /// Runs the CLI toolchain against the project configuration at `config_path`.
 ///
-/// The configuration path is a parameter rather than a constant of this function,
-/// so whoever owns the directory holding `rurqe.toml` decides which file a
-/// command reads: a test points every command it runs at a file it wrote into a
-/// private temporary directory, and an embedding application keeps two projects
-/// apart. Neither of them has to write into the working directory of the process
-/// to configure a command. [`run_cli`] is the entry point that passes the
-/// conventional `rurqe.toml` of the working directory.
+/// The configuration path is the fallback of the cascade rather than a constant
+/// of this function, so whoever owns the directory holding `rurqe.toml` decides
+/// which file a command reads when the invocation names none: a test points every
+/// command it runs at a file it wrote into a private temporary directory, and an
+/// embedding application keeps two projects apart. An explicit `--config` of the
+/// invocation wins over it, because the operator named that file directly.
+/// [`run_cli`] is the entry point that passes the conventional `rurqe.toml` of the
+/// working directory.
+///
+/// Every artifact path of a command is resolved through the loaded project, so the
+/// file is read once per invocation and the cascade of every path — the explicit
+/// flag, then the declared key, then the conventional layout — starts from the same
+/// declaration. `stage cleanup` consumes no artifact path, but it accepts
+/// `--config`, so a configuration it was pointed at is validated exactly like on the
+/// commands that do resolve paths.
 pub(crate) fn run_cli_with_config(
     args: Vec<String>,
     config_path: &Path,
 ) -> Result<CommandOutput, CliError> {
     let cmd = parse_args(&args)?;
 
-    // Every catalog-digest arm below resolves its schemas against the
-    // configuration file this run was pointed at, so the path is bound once here
-    // and the arms keep naming only the schema selection.
-    let resolve_selection = |explicit: Option<&str>| resolve_selection(explicit, config_path);
+    // Help and version describe the toolchain rather than one project, so they are
+    // answered through their own arms below without a configuration being read: a
+    // malformed `rurqe.toml` never suppresses the help of the binary that reports
+    // it. Every other action resolves its paths through the loaded project, so the
+    // file is read once per command.
+    let load_project = |config: Option<PathBuf>| Project::load(config.as_deref(), config_path);
 
     match cmd {
         CliCommand::Help => {
@@ -149,48 +158,74 @@ pub(crate) fn run_cli_with_config(
             env!("CARGO_PKG_VERSION")
         ))),
         CliCommand::MigrateUp {
+            config,
             migrations_dir,
             checkpoint_path,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
-            apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
-        }),
+        } => {
+            let project = load_project(config)?;
+            let migrations_dir = project.migrations_dir(migrations_dir);
+            let checkpoint_path = project.checkpoint_path(checkpoint_path);
+            let selection = project.selection(schema.as_deref());
+            with_migration_backend!(database_url, selection, |backend| {
+                apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
+            })
+        }
         CliCommand::MigrateStatus {
+            config,
             migrations_dir,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
-            report_status(&mut backend, &migrations_dir)
-        }),
+        } => {
+            let project = load_project(config)?;
+            let migrations_dir = project.migrations_dir(migrations_dir);
+            let selection = project.selection(schema.as_deref());
+            with_migration_backend!(database_url, selection, |backend| {
+                report_status(&mut backend, &migrations_dir)
+            })
+        }
         CliCommand::MigrateRepair {
+            config,
             migrations_dir,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
-            repair_history(&mut backend, &migrations_dir)
-        }),
+        } => {
+            let project = load_project(config)?;
+            let migrations_dir = project.migrations_dir(migrations_dir);
+            let selection = project.selection(schema.as_deref());
+            with_migration_backend!(database_url, selection, |backend| {
+                repair_history(&mut backend, &migrations_dir)
+            })
+        }
         CliCommand::Baseline {
+            config,
             version,
             description,
             database_url,
         } => {
+            // The command records a marker and consumes no artifact path, but a
+            // configuration it accepted is validated like on every other command.
+            load_project(config)?;
             with_migration_backend!(database_url, |backend| {
                 baseline_database(&mut backend, version, &description)
             })
         }
         CliCommand::Codegen {
+            config,
             database_url,
             output,
             lock_path,
             domain_types,
             schema,
         } => {
-            let config = load_config(config_path)?;
-            let selection = selection_of(schema.as_deref(), &config)?;
+            let project = load_project(config)?;
+            let selection = project.selection(schema.as_deref())?;
             let url = resolve_database_url(database_url)?;
             let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
-            let mut options = codegen_options(config);
+            let output = project.codegen_output(output);
+            let lock_path = project.lock_path(lock_path);
+            let mut options = project.codegen_options();
             if domain_types {
                 options.domain_types = true;
             }
@@ -210,12 +245,15 @@ pub(crate) fn run_cli_with_config(
             Ok(report)
         }
         CliCommand::Verify {
+            config,
             database_url,
             schema_path,
             lock_path,
             schema,
         } => {
-            let selection = resolve_selection(schema.as_deref())?;
+            let project = load_project(config)?;
+            let selection = project.selection(schema.as_deref())?;
+            let lock_path = project.lock_path(lock_path);
             let url = resolve_database_url(database_url)?;
             let expected_lock = std::fs::read_to_string(&lock_path).map_err(|e| {
                 CliError(format!(
@@ -223,7 +261,7 @@ pub(crate) fn run_cli_with_config(
                     lock_path.display()
                 ))
             })?;
-            let schema_code = resolve_schema_code(schema_path)?;
+            let schema_code = project.resolve_schema_code(schema_path)?;
             let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
             verify_drift(&catalog, &expected_lock, schema_code.as_deref())
                 .map_err(|err| CliError(err.to_string()))?;
@@ -240,15 +278,22 @@ pub(crate) fn run_cli_with_config(
             Ok(report)
         }
         CliCommand::StageInit {
+            config,
             stage_dir,
             version,
             description,
             database_url,
             schema,
-        } => with_migration_backend!(database_url, resolve_selection(schema.as_deref()), |backend| {
-            initialise_stage(&mut backend, &stage_dir, version, &description)
-        }),
+        } => {
+            let project = load_project(config)?;
+            let stage_dir = project.stage_dir(stage_dir);
+            let selection = project.selection(schema.as_deref());
+            with_migration_backend!(database_url, selection, |backend| {
+                initialise_stage(&mut backend, &stage_dir, version, &description)
+            })
+        }
         CliCommand::StageVerify {
+            config,
             stage_dir,
             base_stage_dir,
             migrations_dir,
@@ -263,7 +308,11 @@ pub(crate) fn run_cli_with_config(
             // outside `public` — or declaring secondary schemas — describes what it
             // declares instead of an empty `public`, and a malformed configuration
             // aborts the verification exactly like every other catalog-digest command.
-            let selection = resolve_selection(schema.as_deref())?;
+            let project = load_project(config)?;
+            let selection = project.selection(schema.as_deref())?;
+            let stage_dir = project.stage_dir(stage_dir);
+            let migrations_dir = project.migrations_dir(migrations_dir);
+            let checkpoint_path = project.checkpoint_path(checkpoint_path);
             let url = resolve_equation_url(scratch_url.or(database_url))?;
             verify_stage(
                 &stage_dir,
@@ -275,6 +324,7 @@ pub(crate) fn run_cli_with_config(
             )
         }
         CliCommand::StageCommit {
+            config,
             version,
             database_url,
             stage_dir,
@@ -282,31 +332,45 @@ pub(crate) fn run_cli_with_config(
             checkpoint_path,
             schema,
         } => {
-            let selection = resolve_selection(schema.as_deref())?;
+            let project = load_project(config)?;
+            let selection = project.selection(schema.as_deref())?;
             let url = resolve_database_url(database_url)?;
             commit_stage(
                 version,
                 &url,
                 &selection,
-                &stage_dir,
-                &lock_path,
-                &checkpoint_path,
+                &project.stage_dir(stage_dir),
+                &project.lock_path(lock_path),
+                &project.checkpoint_path(checkpoint_path),
             )
         }
         CliCommand::StageCleanup {
+            config,
             scratch_url,
             database_url,
             older_than_secs,
             force,
         } => {
+            // The sweep consumes no artifact path, but it accepts `--config`, so
+            // the file is validated strictly like on every other command.
+            load_project(config)?;
             let url = resolve_cleanup_url(scratch_url.or(database_url))?;
             cleanup_stage(&url, Duration::from_secs(older_than_secs), force)
         }
         CliCommand::Prune {
+            config,
             before,
             migrations_dir,
             checkpoint_path,
             dry_run,
-        } => prune_migrations(before, &migrations_dir, &checkpoint_path, dry_run),
+        } => {
+            let project = load_project(config)?;
+            prune_migrations(
+                before,
+                &project.migrations_dir(migrations_dir),
+                &project.checkpoint_path(checkpoint_path),
+                dry_run,
+            )
+        }
     }
 }

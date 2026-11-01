@@ -261,6 +261,11 @@ impl<'a> BoundParams<'a> {
     /// the single buffer that call requires. Every other driver call borrows
     /// the wrappers through [`bindings`](BoundParams::bindings) and allocates
     /// nothing beyond the buffer of wrappers itself.
+    ///
+    /// The helper is consumed by the synchronous adapter, which is the only one
+    /// that takes its parameters as a single slice, so a build carrying the
+    /// asynchronous adapter alone compiles it without a caller.
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     pub(crate) fn references(&self) -> Vec<&(dyn ToSql + Sync)> {
         self.bindings().collect()
     }

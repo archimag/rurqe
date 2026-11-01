@@ -37,6 +37,139 @@ pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
     CliError(err.to_string())
 }
 
+/// The generated module code generation writes when the project declares no path.
+///
+/// The path is the built-in default of the generator — the last tier of the
+/// `codegen` cascade — and the conventional module `verify` reads when neither
+/// `--schema-path` nor `[codegen].output` names one.
+const DEFAULT_SCHEMA_OUTPUT: &str = "src/schema.rs";
+
+/// The project a command runs against: its configuration and the directory it lives in.
+///
+/// Every path declared by `rurqe.toml` — the artifact directories and the
+/// generated module alike — resolves against the directory holding the file, so a
+/// command behaves the same whatever its working directory is. The configuration
+/// is loaded once per command and every path of that command is resolved through
+/// this one type, which keeps the cascade identical across the command tree: an
+/// explicit flag wins over the declared key, and the declared key wins over the
+/// conventional path beneath the artifact directory. A path the document carries
+/// no key for — the catalog snapshot — keeps a two-tier cascade of its own.
+#[derive(Debug)]
+pub(super) struct Project {
+    /// The parsed configuration, validated strictly whenever the file exists.
+    config: CodegenConfig,
+    /// The directory holding the configuration file every declared path resolves against.
+    directory: PathBuf,
+}
+
+impl Project {
+    /// Loads the configuration named by `--config`, or the project default at `fallback`.
+    ///
+    /// A file named by the flag has to exist: the operator asked for that file, so a
+    /// mistyped or deleted path is reported instead of silently resolving every
+    /// artifact to the conventional layout. The default is optional — a project
+    /// without `rurqe.toml` keeps the engine-neutral defaults — while a file that
+    /// does exist is validated strictly on every command that accepted one,
+    /// including a command that consumes no artifact path at all.
+    pub(super) fn load(explicit: Option<&Path>, fallback: &Path) -> Result<Self, CliError> {
+        let (path, required) = match explicit {
+            Some(path) => (path, true),
+            None => (fallback, false),
+        };
+
+        if required && !path.exists() {
+            return Err(CliError(format!(
+                "configuration file `{}` named by `--config` does not exist; a path the flag names \
+                 is required, while the conventional `{}` is optional",
+                path.display(),
+                crate::config::DEFAULT_CONFIG_PATH
+            )));
+        }
+
+        if required && !path.is_file() {
+            return Err(CliError(format!(
+                "configuration file `{}` named by `--config` is not a regular file",
+                path.display()
+            )));
+        }
+
+        Ok(Self {
+            config: load_config(path)?,
+            directory: artifact_directory(path).to_path_buf(),
+        })
+    }
+
+    /// Resolves the schema selection: the explicit name, then the configured one, then `public`.
+    pub(super) fn selection(&self, explicit: Option<&str>) -> Result<SchemaSelection, CliError> {
+        selection_of(explicit, &self.config)
+    }
+
+    /// Resolves the migration directory: the flag, then `[migrations].dir`, then `<root>/migrations`.
+    pub(super) fn migrations_dir(&self, flag: Option<PathBuf>) -> PathBuf {
+        flag.unwrap_or_else(|| self.config.migrations_dir(&self.directory))
+    }
+
+    /// Resolves the declarative stage directory: the flag, then `[stage].dir`, then `<root>/schema`.
+    pub(super) fn stage_dir(&self, flag: Option<PathBuf>) -> PathBuf {
+        flag.unwrap_or_else(|| self.config.stage_dir(&self.directory))
+    }
+
+    /// Resolves the checkpoint marker: the flag, then `[stage].checkpoint`, then the marker of the tail.
+    pub(super) fn checkpoint_path(&self, flag: Option<PathBuf>) -> PathBuf {
+        flag.unwrap_or_else(|| self.config.checkpoint_path(&self.directory))
+    }
+
+    /// Resolves the catalog snapshot: the flag, then `<root>/schema.lock`.
+    ///
+    /// The snapshot carries no key of the document, so its cascade has the flag and
+    /// the conventional path alone.
+    pub(super) fn lock_path(&self, flag: Option<PathBuf>) -> PathBuf {
+        flag.unwrap_or_else(|| self.config.schema_lock_path(&self.directory))
+    }
+
+    /// Resolves the generated schema module: the flag, then `[codegen].output`, then the generator default.
+    pub(super) fn codegen_output(&self, flag: Option<PathBuf>) -> PathBuf {
+        flag.or_else(|| self.config.codegen_output(&self.directory))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_SCHEMA_OUTPUT))
+    }
+
+    /// Reads the module `verify` compares its embedded `SCHEMA_HASH` against.
+    ///
+    /// `--schema-path` and `[codegen].output` name one file: an explicit flag wins
+    /// over the declared key, and both are required to resolve, because a project
+    /// that named its module expects it to be verified. Without either, the
+    /// conventional `src/schema.rs` is used when present, and verification otherwise
+    /// falls back to the lock snapshot alone with a warning.
+    pub(super) fn resolve_schema_code(
+        &self,
+        flag: Option<PathBuf>,
+    ) -> Result<Option<String>, CliError> {
+        if let Some(path) = flag.or_else(|| self.config.codegen_output(&self.directory)) {
+            return read_schema_code(&path).map(Some);
+        }
+
+        let default = PathBuf::from(DEFAULT_SCHEMA_OUTPUT);
+        if !default.exists() {
+            tracing::warn!(
+                schema_code = %default.display(),
+                "schema code not found; verifying against the lock snapshot only \
+                 (pass `--schema-path` to require the generated code)"
+            );
+            return Ok(None);
+        }
+        read_schema_code(&default).map(Some)
+    }
+
+    /// Reads the code generation options out of the project configuration.
+    pub(super) fn codegen_options(&self) -> CodegenOptions {
+        CodegenOptions {
+            type_overrides: self.config.type_overrides().clone(),
+            domain_types: self.config.domain_types(),
+            ..CodegenOptions::default()
+        }
+    }
+}
+
 /// Loads the project configuration from the file at `path`.
 ///
 /// The path comes from the caller instead of being read from the working
@@ -45,24 +178,8 @@ pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
 /// types and the default schema, while a malformed file aborts the command instead
 /// of silently emitting wrong types for overridden columns or describing the wrong
 /// schema.
-pub(super) fn load_config(path: &Path) -> Result<CodegenConfig, CliError> {
+fn load_config(path: &Path) -> Result<CodegenConfig, CliError> {
     CodegenConfig::load(path).map_err(cli_error)
-}
-
-/// Resolves the schema selection a command's catalog digests describe.
-///
-/// The `--schema` argument wins over the `primary_schema` key of the
-/// configuration file at `config_path` (and over its legacy `schema` alias), the
-/// libpq default `public` applies when neither names a primary schema, and the
-/// `schemas` array contributes the secondary schemas the project declares beside
-/// it. The resolved selection is what a catalog statement binds, so the codegen
-/// snapshot, the drift gate, the cold-start marker, and the checkpoint guard
-/// always describe the same schemas.
-pub(super) fn resolve_selection(
-    explicit: Option<&str>,
-    config_path: &Path,
-) -> Result<SchemaSelection, CliError> {
-    selection_of(explicit, &load_config(config_path)?)
 }
 
 /// Builds the schema selection of an already loaded configuration.
@@ -77,7 +194,7 @@ pub(super) fn resolve_selection(
 /// primary schema a command will select, so an explicit `--schema` argument
 /// naming a declared secondary schema is a collision only this layer can see, and
 /// a selection naming one schema twice would introspect the same catalog twice.
-pub(super) fn selection_of(
+fn selection_of(
     explicit: Option<&str>,
     config: &CodegenConfig,
 ) -> Result<SchemaSelection, CliError> {
@@ -101,40 +218,6 @@ pub(super) fn selection_of(
     }
 
     Ok(SchemaSelection::new(primary, config.schemas().to_vec()))
-}
-/// Reads the code generation options out of the project configuration.
-pub(super) fn codegen_options(config: CodegenConfig) -> CodegenOptions {
-    let domain_types = config.domain_types();
-    let type_overrides = config.into_type_overrides();
-
-    CodegenOptions {
-        type_overrides,
-        domain_types,
-        ..CodegenOptions::default()
-    }
-}
-
-/// Reads the generated schema code used for `SCHEMA_HASH` verification.
-///
-/// An explicitly supplied `--schema-path` must resolve to a readable file, so a
-/// deleted or misconfigured schema file can never silently pass CI. When the
-/// flag is omitted, the conventional `src/schema.rs` is used if present and
-/// verification otherwise falls back to the lock snapshot alone with a warning.
-pub(super) fn resolve_schema_code(explicit: Option<PathBuf>) -> Result<Option<String>, CliError> {
-    let Some(path) = explicit else {
-        let default = PathBuf::from("src/schema.rs");
-        if !default.exists() {
-            tracing::warn!(
-                schema_code = %default.display(),
-                "schema code not found; verifying against the lock snapshot only \
-                 (pass `--schema-path` to require the generated code)"
-            );
-            return Ok(None);
-        }
-        return read_schema_code(&default).map(Some);
-    };
-
-    read_schema_code(&path).map(Some)
 }
 
 fn read_schema_code(path: &Path) -> Result<String, CliError> {
@@ -528,36 +611,70 @@ pub(super) fn help_text() -> &'static str {
 
 USAGE:
     cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>] [--database-url <url>]
-                       [--schema <name>]
-    cargo db-migrate [status|repair] [--migrations-dir <dir>] [--schema <name>]
-    cargo db-baseline --version <version> [--description <desc>]
+                       [--schema <name>] [--config <path>]
+    cargo db-migrate [status|repair] [--migrations-dir <dir>] [--schema <name>] [--config <path>]
+    cargo db-baseline --version <version> [--description <desc>] [--config <path>]
     cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types] [--schema <name>]
-    cargo db-verify [--schema-path <path>] [--lock-path <path>] [--schema <name>]
+                     [--config <path>]
+    cargo db-verify [--schema-path <path>] [--lock-path <path>] [--schema <name>] [--config <path>]
     cargo rurqe stage init|verify|commit|cleanup [options]
     cargo rurqe prune --before <version> [options]
 
 COMMANDS:
-    migrate up       Apply all pending migrations, guarded by `checkpoint.toml`
+    migrate up       Apply all pending migrations, guarded by the checkpoint marker
     migrate status   Inspect status of migrations against history table
     migrate repair   Fix checksums and purge failed migration attempts
     baseline         Mark current schema as baseline without running past migrations
-    codegen          Introspect database, generate Rust schema, and write schema.lock
-    verify           Verify bit-for-bit parity between live database and schema.lock
-    stage init       Cold start the database from the declarative stage (`schema/`)
+    codegen          Introspect database, generate Rust schema, and write the catalog snapshot
+    verify           Verify bit-for-bit parity between live database and the catalog snapshot
+    stage init       Cold start the database from the declarative stage
     stage verify     Verify the golden equation State(schema/) == State(Checkpoint + tail)
-    stage commit     Seal the live database as `schema.lock`, snapshot the boundary stage,
-                     and anchor `checkpoint.toml`
+    stage commit     Seal the live database as the catalog snapshot, snapshot the boundary stage,
+                     and anchor the checkpoint marker
     stage cleanup    Drop the PostgreSQL scratch databases abandoned by earlier verifications
     prune            Delete migration scripts below the committed checkpoint boundary
 
 STAGE OPTIONS:
     stage init       --version <version> [--stage-dir <dir>] [--description <desc>]
+                     [--config <path>]
     stage verify     [--stage-dir <dir>] [--base-stage-dir <dir>] [--migrations-dir <dir>]
                      [--checkpoint-path <path>] [--scratch-url <url>] [--schema <name>]
+                     [--config <path>]
     stage commit     --version <version> [--stage-dir <dir>] [--lock-path <path>]
-                     [--checkpoint-path <path>]
-    stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force]
-    prune            --before <version> [--migrations-dir <dir>] [--dry-run]
+                     [--checkpoint-path <path>] [--config <path>]
+    stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force] [--config <path>]
+    prune            --before <version> [--migrations-dir <dir>] [--dry-run] [--config <path>]
+
+CONFIGURATION:
+    --config <path>  Project configuration the command reads. Every command accepts it.
+                     Without the flag the conventional `rurqe.toml` of the working directory
+                     is read when it exists, and a project without one keeps the explicit
+                     flags and the artifact layout below. A file named by the flag must
+                     exist: a missing or unreadable path is an error naming the file, never a
+                     silent fallback to the defaults. A file that exists is validated strictly
+                     on every command that accepted it, including `stage cleanup`, which
+                     consumes no artifact path at all.
+
+    `rurqe.toml` `primary_schema = "app"` names the described schema, and
+    `[codegen.type_overrides]` maps a `table.column` onto the Rust type generated
+    for it, e.g. `"users.id" = "uuid::Uuid"`.
+
+ARTIFACTS:
+    Every lifecycle artifact lives beneath the artifact directory declared by the
+    root-level `root` key of `rurqe.toml` — `rurqe` by default — and every path the
+    document declares resolves against the directory holding the configuration file:
+
+        rurqe/schema/            declarative stage (`[stage].dir`)
+        rurqe/migrations/        active migration tail (`[migrations].dir`)
+        rurqe/migrations/checkpoint.toml
+        rurqe/migrations/checkpoint-stage/
+        rurqe/schema.lock        catalog snapshot
+
+    An explicit flag wins over the declared key, and the declared key wins over the
+    conventional path: `--migrations-dir` beats `[migrations].dir`, which beats
+    `rurqe/migrations`. The catalog snapshot carries no key of its own, so its
+    cascade is the flag followed by the conventional path, and `[codegen].output`
+    completes the `codegen` cascade ahead of the built-in `src/schema.rs`.
 
 NOTES:
     `--checkpoint-path` is accepted by `migrate up` alone, where it arms the guard
@@ -565,32 +682,27 @@ NOTES:
     status` and `migrate repair` read the history table only, so the flag is
     rejected there instead of being accepted and ignored.
 
-    `stage commit` snapshots the declarative stage verbatim into `checkpoint-stage/`
-    next to `checkpoint.toml`. `stage verify` loads that snapshot as the base stage
-    when `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has
-    no base stage is rejected instead of replaying the tail over an empty database.
+    `stage commit` snapshots the declarative stage verbatim into the boundary
+    directory beside the marker — `<stem>-stage/`, so `checkpoint-stage/` next to
+    `checkpoint.toml`. `stage verify` loads that snapshot as the base stage when
+    `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has no
+    base stage is rejected instead of replaying the tail over an empty database.
 
-    `stage cleanup` drops only a scratch database the connecting host tagged as
-    its own, whose recorded creation second aged past `--older-than`, and whose
-    name records no process that may still be alive on this host; the
-    opportunistic sweep ahead of a scratch connection applies the same
-    selection and names its candidates on the `WARN` channel before dropping
-    them. Give every host that shares a PostgreSQL server its own
-    `RURQE_HOST_ID`: the process guard keeps a database whose recorded process
-    is live here, while a scratch database created under a duplicated host id
-    by another machine is swept by age alone, and one that is genuinely
-    abandoned is removed manually with `DROP DATABASE`.
+    `stage cleanup` drops only a scratch database the connecting host tagged as its
+    own, whose recorded creation second aged past `--older-than`, and whose name
+    records no process that may still be alive on this host; the opportunistic sweep
+    ahead of a scratch connection applies the same selection and names its candidates
+    on the `WARN` channel before dropping them. Give every host that shares a
+    PostgreSQL server its own `RURQE_HOST_ID`: the process guard keeps a database
+    whose recorded process is live here, while a scratch database created under a
+    duplicated host id by another machine is swept by age alone, and one that is
+    genuinely abandoned is removed manually with `DROP DATABASE`.
 
 SCHEMA SELECTION:
     --schema <name>  PostgreSQL schema every catalog digest describes. A command line
-                     selection wins over the `schema` key of `rurqe.toml`, which wins
-                     over `public`. A selected schema that holds no table while the
-                     database keeps user relations elsewhere is reported instead of
-                     anchoring an empty catalog hash.
-
-CONFIGURATION:
-    `rurqe.toml` `schema = "app"` names the described schema, and
-    `[codegen.type_overrides]` maps a `table.column` onto the Rust type generated
-    for it, e.g. `"users.id" = "uuid::Uuid"`.
+                     selection wins over the `primary_schema` key of `rurqe.toml`,
+                     which wins over `public`. A selected schema that holds no table
+                     while the database keeps user relations elsewhere is reported
+                     instead of anchoring an empty catalog hash.
 "#
 }

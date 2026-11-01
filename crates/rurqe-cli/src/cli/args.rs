@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use rurqe_migrate::checkpoint::CHECKPOINT_FILE;
-use rurqe_migrate::stage::DeclarativeStage;
 use rurqe_migrate::version::MigrationVersion;
 
 mod baseline;
@@ -12,97 +10,127 @@ mod migrate;
 mod prune;
 mod stage;
 
-/// The default directory holding the migration scripts.
-const DEFAULT_MIGRATIONS_DIR: &str = "migrations";
-
-/// The default directory holding the DDL scripts of the declarative stage.
-const DEFAULT_STAGE_DIR: &str = DeclarativeStage::DIRECTORY;
-
-/// The default file receiving the generated schema code.
-const DEFAULT_SCHEMA_OUTPUT: &str = "src/schema.rs";
-
-/// The default snapshot file recording the canonical schema hash.
-const DEFAULT_LOCK_PATH: &str = "schema.lock";
-
 /// Parsed CLI commands.
 ///
 /// The commands that compare catalogs carry the schema selected with `--schema`,
-/// which the dispatcher resolves against the `schema` key of `rurqe.toml` before
-/// any catalog is read.
+/// which the dispatcher resolves against the `primary_schema` key of `rurqe.toml`
+/// before any catalog is read.
+///
+/// Every command carries the configuration file named by `--config` and the
+/// artifact paths named by the flags of its own action. A path field holds a value
+/// only when its flag was supplied, so the dispatcher resolves each of them through
+/// the one cascade it applies everywhere: the explicit flag, then the key of
+/// `rurqe.toml`, then the conventional path beneath the artifact directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     MigrateUp {
-        migrations_dir: PathBuf,
-        checkpoint_path: PathBuf,
+        config: Option<PathBuf>,
+        migrations_dir: Option<PathBuf>,
+        checkpoint_path: Option<PathBuf>,
         database_url: Option<String>,
         schema: Option<String>,
     },
     MigrateStatus {
-        migrations_dir: PathBuf,
+        config: Option<PathBuf>,
+        migrations_dir: Option<PathBuf>,
         database_url: Option<String>,
         schema: Option<String>,
     },
     MigrateRepair {
-        migrations_dir: PathBuf,
+        config: Option<PathBuf>,
+        migrations_dir: Option<PathBuf>,
         database_url: Option<String>,
         schema: Option<String>,
     },
     Baseline {
+        config: Option<PathBuf>,
         version: MigrationVersion,
         description: String,
         database_url: Option<String>,
     },
     Codegen {
+        config: Option<PathBuf>,
         database_url: Option<String>,
-        output: PathBuf,
-        lock_path: PathBuf,
+        output: Option<PathBuf>,
+        lock_path: Option<PathBuf>,
         domain_types: bool,
         schema: Option<String>,
     },
     Verify {
+        config: Option<PathBuf>,
         database_url: Option<String>,
         schema_path: Option<PathBuf>,
-        lock_path: PathBuf,
+        lock_path: Option<PathBuf>,
         schema: Option<String>,
     },
     StageInit {
-        stage_dir: PathBuf,
+        config: Option<PathBuf>,
+        stage_dir: Option<PathBuf>,
         version: MigrationVersion,
         description: String,
         database_url: Option<String>,
         schema: Option<String>,
     },
     StageVerify {
-        stage_dir: PathBuf,
+        config: Option<PathBuf>,
+        stage_dir: Option<PathBuf>,
         base_stage_dir: Option<PathBuf>,
-        migrations_dir: PathBuf,
-        checkpoint_path: PathBuf,
+        migrations_dir: Option<PathBuf>,
+        checkpoint_path: Option<PathBuf>,
         scratch_url: Option<String>,
         database_url: Option<String>,
         schema: Option<String>,
     },
     StageCommit {
+        config: Option<PathBuf>,
         version: MigrationVersion,
         database_url: Option<String>,
-        stage_dir: PathBuf,
-        lock_path: PathBuf,
-        checkpoint_path: PathBuf,
+        stage_dir: Option<PathBuf>,
+        lock_path: Option<PathBuf>,
+        checkpoint_path: Option<PathBuf>,
         schema: Option<String>,
     },
     StageCleanup {
+        config: Option<PathBuf>,
         scratch_url: Option<String>,
         database_url: Option<String>,
         older_than_secs: u64,
         force: bool,
     },
     Prune {
+        config: Option<PathBuf>,
         before: MigrationVersion,
-        migrations_dir: PathBuf,
-        checkpoint_path: PathBuf,
+        migrations_dir: Option<PathBuf>,
+        checkpoint_path: Option<PathBuf>,
         dry_run: bool,
     },
     Help,
     Version,
+}
+
+impl CliCommand {
+    /// The configuration file the invocation named with `--config`.
+    ///
+    /// `None` means the invocation named none, so the dispatcher falls back to the
+    /// conventional `rurqe.toml` of the project it runs in. The accessor reads the
+    /// proposed file without destructuring every action of the command tree, which
+    /// is what lets the dispatcher and the regressions share one answer.
+    pub fn config_path(&self) -> Option<&Path> {
+        match self {
+            CliCommand::MigrateUp { config, .. }
+            | CliCommand::MigrateStatus { config, .. }
+            | CliCommand::MigrateRepair { config, .. }
+            | CliCommand::Baseline { config, .. }
+            | CliCommand::Codegen { config, .. }
+            | CliCommand::Verify { config, .. }
+            | CliCommand::StageInit { config, .. }
+            | CliCommand::StageVerify { config, .. }
+            | CliCommand::StageCommit { config, .. }
+            | CliCommand::StageCleanup { config, .. }
+            | CliCommand::Prune { config, .. } => config.as_deref(),
+            CliCommand::Help | CliCommand::Version => None,
+        }
+    }
 }
 
 /// Errors occurring during CLI argument parsing.
@@ -194,55 +222,36 @@ impl Entrypoint {
     }
 
     /// The command executed when the binary receives no arguments.
+    ///
+    /// Every path of the forced command stays unset, so the dispatcher resolves it
+    /// through the same cascade an explicit invocation uses.
     fn default_command(self) -> Option<CliCommand> {
         match self {
             Entrypoint::CargoDbMigrate => Some(CliCommand::MigrateUp {
-                migrations_dir: default_migrations_dir(),
-                checkpoint_path: default_checkpoint_path(),
+                config: None,
+                migrations_dir: None,
+                checkpoint_path: None,
                 database_url: None,
                 schema: None,
             }),
             Entrypoint::CargoDbCodegen => Some(CliCommand::Codegen {
+                config: None,
                 database_url: None,
-                output: default_schema_output(),
-                lock_path: default_lock_path(),
+                output: None,
+                lock_path: None,
                 domain_types: false,
                 schema: None,
             }),
             Entrypoint::CargoDbVerify => Some(CliCommand::Verify {
+                config: None,
                 database_url: None,
                 schema_path: None,
-                lock_path: default_lock_path(),
+                lock_path: None,
                 schema: None,
             }),
             Entrypoint::CargoDbBaseline | Entrypoint::Direct => None,
         }
     }
-}
-
-/// Default migration directory used when `--migrations-dir` is omitted.
-fn default_migrations_dir() -> PathBuf {
-    PathBuf::from(DEFAULT_MIGRATIONS_DIR)
-}
-
-/// Default declarative stage directory used when `--stage-dir` is omitted.
-fn default_stage_dir() -> PathBuf {
-    PathBuf::from(DEFAULT_STAGE_DIR)
-}
-
-/// Default checkpoint marker path used when `--checkpoint-path` is omitted.
-fn default_checkpoint_path() -> PathBuf {
-    PathBuf::from(CHECKPOINT_FILE)
-}
-
-/// Default generated schema path used when `--output` is omitted.
-fn default_schema_output() -> PathBuf {
-    PathBuf::from(DEFAULT_SCHEMA_OUTPUT)
-}
-
-/// Default schema snapshot path used when `--lock-path` is omitted.
-fn default_lock_path() -> PathBuf {
-    PathBuf::from(DEFAULT_LOCK_PATH)
 }
 
 /// Resolves the scratch database URL the golden equation is verified against.
@@ -322,6 +331,15 @@ fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a
 
     *idx += 2;
     Ok(value)
+}
+
+/// Borrows the path following the flag at `*idx`, advancing past both.
+///
+/// A path is taken exactly like any other value, so a universal flag standing where
+/// the path belongs is answered instead of becoming a file name, and an
+/// option-shaped token is refused against the flag that stayed without its value.
+fn take_path(tokens: &[&str], idx: &mut usize, flag: &str) -> Result<PathBuf, Interrupt> {
+    Ok(PathBuf::from(take_value(tokens, idx, flag)?))
 }
 
 /// Borrows the schema name following `--schema`, rejecting a blank one.

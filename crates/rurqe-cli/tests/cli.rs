@@ -245,7 +245,8 @@ fn cli_argument_dispatch() {
     assert_eq!(
         cmd,
         CliCommand::MigrateStatus {
-            migrations_dir: PathBuf::from("sql_migrations"),
+            config: None,
+            migrations_dir: Some(PathBuf::from("sql_migrations")),
             database_url: None,
             schema: None,
         }

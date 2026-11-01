@@ -1,11 +1,8 @@
 //! Parsers of the `stage` command and its actions.
 
-use std::path::PathBuf;
-
 use super::{
-    default_checkpoint_path, default_lock_path, default_migrations_dir, default_stage_dir,
-    parse_version, take_schema, take_value, universal_flag, universal_flag_beside_version,
-    CliCommand, CliError, Interrupt,
+    parse_version, take_path, take_schema, take_value, universal_flag,
+    universal_flag_beside_version, CliCommand, CliError, Interrupt,
 };
 
 /// The default age above which a scratch database counts as abandoned.
@@ -44,7 +41,8 @@ pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
 
 /// Parses `stage init`: cold start the database from the declarative stage.
 fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
-    let mut stage_dir = default_stage_dir();
+    let mut config = None;
+    let mut stage_dir = None;
     let mut description = "stage".to_owned();
     let mut version = None;
     let mut database_url = None;
@@ -57,9 +55,8 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             return Ok(command);
         }
         match flag {
-            "--stage-dir" => {
-                stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
+            "--config" => config = Some(take_path(tokens, &mut idx, flag)?),
+            "--stage-dir" => stage_dir = Some(take_path(tokens, &mut idx, flag)?),
             "--description" => {
                 description = take_value(tokens, &mut idx, flag)?.to_owned();
             }
@@ -83,6 +80,7 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     })?;
 
     Ok(CliCommand::StageInit {
+        config,
         stage_dir,
         version,
         description,
@@ -93,10 +91,11 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
 
 /// Parses `stage verify`: check the golden equation between stage and tail.
 fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
-    let mut stage_dir = default_stage_dir();
+    let mut config = None;
+    let mut stage_dir = None;
     let mut base_stage_dir = None;
-    let mut migrations_dir = default_migrations_dir();
-    let mut checkpoint_path = default_checkpoint_path();
+    let mut migrations_dir = None;
+    let mut checkpoint_path = None;
     let mut scratch_url = None;
     let mut database_url = None;
     let mut schema = None;
@@ -108,21 +107,14 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             return Ok(command);
         }
         match flag {
-            "--stage-dir" => {
-                stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
-            "--base-stage-dir" => {
-                base_stage_dir = Some(PathBuf::from(take_value(tokens, &mut idx, flag)?));
-            }
+            "--config" => config = Some(take_path(tokens, &mut idx, flag)?),
+            "--stage-dir" => stage_dir = Some(take_path(tokens, &mut idx, flag)?),
+            "--base-stage-dir" => base_stage_dir = Some(take_path(tokens, &mut idx, flag)?),
             "--scratch-url" => {
                 scratch_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
-            "--migrations-dir" => {
-                migrations_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
-            "--checkpoint-path" => {
-                checkpoint_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
+            "--migrations-dir" => migrations_dir = Some(take_path(tokens, &mut idx, flag)?),
+            "--checkpoint-path" => checkpoint_path = Some(take_path(tokens, &mut idx, flag)?),
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
@@ -136,6 +128,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     }
 
     Ok(CliCommand::StageVerify {
+        config,
         stage_dir,
         base_stage_dir,
         migrations_dir,
@@ -148,10 +141,11 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
 
 /// Parses `stage commit`: seal the live database as the new stage anchor.
 fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
+    let mut config = None;
     let mut version = None;
-    let mut stage_dir = default_stage_dir();
-    let mut lock_path = default_lock_path();
-    let mut checkpoint_path = default_checkpoint_path();
+    let mut stage_dir = None;
+    let mut lock_path = None;
+    let mut checkpoint_path = None;
     let mut database_url = None;
     let mut schema = None;
 
@@ -162,21 +156,16 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             return Ok(command);
         }
         match flag {
+            "--config" => config = Some(take_path(tokens, &mut idx, flag)?),
             "--version" => {
                 version = Some(parse_version(flag, take_value(tokens, &mut idx, flag)?)?);
             }
-            "--lock-path" => {
-                lock_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
-            "--checkpoint-path" => {
-                checkpoint_path = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
+            "--lock-path" => lock_path = Some(take_path(tokens, &mut idx, flag)?),
+            "--checkpoint-path" => checkpoint_path = Some(take_path(tokens, &mut idx, flag)?),
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
-            "--stage-dir" => {
-                stage_dir = PathBuf::from(take_value(tokens, &mut idx, flag)?);
-            }
+            "--stage-dir" => stage_dir = Some(take_path(tokens, &mut idx, flag)?),
             "--schema" => {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
@@ -191,6 +180,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     })?;
 
     Ok(CliCommand::StageCommit {
+        config,
         version,
         database_url,
         stage_dir,
@@ -202,6 +192,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
 
 /// Parses `stage cleanup`: drop the scratch databases earlier verifications abandoned.
 fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
+    let mut config = None;
     let mut scratch_url = None;
     let mut database_url = None;
     let mut older_than_secs = DEFAULT_CLEANUP_AGE;
@@ -214,6 +205,7 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             return Ok(command);
         }
         match flag {
+            "--config" => config = Some(take_path(tokens, &mut idx, flag)?),
             "--scratch-url" => {
                 scratch_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
@@ -234,6 +226,7 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     }
 
     Ok(CliCommand::StageCleanup {
+        config,
         scratch_url,
         database_url,
         older_than_secs,
