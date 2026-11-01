@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::cli::CliError;
-use crate::introspect::types::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
+use rurqe_migrate::introspect::{RawIndexMetadata, RawTriggerMetadata, RawViewMetadata};
 
 use super::lexer::{matching_close, span_text, tokenize, SqlKeyword, Token, TokenKind};
 use super::{

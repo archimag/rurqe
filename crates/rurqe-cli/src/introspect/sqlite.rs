@@ -20,7 +20,7 @@ use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::CliError;
 
-use super::types::{parse_foreign_key_action, RawCatalogSections};
+use rurqe_migrate::introspect::{parse_foreign_key_action, RawCatalogSections};
 
 pub use assembly::{catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections};
 pub use check_enums::parse_sqlite_check_enums;

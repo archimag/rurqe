@@ -33,6 +33,7 @@ pub mod checksum;
 pub mod embedded;
 pub mod error;
 pub mod history;
+pub mod introspect;
 pub mod migration;
 pub mod runner;
 pub mod scripts;

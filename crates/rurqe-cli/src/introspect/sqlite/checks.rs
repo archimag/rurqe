@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use rurqe_migrate::catalog::CheckDef;
 
-use crate::introspect::types::RawCheckMetadata;
+use rurqe_migrate::introspect::RawCheckMetadata;
 
 use super::check_enums::{parse_check_clause, parse_check_enums};
 use super::lexer::{matching_close, span_text, tokenize, SqlKeyword, Token, TokenKind};

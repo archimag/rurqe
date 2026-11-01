@@ -1,11 +1,12 @@
 //! Catalog introspection facade.
 //!
-//! Engine-independent metadata handling lives in [`types`], SQLite `PRAGMA`
-//! introspection in [`sqlite`], and PostgreSQL `information_schema` /
-//! `pg_catalog` introspection in [`postgres`]. This facade re-exports the public
-//! surface and keeps the engine-agnostic entry points (`detect_dialect`,
-//! `introspect_database`, `introspect_database_schema`) that open a connection
-//! from a database URL.
+//! The engine-independent metadata rows, the SQL type mapping, and the catalog
+//! assembly live in [`rurqe_migrate::introspect`], SQLite `PRAGMA` introspection
+//! in [`sqlite`], and PostgreSQL `information_schema` / `pg_catalog`
+//! introspection in [`postgres`]. This facade re-exports that shared vocabulary
+//! together with the engine modules and keeps the engine-agnostic entry points
+//! (`detect_dialect`, `introspect_database`, `introspect_database_schema`) that
+//! open a connection from a database URL.
 
 use rurqe_migrate::catalog::SchemaCatalog;
 
@@ -13,7 +14,6 @@ use crate::cli::{connect, CliError, Connection};
 use crate::config::SchemaSelection;
 mod postgres;
 mod sqlite;
-mod types;
 
 #[cfg(test)]
 mod tests;
@@ -22,16 +22,16 @@ pub use crate::target::{detect_dialect, DatabaseDialect};
 pub use postgres::{
     introspect_postgres, introspect_postgres_schema, introspect_postgres_selection,
 };
-pub use sqlite::{
-    catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections, introspect_sqlite,
-    parse_sqlite_check_enums, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
-    RawSqliteTableMetadata,
-};
-pub use types::{
+pub use rurqe_migrate::introspect::{
     catalog_from_metadata, catalog_from_metadata_with_sections, map_sql_type_to_kind,
     map_sqlite_declared_type_to_kind, parse_foreign_key_action, RawCatalogSections,
     RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
     RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata,
+};
+pub use sqlite::{
+    catalog_from_sqlite_metadata, catalog_from_sqlite_metadata_with_sections, introspect_sqlite,
+    parse_sqlite_check_enums, RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata,
+    RawSqliteTableMetadata,
 };
 
 /// Name of the schema introspected when the caller names none.

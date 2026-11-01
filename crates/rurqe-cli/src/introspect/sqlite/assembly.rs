@@ -7,11 +7,9 @@ use rurqe_migrate::catalog::{
     ViewDef,
 };
 
-use crate::introspect::types::{
-    fold_indexes, map_sqlite_declared_type_to_kind, RawCatalogSections, RawIndexMetadata,
-    TableKey,
+use rurqe_migrate::introspect::{
+    fold_indexes, map_sqlite_declared_type_to_kind, RawCatalogSections, RawIndexMetadata, TableKey,
 };
-
 use super::check_enums::parse_sqlite_check_enums;
 use super::checks::SqliteEnumColumn;
 use super::{RawSqliteColumnMetadata, RawSqliteForeignKeyMetadata, RawSqliteTableMetadata};

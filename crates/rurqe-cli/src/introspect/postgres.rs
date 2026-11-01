@@ -15,7 +15,7 @@ use rurqe_migrate::catalog::SchemaCatalog;
 
 use crate::cli::CliError;
 use crate::config::SchemaSelection;
-use super::types::{
+use rurqe_migrate::introspect::{
     catalog_from_metadata_with_sections, parse_foreign_key_action, RawCatalogSections,
     RawCheckMetadata, RawColumnMetadata, RawEnumMetadata, RawForeignKeyMetadata, RawIndexMetadata,
     RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata,

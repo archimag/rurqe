@@ -10,7 +10,7 @@ use super::{
     catalog_from_sqlite_metadata, introspect_sqlite, RawSqliteColumnMetadata,
     RawSqliteForeignKeyMetadata, RawSqliteTableMetadata,
 };
-use crate::introspect::types::parse_foreign_key_action;
+use rurqe_migrate::introspect::parse_foreign_key_action;
 
 fn column(table: &str, name: &str, pk_position: i64) -> RawSqliteColumnMetadata {
     RawSqliteColumnMetadata {
