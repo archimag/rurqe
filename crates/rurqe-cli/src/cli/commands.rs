@@ -104,9 +104,13 @@ impl Project {
         selection_of(explicit, &self.config)
     }
 
-    /// Resolves the migration directory: the flag, then `[migrations].dir`, then `<root>/migrations`.
-    pub(super) fn migrations_dir(&self, flag: Option<PathBuf>) -> PathBuf {
-        flag.unwrap_or_else(|| self.config.migrations_dir(&self.directory))
+    /// Resolves the migration directory: `[migrations].dir`, then `<root>/migrations`.
+    ///
+    /// The migration tail carries no path flag of its own, so the cascade has two
+    /// tiers: the key the configuration declares, and the convention beneath the
+    /// artifact directory.
+    pub(super) fn migrations_dir(&self) -> PathBuf {
+        self.config.migrations_dir(&self.directory)
     }
 
     /// Resolves the declarative stage directory: the flag, then `[stage].dir`, then `<root>/schema`.
@@ -114,9 +118,12 @@ impl Project {
         flag.unwrap_or_else(|| self.config.stage_dir(&self.directory))
     }
 
-    /// Resolves the checkpoint marker: the flag, then `[stage].checkpoint`, then the marker of the tail.
-    pub(super) fn checkpoint_path(&self, flag: Option<PathBuf>) -> PathBuf {
-        flag.unwrap_or_else(|| self.config.checkpoint_path(&self.directory))
+    /// Resolves the checkpoint marker: `[stage].checkpoint`, then the marker of the tail.
+    ///
+    /// The boundary marker is declared like the tail it guards, with the convention
+    /// `checkpoint.toml` inside the resolved migration directory closing the cascade.
+    pub(super) fn checkpoint_path(&self) -> PathBuf {
+        self.config.checkpoint_path(&self.directory)
     }
 
     /// Resolves the catalog snapshot: the flag, then `<root>/schema.lock`.
@@ -623,9 +630,8 @@ pub(super) fn help_text() -> &'static str {
     r#"RURQE Developer CLI
 
 USAGE:
-    cargo db-migrate up [--migrations-dir <dir>] [--checkpoint-path <path>] [--database-url <url>]
-                       [--schema <name>] [--config <path>]
-    cargo db-migrate [status|repair] [--migrations-dir <dir>] [--schema <name>] [--config <path>]
+    cargo db-migrate up [--database-url <url>] [--schema <name>] [--config <path>]
+    cargo db-migrate [status|repair] [--database-url <url>] [--schema <name>] [--config <path>]
     cargo db-baseline --version <version> [--description <desc>] [--config <path>]
     cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types] [--schema <name>]
                      [--config <path>]
@@ -683,17 +689,19 @@ ARTIFACTS:
         rurqe/migrations/checkpoint-stage/
         rurqe/schema.lock        catalog snapshot
 
-    An explicit flag wins over the declared key, and the declared key wins over the
-    conventional path: `--migrations-dir` beats `[migrations].dir`, which beats
-    `rurqe/migrations`. The catalog snapshot carries no key of its own, so its
-    cascade is the flag followed by the conventional path, and `[codegen].output`
-    completes the `codegen` cascade ahead of the built-in `src/schema.rs`.
+    The `migrate` family takes no path option of its own: `migrate up`, `migrate
+    status`, and `migrate repair` read the tail and the boundary marker from the
+    document or from the conventions above. The `stage` and `prune` commands still
+    accept the path options listed below, which win over the declared key, and the
+    catalog snapshot carries no key at all: `--lock-path` of `codegen` and `verify`
+    addresses it ahead of the convention, while `[codegen].output` completes the
+    `codegen` cascade ahead of the built-in `src/schema.rs`.
 
 NOTES:
-    `--checkpoint-path` is accepted by `migrate up` alone, where it arms the guard
-    that refuses a database older than the pruned checkpoint boundary. `migrate
-    status` and `migrate repair` read the history table only, so the flag is
-    rejected there instead of being accepted and ignored.
+    `migrate up` reads the boundary marker from the project configuration, so the
+    guard that refuses a database older than the pruned boundary cannot be armed
+    with a file another command never reads. A path option of the family is
+    reported as an unknown option instead of being accepted and then ignored.
 
     `stage commit` snapshots the declarative stage verbatim into the boundary
     directory beside the marker — `<stem>-stage/`, so `checkpoint-stage/` next to

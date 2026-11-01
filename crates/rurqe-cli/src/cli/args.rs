@@ -25,20 +25,16 @@ mod stage;
 pub enum CliCommand {
     MigrateUp {
         config: Option<PathBuf>,
-        migrations_dir: Option<PathBuf>,
-        checkpoint_path: Option<PathBuf>,
         database_url: Option<String>,
         schema: Option<String>,
     },
     MigrateStatus {
         config: Option<PathBuf>,
-        migrations_dir: Option<PathBuf>,
         database_url: Option<String>,
         schema: Option<String>,
     },
     MigrateRepair {
         config: Option<PathBuf>,
-        migrations_dir: Option<PathBuf>,
         database_url: Option<String>,
         schema: Option<String>,
     },
@@ -229,8 +225,6 @@ impl Entrypoint {
         match self {
             Entrypoint::CargoDbMigrate => Some(CliCommand::MigrateUp {
                 config: None,
-                migrations_dir: None,
-                checkpoint_path: None,
                 database_url: None,
                 schema: None,
             }),

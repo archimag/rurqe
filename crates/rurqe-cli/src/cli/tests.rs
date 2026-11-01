@@ -29,8 +29,6 @@ fn parses_migrate_up() {
         cmd,
         CliCommand::MigrateUp {
             config: None,
-            migrations_dir: None,
-            checkpoint_path: None,
             database_url: None,
             schema: None,
         }
@@ -74,8 +72,6 @@ fn parses_the_cargo_rurqe_migrate_invocation() {
         cmd,
         CliCommand::MigrateUp {
             config: None,
-            migrations_dir: None,
-            checkpoint_path: None,
             database_url: None,
             schema: None,
         }
@@ -83,54 +79,32 @@ fn parses_the_cargo_rurqe_migrate_invocation() {
 }
 
 #[test]
-fn parses_migrate_up_checkpoint_path() {
-    let cmd = parse_args(&[
-        "rurqe".into(),
-        "migrate".into(),
-        "up".into(),
-        "--checkpoint-path".into(),
-        "deploy/checkpoint.toml".into(),
-    ])
-    .unwrap();
+fn the_migrate_family_rejects_path_options() {
+    // The tail and the boundary marker are resolved from the project
+    // configuration, so a path option of the retired cascade is reported instead
+    // of being accepted and then ignored.
+    for action in ["up", "status", "repair"] {
+        for flag in ["--migrations-dir", "--checkpoint-path"] {
+            let argv: Vec<String> = ["rurqe", "migrate", action, flag, "somewhere"]
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .collect();
 
-    assert_eq!(
-        cmd,
-        CliCommand::MigrateUp {
-            config: None,
-            migrations_dir: None,
-            checkpoint_path: Some(PathBuf::from("deploy/checkpoint.toml")),
-            database_url: None,
-            schema: None,
+            let error = parse_args(&argv).expect_err("the family takes no path option");
+            let text = error.to_string();
+
+            assert!(
+                text.contains(flag),
+                "the diagnostic names the flag, got {text}"
+            );
+            assert!(
+                text.contains("migrate"),
+                "the diagnostic names the family, got {text}"
+            );
         }
-    );
-}
-
-#[test]
-fn status_and_repair_reject_the_checkpoint_path() {
-    // The checkpoint arms the outdated-target guard of `up` alone, so the two
-    // history actions refuse the flag instead of accepting and discarding it.
-    for action in ["status", "repair"] {
-        let argv: Vec<String> = [
-            "rurqe",
-            "migrate",
-            action,
-            "--checkpoint-path",
-            "deploy/checkpoint.toml",
-        ]
-        .iter()
-        .map(|arg| (*arg).to_owned())
-        .collect();
-
-        let error = parse_args(&argv).expect_err("the checkpoint guards `up` alone");
-        let text = error.to_string();
-
-        assert!(text.contains("--checkpoint-path"), "got {text}");
-        assert!(
-            text.contains(&format!("migrate {action}")),
-            "the diagnostic names the action, got {text}"
-        );
     }
 }
+
 
 #[test]
 fn parses_the_cargo_rurqe_codegen_invocation() {
@@ -250,8 +224,6 @@ fn parses_the_schema_selection_of_each_catalog_command() {
         migrate,
         CliCommand::MigrateUp {
             config: None,
-            migrations_dir: None,
-            checkpoint_path: None,
             database_url: None,
             schema: Some("app".into()),
         }
@@ -1184,12 +1156,9 @@ output = "generated/schema.rs"
 
     // The declared keys win over the conventional layout beneath the root, and
     // every declared path resolves against the directory holding the file.
-    assert_eq!(project.migrations_dir(None), dir.join("tail"));
+    assert_eq!(project.migrations_dir(), dir.join("tail"));
     assert_eq!(project.stage_dir(None), dir.join("declared-stage"));
-    assert_eq!(
-        project.checkpoint_path(None),
-        dir.join("tail").join("anchored.toml")
-    );
+    assert_eq!(project.checkpoint_path(), dir.join("tail").join("anchored.toml"));
     assert_eq!(
         project.lock_path(None),
         dir.join("artifacts").join("schema.lock")
@@ -1198,16 +1167,14 @@ output = "generated/schema.rs"
         project.codegen_output(None),
         dir.join("generated").join("schema.rs")
     );
-    // The explicit flag of the command wins over every declared key.
-    let tail = PathBuf::from("flag/tail");
+    // The `migrate` family names no path of its own, so the tail and the marker
+    // carry exactly the two tiers asserted above. The stage and the snapshot keep
+    // their explicit flag, which wins over every declared key.
     let stage = PathBuf::from("flag/stage");
-    let checkpoint = PathBuf::from("flag/checkpoint.toml");
     let lock = PathBuf::from("flag/schema.lock");
     let module = PathBuf::from("flag/schema.rs");
 
-    assert_eq!(project.migrations_dir(Some(tail.clone())), tail);
     assert_eq!(project.stage_dir(Some(stage.clone())), stage);
-    assert_eq!(project.checkpoint_path(Some(checkpoint.clone())), checkpoint);
     assert_eq!(project.lock_path(Some(lock.clone())), lock);
     assert_eq!(project.codegen_output(Some(module.clone())), module);
 }
@@ -1393,12 +1360,12 @@ fn a_project_without_declarations_keeps_the_conventional_layout() {
         Project::load(None, &absent).expect("an absent configuration is the default project");
 
     assert_eq!(
-        project.migrations_dir(None),
+        project.migrations_dir(),
         dir.join("rurqe").join("migrations")
     );
     assert_eq!(project.stage_dir(None), dir.join("rurqe").join("schema"));
     assert_eq!(
-        project.checkpoint_path(None),
+        project.checkpoint_path(),
         dir.join("rurqe").join("migrations").join("checkpoint.toml")
     );
     assert_eq!(
@@ -1659,8 +1626,8 @@ fn a_universal_flag_in_value_position_is_answered() {
     // name, or the path the command would otherwise use.
     for args in [
         vec!["rurqe", "migrate", "up", "--database-url", "--help"],
-        vec!["rurqe", "migrate", "status", "--checkpoint-path", "--help"],
-        vec!["rurqe", "migrate", "repair", "--checkpoint-path", "-h"],
+        vec!["rurqe", "migrate", "status", "--schema", "--help"],
+        vec!["rurqe", "migrate", "repair", "--schema", "-h"],
         vec!["rurqe", "codegen", "--lock-path", "--help"],
         vec!["rurqe", "verify", "--schema-path", "--help"],
         vec!["rurqe", "stage", "verify", "--migrations-dir", "-h"],
@@ -1676,7 +1643,7 @@ fn a_universal_flag_in_value_position_is_answered() {
     }
 
     for args in [
-        vec!["rurqe", "migrate", "status", "--checkpoint-path", "-V"],
+        vec!["rurqe", "migrate", "status", "--schema", "-V"],
         vec!["rurqe", "codegen", "--output", "-v"],
         vec!["rurqe", "stage", "commit", "--stage-dir", "-V"],
         vec!["rurqe", "stage", "init", "--description", "-v"],

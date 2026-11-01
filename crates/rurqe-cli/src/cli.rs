@@ -159,14 +159,15 @@ pub(crate) fn run_cli_with_config(
         ))),
         CliCommand::MigrateUp {
             config,
-            migrations_dir,
-            checkpoint_path,
             database_url,
             schema,
         } => {
             let project = load_project(config)?;
-            let migrations_dir = project.migrations_dir(migrations_dir);
-            let checkpoint_path = project.checkpoint_path(checkpoint_path);
+            // The tail and the boundary marker carry no flag of their own: the
+            // configuration declares them, and the `rurqe/` convention closes the
+            // cascade when it declares neither.
+            let migrations_dir = project.migrations_dir();
+            let checkpoint_path = project.checkpoint_path();
             let selection = project.selection(schema.as_deref());
             with_migration_backend!(database_url, selection, |backend| {
                 apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
@@ -174,12 +175,11 @@ pub(crate) fn run_cli_with_config(
         }
         CliCommand::MigrateStatus {
             config,
-            migrations_dir,
             database_url,
             schema,
         } => {
             let project = load_project(config)?;
-            let migrations_dir = project.migrations_dir(migrations_dir);
+            let migrations_dir = project.migrations_dir();
             let selection = project.selection(schema.as_deref());
             with_migration_backend!(database_url, selection, |backend| {
                 report_status(&mut backend, &migrations_dir)
@@ -187,12 +187,11 @@ pub(crate) fn run_cli_with_config(
         }
         CliCommand::MigrateRepair {
             config,
-            migrations_dir,
             database_url,
             schema,
         } => {
             let project = load_project(config)?;
-            let migrations_dir = project.migrations_dir(migrations_dir);
+            let migrations_dir = project.migrations_dir();
             let selection = project.selection(schema.as_deref());
             with_migration_backend!(database_url, selection, |backend| {
                 repair_history(&mut backend, &migrations_dir)
@@ -311,8 +310,8 @@ pub(crate) fn run_cli_with_config(
             let project = load_project(config)?;
             let selection = project.selection(schema.as_deref())?;
             let stage_dir = project.stage_dir(stage_dir);
-            let migrations_dir = project.migrations_dir(migrations_dir);
-            let checkpoint_path = project.checkpoint_path(checkpoint_path);
+            let migrations_dir = migrations_dir.unwrap_or_else(|| project.migrations_dir());
+            let checkpoint_path = checkpoint_path.unwrap_or_else(|| project.checkpoint_path());
             let url = resolve_equation_url(scratch_url.or(database_url))?;
             verify_stage(
                 &stage_dir,
@@ -335,13 +334,14 @@ pub(crate) fn run_cli_with_config(
             let project = load_project(config)?;
             let selection = project.selection(schema.as_deref())?;
             let url = resolve_database_url(database_url)?;
+            let checkpoint_path = checkpoint_path.unwrap_or_else(|| project.checkpoint_path());
             commit_stage(
                 version,
                 &url,
                 &selection,
                 &project.stage_dir(stage_dir),
                 &project.lock_path(lock_path),
-                &project.checkpoint_path(checkpoint_path),
+                &checkpoint_path,
             )
         }
         CliCommand::StageCleanup {
@@ -365,12 +365,9 @@ pub(crate) fn run_cli_with_config(
             dry_run,
         } => {
             let project = load_project(config)?;
-            prune_migrations(
-                before,
-                &project.migrations_dir(migrations_dir),
-                &project.checkpoint_path(checkpoint_path),
-                dry_run,
-            )
+            let migrations_dir = migrations_dir.unwrap_or_else(|| project.migrations_dir());
+            let checkpoint_path = checkpoint_path.unwrap_or_else(|| project.checkpoint_path());
+            prune_migrations(before, &migrations_dir, &checkpoint_path, dry_run)
         }
     }
 }

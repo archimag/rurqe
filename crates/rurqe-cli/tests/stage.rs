@@ -107,6 +107,25 @@ fn write_checkpoint_with_hash(path: &Path, version: &str, schema_hash: Checksum)
     fs::write(path, checkpoint.render()).expect("write the checkpoint");
 }
 
+/// Writes the `rurqe.toml` naming the migration tail and the boundary marker.
+///
+/// The `migrate` family takes no path option of its own, so a regression that
+/// points the runner at a directory of its own names it through the project
+/// configuration and hands the file to the invocation with `--config`.
+fn write_project_config(workspace: &Path, migrations: &Path, checkpoint: &Path) -> String {
+    let config = workspace.join("rurqe.toml");
+    fs::write(
+        &config,
+        format!(
+            "[migrations]\ndir = \"{}\"\n\n[stage]\ncheckpoint = \"{}\"\n",
+            path_string(migrations),
+            path_string(checkpoint),
+        ),
+    )
+    .expect("write the project configuration");
+    path_string(&config)
+}
+
 /// The canonical catalog digest of the SQLite database at `db`.
 ///
 /// The digest is read through the very introspection the migration backend
@@ -220,7 +239,7 @@ fn the_active_tail_advances_the_cold_started_database() {
 
     let stage = path_string(&stage_dir);
     let database = path_string(&db);
-    let dir = path_string(&migrations);
+    let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
 
     run_cli(argv(&[
         "stage",
@@ -237,8 +256,8 @@ fn the_active_tail_advances_the_cold_started_database() {
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -258,8 +277,8 @@ fn the_active_tail_advances_the_cold_started_database() {
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -495,14 +514,14 @@ fn migrate_up_honours_the_committed_checkpoint() {
     let migrations = workspace.join("migrations");
     write_scripts(&migrations, &[("V1__init.sql", USERS)]);
 
-    let dir = path_string(&migrations);
+    let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
     let database = path_string(&db);
 
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -511,15 +530,12 @@ fn migrate_up_honours_the_committed_checkpoint() {
     write_scripts(&migrations, &[("V3__orders.sql", ORDERS)]);
     let checkpoint_path = workspace.join("checkpoint.toml");
     write_checkpoint(&checkpoint_path, "2");
-    let checkpoint = path_string(&checkpoint_path);
 
     let error = run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
-        "--checkpoint-path",
-        &checkpoint,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -533,10 +549,8 @@ fn migrate_up_honours_the_committed_checkpoint() {
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
-        "--checkpoint-path",
-        &checkpoint,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -698,7 +712,7 @@ fn cold_start_records_catalog_checksum_matching_stage_commit() {
 
     let stage = path_string(&stage_dir);
     let database = path_string(&db);
-    let dir = path_string(&migrations);
+    let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
 
     run_cli(argv(&[
         "stage",
@@ -746,10 +760,8 @@ fn cold_start_records_catalog_checksum_matching_stage_commit() {
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
-        "--checkpoint-path",
-        &checkpoint,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -813,15 +825,13 @@ fn migrate_up_rejects_cold_started_database_with_mismatched_checkpoint_schema_ha
 
     let migrations = workspace.join("migrations");
     write_scripts(&migrations, &[("V4__orders.sql", ORDERS)]);
-    let dir = path_string(&migrations);
+    let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
 
     let error = run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
-        "--checkpoint-path",
-        &checkpoint,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -1067,7 +1077,7 @@ fn a_sequential_database_matching_the_checkpoint_is_advanced_by_the_tail() {
     let migrations = workspace.join("migrations");
     write_scripts(&migrations, &[("V1__users.sql", USERS)]);
 
-    let dir = path_string(&migrations);
+    let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
     let database = path_string(&db);
 
     // A classic sequential lifecycle initialises the database; no stage marker
@@ -1075,8 +1085,8 @@ fn a_sequential_database_matching_the_checkpoint_is_advanced_by_the_tail() {
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -1085,16 +1095,13 @@ fn a_sequential_database_matching_the_checkpoint_is_advanced_by_the_tail() {
     // Anchor the checkpoint to the live catalog of the sequential database.
     let checkpoint_path = workspace.join("checkpoint.toml");
     write_checkpoint_with_hash(&checkpoint_path, "1", catalog_checksum(&db));
-    let checkpoint = path_string(&checkpoint_path);
 
     write_scripts(&migrations, &[("V2__orders.sql", ORDERS)]);
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
-        "--checkpoint-path",
-        &checkpoint,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -1117,14 +1124,14 @@ fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
     let migrations = workspace.join("migrations");
     write_scripts(&migrations, &[("V1__users.sql", USERS)]);
 
-    let dir = path_string(&migrations);
+    let config = write_project_config(&workspace, &migrations, &workspace.join("checkpoint.toml"));
     let database = path_string(&db);
 
     run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))
@@ -1132,7 +1139,6 @@ fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
 
     let checkpoint_path = workspace.join("checkpoint.toml");
     write_checkpoint_with_hash(&checkpoint_path, "1", catalog_checksum(&db));
-    let checkpoint = path_string(&checkpoint_path);
 
     // Drift the live schema without touching the recorded history, so only the
     // catalog digest catches the divergence.
@@ -1147,10 +1153,8 @@ fn a_drifted_sequential_database_is_rejected_by_the_checkpoint() {
     let error = run_cli(argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &dir,
-        "--checkpoint-path",
-        &checkpoint,
+        "--config",
+        &config,
         "--database-url",
         &database,
     ]))

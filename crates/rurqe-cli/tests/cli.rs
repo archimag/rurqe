@@ -254,14 +254,13 @@ fn a_schema_qualified_introspection_reads_the_single_sqlite_catalog() {
 
 #[test]
 fn cli_argument_dispatch() {
-    let args = cargo_argv(&["migrate", "status", "--migrations-dir", "sql_migrations"]);
+    let args = cargo_argv(&["migrate", "status", "--config", "project/rurqe.toml"]);
 
     let cmd = parse_args(&args).expect("valid args");
     assert_eq!(
         cmd,
         CliCommand::MigrateStatus {
-            config: None,
-            migrations_dir: Some(PathBuf::from("sql_migrations")),
+            config: Some(PathBuf::from("project/rurqe.toml")),
             database_url: None,
             schema: None,
         }
@@ -366,6 +365,21 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// Writes the `rurqe.toml` naming the migration tail of a test workspace.
+///
+/// The `migrate` family resolves the tail from the project configuration, so a
+/// regression that keeps the scripts in a directory of its own names it there and
+/// hands the file to the invocation with `--config`.
+fn migrations_config(workspace: &Path, migrations: &Path) -> String {
+    let config = workspace.join("rurqe.toml");
+    fs::write(
+        &config,
+        format!("[migrations]\ndir = \"{}\"\n", path_string(migrations)),
+    )
+    .expect("write the project configuration");
+    path_string(&config)
+}
+
 fn history_scripts(db: &Path) -> Vec<String> {
     let conn = rusqlite::Connection::open(db).expect("open sqlite database");
     let mut stmt = conn
@@ -401,11 +415,13 @@ fn run_cli_migrate_up_and_status_handle_versioned_and_repeatable_scripts() {
     )
     .expect("write repeatable");
 
+    let config = migrations_config(&workspace, &migrations);
+
     let up = cargo_argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &path_string(&migrations),
+        "--config",
+        &config,
         "--database-url",
         &path_string(&db),
     ]);
@@ -424,8 +440,8 @@ fn run_cli_migrate_up_and_status_handle_versioned_and_repeatable_scripts() {
     let status = cargo_argv(&[
         "migrate",
         "status",
-        "--migrations-dir",
-        &path_string(&migrations),
+        "--config",
+        &config,
         "--database-url",
         &path_string(&db),
     ]);
@@ -471,11 +487,12 @@ fn run_cli_migrate_repair_rewrites_the_recorded_checksum() {
     let script_path = migrations.join("V1__init.sql");
     fs::write(&script_path, "CREATE TABLE users (id INTEGER PRIMARY KEY);").expect("write V1");
 
+    let config = migrations_config(&workspace, &migrations);
     run_cli(cargo_argv(&[
         "migrate",
         "up",
-        "--migrations-dir",
-        &path_string(&migrations),
+        "--config",
+        &config,
         "--database-url",
         &path_string(&db),
     ]))
@@ -490,8 +507,8 @@ fn run_cli_migrate_repair_rewrites_the_recorded_checksum() {
     run_cli(cargo_argv(&[
         "migrate",
         "repair",
-        "--migrations-dir",
-        &path_string(&migrations),
+        "--config",
+        &config,
         "--database-url",
         &path_string(&db),
     ]))
@@ -878,7 +895,7 @@ fn the_single_binary_dispatches_every_subcommand() {
     let cold = workspace.join("cold.db");
 
     let database = path_string(&db);
-    let migrations_dir = path_string(&migrations);
+    let config = migrations_config(&workspace, &migrations);
     let stage = path_string(&stage_dir);
     let schema_path = path_string(&schema);
     let lock_path = path_string(&lock);
@@ -892,8 +909,8 @@ fn the_single_binary_dispatches_every_subcommand() {
         vec![
             "migrate",
             "status",
-            "--migrations-dir",
-            migrations_dir.as_str(),
+            "--config",
+            config.as_str(),
             "--database-url",
             database.as_str(),
         ],

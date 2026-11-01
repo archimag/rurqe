@@ -4,9 +4,10 @@ use super::{take_path, take_schema, take_value, universal_flag, CliCommand, CliE
 
 /// The action a `migrate` invocation asks for.
 ///
-/// The action decides which inputs the invocation accepts, so it is resolved
-/// before the flags are walked: `--checkpoint-path` arms the guard of `up`
-/// alone, and an unknown action is reported as such whichever flags follow it.
+/// The action decides which command the invocation produces, so it is resolved
+/// before the flags are walked: `up` applies the active tail over the boundary
+/// marker, while `status` and `repair` only read and rewrite the recorded
+/// history. An unknown action is reported as such whichever flags follow it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrateAction {
     Up,
@@ -27,21 +28,18 @@ impl MigrateAction {
             .into()),
         }
     }
-
-    /// The name the diagnostics of the action are written under.
-    fn name(self) -> &'static str {
-        match self {
-            MigrateAction::Up => "up",
-            MigrateAction::Status => "status",
-            MigrateAction::Repair => "repair",
-        }
-    }
 }
 
 /// Parses a `migrate <action>` invocation into its typed command.
 ///
 /// Without an action token the invocation defaults to `up`, so the cargo
 /// entrypoint `cargo db-migrate` migrates when it receives nothing but flags.
+///
+/// The family takes no path option of its own: the migration tail and the
+/// boundary marker are resolved from the project configuration, so the only
+/// inputs an invocation supplies are the configuration it reads, the database it
+/// opens, and the schema its catalog digests describe. A path option of the
+/// retired cascade is therefore reported instead of being accepted and ignored.
 pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let (action, tokens): (MigrateAction, &[&str]) = match tokens.split_first() {
         Some((action, tail)) if !action.starts_with('-') => (MigrateAction::parse(action)?, tail),
@@ -49,8 +47,6 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     };
 
     let mut config = None;
-    let mut migrations_dir = None;
-    let mut checkpoint_path = None;
     let mut database_url = None;
     let mut schema = None;
 
@@ -62,27 +58,6 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
         }
         match flag {
             "--config" => config = Some(take_path(tokens, &mut idx, flag)?),
-            "--migrations-dir" => migrations_dir = Some(take_path(tokens, &mut idx, flag)?),
-            "--checkpoint-path" => {
-                // The value is consumed before the action is consulted, so a
-                // universal flag standing in its place is still answered and a
-                // missing value keeps the diagnostic it carries everywhere.
-                let value = take_path(tokens, &mut idx, flag)?;
-
-                // The checkpoint arms the outdated-target guard of `up` alone,
-                // so accepting the flag on the history actions would silently
-                // discard an input the operator supplied on purpose.
-                if action != MigrateAction::Up {
-                    return Err(CliError(format!(
-                        "unknown option `{flag}` for `migrate {}` (`--checkpoint-path` guards \
-                         `migrate up` against a target older than the pruned boundary)",
-                        action.name()
-                    ))
-                    .into());
-                }
-
-                checkpoint_path = Some(value);
-            }
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
@@ -98,20 +73,16 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     match action {
         MigrateAction::Up => Ok(CliCommand::MigrateUp {
             config,
-            migrations_dir,
-            checkpoint_path,
             database_url,
             schema,
         }),
         MigrateAction::Status => Ok(CliCommand::MigrateStatus {
             config,
-            migrations_dir,
             database_url,
             schema,
         }),
         MigrateAction::Repair => Ok(CliCommand::MigrateRepair {
             config,
-            migrations_dir,
             database_url,
             schema,
         }),
