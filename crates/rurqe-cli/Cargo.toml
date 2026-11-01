@@ -25,6 +25,14 @@ postgres = "0.19"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0" }
 rurqe-project = { path = "../rurqe-project", version = "0.1.0" }
+# The migration protocol of both engines lives in the driver crates behind their
+# `migrate` feature, so the toolchain consumes the single copy of it that the
+# drivers themselves use instead of keeping implementations of its own. The engine
+# feature is named beside `migrate` because each adapter executes through the
+# driver its crate re-exports, and a build without that engine would leave the
+# backend the migration surface is built on out of the graph.
+rurqe-postgres = { path = "../rurqe-postgres", version = "0.1.0", features = ["migrate", "postgres"] }
+rurqe-sqlite = { path = "../rurqe-sqlite", version = "0.1.0", features = ["migrate", "rusqlite"] }
 syn = { version = "2.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

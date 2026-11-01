@@ -8,6 +8,9 @@
 //! feature, and the server-facing behaviour stays with the scenarios that name a
 //! live database.
 
+// A skipped scenario reports itself to the operator running the tests, which is
+// the one place the workspace-wide printing ban is lifted for this file.
+#![allow(clippy::print_stdout)]
 #![cfg(feature = "migrate")]
 
 use std::sync::Mutex;
@@ -411,7 +414,19 @@ mod client_backend {
     use rurqe_postgres::rurqe_migrate::{Migration, Migrator};
     use rurqe_postgres::PgConnection;
 
-    use crate::support;
+    /// The URL of the server the client-backend scenarios run against.
+    ///
+    /// A scenario that cannot run reports itself and returns, so an environment
+    /// without PostgreSQL runs the suite to completion instead of failing it.
+    fn database_url(scenario: &str) -> Option<String> {
+        match std::env::var("RURQE_TEST_POSTGRES_URL") {
+            Ok(url) if !url.trim().is_empty() => Some(url),
+            _ => {
+                println!("skipping `{scenario}`: RURQE_TEST_POSTGRES_URL is not set");
+                None
+            }
+        }
+    }
 
     /// Connects to the scenario server and prepares a schema of its own.
     ///
@@ -420,7 +435,7 @@ mod client_backend {
     /// same schema through `with_schema`, so the catalog digest it records
     /// describes that schema alone.
     fn fixture(scenario: &str, schema: &str) -> Option<PgConnection> {
-        let url = support::database_url(scenario)?;
+        let url = database_url(scenario)?;
         let mut client = postgres::Client::connect(&url, NoTls)
             .expect("the test server accepts the connection");
 
