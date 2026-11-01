@@ -279,6 +279,11 @@ impl PgAsyncConnection {
     /// executed next would join the abandoned transaction and persist it with the
     /// next `COMMIT`.
     ///
+    /// A nested block shares the same record: a savepoint rollback the driver
+    /// refuses is recorded on the cell of the connection before the error of the
+    /// block reaches the caller, so a connection whose savepoint could not be
+    /// undone refuses further work as well.
+    ///
     /// The record is never cleared: a poisoned connection is discarded by its
     /// owner, and the abandoned transaction closes when the socket of the discarded
     /// connection closes, because closing it needs an awaited driver call that a
@@ -311,7 +316,7 @@ impl PgAsyncConnection {
             return Err(E::from(failure));
         }
 
-        match f(PgAsyncScope::new(client)).await {
+        match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
             Ok(value) => match execute_control(client, String::from("COMMIT")).await {
                 Ok(()) => {
                     guard.mark_completed();

@@ -21,11 +21,14 @@
 
 #[cfg(all(feature = "deadpool-postgres", feature = "tokio-postgres"))]
 mod deadpool_impl {
+    use std::sync::Arc;
+
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 
     use crate::backend::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
     use crate::backend::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
+    use crate::backend::poison::PoisonCell;
     use crate::backend::types::PgError;
 
     /// A `deadpool-postgres` pool executing RURQE queries asynchronously.
@@ -110,7 +113,10 @@ mod deadpool_impl {
         /// unchanged inside the block.
         ///
         /// A checkout failure surfaces as [`PgError::Pool`]; a failure raised by
-        /// `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgError`].
+        /// `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgError`]. A savepoint
+        /// rollback the driver refuses inside the block is traced and recorded on
+        /// the block's poison record, because the checkout that recycles the
+        /// connection keeps none of its own.
         ///
         /// # Abandoned blocks
         ///
@@ -181,6 +187,13 @@ mod deadpool_impl {
     /// of replacing the error of the block, and the connection must then be
     /// discarded rather than reused, because the statements of the block stay
     /// pending inside the transaction.
+    ///
+    /// The block receives a poison record of its own, because the checkout that
+    /// owns the connection keeps none: a savepoint rollback the driver refuses
+    /// inside the block is recorded on that cell, and the record is traced here
+    /// once the block has ended. The pooled connection is still returned to the
+    /// pool, so the record is a diagnostic of the block rather than a disposition
+    /// of the connection.
     async fn run_transaction<T, E, F>(
         client: &tokio_postgres::Client,
         begin: String,
@@ -190,16 +203,17 @@ mod deadpool_impl {
         E: From<PgError>,
         F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
     {
+        let poison = Arc::new(PoisonCell::new());
         execute_control(client, begin).await.map_err(E::from)?;
 
-        match f(PgAsyncScope::new(client)).await {
-            Ok(value) => {
-                execute_control(client, String::from("COMMIT"))
-                    .await
-                    .map_err(E::from)?;
-                tracing::info!("committed transaction");
-                Ok(value)
-            }
+        let outcome = match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
+            Ok(value) => match execute_control(client, String::from("COMMIT")).await {
+                Ok(()) => {
+                    tracing::info!("committed transaction");
+                    Ok(value)
+                }
+                Err(failure) => Err(E::from(failure)),
+            },
             Err(error) => {
                 match execute_control(client, String::from("ROLLBACK")).await {
                     Ok(()) => tracing::warn!("rolled back transaction"),
@@ -211,7 +225,20 @@ mod deadpool_impl {
                 }
                 Err(error)
             }
+        };
+
+        if poison.is_poisoned() {
+            let reason = poison
+                .poison_reason()
+                .unwrap_or_else(|| String::from("the block recorded no reason"));
+            tracing::error!(
+                reason = %reason,
+                "the transaction block poisoned its own record; the pooled connection \
+                 is returned without being disposed of"
+            );
         }
+
+        outcome
     }
 
     impl AsyncQueryBackend for PgAsyncPool {

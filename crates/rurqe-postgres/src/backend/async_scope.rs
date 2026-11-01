@@ -7,9 +7,14 @@
 //! contract the synchronous
 //! [`TransactionGuard`](rurqe_core::query::TransactionGuard) implements for the
 //! owned and pooled connection adapters.
+//!
+//! The scope shares the poison record of the connection it borrows, so a
+//! savepoint rollback the driver refuses marks that connection unusable instead
+//! of leaving the work of the block pending inside the enclosing transaction.
 
 use core::future::Future;
 use core::pin::Pin;
+use std::sync::Arc;
 
 use rurqe_core::dialect::Dialect;
 use rurqe_core::expr::SqlVal;
@@ -19,6 +24,7 @@ use tokio_postgres::Client;
 use crate::dialect::{Pg16, Postgres};
 
 use super::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
+use super::poison::{control_failure, PoisonCell};
 use super::types::PgError;
 
 /// The erased future a transaction closure hands back to the adapter.
@@ -105,18 +111,48 @@ fn quoted_savepoint(name: &str) -> String {
 ///
 /// The closure returns the dialect error alias, so a terminal call propagates
 /// with `?` unchanged inside the block.
+///
+/// The scope shares the poison record of the connection it borrows: a savepoint
+/// rollback the driver refuses is recorded there, and the scope then refuses
+/// further statements and further savepoints with
+/// [`PgError::ConnectionPoisoned`] instead of running further work on that
+/// connection.
 pub struct PgAsyncScope<'a> {
     client: &'a Client,
     context: TransactionContext,
+    /// Poison record shared with the connection the scope borrows.
+    poison: Arc<PoisonCell>,
 }
 
 impl<'a> PgAsyncScope<'a> {
     /// Wraps the connection of a transaction the adapter has opened.
-    pub(crate) fn new(client: &'a Client) -> Self {
+    ///
+    /// `poison` is the record of that connection, so a refusal observed at any
+    /// nesting depth is reported by the connection itself and by every scope
+    /// borrowing it.
+    pub(crate) fn new(client: &'a Client, poison: Arc<PoisonCell>) -> Self {
         PgAsyncScope {
             client,
             context: TransactionContext::new(),
+            poison,
         }
+    }
+
+    /// Refuses to run anything on a poisoned connection.
+    ///
+    /// The refusal carries the reason recorded on the shared cell, so a caller
+    /// learns which statement could not be completed instead of only that the
+    /// connection is unusable.
+    fn refuse_if_poisoned(&self) -> Result<(), PgError> {
+        if !self.poison.is_poisoned() {
+            return Ok(());
+        }
+
+        let reason = self
+            .poison
+            .poison_reason()
+            .unwrap_or_else(|| String::from("the connection recorded no reason"));
+        Err(PgError::ConnectionPoisoned { reason })
     }
 
     /// Runs `f` inside a nested transaction, releasing it on `Ok` and rolling it
@@ -130,9 +166,21 @@ impl<'a> PgAsyncScope<'a> {
     /// Both endings are awaited: `RELEASE SAVEPOINT` keeps the work of a block
     /// that returned `Ok`, and `ROLLBACK TO SAVEPOINT` undoes the work of a
     /// block that returned `Err` before that error reaches the caller. A
-    /// rollback the driver refuses is traced instead of replacing the error, and
-    /// the connection must then be discarded rather than reused, because the
-    /// statements of the block stay pending inside the enclosing transaction.
+    /// rollback the driver refuses poisons the connection the scope borrows,
+    /// because the refused statement leaves the work of the block pending inside
+    /// the enclosing transaction: the failure is traced, the error of the block
+    /// still reaches the caller unchanged, and every further statement and
+    /// savepoint is refused with [`PgError::ConnectionPoisoned`], so the
+    /// connection has to be discarded rather than reused.
+    ///
+    /// A block that panics needs no scope-local catch. The unwind leaves the
+    /// nested scope and reaches the exit guard the adapter installed around the
+    /// outer block — the unwind guard of a connection, or the disposition guard
+    /// of a pool — which marks the shared cell poisoned before the panic
+    /// re-raises; the savepoint the panic left open is closed by the rollback of
+    /// the enclosing block or by the destruction of the connection. The scope
+    /// itself holds no guard, because only the adapter that opened the outermost
+    /// block learns that the transaction was abandoned.
     ///
     /// `E` has to absorb the driver error, which the dialect error alias over
     /// `PgError` does, so a terminal call propagates with `?` unchanged inside
@@ -142,6 +190,8 @@ impl<'a> PgAsyncScope<'a> {
         E: From<PgError>,
         F: for<'s> FnOnce(PgAsyncScope<'s>) -> ScopeFuture<'s, T, E>,
     {
+        self.refuse_if_poisoned().map_err(E::from)?;
+
         let savepoint = self.context.open_savepoint();
         let statement = format!("SAVEPOINT {}", quoted_savepoint(savepoint.as_str()));
         let opened = execute_control(self.client, statement).await;
@@ -153,6 +203,7 @@ impl<'a> PgAsyncScope<'a> {
         let nested = PgAsyncScope {
             client: self.client,
             context: self.context.clone(),
+            poison: Arc::clone(&self.poison),
         };
 
         match f(nested).await {
@@ -181,20 +232,26 @@ impl<'a> PgAsyncScope<'a> {
 
     /// Rolls a nested block back to `savepoint`.
     ///
-    /// A rollback the driver refuses is traced instead of returned, because the
-    /// failure of the block is the error the caller has to act on; the
-    /// connection must then be discarded rather than reused, because the
-    /// statements of the block stay pending inside the enclosing transaction.
+    /// A rollback the driver refuses is traced and recorded on the shared poison
+    /// cell instead of being returned, because the failure of the block is the
+    /// error the caller has to act on; the connection must then be discarded
+    /// rather than reused, because the statements of the block stay pending
+    /// inside the enclosing transaction.
     async fn roll_back(&self, savepoint: &SavepointName) {
         let name = savepoint.as_str();
-        let statement = format!("ROLLBACK TO SAVEPOINT {}", quoted_savepoint(name));
+        let quoted = quoted_savepoint(name);
+        let statement = format!("ROLLBACK TO SAVEPOINT {quoted}");
         match execute_control(self.client, statement).await {
             Ok(()) => tracing::warn!(savepoint = %name, "rolled back to savepoint"),
-            Err(failure) => tracing::error!(
-                savepoint = %name,
-                failure = %failure,
-                "rolling back to the savepoint failed; the connection must be discarded"
-            ),
+            Err(failure) => {
+                let refused = format!("ROLLBACK TO SAVEPOINT {quoted}");
+                self.poison.mark(control_failure(&refused, &failure));
+                tracing::error!(
+                    savepoint = %name,
+                    failure = %failure,
+                    "rolling back to the savepoint failed; the connection must be discarded"
+                );
+            }
         }
     }
 }
@@ -202,23 +259,23 @@ impl<'a> PgAsyncScope<'a> {
 impl AsyncQueryBackend for PgAsyncScope<'_> {
     type Error = PgError;
 
-    fn fetch_raw(
-        &self,
-        query: &BuiltQuery,
-    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
-        fetch_raw_async(self.client, query)
+    async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        self.refuse_if_poisoned()?;
+        fetch_raw_async(self.client, query).await
     }
 
-    fn fetch_raw_limited(
+    async fn fetch_raw_limited(
         &self,
         query: &BuiltQuery,
         limit: Option<usize>,
-    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
-        fetch_raw_limited_async(self.client, query, limit)
+    ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        self.refuse_if_poisoned()?;
+        fetch_raw_limited_async(self.client, query, limit).await
     }
 
-    fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
-        execute_raw_async(self.client, query)
+    async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
+        self.refuse_if_poisoned()?;
+        execute_raw_async(self.client, query).await
     }
 }
 
