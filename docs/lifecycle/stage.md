@@ -1,16 +1,12 @@
 # Stage-based schema evolution
 
-The stage lifecycle keeps the schema of a database in two descriptions that have to converge: a declarative stage holding the complete DDL of the target schema, and a short tail of migration scripts applied on top of a recorded boundary. A clean environment is initialised from the stage, an existing database is advanced through the tail, and a checkpoint marker records how far the history has been folded into the stage and may be pruned.
-
-Both descriptions end on one schema:
+The stage lifecycle keeps the schema of a database in two descriptions that have to agree: a declarative stage holding the complete DDL of the target schema, and a short tail of migration scripts that brings a database written before the current stage to the same place. A checkpoint marker records where the history has been folded into the stage, so the scripts below that point can be deleted without breaking a single database that still has to reach the current schema.
 
 ```text
 State(schema/) == State(Checkpoint + migrations/)
 ```
 
-The left side states where the database has to end up. The right side states how a database written before the current stage reaches the same place. A migration pruned below the checkpoint is not lost by the pruning: it is folded into the boundary snapshot every later cold start begins from.
-
-This chapter covers the two lifecycles a schema can be maintained under, the declarative stage, the cold start, the commit that seals a boundary, the checkpoint marker, the verification of the two sides, and the pruning of the history.
+The left side states where the database has to end up. The right side states how a database written before the current stage gets there. The chapter covers the two lifecycles, the declarative stage, the cold start, the checkpoint and the pruning it enables, the verification of the equation, and the move of an existing project onto the lifecycle.
 
 ## Two lifecycles, one schema
 
@@ -79,7 +75,9 @@ project/
 - `checkpoint-stage/` is the verbatim snapshot of the declarative stage the boundary was cut at. It is what a verification replays before the tail.
 - `schema.lock` is the canonical catalog snapshot of the committed stage; its digest is the hash the marker anchors.
 
-## The working cycle
+## The working day
+
+A schema change is written twice, and the two descriptions are made to agree before the change is released.
 
 ```text
 schema/  ──▶ migrations/  ──▶ migrate up    (an existing database advances)
@@ -91,9 +89,10 @@ schema/  ──▶ migrations/  ──▶ migrate up    (an existing database ad
 ```
 
 1. The declarative stage changes: a table is added, a column is altered, an index is dropped.
-2. A migration in `migrations/` carries the same change as a delta for the databases that already exist.
+2. One migration in `migrations/` carries the same change as a delta for the databases that already exist. One task, one script: the script is the unit a reviewer reads and a deployment applies, so a change split over two scripts of the same version never becomes one release.
 3. `migrate up` advances an existing database through the tail, while `stage init` initialises a clean one from the stage and records the stage version as its starting point.
-4. Once every deployed database has passed the release, `stage commit` seals the current stage as the new boundary, and `prune --before <version>` deletes the scripts the boundary now covers.
+4. `stage verify` states whether the two descriptions still converge, and fails the change while they disagree.
+5. Once every deployed database has passed the release, `stage commit` seals the current stage as the new boundary, and `prune --before <version>` deletes the scripts the boundary now covers.
 
 ## The declarative stage
 
@@ -111,7 +110,7 @@ CREATE INDEX users_email_idx ON users (email);
 The rules the directory obeys:
 
 - Only files ending in `.sql` are scripts. Every other file and every subdirectory of the directory is ignored.
-- The scripts are applied in file-name order, so the order the file system reports never decides what runs first.
+- The scripts are applied in file-name order, and a numeric component of a name is compared by its value, so `2_users.sql` precedes `10_orders.sql` without a leading zero. The order the file system reports never decides what runs first.
 - A directory that does not exist and a directory holding no script both refuse the command that needed it, and a script that cannot be read aborts the run: a silently skipped script would initialise the database with an incomplete schema.
 - A script runs inside a transaction unless it declares otherwise. A non-transactional script is marked by the `.notx.sql` (or `__notx.sql`) suffix of its file name, or by one whole comment line:
 
@@ -147,6 +146,7 @@ The run applies the scripts in file-name order. Every transactional script share
 The run ends by recording one baseline entry in `__rurqe_schema_history`. The entry carries the stage version, the description, and the digest of the catalog the stage produced — the digest `schema.lock` records and the generated `SCHEMA_HASH` embeds, because it is derived from the catalog through the engine that really executed the DDL. A backend that cannot introspect itself anchors the digest of the stage directory instead.
 
 The digest describes the whole selection the command resolved — the primary schema plus every secondary schema the project declares — so the marker anchors the summed catalog the project manages rather than the relations of one schema.
+
 Because the entry is a baseline, every versioned migration at or below the version counts as applied, and the tail above it runs on the next `migrate up`. Repeatable scripts are unaffected and run whenever their contents change.
 
 ```text
@@ -189,15 +189,64 @@ declarative stage `schema` holds no `*.sql` script to apply
 
 A database that holds data is never re-initialised; it is advanced. `migrate up` reads `migrations/`, refuses an unusable history — a recorded failure, an edited applied script, two scripts declaring one version — and applies what is pending: versioned scripts in ascending version order, then the repeatable scripts whose contents differ from the recorded digest. A database initialised from a stage at version `5.0` skips every versioned script at or below `5.0`, because the stage already describes that state.
 
-`migrate up` takes one further flag that belongs to the stage lifecycle:
+The tail is also what keeps a change reversible in review: the stage states the destination and the script states the road, so a reviewer reads the destination once and checks that the road reaches it.
+
+## Fail-safe protection of a pruned history
+
+Once the history below a boundary is deleted, a database that stopped below that boundary cannot be advanced: the scripts that would bring it forward are exactly the ones the prune removed. The marker exists to turn that into a refusal instead of a silent partial upgrade.
+
+`migrate up` therefore takes one flag that belongs to the stage lifecycle:
 
 ```bash
 cargo rurqe migrate up --checkpoint-path checkpoint.toml
 ```
 
-The marker arms the fail-safe protection of a pruned history. A target whose newest recorded version sits below `pruned_up_to_version` cannot be advanced by the remaining tail, so the run is refused before a single script executes with a diagnostic naming the version the database stopped at and the boundary it fell below, and pointing at `schema/` as the way back: the database is re-initialised from the stage, or brought forward by hand, never migrated by a partial script sequence. A database whose recorded stage marker carries a digest different from the marker's `schema_hash` is refused the same way, because the database was initialised from a stage the checkpoint does not describe.
+With the marker in hand, the run performs two checks before a single script executes.
+
+- **The boundary check.** A target whose newest recorded version sits below `pruned_up_to_version` is refused, with a diagnostic naming the version the database stopped at and the boundary it fell below, and pointing at `schema/` as the way back: the database is re-initialised from the stage, or brought forward by hand, never migrated by a partial script sequence.
+- **The digest check.** The marker also anchors the digest of the catalog the boundary was cut at. A database whose own stage marker records a different digest was initialised from a stage this checkpoint does not describe, so it is refused the same way rather than being advanced over a schema the boundary never saw.
 
 The flag is accepted by `up` alone. `status` and `repair` read the history table without a boundary, so they reject the flag instead of accepting it and ignoring it.
+
+A history that never recorded a version at all — one holding only repeatable scripts — sits below every boundary by definition and is refused by the same check.
+
+## The checkpoint
+
+A checkpoint is two artifacts, and the pair is what makes the pruning safe.
+
+### The marker file
+
+`checkpoint.toml` is a small, strictly read document:
+
+```toml
+[checkpoint]
+pruned_up_to_version = "5.0"
+schema_hash = "4f1d9c2e..."
+```
+
+| Key | Content |
+|---|---|
+| `pruned_up_to_version` | The version below which the history has been folded into the boundary snapshot and may be pruned. It uses the version grammar of a script, so `5.0`, `5_0`, and `5` declare the same version. |
+| `schema_hash` | The SHA-256 digest of the catalog snapshot the boundary was cut at — the digest `schema.lock` records. |
+
+The document is read strictly. An unknown section, a misspelled or repeated key, a version that does not parse, and a hash that is not a full SHA-256 digest are all refused with the location of the offending declaration, so a marker is never read halfway. An absent marker means "no boundary" and leaves the tail unaffected; a marker that is present but malformed stays an error, because silently ignoring it would let the tail run against a database that can no longer be advanced.
+
+The same distinction governs an unreadable marker. A path that does not exist, and a path below a component that is not a directory, both read as "no marker" — nothing can live there, and the write that follows reports the unusable path with the artifact it could not produce. A permission failure, a damaged file, or a directory whose own metadata cannot be inspected keeps the boundary unknown and stays an error, because a runner that assumes no boundary proceeds against exactly the outdated targets the marker exists to reject.
+
+### The boundary snapshot
+
+`checkpoint-stage/` is the declarative stage copied verbatim at the moment the boundary was cut: the same file names, the same DDL, and the same comments, which is where the replay re-reads the transactionality of each script from.
+
+The directory is a sibling of the marker and is named after its stem, so `checkpoint.toml` describes `checkpoint-stage/`, while `--checkpoint-path prod.toml` describes `prod-stage/`. Two markers in one directory therefore never share the snapshot a commit installs.
+
+A checkpoint is therefore self-contained: the marker says how far the history was folded and what the schema hashed to, and the snapshot holds the schema itself. Neither half is derived from the other, which is why the pair can be compared against the declarative stage at any later time.
+
+### Why the pair is safe
+
+- The snapshot is what the deleted scripts produced. A verification replays it before the tail, so the state the pruned scripts created is still reproducible after their files are gone.
+- The marker is never rewritten by a prune and no baseline is recomputed. Pruning removes files from the tail; it changes nothing about what any database has already recorded.
+- The marker is the commit point of a commit. A process killed before it is durable leaves the previous marker and boundary parked under hidden names, and the next `stage commit` or `stage verify` restores them before doing its own work; a process killed after it leaves the committed pair live and the previous pair as debris, which the sweep discards.
+- Every write of the pair happens inside the exclusive section of the marker — the `checkpoint.lock` file beside it — so no commit, verification, or prune observes a half-written pair or a half-pruned tail.
 
 ## Committing a stage
 
@@ -216,11 +265,13 @@ cargo rurqe stage commit --version 5.0
 | `--checkpoint-path <path>` | The file receiving the boundary marker. Defaults to `checkpoint.toml`. |
 | `--schema <name>` | The primary schema the snapshot and its digest describe. The secondary schemas come from `schemas` in `rurqe.toml`. |
 
+The version is the newest one every deployed database has already applied, not the newest script in the directory. A target that stopped below the boundary cannot be advanced by a pruned tail, so the marker is cut where the slowest environment already stands.
+
 The command runs in two phases, and the split is what makes it safe to run beside another writer.
 
 The preparation reads the declarative stage, introspects the live catalog over the selected schemas, compares the two, renders the snapshot and the marker, and assembles the boundary snapshot in a hidden sibling of the directory it replaces. The comparison is a gate: the snapshot and the marker describe the live database while the boundary snapshot replays the stage, so committing them while they disagree would seal a triple that contradicts itself. A stage that drifted from the database fails the commit before any artifact is written, with the structural differences rendered in the wording of a commit and both remedies named — apply the migration that closes the gap, or re-initialise the stage from the live catalog. The stage is materialised for that comparison in a disposable scratch state, never over the live database: a throwaway database on the server behind the URL for PostgreSQL, an in-memory database for SQLite.
 
-The critical section is bounded by local filesystem work alone. It opens the exclusive section of the checkpoint marker — the `checkpoint.lock` file beside it — and, inside it:
+The critical section is bounded by local filesystem work alone. It opens the exclusive section of the checkpoint marker and, inside it:
 
 1. sweeps the staged siblings an interrupted commit abandoned next to the artifacts;
 2. repairs a commit an earlier process left halfway, restoring the parked pair the marker describes;
@@ -243,79 +294,72 @@ A successful commit reports the three artifacts it published:
 Committed the stage to schema.lock, snapshotted the boundary to checkpoint-stage, and anchored `checkpoint.toml` up to version 5.0 (hash 4f1d9c2e..., schemas `public`)
 ```
 
-### What a crash leaves behind
-
-The marker is the commit point, because a verification only observes the pair once that file is durable. A process killed before it leaves the previous marker and boundary parked under hidden names, and the next `stage commit` or `stage verify` restores them before doing its own work. A process killed after it leaves the committed pair live and the previous pair as debris, which the sweep discards.
-
 A repair renames artifacts into place before the command it belongs to finishes, so a failure after the repair states the side effect instead of hiding it:
 
 ```text
 note: this command repaired an interrupted commit before it failed, so the workspace already changed underneath it; the repair reported:
 ```
 
-## The checkpoint marker
-
-```toml
-[checkpoint]
-pruned_up_to_version = "5.0"
-schema_hash = "4f1d9c2e..."
-```
-
-| Key | Content |
-|---|---|
-| `pruned_up_to_version` | The version below which the history has been folded into the boundary snapshot and may be pruned. It uses the version grammar of a script, so `5.0`, `5_0`, and `5` declare the same version. |
-| `schema_hash` | The SHA-256 digest of the catalog snapshot the boundary was cut at — the digest `schema.lock` records. |
-
-The document is read strictly. An unknown section, a misspelled or repeated key, a version that does not parse, and a hash that is not a full SHA-256 digest are all refused with the location of the offending declaration, so a marker is never read halfway. An absent marker means "no boundary" and leaves the tail unaffected; a marker that is present but malformed stays an error, because silently ignoring it would let the tail run against a database that can no longer be advanced.
-
-The boundary snapshot is a sibling of the marker named after its stem: `checkpoint.toml` describes `checkpoint-stage/`, while `--checkpoint-path prod.toml` describes `prod-stage/`. Two markers in one directory therefore never share the snapshot a commit installs. The snapshot is written verbatim — the scripts keep their names and their comments, which is where the verification re-reads their transactionality from.
 ## Verifying the golden equation
 
-The two descriptions are proven equal by materialising both of them and
-comparing the resulting catalogs. The verification is the gate a pipeline runs
-before a merge:
+The two descriptions are proven equal by materialising both of them and comparing the resulting catalogs. The verification is the gate a pipeline runs before a merge:
 
 ```bash
 cargo rurqe stage verify --scratch-url :memory:
 ```
 
-The scratch target a verification builds in is always named explicitly, either
-with `--scratch-url` or with `--database-url` as its fallback; `DATABASE_URL` is
-deliberately never consulted, because the verification creates and drops
-databases as the connected role and an implicit target routinely names the
-server that variable points at.
+| Option | Effect |
+|---|---|
+| `--scratch-url <url>` | The target a verification builds both sides in. |
+| `--database-url <url>` | The fallback target when `--scratch-url` is not given. |
+| `--stage-dir <dir>` | The declarative stage. Defaults to `schema`. |
+| `--base-stage-dir <dir>` | An explicit boundary snapshot, in place of the one recorded beside the marker. |
+| `--migrations-dir <dir>` | The tail. Defaults to `migrations`. |
+| `--checkpoint-path <path>` | The boundary marker. Defaults to `checkpoint.toml`. |
+| `--schema <name>` | The primary schema compared. The secondary schemas come from `schemas` in `rurqe.toml`. |
 
-The verification first repairs an interrupted commit inside the exclusive section
-of the marker and reads the marker, the tail, and the boundary snapshot there. An
-explicit `--base-stage-dir` wins; without it, the snapshot `stage commit` recorded
-next to the marker is loaded.
+The scratch target is always named explicitly, either with `--scratch-url` or with `--database-url` as its fallback; `DATABASE_URL` is deliberately never consulted, because the verification creates and drops databases as the connected role and an implicit target routinely names the server that variable points at.
+
+The verification first repairs an interrupted commit inside the exclusive section of the marker and reads the marker, the tail, and the boundary snapshot there. An explicit `--base-stage-dir` wins; without it, the snapshot `stage commit` recorded next to the marker is loaded.
 
 The two sides are then built:
 
-- the anchored side replays the boundary snapshot, verifies its catalog against
-  `schema_hash` before a single tail script runs, and continues with the tail on
-  the same sandbox, skipping the scripts at or below `pruned_up_to_version`
-  because the boundary snapshot already folds them in;
+- the anchored side replays the boundary snapshot, verifies its catalog against `schema_hash` before a single tail script runs, and continues with the tail on the same sandbox, skipping the scripts at or below `pruned_up_to_version` because the boundary snapshot already folds them in;
 - the declarative side replays `schema/` and nothing else.
 
-Both catalogs are introspected over the selected schemas and compared
-structurally: tables, columns, types, nullability, defaults, primary and foreign
-keys, check constraints, indexes, enums, views, and triggers. A difference is
-reported as a divergence naming every finding, and the command fails; equivalence
-is reported as one line:
+Both catalogs are introspected over the selected schemas and compared structurally: tables, columns, types, nullability, defaults, primary and foreign keys, check constraints, indexes, enums, views, and triggers. A difference is reported as a divergence naming every finding, and the command fails; equivalence is reported as one line:
 
 ```text
 Golden equation holds: State(schema) == State(Checkpoint + migrations) (hash 4f1d9c2e..., schemas `public`, scratch `:memory:`)
 ```
 
-A checkpoint whose boundary describes a non-empty schema requires a boundary
-snapshot, because replaying the tail over an empty database would report a
-consistent project as diverged. An empty boundary is the exception: an empty
-scratch database reproduces it on its own.
+A checkpoint whose boundary describes a non-empty schema requires a boundary snapshot, because replaying the tail over an empty database would report a consistent project as diverged. An empty boundary is the exception: an empty scratch database reproduces it on its own.
 
 ## Pruning the history
 
-Once the boundary covers a set of scripts, they are deleted:
+Pruning is the step that keeps the tail short: once the boundary covers a set of scripts, their files are deleted from `migrations/`.
+
+### What a prune changes, and what it never changes
+
+A prune deletes files. It does not touch the marker, does not recompute a baseline, and does not alter a single row of `__rurqe_schema_history` in any database. What the deleted scripts produced is not lost, because the boundary snapshot already holds that state and every verification and cold start replays it.
+
+What each kind of database sees afterwards:
+
+| Database state | Before the prune | After the prune |
+|---|---|---|
+| Empty — a CI container, a new development machine | advanced by the full tail | unchanged: `stage init` replays `schema/` only |
+| At or above the boundary | advanced by the tail above the boundary | unchanged: every script it still needs sits at or above the boundary |
+| Below the boundary | would need a script the boundary has folded in | refused with a diagnostic naming the version it stopped at |
+
+### Running the prune
+
+A dry run lists what the boundary covers:
+
+```bash
+cargo rurqe prune --before 5.0 --dry-run
+```
+
+The run without the flag removes it:
 
 ```bash
 cargo rurqe prune --before 5.0
@@ -335,7 +379,7 @@ cargo rurqe prune --before 5.0
 | `Pruned 2 migration(s) below version 5.0` | The summary of a real run. |
 | `Would prune 2 migration(s) below version 5.0` | The summary of a dry run. |
 
-The rules the command obeys:
+### The rules the command obeys
 
 - The marker must exist, and it must anchor the history at or above `--before`. A commit that never happened names the command that has to run first:
 
@@ -349,11 +393,9 @@ The rules the command obeys:
 `checkpoint.toml` anchors the history up to version 4.0 only; pruning below 5.0 would drop scripts the active tail still needs
 ```
 
-- Only versioned scripts strictly below `--before` are deleted. Repeatable scripts carry no version and are never deleted by the prune, because removing one would silently change the schema a cold start produces. A script at the boundary version itself stays.
-- The marker is never rewritten and no baseline is recomputed: the boundary stays exactly what the commit sealed, which is why pruning needs no squash.
+- Only versioned scripts strictly below `--before` are deleted. Repeatable scripts carry no version and are never deleted by the prune, because removing one would silently change the schema a cold start produces. A script at the boundary version itself stays, and it is inert: every runner and the verification skip what the boundary has folded in.
 - The whole prune runs inside the exclusive section of the marker, so no commit, verification, or second prune observes a half-pruned tail: an anchored marker whose scripts are already gone.
-
-A directory with nothing to delete reports it instead of rendering an empty run:
+- A directory with nothing to delete reports it instead of rendering an empty run:
 
 ```text
 No migration below version 5.0 to prune in migrations
@@ -377,8 +419,6 @@ schema/ written ──▶ stage commit ──▶ stage verify ──▶ prune �
 
 `schema/` has to hold the complete DDL of the schema the database holds now: the tables with their columns, constraints, and defaults, the indexes and views over them, the triggers, and the enum types the columns use. The applied history is the description it is assembled from — replaying `migrations/` in version order produces exactly the schema to state — so the stage states that result once, as the description a reader consults instead of the history.
 
-The directory obeys the rules stated above: only `*.sql` files are scripts, they are applied in file-name order, and a script runs inside a transaction unless it declares otherwise.
-
 No command writes `schema/` from a database. The stage is the description a project commits to, so the toolchain reads it and never produces it, and what checks the description is the commit below: it materialises the stage in a disposable scratch state and compares the result against the live catalog.
 
 ### 2. Seal the boundary
@@ -389,7 +429,7 @@ cargo rurqe stage commit --version 5.0
 
 `--version` is the newest version every deployed database has already applied, not the newest script in the directory. A target that stopped below the boundary cannot be advanced by a pruned tail, so the marker is cut where the slowest environment already stands, and `checkpoint.toml` records that version together with the digest of the catalog the live database reports.
 
-The commit gates on parity. The stage is materialised in a disposable scratch state and compared with the live catalog read over the selected schemas, so a stage that does not describe the database is refused before a single artifact is written:
+The commit gates on parity. A stage that does not describe the database is refused before a single artifact is written:
 
 ```text
 the declarative stage `schema` does not describe the database this commit would anchor:
@@ -397,9 +437,7 @@ the declarative stage `schema` does not describe the database this commit would 
 Hint: bring `schema/` and the database back into agreement — apply the migration that closes the gap, or re-init the stage from the live catalog — then re-run `stage commit`.
 ```
 
-Both remedies are named because either side may be the one that is right: a column the database gained from a migration the stage does not carry is fixed in `schema/`, while a stage that states the intended schema a database has not reached is closed by the migration.
-
-The tail is untouched at this point. Every script stays in `migrations/`, and every database still advances through it.
+Both remedies are named because either side may be the one that is right: a column the database gained from a migration the stage does not carry is fixed in `schema/`, while a stage that states the intended schema a database has not reached is closed by the migration. The tail is untouched at this point: every script stays in `migrations/`, and every database still advances through it.
 
 ### 3. Verify the equation
 
@@ -407,23 +445,18 @@ The tail is untouched at this point. Every script stays in `migrations/`, and ev
 cargo rurqe stage verify --scratch-url :memory:
 ```
 
-No `--base-stage-dir` is passed: the verification loads the boundary snapshot the commit recorded next to the marker, checks its catalog against `schema_hash` before a single tail script runs, and skips the tail scripts at or below the boundary, because the snapshot already folds them in. Both sides are then materialised and compared, so the run states whether the declarative stage and the anchored tail still converge. A SQLite project verifies against `:memory:`, while a PostgreSQL project passes a disposable URL whose role holds the `CREATEDB` privilege for the duration of the run.
+No `--base-stage-dir` is passed: the verification loads the boundary snapshot the commit recorded next to the marker, checks its catalog against `schema_hash` before a single tail script runs, and skips the tail scripts at or below the boundary, because the snapshot already folds them in. A SQLite project verifies against `:memory:`, while a PostgreSQL project passes a disposable URL whose role holds the `CREATEDB` privilege for the duration of the run.
 
 ### 4. Prune the folded history
 
-A dry run lists what the boundary covers:
+A dry run lists what the boundary covers, and the run without the flag removes it:
 
 ```bash
 cargo rurqe prune --before 5.0 --dry-run
-```
-
-The run without the flag removes it:
-
-```bash
 cargo rurqe prune --before 5.0
 ```
 
-Only versioned scripts strictly below `--before` are deleted. The script at the boundary version itself stays, and it is inert: every runner and the verification skip what the boundary has folded in. Repeatable scripts are never pruned, because removing one would change the schema a cold start produces. The marker is not rewritten, and no baseline is recomputed.
+Only versioned scripts strictly below `--before` are deleted. The script at the boundary version itself stays, and it is inert. Repeatable scripts are never pruned. The marker is not rewritten, and no baseline is recomputed.
 
 ### 5. Run the two lifecycles side by side
 
