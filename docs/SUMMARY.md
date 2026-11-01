@@ -41,7 +41,7 @@
 # Part IV: Schema Lifecycle & Tooling
 
 - [Database migrations](lifecycle/database_migrations.md)
-  - [Migrations](lifecycle/migrations.md)
+  - [Sequential migrations](lifecycle/migrations.md)
   - [Running migrations in production](lifecycle/embedded.md)
   - [Stage-based schema evolution](lifecycle/stage.md)
   - [Schema drift verification](lifecycle/drift.md)

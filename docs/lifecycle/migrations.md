@@ -1,14 +1,43 @@
-# Migrations
+# Sequential migrations
 
 A migration is a forward-only SQL script kept in the repository and applied to a
 database. The applied entry is recorded in a history table together with the
 checksum of the script, so an edit to a script that already ran is detected
-instead of being silently accepted, and a failed attempt is remembered until it
-is repaired.
+instead of being silently accepted, and a failed attempt stays visible until it is
+repaired.
+
+One script carries one change. The scripts of a project therefore form an ordered
+sequence, every environment applies that sequence once, and two databases that
+applied the same scripts hold the same schema.
 
 Versioned scripts carry an ordered version and run in that order exactly once.
-Repeatable scripts carry no version and run again whenever their contents
-change, which is the shape a view or a function definition takes.
+Repeatable scripts carry no version and run again whenever their contents change,
+which is the shape a view, a function, or a set of reference rows takes.
+
+## Two ways to describe a schema
+
+A migration toolchain answers one question: where the schema of a database comes
+from. The industry answers it in two directions, and both have been in production
+for a long time.
+
+The first keeps an ordered directory of deltas. Every change is a script, and the
+schema of a database is the sum of the scripts applied to it; Flyway and Liquibase
+are the reference examples of that arrangement. The second keeps a declarative
+description of the target schema and generates the delta by comparing the
+description with what a database currently holds; Django, Prisma, and Atlas take
+that route.
+
+The two are not rivals: they differ in what each one makes cheap. A recorded delta
+is exactly what an upgrade of a live database needs — it ran, it is bound to its
+checksum, and its entry states when it ran and how long it took. A declarative
+description is exactly what a reader, a fresh environment, and a verification
+need: it states the schema once, instead of leaving the answer spread over every
+script that ever touched one table.
+
+This chapter documents the sequential lifecycle — the ordered directory of deltas
+— from the work of an ordinary developer through every command that maintains it.
+Its last two sections state where the arrangement starts to cost more than it
+returns, and what takes over when it does.
 
 ## The migrations directory
 
@@ -18,9 +47,12 @@ else.
 
 * Only files ending in `.sql` are scripts. Every other file and every
   subdirectory of the directory is ignored.
-* Scripts are listed in file-name order and then sorted by the run order
-  described below, so the order the filesystem reports never decides what runs
-  first.
+* Scripts are listed in file-name order, and a run of digits inside a name is
+  compared by its value: `2_users.sql` precedes `10_orders.sql` without any
+  leading zero.
+* The listing is only the first step. What a run applies, and in which order, is
+  decided by the run order described below, so the order the filesystem reports
+  never decides what happens first.
 * A missing directory holds no migrations, which is what a project that has not
   started a migration history looks like. A directory that exists but cannot be
   read is reported rather than taken for an empty one, and a script whose name
@@ -75,12 +107,70 @@ and the diagnostic names both files:
 duplicate migration version 2.1: `V2_1__add_orders.sql` and `V2.1__orders.sql` declare the same version
 ```
 
-## Checksums
+## A working day
 
-Every script is digested with SHA-256 over its exact contents when it is read,
-and the hexadecimal digest is recorded with the applied entry. A script that was
-applied and then edited no longer matches the recorded digest, and the next run
-refuses to continue:
+The loop is short, and each step of it is one command:
+
+```text
+write     migrations/V7__add_orders_total.sql     one script for one change
+apply     cargo rurqe migrate up                  the pending scripts run in order
+inspect   cargo rurqe migrate status              one row per script of the directory
+commit    the script and the code that needs it   one commit, so the two never drift
+```
+
+The schema change and the code that reads it travel in one commit, so a deployment
+that carries the query also carries the migration that prepared the column it
+reads. The opposite order — code first, migration later — is the arrangement in
+which a release fails on a column nobody created.
+
+The same loop runs in continuous integration, where the database starts empty: the
+pipeline applies the whole directory and fails on the first script that does not
+run. A script that passes there passes on any machine, because nothing in the
+directory may depend on the state of one developer's database.
+
+A release that already reached production is not part of the loop. Its scripts stay
+exactly as they were applied, and the next change is a new script.
+
+## One change per script
+
+A migration is written for the change in front of the developer, not for the
+release that will carry it. A task that adds a column and the index over it ships
+one script holding both statements; two unrelated tasks ship two scripts.
+
+* The script is reviewed on its own, so the reviewer reads the change rather than
+  the release.
+* A failure rolls back one change, because nothing unrelated shares its
+  transaction.
+* Reverting a change is the next script, and the pair states what was done and
+  what was undone.
+* The directory stays readable by version: the numbers name the order the changes
+  were made, not the order the features were planned.
+
+The version is the position of the change in that order. Whole numbers (`V1`,
+`V2`, `V3`) carry most projects; a project shipping several changes a day adds a
+second part (`V41_2__add_orders_total.sql`) or folds the date in
+(`V20240115_1__add_orders_total.sql`). The scheme matters less than keeping one:
+two schemes interleave into an order nobody expects, and the version is the only
+thing the run sorts on.
+
+A description is read by a person, so it names the change rather than the ticket:
+`add_orders_total`, not `fix`. Underscores become spaces in the history table and
+in the status report, which is exactly where those two are read.
+
+### Editing a script that already ran
+
+An applied script is a fact about every database that ran it, and editing the file
+makes it disagree with all of them. Three cases, three answers:
+
+* The script reached nothing but your own database: the file is yours to change,
+  and `cargo rurqe migrate repair` brings the recorded digest in line with it.
+* The script reached a shared database: write a new script. The history keeps both,
+  and the second one states the correction.
+* A repeatable script is never reported as modified, because a changed digest is
+  exactly the signal that makes it run again. Editing it is the supported way to
+  redefine the view it creates.
+
+Nothing else accepts an edited script, and the refusal names the digests:
 
 ```text
 migration `V1__create_users.sql` has been modified after being applied: recorded 6b86b273ff34fce1…, actual 3f79bb7b435b9583…
@@ -92,8 +182,15 @@ change, not an edit of the script that already ran. When the edit is intended an
 the script is known not to have reached every target yet, `repair` rewrites the
 recorded digest once the file has been reviewed.
 
-Repeatable scripts are never reported as modified: a changed digest is exactly
-the signal that makes them run again.
+## Checksums
+
+Every script is digested with SHA-256 over its exact contents when it is read, and
+the hexadecimal digest is recorded with the applied entry. A script that was
+applied and then edited no longer matches the recorded digest, and the next run
+refuses to continue.
+
+Repeatable scripts are never reported as modified: a changed digest is exactly the
+signal that makes them run again.
 
 ## The history table
 
@@ -274,14 +371,30 @@ PostgreSQL. PostgreSQL sessions of this build are cleartext, so a connection
 string demanding TLS is refused on every host, and a remote host reached without
 `sslmode=disable` is refused as a silent downgrade.
 
-`--schema <name>` selects the primary PostgreSQL schema whose catalog digest the
-history describes, and the secondary schemas declared in `schemas` of
-`rurqe.toml` are described beside it: `migrate up` compares the summed catalog of
-the whole selection against a checkpoint boundary, so a project keeping its tables
-outside `public` names its primary schema here and the rest of the set in the
-configuration file. The flag wins over the `primary_schema` key of `rurqe.toml`
-(and its legacy `schema` alias), which wins over `public`. `baseline` records no
-catalog digest and takes no schema selection.
+## Declaring the schema selection
+
+A project names the schemas its catalog digests describe once, in `rurqe.toml`:
+
+```toml
+primary_schema = "app"
+schemas = ["auth", "billing"]
+```
+
+* `primary_schema` names the schema whose relations render without a qualifier,
+  so a project keeping its tables outside `public` names it here instead of
+  passing `--schema` to every command. The legacy `schema` key names the same
+  setting, and declaring both is refused with the position of each key.
+* `schemas` names the secondary schemas declared beside the primary one. Its
+  entries are read beside the primary schema, so one digest describes the whole
+  selection rather than one schema of it, and an entry repeating the primary
+  schema is refused.
+* `--schema <name>` wins over the configuration file, and the libpq default
+  `public` applies when neither names a primary schema.
+
+`migrate up` compares the summed catalog of the whole selection against a
+checkpoint boundary, so the schema a project declares here is the schema the
+boundary guard measures. `baseline` records no catalog digest and takes no schema
+selection.
 
 ## Applying pending migrations
 
@@ -408,6 +521,28 @@ cannot baseline database: history already contains migration or baseline version
   reported as `IgnoredBaseline` by `status`. Repeatable scripts are unaffected:
   they run, and run again whenever their contents change.
 * The entry carries no digest, so it is never reported as modified.
+
+## Shipping the scripts with the application
+
+The command line reads `migrations/` as a process of its own, which is what a
+development loop and a deployment step need. A binary can carry the same scripts
+inside itself instead: the scripts are compiled in, parsed and digested at
+startup, and applied through the connection the application already opens.
+
+* The entries are the ones a command-line run records: the same file name, the
+  same version grammar, the same digest, and the same row in the history table.
+* A script whose name follows no convention, a version that does not parse, and
+  two entries sharing one script name stop the startup before a connection is
+  opened, because a half-recorded history is worse than a process that refuses to
+  start.
+* A binary runs the scripts it was built from. A script edited after the build
+  reaches the database only once the binary is rebuilt, and the digest recorded
+  is computed from the text the binary executed.
+
+Embedding belongs to the runtime of an application, and it replaces neither the
+directory nor the toolchain: the directory is where a change is written and
+reviewed, and the binary is one of the places the reviewed scripts are applied
+from.
 
 ## Where a linear history reaches its limits
 
