@@ -394,3 +394,198 @@ fn an_undecodable_catalog_column_names_the_query_and_the_column() {
     assert!(message.contains("columns query"), "{message}");
     assert!(message.contains("unexpected type"), "{message}");
 }
+
+/// Migration scenarios driven through the client backend.
+///
+/// Every scenario needs a live server named by `RURQE_TEST_POSTGRES_URL` and
+/// reports a skip when it is absent, like the other server-bound scenarios of this
+/// suite. Each one owns a schema of its own, because the scenarios of one binary
+/// run concurrently and a shared schema would let the history table, the fixtures,
+/// and the recorded digest of one scenario observe the work of another.
+mod client_backend {
+    use postgres::NoTls;
+
+    use rurqe_postgres::migrate::PgConnectionMigrationBackend;
+    use rurqe_postgres::rurqe_core::query::TransactionGuard;
+    use rurqe_postgres::rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
+    use rurqe_postgres::rurqe_migrate::{Migration, Migrator};
+    use rurqe_postgres::PgConnection;
+
+    use crate::support;
+
+    /// Connects to the scenario server and prepares a schema of its own.
+    ///
+    /// The schema becomes the `search_path` of the session, so the history table
+    /// and the tables of a scenario land inside it, and the backend is told the
+    /// same schema through `with_schema`, so the catalog digest it records
+    /// describes that schema alone.
+    fn fixture(scenario: &str, schema: &str) -> Option<PgConnection> {
+        let url = support::database_url(scenario)?;
+        let mut client = postgres::Client::connect(&url, NoTls)
+            .expect("the test server accepts the connection");
+
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
+            ))
+            .expect("the fixture schema is created");
+        client
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .expect("the fixture schema is selected");
+
+        Some(PgConnection::new(client))
+    }
+
+    #[test]
+    fn a_client_connection_applies_every_script_once() {
+        let Some(mut connection) = fixture(
+            "PgConnectionMigrationBackend::migrate",
+            "rurqe_client_apply",
+        ) else {
+            return;
+        };
+
+        let migrations = vec![
+            Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")
+                .expect("a valid script name"),
+            Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
+                .expect("a valid script name"),
+        ];
+
+        let first = {
+            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
+                .with_schema("rurqe_client_apply");
+            Migrator::new()
+                .migrate(&mut backend, &migrations)
+                .expect("the client connection applies the tail")
+        };
+
+        assert_eq!(first.applied_count, 2);
+        assert_eq!(
+            first.applied_scripts,
+            vec!["V1__users.sql", "V2__orders.sql"]
+        );
+
+        let second = {
+            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
+                .with_schema("rurqe_client_apply");
+            Migrator::new()
+                .migrate(&mut backend, &migrations)
+                .expect("a second run finds nothing pending")
+        };
+
+        assert_eq!(second.applied_count, 0, "an applied script never runs twice");
+        assert!(second.applied_scripts.is_empty());
+
+        let recorded = connection
+            .client_mut()
+            .query_one(
+                "SELECT COUNT(*) FROM rurqe_client_apply.__rurqe_schema_history",
+                &[],
+            )
+            .expect("the recorded history is readable through the connection")
+            .get::<_, i64>(0);
+
+        assert_eq!(recorded, 2, "both scripts left one history row each");
+    }
+
+    #[test]
+    fn the_client_backend_reports_the_catalog_digest_of_its_schema() {
+        let Some(mut connection) = fixture(
+            "PgConnectionMigrationBackend::catalog_checksum",
+            "rurqe_client_catalog",
+        ) else {
+            return;
+        };
+
+        let migrations = vec![Migration::parse(
+            "V1__users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+        )
+        .expect("a valid script name")];
+
+        let before = {
+            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
+                .with_schema("rurqe_client_catalog");
+            Migrator::new()
+                .migrate(&mut backend, &migrations)
+                .expect("the tail applies through the client connection");
+            backend
+                .catalog_checksum()
+                .expect("the selected schema is introspectable")
+                .expect("the client backend reports a catalog digest")
+        };
+
+        connection
+            .client_mut()
+            .batch_execute("ALTER TABLE rurqe_client_catalog.users ADD COLUMN email TEXT")
+            .expect("the schema moves on");
+
+        let after = {
+            let mut backend = PgConnectionMigrationBackend::new(&mut connection)
+                .with_schema("rurqe_client_catalog");
+            backend
+                .catalog_checksum()
+                .expect("the selected schema is introspectable")
+                .expect("the client backend reports a catalog digest")
+        };
+
+        assert_ne!(before, after, "the digest follows the catalog it describes");
+    }
+
+    #[test]
+    fn a_client_step_nests_inside_the_callers_savepoint() {
+        let Some(mut connection) = fixture(
+            "PgConnectionMigrationBackend::begin savepoint nesting",
+            "rurqe_client_nested",
+        ) else {
+            return;
+        };
+
+        connection
+            .client_mut()
+            .batch_execute("CREATE TABLE outer_rows (id INTEGER PRIMARY KEY)")
+            .expect("the fixture table is created");
+
+        let mut guard = TransactionGuard::begin(&mut connection)
+            .expect("the caller opens its own transaction");
+        guard
+            .client_mut()
+            .batch_execute("INSERT INTO outer_rows (id) VALUES (1)")
+            .expect("the first row of the caller is written");
+
+        {
+            let mut backend = PgConnectionMigrationBackend::new(&mut guard)
+                .with_schema("rurqe_client_nested");
+            let mut step = backend
+                .begin()
+                .expect("the step nests inside a savepoint of the caller");
+            step.execute("CREATE TABLE nested_rows (id INTEGER PRIMARY KEY);")
+                .expect("the nested script applies");
+            step.rollback().expect("the nested block rolls back");
+        }
+
+        guard
+            .client_mut()
+            .batch_execute("INSERT INTO outer_rows (id) VALUES (2)")
+            .expect("the second row of the caller is written");
+        guard.commit().expect("the caller commits its own transaction");
+
+        let nested = connection
+            .client_mut()
+            .query_one(
+                "SELECT to_regclass('rurqe_client_nested.nested_rows') IS NOT NULL",
+                &[],
+            )
+            .expect("the catalog answers")
+            .get::<_, bool>(0);
+        assert!(!nested, "the nested block rolled back its own script");
+
+        let rows = connection
+            .client_mut()
+            .query_one("SELECT COUNT(*) FROM rurqe_client_nested.outer_rows", &[])
+            .expect("the caller's table is readable")
+            .get::<_, i64>(0);
+        assert_eq!(rows, 2, "the enclosing transaction kept the caller's work");
+    }
+}

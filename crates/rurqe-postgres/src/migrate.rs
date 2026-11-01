@@ -9,7 +9,8 @@
 //! The adapter executes through the synchronous driver, which is why the whole
 //! surface sits behind the `migrate` feature of the crate. The statements of the
 //! history table live in the [`history`] module, while the advisory lock, the
-//! backend, and its transaction live here. The digest a step records comes from
+//! backend, and its transaction live here, while the backend over a connection the
+//! caller already holds lives in [`client`]. The digest a step records comes from
 //! [`crate::introspect`], so a cold start anchors the very catalog the toolchain
 //! compares against.
 //!
@@ -32,12 +33,15 @@ use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, Sleeper, ThreadSleeper};
 
 use crate::introspect::{introspect_postgres_selection, DEFAULT_SCHEMA};
 
+mod client;
 mod history;
 
 pub use history::{
     delete_entry_sql, insert_entry_sql, select_history_sql, update_checksum_sql, RawHistoryRow,
     HISTORY_COLUMN_COUNT,
 };
+
+pub use client::{PgConnectionMigrationBackend, PgConnectionMigrationTransaction};
 
 /// Advisory lock key guarding a PostgreSQL migration run.
 pub const MIGRATION_LOCK_ID: i64 = 0x5255_5251_455f_4d49;
@@ -161,6 +165,34 @@ fn backend_error(err: impl std::fmt::Display) -> Error {
     Error::Backend(err.to_string())
 }
 
+/// Reads and decodes the recorded history of `client`.
+///
+/// The statements of the lifecycle are shared with the backend over a client
+/// connection, so the decoding lives here instead of being repeated per adapter.
+fn read_history_rows(client: &mut postgres::Client) -> Result<Vec<SchemaHistoryEntry>, Error> {
+    let rows = client
+        .query(&select_history_sql(), &[])
+        .map_err(backend_error)?;
+
+    let mut history = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let raw = RawHistoryRow {
+            installed_rank: row.try_get(0).map_err(backend_error)?,
+            version: row.try_get(1).map_err(backend_error)?,
+            description: row.try_get(2).map_err(backend_error)?,
+            kind: row.try_get(3).map_err(backend_error)?,
+            script: row.try_get(4).map_err(backend_error)?,
+            checksum: row.try_get(5).map_err(backend_error)?,
+            installed_on: row.try_get(6).map_err(backend_error)?,
+            execution_time_ms: row.try_get(7).map_err(backend_error)?,
+            success: row.try_get(8).map_err(backend_error)?,
+        };
+        history.push(raw.decode()?);
+    }
+
+    Ok(history)
+}
+
 /// [`MigrationBackend`] over a `postgres` client.
 ///
 /// The adapter is synchronous and blocking: it owns a `postgres::Client` whose
@@ -259,28 +291,7 @@ impl MigrationBackend for PostgresMigrationBackend {
     }
 
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
-        let rows = self
-            .client
-            .query(&select_history_sql(), &[])
-            .map_err(backend_error)?;
-
-        let mut history = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let raw = RawHistoryRow {
-                installed_rank: row.try_get(0).map_err(backend_error)?,
-                version: row.try_get(1).map_err(backend_error)?,
-                description: row.try_get(2).map_err(backend_error)?,
-                kind: row.try_get(3).map_err(backend_error)?,
-                script: row.try_get(4).map_err(backend_error)?,
-                checksum: row.try_get(5).map_err(backend_error)?,
-                installed_on: row.try_get(6).map_err(backend_error)?,
-                execution_time_ms: row.try_get(7).map_err(backend_error)?,
-                success: row.try_get(8).map_err(backend_error)?,
-            };
-            history.push(raw.decode()?);
-        }
-
-        Ok(history)
+        read_history_rows(&mut self.client)
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
