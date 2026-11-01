@@ -1213,6 +1213,175 @@ output = "generated/schema.rs"
 }
 
 #[test]
+fn the_declared_codegen_output_is_the_shared_middle_tier() {
+    let dir = scratch("codegen-output-key");
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    std::fs::write(
+        &configuration,
+        "[codegen]\noutput = \"generated/schema.rs\"\n",
+    )
+    .expect("write the project configuration");
+
+    let declared = dir.join("generated").join("schema.rs");
+    std::fs::create_dir_all(declared.parent().expect("the declared module has a directory"))
+        .expect("create the declared module directory");
+    std::fs::write(&declared, "pub const SCHEMA_HASH: &str = \"declared\";\n")
+        .expect("write the declared module");
+
+    let project =
+        Project::load(Some(&configuration), &configuration).expect("the declared project loads");
+
+    // The middle tier: without a flag, code generation writes and verification
+    // reads the module `[codegen].output` names instead of the built-in default.
+    assert_eq!(project.codegen_output(None), declared);
+    assert_eq!(
+        project
+            .resolve_schema_code(None)
+            .expect("the declared module is read"),
+        Some("pub const SCHEMA_HASH: &str = \"declared\";\n".to_owned())
+    );
+
+    // The first tier: the flag of either command wins over the declared key.
+    let flagged = dir.join("flagged").join("schema.rs");
+    std::fs::create_dir_all(flagged.parent().expect("the flagged module has a directory"))
+        .expect("create the flagged module directory");
+    std::fs::write(&flagged, "pub const SCHEMA_HASH: &str = \"flagged\";\n")
+        .expect("write the flagged module");
+
+    assert_eq!(project.codegen_output(Some(flagged.clone())), flagged);
+    assert_eq!(
+        project
+            .resolve_schema_code(Some(flagged))
+            .expect("the flagged module is read"),
+        Some("pub const SCHEMA_HASH: &str = \"flagged\";\n".to_owned())
+    );
+
+    // The last tier: a project naming no module and passing no flag keeps the
+    // built-in default of the generator as the working end of the cascade, so
+    // the absence of both is never an error of its own.
+    let default_dir = scratch("codegen-output-default");
+    let absent = default_dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    let conventional =
+        Project::load(None, &absent).expect("an absent configuration is the default project");
+    assert_eq!(
+        conventional.codegen_output(None),
+        PathBuf::from("src/schema.rs")
+    );
+
+    // The catalog snapshot carries no key of the document, so the codegen key
+    // never steers it: the cascade of the flag and the conventional
+    // `rurqe/schema.lock` stays exactly as it was.
+    assert_eq!(
+        project.lock_path(None),
+        dir.join("rurqe").join("schema.lock")
+    );
+    let flagged_lock = dir.join("flagged").join("schema.lock");
+    assert_eq!(project.lock_path(Some(flagged_lock.clone())), flagged_lock);
+
+    // A module the configuration names has to resolve: a project that declared
+    // one expects it to be verified, so an absent file fails with its path
+    // instead of silently leaving the module unverified.
+    std::fs::remove_file(&declared).expect("remove the declared module");
+    let missing = project
+        .resolve_schema_code(None)
+        .expect_err("the declared module is required to resolve");
+    assert!(
+        missing.to_string().contains(&declared.display().to_string()),
+        "the diagnostic names the declared module, got {missing}"
+    );
+}
+
+#[test]
+fn codegen_and_verify_address_the_module_the_configuration_declares() {
+    let dir = scratch("codegen-output-command");
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    std::fs::write(
+        &configuration,
+        "[codegen]\noutput = \"generated/schema.rs\"\n",
+    )
+    .expect("write the project configuration");
+
+    let db = dir.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);")
+            .expect("create schema");
+    }
+    let database = db.display().to_string();
+
+    let argv = |action: &str, extra: &[&str]| {
+        let mut argv = vec![
+            "rurqe".to_owned(),
+            action.to_owned(),
+            "--database-url".to_owned(),
+            database.clone(),
+        ];
+        argv.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        argv
+    };
+
+    // No flag: the command writes the module `[codegen].output` names, while the
+    // snapshot keeps the path its own two-tier cascade resolves.
+    let output = run_cli_with_config(argv("codegen", &[]), &configuration)
+        .expect("codegen resolves the declared module path");
+    let declared = dir.join("generated").join("schema.rs");
+    assert!(declared.is_file(), "the declared module is written");
+    assert!(
+        dir.join("rurqe").join("schema.lock").is_file(),
+        "the snapshot keeps the conventional artifact path"
+    );
+
+    let mut report = Vec::new();
+    output
+        .write_into(&mut report)
+        .expect("writing to a buffer cannot fail");
+    let report = String::from_utf8(report).expect("the channel wrote UTF-8");
+    assert!(
+        report.contains(&declared.display().to_string()),
+        "the report names the declared path: {report}"
+    );
+
+    // Verification reads the very same key, which the tampered hash below
+    // proves: the module the declared key names is the one compared.
+    run_cli_with_config(argv("verify", &[]), &configuration)
+        .expect("verification reads the declared module");
+    std::fs::write(&declared, "pub const SCHEMA_HASH: &str = \"sha256:0000\";\n")
+        .expect("tamper with the declared module");
+    let tampered = run_cli_with_config(argv("verify", &[]), &configuration)
+        .expect_err("the tampered hash of the declared module is reported");
+    assert!(
+        tampered.to_string().contains("SCHEMA_HASH mismatch"),
+        "verification read the declared module, got {tampered}"
+    );
+
+    // The first tier wins over the declared key: the declared module stays
+    // untouched while the flagged path receives the generated code.
+    std::fs::write(&declared, "// left untouched\n").expect("mark the declared module");
+    let flagged = dir.join("flagged").join("schema.rs");
+    let flagged_path = flagged.display().to_string();
+    run_cli_with_config(
+        argv("codegen", &["--output", flagged_path.as_str()]),
+        &configuration,
+    )
+    .expect("the explicit output wins over the declared key");
+
+    assert!(flagged.is_file(), "the flagged module is written");
+    assert_eq!(
+        std::fs::read_to_string(&declared).expect("read the declared module"),
+        "// left untouched\n",
+        "the declared module is untouched when the flag names another path"
+    );
+
+    // Verification accepts the same flag, so both commands address one module
+    // from either tier of the cascade.
+    run_cli_with_config(
+        argv("verify", &["--schema-path", flagged_path.as_str()]),
+        &configuration,
+    )
+    .expect("verification accepts the flagged module");
+}
+
+#[test]
 fn a_project_without_declarations_keeps_the_conventional_layout() {
     let dir = scratch("project-layout");
     let absent = dir.join(crate::config::DEFAULT_CONFIG_PATH);

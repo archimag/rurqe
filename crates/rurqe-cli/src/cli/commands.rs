@@ -129,8 +129,21 @@ impl Project {
 
     /// Resolves the generated schema module: the flag, then `[codegen].output`, then the generator default.
     pub(super) fn codegen_output(&self, flag: Option<PathBuf>) -> PathBuf {
-        flag.or_else(|| self.config.codegen_output(&self.directory))
+        self.named_codegen_output(flag)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_SCHEMA_OUTPUT))
+    }
+
+    /// The generated module the invocation names: the flag, then `[codegen].output`.
+    ///
+    /// `codegen` writes and `verify` reads the same module, so the head of their
+    /// cascade lives here: the flag of either command wins over the declared key,
+    /// and the key wins over the built-in default of the generator. The
+    /// completion of the cascade differs — code generation falls back to the
+    /// default while verification treats it as optional — which is why the
+    /// shared head stops at the named value and each command decides the last
+    /// tier of its own cascade.
+    fn named_codegen_output(&self, flag: Option<PathBuf>) -> Option<PathBuf> {
+        flag.or_else(|| self.config.codegen_output(&self.directory))
     }
 
     /// Reads the module `verify` compares its embedded `SCHEMA_HASH` against.
@@ -144,7 +157,7 @@ impl Project {
         &self,
         flag: Option<PathBuf>,
     ) -> Result<Option<String>, CliError> {
-        if let Some(path) = flag.or_else(|| self.config.codegen_output(&self.directory)) {
+        if let Some(path) = self.named_codegen_output(flag) {
             return read_schema_code(&path).map(Some);
         }
 
