@@ -41,10 +41,10 @@
 # Part IV: Schema Lifecycle & Tooling
 
 - [Database migrations](lifecycle/intro.md)
-  - [Sequential migrations](lifecycle/migrations.md)
-  - [Checkpoints and pruning](lifecycle/checkpoints.md)
-  - [Declarative schema](lifecycle/schema.md)
-  - [Project configuration](lifecycle/config.md)
-  - [Running migrations in production](lifecycle/embedded.md)
-  - [Schema drift verification](lifecycle/drift.md)
+- [Sequential migrations](lifecycle/migrations.md)
+- [Checkpoints and pruning](lifecycle/checkpoints.md)
+- [Declarative schema](lifecycle/schema.md)
+- [Project configuration](lifecycle/config.md)
+- [Running migrations in production](lifecycle/embedded.md)
+- [Schema drift verification](lifecycle/drift.md)
 - [Schema code generation](lifecycle/codegen.md)
