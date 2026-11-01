@@ -297,10 +297,10 @@ ecosystem types directly, so the application enables the matching features
 
 ## Project configuration
 
-The optional `rurqe.toml` is read from the working directory and carries the
 The optional `rurqe.toml` is read from the working directory when no `--config`
 names another file, and it carries the schemas a project describes and the
 per-column Rust types the generator emits:
+
 ```toml
 primary_schema = "app"
 schemas = ["auth", "billing"]

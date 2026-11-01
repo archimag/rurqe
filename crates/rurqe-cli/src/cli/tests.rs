@@ -104,8 +104,6 @@ fn the_migrate_family_rejects_path_options() {
         }
     }
 }
-
-
 #[test]
 fn parses_the_cargo_rurqe_codegen_invocation() {
     let cmd = parse_args(&[

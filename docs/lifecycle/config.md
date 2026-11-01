@@ -156,11 +156,14 @@ Every path of a command is resolved through the same three tiers: the explicit f
 
 `codegen` writes and `verify` reads the same module, so the two share a cascade: `--output` of `codegen` and `--schema-path` of `verify` both win over `codegen.output`, and the key wins over the built-in default of the generator. The last tier differs on purpose — `codegen` falls back to `src/schema.rs` and writes it, while `verify` treats the conventional module as optional and falls back to the snapshot alone when neither the flag nor the key names a file.
 
-`--checkpoint-path` is accepted by `migrate up` alone, where it arms the guard that refuses a target older than the pruned history. `migrate status` and `migrate repair` read the history table alone, so they reject the flag instead of accepting it and ignoring it:
-
-```text
-unknown option `--checkpoint-path` for `migrate status` (`--checkpoint-path` guards `migrate up` against a target older than the pruned boundary)
-```
+`migrate` is the one family that takes no path option at all, and the omission is
+deliberate: the guard refusing a target older than the pruned boundary has to read
+the same marker every other command reads, so `migrate up`, `migrate status`, and
+`migrate repair` resolve the migration tail and the boundary marker from the
+project configuration alone. A path option of the family — `--migrations-dir` or
+`--checkpoint-path` — is reported as an unknown option of the action it was given
+to, instead of being accepted and then ignored. The `stage` and `prune` commands
+keep those flags, and there each of them wins over the declared key.
 
 ## Schema selection
 
