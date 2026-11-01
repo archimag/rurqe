@@ -15,6 +15,11 @@ table with the same kind and the same rank. A database advanced by a container
 start ends exactly where a command-line run over the same files would have left
 it.
 
+What changes is where the run happens. The command line is the working loop of a
+developer who edits a script and applies it; the embedded run is the production
+stage of the lifecycle, and all of it happens before the service answers its
+first request.
+
 ## Embedding the scripts
 
 `embed_migrations!` takes pairs of script name and script text and yields a
@@ -27,9 +32,9 @@ fallible collection:
 Every pair is parsed and digested when the collection is built, so a script whose
 name follows no convention, a version that does not parse, and two entries sharing
 one script name stop the process at startup instead of leaving a gap in the
-recorded history. The collection is sorted
-once, the way a directory of scripts is sorted: versioned scripts in ascending
-version order, followed by the repeatable scripts ordered by script name.
+recorded history. The collection is sorted at construction, the way a directory of
+scripts is sorted: versioned scripts in ascending version order, followed by the
+repeatable scripts ordered by script name.
 
 The macro accepts two spellings of a pair — `"<name>" => "<sql>"` and
 `("<name>", "<sql>")` — and a call without a pair yields an empty collection.
@@ -54,7 +59,8 @@ two different bodies under a single recorded identity: the first one is recorded
 the second is re-applied as a modified script and recorded again, and the history
 ends up with two rows for one name. Both constructors refuse such a set, and a run
 refuses a list assembled by hand before it applies anything.
-## Applying the collection
+
+## Starting the service
 
 Every lifecycle operation exists twice: a blocking method that drives the backend
 on the calling thread, and a counterpart that runs the same work on a dedicated
@@ -69,16 +75,18 @@ blocking thread. The counterparts are available with the `tokio` feature.
 
 `migrate` applies what is pending — the versioned scripts in ascending version
 order, then the repeatable scripts whose contents differ from the recorded digest
-— and returns how many scripts ran together with their names. A run that finds
-nothing pending applies nothing and leaves the database untouched. A database that
-never ran a migration holds no history table yet, and the run creates it under the
-same run lock the command line takes.
+— and returns how many scripts ran, which ones, and how long the run took. A run
+that finds nothing pending applies no script. A database that never ran a
+migration holds no history table yet, and the run creates it under the same run
+lock the command line takes.
 
 `status` executes no script and returns one entry per script, carrying the script
 name, its kind, its version, and its status: `Pending` for a script never applied,
 `Applied` for one whose recorded digest matches, `Modified` for one that changed
 after it ran, `IgnoredBaseline` for one below the version a baseline recorded, and
-`Failed` for an attempt that did not complete.
+`Failed` for an attempt that did not complete. A status read on a database that
+was never initialised creates the history table first, under the same run lock,
+because creating it is a schema write.
 
 `repair` executes no script either. It purges every unsuccessful entry and
 rewrites the recorded digest of an applied versioned script whose contents
@@ -86,19 +94,36 @@ changed, and it reports what it removed and which digests it rewrote.
 
 `baseline` records a starting point for a database that already carries the
 schema. It takes the version and the description of the entry, and a database
-whose history already holds a migration or a baseline at that version is refused
-instead of silently restarted.
+whose history already holds an entry is refused instead of silently restarted; the
+diagnostic names the version or the script that is already recorded.
 
-Every operation takes the backend that performs the I/O. The collection opens no
-connection of its own: it hands the scripts to the backend the caller supplies, so
-the connection, the transaction, and the run lock are the ones the application
-already controls.
+## A failure before the first request
 
-The asynchronous counterparts take that backend by value and hand it back together
-with the outcome, so a connection that cannot be shared across threads stays
-usable after the run. A run that fails keeps the connection inside the finished
-task, so an application that has to continue on the same connection after a
-failure either opens a new one or uses the blocking method.
+A run reports failure in a typed error of the migration crate, so a startup
+distinguishes the cases instead of matching on text:
+
+- `DuplicateScriptName` refuses a collection built with two entries under one
+  script name, before a connection is opened.
+- `FailedMigrationAlreadyApplied` refuses a run over a history that records an
+  unsuccessful attempt: the attempt has to be cleared first.
+- `ChecksumMismatch` refuses an applied versioned script whose contents no longer
+  match the recorded digest.
+- `BaselineAlreadyExists` refuses a baseline on a database whose history already
+  holds an entry.
+- `MigrationExecutionFailed` reports a script that did not complete: its
+  transaction is rolled back, the unsuccessful attempt is recorded, and nothing
+  that follows it has run.
+- `Backend` carries a driver failure, and the same variant carries the refusal the
+  `strict-async` feature raises for a blocking call on a runtime thread.
+
+The run performs no repair of its own. A refused history and a failing script both
+stop it, and the deliberate next step belongs to an operator: fix the script, then
+`repair` to clear the recorded attempt, then run again.
+
+A service that cannot advance the schema does not serve. The startup propagates
+the error with `?`, the process exits with a non-zero status, and the orchestrator
+restarts it or rolls the deployment back. Serving on a schema the binary never
+agreed with is the one outcome this route exists to prevent.
 
 ## Blocking, asynchronous, and the runtime boundary
 
@@ -145,10 +170,30 @@ clears the entry once the script is fixed. A script that runs outside a
 transaction commits statement by statement, so part of its work may already be in
 place and deserves a look at the schema before it is re-run.
 
+`status` and `repair` belong to a deployment that reports or repairs the record
+rather than advancing the schema: neither applies a script, so the service that
+advances the schema still runs `migrate` before it serves.
+
 Because the scripts are baked in, the binary and the scripts it runs cannot drift
 apart, and the digests it records are computed from the text it executed. A script
 edited after the binary was built reaches the database only once the binary is
 rebuilt.
+
+## The backend the run needs
+
+Every operation takes the backend that performs the I/O. The collection opens no
+connection of its own: it hands the scripts to the backend the caller supplies, so
+the connection, the transaction, and the run lock are the ones the application
+already controls.
+
+A backend implements one contract, the same one the command line drives through
+its own drivers, and the embedded collection never names a driver. The workspace
+ships two backends for a real database — one for PostgreSQL and one for SQLite —
+inside the command-line crate, which drives them to apply a directory of scripts,
+and the migration crate ships an in-memory backend its own tests run against. An
+application that embeds migrations against a real database therefore supplies the
+backend that fits its driver: the collection carries the scripts, and the service
+carries the connection.
 
 ## The command line and the embedded collection
 
@@ -185,8 +230,5 @@ algorithm, and the history table; they differ in what each one can reach.
   deployment rather than by the binary.
 - It does not read files. The binary is the source of the run: a script edited on
   disk changes nothing until the binary is rebuilt.
-- It does not open connections, and it ships no backend for a real database. The
-  toolchain ships a PostgreSQL backend and a SQLite backend for its own runs, and
-  the migration crate ships an in-memory backend for tests, so an application that
-  embeds migrations against a real database implements the same backend contract
-  over the connection it opens.
+- It does not open a connection and never names a driver: the backend is the
+  caller's, and the collection holds no engine of its own.
