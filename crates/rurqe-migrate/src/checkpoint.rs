@@ -201,24 +201,42 @@ impl Checkpoint {
 
 /// Whether a failed read means no marker exists at the requested path.
 ///
-/// An absent file is the ordinary case, and a path below a component that is not
-/// a directory is the second one: the marker cannot live there, so the boundary is
-/// read as absent instead of aborting a commit that has not written anything yet.
-/// Every other failure — a permission, a decode, or a damaged file — keeps the
-/// boundary unknown rather than pretending the history was never pruned.
+/// An absent file is the ordinary case: nothing was ever written there. The
+/// second confirmed case is a path below a component that is not a directory —
+/// the marker cannot live there, so the boundary is read as absent instead of
+/// aborting a commit that has not written anything yet, and the write that
+/// follows reports the unusable path with the artifact it could not produce.
+///
+/// Every other failure — a permission, a decode, a damaged file, or a read below
+/// a directory whose own metadata cannot be inspected — keeps the boundary
+/// unknown rather than pretending the history was never pruned, because a runner
+/// that assumes no boundary proceeds against exactly the outdated targets the
+/// marker exists to reject.
 fn no_marker_can_exist(path: &Path, error: &std::io::Error) -> bool {
     if error.kind() == std::io::ErrorKind::NotFound {
         return true;
     }
 
     // A path below a regular file fails with an OS error that no stable error kind
-    // names on every toolchain, so the parent itself is inspected instead.
-    matches!(path.parent(), Some(parent) if !names_a_directory(parent))
+    // names on every toolchain, so the parent itself is inspected instead. The
+    // parent has to be *seen* not to be a directory: a metadata lookup that fails
+    // leaves the layout unknown, so the read error keeps propagating.
+    marker_parent(path).is_some_and(|parent| {
+        std::fs::metadata(parent).is_ok_and(|metadata| !metadata.is_dir())
+    })
 }
 
-/// Whether `path` names an existing directory.
-fn names_a_directory(path: &Path) -> bool {
-    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
+/// The directory a marker path is resolved below.
+///
+/// A bare file name carries an empty parent, which names the current directory;
+/// every other path keeps the parent it declares. `None` means the path itself
+/// names no directory component, so nothing can be inspected for it.
+fn marker_parent(path: &Path) -> Option<&Path> {
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        return Some(Path::new("."));
+    }
+    Some(parent)
 }
 
 /// Builds an [`Error::InvalidCheckpoint`] from `message`.
@@ -479,5 +497,115 @@ mod tests {
             other => panic!("expected OutdatedCheckpoint, got {other:?}"),
         }
         assert!(error.to_string().contains("schema/"));
+    }
+
+    #[test]
+    fn a_bare_relative_path_keeps_an_unreadable_layout_unknown() {
+        let bare = std::path::Path::new(CHECKPOINT_FILE);
+        assert_eq!(bare.parent(), Some(std::path::Path::new("")));
+
+        // An absent file stays the unconditional absent signal ...
+        assert!(no_marker_can_exist(
+            bare,
+            &std::io::Error::from(std::io::ErrorKind::NotFound)
+        ));
+
+        // ... while a failure of any other cause leaves the boundary unknown: the
+        // empty parent of a bare name names the current directory, which a marker
+        // can live below, so the read error keeps propagating.
+        assert!(!no_marker_can_exist(
+            bare,
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parent_that_cannot_be_inspected_keeps_the_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch("unreadable-parent");
+        if !permissions_are_enforced(&root) {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+
+        let restricted = root.join("restricted");
+        std::fs::create_dir(&restricted).expect("create the restricted directory");
+        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o000))
+            .expect("withdraw the directory permissions");
+
+        // Resolving the marker requires traversing `restricted`, so neither the
+        // read nor the metadata lookup of the marker's parent can succeed.
+        let loaded = Checkpoint::load(&restricted.join("tail").join(CHECKPOINT_FILE));
+
+        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o700))
+            .expect("restore the directory permissions");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let error = loaded.expect_err("an unreadable layout keeps the boundary unknown");
+        assert!(error.to_string().contains("failed to read"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_marker_under_a_readable_directory_is_reported() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch("unreadable-marker");
+        if !permissions_are_enforced(&root) {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).expect("create the locked directory");
+        std::fs::write(
+            locked.join(CHECKPOINT_FILE),
+            format!("[checkpoint]\npruned_up_to_version = \"3.2\"\nschema_hash = \"{HASH}\"\n"),
+        )
+        .expect("write the marker");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("withdraw the directory permissions");
+
+        // The parent is inspectable and *is* a directory, so the marker may well
+        // exist behind the refused read: the failure has to reach the caller.
+        let loaded = Checkpoint::load(&locked.join(CHECKPOINT_FILE));
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700))
+            .expect("restore the directory permissions");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let error = loaded.expect_err("a refused read is never an absent marker");
+        assert!(error.to_string().contains("failed to read"));
+    }
+
+    /// Creates an empty scratch directory unique to the calling test.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("rurqe-checkpoint-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the workspace");
+        dir
+    }
+
+    /// Whether the operating system enforces directory permissions for this process.
+    ///
+    /// A superuser bypasses them, so a directory cannot be made unreadable and the
+    /// regressions that depend on the refusal stand down.
+    #[cfg(unix)]
+    fn permissions_are_enforced(dir: &std::path::Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+
+        let probe = dir.join(".permission-probe");
+        if std::fs::create_dir(&probe).is_err() {
+            return false;
+        }
+
+        let enforced = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000))
+            .is_ok_and(|()| std::fs::File::open(&probe).is_err());
+        let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_dir(&probe);
+
+        enforced
     }
 }
