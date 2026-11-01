@@ -6,15 +6,17 @@
 //! three spellings of one override path — quoted, dotted, and table — are
 //! flattened here as well, which is what lets the collision between two of them
 //! surface at the key of the second one.
+//!
+//! Every table of the document is read strictly: a key the parser does not know
+//! is rejected where it is written, so a misspelled `[migrations].dir` or
+//! `[stage].checkpoint` cannot silently fall back to the conventional path.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
 
 use toml_edit::{ImDocument, Item, TableLike};
 
-use crate::introspect::DEFAULT_SCHEMA;
-
-use super::{CodegenConfig, ConfigError};
+use super::{CodegenConfig, ConfigError, DEFAULT_SCHEMA};
 
 /// The document-root key naming the database schema every catalog digest describes.
 const SCHEMA_KEY: &str = "schema";
@@ -25,14 +27,32 @@ const PRIMARY_SCHEMA_KEY: &str = "primary_schema";
 /// The document-root key naming the secondary schemas declared beside the primary one.
 const SCHEMAS_KEY: &str = "schemas";
 
+/// The document-root key naming the directory every lifecycle artifact lives in.
+const ROOT_KEY: &str = "root";
+
+/// The section declaring the migration tail of the project.
+const MIGRATIONS_SECTION: &str = "migrations";
+
+/// The section declaring the declarative stage of the project.
+const STAGE_SECTION: &str = "stage";
+
 /// The section holding the code generation settings.
 const CODEGEN_SECTION: &str = "codegen";
+
+/// The key naming a directory inside the section that declares it.
+const DIR_KEY: &str = "dir";
+
+/// The key naming the checkpoint marker inside the `stage` section.
+const CHECKPOINT_KEY: &str = "checkpoint";
 
 /// The key enabling domain types in the generated schema.
 const DOMAIN_TYPES_KEY: &str = "domain_types";
 
 /// The key declaring the per-column Rust type overrides.
 const TYPE_OVERRIDES_KEY: &str = "type_overrides";
+
+/// The key naming the generated schema module inside the `codegen` section.
+const OUTPUT_KEY: &str = "output";
 
 /// The number of segments a primary-schema override path carries.
 const PRIMARY_SCHEMA_PATH_SEGMENTS: usize = 2;
@@ -72,15 +92,20 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
                 let names = read_schemas(contents, span.clone(), item)?;
                 secondary = Some((names, span));
             }
+            ROOT_KEY => {
+                config.root = Some(read_required_string(contents, span, item, ROOT_KEY)?);
+            }
+            MIGRATIONS_SECTION => {
+                let table = section_table(contents, span.clone(), item, MIGRATIONS_SECTION)?;
+                config.read_migrations_section(contents, table, span)?;
+            }
+            STAGE_SECTION => {
+                let table = section_table(contents, span.clone(), item, STAGE_SECTION)?;
+                config.read_stage_section(contents, table, span)?;
+            }
             CODEGEN_SECTION => {
-                let table = item.as_table_like().ok_or_else(|| {
-                    syntax_error(
-                        contents,
-                        span.clone(),
-                        format!("`{CODEGEN_SECTION}` must be a table"),
-                    )
-                })?;
-                config.read_section(contents, table, span)?;
+                let table = section_table(contents, span.clone(), item, CODEGEN_SECTION)?;
+                config.read_codegen_section(contents, table, span)?;
             }
             other => {
                 return Err(syntax_error(
@@ -121,9 +146,9 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
 ///
 /// Declaring both keys is refused rather than ranked: the legacy `schema` key is
 /// kept as an alias of `primary_schema`, so a file carrying both would name two
-/// primary schemas without saying which one wins. The diagnostic sits on the alias
-/// — the declaration whose removal remedies the file — and names the position of
-/// `primary_schema`, so both keys are located at once.
+/// primary schemas without saying which one wins. The diagnostic sits on the
+/// alias — the declaration whose removal remedies the file — and names the
+/// position of `primary_schema`, so both keys are located at once.
 fn resolve_primary_schema(
     contents: &str,
     primary: Option<(String, Option<Range<usize>>)>,
@@ -151,7 +176,7 @@ fn resolve_primary_schema(
 
 impl CodegenConfig {
     /// Reads the keys of the `[codegen]` table.
-    fn read_section(
+    fn read_codegen_section(
         &mut self,
         contents: &str,
         table: &dyn TableLike,
@@ -181,12 +206,80 @@ impl CodegenConfig {
                     let section = format!("{CODEGEN_SECTION}.{TYPE_OVERRIDES_KEY}");
                     self.read_overrides(contents, overrides, &section, "", span)?;
                 }
-                other => {
-                    return Err(syntax_error(
+                OUTPUT_KEY => {
+                    self.codegen_output = Some(read_required_string(
                         contents,
                         span,
-                        format!("unknown key `{other}` in the `{CODEGEN_SECTION}` section"),
-                    ));
+                        item,
+                        &format!("{CODEGEN_SECTION}.{OUTPUT_KEY}"),
+                    )?);
+                }
+                other => {
+                    return Err(unknown_key(contents, span, other, CODEGEN_SECTION));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reads the keys of the `[migrations]` table.
+    fn read_migrations_section(
+        &mut self,
+        contents: &str,
+        table: &dyn TableLike,
+        section_span: Option<Range<usize>>,
+    ) -> Result<(), ConfigError> {
+        for (key, item) in table.iter() {
+            let span = key_span(table, key).or_else(|| section_span.clone());
+
+            match key {
+                DIR_KEY => {
+                    self.migrations_dir = Some(read_required_string(
+                        contents,
+                        span,
+                        item,
+                        &format!("{MIGRATIONS_SECTION}.{DIR_KEY}"),
+                    )?);
+                }
+                other => {
+                    return Err(unknown_key(contents, span, other, MIGRATIONS_SECTION));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reads the keys of the `[stage]` table.
+    fn read_stage_section(
+        &mut self,
+        contents: &str,
+        table: &dyn TableLike,
+        section_span: Option<Range<usize>>,
+    ) -> Result<(), ConfigError> {
+        for (key, item) in table.iter() {
+            let span = key_span(table, key).or_else(|| section_span.clone());
+
+            match key {
+                DIR_KEY => {
+                    self.stage_dir = Some(read_required_string(
+                        contents,
+                        span,
+                        item,
+                        &format!("{STAGE_SECTION}.{DIR_KEY}"),
+                    )?);
+                }
+                CHECKPOINT_KEY => {
+                    self.stage_checkpoint = Some(read_required_string(
+                        contents,
+                        span,
+                        item,
+                        &format!("{STAGE_SECTION}.{CHECKPOINT_KEY}"),
+                    )?);
+                }
+                other => {
+                    return Err(unknown_key(contents, span, other, STAGE_SECTION));
                 }
             }
         }
@@ -274,6 +367,29 @@ impl CodegenConfig {
 
         Ok(())
     }
+}
+
+/// Reads a key whose value is a non-empty string, trimmed of surrounding space.
+fn read_required_string(
+    contents: &str,
+    span: Option<Range<usize>>,
+    item: &Item,
+    key: &str,
+) -> Result<String, ConfigError> {
+    let value = item.as_str().ok_or_else(|| {
+        syntax_error(contents, span.clone(), format!("`{key}` must be a string"))
+    })?;
+    let value = value.trim();
+
+    if value.is_empty() {
+        return Err(syntax_error(
+            contents,
+            span,
+            format!("`{key}` requires a non-empty value"),
+        ));
+    }
+
+    Ok(value.to_owned())
 }
 
 /// Reads a document-root key naming one database schema.
@@ -399,6 +515,31 @@ fn require_override_path(
     }
 
     Ok(segments.join("."))
+}
+
+/// The table declared by `item`, refused unless it is a table.
+fn section_table<'a>(
+    contents: &str,
+    span: Option<Range<usize>>,
+    item: &'a Item,
+    name: &str,
+) -> Result<&'a dyn TableLike, ConfigError> {
+    item.as_table_like()
+        .ok_or_else(|| syntax_error(contents, span, format!("`{name}` must be a table")))
+}
+
+/// The rejection of an unknown key declared inside `section`.
+fn unknown_key(
+    contents: &str,
+    span: Option<Range<usize>>,
+    key: &str,
+    section: &str,
+) -> ConfigError {
+    syntax_error(
+        contents,
+        span,
+        format!("unknown key `{key}` in the `{section}` section"),
+    )
 }
 
 /// The span covering the declaration of `key` inside `table`.

@@ -24,8 +24,8 @@ fs4 = "0.9"
 postgres = "0.19"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0" }
+rurqe-project = { path = "../rurqe-project", version = "0.1.0" }
 syn = { version = "2.0", features = ["full"] }
-toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 url = "2"

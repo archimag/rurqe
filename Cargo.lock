@@ -1011,9 +1011,9 @@ dependencies = [
  "libc",
  "postgres",
  "rurqe-migrate",
+ "rurqe-project",
  "rusqlite",
  "syn 2.0.119",
- "toml_edit 0.22.27",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -1094,6 +1094,13 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "rurqe-project"
+version = "0.1.0"
+dependencies = [
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

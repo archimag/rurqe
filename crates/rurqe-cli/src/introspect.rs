@@ -39,8 +39,10 @@ pub use types::{
 /// A PostgreSQL database keeps its tables in named schemas, and `public` is the
 /// one an ordinary single-schema deployment uses. SQLite has no schema layer at
 /// all, so the name is ignored there and the single catalog of the opened file is
-/// read.
-pub const DEFAULT_SCHEMA: &str = "public";
+/// read. The value itself is declared by `rurqe_project` together with the rest
+/// of the project configuration surface, so the catalog statements of the
+/// toolchain and the model of `rurqe.toml` share one default.
+pub use rurqe_project::DEFAULT_SCHEMA;
 
 /// Introspects the schema catalog of a live database identified by its connection URL or path.
 ///

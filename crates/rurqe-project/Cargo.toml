@@ -1,0 +1,19 @@
+[package]
+name = "rurqe-project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Single source of truth for `rurqe.toml`: the project configuration model, its strict parser, artifact path resolution, and configuration discovery"
+
+[dependencies]
+# The span-preserving TOML representation the parser reads positions from. It is
+# the only dependency of the crate: the model, the resolution of the artifact
+# paths, and the discovery of the file use nothing else, so the toolchain and the
+# procedural macro crate share one configuration surface without pulling a driver
+# into either graph.
+toml_edit = "0.22"
+
+[lints]
+workspace = true

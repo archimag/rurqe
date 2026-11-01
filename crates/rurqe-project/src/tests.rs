@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use super::*;
 
 #[test]
@@ -437,21 +439,30 @@ fn malformed_entries_are_reported_with_their_line() {
     );
 }
 
+/// A private temporary directory a test builds its project tree in.
+fn temporary_project(label: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "rurqe-project-{label}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("the temporary project directory is created");
+    path
+}
+
 #[test]
 fn configuration_files_are_read_from_disk() {
-    let path = std::env::temp_dir().join(format!(
-        "rurqe-config-{}-{}.toml",
-        std::process::id(),
-        std::line!()
-    ));
+    let directory = temporary_project("load");
+    let path = directory.join(DEFAULT_CONFIG_PATH);
     std::fs::write(
         &path,
         "primary_schema = \"app\"\n[codegen.type_overrides]\n\"users.id\" = \"uuid::Uuid\"\n",
     )
-    .expect("write configuration");
+    .expect("the configuration is written");
 
     let config = CodegenConfig::load(&path).expect("the file is valid");
-    let _ = std::fs::remove_file(&path);
+
+    let _ = std::fs::remove_dir_all(&directory);
 
     assert_eq!(config.primary_schema(), Some("app"));
     assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
@@ -459,19 +470,32 @@ fn configuration_files_are_read_from_disk() {
 
 #[test]
 fn missing_configuration_yields_the_default() {
-    let path = std::env::temp_dir().join(format!(
-        "rurqe-config-missing-{}-{}.toml",
-        std::process::id(),
-        std::line!()
-    ));
-    let _ = std::fs::remove_file(&path);
+    let directory = temporary_project("missing");
+    let path = directory.join(DEFAULT_CONFIG_PATH);
 
     let config = CodegenConfig::load(&path).expect("a missing file is not an error");
+
+    let _ = std::fs::remove_dir_all(&directory);
 
     assert_eq!(config, CodegenConfig::default());
     assert_eq!(config.primary_schema(), None);
     assert!(config.schemas().is_empty());
     assert!(config.type_override("users", "id").is_none());
+}
+
+#[test]
+fn an_unreadable_configuration_is_an_error() {
+    let directory = temporary_project("unreadable");
+
+    let err = CodegenConfig::load(&directory).expect_err("a directory is not a configuration file");
+
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert!(matches!(&err, ConfigError::Io { .. }), "{err}");
+    assert!(
+        err.to_string().contains("failed to read configuration"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -609,4 +633,244 @@ fn declarations_inside_a_string_literal_do_not_displace_the_diagnostic() {
         "{err}"
     );
     assert!(err.to_string().contains("cannot be empty"));
+}
+
+#[test]
+fn the_artifact_root_is_read_and_trimmed() {
+    let config = CodegenConfig::parse("").expect("an empty file is valid");
+    assert_eq!(config.root(), "rurqe");
+
+    let config = CodegenConfig::parse("root = \"  artifacts  \"\n").expect("the key parses");
+    assert_eq!(config.root(), "artifacts");
+}
+
+#[test]
+fn a_blank_or_non_string_root_is_rejected() {
+    let blank = CodegenConfig::parse("root = \"   \"\n").expect_err("a blank root selects nothing");
+    assert!(
+        matches!(&blank, ConfigError::Syntax { line: 1, .. }),
+        "{blank}"
+    );
+    assert!(blank.to_string().contains("root"), "{blank}");
+
+    let numeric = CodegenConfig::parse("root = 42\n").expect_err("a numeric root is rejected");
+    assert!(
+        matches!(&numeric, ConfigError::Syntax { line: 1, .. }),
+        "{numeric}"
+    );
+    assert!(numeric.to_string().contains("root"), "{numeric}");
+}
+
+#[test]
+fn the_migration_directory_is_read_and_trimmed() {
+    let config = CodegenConfig::parse("[migrations]\ndir = \"  db/migrations  \"\n")
+        .expect("the migrations section parses");
+
+    assert_eq!(
+        config.migrations_dir(Path::new("project")),
+        Path::new("project").join("db").join("migrations")
+    );
+}
+
+#[test]
+fn the_migrations_section_is_validated_strictly() {
+    for (contents, expected) in [
+        ("[migrations]\ndir = \"   \"\n", "migrations.dir"),
+        ("[migrations]\npath = \"db\"\n", "`path`"),
+        ("migrations = 42\n", "table"),
+    ] {
+        let err = CodegenConfig::parse(contents).expect_err("the migrations section is malformed");
+        assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn the_stage_directory_and_checkpoint_are_read() {
+    let config = CodegenConfig::parse(
+        "[stage]\n\
+         dir = \"  ddl  \"\n\
+         checkpoint = \"  ddl/checkpoint.toml  \"\n",
+    )
+    .expect("the stage section parses");
+
+    let directory = Path::new("project");
+    assert_eq!(config.stage_dir(directory), directory.join("ddl"));
+    assert_eq!(
+        config.checkpoint_path(directory),
+        directory.join("ddl").join("checkpoint.toml")
+    );
+}
+
+#[test]
+fn the_stage_section_is_validated_strictly() {
+    for (contents, expected) in [
+        ("[stage]\ndir = \"  \"\n", "stage.dir"),
+        ("[stage]\ncheckpoint = \"\"\n", "stage.checkpoint"),
+        ("[stage]\nbase = \"ddl\"\n", "`base`"),
+        ("stage = 42\n", "table"),
+    ] {
+        let err = CodegenConfig::parse(contents).expect_err("the stage section is malformed");
+        assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
+#[test]
+fn the_codegen_output_is_read_and_validated() {
+    let config = CodegenConfig::parse("[codegen]\noutput = \"  src/db/schema.rs  \"\n")
+        .expect("the output key parses");
+    let directory = Path::new("project");
+    assert_eq!(
+        config.codegen_output(directory),
+        Some(directory.join("src").join("db").join("schema.rs"))
+    );
+
+    let blank = CodegenConfig::parse("[codegen]\noutput = \"\"\n")
+        .expect_err("a blank output names nothing");
+    assert!(
+        matches!(&blank, ConfigError::Syntax { line: 2, .. }),
+        "{blank}"
+    );
+    assert!(blank.to_string().contains("codegen.output"), "{blank}");
+}
+
+#[test]
+fn the_artifact_layout_defaults_beneath_the_root() {
+    let config = CodegenConfig::parse("").expect("an empty file is valid");
+    let directory = Path::new("project");
+    let root = directory.join("rurqe");
+
+    assert_eq!(config.migrations_dir(directory), root.join("migrations"));
+    assert_eq!(config.stage_dir(directory), root.join("schema"));
+    assert_eq!(
+        config.checkpoint_path(directory),
+        root.join("migrations").join("checkpoint.toml")
+    );
+    assert_eq!(config.schema_lock_path(directory), root.join("schema.lock"));
+    assert!(config.codegen_output(directory).is_none());
+}
+
+#[test]
+fn the_root_key_moves_every_default_artifact() {
+    let config = CodegenConfig::parse("root = \"artifacts\"\n").expect("the key parses");
+    let directory = Path::new("project");
+    let root = directory.join("artifacts");
+
+    assert_eq!(config.migrations_dir(directory), root.join("migrations"));
+    assert_eq!(config.stage_dir(directory), root.join("schema"));
+    assert_eq!(
+        config.checkpoint_path(directory),
+        root.join("migrations").join("checkpoint.toml")
+    );
+    assert_eq!(config.schema_lock_path(directory), root.join("schema.lock"));
+}
+
+#[test]
+fn declared_artifact_paths_resolve_against_the_configuration_directory() {
+    let config = CodegenConfig::parse(
+        "root = \"artifacts\"\n\
+         [migrations]\n\
+         dir = \"db/migrations\"\n\
+         [stage]\n\
+         dir = \"db/schema\"\n\
+         checkpoint = \"db/migrations/marker.toml\"\n",
+    )
+    .expect("the declared paths parse");
+    let directory = Path::new("project");
+
+    assert_eq!(
+        config.migrations_dir(directory),
+        directory.join("db").join("migrations")
+    );
+    assert_eq!(config.stage_dir(directory), directory.join("db").join("schema"));
+    assert_eq!(
+        config.checkpoint_path(directory),
+        directory.join("db").join("migrations").join("marker.toml")
+    );
+    assert_eq!(
+        config.schema_lock_path(directory),
+        directory.join("artifacts").join("schema.lock")
+    );
+}
+
+#[test]
+fn the_checkpoint_default_follows_the_resolved_migration_directory() {
+    let config = CodegenConfig::parse("[migrations]\ndir = \"db/migrations\"\n")
+        .expect("the migration directory parses");
+    let directory = Path::new("project");
+
+    assert_eq!(
+        config.checkpoint_path(directory),
+        directory.join("db").join("migrations").join("checkpoint.toml")
+    );
+}
+
+#[test]
+fn dotted_forms_of_the_artifact_keys_are_read() {
+    let config = CodegenConfig::parse(
+        "root = \"artifacts\"\n\
+         migrations.dir = \"db/migrations\"\n\
+         stage.dir = \"db/schema\"\n\
+         stage.checkpoint = \"db/migrations/marker.toml\"\n",
+    )
+    .expect("the dotted tables parse");
+    let directory = Path::new("project");
+
+    assert_eq!(
+        config.migrations_dir(directory),
+        directory.join("db").join("migrations")
+    );
+    assert_eq!(config.stage_dir(directory), directory.join("db").join("schema"));
+    assert_eq!(
+        config.checkpoint_path(directory),
+        directory.join("db").join("migrations").join("marker.toml")
+    );
+}
+
+#[test]
+fn the_configuration_file_of_a_directory_is_named_rurqe_toml() {
+    assert_eq!(
+        config_path_in(Path::new("project")),
+        Path::new("project").join(DEFAULT_CONFIG_PATH)
+    );
+}
+
+#[test]
+fn discovery_answers_with_the_nearest_configuration_file() {
+    let root = temporary_project("nearest");
+    let nested = root.join("crates").join("app");
+    std::fs::create_dir_all(&nested).expect("the nested directories are created");
+    std::fs::write(root.join(DEFAULT_CONFIG_PATH), "root = \"outer\"\n")
+        .expect("the outer configuration is written");
+    let nearest = nested.join(DEFAULT_CONFIG_PATH);
+    std::fs::write(&nearest, "root = \"inner\"\n")
+        .expect("the inner configuration is written");
+
+    let discovered = discover_config(&nested);
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(discovered, Some(nearest));
+}
+
+#[test]
+fn a_directory_tree_without_a_configuration_file_yields_none() {
+    let root = temporary_project("absent");
+    let nested = root.join("crates").join("app");
+    std::fs::create_dir_all(&nested).expect("the nested directories are created");
+
+    // Directories above the temporary root belong to the host, so the assertion
+    // is made only when none of them declares a configuration of its own.
+    let outside = root
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH).is_file());
+    let discovered = discover_config(&nested);
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    if outside.is_none() {
+        assert_eq!(discovered, None);
+    }
 }
