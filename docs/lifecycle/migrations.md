@@ -16,11 +16,11 @@ which is the shape a view, a function, or a set of reference rows takes.
 
 ## The migrations directory
 
-Scripts are read from `rurqe/migrations/` by default. `--migrations-dir <dir>`
-points one invocation at another directory, and `[migrations].dir` of `rurqe.toml`
-names one for the project; `--config <path>` selects the configuration file the
-key is read from, and the declared directory resolves against the directory
-holding that file.
+Scripts are read from `rurqe/migrations/` by default. The `[migrations].dir` key of
+`rurqe.toml` names another directory for the project, and `--config <path>` selects
+the configuration file the key is read from; the declared directory resolves against
+the directory holding that file. The command line carries no directory option, so a
+run reads the directory the project declares.
 
 * Only files ending in `.sql` are scripts. Every other file and every
   subdirectory of the directory is ignored.
@@ -420,22 +420,16 @@ A run that finds nothing pending reports `Applied 0 migration(s) in 0 ms`.
 
 | Option | Effect |
 |---|---|
-| `--migrations-dir <dir>` | The directory the scripts are read from. Defaults to `rurqe/migrations`. |
 | `--database-url <url>` | The database to advance. Falls back to `DATABASE_URL`. |
 | `--schema <name>` | The primary schema whose catalog digest the checkpoint guard compares; the secondary schemas come from `schemas` in `rurqe.toml`. |
-| `--checkpoint-path <path>` | The checkpoint marker that arms the outdated-target guard. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The checkpoint marker belongs to the stage-based lifecycle: a project that pruned
-migrations below a boundary records that boundary in a marker file, and the flag
-is accepted by `up` alone, where it arms the guard that refuses a target older
-than the boundary instead of applying a partial tail. `status` and `repair` read
-the history table only, so they reject the flag instead of accepting and ignoring
-it:
-
-```text
-unknown option `--checkpoint-path` for `migrate status` (`--checkpoint-path` guards `migrate up` against a target older than the pruned boundary)
-```
+migrations below a boundary records that boundary in a marker file, and `migrate up`
+resolves it from the project configuration, where it arms the guard that refuses a
+target older than the boundary instead of applying a partial tail. `status` and
+`repair` read the history table only, so no boundary takes part in them, and no
+invocation can arm one command with a marker the others never read.
 
 ## Inspecting the status
 

@@ -94,9 +94,8 @@ inspected keeps the boundary unknown and stays an error.
 `checkpoint.toml` is the default name, and it lives inside the resolved migration
 directory: `rurqe/migrations/checkpoint.toml` under the conventional layout, and
 `<root>/migrations/checkpoint.toml` when the root-level `root` key of `rurqe.toml`
-relocates the artifact directory. `--checkpoint-path <path>` points a command of the
-lifecycle at a marker kept somewhere else, and `[stage].checkpoint` of `rurqe.toml`
-names it for the project; every declared path resolves against the directory holding
+relocates the artifact directory. `[stage].checkpoint` of `rurqe.toml` names a marker
+kept somewhere else, and every declared path resolves against the directory holding
 the configuration file, so the marker of a relocated layout is reached from any
 working directory the command was started in.
 
@@ -107,9 +106,9 @@ boundary was cut: the same file names, the same DDL, and the same comments, whic
 is where a replay re-reads the transactionality of each script from.
 
 The directory is a sibling of the marker and is named after its stem, so
-`checkpoint.toml` describes `checkpoint-stage/`, while `--checkpoint-path prod.toml`
-describes `prod-stage/`. Two markers in one directory therefore never share the
-snapshot a commit installs.
+`checkpoint.toml` describes `checkpoint-stage/`, while a `prod.toml` the
+`[stage].checkpoint` key names describes `prod-stage/`. Two markers in one
+directory therefore never share the snapshot a commit installs.
 
 A checkpoint is self-contained. The marker says how far the history was folded
 and what the schema hashed to; the snapshot holds the schema itself. Neither half
@@ -183,9 +182,6 @@ cargo rurqe stage commit --version 5.0
 |---|---|
 | `--version <version>` | The boundary version the commit anchors. Required. |
 | `--database-url <url>` | The database whose catalog is sealed. Falls back to `DATABASE_URL`. |
-| `--stage-dir <dir>` | The declarative stage. Defaults to `rurqe/schema`. |
-| `--lock-path <path>` | The file receiving the catalog snapshot. Defaults to `rurqe/schema.lock`. |
-| `--checkpoint-path <path>` | The file receiving the boundary marker. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--schema <name>` | The primary schema the snapshot and its digest describe. The secondary schemas come from `schemas` in `rurqe.toml`. |
 | `--config <path>` | The configuration file the command reads. Without it the conventional `rurqe.toml` of the working directory is read when it exists, and a project without one keeps the conventional paths above. |
 
@@ -241,11 +237,11 @@ cannot be advanced: the scripts that would bring it forward are exactly the ones
 the prune removed. The marker turns that into a refusal instead of a silent
 partial upgrade.
 
-`migrate up` reads `checkpoint.toml` by default and a marker kept elsewhere when
-`--checkpoint-path <path>` names it:
+`migrate up` reads `checkpoint.toml` from the resolved migration directory, or the
+marker `[stage].checkpoint` of `rurqe.toml` names, and consults nothing else:
 
 ```bash
-cargo rurqe migrate up --checkpoint-path prod.toml
+cargo rurqe migrate up
 ```
 
 A marker that is present arms two checks, both of them before a single script
@@ -272,13 +268,8 @@ A history that never recorded a version at all — one holding only repeatable
 scripts — sits below every boundary by definition and is refused by the first
 check, which reports no recorded version instead of a number.
 
-The marker flag belongs to `up` alone. `status` and `repair` read the history
-table without a boundary, so they reject it instead of accepting it and ignoring
-it:
-
-```text
-unknown option `--checkpoint-path` for `migrate status` (`--checkpoint-path` guards `migrate up` against a target older than the pruned boundary)
-```
+The marker takes part in `up` alone. `status` and `repair` read the history table
+without a boundary, so no part of the checkpoint lifecycle is resolved for them.
 
 ## Pruning the folded history
 
@@ -317,8 +308,6 @@ cargo rurqe prune --before 5.0
 | Option | Effect |
 |---|---|
 | `--before <version>` | The version the history is pruned below. Required. |
-| `--migrations-dir <dir>` | The directory the scripts are read from. Defaults to `rurqe/migrations`. |
-| `--checkpoint-path <path>` | The boundary marker. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--dry-run` | List what would be removed without removing it. |
 | `--config <path>` | The configuration file the command reads. Without it the conventional `rurqe.toml` of the working directory is read when it exists. |
 

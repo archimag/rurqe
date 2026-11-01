@@ -79,17 +79,15 @@ cargo rurqe codegen --database-url postgres://app@localhost:5432/app
 | Option | Effect |
 |---|---|
 | `--database-url <url>` | The database to introspect. Falls back to the `DATABASE_URL` environment variable. |
-| `--output <path>`, `-o <path>` | The file receiving the generated module. Wins over `codegen.output`; defaults to `src/schema.rs`. |
-| `--lock-path <path>` | The file receiving the snapshot. Defaults to `rurqe/schema.lock`. |
 | `--domain-types` | Maps the engine-neutral types onto their domain types. |
 | `--schema <name>` | The primary schema to describe. Wins over the `primary_schema` key of the configuration, and the secondary schemas come from `schemas`. |
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
-The generated module is the middle tier of its own cascade: `--output` wins over
-`[codegen].output`, which wins over the built-in `src/schema.rs`. The snapshot
-carries no key of the document, so its cascade is the flag followed by the
-conventional `rurqe/schema.lock` beneath the artifact directory. The directory
-receiving an artifact is created if it does not exist.
+The generated module is resolved through `[codegen].output`, and the built-in
+`src/schema.rs` closes the cascade when the key names no file. The snapshot carries
+no key of the document, so it lives at the conventional `rurqe/schema.lock` beneath
+the artifact directory. The directory receiving an artifact is created if it does not
+exist.
 
 A project that exports `DATABASE_URL` and declares its schema, its module path,
 and its overrides in `rurqe.toml` regenerates both artifacts with the bare
@@ -344,7 +342,7 @@ The rules the file obeys:
 * `schemas` names the secondary schemas declared beside the primary one. An entry is trimmed, a blank one is refused, a name may appear once, and no entry may repeat the primary schema — the declared one or the `public` default — because the selection would then describe the same catalog twice.
 * `schema` is the legacy spelling of `primary_schema` and names the same setting. Declaring both is refused, with the position of each key in the diagnostic, so one file never selects two primary schemas.
 * `codegen.domain_types` is a boolean. The `--domain-types` flag enables the same mapping, so a project states the choice once in the file and a one-off run enables it on the command line.
-* `codegen.output` names the generated module `codegen` writes and `verify` reads. `--output` of `codegen` and `--schema-path` of `verify` win over it, and `src/schema.rs` closes the cascade when neither names a file.
+* `codegen.output` names the generated module `codegen` writes and `verify` reads, and `src/schema.rs` closes the cascade when the key names no file.
 * The value is emitted verbatim as the column type, so it must be a syntactically valid Rust type. An override survives every later regeneration, because the generator never edits the configuration.
 * The nullability of the column still applies: a nullable column wraps the override in `Option<...>` unless the value already spells an optional type. The value is parsed as a Rust type to decide, so `Option<T>`, `std::option::Option<T>`, and `core::option::Option<T>` are all recognised.
 * A value that is not a string, a path that is neither `table.column` nor `schema.table.column` (an empty segment included), an empty type, and a repeated declaration of the same path are refused. The quoted and the dotted spelling of one path collide even though TOML treats them as distinct keys.

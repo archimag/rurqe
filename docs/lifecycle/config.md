@@ -143,27 +143,33 @@ invalid configuration at line 1, column 1: `stage.checkpoint` requires a non-emp
 
 ## The path cascade
 
-Every path of a command is resolved through the same three tiers: the explicit flag of the invocation, the key of the configuration file, and the conventional path beneath the artifact directory. A path the document carries no key for keeps two tiers — the flag, then the convention.
+Every path of a command is resolved through the same two tiers: the key of the
+configuration file, and the conventional path beneath the artifact directory. The
+command line carries no path option of its own, so a project states where its
+artifacts live once, in the file, and an invocation that has to read another layout
+names another configuration file with `--config`.
 
-| Path | Flag | Key | Conventional |
-|---|---|---|---|
-| Migration tail | `--migrations-dir` | `migrations.dir` | `rurqe/migrations` |
-| Declarative stage | `--stage-dir` | `stage.dir` | `rurqe/schema` |
-| Boundary marker | `--checkpoint-path` | `stage.checkpoint` | `rurqe/migrations/checkpoint.toml` |
-| Catalog snapshot | `--lock-path` | — | `rurqe/schema.lock` |
-| Generated module | `--output`, `-o` | `codegen.output` | `src/schema.rs` |
-| Module `verify` reads | `--schema-path` | `codegen.output` | `src/schema.rs` when it exists |
+| Path | Key | Conventional |
+|---|---|---|
+| Migration tail | `migrations.dir` | `rurqe/migrations` |
+| Declarative stage | `stage.dir` | `rurqe/schema` |
+| Boundary marker | `stage.checkpoint` | `rurqe/migrations/checkpoint.toml` |
+| Catalog snapshot | — | `rurqe/schema.lock` |
+| Generated module | `codegen.output` | `src/schema.rs` |
 
-`codegen` writes and `verify` reads the same module, so the two share a cascade: `--output` of `codegen` and `--schema-path` of `verify` both win over `codegen.output`, and the key wins over the built-in default of the generator. The last tier differs on purpose — `codegen` falls back to `src/schema.rs` and writes it, while `verify` treats the conventional module as optional and falls back to the snapshot alone when neither the flag nor the key names a file.
+`codegen` writes and `verify` reads the same module, so the two share one key:
+`codegen.output` names it for both commands. The last tier differs on purpose —
+`codegen` falls back to `src/schema.rs` and writes it, while `verify` treats the
+conventional module as optional and falls back to the snapshot alone when the key
+names no file.
 
-`migrate` is the one family that takes no path option at all, and the omission is
-deliberate: the guard refusing a target older than the pruned boundary has to read
-the same marker every other command reads, so `migrate up`, `migrate status`, and
-`migrate repair` resolve the migration tail and the boundary marker from the
-project configuration alone. A path option of the family — `--migrations-dir` or
-`--checkpoint-path` — is reported as an unknown option of the action it was given
-to, instead of being accepted and then ignored. The `stage` and `prune` commands
-keep those flags, and there each of them wins over the declared key.
+One consequence is worth stating on its own: the marker a guard reads is the marker
+every other command reads. The guard that refuses a target older than the pruned
+boundary resolves the migration tail and the boundary marker from the project
+configuration alone, so a run can never consult a marker that no other command of
+the project would ever read, and no invocation can arm one command with a boundary
+the rest of the lifecycle never sees.
+
 
 ## Schema selection
 
@@ -317,7 +323,9 @@ output = "src/db/schema.rs"
 
 Names the module code generation writes and verification reads, resolved against the directory of the configuration file. The key is not an artifact of the toolchain: it addresses generated application sources, so the artifact directory never contributes to it.
 
-`--output` of `codegen` and `--schema-path` of `verify` win over the key, and the built-in `src/schema.rs` closes the cascade when neither names a file. `codegen` writes that default; `verify` treats it as optional and falls back to the catalog snapshot alone when the conventional module does not exist.
+`src/schema.rs` closes the cascade when the key names no file: `codegen` writes
+that default, and `verify` treats the conventional module as optional and falls back
+to the catalog snapshot alone when it does not exist.
 
 ## The connection target
 

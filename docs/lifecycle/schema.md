@@ -27,13 +27,13 @@ CREATE INDEX users_email_idx ON users (email);
 project/
 ├── rurqe.toml                 # schema selection, artifact layout, codegen settings
 └── rurqe/                     # artifact directory (default `root`)
-    ├── schema/                # declarative stage (default `--stage-dir`)
+    ├── schema/                # declarative stage (`[stage].dir`)
     │   ├── billing.sql
     │   └── users.sql
-    ├── migrations/            # active tail (default `--migrations-dir`)
+    ├── migrations/            # active tail (`[migrations].dir`)
     │   ├── V6__add_credits.sql
     │   ├── R__active_users.sql
-    │   ├── checkpoint.toml    # boundary marker (default `--checkpoint-path`)
+    │   ├── checkpoint.toml    # boundary marker (`[stage].checkpoint`)
     │   └── checkpoint-stage/  # boundary snapshot, named after the marker
     └── schema.lock            # catalog snapshot of the committed stage
 ```
@@ -52,10 +52,9 @@ CREATE INDEX CONCURRENTLY users_email_idx ON users (email);
 
 The directive accepts the keys `executeInTransaction`, `execute_in_transaction`, and `transactional`, and the value `false`. Only alphanumeric characters are kept and lowercased before the comparison, so spacing, underscores, the case of the key, and comment decoration change nothing; a line carrying leftover words after the key and the value stays an ordinary remark. Directives are read from comments alone: text inside a string literal, a quoted identifier, a dollar-quoted body, or a nested block comment is data.
 
-- `rurqe/schema` is the default. `--stage-dir <dir>` points one invocation at a
-  stage kept somewhere else, `[stage].dir` of `rurqe.toml` names one for the
-  project, and every command of the lifecycle resolves the directory through the
-  same cascade.
+- `rurqe/schema` is the default, and `[stage].dir` of `rurqe.toml` names another
+  directory for the project. Every command of the lifecycle resolves the directory
+  through the same two-tier cascade, so a run reads the stage the project declares.
 
 ### Application order
 
@@ -123,7 +122,6 @@ cargo rurqe stage init --version 5.0
 
 | Option | Effect |
 |---|---|
-| `--stage-dir <dir>` | The directory holding the declarative DDL. Defaults to `rurqe/schema`. |
 | `--description <desc>` | The description recorded in the history row. Defaults to `stage`. |
 | `--database-url <url>` | The database to initialise. Falls back to `DATABASE_URL`. |
 | `--schema <name>` | The primary schema the recorded catalog digest describes. The secondary schemas come from `schemas` in `rurqe.toml`. |
@@ -186,16 +184,15 @@ cargo rurqe stage verify --scratch-url :memory:
 |---|---|
 | `--scratch-url <url>` | The target a verification builds both sides in. |
 | `--database-url <url>` | The fallback target when `--scratch-url` is not given. |
-| `--stage-dir <dir>` | The declarative stage. Defaults to `rurqe/schema`. |
-| `--base-stage-dir <dir>` | An explicit boundary snapshot, in place of the one recorded beside the marker. |
-| `--migrations-dir <dir>` | The tail. Defaults to `rurqe/migrations`. |
-| `--checkpoint-path <path>` | The boundary marker. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--schema <name>` | The primary schema compared. The secondary schemas come from `schemas` in `rurqe.toml`. |
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
 The scratch target is always named explicitly, either with `--scratch-url` or with `--database-url` as its fallback; `DATABASE_URL` is deliberately never consulted, because the verification creates and drops databases as the connected role and an implicit target routinely names the server that variable points at.
 
-The verification first repairs an interrupted commit inside the exclusive section of the marker and reads the marker, the tail, and the boundary snapshot there. An explicit `--base-stage-dir` wins; without it, the snapshot the boundary commit recorded next to the marker is loaded.
+The verification first repairs an interrupted commit inside the exclusive section of
+the marker and reads the marker, the tail, and the boundary snapshot there. The
+snapshot the boundary commit recorded next to the marker is loaded, so the tail is
+always replayed over the boundary it actually advances.
 
 The two sides are then built:
 

@@ -77,7 +77,7 @@ environment that holds data.
 export DATABASE_URL=postgres://app@localhost:5432/app_ci
 
 cargo rurqe migrate up
-cargo rurqe verify --schema-path src/schema.rs
+cargo rurqe verify
 
 cargo rurqe stage verify --scratch-url postgres://app@localhost:5432/app_ci
 ```
@@ -93,9 +93,8 @@ A project that keeps its relations outside `public` declares its primary schema
 with `primary_schema` in `rurqe.toml` (or names it with `--schema`), declares the
 remaining schemas in `schemas`, and the same selection reaches every digest the
 commands compare:
-
 ```bash
-cargo rurqe verify --schema-path src/schema.rs --schema app
+cargo rurqe verify --schema app
 cargo rurqe stage verify --scratch-url :memory: --schema app
 ```
 
@@ -105,14 +104,12 @@ A malformed `rurqe.toml` aborts either command instead of being partially applie
 ## The snapshot gate
 
 ```bash
-cargo rurqe verify --schema-path src/schema.rs --lock-path schema.lock
+cargo rurqe verify
 ```
 
 | Option | Effect |
 |---|---|
 | `--database-url <url>` | The database to read. Falls back to the `DATABASE_URL` environment variable. |
-| `--schema-path <path>` | The generated module carrying `SCHEMA_HASH`. Wins over `codegen.output`; the conventional `src/schema.rs` applies when neither names a file. |
-| `--lock-path <path>` | The snapshot to compare against. Defaults to `rurqe/schema.lock`. |
 | `--schema <name>` | The primary schema the catalog digest describes. Wins over the `primary_schema` key of `rurqe.toml`, and the secondary schemas come from `schemas`. |
 | `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
 
@@ -129,23 +126,20 @@ stop is the default outcome and no separate check is needed around the command.
 `cargo rurqe verify` is the snapshot gate; the golden gate below is `cargo rurqe
 stage verify`.
 
-### The generated module is optional, the flag is not
+### The generated module is optional, the declared module is not
 
-The module the gate reads is decided by the same cascade `codegen` writes with,
-and the declaration decides whether the digest embedded in the code is part of
-the gate:
+The module the gate reads is decided by the same cascade `codegen` writes with, and
+the declaration decides whether the digest embedded in the code is part of the gate:
 
-- The flag names a file, and that file must be readable. A missing or misspelled
-  path fails the run with `failed to read schema code`; it can never pass
-  silently because the code was absent. A module named by `codegen.output` of the
-  configuration file is required in the same way.
-- Without the flag, `codegen.output` names the module.
-- Without either, the conventional `src/schema.rs` is used when it exists.
-- Without either and without that file, the run falls back to the snapshot alone
-  and reports `schema code not found; verifying against the lock snapshot only
-  (pass `--schema-path` to require the generated code)` as a warning. The
-  verification still runs, but the module is no longer tied to the catalog, so a
-  pipeline that ships generated code names the path explicitly.
+- A module named by `codegen.output` must be readable. A misspelled key fails the run
+  with `failed to read schema code`; it can never pass silently because the code was
+  absent.
+- Without the key, the conventional `src/schema.rs` is used when it exists.
+- Without either and without that file, the run falls back to the snapshot alone and
+  reports `schema code not found; verifying against the lock snapshot only` as a
+  warning. The verification still runs, but the module is no longer tied to the
+  catalog, so a pipeline that ships generated code declares the module in its
+  configuration.
 
 ### Reading a drift diagnostic
 
@@ -240,15 +234,11 @@ State(schema/) == State(Checkpoint + migrations/)
 ```
 
 ```bash
-cargo rurqe stage verify --checkpoint-path checkpoint.toml --scratch-url :memory:
+cargo rurqe stage verify --scratch-url :memory:
 ```
 
 | Option | Effect |
 |---|---|
-| `--stage-dir <dir>` | The declarative stage to replay. Defaults to `rurqe/schema`. |
-| `--base-stage-dir <dir>` | Overrides the boundary snapshot the marker records. |
-| `--migrations-dir <dir>` | The active migration tail to replay. Defaults to `rurqe/migrations`. |
-| `--checkpoint-path <path>` | The boundary marker. Defaults to `rurqe/migrations/checkpoint.toml`. |
 | `--scratch-url <url>` | The disposable target both sides are built in. `--database-url` is the fallback. |
 | `--database-url <url>` | The fallback for `--scratch-url`. |
 | `--schema <name>` | The primary schema both sides are materialised into and introspected over. The secondary schemas come from `schemas` in `rurqe.toml`. |
@@ -293,17 +283,16 @@ A committed checkpoint anchors a boundary version and a digest. The boundary is
 reproduced from the snapshot `stage commit` records next to the marker, so the
 filtered tail is replayed over the schema it actually advances:
 
-- an explicit `--base-stage-dir` wins over the recorded snapshot;
-- without it, the snapshot the commit wrote next to the marker is loaded;
-- the boundary digest is verified against `schema_hash` before a single tail
-  script runs, and a snapshot that drifted from its marker is rejected with
-  `base stage catalog hash mismatch: expected <checkpoint hash>, got <boundary hash>`;
-- a checkpoint whose boundary describes a non-empty schema requires a snapshot.
-  Without one the run is refused with `checkpoint pruned up to version 5.0
-  requires a base stage to reproduce the boundary, but none was supplied; re-run
-  `stage commit` to snapshot the boundary next to `checkpoint.toml`, or pass
-  `--base-stage-dir``, because replaying the tail over an empty database would
-  report a consistent project as diverged.
+- the snapshot the commit wrote next to the marker is loaded, so the filtered tail is
+  replayed over the schema it actually advances;
+- the boundary digest is verified against `schema_hash` before a single tail script
+  runs, and a snapshot that drifted from its marker is rejected with `base stage
+  catalog hash mismatch: expected <checkpoint hash>, got <boundary hash>`;
+- a checkpoint whose boundary describes a non-empty schema requires that snapshot.
+  Without one the run is refused with `checkpoint pruned up to version 5.0 requires a
+  base stage to reproduce the boundary, but none was supplied; re-run `stage commit`
+  to snapshot the boundary next to `checkpoint.toml``, because replaying the tail over
+  an empty database would report a consistent project as diverged.
 
 The artifacts are read inside the exclusive section the checkpoint marker guards,
 so a verification that overlaps a commit waits for it and reads the committed
