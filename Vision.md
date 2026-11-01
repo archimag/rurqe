@@ -12,13 +12,13 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 ┌─────────────────────────────────────────────────────────────────────────────────────────┐
 │                                 THE FOUNDATIONAL TETRAD                                 │
 ├───────────────────────┬────────────────────────┬───────────────────────┬────────────────┤
-│   Kysely Ergonomics   │  jOOQ Expressiveness   │   Flyway Lifecycle    │Rust Type Safety│
-│         (DX)          │   & Relational Depth   │       Integrity       │  & Zero-Cost   │
+│   Kysely Ergonomics   │  jOOQ Expressiveness   │    Atlas Evolution    │Rust Type Safety│
+│         (DX)          │   & Relational Depth   │  & Declarative SSOT   │  & Zero-Cost   │
 ├───────────────────────┼────────────────────────┼───────────────────────┼────────────────┤
-│ • Fluent syntax       │ • Database-first truth │ • Versioned (V) &     │• Compile guards│
-│ • Named projections   │ • Complex joins & CTEs │   Repeatable (R)      │• Zero cost     │
-│ • Zero boilerplate    │ • Sound nullability    │ • SHA-256 checksums   │• Clear errors  │
-│ • First-class tooling │ • Catalog introspection│ • Baseline & Repair   │• Version gates │
+│ • Fluent syntax       │ • Database-first truth │ • Declarative schema/ │• Compile guards│
+│ • Named projections   │ • Complex joins & CTEs │ • Active delta tail   │• Zero cost     │
+│ • Zero boilerplate    │ • Sound nullability    │ • Ephemeral dev DB    │• Clear errors  │
+│ • First-class tooling │ • Catalog introspection│ • Golden verification │• Version gates │
 └───────────────────────┴────────────────────────┴───────────────────────┴────────────────┘
 ```
 
@@ -33,7 +33,7 @@ RURQE synthesizes four foundational superpowers into a unified, uncompromising d
 - **Relational Type Invariants:** Mathematically sound compile-time nullability tracking (e.g. automatically lifting non-nullable columns to `Option<T>` in `LEFT JOIN` and outer join operations).
 
 ### 1.3 Stage-Based Evolution & Lifecycle Integrity (AI-First Database Management)
-- **Dual Lifecycle Modes (Zero Compromise):** Uncompromised coexistence of traditional Flyway-style sequential migrations for manual workflows, and the AI-First Stage + Tail lifecycle.
+- **Atlas-Grade Declarative Evolution with Industrial Safety:** Unifies the modern declarative migration authoring paradigm pioneered by Atlas with zero-compromise backward compatibility for classic Flyway-style sequential migrations.
 - **Current Stage as Single Source of Truth (`schema/`):** The repository maintains a single, clean declarative DDL state of the target schema (splittable across domain files like `users.sql`, `orders.sql`). Developers and LLMs interact exclusively with this state without reading historical migration trails.
 - **Active Migration Tail (`migrations/`):** Sequential delta scripts (`V...`, `R...`) transform live existing production databases from an established checkpoint into the current stage, handling both DDL and DML data migrations.
 - **Cold-Start Instant Initialization:** Clean environments (CI, local dev, container spin-up) bypass historical migrations entirely, initializing the database directly from `schema/` in milliseconds with state markers automatically recorded.
@@ -109,18 +109,18 @@ Preventing the cryptic, 50-line compiler errors notorious in existing Rust ORMs:
 3. **Continuous Golden Verification (`cargo rurqe verify`):** CI spins up ephemeral databases to verify that $\text{State}(\text{schema/}) \equiv \text{State}(\text{Checkpoint} + \text{migrations/})$ bit-for-bit against `schema.lock` and catalog diffs.
 4. **Zero-Pain History Pruning:** Teams safely delete obsolete migrations once all deployed environments have progressed past the checkpoint version, without rewriting baseline checksums.
 5. **Fail-Safe Checkpoint Protection:** If a legacy database lags behind the active checkpoint, the migration engine rejects execution with an actionable remediation guide rather than silently corrupting state.
-6. **Flyway-Grade Traditional Compatibility:** Teams preferring classic sequential migrations continue using versioned (`V...`) and repeatable (`R...`) scripts with SHA-256 audit trails, repair, and baseline facilities.
+6. **Classic Sequential Compatibility:** Teams preferring traditional sequential migrations continue using versioned (`V...`) and repeatable (`R...`) scripts with SHA-256 audit trails, repair, and baseline facilities.
 
 ---
 
 ## 4. Benchmark Comparison
 
-| Feature / Property | RURQE | jOOQ (Java) | Kysely (TypeScript) | Flyway (Java/CLI) | Diesel / SQLx (Rust) |
+| Feature / Property | RURQE | jOOQ (Java) | Kysely (TypeScript) | Atlas / Flyway | Diesel / SQLx (Rust) |
 |---|---|---|---|---|---|
 | **Dialect Capability Gates** | Compile-time (Trait markers) | Runtime check / exception | Runtime syntax error | N/A (DDL-only) | Mostly unchecked / dialect-tied |
 | **Null-Safety on Outer Joins** | Strict `Option<T>` compile-time lifting | Nullable at runtime (`NullPointerException` risk) | Optional in types, prone to `as` escapes | N/A (DDL-only) | Varies (complex macros or manual) |
 | **Ad-Hoc Named Projections** | Zero-boilerplate via `select!` | Record classes / ad-hoc tuples | Native object literals | N/A (DDL-only) | Tuples or manual DTO structs |
-| **Single Source of Truth** | DB-first codegen + `schema.lock` | DB-first codegen | DB-first types generator | Schema history table | Diesel: CLI / SQLx: offline JSON |
-| **Migration & Schema Evolution** | AI-First Stages + Flyway (Verifiable $A \to B$, optional history) | External integration (Flyway/Liquibase) | External plugins / basic runners | Gold standard (V + R, repair, baseline) | Basic sequential up/down |
+| **Single Source of Truth** | DB-first codegen + `schema.lock` | DB-first codegen | DB-first types generator | Atlas: HCL/SQL / Flyway: history | Diesel: CLI / SQLx: offline JSON |
+| **Migration & Schema Evolution** | AI-First Stage + Tail (Verifiable $A \to B$, safe pruning) | External integration (Flyway/Liquibase) | External plugins / basic runners | Declarative diffing (Atlas) / V+R (Flyway) | Basic sequential up/down |
 | **Error Message Ergonomics** | Tailored via `#[diagnostic]` & fail-fast | Clear compiler / runtime errors | TypeScript diagnostics | Clear CLI / log errors | Verbose multi-clause trait dumps |
-| **Runtime Overhead** | Zero-cost (no GC, monomorphized) | Moderate (GC allocations, reflection) | Moderate (V8 JS heap, string ops) | JVM startup / CLI process | Minimal (zero-cost) |
+| **Runtime Overhead** | Zero-cost (no GC, monomorphized) | Moderate (GC allocations, reflection) | Moderate (V8 JS heap, string ops) | External Go/JVM process | Minimal (zero-cost) |
