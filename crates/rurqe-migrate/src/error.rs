@@ -127,6 +127,19 @@ pub enum Error {
         /// The expected schema hash declared in the checkpoint.
         expected_hash: String,
     },
+    /// The catalog of the target database does not match the anchored schema hash.
+    ///
+    /// The digest is anchored by the `schema.lock` snapshot a binary carries, and
+    /// it is compared against the catalog the backend reports once the lifecycle
+    /// run has applied its scripts, so a database whose migrations produced a
+    /// schema other than the baked one is reported instead of being accepted as
+    /// up to date.
+    SchemaHashMismatch {
+        /// The digest anchored by the embedded artifacts.
+        expected_hash: String,
+        /// The digest the backend reported for its catalog.
+        actual_hash: String,
+    },
     /// An error occurred during database backend interaction.
     Backend(String),
 }
@@ -231,6 +244,15 @@ impl fmt::Display for Error {
                 "schema at version `{pruned_up_to_version}` has hash `{recorded_hash}`, \
                  but checkpoint expects `{expected_hash}`: the recorded stage marker or the \
                  live catalog has diverged from the checkpoint"
+            ),
+            Error::SchemaHashMismatch {
+                expected_hash,
+                actual_hash,
+            } => write!(
+                f,
+                "the catalog of the target database has hash `{actual_hash}`, but the embedded \
+                 artifacts anchor `{expected_hash}`: the applied migrations produced a schema that \
+                 diverges from the baked `schema.lock` snapshot"
             ),
             Error::Backend(message) => write!(f, "database backend error: {message}"),
         }

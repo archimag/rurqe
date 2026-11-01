@@ -438,3 +438,207 @@ fn an_unwritable_in_progress_row_names_the_script() {
     assert!(backend.history.is_empty(), "the attempt is rolled back");
     assert!(!backend.locked, "the lock is released on the way out");
 }
+
+#[test]
+fn a_baked_stage_cold_starts_an_empty_database_once() {
+    use rurqe_migrate::{EmbeddedArtifacts, EmbeddedMigrations, STAGE_SCRIPT};
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[],
+        checkpoint: None,
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: None,
+    })
+    .expect("valid artifacts");
+
+    let mut backend = InMemoryBackend::new();
+    let report = embedded
+        .migrate(&mut backend)
+        .expect("the cold start succeeds");
+
+    let cold_start = report.cold_start.expect("the cold start runs");
+    assert_eq!(cold_start.stage_scripts, vec!["users.sql"]);
+    assert!(report.applied_scripts.is_empty());
+    assert_eq!(report.applied_count, 0);
+    assert_eq!(backend.history.len(), 1);
+    assert!(backend.history[0].success);
+    assert_eq!(backend.history[0].script, STAGE_SCRIPT);
+    assert!(!backend.locked, "the lock is released on the way out");
+
+    // A second run finds an initialised database, so the stage is not replayed.
+    let again = embedded
+        .migrate(&mut backend)
+        .expect("the second run succeeds");
+    assert!(again.cold_start.is_none());
+    assert_eq!(again.applied_count, 0);
+    assert_eq!(backend.history.len(), 1);
+}
+
+#[test]
+fn the_stage_marker_closes_every_baked_migration() {
+    use rurqe_migrate::{EmbeddedArtifacts, EmbeddedMigrations};
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V2__orders.sql", "CREATE TABLE orders (id INTEGER);")],
+        checkpoint: None,
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: None,
+    })
+    .expect("valid artifacts");
+
+    let mut backend = InMemoryBackend::new();
+    let report = embedded
+        .migrate(&mut backend)
+        .expect("the cold start succeeds");
+
+    assert!(report.cold_start.is_some());
+    assert_eq!(backend.history.len(), 1);
+    assert_eq!(
+        backend.history[0].version.as_ref().map(ToString::to_string),
+        Some("2".to_owned())
+    );
+    assert!(
+        report.applied_scripts.is_empty(),
+        "the applied stage already reflects the baked tail"
+    );
+
+    let again = embedded
+        .migrate(&mut backend)
+        .expect("the second run succeeds");
+    assert!(again.cold_start.is_none());
+    assert_eq!(again.applied_count, 0);
+    assert_eq!(backend.history.len(), 1);
+}
+
+#[test]
+fn a_baked_checkpoint_rejects_a_target_below_the_pruned_boundary() {
+    use rurqe_migrate::{Checksum, EmbeddedArtifacts, EmbeddedMigrations};
+
+    let mut backend = InMemoryBackend::new();
+    let stage = [Migration::parse(
+        "V1__init.sql",
+        "CREATE TABLE users (id INTEGER);",
+    )
+    .expect("a valid script name")];
+    Migrator::new()
+        .migrate(&mut backend, &stage)
+        .expect("the first run records the history");
+
+    let digest = Checksum::of(b"stage").to_hex();
+    let marker =
+        format!("[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{digest}\"\n");
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V2__orders.sql", "CREATE TABLE orders (id INTEGER);")],
+        checkpoint: Some(marker.as_str()),
+        stage: &[],
+        schema_lock: None,
+    })
+    .expect("valid artifacts");
+
+    let error = embedded
+        .migrate(&mut backend)
+        .expect_err("the outdated target is rejected");
+
+    match error {
+        Error::OutdatedCheckpoint {
+            database_version,
+            pruned_up_to_version,
+            ..
+        } => {
+            assert_eq!(database_version.as_deref(), Some("1"));
+            assert_eq!(pruned_up_to_version, "2");
+        }
+        other => panic!("expected OutdatedCheckpoint, got {other:?}"),
+    }
+
+    assert_eq!(
+        backend.history.len(),
+        1,
+        "the rejected run applies nothing"
+    );
+}
+
+#[test]
+fn a_baked_snapshot_anchors_the_catalog_of_the_run() {
+    use rurqe_migrate::{Checksum, EmbeddedArtifacts, EmbeddedMigrations, SchemaCatalog};
+
+    let snapshot = SchemaCatalog::default().to_lock();
+    let digest = SchemaCatalog::default().checksum();
+
+    let artifacts = EmbeddedArtifacts {
+        tail: &[("V1__users.sql", "CREATE TABLE users (id INTEGER);")],
+        checkpoint: None,
+        stage: &[],
+        schema_lock: Some(snapshot.as_str()),
+    };
+
+    let mut matching = InMemoryBackend::new();
+    matching.catalog_checksum = Some(digest);
+    EmbeddedMigrations::from_artifacts(artifacts)
+        .expect("valid artifacts")
+        .migrate(&mut matching)
+        .expect("the catalog matches the baked snapshot");
+    assert_eq!(matching.history.len(), 1);
+
+    let mut diverged = InMemoryBackend::new();
+    diverged.catalog_checksum = Some(Checksum::of(b"diverged"));
+    let error = EmbeddedMigrations::from_artifacts(artifacts)
+        .expect("valid artifacts")
+        .migrate(&mut diverged)
+        .expect_err("the diverged catalog is reported");
+
+    match error {
+        Error::SchemaHashMismatch {
+            expected_hash,
+            actual_hash,
+        } => {
+            assert_eq!(expected_hash, digest.to_hex());
+            assert_eq!(actual_hash, Checksum::of(b"diverged").to_hex());
+        }
+        other => panic!("expected SchemaHashMismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_collection_without_artifacts_keeps_the_plain_tail_lifecycle() {
+    use rurqe_migrate::EmbeddedMigrations;
+
+    let embedded = EmbeddedMigrations::new(&[
+        ("V1__users.sql", "CREATE TABLE users (id INTEGER);"),
+        ("V2__orders.sql", "CREATE TABLE orders (id INTEGER);"),
+    ])
+    .expect("valid migrations");
+
+    let mut backend = InMemoryBackend::new();
+    let report = embedded
+        .migrate(&mut backend)
+        .expect("the first run succeeds");
+
+    assert!(report.cold_start.is_none());
+    assert_eq!(report.applied_count, 2);
+    assert_eq!(backend.history.len(), 2);
+
+    let again = embedded
+        .migrate(&mut backend)
+        .expect("the second run succeeds");
+
+    assert!(again.cold_start.is_none());
+    assert_eq!(again.applied_count, 0);
+    assert_eq!(backend.history.len(), 2);
+}
+
+#[test]
+fn malformed_artifacts_are_rejected_before_a_connection_is_opened() {
+    use rurqe_migrate::{EmbeddedArtifacts, EmbeddedMigrations};
+
+    let error = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[],
+        checkpoint: Some("[checkpoint]\npruned_up_to_version = \"1\"\n"),
+        stage: &[],
+        schema_lock: None,
+    })
+    .expect_err("a marker without a hash is rejected");
+
+    assert!(matches!(error, Error::InvalidCheckpoint { .. }));
+}

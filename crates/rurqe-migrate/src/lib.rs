@@ -46,7 +46,7 @@ pub use catalog::{
 };
 pub use checkpoint::{Checkpoint, CHECKPOINT_FILE};
 pub use checksum::{sha256, Checksum};
-pub use embedded::EmbeddedMigrations;
+pub use embedded::{EmbeddedArtifacts, EmbeddedMigrations};
 pub use error::Error;
 pub use history::{create_schema_history_table_sql, SchemaHistoryEntry, SCHEMA_HISTORY_TABLE};
 pub use migration::{Migration, MigrationKind};

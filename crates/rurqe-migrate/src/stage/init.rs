@@ -71,10 +71,12 @@ pub fn cold_start<B: MigrationBackend>(
 
 /// Guard-free core of [`cold_start`].
 ///
-/// `cold_start_async` runs it on a `spawn_blocking` thread, where the
-/// blocking-entry guard cannot tell a blocking-pool thread from a worker thread and
-/// would refuse work that is exactly where it belongs.
-fn cold_start_core<B: MigrationBackend>(
+/// The asynchronous entry points — [`cold_start_async`] and the lifecycle
+/// protocol of [`EmbeddedMigrations`](crate::embedded::EmbeddedMigrations) — run
+/// it on a `spawn_blocking` thread, where the blocking-entry guard cannot tell a
+/// blocking-pool thread from a worker thread and would refuse work that is
+/// exactly where it belongs.
+pub(crate) fn cold_start_core<B: MigrationBackend>(
     backend: &mut B,
     stage: &DeclarativeStage,
     marker: &StageMarker,

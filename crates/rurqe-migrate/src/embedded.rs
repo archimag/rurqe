@@ -7,6 +7,20 @@
 //! those pairs from a migrations directory at compile time and expands into this
 //! constructor, so the text a binary carries is the text it was built from.
 //!
+//! A collection assembled from the full project artifacts —
+//! [`EmbeddedMigrations::from_artifacts`] — carries the migration tail together
+//! with the optional `checkpoint.toml` marker, the declarative stage, and the
+//! `schema.lock` snapshot, so the run itself guards the database:
+//!
+//! * an empty target is initialised from the declarative stage, and the recorded
+//!   stage marker closes every migration the stage already reflects;
+//! * a baked checkpoint rejects a target sitting below the pruned boundary;
+//! * a baked snapshot anchors the digest the catalog the run produced is compared
+//!   against once every script has been applied.
+//!
+//! Every artifact is optional on its own: a collection that does not bake one
+//! keeps the corresponding step switched off without disturbing the others.
+//!
 //! ```
 //! use rurqe_migrate::{EmbeddedMigrations, InMemoryBackend};
 //!
@@ -22,14 +36,46 @@
 //! let report = embedded.migrate(&mut backend).expect("migration succeeds");
 //! assert_eq!(report.applied_count, 2);
 //! ```
-
+//!
+//! ```
+//! use rurqe_migrate::{EmbeddedArtifacts, EmbeddedMigrations, InMemoryBackend, SchemaCatalog};
+//!
+//! let catalog = SchemaCatalog::default();
+//! let snapshot = catalog.to_lock();
+//!
+//! let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+//!     tail: &[("V1__users.sql", "CREATE TABLE users (id INTEGER);")],
+//!     checkpoint: None,
+//!     stage: &[("users.sql", "CREATE TABLE users (id INTEGER, email TEXT);")],
+//!     schema_lock: Some(&snapshot),
+//! })
+//! .expect("valid artifacts");
+//!
+//! let mut backend = InMemoryBackend::new();
+//! backend.catalog_checksum = Some(catalog.checksum());
+//!
+//! let report = embedded.migrate(&mut backend).expect("the database is cold started");
+//! assert_eq!(
+//!     report.cold_start.expect("the cold start runs").stage_scripts,
+//!     vec!["users.sql"]
+//! );
+//! assert_eq!(backend.history.len(), 1);
+//! ```
+//!
 use core::ops::Deref;
 
+use crate::catalog::SchemaCatalog;
+use crate::checkpoint::Checkpoint;
+use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
 use crate::migration::Migration;
-use crate::runner::{MigrationBackend, MigrationReport, MigrationStatus, Migrator, RepairReport};
+use crate::runner::{
+    LockGuard, MigrationBackend, MigrationReport, MigrationStatus, Migrator, RepairReport,
+};
 use crate::sleeper::guard_blocking_entry;
+use crate::stage::init::cold_start_core;
+use crate::stage::{DeclarativeStage, StageMarker, StageScript};
 use crate::version::MigrationVersion;
 
 /// A collection of migrations embedded directly into application binaries.
@@ -40,9 +86,11 @@ use crate::version::MigrationVersion;
 /// lifecycle method has a Tokio-safe counterpart, available with the `tokio`
 /// feature: [`migrate_async`](Self::migrate_async),
 /// [`status_async`](Self::status_async), [`repair_async`](Self::repair_async), and
-/// [`baseline_async`](Self::baseline_async). Each one delegates to the matching
-/// [`Migrator`] wrapper, so the offload mechanics live in a single place and the
-/// work runs on a dedicated blocking thread.
+/// [`baseline_async`](Self::baseline_async). The three history wrappers delegate
+/// to the matching [`Migrator`] wrapper, so the offload mechanics live in a single
+/// place, while [`migrate_async`](Self::migrate_async) runs the collection's own
+/// guard-free lifecycle core — cold start, tail, and final catalog check — on the
+/// dedicated blocking thread.
 ///
 /// The synchronous methods report such a call through `warn_if_in_tokio_runtime`
 /// and keep running, which is the default behaviour. Compiling this crate with the
@@ -57,9 +105,40 @@ use crate::version::MigrationVersion;
 /// A script name identifies one migration, so a collection refuses two entries
 /// sharing one script name: one run would otherwise apply two different bodies
 /// under a single recorded identity.
+///
+/// A collection assembled from the full project artifacts —
+/// [`from_artifacts`](Self::from_artifacts) — carries the project checkpoint, the
+/// declarative stage, and the digest anchored by `schema.lock` as well, so
+/// [`migrate`](Self::migrate) runs the guarded lifecycle: it initialises an empty
+/// target from the stage, rejects a target sitting below the pruned boundary, and
+/// compares the catalog the run produced against the baked digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedMigrations {
     migrations: Vec<Migration>,
+    checkpoint: Option<Checkpoint>,
+    stage: Option<DeclarativeStage>,
+    schema_hash: Option<Checksum>,
+}
+
+/// The raw artifacts a project configuration bakes into an application binary.
+///
+/// Every artifact is optional on its own, and a missing one switches off exactly
+/// the lifecycle step it feeds: `stage` enables the cold start of an empty
+/// database, `checkpoint` arms the pruning boundary, and `schema_lock` anchors the
+/// final catalog check. The texts are the raw file contents, and
+/// [`EmbeddedMigrations::from_artifacts`] parses them with the same parsers the
+/// rest of the crate uses, so a malformed artifact is rejected before any
+/// connection is opened.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmbeddedArtifacts<'a> {
+    /// The `(script name, SQL text)` pairs of the migration tail.
+    pub tail: &'a [(&'a str, &'a str)],
+    /// The raw text of `checkpoint.toml`.
+    pub checkpoint: Option<&'a str>,
+    /// The `(file name, DDL text)` pairs of the declarative stage.
+    pub stage: &'a [(&'a str, &'a str)],
+    /// The raw text of `schema.lock`.
+    pub schema_lock: Option<&'a str>,
 }
 
 impl EmbeddedMigrations {
@@ -80,10 +159,50 @@ impl EmbeddedMigrations {
         Self::assemble(&parsed)
     }
 
+    /// Creates a collection from the raw artifacts of a project configuration.
+    ///
+    /// Every text is parsed here — the tail through [`Migration::parse`], the
+    /// marker through [`Checkpoint::parse`], the stage through
+    /// [`StageScript::new`], and the snapshot through [`SchemaCatalog::from_lock`]
+    /// — so a malformed artifact is rejected before any connection is opened. An
+    /// artifact the caller does not bake leaves the lifecycle step it feeds
+    /// switched off without disturbing the others.
+    pub fn from_artifacts(artifacts: EmbeddedArtifacts<'_>) -> Result<Self, Error> {
+        let mut parsed = Vec::with_capacity(artifacts.tail.len());
+        for &(script, sql) in artifacts.tail {
+            parsed.push(Migration::parse(script, sql)?);
+        }
+
+        let checkpoint = match artifacts.checkpoint {
+            Some(text) => Some(Checkpoint::parse(text)?),
+            None => None,
+        };
+
+        let stage = if artifacts.stage.is_empty() {
+            None
+        } else {
+            let mut scripts = Vec::with_capacity(artifacts.stage.len());
+            for &(name, ddl) in artifacts.stage {
+                scripts.push(StageScript::new(name, ddl));
+            }
+            Some(DeclarativeStage::new(scripts))
+        };
+
+        let schema_hash = match artifacts.schema_lock {
+            Some(text) => Some(SchemaCatalog::from_lock(text)?.checksum()),
+            None => None,
+        };
+
+        Self::with_artifacts(&parsed, checkpoint, stage, schema_hash)
+    }
+
     /// Creates an empty embedded migration set.
     pub fn empty() -> Self {
         Self {
             migrations: Vec::new(),
+            checkpoint: None,
+            stage: None,
+            schema_hash: None,
         }
     }
 
@@ -97,11 +216,27 @@ impl EmbeddedMigrations {
         Self::assemble(&migrations)
     }
 
-    /// Sorts `migrations` and refuses two entries sharing one script name.
+    /// Assembles a pure-tail collection: no checkpoint, stage, or snapshot.
     fn assemble(migrations: &[Migration]) -> Result<Self, Error> {
+        Self::with_artifacts(migrations, None, None, None)
+    }
+
+    /// Sorts `migrations`, refuses two entries sharing one script name, and
+    /// attaches the artifacts the collection carries.
+    fn with_artifacts(
+        migrations: &[Migration],
+        checkpoint: Option<Checkpoint>,
+        stage: Option<DeclarativeStage>,
+        schema_hash: Option<Checksum>,
+    ) -> Result<Self, Error> {
         let sorted = Migrator::sort_migrations(migrations);
         Migrator::validate_script_uniqueness(&sorted)?;
-        Ok(Self { migrations: sorted })
+        Ok(Self {
+            migrations: sorted,
+            checkpoint,
+            stage,
+            schema_hash,
+        })
     }
 
     /// Returns a slice of the parsed and sorted migrations.
@@ -119,26 +254,168 @@ impl EmbeddedMigrations {
         self.migrations.is_empty()
     }
 
+    /// The checkpoint marker baked into the collection, if any.
+    pub fn checkpoint(&self) -> Option<&Checkpoint> {
+        self.checkpoint.as_ref()
+    }
+
+    /// The declarative stage baked into the collection, if any.
+    pub fn stage(&self) -> Option<&DeclarativeStage> {
+        self.stage.as_ref()
+    }
+
+    /// The digest anchored by the baked `schema.lock` snapshot, if any.
+    pub fn schema_hash(&self) -> Option<Checksum> {
+        self.schema_hash
+    }
+
     /// Converts this collection into a vector of [`Migration`]s.
     pub fn to_vec(&self) -> Vec<Migration> {
         self.migrations.clone()
     }
 
-    /// Runs all pending versioned and modified repeatable migrations against `backend`.
+    /// Runs the embedded lifecycle: the cold start, the migration tail, and the
+    /// final catalog check.
+    ///
+    /// * An empty target is initialised from the baked declarative stage when the
+    ///   collection carries one, exactly like [`cold_start`](crate::cold_start): the
+    ///   stage marker sits at the newest version the collection declares and is
+    ///   anchored by the baked `schema.lock` digest, so the tail the stage already
+    ///   reflects does not run a second time.
+    /// * A baked `checkpoint.toml` marker arms [`Migrator::with_checkpoint`], so a
+    ///   target sitting below the pruned boundary is rejected instead of being
+    ///   advanced by a partial tail.
+    /// * A baked `schema.lock` snapshot anchors the digest the catalog the run
+    ///   produced is compared against once every script has been applied; a
+    ///   divergence is reported as [`Error::SchemaHashMismatch`].
+    ///
+    /// A collection built by [`new`](Self::new) or
+    /// [`from_migrations`](Self::from_migrations) carries none of those artifacts,
+    /// so it behaves exactly as the plain tail it describes.
     ///
     /// The backend blocks the calling thread, so an async worker thread must hand
-    /// the run to [`migrate_async`](Self::migrate_async) or to
-    /// `tokio::task::spawn_blocking` instead of calling this method directly
-    /// (Conventions.md §3).
+    /// the run to [`migrate_async`](Self::migrate_async) instead of calling this
+    /// method directly (Conventions.md §3).
     pub fn migrate<B: MigrationBackend>(&self, backend: &mut B) -> Result<MigrationReport, Error> {
         guard_blocking_entry("EmbeddedMigrations::migrate")?;
-        Migrator::new().migrate_core(backend, &self.migrations)
+        self.migrate_core(backend)
     }
 
-    /// Runs all pending migrations on a dedicated blocking thread.
+    /// Guard-free core of [`migrate`](Self::migrate).
     ///
-    /// Delegates to [`Migrator::migrate_async`], which owns the offload mechanics,
-    /// so this wrapper and the runner counterpart cannot drift apart.
+    /// The asynchronous wrapper runs it on a `spawn_blocking` thread, where the
+    /// blocking-entry guard cannot tell a blocking-pool thread from a worker thread
+    /// and would refuse work that is exactly where it belongs.
+    fn migrate_core<B: MigrationBackend>(&self, backend: &mut B) -> Result<MigrationReport, Error> {
+        let mut report = MigrationReport::default();
+        let mut cold_start_time = 0;
+
+        if let Some(stage) = self.cold_start_stage(backend)? {
+            let marker = self.stage_marker(stage)?;
+            let cold = cold_start_core(backend, stage, &marker)?;
+            cold_start_time = cold.total_time_ms;
+            if cold.installed_rank.is_some() {
+                report.cold_start = Some(cold);
+            }
+        }
+
+        let migrator = match &self.checkpoint {
+            Some(checkpoint) => Migrator::with_checkpoint(checkpoint.clone()),
+            None => Migrator::new(),
+        };
+        let tail = migrator.migrate_core(backend, &self.migrations)?;
+
+        report.applied_scripts = tail.applied_scripts;
+        report.applied_count = tail.applied_count;
+        report.total_time_ms = tail.total_time_ms + cold_start_time;
+
+        self.verify_catalog(backend)?;
+
+        Ok(report)
+    }
+
+    /// The stage an empty target is initialised from.
+    ///
+    /// `None` when the collection bakes no stage, and when the target already
+    /// carries history: an initialised database is advanced by the tail alone, so a
+    /// cold start never overwrites it.
+    fn cold_start_stage<'a, B: MigrationBackend>(
+        &'a self,
+        backend: &mut B,
+    ) -> Result<Option<&'a DeclarativeStage>, Error> {
+        let Some(stage) = &self.stage else {
+            return Ok(None);
+        };
+        if !history_is_empty(backend)? {
+            return Ok(None);
+        }
+        Ok(Some(stage))
+    }
+
+    /// Builds the marker the cold start of this collection records.
+    ///
+    /// The marker sits at the newest version the collection declares, so every
+    /// migration the stage already reflects is reported as applied, and its digest
+    /// is the baked `schema.lock` one, which is exactly the digest the counterpart
+    /// tail replay has to produce. A collection without a snapshot anchors the
+    /// digest of its own stage instead.
+    fn stage_marker(&self, stage: &DeclarativeStage) -> Result<StageMarker, Error> {
+        let checksum = match self.schema_hash {
+            Some(checksum) => checksum,
+            None => stage.checksum(),
+        };
+        Ok(StageMarker::new(self.marker_version()?, StageMarker::DESCRIPTION, checksum))
+    }
+
+    /// The version that closes every migration the cold start already reflects.
+    ///
+    /// That is the newest tail version or the checkpoint boundary, whichever is
+    /// higher, and `0` for a collection declaring neither.
+    fn marker_version(&self) -> Result<MigrationVersion, Error> {
+        let tail = self
+            .migrations
+            .iter()
+            .filter_map(|migration| migration.version.as_ref())
+            .max()
+            .cloned();
+        let boundary = self
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.pruned_up_to_version().clone());
+
+        match tail.max(boundary) {
+            Some(version) => Ok(version),
+            None => "0".parse(),
+        }
+    }
+
+    /// Compares the catalog the run produced against the baked digest.
+    ///
+    /// A backend able to introspect itself reports the digest of the catalog it
+    /// really holds; one that cannot reports nothing, which leaves the anchor
+    /// unverified instead of rejecting a schema the backend never described.
+    fn verify_catalog<B: MigrationBackend>(&self, backend: &mut B) -> Result<(), Error> {
+        let Some(expected) = self.schema_hash else {
+            return Ok(());
+        };
+        let Some(actual) = backend.catalog_checksum()? else {
+            return Ok(());
+        };
+        if actual == expected {
+            return Ok(());
+        }
+
+        Err(Error::SchemaHashMismatch {
+            expected_hash: expected.to_hex(),
+            actual_hash: actual.to_hex(),
+        })
+    }
+
+    /// Runs the embedded lifecycle on a dedicated blocking thread.
+    ///
+    /// Delegates to the guard-free core of [`migrate`](Self::migrate), so the whole
+    /// protocol — cold start, checkpoint boundary, tail, and final catalog check —
+    /// runs off the runtime's worker threads.
     ///
     /// The backend is moved into the blocking task and handed back together with
     /// the report, so a connection that cannot be shared across threads stays
@@ -152,11 +429,22 @@ impl EmbeddedMigrations {
     #[cfg(feature = "tokio")]
     pub async fn migrate_async<B: MigrationBackend + Send + 'static>(
         &self,
-        backend: B,
+        mut backend: B,
     ) -> Result<(MigrationReport, B), Error> {
-        Migrator::new()
-            .migrate_async(backend, &self.migrations)
-            .await
+        let embedded = self.clone();
+
+        let joined = tokio::task::spawn_blocking(move || {
+            let report = embedded.migrate_core(&mut backend);
+            (report, backend)
+        })
+        .await;
+
+        match joined {
+            Ok((report, backend)) => report.map(|report| (report, backend)),
+            Err(error) => Err(Error::Backend(format!(
+                "blocking migration task failed: {error}"
+            ))),
+        }
     }
 
     /// Inspects the status of embedded migrations against the database history.
@@ -271,6 +559,18 @@ impl EmbeddedMigrations {
     }
 }
 
+/// Whether the target database carries no recorded history at all.
+///
+/// The metadata table is created on demand, so the read is a schema write and
+/// happens under the same run lock the lifecycle operations take. The guard is
+/// dropped before the lifecycle continues, so the cold start that follows acquires
+/// the lock on its own.
+fn history_is_empty<B: MigrationBackend>(backend: &mut B) -> Result<bool, Error> {
+    let mut guard = LockGuard::acquire(backend)?;
+    guard.ensure_schema_history_table()?;
+    Ok(guard.read_history()?.is_empty())
+}
+
 impl Deref for EmbeddedMigrations {
     type Target = [Migration];
 
@@ -302,231 +602,5 @@ impl<'a> IntoIterator for &'a EmbeddedMigrations {
         self.migrations.iter()
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    // Only the asynchronous baseline tests name `MigrationKind`, so the import
-    // carries the same feature gate as the tests that read it.
-    #[cfg(feature = "tokio")]
-    use crate::migration::MigrationKind;
-    use crate::runner::InMemoryBackend;
-
-    fn embedded() -> EmbeddedMigrations {
-        EmbeddedMigrations::new(&[
-            ("V1__users.sql", "CREATE TABLE users (id INTEGER);"),
-            ("V2__orders.sql", "CREATE TABLE orders (id INTEGER);"),
-        ])
-        .expect("valid migrations")
-    }
-
-    #[test]
-    fn migrate_reports_every_applied_script() {
-        let mut backend = InMemoryBackend::new();
-        let report = embedded()
-            .migrate(&mut backend)
-            .expect("the migration run succeeds");
-
-        assert_eq!(report.applied_count, 2);
-        assert_eq!(backend.history.len(), 2);
-    }
-
-    #[test]
-    fn duplicate_script_names_are_rejected_at_construction() {
-        let error = EmbeddedMigrations::new(&[
-            ("R__view.sql", "CREATE VIEW v AS SELECT 1;"),
-            ("R__view.sql", "CREATE VIEW v AS SELECT 2;"),
-        ])
-        .expect_err("two scripts under one name must be rejected");
-
-        assert_eq!(
-            error,
-            Error::DuplicateScriptName {
-                script: "R__view.sql".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    fn from_migrations_rejects_duplicate_script_names() {
-        let first = Migration::parse("R__view.sql", "SELECT 1;").expect("a valid script name");
-        let second = Migration::parse("R__view.sql", "SELECT 2;").expect("a valid script name");
-
-        let error = EmbeddedMigrations::from_migrations(vec![first, second])
-            .expect_err("two scripts under one name must be rejected");
-
-        assert_eq!(
-            error,
-            Error::DuplicateScriptName {
-                script: "R__view.sql".to_owned()
-            }
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "tokio")]
-    fn migrate_async_hands_the_backend_back() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        let (report, backend) = runtime
-            .block_on(embedded().migrate_async(InMemoryBackend::new()))
-            .expect("the blocking run succeeds");
-
-        assert_eq!(report.applied_count, 2);
-        assert_eq!(report.applied_scripts.len(), 2);
-        assert_eq!(backend.history.len(), 2);
-        assert!(backend.history.iter().all(|entry| entry.success));
-    }
-
-    #[test]
-    #[cfg(feature = "tokio")]
-    fn status_async_reports_the_applied_scripts() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        let embedded = embedded();
-        let (_, backend) = runtime
-            .block_on(embedded.migrate_async(InMemoryBackend::new()))
-            .expect("the blocking run succeeds");
-
-        let (statuses, backend) = runtime
-            .block_on(embedded.status_async(backend))
-            .expect("the blocking status read succeeds");
-
-        assert_eq!(statuses.len(), 2);
-        assert_eq!(
-            statuses[0].status,
-            crate::runner::MigrationStatusKind::Applied
-        );
-        assert_eq!(
-            statuses[1].status,
-            crate::runner::MigrationStatusKind::Applied
-        );
-        assert_eq!(backend.history.len(), 2);
-    }
-
-    #[test]
-    #[cfg(feature = "tokio")]
-    fn migrate_async_surfaces_a_backend_failure() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        let mut backend = InMemoryBackend::new();
-        backend.failure_script = Some("BOOM".to_owned());
-        let embedded =
-            EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")]).expect("valid migrations");
-
-        let error = runtime
-            .block_on(embedded.migrate_async(backend))
-            .expect_err("the failing script aborts the run");
-
-        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
-    }
-
-    #[test]
-    #[cfg(feature = "tokio")]
-    fn baseline_async_records_the_baseline_and_hands_the_backend_back() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
-
-        let (entry, backend) = runtime
-            .block_on(embedded().baseline_async(
-                InMemoryBackend::new(),
-                version.clone(),
-                "legacy baseline",
-            ))
-            .expect("the blocking baseline succeeds");
-
-        assert_eq!(entry.kind, MigrationKind::Baseline);
-        assert_eq!(
-            entry.version.as_ref().map(ToString::to_string),
-            Some(version.to_string())
-        );
-        assert_eq!(backend.history.len(), 1);
-        assert_eq!(backend.history[0].kind, MigrationKind::Baseline);
-        assert!(backend.history[0].success);
-    }
-
-    #[test]
-    #[cfg(feature = "tokio")]
-    fn repair_async_purges_the_failed_entry_of_a_broken_script() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        // The failing run is driven on this plain test thread: the `*_async`
-        // wrappers hand the backend back on success only, so the connection that
-        // carries the failed entry has to come from the blocking path.
-        let mut backend = InMemoryBackend::new();
-        backend.failure_script = Some("BOOM".to_owned());
-        let broken =
-            EmbeddedMigrations::new(&[("V1__broken.sql", "BOOM;")]).expect("valid migrations");
-
-        let error = broken
-            .migrate(&mut backend)
-            .expect_err("the failing script aborts the run");
-        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
-        assert_eq!(backend.history.len(), 1);
-        assert!(!backend.history[0].success);
-
-        backend.failure_script = None;
-        let fixed =
-            EmbeddedMigrations::new(&[("V1__broken.sql", "SELECT 1;")]).expect("valid migrations");
-
-        let (report, backend) = runtime
-            .block_on(fixed.repair_async(backend))
-            .expect("the blocking repair succeeds");
-
-        assert_eq!(report.removed_failed_entries, 1);
-        assert!(report.updated_checksums.is_empty());
-        assert!(
-            backend.history.is_empty(),
-            "the purge leaves a clean history behind"
-        );
-    }
-
-    /// The `*_async` wrapper runs the guard-free core, so the blocking-pool thread
-    /// never trips the enforcement the synchronous entry points raise.
-    #[test]
-    #[cfg(feature = "strict-async")]
-    fn migrate_async_runs_the_guard_free_core_inside_a_runtime() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        let (report, backend) = runtime
-            .block_on(embedded().migrate_async(InMemoryBackend::new()))
-            .expect("the blocking run succeeds under `strict-async`");
-
-        assert_eq!(report.applied_count, 2);
-        assert_eq!(backend.history.len(), 2);
-        assert!(backend.history.iter().all(|entry| entry.success));
-    }
-
-    /// The baseline wrapper drives the same guard-free core, so it stays usable
-    /// from a runtime thread even when the synchronous entry points refuse to run.
-    #[test]
-    #[cfg(feature = "strict-async")]
-    fn baseline_async_runs_the_guard_free_core_inside_a_runtime() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("build tokio runtime");
-
-        let version: MigrationVersion = "1.0.0".parse().expect("a valid version");
-
-        let (entry, backend) = runtime
-            .block_on(embedded().baseline_async(InMemoryBackend::new(), version, "legacy baseline"))
-            .expect("the blocking baseline succeeds under `strict-async`");
-
-        assert_eq!(entry.kind, MigrationKind::Baseline);
-        assert_eq!(backend.history.len(), 1);
-        assert!(backend.history[0].success);
-    }
-}
+mod tests;

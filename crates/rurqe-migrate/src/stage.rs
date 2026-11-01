@@ -72,7 +72,7 @@
 //! assert_eq!(backend.history.len(), 1);
 //! ```
 
-mod init;
+pub(crate) mod init;
 mod marker;
 mod script;
 
