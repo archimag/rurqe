@@ -675,6 +675,56 @@ fn text_parameters_bind_to_uuid_json_and_temporal_types() {
     ));
 }
 
+#[cfg(not(any(feature = "uuid", feature = "serde_json", feature = "chrono")))]
+#[test]
+fn textual_values_bind_uuid_json_and_temporal_columns_without_their_crates() {
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text(
+        "00010203-0405-0607-0809-0a0b0c0d0e0f".to_owned(),
+    ))
+    .to_sql_checked(&Type::UUID, &mut buffer)
+    .expect("a textual value fills a UUID column");
+    assert_eq!(
+        decode_value(&Type::UUID, &buffer[..]).expect("the UUID value is decodable"),
+        SqlVal::Text("00010203-0405-0607-0809-0a0b0c0d0e0f".to_owned())
+    );
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("{\"a\": 1}".to_owned()))
+        .to_sql_checked(&Type::JSONB, &mut buffer)
+        .expect("a textual value fills a JSONB column");
+    assert_eq!(
+        decode_value(&Type::JSONB, &buffer[..]).expect("the JSONB value is decodable"),
+        SqlVal::Text("{\"a\": 1}".to_owned())
+    );
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()))
+        .to_sql_checked(&Type::TIMESTAMP, &mut buffer)
+        .expect("a textual value fills a timestamp column");
+    assert_eq!(
+        decode_value(&Type::TIMESTAMP, &buffer[..]).expect("the timestamp value is decodable"),
+        SqlVal::Text("2024-01-02 03:04:05".to_owned())
+    );
+
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("2024-01-02".to_owned()))
+        .to_sql_checked(&Type::DATE, &mut buffer)
+        .expect("a textual value fills a date column");
+    assert_eq!(buffer.to_vec(), 8_767i32.to_be_bytes().to_vec());
+
+    // A value the family cannot represent is reported by the adapter instead of
+    // reaching the server as an opaque protocol failure.
+    let mut buffer = BytesMut::new();
+    let error = match SqlValParam(&SqlVal::Text("not-a-date".to_owned()))
+        .to_sql_checked(&Type::DATE, &mut buffer)
+    {
+        Ok(_) => panic!("a malformed date cannot fill a date column"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("not-a-date"));
+}
+
 #[test]
 fn a_statement_prepares_its_parameters_once() {
     let query = BuiltQuery {

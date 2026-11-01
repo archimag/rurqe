@@ -96,10 +96,12 @@ impl From<deadpool_postgres::PoolError> for PgError {
 /// Binds a text parameter to the binary representation expected by `ty`.
 ///
 /// `UUID`, `JSON`/`JSONB`, and the temporal types have no dedicated
-/// [`SqlVal`] variant: codegen maps them to `String`, so their text values
-/// are parsed back into the type the column declares before being encoded. A
-/// build without the feature backing one of those families binds the text as it
-/// stands and leaves the server to reject a value it cannot read.
+/// [`SqlVal`] variant: codegen maps them to `String`, so their text values are
+/// parsed back into the type the column declares before being encoded. A build
+/// without the feature backing one of those families encodes the text through the
+/// featureless codec of its family — the inverse of the decoder that renders such
+/// a column back into text — so the mapping the code generator produces reaches
+/// the server in every build.
 fn text_to_sql(
     value: &str,
     ty: &Type,
@@ -135,6 +137,16 @@ fn text_to_sql(
         if ty == &Type::DATE {
             return chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")?.to_sql(ty, out);
         }
+    }
+
+    // A build without the crate backing one of those families encodes the text
+    // through the featureless codec of its family, which is the inverse of the
+    // decoder that renders such a column back into text. Covering both directions
+    // with the same families keeps a value read from a column writable to it, so
+    // the mapping the code generator produces reaches the server in every build.
+    if let Some(encoded) = fallback::encode(ty, value, out) {
+        encoded.map_err(|reason| encoding_failure(&reason))?;
+        return Ok(IsNull::No);
     }
 
     value.to_sql(ty, out)
