@@ -12,7 +12,8 @@ use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::commands::{cli_error, sweep_stale_temporaries, STALE_TEMPORARY_AGE};
 use crate::cli::{redact_database_url, CliError, CommandOutput};
-use crate::config::SchemaSelection;use crate::loader::load_migrations_from_dir;
+use crate::config::SchemaSelection;
+use crate::loader::load_migrations_from_dir;
 use crate::stage::GoldenEquation;
 
 use super::lock::CheckpointLock;
