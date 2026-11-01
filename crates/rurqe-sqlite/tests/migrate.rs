@@ -9,7 +9,8 @@
 
 use std::time::Duration;
 
-use rurqe_sqlite::migrate::{self, SqliteMigrationBackend};
+use rurqe_sqlite::SqliteConnection;
+use rurqe_sqlite::migrate::{self, SqliteConnectionMigrationBackend, SqliteMigrationBackend};
 use rurqe_sqlite::rurqe_migrate::error::Error;
 use rurqe_sqlite::rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_sqlite::rurqe_migrate::{Checksum, Migration, MigrationKind, Migrator};
@@ -432,5 +433,236 @@ fn a_malformed_recorded_checksum_is_rejected() {
     assert!(
         matches!(&error, Error::InvalidChecksum { .. }),
         "got {error:?}"
+    );
+}
+
+/// A client adapter over a fresh in-memory database.
+fn client_connection() -> SqliteConnection {
+    SqliteConnection::new(
+        rusqlite::Connection::open_in_memory().expect("the in-memory database opens"),
+    )
+}
+
+#[test]
+fn sqlite_client_backend_applies_versioned_migrations_once() {
+    let mut connection = client_connection();
+    let scripts = migrations("V1__init.sql", "CREATE TABLE users (id INTEGER);");
+
+    {
+        let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+        let report = Migrator::new()
+            .migrate(&mut backend, &scripts)
+            .expect("the tail applies");
+        assert_eq!(report.applied_count, 1);
+
+        let history = backend.read_history().expect("the history is readable");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].script, "V1__init.sql");
+        assert_eq!(history[0].kind, MigrationKind::Versioned);
+        assert!(history[0].success);
+    }
+
+    // The run lock is committed when the run ends, so the client keeps a
+    // connection in autocommit mode.
+    assert!(connection.connection().is_autocommit());
+
+    {
+        let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+        let report = Migrator::new()
+            .migrate(&mut backend, &scripts)
+            .expect("a second run finds nothing pending");
+        assert_eq!(report.applied_count, 0);
+        assert!(report.applied_scripts.is_empty());
+    }
+}
+
+#[test]
+fn sqlite_client_backend_rolls_back_failed_migrations() {
+    let mut connection = client_connection();
+    let broken = migrations("V1__broken.sql", "CREATE TABLE oops (;");
+
+    {
+        let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+        let error = Migrator::new()
+            .migrate(&mut backend, &broken)
+            .expect_err("the broken script fails to execute");
+        assert!(matches!(error, Error::MigrationExecutionFailed { .. }));
+
+        let history = backend.read_history().expect("the history is readable");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].script, "V1__broken.sql");
+        assert!(!history[0].success);
+    }
+
+    // The failing script left no table behind: its work was rolled back to the
+    // savepoint of the step.
+    let created: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'oops'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the catalog answers");
+    assert_eq!(created, 0, "the failed script leaves no table behind");
+
+    let migrator = Migrator::new();
+    let fixed = migrations("V1__fixed.sql", "CREATE TABLE ok (id INTEGER);");
+    let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+
+    let blocked = migrator
+        .migrate(&mut backend, &broken)
+        .expect_err("the failed entry blocks the next run");
+    assert!(matches!(
+        blocked,
+        Error::FailedMigrationAlreadyApplied { .. }
+    ));
+
+    let repair = migrator
+        .repair(&mut backend, &fixed)
+        .expect("repair purges the failed entry");
+    assert_eq!(repair.removed_failed_entries, 1);
+
+    let report = migrator
+        .migrate(&mut backend, &fixed)
+        .expect("the fixed script applies");
+    assert_eq!(report.applied_count, 1);
+}
+
+#[test]
+fn the_client_run_lock_nests_every_step_in_a_savepoint() {
+    let mut connection = client_connection();
+
+    {
+        let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+        backend.acquire_lock().expect("the write lock is taken");
+
+        {
+            let mut step = backend.begin().expect("a step opens inside the lock");
+            step.execute("CREATE TABLE users (id INTEGER NOT NULL);")
+                .expect("the step applies");
+            step.commit().expect("the step is released");
+        }
+
+        {
+            let mut step = backend.begin().expect("a second step opens inside the lock");
+            step.execute("CREATE TABLE oops (;")
+                .expect_err("the broken statement fails");
+            step.rollback().expect("the step is rolled back");
+        }
+
+        backend.release_lock().expect("the lock commits the run");
+    }
+
+    let users: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'users'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the committed table is visible");
+    assert_eq!(users, 1);
+
+    let oops: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'oops'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the rolled back table stays absent");
+    assert_eq!(oops, 0);
+}
+
+#[test]
+fn a_caller_transaction_serves_as_the_run_lock() {
+    let mut connection = client_connection();
+    connection
+        .connection_mut()
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("the caller opens a transaction");
+
+    let scripts = migrations("V1__users.sql", "CREATE TABLE users (id INTEGER NOT NULL);");
+
+    {
+        let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+        backend
+            .acquire_lock()
+            .expect("the caller transaction serialises the run");
+        let report = Migrator::new()
+            .migrate(&mut backend, &scripts)
+            .expect("the tail applies inside the caller transaction");
+        assert_eq!(report.applied_count, 1);
+        backend
+            .release_lock()
+            .expect("the release leaves the caller transaction alone");
+    }
+
+    // The run committed nothing on the caller's behalf: the migration work becomes
+    // visible exactly when the caller commits.
+    assert!(!connection.connection().is_autocommit());
+
+    connection
+        .connection_mut()
+        .execute_batch("COMMIT")
+        .expect("the caller commits");
+
+    let users: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'users'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the committed table is visible");
+    assert_eq!(users, 1);
+}
+
+#[test]
+fn a_non_transactional_script_is_refused_inside_a_caller_transaction() {
+    let mut connection = client_connection();
+    connection
+        .connection_mut()
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("the caller opens a transaction");
+
+    let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+    backend
+        .acquire_lock()
+        .expect("the caller transaction serialises the run");
+
+    let error = backend
+        .execute_non_transactional("CREATE TABLE users (id INTEGER NOT NULL);")
+        .expect_err("the statements of such a script belong outside any transaction");
+
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(message.contains("non-transactional"), "{message}");
+}
+
+#[test]
+fn sqlite_client_backend_reports_the_digest_of_its_catalog() {
+    let mut connection = client_connection();
+    let scripts = migrations(
+        "V1__users.sql",
+        "CREATE TABLE users (id INTEGER NOT NULL PRIMARY KEY, email TEXT NOT NULL);",
+    );
+
+    let mut backend = SqliteConnectionMigrationBackend::new(&mut connection);
+    Migrator::new()
+        .migrate(&mut backend, &scripts)
+        .expect("the script applies");
+
+    let catalog = backend
+        .introspect_catalog()
+        .expect("the catalog of the connection is introspected");
+    assert_eq!(catalog.tables.len(), 1);
+    assert_eq!(catalog.tables[0].name, "users");
+
+    // The history table stays outside the catalog the digest describes.
+    assert_eq!(
+        backend
+            .catalog_checksum()
+            .expect("the digest of the connection"),
+        Some(catalog.checksum())
     );
 }

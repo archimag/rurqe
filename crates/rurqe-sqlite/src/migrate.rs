@@ -18,6 +18,10 @@
 //! lock first, because the statements such a script exists for are exactly the ones
 //! SQLite rejects inside a transaction; the lock is taken again afterwards, so the
 //! history row of the script and the remaining steps of the run stay serialised.
+//!
+//! `SqliteConnectionMigrationBackend` is the client half: it drives a
+//! `SqliteConnection` the application already owns — owned or borrowed — so a
+//! service migrates through the very connection it queries with.
 
 use std::time::Duration;
 
@@ -29,7 +33,7 @@ use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_migrate::sleeper::warn_if_in_tokio_runtime;
 
 use crate::introspect::introspect_sqlite;
-
+mod client;
 mod history;
 
 pub use history::{
@@ -37,7 +41,12 @@ pub use history::{
     HISTORY_COLUMN_COUNT,
 };
 
-use history::{backend_error, release_savepoint_sql, rollback_savepoint_sql, SQLITE_STEP_SAVEPOINT};
+pub use client::{SqliteConnectionMigrationBackend, SqliteConnectionMigrationTransaction};
+
+use history::{
+    backend_error, read_history_rows, release_savepoint_sql, rollback_savepoint_sql,
+    SQLITE_STEP_SAVEPOINT,
+};
 
 /// Time a migration run waits for the SQLite write lock.
 const DEFAULT_SQLITE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -140,30 +149,7 @@ impl MigrationBackend for SqliteMigrationBackend {
     }
 
     fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
-        let mut statement = self
-            .conn
-            .prepare(&select_history_sql())
-            .map_err(backend_error)?;
-
-        let rows = statement
-            .query_map([], |row| {
-                Ok(RawHistoryRow {
-                    installed_rank: row.get(0)?,
-                    version: row.get(1)?,
-                    description: row.get(2)?,
-                    kind: row.get(3)?,
-                    script: row.get(4)?,
-                    checksum: row.get(5)?,
-                    installed_on: row.get(6)?,
-                    execution_time_ms: row.get(7)?,
-                    success: row.get::<_, i64>(8)? != 0,
-                })
-            })
-            .map_err(backend_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(backend_error)?;
-
-        rows.into_iter().map(RawHistoryRow::decode).collect()
+        read_history_rows(&self.conn)
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {

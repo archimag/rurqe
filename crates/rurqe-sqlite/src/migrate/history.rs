@@ -90,7 +90,39 @@ fn decode_kind(raw: &str) -> Result<MigrationKind, Error> {
         ))
     })
 }
+/// Reads and decodes the recorded history of `connection`.
+///
+/// The statement and the decode path live here rather than in each adapter, so the
+/// standalone backend, the client backend, and the status report read the history
+/// through one copy of the protocol, and a recorded value this decode path does not
+/// recognise is reported the same way on either connection.
+pub(super) fn read_history_rows(
+    connection: &::rusqlite::Connection,
+) -> Result<Vec<SchemaHistoryEntry>, Error> {
+    let mut statement = connection
+        .prepare(&select_history_sql())
+        .map_err(backend_error)?;
 
+    let rows = statement
+        .query_map([], |row| {
+            Ok(RawHistoryRow {
+                installed_rank: row.get(0)?,
+                version: row.get(1)?,
+                description: row.get(2)?,
+                kind: row.get(3)?,
+                script: row.get(4)?,
+                checksum: row.get(5)?,
+                installed_on: row.get(6)?,
+                execution_time_ms: row.get(7)?,
+                success: row.get::<_, i64>(8)? != 0,
+            })
+        })
+        .map_err(backend_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(backend_error)?;
+
+    rows.into_iter().map(RawHistoryRow::decode).collect()
+}
 /// The statement reading the recorded history in installation order.
 pub fn select_history_sql() -> String {
     format!(
