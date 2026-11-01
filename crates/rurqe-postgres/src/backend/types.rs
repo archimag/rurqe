@@ -54,6 +54,19 @@ pub enum PgError {
         /// Why the value does not decode.
         reason: String,
     },
+    /// The connection is poisoned and refuses to execute further statements.
+    ///
+    /// A poison record is written when the adapter can no longer prove that the
+    /// connection is outside a transaction: a transaction-control statement the
+    /// driver refused, or a transaction block that ended without one. PostgreSQL
+    /// accepts a `BEGIN` inside an open transaction with a warning, so executing
+    /// on such a connection would run the statement inside the abandoned
+    /// transaction and persist it with the next `COMMIT`. The connection has to be
+    /// discarded instead.
+    ConnectionPoisoned {
+        /// The transaction-control failure that poisoned the connection.
+        reason: String,
+    },
     /// The connection could not be checked out of a `deadpool-postgres` pool.
     #[cfg(feature = "deadpool-postgres")]
     Pool(deadpool_postgres::PoolError),
@@ -74,6 +87,9 @@ impl fmt::Display for PgError {
                 f,
                 "invalid value for PostgreSQL column type `{column_type}`: {reason}"
             ),
+            PgError::ConnectionPoisoned { reason } => {
+                write!(f, "the PostgreSQL connection is poisoned: {reason}")
+            }
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(error) => write!(f, "connection pool error: {error}"),
         }
@@ -86,6 +102,7 @@ impl StdError for PgError {
             PgError::Driver(error) => Some(error),
             PgError::UnsupportedType(_) => None,
             PgError::InvalidValue { .. } => None,
+            PgError::ConnectionPoisoned { .. } => None,
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(_) => None,
         }
