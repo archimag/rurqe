@@ -8,6 +8,13 @@
 //! exercises the whole set. Each scenario owns its fixture table, because the
 //! scenarios of one binary run concurrently and a shared table would let them
 //! observe each other's work.
+//!
+//! The regression scenarios pin the disposition of a checkout whose transaction
+//! was abandoned. On the synchronous pool a leaked transaction and a leaked
+//! aborted transaction are repaired by the reset of the next checkout, while a
+//! session that lost its backend is refused there; on the asynchronous surfaces
+//! a cancelled block, a panicking block, and a refused rollback destroy their
+//! own checkout instead of returning it to the pool.
 
 // A skipped scenario reports itself to the operator running the tests, which is
 // the one place the workspace-wide printing ban is lifted for this file.
@@ -101,6 +108,19 @@ mod support {
             column_type: String::from("text"),
             reason: failure.to_string(),
         })
+    }
+    /// The failure a block returns when the scenario only needs an error value.
+    ///
+    /// The variant names a decoding failure because it is the one `PgError`
+    /// constructor the adapter exposes to its callers: the scenario never lets
+    /// the value reach a column, it only makes the block return `Err` on its
+    /// own, so the rollback the adapter awaits is the call that fails next.
+    #[cfg(feature = "tokio-postgres")]
+    pub(super) fn deliberate_failure() -> PgError {
+        PgError::InvalidValue {
+            column_type: String::from("text"),
+            reason: String::from("the block failed before its rollback"),
+        }
     }
 }
 
@@ -261,10 +281,139 @@ mod sync_pool {
         // the one-connection pool with nothing to serve the counting block.
         assert_eq!(totals(&pool, "rurqe_tx_return"), (1, 100));
     }
+    #[test]
+    fn a_leaked_transaction_is_cleared_at_checkout() {
+        let Some(url) = support::database_url("PgPool::get leaked transaction reset") else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_leak");
+
+        // The raw pooled handle is the supported escape hatch, so the leak this
+        // scenario produces is the ordinary one: a `BEGIN` the caller issued
+        // itself and never closed.
+        {
+            let mut connection = pool.get().expect("the fixture connection is checked out");
+            connection
+                .batch_execute("BEGIN")
+                .expect("the manual transaction opens");
+            connection
+                .batch_execute("INSERT INTO rurqe_tx_leak (id, amount) VALUES (1, 100)")
+                .expect("the leaked row is written");
+            // The handle returns to the pool with its transaction still open.
+        }
+
+        pool.transaction(|tx| {
+            tx.client_mut()
+                .batch_execute("INSERT INTO rurqe_tx_leak (id, amount) VALUES (2, 200)")?;
+            Ok(())
+        })
+        .expect("the block commits on the session the checkout returned to idle");
+
+        assert_eq!(
+            totals(&pool, "rurqe_tx_leak"),
+            (1, 200),
+            "the reset rolled the abandoned transaction back, so only the block's row persists"
+        );
+    }
+
+    #[test]
+    fn an_aborted_leaked_transaction_is_cleared_at_checkout() {
+        let Some(url) = support::database_url("PgPool::get aborted transaction reset") else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_aborted");
+
+        {
+            let mut connection = pool.get().expect("the fixture connection is checked out");
+            connection
+                .batch_execute("BEGIN")
+                .expect("the manual transaction opens");
+            connection
+                .batch_execute("INSERT INTO rurqe_tx_aborted (id, amount) VALUES (1, 100)")
+                .expect("the leaked row is written");
+            // The failing statement leaves the session `idle in transaction
+            // (aborted)`, the second state a checkout has to repair.
+            assert!(
+                connection
+                    .batch_execute("INSERT INTO rurqe_tx_absent (id) VALUES (1)")
+                    .is_err(),
+                "the statement that aborts the session reports its failure"
+            );
+        }
+
+        pool.transaction(|tx| {
+            tx.client_mut()
+                .batch_execute("INSERT INTO rurqe_tx_aborted (id, amount) VALUES (2, 200)")?;
+            Ok(())
+        })
+        .expect("the block commits on the session the checkout repaired");
+
+        assert_eq!(
+            totals(&pool, "rurqe_tx_aborted"),
+            (1, 200),
+            "the aborted transaction was discarded, so only the block's row persists"
+        );
+    }
+
+    #[test]
+    fn a_broken_connection_is_refused_at_checkout() {
+        let Some(url) = support::database_url("PgPool::get refused checkout") else {
+            return;
+        };
+        let pool = pool(&url);
+
+        let backend = {
+            let mut connection = pool.get().expect("the fixture connection is checked out");
+            let row = connection
+                .query_one("SELECT pg_backend_pid()", &[])
+                .expect("the backend reports its process id");
+            // The handle returns to the pool while its session is still healthy,
+            // so the pool recycles the connection instead of discarding it.
+            row.get::<_, i32>(0)
+        };
+
+        // Terminating the backend from another session leaves the recycled
+        // connection in a state the pool does not inspect: `r2d2` validates that
+        // a connection is alive rather than that it is usable, and a session
+        // that lost its backend still looks open to the pool.
+        let config: postgres::Config = url.parse().expect("the test URL parses");
+        let mut killer = config
+            .connect(NoTls)
+            .expect("the second client connects to the server");
+        let terminated = killer
+            .query_one("SELECT pg_terminate_backend($1)", &[&backend])
+            .expect("the termination request is dispatched");
+        assert!(
+            terminated.get::<_, bool>(0),
+            "the server accepted the termination of backend {backend}"
+        );
+
+        // The checkout of the dead session is refused instead of handed out, and
+        // the refusal names the reset the broken session could not complete.
+        match pool.get() {
+            Err(PgPoolError::Query(PgError::AbandonedTransaction { .. })) => {}
+            Err(other) => panic!("the checkout reports the broken session: {other:?}"),
+            Ok(_) => panic!("the checkout of a session without a backend is refused"),
+        }
+
+        // The refused checkout dropped the dead connection, so the pool opens a
+        // fresh one for the next caller.
+        let served = pool.get();
+        assert!(
+            served.is_ok(),
+            "the pool replaces the connection it refused: {:?}",
+            served.err()
+        );
+    }
 }
 
 #[cfg(feature = "deadpool-postgres")]
 mod async_pool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     use deadpool_postgres::{Manager, ManagerConfig, Pool, Runtime};
     use rurqe_postgres::{PgAsyncPool, PgError};
     use tokio_postgres::NoTls;
@@ -367,10 +516,149 @@ mod async_pool {
             (0, 0)
         );
     }
+    /// Polls the yield loop grants the cancelled block before it fails.
+    ///
+    /// The block raises its flag from the server's acknowledgement of the
+    /// insert and then parks, so a live server reaches the flag in a handful of
+    /// polls; the budget exists only so a block that never gets there fails the
+    /// scenario with a diagnostic instead of hanging the suite.
+    const YIELD_BUDGET: usize = 100_000;
+
+    #[tokio::test]
+    async fn a_cancelled_block_does_not_leak_its_transaction() {
+        let Some(url) = support::database_url("PgAsyncPool::transaction cancellation") else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_async_cancel").await;
+
+        let inserted = Arc::new(AtomicBool::new(false));
+        let block = tokio::spawn({
+            let pool = pool.clone();
+            let inserted = Arc::clone(&inserted);
+            async move {
+                pool.transaction(|scope| {
+                    Box::pin(async move {
+                        support::execute(
+                            &scope,
+                            "INSERT INTO rurqe_tx_async_cancel (id, amount) VALUES (1, 100)",
+                        )
+                        .await?;
+                        inserted.store(true, Ordering::SeqCst);
+                        // The block parks on a future that never becomes ready,
+                        // so the only way out of it is the cancellation below.
+                        std::future::pending::<()>().await;
+                        Ok::<(), PgError>(())
+                    })
+                })
+                .await
+            }
+        });
+
+        // The flag is raised from the server's acknowledgement of the insert, so
+        // the yield loop gives the block the polls it needs to reach it. The loop
+        // is bounded so a block that never completes its insert fails the
+        // scenario with a diagnostic instead of hanging the suite.
+        let mut yields = 0;
+        while !inserted.load(Ordering::SeqCst) {
+            assert!(
+                yields < YIELD_BUDGET,
+                "the cancelled block did not complete its insert within {YIELD_BUDGET} yields"
+            );
+            yields += 1;
+            tokio::task::yield_now().await;
+        }
+
+        // Aborting drops the block future inside the closure: neither `COMMIT`
+        // nor `ROLLBACK` is ever awaited for it, so the disposition guard alone
+        // decides what happens to the connection that opened the transaction.
+        block.abort();
+        match block.await {
+            Ok(_) => panic!("the cancelled block never returns a value"),
+            Err(failure) => assert!(
+                failure.is_cancelled(),
+                "the block was cancelled rather than failed: {failure}"
+            ),
+        }
+
+        pool.transaction(|scope| {
+            Box::pin(async move {
+                support::execute(
+                    &scope,
+                    "INSERT INTO rurqe_tx_async_cancel (id, amount) VALUES (2, 200)",
+                )
+                .await?;
+                Ok::<(), PgError>(())
+            })
+        })
+        .await
+        .expect("the pool serves a fresh connection after the cancelled block");
+
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_cancel").await,
+            (1, 200),
+            "the abandoned checkout was destroyed, so only the second block's row persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_pool_rollback_poisons_and_is_reported() {
+        let Some(url) = support::database_url("PgAsyncPool::transaction refused rollback") else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_async_refused").await;
+
+        let outcome: Result<(), PgError> = pool
+            .transaction(|scope| {
+                Box::pin(async move {
+                    // The statement ends the session: the backend terminates
+                    // itself, so the `ROLLBACK` the adapter awaits below reaches
+                    // a connection that no longer exists.
+                    let _ =
+                        support::execute(&scope, "SELECT pg_terminate_backend(pg_backend_pid())")
+                            .await;
+                    Err(support::deliberate_failure())
+                })
+            })
+            .await;
+
+        assert!(
+            matches!(&outcome, Err(PgError::ConnectionPoisoned { .. })),
+            "the refused rollback supersedes the block's error: {outcome:?}"
+        );
+
+        // The poisoned checkout was destroyed rather than recycled, so the pool
+        // opens a fresh connection for the block that follows.
+        pool.transaction(|scope| {
+            Box::pin(async move {
+                support::execute(
+                    &scope,
+                    "INSERT INTO rurqe_tx_async_refused (id, amount) VALUES (1, 100)",
+                )
+                .await?;
+                Ok::<(), PgError>(())
+            })
+        })
+        .await
+        .expect("the pool opens a fresh connection for the next block");
+
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_refused").await,
+            (1, 100),
+            "the abandoned checkout was destroyed, so the pool serves a fresh connection"
+        );
+    }
 }
 
 #[cfg(feature = "tokio-postgres")]
 mod async_connection {
+    use std::any::Any;
+    use std::future::Future;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::pin::pin;
+    use std::task::Poll;
+
     use rurqe_postgres::rurqe_core::query::{AsyncQueryBackend, IsolationLevel};
     use rurqe_postgres::{PgAsyncConnection, PgError};
     use tokio_postgres::NoTls;
@@ -477,5 +765,142 @@ mod async_connection {
         // The savepoint undid the nested insert alone, so the work written
         // around it committed: the enclosing block and the row after it.
         assert_eq!(support::totals(&connection, table).await, (2, 400));
+    }
+    /// The outcome of a block driven through [`catch_unwind_future`].
+    type BlockOutcome<T> = Result<Result<T, PgError>, Box<dyn Any + Send>>;
+
+    /// Drives `future` to completion, capturing a panic instead of unwinding.
+    ///
+    /// An unwinding block still has to be observed by the exit guard of the
+    /// adapter, so the panic is caught at the poll boundary: the unwind leaves
+    /// the poll call, the future is dropped through the ordinary drop path on
+    /// the way out, and the guard marks the connection poisoned exactly as it
+    /// does when a block returns.
+    async fn catch_unwind_future<T, F>(future: F) -> BlockOutcome<T>
+    where
+        F: Future<Output = Result<T, PgError>>,
+    {
+        let mut future = pin!(future);
+        std::future::poll_fn(move |context| {
+            match catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(context))) {
+                Ok(Poll::Pending) => Poll::Pending,
+                Ok(Poll::Ready(output)) => Poll::Ready(Ok(output)),
+                Err(payload) => Poll::Ready(Err(payload)),
+            }
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_panicking_nested_block_poisons_the_connection() {
+        let Some(url) = support::database_url("PgAsyncConnection panicking nested block") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+        let table = "rurqe_tx_async_panic";
+
+        let outcome: BlockOutcome<()> = catch_unwind_future(
+            connection.transaction_with_isolation(IsolationLevel::Serializable, |mut scope| {
+                Box::pin(async move {
+                    support::execute(&scope, &format!("DROP TABLE IF EXISTS {table}")).await?;
+                    support::execute(
+                        &scope,
+                        &format!(
+                            "CREATE TABLE {table} (id INTEGER PRIMARY KEY, amount INTEGER NOT NULL)"
+                        ),
+                    )
+                    .await?;
+                    support::execute(
+                        &scope,
+                        &format!("INSERT INTO {table} (id, amount) VALUES (1, 100)"),
+                    )
+                    .await?;
+
+                    // The nested block is a savepoint of the enclosing
+                    // transaction, and its panic unwinds through both scopes:
+                    // neither block ever issues a control statement.
+                    let _nested: Result<(), PgError> = scope
+                        .transaction(|nested| {
+                            Box::pin(async move {
+                                support::execute(
+                                    &nested,
+                                    &format!("INSERT INTO {table} (id, amount) VALUES (2, 200)"),
+                                )
+                                .await?;
+                                panic!("the nested block unwinds after inserting its row");
+                            })
+                        })
+                        .await;
+                    Ok::<(), PgError>(())
+                })
+            }),
+        )
+        .await;
+
+        let payload = outcome.expect_err("the wrapper captures the panic the block unwinds with");
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|text| (*text).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned());
+        assert_eq!(
+            message.as_deref(),
+            Some("the nested block unwinds after inserting its row"),
+            "the panic that unwound through the block is the nested block's own"
+        );
+
+        assert!(
+            connection.is_poisoned(),
+            "the block unwound without closing its transaction, so the connection is poisoned"
+        );
+
+        let refused =
+            AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
+        assert!(
+            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+            "the poisoned connection refuses further statements: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_rollback_poisons_and_is_reported() {
+        let Some(url) = support::database_url("PgAsyncConnection refused rollback") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        let outcome: Result<(), PgError> = connection
+            .transaction_with_isolation(IsolationLevel::ReadCommitted, |scope| {
+                Box::pin(async move {
+                    // The statement ends the session: the backend terminates
+                    // itself, so the `ROLLBACK` the adapter awaits below reaches
+                    // a connection that no longer exists.
+                    let _ =
+                        support::execute(&scope, "SELECT pg_terminate_backend(pg_backend_pid())")
+                            .await;
+                    Err(support::deliberate_failure())
+                })
+            })
+            .await;
+
+        match &outcome {
+            Err(PgError::InvalidValue { reason, .. }) => assert_eq!(
+                reason.as_str(),
+                "the block failed before its rollback",
+                "the block reports the failure it returned"
+            ),
+            other => panic!("the refused rollback supersedes the block's error: {other:?}"),
+        }
+
+        assert!(
+            connection.is_poisoned(),
+            "the refused rollback recorded a poison on the connection"
+        );
+
+        let refused =
+            AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
+        assert!(
+            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+            "the poisoned connection refuses further statements: {refused:?}"
+        );
     }
 }
