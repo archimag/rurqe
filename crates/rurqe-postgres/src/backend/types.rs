@@ -600,60 +600,93 @@ impl<'a> FromSql<'a> for RawValue<'a> {
 ///
 /// Classifying a column type resolves its domain chain and compares type names,
 /// which yields the same answer for every row a statement returns. Resolving it
-/// once per column keeps that work off the path taken for every decoded value.
-struct ColumnPlan<'a> {
+/// once per column keeps that work off the path taken for every decoded value,
+/// and owning the resolved type keeps the classification valid for every row of
+/// the result set rather than for the row it was read from.
+struct ColumnPlan {
     /// The type the column is declared over, with its domain chain resolved.
-    base: &'a Type,
+    base: Type,
     /// Textual representation of the column type, when it declares one.
     wire: Option<Wire>,
 }
 
-impl<'a> ColumnPlan<'a> {
+impl ColumnPlan {
     /// Classifies a column declared as `ty`.
-    fn of(ty: &'a Type) -> Self {
-        let base = base_type(ty);
-        Self {
-            base,
-            wire: wire_of(base),
-        }
+    fn of(ty: &Type) -> Self {
+        let base = base_type(ty).clone();
+        let wire = wire_of(&base);
+        Self { base, wire }
     }
 }
 
-/// Decodes the rows of a result set into the ordered values RURQE rows are built
-/// from.
+/// A row of a result set, as the decoding layer reads it.
+///
+/// A driver hands its own row type to the adapters, and every row reports the
+/// type each of its columns is declared as together with the binary payload that
+/// column carries. Reading a row through this view keeps the decoding loop
+/// independent of how a driver materialises one, which is what lets the loop run
+/// against a synthetic row in the test suite without a running server.
+pub(crate) trait ResultRow {
+    /// Types the columns of the row are declared as, in projection order.
+    fn column_types(&self) -> impl Iterator<Item = &Type> + '_;
+
+    /// Binary payload of the column at `index`, or `None` for SQL `NULL`.
+    fn column_payload(&self, index: usize) -> Result<Option<&[u8]>, PgError>;
+}
+
+impl ResultRow for Row {
+    fn column_types(&self) -> impl Iterator<Item = &Type> + '_ {
+        self.columns().iter().map(|column| column.type_())
+    }
+
+    fn column_payload(&self, index: usize) -> Result<Option<&[u8]>, PgError> {
+        let raw: Option<RawValue<'_>> = self.try_get(index)?;
+        Ok(raw.map(|raw| raw.0))
+    }
+}
+
+/// Decodes the rows of a result set one at a time.
 ///
 /// Every row a statement returns carries the same columns, so the decoding rules
-/// of each column are classified once from the first row and reused for the rest
-/// of the result set, and every payload is decoded straight from the borrowed row
-/// buffer.
-pub(crate) fn rows_to_sql_vals(rows: Vec<Row>) -> Result<Vec<Vec<SqlVal>>, PgError> {
-    let Some(first) = rows.first() else {
-        return Ok(Vec::new());
-    };
+/// of the result set are classified once, from the first row that arrives, and
+/// reused for every further row. Decoding a row on arrival keeps the message
+/// buffer of one row alive at a time instead of holding the whole result set in
+/// its raw form while its decoded values are built, so a fetch never materialises
+/// its result set twice.
+pub(crate) struct RowDecoder {
+    /// Decoding rules of the result set, classified from its first row.
+    plans: Option<Vec<ColumnPlan>>,
+}
 
-    let plans: Vec<ColumnPlan<'_>> = first
-        .columns()
-        .iter()
-        .map(|column| ColumnPlan::of(column.type_()))
-        .collect();
+impl RowDecoder {
+    /// Creates a decoder that has not read a row of its result set yet.
+    pub(crate) fn new() -> Self {
+        Self { plans: None }
+    }
 
-    rows.iter().map(|row| decode_row(&plans, row)).collect()
+    /// Decodes `row`, classifying the result set from the first row it receives.
+    pub(crate) fn decode<R: ResultRow>(&mut self, row: &R) -> Result<Vec<SqlVal>, PgError> {
+        let plans = self.plans.get_or_insert_with(|| classify(row));
+        decode_row(plans, row)
+    }
+}
+
+/// Classifies the decoding rules of a result set from one of its rows.
+fn classify<R: ResultRow>(row: &R) -> Vec<ColumnPlan> {
+    row.column_types().map(ColumnPlan::of).collect()
 }
 
 /// Decodes one row with the plans classified for its result set.
-fn decode_row(plans: &[ColumnPlan<'_>], row: &Row) -> Result<Vec<SqlVal>, PgError> {
-    let mut values = Vec::with_capacity(row.columns().len());
+fn decode_row<R: ResultRow>(plans: &[ColumnPlan], row: &R) -> Result<Vec<SqlVal>, PgError> {
+    let mut values = Vec::with_capacity(plans.len());
 
-    for (index, column) in row.columns().iter().enumerate() {
-        let declared = column.type_();
-        let raw: Option<RawValue<'_>> = row.try_get(index)?;
-
-        let decoded = match raw {
-            Some(raw) => match plans.get(index) {
-                Some(plan) => decode_payload(plan.base, plan.wire, raw.0),
+    for (index, declared) in row.column_types().enumerate() {
+        let decoded = match row.column_payload(index)? {
+            Some(payload) => match plans.get(index) {
+                Some(plan) => decode_payload(&plan.base, plan.wire, payload),
                 // A row of another shape keeps decoding by classifying its own
                 // column instead of being reported as an unsupported type.
-                None => decode_value(declared, raw.0),
+                None => decode_value(declared, payload),
             },
             None => Ok(SqlVal::Null),
         };
@@ -705,7 +738,7 @@ impl DecodeError {
 /// like the column carrying it.
 fn decode_value(ty: &Type, payload: &[u8]) -> Result<SqlVal, DecodeError> {
     let plan = ColumnPlan::of(ty);
-    decode_payload(plan.base, plan.wire, payload)
+    decode_payload(&plan.base, plan.wire, payload)
 }
 
 /// Decodes the binary payload of a value whose column was already classified.

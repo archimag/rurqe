@@ -13,7 +13,7 @@ use rurqe_core::query::BuiltQuery;
 
 use super::driver::types::{IsNull, Kind, ToSql, Type};
 use super::wire::{wire_of, Wire};
-use super::{decode_value, BoundParams, SqlValParam};
+use super::{decode_value, BoundParams, PgError, ResultRow, RowDecoder, SqlValParam};
 
 // The binding layer sits on the hot path of every statement, so its allocation
 // count is observed rather than assumed. The counter is thread-local because
@@ -74,6 +74,34 @@ fn array_of(name: &str, oid: u32, element: Type) -> Type {
         Kind::Array(element),
         "public".to_owned(),
     )
+}
+
+/// Runs `f` while counting the allocations it makes on the current thread.
+fn allocations_of<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    ALLOCATIONS.with(|allocations| allocations.set(0));
+    COUNTING.with(|counting| counting.set(true));
+    let value = f();
+    COUNTING.with(|counting| counting.set(false));
+    (value, ALLOCATIONS.with(|allocations| allocations.get()))
+}
+
+/// A result row built from synthetic column types and payloads.
+struct SyntheticRow<'a> {
+    /// Type each column is declared as, paired with its binary payload.
+    columns: Vec<(&'a Type, Option<&'a [u8]>)>,
+}
+
+impl ResultRow for SyntheticRow<'_> {
+    fn column_types(&self) -> impl Iterator<Item = &Type> + '_ {
+        self.columns.iter().map(|(column_type, _)| *column_type)
+    }
+
+    fn column_payload(&self, index: usize) -> Result<Option<&[u8]>, PgError> {
+        match self.columns.get(index) {
+            Some((_, payload)) => Ok(*payload),
+            None => Ok(None),
+        }
+    }
 }
 
 #[test]
@@ -732,12 +760,10 @@ fn a_statement_prepares_its_parameters_once() {
         params: vec![SqlVal::I64(1)],
     };
 
-    ALLOCATIONS.with(|allocations| allocations.set(0));
-    COUNTING.with(|counting| counting.set(true));
-    let params = BoundParams::of(&query);
-    let bound = params.bindings().count();
-    COUNTING.with(|counting| counting.set(false));
-    let allocations = ALLOCATIONS.with(|allocations| allocations.get());
+    let (bound, allocations) = allocations_of(|| {
+        let params = BoundParams::of(&query);
+        params.bindings().count()
+    });
 
     assert_eq!(bound, 1);
     // The statement pays for one buffer of wrappers. A second buffer of
@@ -745,5 +771,38 @@ fn a_statement_prepares_its_parameters_once() {
     assert_eq!(
         allocations, 1,
         "binding one parameter must allocate one buffer of its bound values"
+    );
+}
+
+#[test]
+fn a_result_set_is_decoded_one_row_at_a_time() {
+    let payload: &[u8] = b"alice";
+    let mut decoder = RowDecoder::new();
+    let row = SyntheticRow {
+        columns: vec![(&Type::TEXT, Some(payload))],
+    };
+
+    // The first row pays for the classification of the result set, which every
+    // further row reuses.
+    let (first, first_allocations) = allocations_of(|| decoder.decode(&row));
+    let first = first.expect("the first row of the result set decodes");
+    let (second, second_allocations) = allocations_of(|| decoder.decode(&row));
+    let second = second.expect("the second row of the result set decodes");
+
+    let expected = vec![SqlVal::Text(String::from("alice"))];
+    assert_eq!(first, expected);
+    assert_eq!(second, expected);
+
+    // One buffer for the classified result set, one for the decoded row, and one
+    // for the text value the row carries.
+    assert_eq!(
+        first_allocations, 3,
+        "decoding the first row must classify the result set once and decode the row"
+    );
+    // A further row allocates its own decoded values only: the result set is
+    // never materialised a second time.
+    assert_eq!(
+        second_allocations, 2,
+        "decoding a further row must not allocate another copy of the result set"
     );
 }

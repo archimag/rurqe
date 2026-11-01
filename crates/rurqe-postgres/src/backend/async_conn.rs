@@ -7,7 +7,7 @@ use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 
 use super::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
-use super::types::{rows_to_sql_vals, BoundParams, PgError};
+use super::types::{BoundParams, PgError, RowDecoder};
 
 /// Executes `query` through an asynchronous client without decoding rows.
 ///
@@ -68,21 +68,28 @@ where
 /// The stream is polled row by row and the loop stops as soon as `limit` rows
 /// have been collected, so the remaining rows of a bounded result set are never
 /// read from the socket. Without a limit the stream is drained to its end.
+///
+/// Every row is decoded as it arrives instead of being collected first, so the
+/// message buffer of a row is released before the next one is read.
 async fn rows_from_stream(
     stream: tokio_postgres::RowStream,
     limit: Option<usize>,
 ) -> Result<Vec<Vec<SqlVal>>, PgError> {
     let mut stream = std::pin::pin!(stream);
+    let mut decoder = RowDecoder::new();
     let mut rows = Vec::new();
     let ceiling = limit.unwrap_or(usize::MAX);
     while rows.len() < ceiling {
         let next = std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
         match next {
-            Some(row) => rows.push(row?),
+            Some(row) => {
+                let row = row?;
+                rows.push(decoder.decode(&row)?);
+            }
             None => break,
         }
     }
-    rows_to_sql_vals(rows)
+    Ok(rows)
 }
 
 /// A [`tokio_postgres::Client`] executing RURQE queries asynchronously.

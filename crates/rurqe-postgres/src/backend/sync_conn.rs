@@ -9,7 +9,7 @@ use rurqe_core::query::{
     TransactionStatus, TransactionalConnection,
 };
 
-use super::types::{rows_to_sql_vals, BoundParams, PgError};
+use super::types::{BoundParams, PgError, RowDecoder};
 
 /// Executes `query` through a synchronous client without decoding rows.
 pub(crate) fn fetch_raw_sync(
@@ -41,6 +41,9 @@ pub(crate) fn execute_raw_sync(
 ///
 /// Without a limit the whole result set is fetched, exactly as
 /// [`fetch_raw_sync`] does.
+///
+/// Every row is decoded as it arrives instead of being collected first, so the
+/// message buffer of a row is released before the next one is read.
 pub(crate) fn fetch_raw_limited_sync(
     client: &mut postgres::Client,
     query: &BuiltQuery,
@@ -50,16 +53,17 @@ pub(crate) fn fetch_raw_limited_sync(
     // statement pays for one buffer of its own values and never for a copy of
     // them.
     let params = BoundParams::of(query);
+    let mut decoder = RowDecoder::new();
     let mut rows = Vec::new();
     let mut stream = client.query_raw(query.sql.as_str(), params.bindings())?;
     let ceiling = limit.unwrap_or(usize::MAX);
     while rows.len() < ceiling {
         match stream.next()? {
-            Some(row) => rows.push(row),
+            Some(row) => rows.push(decoder.decode(&row)?),
             None => break,
         }
     }
-    rows_to_sql_vals(rows)
+    Ok(rows)
 }
 
 /// A synchronous PostgreSQL handle executing RURQE queries.
