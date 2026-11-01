@@ -59,7 +59,7 @@ The asynchronous closure form nests the same way, one awaited statement at a tim
 {{#rustdoc_include ../examples/pool_transactions.rs:nesting}}
 ```
 
-A release or a rollback the driver refuses is traced instead of replacing the error of the block, and the connection then has to be discarded rather than reused, because the statements of the nested block stay pending inside the enclosing transaction.
+A rollback the driver refuses is traced instead of replacing the error of the block, and the connection is poisoned from that point on: further statements and further savepoints are refused with the poisoned-connection error, so the connection has to be discarded rather than reused, because the statements of the nested block stay pending inside the enclosing transaction.
 
 ## Transaction Isolation Levels
 
@@ -96,9 +96,10 @@ A pool executes a single statement by checking a connection out, running it in a
 - The outermost block of a pooled transaction runs between `BEGIN` and `COMMIT`; a block opened while a transaction is already open nests inside a `SAVEPOINT`.
 - A block that returns `Err` has its statements rolled back before that error reaches the caller.
 - A checkout failure surfaces as `PgError::Pool`, while a failure raised by `BEGIN`, by the block, or by `COMMIT` surfaces as `PgError`.
-- The connection returns to the pool on every completed path, because the checkout guard is dropped however the block ends, so several transactions of a shared pool run concurrently, each on its own connection.
+- A `ROLLBACK` the driver refuses supersedes the error of the block and surfaces as the poisoned-connection error `PgError::ConnectionPoisoned`, because the transaction state is unknown from that point on.
+- A checkout whose block reached its end returns to the pool, whether the block committed or was rolled back, so several transactions of a shared pool run concurrently, each on its own connection.
 
-A block that is cancelled or unwound never reaches the end of the call, so neither `COMMIT` nor `ROLLBACK` is awaited for it: the connection returns to the pool with the transaction of the abandoned block still open. The asynchronous pool recycles a connection by checking that it is not closed, not by checking that it holds no open transaction, so a pool that observed an abandoned block has to be rebuilt rather than reused. The synchronous pools differ here: their guard performs the rollback in its `Drop`, before the connection returns to the pool.
+A block that is cancelled or unwound never reaches the end of the call, so neither `COMMIT` nor `ROLLBACK` is awaited for it, and a `BEGIN`, `COMMIT`, or `ROLLBACK` the driver refuses leaves the transaction state unknown. Either ending destroys the checkout instead of returning it to the pool, so the connection never reaches another caller: dropping it closes its session, the server rolls the abandoned transaction back when that session ends, and the work of the abandoned block is discarded. The pool replaces the destroyed connection, so the next caller starts on a fresh session; a block that has to survive an abandoned future belongs in a task that finishes or reports its own cancellation.
 
 ### The synchronous pool
 
@@ -109,6 +110,8 @@ This section documents the synchronous runtime form. The synchronous pool hands 
 ```
 
 The block commits when the closure returns `Ok` and rolls back when the closure returns `Err` or unwinds, exactly as the owned connection does, and the checkout returns to the pool on every one of those paths.
+
+The synchronous PostgreSQL pool returns every connection to an idle session before handing it out: the reset is one round trip carrying `BEGIN` followed by `ROLLBACK`, and it leaves no trace on a session that was already idle. A transaction an earlier checkout left open — one issued through the raw handle, or one whose control statement the driver refused — is therefore closed before the next block opens, so neither a transaction block nor a single statement issued through the pool joins an abandoned transaction. A session the reset cannot bring back to a known state is never handed out: the checkout fails with the abandoned-transaction refusal `PgError::AbandonedTransaction`, carried by `PgPoolError::Query`, instead of running a block inside the abandoned transaction.
 
 A block opened inside a pooled transaction nests the same way:
 
@@ -132,6 +135,6 @@ What such a desynchronisation costs is bounded, and deliberately so:
 The observation is driver-specific, because the engines disagree on a transaction-control statement issued with no transaction open:
 
 - SQLite refuses `COMMIT` and `ROLLBACK` with an error, so the SQLite adapter classifies the refusal through the driver's autocommit check — the same observation the migration tooling uses to detect a script that left a transaction open. A refusal raised while no transaction is open is benign; a refusal that leaves a transaction open remains the driver's own error and is reported as such.
-- PostgreSQL reports both statements in an idle session as warnings rather than errors, so no classification is needed there and the bookkeeping resynchronises through the server's own tolerance.
+- PostgreSQL reports both statements in an idle session as warnings rather than errors, so no classification is needed there and the bookkeeping resynchronises through the server's own tolerance. Where a leaked transaction is repaired depends on the surface: the synchronous pool returns every checkout to an idle session, so a transaction the raw handle left open is closed before the next block opens and never reaches another caller; an owned connection runs the next block inside the leaked transaction in a release build, while a debug build returns the session to an idle state at the next typed transaction entry, before that block opens.
 
 The classification covers the rollback path only. A `COMMIT` that the raw handle desynchronised still costs its own transaction call its driver error, and the scope is closed by its rollback instead of being reported as successfully committed.
