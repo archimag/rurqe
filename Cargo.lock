@@ -1112,6 +1112,7 @@ dependencies = [
  "r2d2",
  "r2d2_sqlite",
  "rurqe-core",
+ "rurqe-migrate",
  "rusqlite",
  "tracing",
 ]

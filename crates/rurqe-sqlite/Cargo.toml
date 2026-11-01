@@ -11,9 +11,13 @@ description = "SQLite dialect implementation and runtime adapters for RURQE"
 default = ["rusqlite"]
 rusqlite = ["dep:rusqlite"]
 r2d2 = ["dep:r2d2", "rusqlite"]
+# The migration surface executes through `rusqlite`, so the feature carries the
+# driver it runs on instead of leaving the implication implicit.
+migrate = ["dep:rurqe-migrate", "rusqlite"]
 
 [dependencies]
 rurqe-core = { path = "../rurqe-core", version = "0.1.0" }
+rurqe-migrate = { path = "../rurqe-migrate", version = "0.1.0", optional = true }
 tracing = "0.1"
 r2d2 = { version = "0.8", optional = true }
 rusqlite = { version = "0.31", optional = true, features = ["bundled"] }
