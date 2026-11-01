@@ -77,22 +77,25 @@ project/
 
 ## The working day
 
-A schema change is written twice, and the two descriptions are made to agree before the change is released.
+A schema change reaches a project in two shapes, and the two are made to agree before the release that carries them. The declarative stage states the schema as it should stand after the change; one migration script carries the same change as a delta for the databases that already hold data.
 
 ```text
-schema/  ──▶ migrations/  ──▶ migrate up    (an existing database advances)
-   │                            stage init    (a clean database starts at the stage)
-   │
-   └──▶ stage commit ──▶ checkpoint.toml, checkpoint-stage/, schema.lock
-                              │
-                              └──▶ prune --before <version> ──▶ scripts below the boundary deleted
+schema/users.sql                    the target state, stated once
+migrations/V7__add_credits.sql      the same change as a delta for a live database
+        │
+        ├──▶ stage verify            State(schema/) == State(Checkpoint + migrations/)
+        ├──▶ stage init              a clean database begins at the stage
+        ├──▶ migrate up              an existing database advances through the tail
+        └──▶ stage commit            checkpoint.toml, checkpoint-stage/, schema.lock
+                     └──▶ prune      the scripts the boundary covers are deleted
 ```
 
-1. The declarative stage changes: a table is added, a column is altered, an index is dropped.
-2. One migration in `migrations/` carries the same change as a delta for the databases that already exist. One task, one script: the script is the unit a reviewer reads and a deployment applies, so a change split over two scripts of the same version never becomes one release.
-3. `migrate up` advances an existing database through the tail, while `stage init` initialises a clean one from the stage and records the stage version as its starting point.
-4. `stage verify` states whether the two descriptions still converge, and fails the change while they disagree.
-5. Once every deployed database has passed the release, `stage commit` seals the current stage as the new boundary, and `prune --before <version>` deletes the scripts the boundary now covers.
+1. **Describe the change in the stage.** The DDL of `schema/` is edited until it states the schema the project should have: a table added, a column altered, an index dropped. A stage split over several files is applied in file-name order, so a file that declares a type, creates a schema, or adds a column another file refers to is numbered below it.
+2. **Carry the same change as one script.** A `V...` script in `migrations/` states the identical change as a delta for the databases that already exist, and one task ships one script: the script is the unit a reviewer reads and a deployment applies, so a change split over two scripts of the same version never becomes one release. No command writes that script — the toolchain reads the declarative stage and never derives a delta from it — so the delta is the author's: while it has not been applied anywhere it is rewritten freely, together with the stage, until `stage verify` accepts the pair, and once it has been applied it is fixed, and a correction is a new script.
+3. **State whether the two descriptions still converge.** `cargo rurqe stage verify` materialises both sides in a disposable scratch state — the boundary together with the tail on one side, the stage on the other — and compares the resulting catalogs, so the pair is proven rather than assumed while the change is still local.
+4. **Start a clean environment at the stage.** `cargo rurqe stage init --version <version>` applies `schema/` in one pass and records the stage version as the starting point, so a CI container or a fresh development machine reaches the current schema in the time the stage takes rather than the time the history takes.
+5. **Advance an existing database through the tail.** `cargo rurqe migrate up` applies the pending scripts on a database that holds data, in version order, recording each one in the history table as it runs.
+6. **Seal the boundary once every deployed database has passed the release.** `cargo rurqe stage commit --version <version>` introspects the live catalog, refuses while the stage and the database disagree, and writes the boundary snapshot, the marker, and `schema.lock` together; `cargo rurqe prune --before <version>` then deletes the scripts the boundary folds in.
 
 ## The declarative stage
 
@@ -124,6 +127,19 @@ The directive accepts the keys `executeInTransaction`, `execute_in_transaction`,
 The stage carries a digest of its own: SHA-256 over every script name and body in application order. Reordering the directory does not change the digest, while editing any script does.
 
 The directory is the default. `--stage-dir <dir>` points a command at a stage kept somewhere else, and every command of the lifecycle accepts it.
+
+### Application order
+
+The order the stage is applied in is decided by its file names alone, and the comparison is a version sort rather than a text comparison:
+
+- A run of ASCII digits inside a name is compared by its numeric value, so `2_users.sql` precedes `10_orders.sql` with no leading zero, and no project has to pad its prefixes to a fixed width.
+- Every other run of characters is compared byte by byte, so a name without a numeric prefix sorts among the numbered ones by its text rather than by the position the listing happens to give it.
+- Names that agree on every segment and differ only in their leading zeros, such as `02_users.sql` and `2_users.sql`, are ordered by their raw text last, which keeps the comparison total instead of leaving two names unordered.
+- The comparison is fixed: the same directory produces the same order on every machine and every file system, so a stage never applies differently because a directory is listed another way.
+
+The order is the one place where a stage split over several files states a dependency. A file declaring an enum type is numbered below the files whose columns use it, a file creating a schema is numbered below every file that qualifies a relation with it, and a file adding a column is numbered below the file whose index covers it.
+
+The same comparison orders every directory the lifecycle reads — the declarative stage, the boundary snapshot a verification replays, and the scripts of the migration tail — so one rule decides what runs first everywhere, and a snapshot keeps the order of the stage it copies.
 
 ## Cold start
 
