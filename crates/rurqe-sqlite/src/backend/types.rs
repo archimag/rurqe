@@ -13,6 +13,11 @@ impl ToSql for SqlValParam<'_> {
             SqlVal::Null => Ok(ToSqlOutput::Borrowed(ValueRef::Null)),
             SqlVal::I32(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(i64::from(*value)))),
             SqlVal::I64(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value))),
+            // SQLite has no storage class for NaN and converts a bound NaN
+            // double to NULL, so a NaN parameter is refused instead of being
+            // silently substituted with a value it never carried. Infinities
+            // keep binding as-is: SQLite stores them faithfully as a REAL.
+            SqlVal::F64(value) if value.is_nan() => Err(nan_failure()),
             SqlVal::F64(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Real(*value))),
             SqlVal::Bool(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Integer(*value as i64))),
             SqlVal::Text(value) => Ok(ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes()))),
@@ -39,6 +44,19 @@ impl ToSql for SqlValParam<'_> {
             ))),
         }
     }
+}
+
+/// Builds the conversion failure reported for a `NaN` double parameter.
+///
+/// SQLite has no storage class for `NaN` and stores a bound `NaN` as `NULL`,
+/// so the parameter is refused instead of silently reaching the database as a
+/// value it never carried. Infinities keep binding as-is, because SQLite
+/// stores them faithfully.
+fn nan_failure() -> ::rusqlite::Error {
+    let cause = ::std::io::Error::other(
+        "a NaN double has no SQLite representation and would bind as NULL",
+    );
+    ::rusqlite::Error::ToSqlConversionFailure(Box::new(cause))
 }
 
 /// Renders an array value as the JSON document bound for its parameter.

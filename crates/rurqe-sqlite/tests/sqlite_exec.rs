@@ -153,6 +153,59 @@ fn an_array_parameter_binds_as_a_json_document_and_decodes_back() {
     assert_eq!(decoded_numbers, vec![1i64, 2]);
 }
 
+#[test]
+fn a_nan_parameter_is_refused_instead_of_binding_as_null() {
+    let mut adapter = seeded();
+
+    // SQLite has no storage class for NaN: a bound NaN double becomes NULL
+    // without an error, so the adapter refuses the parameter instead of
+    // silently substituting a value on the write path.
+    let nan = Expr::<f64>::raw("?", vec![SqlVal::F64(f64::NAN)])
+        .expect("a template with one placeholder");
+    let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((nan,))
+        .where_(Expr::column::<UserId>().eq(1i64));
+
+    let failed = adapter
+        .fetch_one(&query)
+        .expect_err("a NaN parameter has no SQLite representation");
+
+    let backend = failed.as_backend().expect("the refusal is a driver error");
+    match backend {
+        rurqe_sqlite::rusqlite::Error::ToSqlConversionFailure(cause) => {
+            assert!(
+                cause.to_string().contains("NaN"),
+                "unexpected cause: {cause}"
+            );
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn infinities_bind_faithfully_because_sqlite_stores_them() {
+    let mut adapter = seeded();
+
+    // SQLite stores infinities as ordinary REAL values, so they round-trip
+    // unchanged and need no refusal of their own.
+    let positive = Expr::<f64>::raw("?", vec![SqlVal::F64(f64::INFINITY)])
+        .expect("a template with one placeholder");
+    let negative = Expr::<f64>::raw("?", vec![SqlVal::F64(f64::NEG_INFINITY)])
+        .expect("a template with one placeholder");
+    let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((positive, negative))
+        .where_(Expr::column::<UserId>().eq(1i64));
+
+    let (infinity, negative_infinity) = adapter
+        .fetch_one(&query)
+        .expect("infinities round-trip through SQLite");
+
+    assert!(infinity.is_infinite() && infinity.is_sign_positive());
+    assert!(negative_infinity.is_infinite() && negative_infinity.is_sign_negative());
+}
+
 /// Minimal error type used by the transaction closures in the tests below.
 #[derive(Debug)]
 struct TestError;
