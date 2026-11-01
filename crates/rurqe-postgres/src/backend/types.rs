@@ -29,7 +29,19 @@ use self::driver::{Error as DriverError, Row};
 use self::wire::{base_type, wire_of, Wire};
 
 /// Error raised while executing a query through a PostgreSQL driver adapter.
+///
+/// The enum is `#[non_exhaustive]`, because the failures it names follow the
+/// adapters a build compiles: a match written against it carries a wildcard arm,
+/// so a variant added for a new adapter does not break the matches already
+/// compiled.
+///
+/// One variant follows the feature matrix directly. `PgError::Pool` exists only
+/// under the `deadpool-postgres` feature, because the asynchronous pool is the
+/// adapter that checks a connection out of a pool on its own. The shape of the
+/// enum is therefore the shape of the adapters a build carries, and a downstream
+/// match observes the variant set of its own build.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum PgError {
     /// The PostgreSQL driver failed to execute the statement.
     Driver(DriverError),

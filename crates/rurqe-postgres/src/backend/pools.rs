@@ -363,7 +363,14 @@ mod r2d2_impl {
     }
 
     /// Error raised while executing a query through an `r2d2` PostgreSQL pool.
+    ///
+    /// The enum is `#[non_exhaustive]`: it is the failure surface of the pool
+    /// rather than a closed set, so a match written against it carries a wildcard
+    /// arm, and a variant added later does not break the matches already
+    /// compiled. The `Query` variant wraps [`PgError`], whose own variant set
+    /// follows the features its build enables.
     #[derive(Debug)]
+    #[non_exhaustive]
     pub enum PgPoolError {
         /// The connection could not be checked out of the pool.
         Pool(r2d2::Error),
