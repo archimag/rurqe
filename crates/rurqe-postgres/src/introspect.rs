@@ -103,47 +103,80 @@ where
     // The catalog statements take the whole selection as one array parameter, and
     // the primary schema is the one whose rows carry no attribution.
     let schemas = selection.all();
+    let rows = query_catalog_rows(client, &schemas)?;
+    decode_catalog(selection, rows)
+}
+
+/// The rows of every catalog statement, before they are decoded into a catalog.
+///
+/// The rows are the raw driver rows of the statements in [`queries`], and the row
+/// type of an asynchronous client is the one of a synchronous client, so the
+/// decoding below serves both: the adapter that drives the migration protocol
+/// over an asynchronous connection runs the very statements the synchronous entry
+/// points run and hands their rows to [`decode_catalog`].
+pub(crate) struct CatalogRows {
+    pub(crate) tables: Vec<postgres::Row>,
+    pub(crate) columns: Vec<postgres::Row>,
+    pub(crate) primary_keys: Vec<postgres::Row>,
+    pub(crate) foreign_keys: Vec<postgres::Row>,
+    pub(crate) indexes: Vec<postgres::Row>,
+    pub(crate) enums: Vec<postgres::Row>,
+    pub(crate) checks: Vec<postgres::Row>,
+    pub(crate) views: Vec<postgres::Row>,
+    pub(crate) triggers: Vec<postgres::Row>,
+}
+
+/// Decodes the rows of every catalog section into the catalog they describe.
+pub(crate) fn decode_catalog(
+    selection: &SchemaSelection,
+    rows: CatalogRows,
+) -> Result<SchemaCatalog, PgError> {
     let schema = selection.primary();
-    let raw_tables = query_catalog(client, POSTGRES_TABLES, &schemas, "tables", |row| {
-        Ok(RawTableMetadata {
-            schema: read_schema(row, 0, schema, "tables", "table_schema")?,
-            name: read_column(row, 1, "tables", "table_name")?,
-        })
-    })?;
 
-    let raw_columns = query_catalog(client, POSTGRES_COLUMNS, &schemas, "columns", |row| {
-        Ok(RawColumnMetadata {
-            schema: read_schema(row, 0, schema, "columns", "table_schema")?,
-            table_name: read_column(row, 1, "columns", "table_name")?,
-            column_name: read_column(row, 2, "columns", "column_name")?,
-            data_type: read_column(row, 3, "columns", "data_type")?,
-            is_nullable: read_column(row, 4, "columns", "is_nullable")?,
-            column_default: read_column(row, 5, "columns", "column_default")?,
-            udt_name: read_column(row, 6, "columns", "udt_name")?,
-            udt_schema: read_optional_schema(row, 7, schema, "columns", "udt_schema")?,
+    let raw_tables = rows
+        .tables
+        .iter()
+        .map(|row| -> Result<RawTableMetadata, PgError> {
+            Ok(RawTableMetadata {
+                schema: read_schema(row, 0, schema, "tables", "table_schema")?,
+                name: read_column(row, 1, "tables", "table_name")?,
+            })
         })
-    })?;
+        .collect::<Result<Vec<_>, PgError>>()?;
 
-    let raw_pks = query_catalog(
-        client,
-        POSTGRES_PRIMARY_KEYS,
-        &schemas,
-        "primary keys",
-        |row| {
+    let raw_columns = rows
+        .columns
+        .iter()
+        .map(|row| -> Result<RawColumnMetadata, PgError> {
+            Ok(RawColumnMetadata {
+                schema: read_schema(row, 0, schema, "columns", "table_schema")?,
+                table_name: read_column(row, 1, "columns", "table_name")?,
+                column_name: read_column(row, 2, "columns", "column_name")?,
+                data_type: read_column(row, 3, "columns", "data_type")?,
+                is_nullable: read_column(row, 4, "columns", "is_nullable")?,
+                column_default: read_column(row, 5, "columns", "column_default")?,
+                udt_name: read_column(row, 6, "columns", "udt_name")?,
+                udt_schema: read_optional_schema(row, 7, schema, "columns", "udt_schema")?,
+            })
+        })
+        .collect::<Result<Vec<_>, PgError>>()?;
+
+    let raw_pks = rows
+        .primary_keys
+        .iter()
+        .map(|row| -> Result<RawPrimaryKeyMetadata, PgError> {
             Ok(RawPrimaryKeyMetadata {
                 schema: read_schema(row, 0, schema, "primary keys", "table_schema")?,
                 table_name: read_column(row, 1, "primary keys", "table_name")?,
                 column_name: read_column(row, 2, "primary keys", "column_name")?,
             })
-        },
-    )?;
+        })
+        .collect::<Result<Vec<_>, PgError>>()?;
 
-    let raw_fks = query_catalog(
-        client,
-        POSTGRES_FOREIGN_KEYS,
-        &schemas,
-        "foreign keys",
-        |row| {
+    let raw_fks = rows
+        .foreign_keys
+        .iter()
+        .map(|row| -> Result<RawForeignKeyMetadata, PgError> {
             let referenced_schema: String =
                 read_column(row, 6, "foreign keys", "referenced_schema")?;
             let on_delete: String = read_column(row, 7, "foreign keys", "on_delete")?;
@@ -162,55 +195,75 @@ where
                 on_delete: parse_foreign_key_action(&on_delete),
                 on_update: parse_foreign_key_action(&on_update),
             })
-        },
-    )?;
-
-    let raw_indexes = query_catalog(client, POSTGRES_INDEXES, &schemas, "indexes", |row| {
-        Ok(RawIndexMetadata {
-            schema: read_schema(row, 0, schema, "indexes", "table_schema")?,
-            table_name: read_column(row, 1, "indexes", "table_name")?,
-            index_name: read_column(row, 2, "indexes", "index_name")?,
-            unique: read_column(row, 3, "indexes", "is_unique")?,
-            method: read_column(row, 4, "indexes", "method")?,
-            predicate: read_column(row, 5, "indexes", "predicate")?,
-            expression: read_column(row, 6, "indexes", "expression")?,
-            column_name: read_column(row, 7, "indexes", "column_name")?,
         })
-    })?;
+        .collect::<Result<Vec<_>, PgError>>()?;
 
-    let raw_enums = query_catalog(client, POSTGRES_ENUMS, &schemas, "enums", |row| {
-        Ok(RawEnumMetadata {
-            schema: read_schema(row, 0, schema, "enums", "schema_name")?,
-            name: read_column(row, 1, "enums", "enum_name")?,
-            variant: read_column(row, 2, "enums", "variant_name")?,
+    let raw_indexes = rows
+        .indexes
+        .iter()
+        .map(|row| -> Result<RawIndexMetadata, PgError> {
+            Ok(RawIndexMetadata {
+                schema: read_schema(row, 0, schema, "indexes", "table_schema")?,
+                table_name: read_column(row, 1, "indexes", "table_name")?,
+                index_name: read_column(row, 2, "indexes", "index_name")?,
+                unique: read_column(row, 3, "indexes", "is_unique")?,
+                method: read_column(row, 4, "indexes", "method")?,
+                predicate: read_column(row, 5, "indexes", "predicate")?,
+                expression: read_column(row, 6, "indexes", "expression")?,
+                column_name: read_column(row, 7, "indexes", "column_name")?,
+            })
         })
-    })?;
+        .collect::<Result<Vec<_>, PgError>>()?;
 
-    let raw_checks = query_catalog(client, POSTGRES_CHECKS, &schemas, "checks", |row| {
-        Ok(RawCheckMetadata {
-            schema: read_schema(row, 0, schema, "checks", "table_schema")?,
-            table_name: read_column(row, 1, "checks", "table_name")?,
-            name: read_column(row, 2, "checks", "constraint_name")?,
-            expression: read_column(row, 3, "checks", "expression")?,
+    let raw_enums = rows
+        .enums
+        .iter()
+        .map(|row| -> Result<RawEnumMetadata, PgError> {
+            Ok(RawEnumMetadata {
+                schema: read_schema(row, 0, schema, "enums", "schema_name")?,
+                name: read_column(row, 1, "enums", "enum_name")?,
+                variant: read_column(row, 2, "enums", "variant_name")?,
+            })
         })
-    })?;
+        .collect::<Result<Vec<_>, PgError>>()?;
 
-    let raw_views = query_catalog(client, POSTGRES_VIEWS, &schemas, "views", |row| {
-        Ok(RawViewMetadata {
-            schema: read_schema(row, 0, schema, "views", "table_schema")?,
-            name: read_column(row, 1, "views", "view_name")?,
-            definition: read_column(row, 2, "views", "view_definition")?,
+    let raw_checks = rows
+        .checks
+        .iter()
+        .map(|row| -> Result<RawCheckMetadata, PgError> {
+            Ok(RawCheckMetadata {
+                schema: read_schema(row, 0, schema, "checks", "table_schema")?,
+                table_name: read_column(row, 1, "checks", "table_name")?,
+                name: read_column(row, 2, "checks", "constraint_name")?,
+                expression: read_column(row, 3, "checks", "expression")?,
+            })
         })
-    })?;
+        .collect::<Result<Vec<_>, PgError>>()?;
 
-    let raw_triggers = query_catalog(client, POSTGRES_TRIGGERS, &schemas, "triggers", |row| {
-        Ok(RawTriggerMetadata {
-            schema: read_schema(row, 0, schema, "triggers", "table_schema")?,
-            name: read_column(row, 1, "triggers", "trigger_name")?,
-            table_name: read_column(row, 2, "triggers", "table_name")?,
-            definition: read_column(row, 3, "triggers", "definition")?,
+    let raw_views = rows
+        .views
+        .iter()
+        .map(|row| -> Result<RawViewMetadata, PgError> {
+            Ok(RawViewMetadata {
+                schema: read_schema(row, 0, schema, "views", "table_schema")?,
+                name: read_column(row, 1, "views", "view_name")?,
+                definition: read_column(row, 2, "views", "view_definition")?,
+            })
         })
-    })?;
+        .collect::<Result<Vec<_>, PgError>>()?;
+
+    let raw_triggers = rows
+        .triggers
+        .iter()
+        .map(|row| -> Result<RawTriggerMetadata, PgError> {
+            Ok(RawTriggerMetadata {
+                schema: read_schema(row, 0, schema, "triggers", "table_schema")?,
+                name: read_column(row, 1, "triggers", "trigger_name")?,
+                table_name: read_column(row, 2, "triggers", "table_name")?,
+                definition: read_column(row, 3, "triggers", "definition")?,
+            })
+        })
+        .collect::<Result<Vec<_>, PgError>>()?;
 
     Ok(catalog_from_metadata_with_sections(
         &raw_tables,
@@ -230,23 +283,106 @@ where
 /// Runs a catalog statement with the schema list bound as its only parameter.
 ///
 /// The list is bound rather than rendered, so no caller can smuggle SQL into the
-/// catalog queries, and every returned row is decoded by `decode` without
-/// panicking on a column type the driver cannot read.
-fn query_catalog<T, C>(
+/// catalog queries, and every returned row is decoded by [`decode_catalog`]
+/// without panicking on a column type the driver cannot read.
+fn query<C>(
     client: &mut C,
     statement: &str,
     schemas: &[String],
     label: &str,
-    decode: impl Fn(&postgres::Row) -> Result<T, PgError>,
-) -> Result<Vec<T>, PgError>
+) -> Result<Vec<postgres::Row>, PgError>
 where
     C: postgres::GenericClient,
 {
-    let rows = client
+    client
         .query(statement, &[&schemas])
-        .map_err(|error| query_error(label, error))?;
+        .map_err(|error| query_error(label, error))
+}
+///
+/// Reading the rows first is what lets one decoding serve both drivers: the
+/// statements and their binding are shared, while only the call that awaits them
+/// differs between a synchronous and an asynchronous client.
+pub(crate) fn query_catalog_rows<C>(
+    client: &mut C,
+    schemas: &[String],
+) -> Result<CatalogRows, PgError>
+where
+    C: postgres::GenericClient,
+{
+    Ok(CatalogRows {
+        tables: query(&mut *client, POSTGRES_TABLES, schemas, "tables")?,
+        columns: query(&mut *client, POSTGRES_COLUMNS, schemas, "columns")?,
+        primary_keys: query(
+            &mut *client,
+            POSTGRES_PRIMARY_KEYS,
+            schemas,
+            "primary keys",
+        )?,
+        foreign_keys: query(
+            &mut *client,
+            POSTGRES_FOREIGN_KEYS,
+            schemas,
+            "foreign keys",
+        )?,
+        indexes: query(&mut *client, POSTGRES_INDEXES, schemas, "indexes")?,
+        enums: query(&mut *client, POSTGRES_ENUMS, schemas, "enums")?,
+        checks: query(&mut *client, POSTGRES_CHECKS, schemas, "checks")?,
+        views: query(&mut *client, POSTGRES_VIEWS, schemas, "views")?,
+        triggers: query(&mut *client, POSTGRES_TRIGGERS, schemas, "triggers")?,
+    })
+}
 
-    rows.iter().map(decode).collect()
+/// Runs every catalog statement of `schemas` through an asynchronous client.
+///
+/// The statements, their binding, and the decoding are the ones the synchronous
+/// entry points use, so an adapter that awaits its catalog reports the very
+/// catalog a synchronous introspection of the same schemas reports.
+#[cfg(feature = "tokio-postgres")]
+pub(crate) async fn query_catalog_rows_async<C>(
+    client: &C,
+    schemas: &[String],
+) -> Result<CatalogRows, PgError>
+where
+    C: tokio_postgres::GenericClient,
+{
+    Ok(CatalogRows {
+        tables: client
+            .query(POSTGRES_TABLES, &[&schemas])
+            .await
+            .map_err(|error| query_error("tables", error))?,
+        columns: client
+            .query(POSTGRES_COLUMNS, &[&schemas])
+            .await
+            .map_err(|error| query_error("columns", error))?,
+        primary_keys: client
+            .query(POSTGRES_PRIMARY_KEYS, &[&schemas])
+            .await
+            .map_err(|error| query_error("primary keys", error))?,
+        foreign_keys: client
+            .query(POSTGRES_FOREIGN_KEYS, &[&schemas])
+            .await
+            .map_err(|error| query_error("foreign keys", error))?,
+        indexes: client
+            .query(POSTGRES_INDEXES, &[&schemas])
+            .await
+            .map_err(|error| query_error("indexes", error))?,
+        enums: client
+            .query(POSTGRES_ENUMS, &[&schemas])
+            .await
+            .map_err(|error| query_error("enums", error))?,
+        checks: client
+            .query(POSTGRES_CHECKS, &[&schemas])
+            .await
+            .map_err(|error| query_error("checks", error))?,
+        views: client
+            .query(POSTGRES_VIEWS, &[&schemas])
+            .await
+            .map_err(|error| query_error("views", error))?,
+        triggers: client
+            .query(POSTGRES_TRIGGERS, &[&schemas])
+            .await
+            .map_err(|error| query_error("triggers", error))?,
+    })
 }
 
 /// Reads the column at `index` of `row` as a `T`, naming the query and column.

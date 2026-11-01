@@ -8,9 +8,10 @@
 //!
 //! The adapter executes through the synchronous driver, which is why the whole
 //! surface sits behind the `migrate` feature of the crate. The statements of the
-//! history table live in the [`history`] module, while the advisory lock, the
 //! backend, and its transaction live here, while the backend over a connection the
-//! caller already holds lives in [`client`]. The digest a step records comes from
+//! caller already holds lives in [`client`]. The backend over an asynchronous
+//! connection lives in the `async_adapter` module, which drives the very same
+//! protocol on a dedicated thread. The digest a step records comes from
 //! [`crate::introspect`], so a cold start anchors the very catalog the toolchain
 //! compares against.
 //!
@@ -33,6 +34,8 @@ use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, Sleeper, ThreadSleeper};
 
 use crate::introspect::{introspect_postgres_selection, DEFAULT_SCHEMA};
 
+#[cfg(feature = "tokio-postgres")]
+mod async_adapter;
 mod client;
 mod history;
 
@@ -42,6 +45,9 @@ pub use history::{
 };
 
 pub use client::{PgConnectionMigrationBackend, PgConnectionMigrationTransaction};
+
+#[cfg(feature = "tokio-postgres")]
+pub use async_adapter::{PgAsyncMigrationBackend, PgAsyncMigrationTransaction};
 
 /// Advisory lock key guarding a PostgreSQL migration run.
 pub const MIGRATION_LOCK_ID: i64 = 0x5255_5251_455f_4d49;
@@ -167,15 +173,27 @@ fn backend_error(err: impl std::fmt::Display) -> Error {
 
 /// Reads and decodes the recorded history of `client`.
 ///
-/// The statements of the lifecycle are shared with the backend over a client
-/// connection, so the decoding lives here instead of being repeated per adapter.
+/// The statements of the lifecycle are shared by every adapter — the backend over
+/// an owned client, the backend over a client the caller holds, and the blocking
+/// adapter over an asynchronous connection — so the decoding lives here instead
+/// of being repeated per adapter.
 fn read_history_rows(client: &mut postgres::Client) -> Result<Vec<SchemaHistoryEntry>, Error> {
     let rows = client
         .query(&select_history_sql(), &[])
         .map_err(backend_error)?;
+    decode_history_rows(&rows)
+}
 
+/// Decodes the recorded history rows into their entries.
+///
+/// The driver row type of an asynchronous client is the one of a synchronous
+/// client, so the decoding of a recorded history serves both: an adapter that
+/// awaits its rows hands them to this function exactly as the synchronous
+/// statements do, and every failure it reports names the recorded value that is
+/// wrong.
+fn decode_history_rows(rows: &[postgres::Row]) -> Result<Vec<SchemaHistoryEntry>, Error> {
     let mut history = Vec::with_capacity(rows.len());
-    for row in &rows {
+    for row in rows {
         let raw = RawHistoryRow {
             installed_rank: row.try_get(0).map_err(backend_error)?,
             version: row.try_get(1).map_err(backend_error)?,

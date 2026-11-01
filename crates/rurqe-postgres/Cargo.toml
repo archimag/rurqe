@@ -21,6 +21,11 @@ postgres = { version = "0.19", optional = true }
 r2d2 = { version = "0.8", optional = true }
 rust_decimal = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
+# The blocking migration adapter drives the asynchronous protocol on a
+# current-thread runtime of its own: the runtime schedules the driver work it
+# awaits, and a pooled checkout dials its connection on that same runtime, so
+# the dependency carries the I/O and timer drivers beside the scheduler.
+tokio = { version = "1", optional = true, default-features = false, features = ["rt", "net", "time"] }
 tokio-postgres = { version = "0.7", optional = true }
 uuid = { version = "1", optional = true }
 
@@ -29,7 +34,7 @@ uuid = { version = "1", optional = true }
 # adapter: the shared binding layer needs `bytes`, while the asynchronous adapter
 # is compiled only when its own feature asks for it.
 postgres = ["dep:postgres", "dep:bytes"]
-tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "dep:futures-core", "chrono", "serde_json", "uuid"]
+tokio-postgres = ["dep:tokio-postgres", "dep:bytes", "dep:futures-core", "dep:tokio", "chrono", "serde_json", "uuid"]
 # A pool adapter is compiled on top of the driver it pools, so the pool feature
 # carries the driver feature instead of leaving the implication implicit:
 # `deadpool-postgres` pools the asynchronous client and `r2d2` the synchronous
@@ -71,7 +76,7 @@ uuid = [
 # asynchronous one. Every scenario is gated on the adapter feature it
 # exercises, so a build without those features compiles no test module.
 r2d2_postgres = "0.18"
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true

@@ -604,3 +604,272 @@ mod client_backend {
         assert_eq!(rows, 2, "the enclosing transaction kept the caller's work");
     }
 }
+
+/// Migration scenarios driven through the blocking adapter over an asynchronous
+/// connection.
+///
+/// Every scenario needs a live server named by `RURQE_TEST_POSTGRES_URL` and
+/// reports a skip when it is absent. The connection task of a scenario runs on the
+/// worker threads of a multi-threaded runtime while the migration itself blocks
+/// the thread of the scenario, which is the arrangement the adapter expects: the
+/// runtime stays free to drive the socket the protocol awaits.
+#[cfg(feature = "tokio-postgres")]
+mod async_backend {
+    use rurqe_postgres::migrate::PgAsyncMigrationBackend;
+    use rurqe_postgres::rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
+    use rurqe_postgres::rurqe_migrate::{Migration, Migrator};
+    use rurqe_postgres::PgAsyncConnection;
+    use tokio_postgres::NoTls;
+
+    /// The multi-threaded runtime that drives the connection of a scenario.
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("the scenario runtime builds")
+    }
+
+    /// The URL of the server the scenarios run against.
+    ///
+    /// A scenario that cannot run reports itself and returns, so an environment
+    /// without PostgreSQL runs the suite to completion instead of failing it.
+    fn database_url(scenario: &str) -> Option<String> {
+        match std::env::var("RURQE_TEST_POSTGRES_URL") {
+            Ok(url) if !url.trim().is_empty() => Some(url),
+            _ => {
+                println!("skipping `{scenario}`: RURQE_TEST_POSTGRES_URL is not set");
+                None
+            }
+        }
+    }
+
+    /// Connects asynchronously and prepares a schema of its own.
+    ///
+    /// The schema becomes the `search_path` of the session, so the history table
+    /// and the tables of a scenario land inside it, and the backend is told the
+    /// same schema through `with_schema`, so the catalog digest it records
+    /// describes that schema alone.
+    async fn connect(url: &str, schema: &str) -> PgAsyncConnection {
+        let (client, connection) = tokio_postgres::connect(url, NoTls)
+            .await
+            .expect("the test server accepts the asynchronous connection");
+        // The task drives the socket until the client is dropped, which is what
+        // lets the adapter await its statements.
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
+            ))
+            .await
+            .expect("the fixture schema is created");
+        client
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .await
+            .expect("the fixture schema is selected");
+
+        PgAsyncConnection::new(client)
+    }
+
+    /// Connects a blocking client to the fixture of a scenario.
+    fn blocking_client(url: &str, schema: &str) -> postgres::Client {
+        let mut client = postgres::Client::connect(url, NoTls)
+            .expect("the test server accepts the blocking connection");
+        client
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .expect("the fixture schema is selected");
+        client
+    }
+
+    #[test]
+    fn an_async_connection_applies_every_script_once() {
+        let Some(url) = database_url("PgAsyncMigrationBackend::migrate") else {
+            return;
+        };
+        let runtime = runtime();
+        let schema = "rurqe_async_apply";
+        let connection = runtime.block_on(connect(&url, schema));
+        let mut backend = PgAsyncMigrationBackend::new(connection)
+            .expect("the migration worker starts")
+            .with_schema(schema);
+
+        let migrations = vec![
+            Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")
+                .expect("a valid script name"),
+            Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
+                .expect("a valid script name"),
+        ];
+
+        let first = Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("the asynchronous connection applies the tail");
+
+        assert_eq!(first.applied_count, 2);
+        assert_eq!(
+            first.applied_scripts,
+            vec!["V1__users.sql", "V2__orders.sql"]
+        );
+
+        let second = Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("a second run finds nothing pending");
+
+        assert_eq!(second.applied_count, 0, "an applied script never runs twice");
+        assert!(second.applied_scripts.is_empty());
+
+        // The backend owns the session, so dropping it closes the connection and
+        // the history it recorded is read through a client of the scenario.
+        drop(backend);
+
+        let recorded = blocking_client(&url, schema)
+            .query_one("SELECT COUNT(*) FROM __rurqe_schema_history", &[])
+            .expect("the recorded history is readable")
+            .get::<_, i64>(0);
+
+        assert_eq!(recorded, 2, "both scripts left one history row each");
+    }
+
+    #[test]
+    fn the_async_backend_reports_the_catalog_digest_of_its_schema() {
+        let Some(url) = database_url("PgAsyncMigrationBackend::catalog_checksum") else {
+            return;
+        };
+        let runtime = runtime();
+        let schema = "rurqe_async_catalog";
+        let connection = runtime.block_on(connect(&url, schema));
+        let mut backend = PgAsyncMigrationBackend::new(connection)
+            .expect("the migration worker starts")
+            .with_schema(schema);
+
+        let migrations = vec![Migration::parse(
+            "V1__users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+        )
+        .expect("a valid script name")];
+
+        Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("the tail applies through the asynchronous connection");
+
+        let before = backend
+            .catalog_checksum()
+            .expect("the selected schema is introspectable")
+            .expect("the asynchronous backend reports a catalog digest");
+
+        blocking_client(&url, schema)
+            .batch_execute("ALTER TABLE users ADD COLUMN email TEXT")
+            .expect("the schema moves on");
+
+        let after = backend
+            .catalog_checksum()
+            .expect("the selected schema is introspectable")
+            .expect("the asynchronous backend reports a catalog digest");
+
+        assert_ne!(before, after, "the digest follows the catalog it describes");
+    }
+
+    #[test]
+    fn an_abandoned_async_step_rolls_back() {
+        let Some(url) = database_url("PgAsyncMigrationBackend abandoned step") else {
+            return;
+        };
+        let runtime = runtime();
+        let schema = "rurqe_async_abandoned";
+        let connection = runtime.block_on(connect(&url, schema));
+        let mut backend = PgAsyncMigrationBackend::new(connection)
+            .expect("the migration worker starts")
+            .with_schema(schema);
+
+        {
+            let mut step = backend.begin().expect("the step opens its transaction");
+            step.execute("CREATE TABLE abandoned_rows (id INTEGER PRIMARY KEY);")
+                .expect("the script applies inside the step");
+            // The step is dropped without a terminal call, so the adapter rolls
+            // its transaction back instead of leaving it open.
+        }
+
+        let survived = blocking_client(&url, schema)
+            .query_one("SELECT to_regclass('abandoned_rows') IS NOT NULL", &[])
+            .expect("the catalog answers")
+            .get::<_, bool>(0);
+
+        assert!(!survived, "the abandoned step rolled its own script back");
+    }
+
+    /// The pooled form checks its connection out of the pool on the worker thread
+    /// and holds it for the whole run.
+    #[cfg(feature = "deadpool-postgres")]
+    #[test]
+    fn a_pooled_async_backend_applies_the_tail() {
+        use deadpool_postgres::{Manager, ManagerConfig, Pool, Runtime};
+        use rurqe_postgres::PgAsyncPool;
+
+        let Some(url) = database_url("PgAsyncMigrationBackend::from_pool") else {
+            return;
+        };
+
+        let runtime = runtime();
+        // The pooled session runs in `public`, so the fixture is reset there under
+        // names of its own: another scenario of this binary keeps its own schema.
+        let fixture = runtime.block_on(async {
+            let (client, connection) = tokio_postgres::connect(&url, NoTls)
+                .await
+                .expect("the test server accepts the asynchronous connection");
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            client
+                .batch_execute(
+                    "DROP TABLE IF EXISTS rurqe_pool_users; \
+                     DROP TABLE IF EXISTS rurqe_pool_orders; \
+                     DROP TABLE IF EXISTS __rurqe_schema_history",
+                )
+                .await
+                .expect("the pooled fixture is reset");
+            PgAsyncConnection::new(client)
+        });
+        drop(fixture);
+
+        let config: tokio_postgres::Config = url.parse().expect("the test URL parses");
+        let manager = Manager::from_config(config, NoTls, ManagerConfig::default());
+        let pool = Pool::builder(manager)
+            .max_size(1)
+            .runtime(Runtime::Tokio1)
+            .build()
+            .expect("a one-connection pool builds");
+
+        let mut backend = PgAsyncMigrationBackend::from_pool(PgAsyncPool::new(pool))
+            .expect("the migration worker checks a connection out");
+
+        let migrations = vec![
+            Migration::parse(
+                "V1__users.sql",
+                "CREATE TABLE rurqe_pool_users (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
+            Migration::parse(
+                "V2__orders.sql",
+                "CREATE TABLE rurqe_pool_orders (id INTEGER PRIMARY KEY);",
+            )
+            .expect("a valid script name"),
+        ];
+
+        let report = Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("the pooled backend applies the tail");
+
+        assert_eq!(report.applied_count, 2);
+
+        let mut client = postgres::Client::connect(&url, NoTls)
+            .expect("the test server accepts the blocking connection");
+        let recorded = client
+            .query_one("SELECT COUNT(*) FROM __rurqe_schema_history", &[])
+            .expect("the recorded history is readable")
+            .get::<_, i64>(0);
+
+        assert_eq!(recorded, 2, "both scripts left one history row each");
+    }
+}
