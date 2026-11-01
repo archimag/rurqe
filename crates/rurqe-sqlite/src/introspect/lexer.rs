@@ -1,0 +1,669 @@
+//! Strictly typed SQL lexer and paren balancer for SQLite introspection.
+//!
+//! Provides lexical analysis for SQLite DDL statements, supporting keywords,
+//! identifiers, quoted identifiers in all SQLite quotation styles (`"..."`,
+//! `` `...` ``, `[...]`), string literals (`'...'` with `''` escape), numbers,
+//! punctuation, line comments (`-- ...\n`), and block comments (`/* ... */`).
+//!
+//! # Owner decision: no `sqlparser` dependency
+//!
+//! `Conventions.md` forbids hand-rolled parsers where a mature crate covers the
+//! format, so the `sqlparser` crate (SQLite dialect) was evaluated for this
+//! module and rejected. Its consumers — the `CHECK ... IN (...)` enum recovery,
+//! the check collector, and the index reader — must report the *exact source
+//! spans* of sub-expressions, because the text they cut out of the DDL becomes
+//! the expression recorded in `schema.lock`, and a snapshot has to stay
+//! bit-stable across runs and across SQLite versions. `sqlparser` normalises the
+//! statement it parses and never hands back the byte range of an inner
+//! predicate, so the snapshot would be re-rendered from an AST instead of
+//! reproduced from the source it was declared in.
+//!
+//! The module therefore remains an explicitly documented lexical scanner, and
+//! the review recommendation is honoured the other way it allows: the scan is
+//! hardened by the seeded property suite in [`property_tests`], which pins span
+//! soundness, round-trip identity, paren balancing, and the handling of
+//! unterminated input over adversarial byte sequences.
+//!
+//! The exception is narrowly ratified in `Conventions.md` §1: it covers a
+//! lexical scanner only. Any extension toward full DDL parsing — AST
+//! construction, semantic modelling, or a parse-tree-based recovery —
+//! re-triggers the no-hand-rolled-parsers mandate and must come with a new
+//! decision record before it lands.
+
+/// Recognised SQL keywords used during SQLite schema introspection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SqlKeyword {
+    Check,
+    Constraint,
+    In,
+    Where,
+}
+
+impl SqlKeyword {
+    /// Parses a keyword case-insensitively.
+    pub fn parse(s: &str) -> Option<Self> {
+        if s.eq_ignore_ascii_case("check") {
+            Some(Self::Check)
+        } else if s.eq_ignore_ascii_case("constraint") {
+            Some(Self::Constraint)
+        } else if s.eq_ignore_ascii_case("in") {
+            Some(Self::In)
+        } else if s.eq_ignore_ascii_case("where") {
+            Some(Self::Where)
+        } else {
+            None
+        }
+    }
+}
+
+/// Quotation styles supported by SQLite for identifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuoteStyle {
+    /// ANSI-style `"identifier"` with `""` escape.
+    DoubleQuote,
+    /// MySQL-style `` `identifier` `` with ```` `` ```` escape.
+    Backtick,
+    /// MS SQL-style `[identifier]` with `]]` escape.
+    SquareBracket,
+}
+
+/// Classified kind of a SQL token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TokenKind {
+    /// A recognised SQL keyword.
+    Keyword(SqlKeyword),
+    /// A bare unquoted identifier.
+    Ident,
+    /// A quoted identifier with its enclosing quote style.
+    QuotedIdent(QuoteStyle),
+    /// A single-quoted string literal (`'...'`).
+    StringLiteral,
+    /// An integer or floating-point number.
+    Number,
+    /// Opening parenthesis `(`.
+    OpenParen,
+    /// Closing parenthesis `)`.
+    CloseParen,
+    /// Comma `,`.
+    Comma,
+    /// Semicolon `;`.
+    Semicolon,
+    /// Dot `.`.
+    Dot,
+    /// Any other single-character operator or symbol.
+    Other(char),
+}
+
+/// A scanned token referencing a slice of the source SQL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token<'a> {
+    /// The token kind.
+    pub kind: TokenKind,
+    /// The exact source text slice.
+    pub text: &'a str,
+    /// The byte offsets in the source string: `(start, end)`.
+    pub span: (usize, usize),
+}
+
+impl<'a> Token<'a> {
+    /// Unescapes an identifier token into its bare name.
+    ///
+    /// Strips enclosing quotes and unescapes doubled quote characters according
+    /// to the token's quote style. For bare identifiers and other tokens,
+    /// returns the verbatim text.
+    pub fn unescaped_ident(&self) -> String {
+        match self.kind {
+            TokenKind::QuotedIdent(QuoteStyle::DoubleQuote) => {
+                let mut s = self.text;
+                if let Some(rest) = s.strip_prefix('"') {
+                    s = rest;
+                }
+                if let Some(rest) = s.strip_suffix('"') {
+                    s = rest;
+                }
+                s.replace("\"\"", "\"")
+            }
+            TokenKind::QuotedIdent(QuoteStyle::Backtick) => {
+                let mut s = self.text;
+                if let Some(rest) = s.strip_prefix('`') {
+                    s = rest;
+                }
+                if let Some(rest) = s.strip_suffix('`') {
+                    s = rest;
+                }
+                s.replace("``", "`")
+            }
+            TokenKind::QuotedIdent(QuoteStyle::SquareBracket) => {
+                let mut s = self.text;
+                if let Some(rest) = s.strip_prefix('[') {
+                    s = rest;
+                }
+                if let Some(rest) = s.strip_suffix(']') {
+                    s = rest;
+                }
+                s.replace("]]", "]")
+            }
+            _ => self.text.to_owned(),
+        }
+    }
+
+    /// Unescapes a string literal token into its content.
+    ///
+    /// Strips enclosing single quotes and replaces doubled `''` with a single `'`.
+    /// For non-string tokens, returns the verbatim text.
+    pub fn unescaped_string(&self) -> String {
+        match self.kind {
+            TokenKind::StringLiteral => {
+                let mut s = self.text;
+                if let Some(rest) = s.strip_prefix('\'') {
+                    s = rest;
+                }
+                if let Some(rest) = s.strip_suffix('\'') {
+                    s = rest;
+                }
+                s.replace("''", "'")
+            }
+            _ => self.text.to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Number of lexer passes the current thread has performed.
+    static LEX_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reads the number of lexer passes the current thread has performed.
+///
+/// The count exists only for the test surface, where it pins how many times a
+/// catalog build reads the same statement.
+#[cfg(test)]
+pub(crate) fn lex_passes() -> usize {
+    LEX_PASSES.with(std::cell::Cell::get)
+}
+
+/// Resets the number of lexer passes the current thread has performed.
+#[cfg(test)]
+pub(crate) fn reset_lex_passes() {
+    LEX_PASSES.with(|passes| passes.set(0));
+}
+
+#[cfg(test)]
+fn record_lex_pass() {
+    LEX_PASSES.with(|passes| passes.set(passes.get() + 1));
+}
+
+#[cfg(not(test))]
+fn record_lex_pass() {}
+
+/// Tokenizes a SQL string into a sequence of [`Token`]s.
+///
+/// Whitespace, single-line comments (`-- ...\n`), and block comments
+/// (`/* ... */`) are skipped and not emitted as tokens.
+///
+/// Every byte offset the scan advances is read back through the checked
+/// [`str::get`] — the same discipline [`span_text`] follows — instead of
+/// being sliced directly: an offset that is not a character boundary, or
+/// one that lies past the end of the input, reads as `None` and ends the
+/// scan, so a future edit that advances by a non-character amount degrades
+/// gracefully on untrusted `sqlite_master` DDL instead of panicking.
+pub fn tokenize(sql: &str) -> Vec<Token<'_>> {
+    record_lex_pass();
+
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while let Some(rem) = sql.get(i..) {
+        // 1. Skip whitespace
+        if let Some(ch) = rem.chars().next() {
+            if ch.is_whitespace() {
+                i += ch.len_utf8();
+                continue;
+            }
+        }
+
+        // 2. Skip line comments: -- ...
+        if rem.starts_with("--") {
+            i += 2;
+            if let Some(pos) = sql.get(i..).and_then(|rest| rest.find('\n')) {
+                i += pos + 1;
+            } else {
+                i = sql.len();
+            }
+            continue;
+        }
+
+        // 3. Skip block comments: /* ... */
+        if rem.starts_with("/*") {
+            i += 2;
+            if let Some(pos) = sql.get(i..).and_then(|rest| rest.find("*/")) {
+                i += pos + 2;
+            } else {
+                i = sql.len();
+            }
+            continue;
+        }
+
+        let start = i;
+        let ch = match rem.chars().next() {
+            Some(c) => c,
+            None => break,
+        };
+
+        match ch {
+            '\'' => {
+                i += 1;
+                while let Some(r) = sql.get(i..) {
+                    if r.starts_with("''") {
+                        i += 2;
+                    } else if r.starts_with('\'') {
+                        i += 1;
+                        break;
+                    } else if let Some(c) = r.chars().next() {
+                        i += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                push_scanned(&mut tokens, sql, TokenKind::StringLiteral, start, i);
+            }
+            '"' => {
+                i += 1;
+                while let Some(r) = sql.get(i..) {
+                    if r.starts_with("\"\"") {
+                        i += 2;
+                    } else if r.starts_with('"') {
+                        i += 1;
+                        break;
+                    } else if let Some(c) = r.chars().next() {
+                        i += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                push_scanned(
+                    &mut tokens,
+                    sql,
+                    TokenKind::QuotedIdent(QuoteStyle::DoubleQuote),
+                    start,
+                    i,
+                );
+            }
+            '`' => {
+                i += 1;
+                while let Some(r) = sql.get(i..) {
+                    if r.starts_with("``") {
+                        i += 2;
+                    } else if r.starts_with('`') {
+                        i += 1;
+                        break;
+                    } else if let Some(c) = r.chars().next() {
+                        i += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                push_scanned(
+                    &mut tokens,
+                    sql,
+                    TokenKind::QuotedIdent(QuoteStyle::Backtick),
+                    start,
+                    i,
+                );
+            }
+            '[' => {
+                i += 1;
+                while let Some(r) = sql.get(i..) {
+                    if r.starts_with("]]") {
+                        i += 2;
+                    } else if r.starts_with(']') {
+                        i += 1;
+                        break;
+                    } else if let Some(c) = r.chars().next() {
+                        i += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                push_scanned(
+                    &mut tokens,
+                    sql,
+                    TokenKind::QuotedIdent(QuoteStyle::SquareBracket),
+                    start,
+                    i,
+                );
+            }
+            '(' => {
+                i += 1;
+                push_scanned(&mut tokens, sql, TokenKind::OpenParen, start, i);
+            }
+            ')' => {
+                i += 1;
+                push_scanned(&mut tokens, sql, TokenKind::CloseParen, start, i);
+            }
+            ',' => {
+                i += 1;
+                push_scanned(&mut tokens, sql, TokenKind::Comma, start, i);
+            }
+            ';' => {
+                i += 1;
+                push_scanned(&mut tokens, sql, TokenKind::Semicolon, start, i);
+            }
+            '.' => {
+                i += 1;
+                push_scanned(&mut tokens, sql, TokenKind::Dot, start, i);
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                i += c.len_utf8();
+                while let Some(next_ch) = sql.get(i..).and_then(|rest| rest.chars().next()) {
+                    if next_ch.is_alphanumeric() || next_ch == '_' || next_ch == '$' {
+                        i += next_ch.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                // The token kind is classified from the scanned text itself,
+                // so this branch reads the span through `get` inline.
+                if let Some(text) = sql.get(start..i) {
+                    let kind = match SqlKeyword::parse(text) {
+                        Some(kw) => TokenKind::Keyword(kw),
+                        None => TokenKind::Ident,
+                    };
+                    tokens.push(Token {
+                        kind,
+                        text,
+                        span: (start, i),
+                    });
+                }
+            }
+            c if c.is_ascii_digit() => {
+                i += 1;
+                while let Some(next_ch) = sql.get(i..).and_then(|rest| rest.chars().next()) {
+                    if next_ch.is_ascii_digit() {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if sql
+                    .get(i..)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .is_some_and(|after_dot| after_dot.starts_with(|d: char| d.is_ascii_digit()))
+                {
+                    i += 1;
+                    while let Some(next_ch) = sql.get(i..).and_then(|rest| rest.chars().next()) {
+                        if next_ch.is_ascii_digit() {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                push_scanned(&mut tokens, sql, TokenKind::Number, start, i);
+            }
+            c => {
+                i += c.len_utf8();
+                push_scanned(&mut tokens, sql, TokenKind::Other(c), start, i);
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Pushes the token covering `start..end` of `sql`, reading the token text
+/// through the checked [`str::get`] instead of slicing the offsets directly.
+///
+/// The span addresses a slice of the scanned statement by construction, but
+/// nothing in the type system proves that: `None` here reports a broken scan
+/// invariant — a future edit advancing the scan by a non-character amount —
+/// and the token is then skipped instead of panicking on untrusted
+/// `sqlite_master` DDL, matching the [`span_text`] discipline consumers
+/// already follow.
+fn push_scanned<'a>(
+    tokens: &mut Vec<Token<'a>>,
+    sql: &'a str,
+    kind: TokenKind,
+    start: usize,
+    end: usize,
+) {
+    if let Some(text) = sql.get(start..end) {
+        tokens.push(Token {
+            kind,
+            text,
+            span: (start, end),
+        });
+    }
+}
+
+/// The token index of the parenthesis closing the one at `open`.
+///
+/// The scan runs over the token stream of [`tokenize`], so a parenthesis written
+/// inside a literal, a quoted identifier, or a comment never affects the depth of
+/// the one being closed. An unbalanced stream reports `None`.
+pub fn matching_close(tokens: &[Token<'_>], open: usize) -> Option<usize> {
+    if tokens.get(open).map(|token| token.kind) != Some(TokenKind::OpenParen) {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        match token.kind {
+            TokenKind::OpenParen => depth = depth.checked_add(1)?,
+            TokenKind::CloseParen => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+/// The source text between two byte offsets of a statement.
+///
+/// The offsets come from the [`Token::span`] values [`tokenize`] reports, and the
+/// text is still read through the checked [`str::get`], so a consumer of
+/// untrusted `sqlite_master` DDL never slices a statement at an offset that is not
+/// a character boundary and never panics on the SQL it introspects.
+///
+/// Span soundness of the scan is pinned by the seeded property suite in
+/// [`property_tests`], which stays the merge gate of the ratified lexer exception,
+/// so `None` reports a broken span invariant rather than malformed SQL. A caller
+/// that receives it skips the construct it was reading instead of failing the
+/// whole introspection.
+pub fn span_text(sql: &str, start: usize, end: usize) -> Option<&str> {
+    sql.get(start..end)
+}
+
+#[cfg(test)]
+mod property_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_keywords_and_identifiers() {
+        let sql = "CHECK constraint In WHERE status my_col _leading col$val";
+        let tokens = tokenize(sql);
+
+        assert_eq!(tokens.len(), 8);
+        assert_eq!(tokens[0].kind, TokenKind::Keyword(SqlKeyword::Check));
+        assert_eq!(tokens[0].text, "CHECK");
+        assert_eq!(tokens[0].span, (0, 5));
+
+        assert_eq!(tokens[1].kind, TokenKind::Keyword(SqlKeyword::Constraint));
+        assert_eq!(tokens[1].text, "constraint");
+
+        assert_eq!(tokens[2].kind, TokenKind::Keyword(SqlKeyword::In));
+        assert_eq!(tokens[2].text, "In");
+
+        assert_eq!(tokens[3].kind, TokenKind::Keyword(SqlKeyword::Where));
+        assert_eq!(tokens[3].text, "WHERE");
+
+        assert_eq!(tokens[4].kind, TokenKind::Ident);
+        assert_eq!(tokens[4].text, "status");
+
+        assert_eq!(tokens[5].kind, TokenKind::Ident);
+        assert_eq!(tokens[5].text, "my_col");
+
+        assert_eq!(tokens[6].kind, TokenKind::Ident);
+        assert_eq!(tokens[6].text, "_leading");
+
+        assert_eq!(tokens[7].kind, TokenKind::Ident);
+        assert_eq!(tokens[7].text, "col$val");
+    }
+
+    #[test]
+    fn tokenize_quoted_identifiers_and_unescape() {
+        let sql = r#""users" "user""name" `table` `tab``le` [order details] [col]]name]"#;
+        let tokens = tokenize(sql);
+
+        assert_eq!(tokens.len(), 6);
+
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::QuotedIdent(QuoteStyle::DoubleQuote)
+        );
+        assert_eq!(tokens[0].unescaped_ident(), "users");
+
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::QuotedIdent(QuoteStyle::DoubleQuote)
+        );
+        assert_eq!(tokens[1].unescaped_ident(), "user\"name");
+
+        assert_eq!(tokens[2].kind, TokenKind::QuotedIdent(QuoteStyle::Backtick));
+        assert_eq!(tokens[2].unescaped_ident(), "table");
+
+        assert_eq!(tokens[3].kind, TokenKind::QuotedIdent(QuoteStyle::Backtick));
+        assert_eq!(tokens[3].unescaped_ident(), "tab`le");
+
+        assert_eq!(
+            tokens[4].kind,
+            TokenKind::QuotedIdent(QuoteStyle::SquareBracket)
+        );
+        assert_eq!(tokens[4].unescaped_ident(), "order details");
+
+        assert_eq!(
+            tokens[5].kind,
+            TokenKind::QuotedIdent(QuoteStyle::SquareBracket)
+        );
+        assert_eq!(tokens[5].unescaped_ident(), "col]name");
+    }
+
+    #[test]
+    fn tokenize_string_literals_and_unescape() {
+        let sql = "'hello' 'it''s fine' ''";
+        let tokens = tokenize(sql);
+
+        assert_eq!(tokens.len(), 3);
+
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
+        assert_eq!(tokens[0].unescaped_string(), "hello");
+
+        assert_eq!(tokens[1].kind, TokenKind::StringLiteral);
+        assert_eq!(tokens[1].unescaped_string(), "it's fine");
+
+        assert_eq!(tokens[2].kind, TokenKind::StringLiteral);
+        assert_eq!(tokens[2].unescaped_string(), "");
+    }
+
+    #[test]
+    fn tokenize_comments_and_whitespace() {
+        let sql = r#"
+            -- Single line comment with quotes 'ignored' and (parens)
+            SELECT
+            /* Block comment
+               spanning lines with ) and "quoted" */
+            id -- trailing line comment
+        "#;
+        let tokens = tokenize(sql);
+
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[0].kind, TokenKind::Ident);
+        assert_eq!(tokens[0].text, "SELECT");
+        assert_eq!(tokens[1].kind, TokenKind::Ident);
+        assert_eq!(tokens[1].text, "id");
+    }
+
+    #[test]
+    fn tokenize_numbers_and_punctuation() {
+        let sql = "(123, 45.67); . >=";
+        let tokens = tokenize(sql);
+
+        assert_eq!(tokens[0].kind, TokenKind::OpenParen);
+        assert_eq!(tokens[1].kind, TokenKind::Number);
+        assert_eq!(tokens[1].text, "123");
+        assert_eq!(tokens[2].kind, TokenKind::Comma);
+        assert_eq!(tokens[3].kind, TokenKind::Number);
+        assert_eq!(tokens[3].text, "45.67");
+        assert_eq!(tokens[4].kind, TokenKind::CloseParen);
+        assert_eq!(tokens[5].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[6].kind, TokenKind::Dot);
+        assert_eq!(tokens[7].kind, TokenKind::Other('>'));
+        assert_eq!(tokens[8].kind, TokenKind::Other('='));
+    }
+
+    #[test]
+    fn tokenize_a_number_ending_at_a_trailing_dot() {
+        let tokens = tokenize("SELECT 1.");
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[1].kind, TokenKind::Number);
+        assert_eq!(tokens[1].text, "1");
+        assert_eq!(tokens[1].span, (7, 8));
+        assert_eq!(tokens[2].kind, TokenKind::Dot);
+        assert_eq!(tokens[2].span, (8, 9));
+
+        let tokens = tokenize("(1.)");
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[1].kind, TokenKind::Number);
+        assert_eq!(tokens[1].text, "1");
+        assert_eq!(tokens[2].kind, TokenKind::Dot);
+        assert_eq!(tokens[3].kind, TokenKind::CloseParen);
+    }
+
+    #[test]
+    fn multibyte_utf8_tokenization() {
+        let sql = r#"
+            CREATE TABLE "пользователи" (
+                -- Комментарий с кириллицей: 🚀
+                "статус" TEXT NOT NULL,
+                CHECK ("статус" IN ('активен', 'заблокирован'))
+            );
+        "#;
+        let tokens = tokenize(sql);
+        assert!(!tokens.is_empty());
+
+        let status_quoted = tokens
+            .iter()
+            .find(|t| t.unescaped_ident() == "статус")
+            .expect("find status identifier");
+        assert_eq!(
+            status_quoted.kind,
+            TokenKind::QuotedIdent(QuoteStyle::DoubleQuote)
+        );
+
+        let active_lit = tokens
+            .iter()
+            .find(|t| t.unescaped_string() == "активен")
+            .expect("find active literal");
+        assert_eq!(active_lit.kind, TokenKind::StringLiteral);
+    }
+
+    #[test]
+    fn matching_close_balances_parentheses_across_literals_and_comments() {
+        let sql = "CHECK ((status) IN ('a)', \"b)\", [c)])) /* ) */";
+        let tokens = tokenize(sql);
+
+        assert_eq!(matching_close(&tokens, 0), None);
+        assert_eq!(matching_close(&tokens, 1), Some(tokens.len() - 1));
+        assert_eq!(matching_close(&tokens, 2), Some(4));
+        assert_eq!(matching_close(&tokenize("(unclosed"), 0), None);
+    }
+}
