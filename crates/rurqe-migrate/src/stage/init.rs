@@ -46,6 +46,14 @@ pub struct ColdStartReport {
 /// the next attempt reports the database as partially initialised instead of
 /// treating it as an unknown schema or as one that already carries history.
 ///
+/// A backend that cannot execute a script outside a transaction refuses it
+/// before the database is reached. When the refused script is the first of the
+/// stage, the in-progress marker is withdrawn again and the refusal is reported
+/// as [`Error::NonTransactionalUnsupported`] naming that script, so an attempt
+/// that never started leaves no history behind; a stage that already applied an
+/// earlier script keeps the marker, because its schema really is partially
+/// initialised.
+///
 /// The call blocks the calling thread for as long as the DDL takes, so it guards
 /// the blocking entry described in the module documentation: the call warns by
 /// default and is refused under the `strict-async` feature. An asynchronous
@@ -142,15 +150,15 @@ fn cold_start_core<B: MigrationBackend>(
         .scripts()
         .iter()
         .any(|script| !script.is_transactional());
-    if in_progress {
-        record_marker(
-            &mut guard,
-            &marker.entry(1, current_timestamp(), marker.checksum(), false),
-            None,
-        )?;
-    }
+    let in_progress_rank = if in_progress {
+        let entry = marker.entry(1, current_timestamp(), marker.checksum(), false);
+        record_marker(&mut guard, &entry, None)?;
+        Some(entry.installed_rank)
+    } else {
+        None
+    };
 
-    apply_stage(&mut guard, stage)?;
+    apply_stage(&mut guard, stage, in_progress_rank)?;
 
     let elapsed_ms = start_time.elapsed().as_millis() as i64;
 
@@ -166,7 +174,7 @@ fn cold_start_core<B: MigrationBackend>(
 
     let entry = marker.entry(1, current_timestamp(), checksum, true);
 
-    record_marker(&mut guard, &entry, in_progress.then_some(1))?;
+    record_marker(&mut guard, &entry, in_progress_rank)?;
 
     tracing::info!(
         version = %marker.version(),
@@ -249,6 +257,39 @@ fn record_marker<B: MigrationBackend>(
     tx.commit()
 }
 
+/// Withdraws the in-progress marker of a stage the backend refused to run.
+///
+/// The refusal proves nothing reached the database, so the marker of a cold
+/// start that applied no script is removed again instead of making every later
+/// attempt report a partial initialisation. The removal is best effort: the
+/// caller already holds the authoritative diagnostic, which must not be replaced
+/// by a second error about the marker.
+fn withdraw_marker<B: MigrationBackend>(guard: &mut LockGuard<'_, B>, installed_rank: i64) {
+    match guard.begin() {
+        Ok(mut tx) => {
+            if let Err(error) = tx.delete_entry(installed_rank) {
+                tracing::warn!(
+                    installed_rank = installed_rank,
+                    error = %error,
+                    "failed to withdraw the in-progress stage marker"
+                );
+                let _ = tx.rollback();
+            } else if let Err(error) = tx.commit() {
+                tracing::warn!(
+                    installed_rank = installed_rank,
+                    error = %error,
+                    "failed to commit the withdrawal of the in-progress stage marker"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(
+            installed_rank = installed_rank,
+            error = %error,
+            "failed to open the transaction withdrawing the in-progress stage marker"
+        ),
+    }
+}
+
 /// Builds the diagnostic of a cold start interrupted while applying the stage.
 fn partial_initialisation(entry: &SchemaHistoryEntry) -> Error {
     let version = entry
@@ -274,17 +315,41 @@ fn partial_initialisation(entry: &SchemaHistoryEntry) -> Error {
 /// the work staged so far and then runs on its own: engines refuse such
 /// statements inside a transaction, so wrapping them would abort the cold start
 /// on a perfectly valid stage.
+///
+/// `in_progress_rank` names the marker a cold start committed before the first
+/// non-transactional script. A backend that cannot run such a script refuses it
+/// before it reaches the database, which leaves the database exactly as cold as
+/// it was: when the refused script is the first of the stage, the marker of an
+/// attempt that applied nothing is withdrawn instead of being left to report a
+/// partial initialisation on every later run.
 fn apply_stage<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     stage: &DeclarativeStage,
+    in_progress_rank: Option<i64>,
 ) -> Result<(), Error> {
     let scripts = stage.scripts();
     let mut index = 0usize;
 
     while let Some(script) = scripts.get(index) {
         if !script.is_transactional() {
-            if let Err(error) = guard.execute_non_transactional(script.sql()) {
-                return Err(stage_script_failed(script, &error));
+            match guard.execute_non_transactional(script.sql()) {
+                Ok(()) => {}
+                // The refusal proves nothing reached the database, so the
+                // capability gap travels under its own identity and names the
+                // script instead of masquerading as a failed migration.
+                Err(Error::NonTransactionalUnsupported { .. }) => {
+                    // Withdrawing the marker is only honest while nothing of the
+                    // stage has been applied: an earlier script proves the schema
+                    // really is partially initialised, and then the marker has to
+                    // stay.
+                    if let Some(installed_rank) = in_progress_rank.filter(|_| index == 0) {
+                        withdraw_marker(guard, installed_rank);
+                    }
+                    return Err(Error::NonTransactionalUnsupported {
+                        script: Some(script.name().to_owned()),
+                    });
+                }
+                Err(error) => return Err(stage_script_failed(script, &error)),
             }
             index += 1;
             continue;

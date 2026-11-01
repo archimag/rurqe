@@ -15,12 +15,21 @@
 //! applied while the active tail above it still runs.
 //!
 //! A script marked non-transactional runs outside any transaction, so a stage
+//! A script marked non-transactional runs outside any transaction, so a stage
 //! holding one cannot be applied atomically: the cold start then commits an
 //! in-progress marker before the first such script and replaces it with the
 //! applied one once every script has run. An interrupted cold start therefore
 //! leaves a database whose partial initialisation is reported by the next
 //! attempt instead of a schema the history knows nothing about.
 //!
+//! A backend that cannot execute a script outside a transaction refuses it
+//! before anything reaches the database. When the refused script is the first of
+//! the stage, nothing was applied at all, so the committed in-progress marker is
+//! withdrawn again and the refusal is reported under its own identity, naming
+//! that script: the next attempt starts from a clean history instead of being
+//! told an initialisation was interrupted. A stage that already applied an
+//! earlier script keeps its marker, because its schema really is partially
+//! initialised.
 //! # Blocking entry points
 //!
 //! [`cold_start`] is a blocking lifecycle entry point, exactly like

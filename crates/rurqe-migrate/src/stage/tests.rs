@@ -8,7 +8,7 @@ use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::history::{create_schema_history_table_sql, SchemaHistoryEntry};
 use crate::migration::{Migration, MigrationKind};
-use crate::runner::{InMemoryBackend, MigrationBackend};
+use crate::runner::{InMemoryBackend, InMemoryTransaction, MigrationBackend};
 use crate::version::MigrationVersion;
 use std::path::PathBuf;
 
@@ -440,4 +440,107 @@ fn a_cold_start_that_cannot_record_the_applied_marker_stays_visible() {
         .expect_err("the interrupted marker stops a second cold start");
 
     assert!(matches!(retry, Error::InvalidStage { .. }), "got {retry:?}");
+}
+
+/// A backend that keeps every script inside a transaction.
+///
+/// It leaves `execute_non_transactional` at its default, so it behaves exactly
+/// like a driver that cannot commit a statement outside the runner's
+/// transaction.
+struct TransactionOnlyBackend(InMemoryBackend);
+
+impl MigrationBackend for TransactionOnlyBackend {
+    type Transaction<'a>
+        = InMemoryTransaction<'a>
+    where
+        Self: 'a;
+
+    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+        self.0.ensure_schema_history_table()
+    }
+
+    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+        self.0.read_history()
+    }
+
+    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        self.0.begin()
+    }
+}
+
+#[test]
+fn a_refused_first_non_transactional_script_leaves_no_history_behind() {
+    let mut backend = TransactionOnlyBackend(InMemoryBackend::new());
+    let stage = DeclarativeStage::new(vec![StageScript::new(
+        "users.notx.sql",
+        "CREATE INDEX CONCURRENTLY users_id ON users (id);",
+    )]);
+
+    let error = cold_start(&mut backend, &stage, &marker())
+        .expect_err("the backend keeps the script inside a transaction");
+
+    match &error {
+        Error::NonTransactionalUnsupported { script } => {
+            assert_eq!(script.as_deref(), Some("users.notx.sql"));
+        }
+        other => panic!("expected NonTransactionalUnsupported, got {other:?}"),
+    }
+    assert!(
+        !error.to_string().contains("CREATE INDEX"),
+        "the diagnostic never echoes the script body: {error}"
+    );
+    assert!(
+        backend.0.history.is_empty(),
+        "the marker of a cold start that applied nothing is withdrawn"
+    );
+    assert!(
+        backend.0.non_transactional_sql.is_empty(),
+        "the refused script never reached the backend"
+    );
+    assert!(!backend.0.locked, "the lock is released on the way out");
+
+    // The withdrawal leaves the database as cold as it was, so the retry meets
+    // the capability gap again instead of an interrupted cold start.
+    let retry = cold_start(&mut backend, &stage, &marker())
+        .expect_err("the backend keeps the script inside a transaction");
+    assert!(
+        matches!(retry, Error::NonTransactionalUnsupported { .. }),
+        "got {retry:?}"
+    );
+    assert!(backend.0.history.is_empty());
+    assert!(!backend.0.locked);
+}
+
+#[test]
+fn a_refused_non_transactional_script_keeps_the_marker_of_partial_application() {
+    let mut backend = TransactionOnlyBackend(InMemoryBackend::new());
+    let stage = DeclarativeStage::new(vec![
+        StageScript::new("orders.sql", ORDERS),
+        StageScript::new("users.notx.sql", "CREATE INDEX CONCURRENTLY users_id ON users (id);"),
+    ]);
+
+    let error = cold_start(&mut backend, &stage, &marker())
+        .expect_err("the backend keeps the script inside a transaction");
+
+    match &error {
+        Error::NonTransactionalUnsupported { script } => {
+            assert_eq!(script.as_deref(), Some("users.notx.sql"));
+        }
+        other => panic!("expected NonTransactionalUnsupported, got {other:?}"),
+    }
+    assert!(
+        backend.0.executed_sql.iter().any(|sql| sql.as_str() == ORDERS),
+        "the transactional script really ran"
+    );
+    assert_eq!(backend.0.history.len(), 1);
+    assert!(
+        !backend.0.history[0].success,
+        "the marker records the partially initialised database"
+    );
+    assert!(!backend.0.locked);
+
+    let retry = cold_start(&mut backend, &stage, &marker())
+        .expect_err("the interrupted marker stops a second cold start");
+    assert!(matches!(retry, Error::InvalidStage { .. }), "got {retry:?}");
+    assert!(retry.to_string().contains("interrupted"), "got {retry}");
 }
