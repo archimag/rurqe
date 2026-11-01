@@ -48,6 +48,7 @@ they are:
 - `empty` builds a collection holding no script;
 - `from_migrations` wraps already parsed migrations, sorts them
   deterministically, and refuses two entries sharing one script name.
+
 A script name identifies one migration. Two entries under one name would apply
 two different bodies under a single recorded identity: the first one is recorded,
 the second is re-applied as a modified script and recorded again, and the history
