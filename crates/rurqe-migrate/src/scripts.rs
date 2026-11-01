@@ -9,6 +9,7 @@
 //! silently dropping it would leave a database half initialised, and every
 //! message about that script would have no name to carry.
 
+use core::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
@@ -76,11 +77,86 @@ pub fn sql_scripts(dir: &Path) -> Result<Option<Vec<SqlScript>>, Error> {
         scripts.push(SqlScript { name, path });
     }
 
-    scripts.sort_by(|left, right| left.name.cmp(&right.name));
+    scripts.sort_by(|left, right| compare_script_names(&left.name, &right.name));
 
     Ok(Some(scripts))
 }
+/// Compares two script file names the way a version string is ordered.
+///
+/// A run of ASCII digits inside a name is compared by its numeric value, so
+/// `2_users.sql` precedes `10_orders.sql` without any leading zero, while a run
+/// of other characters is compared byte by byte. Names that differ only in
+/// their leading zeros, such as `02_users.sql` and `2_users.sql`, are ordered by
+/// their raw text last, so the comparison stays a total order.
+pub(crate) fn compare_script_names(left: &str, right: &str) -> Ordering {
+    let mut left_rest = left;
+    let mut right_rest = right;
 
+    while !left_rest.is_empty() && !right_rest.is_empty() {
+        let (left_run, left_tail) = next_run(left_rest);
+        let (right_run, right_tail) = next_run(right_rest);
+
+        let ordering = if is_digit_run(left_run) && is_digit_run(right_run) {
+            compare_numeric(left_run, right_run)
+        } else {
+            left_run.cmp(right_run)
+        };
+
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+
+        left_rest = left_tail;
+        right_rest = right_tail;
+    }
+
+    // A name that ran out of text is the shorter one, so it sorts first; two
+    // names that agree on every segment are ordered by their raw text.
+    right_rest
+        .is_empty()
+        .cmp(&left_rest.is_empty())
+        .then_with(|| left.cmp(right))
+}
+
+/// Splits `text` into its leading run of one character class and the rest.
+///
+/// The class is "ASCII digit" or "everything else", so every digit run of a
+/// name reaches the numeric comparison as a whole.
+fn next_run(text: &str) -> (&str, &str) {
+    let mut characters = text.char_indices();
+
+    let digits = match characters.next() {
+        Some((_, first)) => first.is_ascii_digit(),
+        None => return ("", ""),
+    };
+
+    let end = characters
+        .find(|(_, character)| character.is_ascii_digit() != digits)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+
+    text.split_at(end)
+}
+
+/// Whether `run` is a non-empty run of ASCII digits.
+fn is_digit_run(run: &str) -> bool {
+    matches!(run.as_bytes().first(), Some(byte) if byte.is_ascii_digit())
+}
+
+/// Compares two digit runs by their numeric value.
+///
+/// The runs are compared as text without their leading zeros, so the comparison
+/// never overflows on a long run and `10` still orders after `9`.
+fn compare_numeric(left: &str, right: &str) -> Ordering {
+    let left_significant = left.trim_start_matches('0');
+    let right_significant = right.trim_start_matches('0');
+
+    left_significant
+        .len()
+        .cmp(&right_significant.len())
+        .then_with(|| left_significant.cmp(right_significant))
+        .then_with(|| left.len().cmp(&right.len()))
+}
 /// Names the directory a listing failed on.
 fn read_failure(dir: &Path, error: &std::io::Error) -> Error {
     Error::Backend(format!("failed to read `{}`: {error}", dir.display()))
@@ -150,5 +226,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(matches!(error, Error::Backend(_)), "{error}");
+    }
+    #[test]
+    fn numeric_name_components_are_ordered_by_value() {
+        let dir = directory("numeric");
+        for name in [
+            "10_orders.sql",
+            "2_users.sql",
+            "1_init.sql",
+            "step10.sql",
+            "step2.sql",
+        ] {
+            std::fs::write(dir.join(name), "SELECT 1;").expect("write the script");
+        }
+
+        let scripts = sql_scripts(&dir)
+            .expect("the directory is readable")
+            .expect("the directory exists");
+        let names: Vec<String> = scripts
+            .iter()
+            .map(|script| script.name().to_owned())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            names,
+            vec![
+                "1_init.sql".to_owned(),
+                "2_users.sql".to_owned(),
+                "10_orders.sql".to_owned(),
+                "step2.sql".to_owned(),
+                "step10.sql".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn script_names_compare_like_versions() {
+        for (left, right) in [
+            ("V2__init.sql", "V10__init.sql"),
+            ("step2.sql", "step10.sql"),
+            ("orders_2.sql", "orders_10.sql"),
+            ("007_users.sql", "10_orders.sql"),
+        ] {
+            assert_eq!(
+                compare_script_names(left, right),
+                Ordering::Less,
+                "`{left}` sorts before `{right}`"
+            );
+            assert_eq!(
+                compare_script_names(right, left),
+                Ordering::Greater,
+                "`{right}` sorts after `{left}`"
+            );
+        }
+
+        assert_eq!(
+            compare_script_names("users.sql", "users.sql"),
+            Ordering::Equal
+        );
     }
 }

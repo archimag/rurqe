@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::checksum::Checksum;
 use crate::error::Error;
 use crate::migration::parse_script_attributes;
-use crate::scripts::sql_scripts;
+use crate::scripts::{compare_script_names, sql_scripts};
 
 /// One DDL script of the declarative stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,13 +64,15 @@ impl DeclarativeStage {
     /// The directory holding the DDL scripts of the stage.
     pub const DIRECTORY: &str = "schema";
 
-    /// Collects the scripts, sorting them by file name.
+    /// Collects the scripts, ordering them by file name.
     ///
     /// Directories are read in whatever order the file system reports, so the
-    /// scripts are ordered here to keep the applied DDL deterministic.
+    /// scripts are ordered here to keep the applied DDL deterministic. A numeric
+    /// component of a name is compared by its value, so `2_users.sql` precedes
+    /// `10_orders.sql` without a leading zero.
     pub fn new(scripts: Vec<StageScript>) -> Self {
         let mut scripts = scripts;
-        scripts.sort_by(|left, right| left.name.cmp(&right.name));
+        scripts.sort_by(|left, right| compare_script_names(left.name(), right.name()));
         Self { scripts }
     }
 
@@ -121,5 +123,22 @@ impl DeclarativeStage {
         }
 
         Checksum::of(digest.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_name_components_order_by_value() {
+        let stage = DeclarativeStage::new(vec![
+            StageScript::new("10_orders.sql", "CREATE TABLE orders (id INTEGER);"),
+            StageScript::new("2_users.sql", "CREATE TABLE users (id INTEGER);"),
+            StageScript::new("1_init.sql", "CREATE SCHEMA app;"),
+        ]);
+
+        let names: Vec<&str> = stage.scripts().iter().map(StageScript::name).collect();
+        assert_eq!(names, vec!["1_init.sql", "2_users.sql", "10_orders.sql"]);
     }
 }
