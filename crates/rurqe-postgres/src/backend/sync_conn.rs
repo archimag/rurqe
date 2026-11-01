@@ -77,6 +77,36 @@ pub(crate) fn fetch_raw_limited_sync(
     Ok(rows)
 }
 
+/// Returns the session of a checked-out client to a provably idle state.
+///
+/// A connection recycled by a pool carries the session state of the block that
+/// drove it last: a transaction a raw handle opened, a `BEGIN` whose `COMMIT`
+/// the caller never issued, or a block whose rollback the driver refused. The
+/// bookkeeping of an adapter dies with the adapter, while the session of the
+/// server outlives it, so a checkout is the place where that state can still
+/// be closed.
+///
+/// The reset is one round trip of the simple protocol carrying `BEGIN;
+/// ROLLBACK`. Opening the transaction first makes the trailing `ROLLBACK`
+/// legitimate in every session state, so a checkout that finds an idle session
+/// logs nothing at all, while a session that still holds a transaction has it
+/// ended by the `ROLLBACK`. The idle handout is therefore guaranteed by
+/// construction instead of by classifying the state the session arrived in,
+/// and the only trace the reset leaves is the server-side warning it emits
+/// when it actually repairs an abandoned transaction.
+///
+/// A reset the driver refuses means the connection could not be brought back
+/// to a known state, so the failure is reported instead of handing the
+/// connection to a block that would run inside the abandoned transaction.
+#[cfg_attr(not(any(feature = "r2d2", debug_assertions)), allow(dead_code))]
+pub(crate) fn ensure_idle(client: &mut postgres::Client) -> Result<(), PgError> {
+    client
+        .batch_execute("BEGIN; ROLLBACK")
+        .map_err(|failure| PgError::AbandonedTransaction {
+            detail: failure.to_string(),
+        })
+}
+
 /// A synchronous PostgreSQL handle executing RURQE queries.
 ///
 /// The adapter is generic over the handle it executes through, and the default
@@ -119,6 +149,13 @@ impl PgConnection<&mut postgres::Client> {
     /// for the lifetime of the adapter and returns to its owner once the
     /// adapter is dropped. The bookkeeping starts clean, because such a handle
     /// may have executed statements before it was checked out.
+    ///
+    /// The constructor trusts the handle it receives: the bookkeeping starts
+    /// clean because a pooled checkout has already returned the session to an
+    /// idle state before handing the connection out, so the adapter does not
+    /// probe the driver for the state of that session. A caller that wraps a
+    /// foreign handle directly — one that never passed through a pooled
+    /// checkout — verifies the idleness of that session itself.
     pub fn borrowed(client: &mut postgres::Client) -> PgConnection<&mut postgres::Client> {
         PgConnection {
             client,
@@ -136,6 +173,16 @@ impl<B: Borrow<postgres::Client>> PgConnection<B> {
 
 impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// Returns a mutable reference to the wrapped client.
+    ///
+    /// The accessor is a supported escape hatch for behaviour the typed API
+    /// does not model, on par with the raw SQL macros: the statements issued
+    /// through it stay outside the transaction bookkeeping of the adapter, so
+    /// a manual `BEGIN` leaves the connection inside a transaction the adapter
+    /// never records. The caller owns that state and leaves the connection
+    /// idle when it is done. A session that is not repaired is reset at the
+    /// next pooled checkout and, in a debug build, at the next typed
+    /// transaction entry, so the leak is contained instead of being inherited
+    /// by the following caller.
     pub fn client_mut(&mut self) -> &mut postgres::Client {
         self.client.borrow_mut()
     }
@@ -149,11 +196,18 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// inner failure rolls back only its own statements while the enclosing
     /// transaction stays intact. A panicking block is rolled back as well, so
     /// unwinding never leaves an open transaction or savepoint behind.
+    ///
+    /// A debug build returns the session to an idle state before the block
+    /// opens, so a transaction a raw driver handle left open is rolled back
+    /// here instead of enclosing the block; a release build keeps the
+    /// tolerance the raw handles are documented with.
     pub fn transaction<T, E, F>(&mut self, f: F) -> Result<T, E>
     where
         F: FnOnce(&mut PgConnection<B>) -> Result<T, E>,
         E: From<PgError>,
     {
+        #[cfg(debug_assertions)]
+        self.repair_idle_session().map_err(E::from)?;
         let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
         let value = f(&mut guard)?;
         guard.commit().map_err(E::from)?;
@@ -205,10 +259,34 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
         F: FnOnce(&mut PgConnection<B>) -> Result<T, E>,
         E: From<PgError>,
     {
+        #[cfg(debug_assertions)]
+        self.repair_idle_session().map_err(E::from)?;
         let mut guard = TransactionGuard::begin_with(self, Some(isolation)).map_err(E::from)?;
         let value = f(&mut guard)?;
         guard.commit().map_err(E::from)?;
         Ok(value)
+    }
+    /// Repairs a session left inside a transaction by a raw driver handle.
+    ///
+    /// A typed entry point is the only place where the adapter can still tell
+    /// that the caller is about to open a transaction of its own, so a debug
+    /// build returns the session to an idle state here. The repair runs only
+    /// while the bookkeeping records neither an open transaction nor a
+    /// poisoning: a nested savepoint block belongs to the transaction the
+    /// enclosing guard opened and must not be reset, and a poisoned connection
+    /// belongs to the recovery of [`TransactionGuard`], which retries the
+    /// rollback the driver refused instead of closing the transaction behind
+    /// its back.
+    ///
+    /// A release build skips the repair and keeps the tolerance the raw driver
+    /// handles are documented with: the reset is a development aid, not a
+    /// guarantee of the typed API.
+    #[cfg(debug_assertions)]
+    fn repair_idle_session(&mut self) -> Result<(), PgError> {
+        if self.status.is_open() || self.status.is_poisoned() {
+            return Ok(());
+        }
+        ensure_idle(self.client.borrow_mut())
     }
 }
 
