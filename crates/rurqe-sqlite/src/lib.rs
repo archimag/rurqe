@@ -19,7 +19,9 @@
 //!
 //! The dialect lives in `dialect`, and the runtime adapters are split by the
 //! dependency they need — the value translation, the `rusqlite` connection, and the
-//! `r2d2` pool — exactly like the PostgreSQL crate does.
+//! `r2d2` pool — exactly like the PostgreSQL crate does. The `migrate` feature adds
+//! the catalog introspection and the migration backend the lifecycle runner drives,
+//! so neither of them lives in a separate toolchain crate.
 
 mod backend;
 mod dialect;
@@ -42,3 +44,27 @@ pub use self::backend::{SqlitePool, SqlitePoolError};
 /// Re-export of the underlying `rusqlite` crate for adapter users.
 #[cfg(feature = "rusqlite")]
 pub use ::rusqlite;
+
+/// Catalog introspection of a live SQLite database.
+///
+/// The module reports the catalog as the engine-neutral [`SchemaCatalog`] the
+/// migration runner compares, snapshots, and verifies, so a catalog read from a
+/// SQLite file speaks the same vocabulary as one read from PostgreSQL.
+///
+/// [`SchemaCatalog`]: rurqe_migrate::catalog::SchemaCatalog
+#[cfg(feature = "migrate")]
+pub mod introspect;
+
+/// Migration protocol over a `rusqlite` connection.
+///
+/// The module owns the statements of `__rurqe_schema_history`, the write lock a
+/// run holds, and the [`MigrationBackend`] adapters the runner drives, so an
+/// application applies migrations through the driver crate it already uses.
+///
+/// [`MigrationBackend`]: rurqe_migrate::runner::MigrationBackend
+#[cfg(feature = "migrate")]
+pub mod migrate;
+
+/// Re-export of the migration crate the backend implements.
+#[cfg(feature = "migrate")]
+pub use rurqe_migrate;

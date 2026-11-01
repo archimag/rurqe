@@ -29,7 +29,10 @@ sqlite = ["dep:rurqe-sqlite"]
 # `migrate` brings the migration crate: the embedded collection, the runner, and
 # the backend contracts. The `embed_migrations!` macro additionally needs
 # `macros`, because the expansion itself is compiled by the proc-macro crate.
-migrate = ["dep:rurqe-migrate"]
+# Each driver crate carries its own `migrate` feature — the catalog introspection
+# and the migration backend of that engine — so a build bound to a driver compiles
+# the protocol of that driver alone instead of pulling a second one in.
+migrate = ["dep:rurqe-migrate", "rurqe-sqlite?/migrate"]
 tokio = ["rurqe-migrate?/tokio"]
 # `r2d2` pools the synchronous drivers, so it enables the `postgres` adapter it
 # pools; `deadpool-postgres` pools the asynchronous one.
