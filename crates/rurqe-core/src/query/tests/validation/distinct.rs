@@ -7,8 +7,8 @@
 //! well as through the fluent builders.
 
 use super::super::{MockDialect, Order, OrderAlias, OrderId, OrderTotal, OrderUserId};
-use super::{count_star, empty_ast};
-use crate::expr::{ExprKind, OrderCriterion, OrderDirection};
+use super::{count_star, empty_ast, relation_statement};
+use crate::expr::{ExprKind, OrderCriterion, OrderDirection, SelectAst, Subquery, SubqueryOp};
 use crate::query::*;
 use crate::schema::{AliasedCol, TableRef};
 
@@ -347,4 +347,235 @@ fn a_distinct_ordering_matches_a_projected_aggregate() {
         .push(OrderCriterion::new(count_star(), OrderDirection::Desc));
 
     assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_matches_a_window_over_the_other_node_shape() {
+    // The projection partitions the window by the schema-marker shape of a
+    // column while the ordering criterion partitions the same window by the
+    // table-qualified shape of that column, which is what the public
+    // correlation escape rewrites every bare reference into. Both spellings
+    // name one value of one relation, so the canonical comparison accepts the
+    // statement: a window node hides the column references the normalisation
+    // exists to resolve.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(window_partitioned_by(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }));
+    ast.order_by.push(OrderCriterion::new(
+        window_partitioned_by(ExprKind::QualifiedColumn {
+            table: "orders",
+            column: "user_id",
+        }),
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_of_a_window_partitioned_by_another_column_is_rejected() {
+    // The canonical comparison resolves the two spellings of one column; it does
+    // not make distinct columns match, so the rule still rejects an ordering
+    // criterion whose window partitions the rows by another column than the
+    // projected window does.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(window_partitioned_by(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }));
+    ast.order_by.push(OrderCriterion::new(
+        window_partitioned_by(ExprKind::QualifiedColumn {
+            table: "orders",
+            column: "total",
+        }),
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DistinctOrderNotProjected { position: 0 })
+    );
+}
+
+#[test]
+fn a_distinct_ordering_matches_a_subquery_written_through_the_other_node_shape() {
+    // The projection writes the operand of the membership predicate as a bare
+    // column reference while the ordering criterion writes the same predicate
+    // through the public correlation escape, whose rewrite turns that reference
+    // into a table-qualified one. Both clauses compute the same value, so the
+    // DISTINCT rule accepts the ordering.
+    let inner = relation_statement("orders", "id");
+    let projection = membership_predicate(bare_column("orders", "user_id"), inner.clone());
+    let criterion = membership_predicate(qualified_column("orders", "user_id"), inner);
+
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(projection);
+    ast.order_by
+        .push(OrderCriterion::new(criterion, OrderDirection::Asc));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_matches_a_lag_window_over_the_other_node_shape() {
+    // The correlation escape rewrites the column a `LAG` reads, the column the
+    // window partitions by, and the column it orders by into table-qualified
+    // references. Both clauses compute the same value, so the DISTINCT rule
+    // accepts the ordering.
+    let projection = lag_window(
+        bare_column("orders", "total"),
+        1,
+        bare_column("orders", "user_id"),
+        bare_column("orders", "id"),
+        OrderDirection::Asc,
+    );
+    let criterion = lag_window(
+        qualified_column("orders", "total"),
+        1,
+        qualified_column("orders", "user_id"),
+        qualified_column("orders", "id"),
+        OrderDirection::Asc,
+    );
+
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(projection);
+    ast.order_by
+        .push(OrderCriterion::new(criterion, OrderDirection::Asc));
+
+    assert_eq!(ast.validate(), Ok(()));
+}
+
+#[test]
+fn a_distinct_ordering_of_a_window_ordered_the_other_way_is_rejected() {
+    // The two windows read the same rows, but their orderings run in opposite
+    // directions, so `LAG` reads a different row: the two expressions compute
+    // different values and the DISTINCT rule keeps rejecting the ordering.
+    let projection = lag_window(
+        bare_column("orders", "total"),
+        1,
+        bare_column("orders", "user_id"),
+        bare_column("orders", "id"),
+        OrderDirection::Asc,
+    );
+    let criterion = lag_window(
+        bare_column("orders", "total"),
+        1,
+        bare_column("orders", "user_id"),
+        bare_column("orders", "id"),
+        OrderDirection::Desc,
+    );
+
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(projection);
+    ast.order_by
+        .push(OrderCriterion::new(criterion, OrderDirection::Asc));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DistinctOrderNotProjected { position: 0 })
+    );
+}
+
+#[test]
+fn a_distinct_ordering_of_a_window_reading_another_row_is_rejected() {
+    // The offset selects the row `LAG` reads, so reading the second row back
+    // computes a different value than reading the first one.
+    let projection = lag_window(
+        bare_column("orders", "total"),
+        1,
+        bare_column("orders", "user_id"),
+        bare_column("orders", "id"),
+        OrderDirection::Asc,
+    );
+    let criterion = lag_window(
+        bare_column("orders", "total"),
+        2,
+        bare_column("orders", "user_id"),
+        bare_column("orders", "id"),
+        OrderDirection::Asc,
+    );
+
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(projection);
+    ast.order_by
+        .push(OrderCriterion::new(criterion, OrderDirection::Asc));
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::DistinctOrderNotProjected { position: 0 })
+    );
+}
+
+/// Builds a bare column reference to `name` of `table`.
+fn bare_column(table: &'static str, name: &'static str) -> ExprKind {
+    ExprKind::Column { table, name }
+}
+
+/// Builds a reference to `column` of `table`, qualified by its table.
+fn qualified_column(table: &'static str, column: &'static str) -> ExprKind {
+    ExprKind::QualifiedColumn { table, column }
+}
+
+/// Builds a membership predicate testing `operand` against the rows of `inner`.
+///
+/// The nested statement projects one column of `orders`, so the predicate reads the
+/// operand against that column; projecting the predicate makes the enclosing
+/// statement project a boolean a `DISTINCT` statement may order by.
+fn membership_predicate(operand: ExprKind, inner: SelectAst) -> ExprKind {
+    ExprKind::Subquery {
+        op: SubqueryOp::In,
+        operand: Some(Box::new(operand)),
+        query: Subquery::new(inner),
+        negated: false,
+    }
+}
+
+/// Builds a `LAG` window reading `column` `offset` rows before the current row.
+///
+/// The window partitions by `partition` and orders by `ordering` in `direction`, so
+/// a test varies the column references independently while every other clause of
+/// the window stays as written.
+fn lag_window(
+    column: ExprKind,
+    offset: u32,
+    partition: ExprKind,
+    ordering: ExprKind,
+    direction: OrderDirection,
+) -> ExprKind {
+    ExprKind::Window {
+        kind: Box::new(crate::expr::WindowExprKind::Lag {
+            column,
+            offset: Some(offset),
+        }),
+        partition_by: vec![partition],
+        order_by: vec![OrderCriterion::new(ordering, direction)],
+        frame: None,
+    }
+}
+
+/// Builds a `ROW_NUMBER()` window partitioned by `partition`.
+///
+/// The window carries no ordering and no frame, so two windows built by the
+/// helper differ exactly in the partition expression the test supplies.
+fn window_partitioned_by(partition: ExprKind) -> ExprKind {
+    ExprKind::Window {
+        kind: Box::new(crate::expr::WindowExprKind::RowNumber),
+        partition_by: vec![partition],
+        order_by: Vec::new(),
+        frame: None,
+    }
 }

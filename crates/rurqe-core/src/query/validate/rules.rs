@@ -13,7 +13,7 @@
 
 use std::collections::HashSet;
 
-use crate::expr::{DerivedAst, ExprKind, SelectAst, StatementRef, WindowExprKind};
+use crate::expr::{DerivedAst, ExprKind, OrderCriterion, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
 
 use super::qualifiers::{validate_clauses, ROOT_SCOPE};
@@ -497,10 +497,15 @@ pub(super) fn column_reference(expr: &ExprKind) -> Option<(&'static str, &'stati
 ///   `CASE`, a row value, and the predicates built over them — is compared through
 ///   its operands, so the normalisation reaches a column nested inside a computed
 ///   projection;
-/// - a node the comparison does not decompose — a bound value, a raw fragment, a
-///   nested statement, a window call, or a nested collection — is compared
-///   structurally, which stays correct because none of those shapes hides a column
-///   reference the normalisation would have to resolve.
+/// - a window call is decomposed into the operand its function evaluates, the
+///   expressions it partitions by, and the criteria it orders by, because the
+///   rewrite that drops the scope descends into all three;
+/// - a nested statement is decomposed into its operator, its negation, the operand
+///   of its predicate, and the statement it embeds, which is compared structurally
+///   because that statement owns its relations and the rewrite leaves it untouched;
+/// - a node the comparison does not decompose — a bound value, a raw fragment, or a
+///   nested collection — is compared structurally, which stays correct because the
+///   rewrite leaves it untouched as well.
 fn equivalent_expressions(lhs: &ExprKind, rhs: &ExprKind) -> bool {
     let lhs = without_alias(lhs);
     let rhs = without_alias(rhs);
@@ -675,6 +680,44 @@ fn equivalent_expressions(lhs: &ExprKind, rhs: &ExprKind) -> bool {
                 })
                 && equivalent_optional(lhs_else.as_deref(), rhs_else.as_deref())
         }
+        (
+            ExprKind::Window {
+                kind: lhs_kind,
+                partition_by: lhs_partition,
+                order_by: lhs_order,
+                frame: lhs_frame,
+            },
+            ExprKind::Window {
+                kind: rhs_kind,
+                partition_by: rhs_partition,
+                order_by: rhs_order,
+                frame: rhs_frame,
+            },
+        ) => {
+            equivalent_window_kinds(lhs_kind, rhs_kind)
+                && equivalent_lists(lhs_partition, rhs_partition)
+                && equivalent_criteria(lhs_order, rhs_order)
+                && lhs_frame == rhs_frame
+        }
+        (
+            ExprKind::Subquery {
+                op: lhs_op,
+                operand: lhs_operand,
+                query: lhs_query,
+                negated: lhs_negated,
+            },
+            ExprKind::Subquery {
+                op: rhs_op,
+                operand: rhs_operand,
+                query: rhs_query,
+                negated: rhs_negated,
+            },
+        ) => {
+            lhs_op == rhs_op
+                && lhs_negated == rhs_negated
+                && equivalent_optional(lhs_operand.as_deref(), rhs_operand.as_deref())
+                && lhs_query == rhs_query
+        }
         (lhs, rhs) => lhs == rhs,
     }
 }
@@ -693,6 +736,61 @@ fn equivalent_optional(lhs: Option<&ExprKind>, rhs: Option<&ExprKind>) -> bool {
     match (lhs, rhs) {
         (Some(lhs), Some(rhs)) => equivalent_expressions(lhs, rhs),
         (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Compares two ordering criteria in their canonical form.
+///
+/// A criterion of a window carries the direction it orders in and the placement of
+/// its NULL values, and both are part of the value the window computes: ordering a
+/// column descending ranks the rows differently from ordering it ascending, and a
+/// placement fixes the order of a nullable column exactly as it does for the
+/// statement itself. They are therefore compared as written, while the ordered
+/// expression goes through the canonical comparison.
+fn equivalent_criteria(lhs: &[OrderCriterion], rhs: &[OrderCriterion]) -> bool {
+    lhs.len() == rhs.len()
+        && lhs.iter().zip(rhs).all(|(lhs, rhs)| {
+            lhs.direction == rhs.direction
+                && lhs.nulls == rhs.nulls
+                && equivalent_expressions(&lhs.expr, &rhs.expr)
+        })
+}
+
+/// The operand a window function evaluates, together with its row offset.
+///
+/// Only `LAG` and `LEAD` read a column of their own; the ranking functions take no
+/// operand, and a window aggregate stores the expression it evaluates as
+/// [`WindowExprKind::Expr`]. A caller comparing two calls of the same function
+/// reaches the operand through this helper and compares the remaining flavours
+/// structurally.
+fn window_kind_operand(kind: &WindowExprKind) -> Option<(&ExprKind, Option<u32>)> {
+    match kind {
+        WindowExprKind::Lag { column, offset } | WindowExprKind::Lead { column, offset } => {
+            Some((column, *offset))
+        }
+        _ => None,
+    }
+}
+
+/// Compares two window function calls in their canonical form.
+///
+/// The rewrite that drops the scope descends into the operand a window function
+/// evaluates — the column `LAG` and `LEAD` read, and the expression a window
+/// aggregate is evaluated over — so that operand is compared through the canonical
+/// comparison, while the offset and the choice of function are compared as
+/// written: `LAG("total", 1)` and `LAG("total", 2)` read different rows.
+fn equivalent_window_kinds(lhs: &WindowExprKind, rhs: &WindowExprKind) -> bool {
+    match (window_kind_operand(lhs), window_kind_operand(rhs)) {
+        (Some((lhs_operand, lhs_offset)), Some((rhs_operand, rhs_offset))) => {
+            lhs_offset == rhs_offset && equivalent_expressions(lhs_operand, rhs_operand)
+        }
+        (None, None) => match (lhs, rhs) {
+            (WindowExprKind::Expr(lhs_inner), WindowExprKind::Expr(rhs_inner)) => {
+                equivalent_expressions(lhs_inner, rhs_inner)
+            }
+            (lhs, rhs) => lhs == rhs,
+        },
         _ => false,
     }
 }
