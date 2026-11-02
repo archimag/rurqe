@@ -118,12 +118,23 @@ fn write_project_config(workspace: &Path, migrations: &Path, checkpoint: &Path) 
         &config,
         format!(
             "[migrations]\ndir = \"{}\"\n\n[stage]\ncheckpoint = \"{}\"\n",
-            path_string(migrations),
-            path_string(checkpoint),
+            declared_path(workspace, migrations),
+            declared_path(workspace, checkpoint),
         ),
     )
     .expect("write the project configuration");
     path_string(&config)
+}
+
+/// The path of `path` as the project configuration declares it.
+///
+/// A declared path resolves against the directory holding `rurqe.toml`, so it is
+/// written relative to the workspace: an absolute value would be refused.
+fn declared_path(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The canonical catalog digest of the SQLite database at `db`.

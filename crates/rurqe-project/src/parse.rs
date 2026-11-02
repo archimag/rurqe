@@ -10,9 +10,14 @@
 //! Every table of the document is read strictly: a key the parser does not know
 //! is rejected where it is written, so a misspelled `[migrations].dir` or
 //! `[stage].checkpoint` cannot silently fall back to the conventional path.
+//! A declared path is resolved against the directory holding the document, so a
+//! value the host reads as absolute or rooted, or one that climbs out of that
+//! directory with `..`, is refused at its own key instead of relocating an
+//! artifact the project never intended.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
+use std::path::{Component, Path};
 
 use toml_edit::{ImDocument, Item, TableLike};
 
@@ -93,7 +98,7 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
                 secondary = Some((names, span));
             }
             ROOT_KEY => {
-                config.root = Some(read_required_string(contents, span, item, ROOT_KEY)?);
+                config.root = Some(read_required_path(contents, span, item, ROOT_KEY)?);
             }
             MIGRATIONS_SECTION => {
                 let table = section_table(contents, span.clone(), item, MIGRATIONS_SECTION)?;
@@ -207,7 +212,7 @@ impl CodegenConfig {
                     self.read_overrides(contents, overrides, &section, "", span)?;
                 }
                 OUTPUT_KEY => {
-                    self.codegen_output = Some(read_required_string(
+                    self.codegen_output = Some(read_required_path(
                         contents,
                         span,
                         item,
@@ -235,7 +240,7 @@ impl CodegenConfig {
 
             match key {
                 DIR_KEY => {
-                    self.migrations_dir = Some(read_required_string(
+                    self.migrations_dir = Some(read_required_path(
                         contents,
                         span,
                         item,
@@ -263,7 +268,7 @@ impl CodegenConfig {
 
             match key {
                 DIR_KEY => {
-                    self.stage_dir = Some(read_required_string(
+                    self.stage_dir = Some(read_required_path(
                         contents,
                         span,
                         item,
@@ -271,7 +276,7 @@ impl CodegenConfig {
                     )?);
                 }
                 CHECKPOINT_KEY => {
-                    self.stage_checkpoint = Some(read_required_string(
+                    self.stage_checkpoint = Some(read_required_path(
                         contents,
                         span,
                         item,
@@ -390,6 +395,73 @@ fn read_required_string(
     }
 
     Ok(value.to_owned())
+}
+
+/// Reads a key whose value is a path the document declares.
+///
+/// The value is read like any other string and then resolved against the
+/// directory holding `rurqe.toml`, so it has to stay inside that directory: a
+/// path the host reads as absolute or rooted replaces the whole accumulated path
+/// when it is joined, and a `..` segment climbs out of it. Both are refused at
+/// the key that declares them, because a silently relocated artifact is never
+/// what the project asked for.
+fn read_required_path(
+    contents: &str,
+    span: Option<Range<usize>>,
+    item: &Item,
+    key: &str,
+) -> Result<String, ConfigError> {
+    let value = read_required_string(contents, span.clone(), item, key)?;
+
+    validate_declared_path(contents, span, key, &value)?;
+
+    Ok(value)
+}
+
+/// Refuses a declared path that does not resolve beneath the directory holding
+/// the configuration file.
+///
+/// A path the host reads as absolute or rooted replaces the configuration
+/// directory, and a `..` segment leaves it, so neither is accepted: a declaration
+/// names a location relative to the directory holding `rurqe.toml`, and the file
+/// never relocates an artifact outside the project.
+fn validate_declared_path(
+    contents: &str,
+    span: Option<Range<usize>>,
+    key: &str,
+    value: &str,
+) -> Result<(), ConfigError> {
+    let path = Path::new(value);
+
+    if matches!(
+        path.components().next(),
+        Some(Component::Prefix(_) | Component::RootDir)
+    ) {
+        return Err(syntax_error(
+            contents,
+            span,
+            format!(
+                "`{key}` must be a path relative to the directory holding the configuration \
+                 file; `{value}` is absolute and would discard it"
+            ),
+        ));
+    }
+
+    if path
+        .components()
+        .any(|component| component == Component::ParentDir)
+    {
+        return Err(syntax_error(
+            contents,
+            span,
+            format!(
+                "`{key}` must stay inside the directory holding the configuration file; \
+                 `{value}` climbs out of it with `..`"
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Reads a document-root key naming one database schema.

@@ -374,10 +374,21 @@ fn migrations_config(workspace: &Path, migrations: &Path) -> String {
     let config = workspace.join("rurqe.toml");
     fs::write(
         &config,
-        format!("[migrations]\ndir = \"{}\"\n", path_string(migrations)),
+        format!("[migrations]\ndir = \"{}\"\n", declared_path(workspace, migrations)),
     )
     .expect("write the project configuration");
     path_string(&config)
+}
+
+/// The path of `path` as the project configuration declares it.
+///
+/// A declared path resolves against the directory holding `rurqe.toml`, so it is
+/// written relative to the workspace: an absolute value would be refused.
+fn declared_path(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn history_scripts(db: &Path) -> Vec<String> {

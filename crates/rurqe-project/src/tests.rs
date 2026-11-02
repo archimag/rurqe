@@ -874,3 +874,105 @@ fn a_directory_tree_without_a_configuration_file_yields_none() {
         assert_eq!(discovered, None);
     }
 }
+
+#[test]
+fn an_absolute_declared_path_is_rejected() {
+    for (contents, key, line) in [
+        ("root = \"/var/rurqe\"\n", "root", 1),
+        (
+            "[migrations]\ndir = \"/etc/rurqe\"\n",
+            "migrations.dir",
+            2,
+        ),
+        ("[stage]\ndir = \"/srv/schema\"\n", "stage.dir", 2),
+        (
+            "[stage]\ncheckpoint = \"/srv/checkpoint.toml\"\n",
+            "stage.checkpoint",
+            2,
+        ),
+        (
+            "[codegen]\noutput = \"/srv/schema.rs\"\n",
+            "codegen.output",
+            2,
+        ),
+    ] {
+        let err = CodegenConfig::parse(contents)
+            .expect_err("an absolute path would discard the configuration directory");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: at, .. } if *at == line),
+            "the diagnostic is located at the declaration: {err}"
+        );
+        let message = err.to_string();
+        assert!(message.contains(key), "the key is named: {message}");
+        assert!(
+            message.contains("absolute"),
+            "the refusal names the offending value: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_declared_path_climbing_out_of_the_project_is_rejected() {
+    for (contents, key) in [
+        ("[migrations]\ndir = \"../db\"\n", "migrations.dir"),
+        ("[stage]\ndir = \"ddl/../schema\"\n", "stage.dir"),
+        (
+            "[stage]\ncheckpoint = \"../migrations/checkpoint.toml\"\n",
+            "stage.checkpoint",
+        ),
+        (
+            "[codegen]\noutput = \"../src/schema.rs\"\n",
+            "codegen.output",
+        ),
+    ] {
+        let err = CodegenConfig::parse(contents).expect_err("a `..` segment leaves the project");
+
+        assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
+        let message = err.to_string();
+        assert!(message.contains(key), "the key is named: {message}");
+        assert!(
+            message.contains(".."),
+            "the refusal names the segment: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_declared_path_resolves_inside_the_configuration_directory() {
+    let config = CodegenConfig::parse(
+        "root = \"artifacts\"\n\
+         [migrations]\n\
+         dir = \"db/migrations\"\n\
+         [stage]\n\
+         dir = \"db/schema\"\n\
+         checkpoint = \"db/migrations/marker.toml\"\n\
+         [codegen]\n\
+         output = \"src/db/schema.rs\"\n",
+    )
+    .expect("a relative declaration stays inside the project");
+
+    let directory = Path::new("project");
+
+    for path in [
+        config.migrations_dir(directory),
+        config.stage_dir(directory),
+        config.checkpoint_path(directory),
+        config.schema_lock_path(directory),
+    ] {
+        assert!(
+            path.starts_with(directory),
+            "`{}` resolves beneath the configuration directory",
+            path.display()
+        );
+    }
+
+    let module = config
+        .codegen_output(directory)
+        .expect("the declared module resolves");
+    assert!(
+        module.starts_with(directory),
+        "`{}` resolves beneath the configuration directory",
+        module.display()
+    );
+}
