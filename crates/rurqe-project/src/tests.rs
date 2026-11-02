@@ -226,6 +226,7 @@ fn schemas_must_not_repeat_the_primary_schema() {
 fn schema_qualified_override_paths_are_read() {
     let quoted = CodegenConfig::parse(
         "primary_schema = \"app\"\n\
+         schemas = [\"auth\"]\n\
          [codegen.type_overrides]\n\
          \"auth.users.id\" = \"uuid::Uuid\"\n",
     )
@@ -239,7 +240,8 @@ fn schema_qualified_override_paths_are_read() {
     );
 
     let dotted = CodegenConfig::parse(
-        "[codegen.type_overrides]\n\
+        "schemas = [\"auth\"]\n\
+         [codegen.type_overrides]\n\
          auth.users.id = \"uuid::Uuid\"\n",
     )
     .expect("a dotted three-segment path is valid");
@@ -252,7 +254,8 @@ fn schema_qualified_override_paths_are_read() {
     );
 
     let nested = CodegenConfig::parse(
-        "[codegen.type_overrides.auth.users]\n\
+        "schemas = [\"auth\"]\n\
+         [codegen.type_overrides.auth.users]\n\
          id = \"uuid::Uuid\"\n",
     )
     .expect("a two-level nested table is valid");
@@ -265,12 +268,95 @@ fn schema_qualified_override_paths_are_read() {
     );
 
     let two_levels = CodegenConfig::parse(
-        "[codegen.type_overrides.auth]\n\
+        "schemas = [\"auth\"]\n\
+         [codegen.type_overrides.auth]\n\
          users.id = \"uuid::Uuid\"\n",
     )
     .expect("the table and the dotted key meet at one path");
     assert_eq!(
         two_levels
+            .type_overrides()
+            .get("auth.users.id")
+            .map(String::as_str),
+        Some("uuid::Uuid")
+    );
+}
+
+#[test]
+fn a_three_segment_override_must_name_a_declared_schema() {
+    let err = CodegenConfig::parse(
+        "primary_schema = \"app\"\n\
+         schemas = [\"auth\"]\n\
+         [codegen.type_overrides]\n\
+         \"ath.users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect_err("a misspelled schema names no declared schema");
+
+    assert!(matches!(&err, ConfigError::Syntax { line: 4, .. }), "{err}");
+
+    let message = err.to_string();
+    assert!(message.contains("`ath.users.id`"), "{message}");
+    assert!(message.contains("`ath`"), "{message}");
+    assert!(
+        message.contains("`auth`"),
+        "the declared schema is named: {message}"
+    );
+}
+
+#[test]
+fn a_three_segment_override_needs_a_declared_secondary_schema() {
+    let err = CodegenConfig::parse(
+        "[codegen.type_overrides]\n\
+         \"auth.users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect_err("a project without a secondary schema addresses no such column");
+
+    assert!(matches!(&err, ConfigError::Syntax { line: 2, .. }), "{err}");
+    assert!(err.to_string().contains("no secondary schema"), "{err}");
+}
+
+#[test]
+fn a_three_segment_override_naming_the_primary_schema_is_refused() {
+    let err = CodegenConfig::parse(
+        "primary_schema = \"app\"\n\
+         [codegen.type_overrides]\n\
+         \"app.users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect_err("the primary schema is addressed through two segments");
+
+    assert!(matches!(&err, ConfigError::Syntax { line: 3, .. }), "{err}");
+
+    let message = err.to_string();
+    assert!(message.contains("`app.users.id`"), "{message}");
+    assert!(
+        message.contains("write `users.id`"),
+        "the two-segment spelling is offered: {message}"
+    );
+}
+
+#[test]
+fn the_default_primary_schema_is_refused_in_a_three_segment_override() {
+    let err = CodegenConfig::parse(
+        "[codegen.type_overrides]\n\
+         \"public.users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect_err("the public default is the primary schema when none is named");
+
+    assert!(err.to_string().contains("`public`"), "{err}");
+}
+
+#[test]
+fn the_schema_cross_check_considers_the_whole_document() {
+    // A dotted root key declares the override before the `schemas` key that
+    // authorises it, so the check cannot run while the overrides are read.
+    let config = CodegenConfig::parse(
+        "codegen.type_overrides.auth.users.id = \"uuid::Uuid\"\n\
+         schemas = [\"auth\"]\n",
+    )
+    .expect("a schema declared after the override is still declared");
+
+    assert_eq!(
+        config
             .type_overrides()
             .get("auth.users.id")
             .map(String::as_str),

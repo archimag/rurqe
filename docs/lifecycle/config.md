@@ -290,6 +290,24 @@ invalid configuration at line 5, column 1: expected a `table.column` or `schema.
 invalid configuration at line 5, column 1: `users..id` has an empty segment at position 2; every segment of a `table.column` or `schema.table.column` path must be non-empty
 ```
 
+- The schema a three-segment path names has to be one the project declares, because a primary-schema column is addressed as `table.column` and a secondary-schema column as `schema.table.column` for a schema declared in `schemas`. A path naming the primary schema can never reach a column, so it is refused and the two-segment spelling is offered:
+
+```text
+invalid configuration at line 4, column 1: override path `app.users.id` names the primary schema `app`; a primary-schema column is named `table.column`, so write `users.id`
+```
+
+- A path naming a schema `schemas` does not declare is refused the same way, and the diagnostic names the declared secondaries — or reports that the project declares none:
+
+```text
+invalid configuration at line 4, column 1: override path `ath.users.id` names the schema `ath`, which `schemas` does not declare; the declared secondary schemas are `auth`
+```
+
+```text
+invalid configuration at line 2, column 1: override path `auth.users.id` names the schema `auth`, but the project declares no secondary schema; a secondary-schema column is named `schema.table.column` for a schema declared in `schemas`, and a primary-schema column is named `table.column`
+```
+
+- The cross-check considers the whole document, because a dotted root key may declare an override before the `schemas` key that authorises it.
+
 - The value is the Rust type emitted verbatim into the declaration, so it has to be a syntactically valid Rust type, and an empty one is refused:
 
 ```text

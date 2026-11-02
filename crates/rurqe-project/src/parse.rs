@@ -80,6 +80,7 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
     let mut primary: Option<(String, Option<Range<usize>>)> = None;
     let mut legacy: Option<(String, Option<Range<usize>>)> = None;
     let mut secondary: Option<(Vec<String>, Option<Range<usize>>)> = None;
+    let mut overrides: Vec<OverrideDeclaration> = Vec::new();
 
     for (key, item) in root.iter() {
         let span = key_span(root, key);
@@ -110,7 +111,7 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
             }
             CODEGEN_SECTION => {
                 let table = section_table(contents, span.clone(), item, CODEGEN_SECTION)?;
-                config.read_codegen_section(contents, table, span)?;
+                config.read_codegen_section(contents, table, span, &mut overrides)?;
             }
             other => {
                 return Err(syntax_error(
@@ -141,6 +142,8 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
 
         config.schemas = names;
     }
+
+    validate_override_schemas(contents, primary.as_deref(), &config.schemas, &overrides)?;
 
     config.primary_schema = primary;
 
@@ -186,6 +189,7 @@ impl CodegenConfig {
         contents: &str,
         table: &dyn TableLike,
         section_span: Option<Range<usize>>,
+        declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
         for (key, item) in table.iter() {
             let span = key_span(table, key).or_else(|| section_span.clone());
@@ -209,7 +213,7 @@ impl CodegenConfig {
                         )
                     })?;
                     let section = format!("{CODEGEN_SECTION}.{TYPE_OVERRIDES_KEY}");
-                    self.read_overrides(contents, overrides, &section, "", span)?;
+                    self.read_overrides(contents, overrides, &section, "", span, declarations)?;
                 }
                 OUTPUT_KEY => {
                     self.codegen_output = Some(read_required_path(
@@ -301,6 +305,10 @@ impl CodegenConfig {
     /// `prefix` records the segments the enclosing tables contributed, so the three
     /// forms flatten onto the same `auth.users.id` entry and the collision between
     /// two of them is detected instead of one silently overwriting the other.
+    ///
+    /// The schema a three-segment path names is validated once the whole
+    /// document has been read, by [`validate_override_schemas`], because the
+    /// `schemas` key may follow the table that declares the override.
     fn read_overrides(
         &mut self,
         contents: &str,
@@ -308,6 +316,7 @@ impl CodegenConfig {
         section: &str,
         prefix: &str,
         enclosing: Option<Range<usize>>,
+        declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
         for (key, item) in table.iter() {
             let span = key_span(table, key).or_else(|| enclosing.clone());
@@ -319,9 +328,9 @@ impl CodegenConfig {
 
             if let Some(rust_type) = item.as_str() {
                 let path = require_override_path(contents, span.clone(), &path)?;
-                self.insert_override(contents, span, path, rust_type)?;
+                self.insert_override(contents, span, path, rust_type, declarations)?;
             } else if let Some(nested) = item.as_table_like() {
-                self.read_overrides(contents, nested, section, &path, span)?;
+                self.read_overrides(contents, nested, section, &path, span, declarations)?;
             } else {
                 return Err(syntax_error(
                     contents,
@@ -338,12 +347,16 @@ impl CodegenConfig {
     }
 
     /// Records one override, rejecting an empty type or a repeated path.
+    ///
+    /// The declaration keeps the position of its own key, which is where the
+    /// schema cross-check reports it once the whole document is read.
     fn insert_override(
         &mut self,
         contents: &str,
         span: Option<Range<usize>>,
         schema_path: String,
         rust_type: &str,
+        declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
         if rust_type.trim().is_empty() {
             return Err(syntax_error(
@@ -369,6 +382,8 @@ impl CodegenConfig {
                 format!("duplicate type override `{schema_path}`"),
             ));
         }
+
+        declarations.push((schema_path, span));
 
         Ok(())
     }
@@ -588,7 +603,85 @@ fn require_override_path(
 
     Ok(segments.join("."))
 }
+/// The declaration of one override: its flattened path and the position of its
+/// key.
+type OverrideDeclaration = (String, Option<Range<usize>>);
 
+/// Splits a `schema.table.column` path into its three segments.
+///
+/// `None` means the path is a `table.column` one, which addresses a column of
+/// the primary schema and therefore needs no schema cross-check.
+fn schema_qualified_path(path: &str) -> Option<(&str, &str, &str)> {
+    let (schema, rest) = path.split_once('.')?;
+    let (table, column) = rest.split_once('.')?;
+
+    // `require_override_path` refuses a fourth segment, so the last segment of
+    // an accepted path never carries a dot of its own.
+    if column.contains('.') {
+        return None;
+    }
+
+    Some((schema, table, column))
+}
+
+/// Refuses an override path whose schema segment can never reach a column.
+///
+/// A primary-schema column is addressed as `table.column` and a column of a
+/// secondary schema as `schema.table.column` for a schema the document declares
+/// in `schemas`, so a three-segment path naming anything else addresses no
+/// column the generator ever looks up: the generated module would keep the type
+/// the default mapping produces while the file believes the column was
+/// overridden. That is the silent misconfiguration every other rule of this
+/// parser refuses, so the path is reported where it is declared.
+///
+/// The cross-check runs once the whole document has been read, because a dotted
+/// root key may declare an override before the `schemas` key that authorises it.
+fn validate_override_schemas(
+    contents: &str,
+    primary: Option<&str>,
+    schemas: &[String],
+    declarations: &[OverrideDeclaration],
+) -> Result<(), ConfigError> {
+    let primary = primary.unwrap_or(DEFAULT_SCHEMA);
+
+    for (path, span) in declarations {
+        let Some((schema, table, column)) = schema_qualified_path(path) else {
+            continue;
+        };
+
+        if schemas.iter().any(|declared| declared.as_str() == schema) {
+            continue;
+        }
+
+        let message = if schema == primary {
+            format!(
+                "override path `{path}` names the primary schema `{schema}`; a primary-schema \
+                 column is named `table.column`, so write `{table}.{column}`"
+            )
+        } else if schemas.is_empty() {
+            format!(
+                "override path `{path}` names the schema `{schema}`, but the project declares no \
+                 secondary schema; a secondary-schema column is named `schema.table.column` for a \
+                 schema declared in `schemas`, and a primary-schema column is named `table.column`"
+            )
+        } else {
+            let declared = schemas
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            format!(
+                "override path `{path}` names the schema `{schema}`, which `schemas` does not \
+                 declare; the declared secondary schemas are {declared}"
+            )
+        };
+
+        return Err(syntax_error(contents, span.clone(), message));
+    }
+
+    Ok(())
+}
 /// The table declared by `item`, refused unless it is a table.
 fn section_table<'a>(
     contents: &str,

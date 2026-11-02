@@ -177,6 +177,18 @@ impl CodegenConfig {
     /// `schema.table.column` entry, so the collision between two of them is
     /// reported instead of one silently overwriting the other, and every rejected
     /// entry is reported where its own key is declared.
+    ///
+    /// A three-segment path names a schema the document declares in `schemas`,
+    /// because a secondary-schema column is addressed as `schema.table.column`
+    /// while a primary-schema column is addressed as `table.column`. A path
+    /// naming a schema the project does not declare — a misspelled secondary
+    /// schema, or the primary schema itself — could never reach a column and is
+    /// refused where it is declared, so a typo cannot silently leave the
+    /// generated module on the type the default mapping produces. The
+    /// cross-check runs once the whole document has been read, because a dotted
+    /// root key may declare an override before the `schemas` key that
+    /// authorises it.
+    ///
     pub fn parse(contents: &str) -> Result<Self, ConfigError> {
         parse::document(contents)
     }
@@ -228,7 +240,8 @@ impl CodegenConfig {
     /// Returns the declared overrides keyed by their schema path.
     ///
     /// A primary-schema column is keyed as `table.column` and a secondary-schema
-    /// one as `schema.table.column`, with every segment trimmed.
+    /// one as `schema.table.column` for a schema declared in `schemas`, with
+    /// every segment trimmed.
     pub fn type_overrides(&self) -> &BTreeMap<String, String> {
         &self.type_overrides
     }
