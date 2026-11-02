@@ -50,6 +50,7 @@ pub trait Expression<T> {
     /// The dropped tables are replaced with the [`Unscoped`] marker, so the
     /// expression is accepted in every query scope without becoming
     /// indistinguishable from a constant.
+    #[doc(hidden)]
     fn without_scope(self) -> Expr<T, Unscoped, NonAggregate, Self::Dialect>
     where
         Self: Sized,
@@ -346,7 +347,45 @@ impl<C: Column> Expression<C::RustType> for C {
         Expr::<C::RustType, C::Table, NonAggregate, ()>::new(C::expr_kind())
     }
 }
-
+/// Declares that an expression reads a column of the statement enclosing it.
+///
+/// A correlated subquery reads a column of the query it is embedded into, and
+/// that reference names no relation of the subquery itself. Every expression of
+/// a statement is checked against the relations the statement introduces, so the
+/// read of the enclosing query is declared explicitly: `outer` replaces the
+/// relation scope of `expr` with [`Unscoped`], a marker every query scope
+/// accepts, while the reference itself keeps naming its own table.
+///
+/// The dropped scope is what admits the expression into a statement that does
+/// not select from the referenced table, so the correlated subquery builds like
+/// any other statement and the reference renders as the explicitly qualified
+/// `"users"."id"` instead of silently reading a column of the statement it is
+/// rendered into.
+///
+/// ```
+/// use rurqe_core::expr::{outer, Expr, NonAggregate, Unscoped};
+///
+/// rurqe_core::table!(
+///     /// The `users` table.
+///     User => "users" {
+///         UserId => "id": i64,
+///     }
+/// );
+///
+/// let correlated = outer(UserId);
+///
+/// assert_eq!(correlated, Expr::column::<UserId>().without_scope());
+///
+/// // The reference reads `users` while naming no relation of its own, so a
+/// // subquery may carry it without selecting from that table.
+/// let _: Expr<i64, Unscoped, NonAggregate, ()> = correlated;
+/// ```
+pub fn outer<E, T>(expr: E) -> Expr<T, Unscoped, NonAggregate, E::Dialect>
+where
+    E: Expression<T>,
+{
+    expr.into_expression().without_scope()
+}
 /// A string expression that can be matched against `LIKE` patterns.
 ///
 /// Both a string column marker and an already built [`Expr<String>`] implement
@@ -422,5 +461,39 @@ impl<C: Column<RustType = String>> StringExpression for C {
 
     fn into_string_expression(self) -> Expr<String, C::Table, NonAggregate, ()> {
         Expr::<String, C::Table, NonAggregate, ()>::new(C::expr_kind())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::table!(
+        User => "users" {
+            UserId => "id": i64,
+        }
+    );
+
+    #[test]
+    fn outer_drops_the_scope_of_a_column_reference() {
+        let correlated = outer(UserId);
+
+        assert_eq!(correlated, Expr::column::<UserId>().without_scope());
+
+        // The reference keeps naming its own table, so the statement embedding
+        // it may introduce that table or not.
+        let _: Expr<i64, Unscoped, NonAggregate, ()> = correlated;
+    }
+
+    #[test]
+    fn outer_drops_the_scope_of_a_compound_expression() {
+        let correlated = outer(UserId.gt(10i64));
+
+        assert_eq!(
+            correlated,
+            Expr::column::<UserId>().gt(10i64).without_scope()
+        );
+
+        let _: Expr<bool, Unscoped, NonAggregate, ()> = correlated;
     }
 }

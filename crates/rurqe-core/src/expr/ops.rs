@@ -18,6 +18,6 @@ mod subquery;
 
 pub use compat::SqlCompatible;
 pub use conversion::{IntoExpr, IntoExprList};
-pub use expression::{Expression, StringExpression};
+pub use expression::{outer, Expression, StringExpression};
 pub use numeric::{CombineAggr, CombinedAggr, Numeric, NumericOperand};
 pub use subquery::{AnySubquery, InSubquery};

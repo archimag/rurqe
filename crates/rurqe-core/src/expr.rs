@@ -48,7 +48,7 @@ pub use functions::{
 };
 pub use operand::FunctionOperand;
 pub use ops::{
-    AnySubquery, CombineAggr, CombinedAggr, Expression, InSubquery, IntoExpr, IntoExprList,
+    outer, AnySubquery, CombineAggr, CombinedAggr, Expression, InSubquery, IntoExpr, IntoExprList,
     Numeric, NumericOperand, SqlCompatible, StringExpression,
 };
 pub(crate) use render::StatementRef;

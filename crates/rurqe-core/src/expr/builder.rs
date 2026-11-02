@@ -136,6 +136,7 @@ impl<T, Scope, Aggr, D> Expr<T, Scope, Aggr, D> {
     /// an alias the reference cannot name. The qualifier keeps the reference
     /// naming its own table instead of silently reading a column of the statement
     /// it is rendered into.
+    #[doc(hidden)]
     pub fn without_scope(self) -> Expr<T, Unscoped, Aggr, D> {
         Expr::new(qualify_references(self.kind))
     }
