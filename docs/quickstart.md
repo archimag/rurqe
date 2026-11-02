@@ -1,17 +1,17 @@
-# Getting Started
+# Quickstart
 
-This guide demonstrates end-to-end usage of RURQE: establishing dependencies, declaring schema markers, executing typed reads, building mutations, managing transactions, and handling errors.
+This chapter walks the workflow of an application built on RURQE: it declares what the toolchain has to know about the project, generates the schema markers from the live database catalog, writes a typed query over those markers, and executes it against a connection pool.
 
-Query building performs no I/O and opens no network connection, allowing statements to compile without a reachable database. Every example in this chapter is verified by the workspace test suite.
+Query building performs no I/O, so every statement below compiles without a reachable database. The generation step and the terminal call of the query are the only places that open a connection.
 
-## 1. Dependencies and Cargo Features
+## 1. Dependencies and Cargo features
 
-Add `rurqe` to `Cargo.toml` with the desired dialect and execution features:
+Add `rurqe` to `Cargo.toml` with the dialect and execution features the project targets:
 
 ```toml
 [dependencies]
-rurqe = { version = "0.1", features = ["sqlite", "macros"] }
-# for PostgreSQL: features = ["postgres", "tokio-postgres", "deadpool-postgres", "macros"]
+rurqe = { version = "0.1", features = ["postgres", "tokio-postgres", "deadpool-postgres", "macros"] }
+# for SQLite: features = ["sqlite", "macros"]
 ```
 
 | Feature | Functionality |
@@ -24,27 +24,50 @@ rurqe = { version = "0.1", features = ["sqlite", "macros"] }
 | `migrate` | Embedded migration engine (`EmbeddedMigrations`, `embed_migrations!`); it also enables the `migrate` feature of every driver in the build, so a baked collection applies over a connection the application already owns |
 | `uuid`, `chrono`, `serde_json`, `decimal` | Ecosystem data type mappings |
 
-## 2. Schema Markers
+## 2. Project configuration
 
-Schema definitions are represented by zero-sized marker types implementing the `Table` and `Column` traits:
+The toolchain reads its settings from `rurqe.toml` in the working directory. A minimal file states the schemas the catalog digests describe and the module code generation writes:
 
-```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:schema}}
+```toml
+primary_schema = "app"
+schemas = ["auth"]
+
+[codegen]
+output = "src/schema.rs"
 ```
 
-In standard workflows, these markers are generated automatically by `cargo rurqe codegen` from the live database catalog, which writes the module and the catalog snapshot `rurqe/schema.lock` beside it.
+* `primary_schema` names the database schema the project's catalogs describe — the one its relations render without a qualifier.
+* `schemas` names the secondary schemas declared beside the primary one.
+* `codegen.output` names the module the generator writes and the drift gate reads, and the built-in `src/schema.rs` closes the cascade when the key is absent.
 
-## 3. Typed Read Queries
+Every declared path resolves against the directory holding the configuration file, never against the working directory of a command. The file is optional: a project whose relations live in `public` and whose module sits at `src/schema.rs` omits it and keeps the defaults. It carries no connection setting either, so the target of a command is always taken from its arguments or from the environment.
 
-A filtered projection executed against an asynchronous connection pool:
+## 3. Schema code generation
+
+```bash
+cargo rurqe codegen --database-url postgres://app@localhost:5432/app
+```
+
+The command introspects the declared schemas and writes two artifacts from one catalog:
+
+* the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, so a query addresses a schema the database actually has rather than a schema somebody remembered to update;
+* the snapshot `rurqe/schema.lock` beneath the artifact directory, which is the normalized catalog the lifecycle compares against.
+
+The module embeds the digest of the snapshot as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database.
+
+The database is named by `--database-url`, or by the `DATABASE_URL` environment variable when the flag is absent, so a project that exports the variable regenerates both artifacts with the bare `cargo rurqe codegen`. Both engines are addressed the same way: a `postgres://` or `postgresql://` URL and a libpq keyword string address PostgreSQL, while a `sqlite:` URL, `:memory:`, or a path ending in `.db`, `.sqlite`, or `.sqlite3` addresses SQLite.
+
+## 4. Typed queries
+
+The generated module is a schema declaration like a hand-written one: a table and each of its columns are values, so a query names a relation or a column directly and the chain carries no generic annotation.
 
 ```rust,no_run
 {{#rustdoc_include examples/quickstart.rs:query}}
 ```
 
-The result vector contains synthesized record structs whose fields match the projected column markers (`UserId` maps to `user_id`). Assembling the query chain opens no connection; execution occurs exclusively at the terminal call (`.fetch_all(&pool).await?`).
+Assembling the chain opens no connection. Execution happens at the terminal call alone (`.fetch_all(&pool).await?`), which decodes every row into a synthesized record; the chain that builds the statement is the same for the blocking drivers, and only the terminal call differs.
 
-A projection names its items, so the fetched rows are read by those names: the field a chain reads is the one its projection declared, never a position in the row.
+A projection names its items, so a fetched row is read by those names rather than by a position in the row:
 
 ```rust,no_run
 {{#rustdoc_include examples/quickstart.rs:named_rows}}
@@ -57,124 +80,22 @@ WHERE ("email" = $1)
 ORDER BY "id" ASC
 ```
 
-A row that has to cross a function boundary is declared once with `dto!`, which reads every field type from the schema instead of restating it:
+## 5. Manual schema declarations
+
+Schema code generation is the primary route, because it keeps the markers, the snapshot, and the database catalog in step. A hand-written `table!` declaration stays available as a low-level fallback for isolated unit tests and rapid prototypes, where the crate is built with no reachable database:
 
 ```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:dto}}
+{{#rustdoc_include examples/quickstart.rs:schema}}
 ```
 
-The declaration turns the values of such a row into the struct, and the struct is read by the names the declaration gave its fields:
+The generated module declares its markers the same way, so a relation and its columns are values under both forms, and the builder calls a test exercises are the calls the generated module receives. A hand-written declaration carries no snapshot and no `SCHEMA_HASH`, so it never stands in for the generated module when drift is verified.
 
-```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:dto_row}}
-```
-
-## 4. Dynamic Query Construction
-
-Conditional query modifiers allow runtime branches to augment query clauses without breaking the builder's typestate or erasing static types:
-
-```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:conditional}}
-```
-
-When a flag is false or an `Option` contains `None`, the query remains unaffected and retains its static type.
-
-## 5. Mutations: Insert, Update, Delete, and Upsert
-
-All mutation statements enforce compile-time type compatibility and protective typestates:
-
-```rust,no_run
-{{#rustdoc_include examples/crud.rs:insert}}
-```
-
-Column assignments verify value types at compile time. Clauses such as `.returning(...)` are capability-gated and exist only for dialects supporting returning semantics.
-
-Mutations require a filter predicate before execution is permitted, preventing accidental full-table operations:
-
-```rust,no_run
-{{#rustdoc_include examples/crud.rs:update}}
-```
-
-```rust,no_run
-{{#rustdoc_include examples/crud.rs:delete}}
-```
-
-Conflict resolution is expressed natively via `on_conflict`:
-
-```rust,no_run
-{{#rustdoc_include examples/crud.rs:upsert}}
-```
-
-## 6. Joins and Automatic Nullability
-
-Columns brought into scope via outer joins automatically lift their Rust types to `Option<T>`:
-
-```rust,no_run
-{{#rustdoc_include examples/joins.rs:outer}}
-```
-
-Because the right side of a `LEFT JOIN` may be absent, `order_total` evaluates to `Option<f64>`. Reading an outer-joined column as an unwrapped scalar is rejected by the compiler.
-
-## 7. Aggregations and Grouping
-
-Aggregations and grouped queries maintain strict SQL projection semantics:
-
-```rust,no_run
-{{#rustdoc_include examples/aggregates.rs:group_by}}
-```
-
-A grouped query accepts only grouped columns and aggregate expressions. Referencing an ungrouped column outside an aggregate function fails at compile time.
-
-## 8. Nested Collections
-
-One-to-many relationships can be queried and transformed into typed child collections in a single round trip:
-
-```rust,no_run
-{{#rustdoc_include examples/nested.rs:nested}}
-```
-
-The database engine performs JSON aggregation internally, and the deserializer maps the payload directly into a `Vec` of the synthesized child record — one `order_id`/`total` pair per child row — without Cartesian multiplication on the wire.
-
-## 9. Transactions
-
-Transactions use an RAII guard to guarantee atomicity. A transaction is opened on a live connection with `.transaction().await?`, and it commits when the handle awaits `commit().await?`; dropping the handle without committing rolls the transaction back, so a returned error or a cancelled future leaves no partial work behind.
-
-```rust,no_run
-{{#rustdoc_include examples/transactions.rs:transaction}}
-```
-
-## 10. Multi-Dialect Support and Version Gating
-
-Importing a dialect prelude binds identifier quoting, parameter placeholders, and capability traits without generic annotations:
-
-```rust,no_run
-{{#rustdoc_include examples/dialects.rs:postgres}}
-```
-
-The equivalent SQLite query uses the SQLite prelude and generates positional `?` placeholders:
-
-```rust,no_run
-{{#rustdoc_include examples/dialects.rs:sqlite}}
-```
-
-Version-pinned preludes enforce capability boundaries. Clauses unsupported by the selected engine release do not exist in the builder API:
-
-```rust,no_run
-{{#rustdoc_include examples/dialects.rs:version}}
-```
-
-## 11. Pre-Flight Validation and Typestates
-
-While the compiler enforces positive relational invariants, `.build()` deterministically validates semantic rules requiring negative assertions or multi-clause alignment before any network I/O:
-
-```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:build_refusal}}
-```
-
-## 12. Error Model
+## 6. Error model
 
 Failures are returned as explicit, structured `Result` types:
 
-* **`BuildError`:** Returned by `.build()` when a statement violates AST structural rules (such as unaliased duplicate table names or mismatched `DISTINCT ON` order prefixes).
+* **`BuildError`:** Returned by `.build()` when a statement violates a structural rule of the SQL AST, such as a relation addressed twice under one name or a `DISTINCT ON` prefix that disagrees with the leading ordering criterion.
 * **`RowDecodeError`:** Returned during row extraction when a returned database value cannot be decoded into the expected Rust type.
 * **`ExecutionError`:** Returned by terminal query calls, preserving the underlying driver error while providing classification helpers (`is_not_found`, `is_multiple_rows`, `is_row_decode`, `as_backend`).
+
+A failure travels in the type that produced it, so a terminal call is propagated with `?` and the typed error surfaces at the runtime boundary of the application.
