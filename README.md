@@ -2,6 +2,7 @@
 
 **RURQE** (**R**ust **U**niversal **R**elational **Q**uery **E**ngine) is an ergonomic, strictly type-safe SQL query builder, relational execution engine, and database-first codegen toolkit for Rust.
 
+📖 **Documentation:** [https://archimag.github.io/rurqe/](https://archimag.github.io/rurqe/)
 ## Key Features
 
 - **Zero-Boilerplate Ergonomics:** Fluent query syntax and ad-hoc named record projections via `select!` and `cols!` with no generic turbofish noise.
@@ -39,6 +40,10 @@ This project is engineered using [TAUQE](https://github.com/archimag/tauqe), an 
 Pull requests containing raw code are not accepted. In the modern LLM paradigm, synthesizing raw code carries negligible marginal cost—code is no longer the scarce resource. What truly matters is conceptual clarity, invariant design, and cohesive system architecture.
 
 Not a single line of code in this repository was written by a human, and never will be.
+
+If you would like to contribute:
+- Open an issue to discuss conceptual ideas, architectural trade-offs, or UX workflows.
+- Better yet, contribute well-defined, ready-to-implement engineering specifications and formal invariants.
 
 ## License
 
