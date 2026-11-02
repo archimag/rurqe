@@ -15,7 +15,9 @@
 //! session that lost its backend is refused there; on the asynchronous surfaces
 //! a cancelled block, a panicking block, and a refused rollback destroy their
 // own checkout instead of returning it to the pool, and a transaction handle
-// dropped without a terminal call poisons the connection it borrows.
+//! dropped without a terminal call poisons the connection it borrows, and so does
+//! an entry whose `BEGIN` the driver refused or whose future was dropped before
+//! the transaction opened.
 
 // A skipped scenario reports itself to the operator running the tests, which is
 // the one place the workspace-wide printing ban is lifted for this file.
@@ -953,6 +955,82 @@ mod async_connection {
 
         let refused =
             AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
+        assert!(
+            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+            "the poisoned connection refuses further statements: {refused:?}"
+        );
+    }
+    /// Polls `future` once and drops it, leaving the statement it dispatched in
+    /// flight.
+    ///
+    /// The first poll is what sends the `BEGIN` to the server, and the drop that
+    /// follows is the ending a caller produces when it cancels the entry: the
+    /// response never arrives, so the connection cannot learn whether the
+    /// transaction opened.
+    async fn poll_once_then_drop<F: Future>(future: F) {
+        let mut future = pin!(future);
+        std::future::poll_fn(move |context| {
+            let _ = future.as_mut().poll(context);
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_entry_poisons_the_connection() {
+        let Some(url) = support::database_url("PgAsyncConnection refused begin") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        // The session ends before the transaction below opens, so the `BEGIN`
+        // reaches a connection that no longer exists. The probe waits for the
+        // client to observe the end of the session instead of racing it.
+        let termination = "SELECT pg_terminate_backend(pg_backend_pid())";
+        let _ = support::execute(&connection, termination).await;
+        let query = support::statement("SELECT 1");
+        let probe = AsyncQueryBackend::fetch_raw(&connection, &query).await;
+        assert!(probe.is_err(), "the ended session refuses the probe");
+
+        let failed = match connection.transaction().await {
+            Ok(_) => panic!("the `BEGIN` of an ended session is refused"),
+            Err(failure) => failure,
+        };
+
+        assert!(
+            connection.is_poisoned(),
+            "the refused entry records the failure on the connection: {failed}"
+        );
+
+        let refused = AsyncQueryBackend::fetch_raw(&connection, &query).await;
+        match refused {
+            Err(PgError::ConnectionPoisoned { reason }) => assert!(
+                reason.contains("BEGIN"),
+                "the reason names the statement that failed: {reason}"
+            ),
+            other => panic!("the poisoned connection refuses further statements: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dropped_entry_poisons_the_connection() {
+        let Some(url) = support::database_url("PgAsyncConnection dropped transaction entry") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        // The `BEGIN` is dispatched by the first poll and the future is dropped
+        // before the response arrives, so the caller never learns whether the
+        // transaction opened.
+        poll_once_then_drop(connection.transaction()).await;
+
+        assert!(
+            connection.is_poisoned(),
+            "the abandoned entry records the open transaction on the connection"
+        );
+
+        let query = support::statement("SELECT 1");
+        let refused = AsyncQueryBackend::fetch_raw(&connection, &query).await;
         assert!(
             matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
             "the poisoned connection refuses further statements: {refused:?}"

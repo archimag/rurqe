@@ -19,6 +19,15 @@ The handle implements the standard asynchronous terminal calls — `.fetch_all(&
 
 The handle neither selects an isolation level nor nests. It borrows the connection mutably for as long as it lives, so a second `.transaction()` call on the same connection is rejected by the borrow checker instead of opening a nested transaction, and no savepoint is opened for a block started through the handle. The closure-scoped forms of the same adapters offer both, and the rest of this chapter presents them.
 
+### Failure mode of an abandoned entry
+
+Opening a transaction is guarded on its own, because the statement that opens it and the work that follows it are two separate steps:
+
+- A `BEGIN` the driver refuses is recorded on the connection, which is poisoned from that point on: the transaction state is unknown, so the connection refuses every later statement and every later transaction instead of assuming the session was left outside a transaction.
+- The future of `.transaction()` is dropped before it completes, so no handle is handed back and the caller never learns whether the `BEGIN` reached the server. The adapter cannot prove the session is outside a transaction either, and poisons the connection the same way.
+
+Both cases report the same poisoned-connection error as an abandoned handle, so a session that cannot be proven clean is never handed to later work.
+
 ### Failure mode of a dropped guard
 
 Dropping the handle without committing requests a rollback, and that request is best effort rather than a guarantee:

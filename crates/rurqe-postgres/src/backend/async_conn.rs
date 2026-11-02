@@ -3,7 +3,8 @@
 //! The adapter tracks the transaction state of the connection it drives and
 //! poisons it whenever it cannot prove that the connection is outside a
 //! transaction: a `COMMIT` or a `ROLLBACK` the driver refused, a `BEGIN` that
-//! failed, a panicking block, a block whose future was dropped before either
+//! failed, a transaction entry whose future was dropped before the transaction
+//! opened, a panicking block, a block whose future was dropped before either
 //! control statement ran, or a transaction handle dropped without a terminal
 //! call. A poisoned connection refuses every statement and every
 //! transaction with [`PgError::ConnectionPoisoned`] instead of executing them
@@ -153,7 +154,8 @@ impl PgAsyncConnection {
     ///
     /// The state is recorded when the adapter can no longer prove that the
     /// connection is outside a transaction: a transaction-control statement the
-    /// driver refused, or a block that ended without one. Every further statement
+    /// driver refused, an entry that ended before its transaction opened, or a
+    /// block that ended without one. Every further statement
     /// and every further transaction is refused with
     /// [`PgError::ConnectionPoisoned`], so the caller detects the state here and
     /// drops the handle instead of running work inside an abandoned transaction.
@@ -204,11 +206,29 @@ impl PgAsyncConnection {
     /// the recorded reason. A `COMMIT` or a `ROLLBACK` the driver refuses on the
     /// returned handle poisons the connection in turn, so the failure stays
     /// observable after the handle is consumed.
+    ///
+    /// The entry is guarded like the transaction it opens. A `BEGIN` the driver
+    /// refuses records the failure on the poison cell of the connection and returns
+    /// the driver error, so the session is never handed to a later statement while
+    /// the server may still hold a transaction. A caller that drops the future of
+    /// this method before the transaction opened poisons the connection in the same
+    /// way: the adapter cannot prove that the `BEGIN` did not reach the server, so
+    /// it refuses the session instead of assuming it was left outside a
+    /// transaction.
     pub async fn transaction(&mut self) -> Result<PgAsyncTransaction<'_>, PgError> {
         self.refuse_if_poisoned()?;
         let poison = Arc::clone(&self.poison);
+        let mut guard = BlockExitGuard::new(Arc::clone(&poison));
         tracing::info!("beginning transaction");
-        let inner = self.client.transaction().await?;
+        let inner = match self.client.transaction().await {
+            Ok(inner) => inner,
+            Err(error) => {
+                let failure = PgError::from(error);
+                poison.mark(control_failure("BEGIN", &failure));
+                return Err(failure);
+            }
+        };
+        guard.mark_completed();
         Ok(PgAsyncTransaction {
             inner: Some(inner),
             poison,
