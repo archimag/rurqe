@@ -114,11 +114,17 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
                 config.read_codegen_section(contents, table, span, &mut overrides)?;
             }
             other => {
-                return Err(syntax_error(
-                    contents,
-                    span,
-                    format!("unknown configuration section `{other}`"),
-                ));
+                // A table-valued declaration opens a section; a scalar declares a
+                // single key. The two are named differently, so a misspelled
+                // `primary_schemas` or `roots` is reported as the key it is rather
+                // than as a section the file never opened.
+                let message = if item.is_table_like() || item.is_array_of_tables() {
+                    format!("unknown configuration section `{other}`")
+                } else {
+                    format!("unknown configuration key `{other}`")
+                };
+
+                return Err(syntax_error(contents, span, message));
             }
         }
     }

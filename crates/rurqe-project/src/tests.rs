@@ -493,17 +493,52 @@ fn declared_override_rust_types_are_stored_trimmed() {
 
 #[test]
 fn unknown_sections_are_rejected() {
-    let err = CodegenConfig::parse(
+    for contents in [
         "# project configuration\n\
          [workspace]\n\
          members = [\"a\", \"b\"]\n\
          \n\
          [codegen.type_overrides]\n\
          \"users.id\" = \"uuid::Uuid\"\n",
-    )
-    .expect_err("unknown sections are rejected");
+        "workspace = { members = [\"a\", \"b\"] }\n",
+        "[[workspace]]\nmembers = [\"a\"]\n",
+    ] {
+        let err = CodegenConfig::parse(contents).expect_err("unknown sections are rejected");
 
-    assert!(err.to_string().contains("workspace"));
+        let message = err.to_string();
+        assert!(message.contains("`workspace`"), "{message}");
+        assert!(
+            message.contains("unknown configuration section"),
+            "a table declaration opens a section: {message}"
+        );
+    }
+}
+
+#[test]
+fn unknown_root_scalar_keys_are_reported_as_keys() {
+    for (contents, key) in [
+        ("primary_schemas = \"app\"\n", "primary_schemas"),
+        ("roots = \"rurqe\"\n", "roots"),
+        ("domains = true\n", "domains"),
+    ] {
+        let err = CodegenConfig::parse(contents).expect_err("an unknown root key is rejected");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: 1, column: 1, .. }),
+            "the diagnostic is located at the declaration: {err}"
+        );
+
+        let message = err.to_string();
+        assert!(message.contains(&format!("`{key}`")), "{message}");
+        assert!(
+            message.contains("unknown configuration key"),
+            "a scalar declaration declares a key: {message}"
+        );
+        assert!(
+            !message.contains("section"),
+            "a scalar declaration opens no section: {message}"
+        );
+    }
 }
 
 #[test]
