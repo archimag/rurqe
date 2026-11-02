@@ -5,6 +5,8 @@
 * **Standard Engineering Terminology:** Database and software engineering concepts are named with the term the industry already uses, so a reader recognizes the subject of a chapter from its title alone: `Database Migrations`, `Sequential migrations`, `Embedded migrations`, `DDL`, `Schema drift`, `Connection pooling`.
 * **No Invented Jargon:** Manufactured or pseudo-academic wording is strictly forbidden in chapter titles and in prose. The concept the industry calls `Database Migrations` is never renamed "Schema change management", and an established term is never replaced by a synonym the reader has to decode.
 * **Dual Audience (Human + LLM):** Content must provide intuitive walkthroughs, diagrams, and "Compiler Guard in Action" examples for human engineers, paired with deterministic SQL ↔ DSL mapping tables, strict typestate rules, and explicit compiler diagnostic listings for LLMs.
+* **Precision of Guarantees (No Unjustified Absolutes):** Avoid unqualified absolute claims ("always", "never", "every", "guaranteed"). State guarantees with technical precision, explicitly distinguishing compile-time type soundness and trait/typestate rejection (Tier 1) from pre-flight client-side AST validation performed inside `.build()` returning `Result<_, BuildError>` (Tier 2).
+* **Standard, Searchable Headings:** Chapter titles must be concise, standard, and searchable without decorative fluff or filler phrases: prefer `SELECT` over `The SELECT statement`, `Common Table Expressions (WITH)` over `The WITH statement`, `Nested Results (MULTISET)` over `The MULTISET statement`, and `Projections and Result Types` over `Projections and typed rows`.
 
 ## 2. Scope: the Book Is a User Guide
 * **Application-First Audience:** The book teaches an application developer how to use the library. Every chapter is written from the caller's point of view: what a query expresses, how it is written, and what it returns. Design rationale, historical comparisons, and evolution plans belong to the internal `Vision.md` and `ROADMAP.md`, never to the book.
@@ -14,6 +16,16 @@
 * **No External Tool Names in Practical Guides:** The book never names a third-party library, ORM, or migration tool — Kysely, jOOQ, Diesel, SQLx, Flyway, Liquibase, or any comfortable product — in the prose of a practical guide, a reference chapter, or a `SUMMARY.md` entry. Such a chapter speaks exclusively in RURQE and SQL terms, and states what the library does and does not support rather than measuring it against a product the reader may never have used.
 * **Sanctioned Exception — Introductory and Historical Overviews:** An introductory chapter or a conceptual overview that explains where an approach comes from may name the established systems the industry already uses (`Flyway`, `Liquibase`, `Django`, `Prisma`, `Atlas`) to set out that history and to compare architectural paradigms. The licence is bounded: the mention explains a lineage or contrasts two paradigms in the opening of a section, it never appears in a walkthrough, a tutorial, or a reference of how to use RURQE, and no chapter instructs the reader to install or configure such a system or measures RURQE against it. A practical guide that follows an overview stays self-contained, so the overview is the only place where a reader meets a foreign product name.
 * **Self-Contained Chapters (No Cross-References):** Chapters are strictly self-contained user guide modules, not an interconnected wiki. "Related topics", "See also" blocks, and arbitrary cross-chapter markdown links (`[...](../other.md)`) are strictly forbidden. Navigation and thematic hierarchy belong exclusively to `SUMMARY.md`. Every chapter provides complete, focused instruction for its own topic without external pointers or fragile inter-chapter coupling.
+* **Canonical SUMMARY.md Taxonomy:** The book's global navigation hierarchy is organized strictly into seven canonical sections in `SUMMARY.md`:
+  1. *Getting Started* (Introduction, Quickstart, Guided Tour)
+  2. *Querying* (SELECT and its clause subchapters, Filtering, Projections, Joins, Grouping, Ordering, Window Functions, Set Operations, Subqueries, CTEs, Nested Results)
+  3. *Data Modification* (INSERT, UPDATE, DELETE)
+  4. *Execution* (Asynchronous, Synchronous, Transactions, Connection Pools)
+  5. *Schema & Code Generation* (Schema Definition, Introspection & Codegen, Custom Domain Types)
+  6. *Schema Lifecycle* (Declarative Stage, Migrations, Checkpoints, Drift Verification)
+  7. *Reference* (Dialect Capabilities, Configuration, Errors)
+* **Concept SSOT (No Theoretical Duplication):** Each architectural concept or cross-cutting mechanism has exactly one authoritative home in the book. The two-tier validation architecture (Tier 1 compile-time vs Tier 2 pre-flight in `.build()`) is explained in depth strictly in the query correctness and validation chapter; individual statement chapters document only their local errors and clause behaviors without repeating the systemic rationale. Dialect capabilities have one comprehensive matrix in the Reference section; statement chapters provide only context-specific clause applicability tables.
+* **Database-First Workflow Priority in Getting Started:** The recommended and primary workflow taught in Getting Started is database-first: configuration (`rurqe.toml`) → catalog introspection / code generation (`cargo rurqe codegen`) → typed query → execution. Manual schema definitions via the `table!` macro are introduced strictly as low-level / fallback utilities for isolated unit tests or rapid prototyping, never as the primary application development paradigm.
 ## 3. Tables, Lists, and Diagrams
 * **Table Regulation (Strictly Reserved for Mappings & Capability Matrices):** Markdown tables are strictly reserved for bijective mappings (SQL ↔ DSL), dialect capability gates, and structured parameter/option references. Narrative, descriptive, or conceptual explanations must use structured Markdown lists (bulleted or numbered) rather than prose-dense tables.
 * **Markdown Tables Only:** When a table is appropriate (mappings and matrices), it is written as a standard Markdown pipe table (`| ... |`). Tables drawn with box-drawing characters or pseudographics inside a fenced `text` block are forbidden: they do not wrap, they break on narrow screens, and they are unreadable in the plain-text source.
@@ -172,6 +184,19 @@ The parts are mandatory and ordered. A statement chapter that omits one of them 
 * **A subchapter owns one clause family.** A chapter is subordinate to the head page when it extends a clause the anatomy already names. The subchapter documents that clause in depth — every accepted form, the SQL it renders, and the guards of the clause — and never repeats the skeleton or the capability matrix in full.
 * **The mapping table names the chapter.** On a head page, the table of § 7.2 carries one further column: the chapter that documents the clause in depth. A clause whose row names no chapter is documented by the head page alone, and a capability the library does not implement still appears only in the capability matrix (§ 7.4).
 * **`SUMMARY.md` mirrors the hierarchy.** Every subchapter is nested under its head page, so the statement reads as one collapsible block, and the statements reusing the same clause families — the DML statements and `WITH` — sit as siblings of that block inside the same part. A clause chapter listed at the level of its head page breaks the hierarchy, and a head page shown without its subchapters misleads the reader into expecting the whole statement on one page.
+
+### 7.7 Workflow Guide Chapters
+Chapters documenting developer workflows (such as Quickstart, Code Generation, and Database Migrations) follow a structured guide layout:
+1. *Purpose and Prerequisites:* The objective of the workflow, toolchain requirements, and required configuration files (`rurqe.toml`).
+2. *Canonical Workflow:* The recommended step-by-step sequence from setup to verification.
+3. *Walkthrough with Real Commands and Code:* Tested CLI commands paired with compiled, anchored Rust examples from the `docs/examples/` crate.
+4. *Edge Cases and Operational Constraints:* Practical operational notes, error handling, and recovery steps without speculative tangents.
+
+### 7.8 Reference Chapters
+Chapters serving as exhaustive references (such as Dialect Capabilities, Project Configuration, and Typed Errors) prioritize dense, structured reference tables over narrative exposition:
+1. *Scope and Purpose:* Clear definition of the referenced subsystem.
+2. *Exhaustive Reference Table/Matrix:* Complete parameter lists, capability grids, or error variant catalogs derived directly from the authoritative Rust types.
+3. *Field and Variant Specifications:* Structured, per-item descriptions detailing types, defaults, validation rules, and remediation hints.
 ---
 
 ## 8. Toolchain and Verification
