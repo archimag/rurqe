@@ -14,7 +14,8 @@
 //! aborted transaction are repaired by the reset of the next checkout, while a
 //! session that lost its backend is refused there; on the asynchronous surfaces
 //! a cancelled block, a panicking block, and a refused rollback destroy their
-//! own checkout instead of returning it to the pool.
+// own checkout instead of returning it to the pool, and a transaction handle
+// dropped without a terminal call poisons the connection it borrows.
 
 // A skipped scenario reports itself to the operator running the tests, which is
 // the one place the workspace-wide printing ban is lifted for this file.
@@ -894,6 +895,43 @@ mod async_connection {
         assert!(
             connection.is_poisoned(),
             "the refused rollback recorded a poison on the connection"
+        );
+
+        let refused =
+            AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
+        assert!(
+            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+            "the poisoned connection refuses further statements: {refused:?}"
+        );
+    }
+    /// A handle dropped without a terminal call leaves its server-side
+    /// transaction open, and the adapter proves nothing about it: the connection
+    /// is poisoned, so the next caller is refused instead of running inside the
+    /// abandoned transaction.
+    #[tokio::test]
+    async fn a_dropped_handle_poisons_the_connection() {
+        let Some(url) = support::database_url("PgAsyncTransaction dropped handle") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        {
+            let handle = connection
+                .transaction()
+                .await
+                .expect("the transaction opens");
+            support::execute(&handle, "SELECT 1")
+                .await
+                .expect("the statement runs inside the transaction");
+            // The handle reaches its `Drop` with the transaction still open: the
+            // rollback the driver requests from there is a fire-and-forget
+            // statement, so the adapter can prove nothing about the transaction
+            // the server still holds.
+        }
+
+        assert!(
+            connection.is_poisoned(),
+            "the dropped handle records the abandoned transaction on the connection"
         );
 
         let refused =

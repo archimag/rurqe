@@ -3,9 +3,9 @@
 RURQE offers two transactional surfaces, and the difference between them is what closes the transaction.
 
 - A **closure-scoped block** lends the transaction to a closure. The adapter opens the block, nests a block opened inside it through a SQL savepoint, awaits the commit of a block that returned `Ok`, awaits the rollback of a block that returned `Err`, and returns the connection on either ending. The synchronous connections and pools offer this form, and so do the asynchronous connection and pool.
-- A **transaction guard** lends the transaction itself to the caller. Opening one on the asynchronous connection hands back a handle that owns the transaction until its commit is awaited; the handle neither nests nor selects an isolation level, and dropping it without a commit asks the driver for a rollback the adapter never observes.
+- A **transaction guard** lends the transaction itself to the caller. Opening one on the asynchronous connection hands back a handle that owns the transaction until its commit is awaited; the handle neither nests nor selects an isolation level, and dropping it without a commit asks the driver for a rollback the adapter cannot prove was delivered, so the connection is marked poisoned rather than reused.
 
-Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block, while a guard is closed by its own `Drop`.
+Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block and awaits the statement that ends it, while a guard is closed by its own `Drop`, which cannot await anything. A guard that ends without a terminal call therefore proves nothing and leaves its connection refusing further work.
 
 ## Asynchronous Transaction Guards
 
@@ -26,6 +26,8 @@ Dropping the handle without committing requests a rollback, and that request is 
 - The rollback is issued from `Drop`, which cannot await a statement, so the driver neither awaits it nor reports its outcome.
 - The driver does not make an in-flight statement cancel-safe. A future dropped in the middle of a statement can leave the connection waiting for a response, and the rollback the drop requested then never reaches the server.
 - The work of the statements that completed stays pending in the open transaction until the connection is discarded.
+
+Because the adapter cannot prove that the transaction was closed, a handle dropped without a terminal call marks its connection poisoned, exactly as an abandoned closure-scoped block does. `is_poisoned()` reports the state, and every further statement and every further transaction on that connection is refused with `PgError::ConnectionPoisoned` before it reaches the server, carrying the reason that produced the state. No later caller therefore joins the abandoned transaction, and the transaction itself is rolled back by the server when the session of the discarded connection ends, which is also why the mark is never cleared and the connection has to be discarded rather than reused.
 
 A block that has to survive a cancelled future therefore closes itself through a closure-scoped form, which awaits the commit or the rollback before the result reaches the caller.
 

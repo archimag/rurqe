@@ -3,14 +3,14 @@
 //! The adapter tracks the transaction state of the connection it drives and
 //! poisons it whenever it cannot prove that the connection is outside a
 //! transaction: a `COMMIT` or a `ROLLBACK` the driver refused, a `BEGIN` that
-//! failed, a panicking block, or a block whose future was dropped before either
-//! control statement ran. A poisoned connection refuses every statement and every
+//! failed, a panicking block, a block whose future was dropped before either
+//! control statement ran, or a transaction handle dropped without a terminal
+//! call. A poisoned connection refuses every statement and every
 //! transaction with [`PgError::ConnectionPoisoned`] instead of executing them
 //! inside the abandoned transaction, which PostgreSQL would accept with a warning
 //! and persist with the next `COMMIT`. The state is sticky and is never cleared:
 //! the owner of the handle discards it, and the abandoned transaction closes when
 //! the socket of the discarded connection closes.
-use core::future::Future;
 use std::sync::Arc;
 
 use futures_core::Stream;
@@ -18,7 +18,7 @@ use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 
 use super::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
-use super::poison::{control_failure, BlockExitGuard, PoisonCell};
+use super::poison::{control_failure, BlockExitGuard, PoisonCell, ABANDONED_BLOCK};
 use super::types::{BoundParams, PgError, RowDecoder};
 
 /// Executes `query` through an asynchronous client without decoding rows.
@@ -185,7 +185,10 @@ impl PgAsyncConnection {
     /// without committing requests a rollback through the driver's `Drop`, which
     /// is a fire-and-forget statement the driver neither awaits nor reports, so a
     /// cancelled or panicking block is rolled back only as far as the driver
-    /// manages.
+    /// manages. The dropped handle records the abandoned transaction in the poison
+    /// record of the connection, so every further statement and every further
+    /// transaction on it is refused with [`PgError::ConnectionPoisoned`] instead
+    /// of joining the abandoned transaction.
     ///
     /// The guard borrows the connection mutably for as long as it lives, so a
     /// second call while the first guard is open is rejected by the borrow
@@ -206,7 +209,10 @@ impl PgAsyncConnection {
         let poison = Arc::clone(&self.poison);
         tracing::info!("beginning transaction");
         let inner = self.client.transaction().await?;
-        Ok(PgAsyncTransaction { inner, poison })
+        Ok(PgAsyncTransaction {
+            inner: Some(inner),
+            poison,
+        })
     }
 
     /// Runs `f` inside a transaction at the requested `isolation` level,
@@ -408,22 +414,40 @@ impl AsyncQueryBackend for PgAsyncConnection {
 /// [`AsyncQueryBackend`](rurqe_core::query::AsyncQueryBackend) contract as the
 /// connection, so query helpers behave identically inside and outside a
 /// transaction.
+///
+/// A handle that ends without one of its terminal calls poisons the connection
+/// instead of leaving an abandoned transaction behind: the rollback the driver
+/// requests from its own `Drop` is a fire-and-forget statement the adapter
+/// neither awaits nor observes, so the transaction may stay open on the server,
+/// and the connection refuses further work rather than running the next caller
+/// inside it.
 pub struct PgAsyncTransaction<'a> {
-    inner: tokio_postgres::Transaction<'a>,
+    /// The open transaction, taken by the terminal call that ends it.
+    ///
+    /// The field is optional so that the terminal calls can move the transaction
+    /// out and await its end: a `Drop` implementation cannot move a field out of
+    /// the value it drops, and a transaction still present when the handle drops
+    /// is exactly the state that poisons the connection.
+    inner: Option<tokio_postgres::Transaction<'a>>,
     /// Poison record shared with the connection that opened the transaction.
     poison: Arc<PoisonCell>,
 }
 
-impl PgAsyncTransaction<'_> {
+impl<'a> PgAsyncTransaction<'a> {
     /// Commits the transaction, persisting all its work.
     ///
-    /// A commit the driver refuses poisons the connection and returns the driver
-    /// failure: the transaction state is unknown from that point on, so the
-    /// connection refuses every further statement with
-    /// [`PgError::ConnectionPoisoned`] instead of running the work of the next
-    /// caller inside it.
-    pub async fn commit(self) -> Result<(), PgError> {
-        let PgAsyncTransaction { inner, poison } = self;
+    /// The terminal call takes the transaction out of the handle before it awaits
+    /// the commit, so the handle ends with nothing pending: the transaction it
+    /// carried was closed by the awaited statement. A commit the driver refuses
+    /// poisons the connection and returns the driver failure: the transaction
+    /// state is unknown from that point on, so the connection refuses every
+    /// further statement with [`PgError::ConnectionPoisoned`] instead of running
+    /// the work of the next caller inside it.
+    pub async fn commit(mut self) -> Result<(), PgError> {
+        let Some(inner) = self.inner.take() else {
+            return Err(consumed_refusal());
+        };
+
         match inner.commit().await {
             Ok(()) => {
                 tracing::info!("committed transaction");
@@ -431,7 +455,7 @@ impl PgAsyncTransaction<'_> {
             }
             Err(error) => {
                 let failure = PgError::from(error);
-                poison.mark(control_failure("COMMIT", &failure));
+                self.poison.mark(control_failure("COMMIT", &failure));
                 Err(failure)
             }
         }
@@ -439,11 +463,16 @@ impl PgAsyncTransaction<'_> {
 
     /// Rolls the transaction back, discarding all its work.
     ///
-    /// A rollback the driver refuses poisons the connection for the same reason a
-    /// refused commit does: the statements of the transaction stay pending on the
-    /// server, and nothing the caller could run next is outside them.
-    pub async fn rollback(self) -> Result<(), PgError> {
-        let PgAsyncTransaction { inner, poison } = self;
+    /// The terminal call takes the transaction out of the handle exactly as
+    /// [`commit`](PgAsyncTransaction::commit) does. A rollback the driver refuses
+    /// poisons the connection for the same reason a refused commit does: the
+    /// statements of the transaction stay pending on the server, and nothing the
+    /// caller could run next is outside them.
+    pub async fn rollback(mut self) -> Result<(), PgError> {
+        let Some(inner) = self.inner.take() else {
+            return Err(consumed_refusal());
+        };
+
         match inner.rollback().await {
             Ok(()) => {
                 tracing::warn!("rolled back transaction");
@@ -451,32 +480,68 @@ impl PgAsyncTransaction<'_> {
             }
             Err(error) => {
                 let failure = PgError::from(error);
-                poison.mark(control_failure("ROLLBACK", &failure));
+                self.poison.mark(control_failure("ROLLBACK", &failure));
                 Err(failure)
             }
         }
     }
 }
 
+impl Drop for PgAsyncTransaction<'_> {
+    /// Records the abandoned transaction when the handle ends without a terminal
+    /// call.
+    ///
+    /// The terminal calls take the transaction out before they await its end, so a
+    /// transaction this handle still carries here is one no statement ever closed.
+    /// The rollback the driver requests from the `Drop` of its own transaction is
+    /// a fire-and-forget statement the adapter neither awaits nor observes, so the
+    /// server-side transaction may stay open; the connection is poisoned instead
+    /// of letting a later caller run inside it.
+    fn drop(&mut self) {
+        if self.inner.is_some() {
+            self.poison.mark(String::from(ABANDONED_BLOCK));
+        }
+    }
+}
+
+/// Describes a statement issued on a handle whose transaction a terminal call
+/// already took.
+///
+/// The terminal calls consume the handle, so the state is not reachable through
+/// the public API; the refusal keeps it diagnosable instead of unwrapping a value
+/// the caller never observed.
+fn consumed_refusal() -> PgError {
+    PgError::ConnectionPoisoned {
+        reason: String::from("the transaction handle was already consumed by a terminal call"),
+    }
+}
+
+/// Borrows the open transaction of a handle, refusing a consumed one.
+fn live_transaction<'a, 'b>(
+    inner: &'a Option<tokio_postgres::Transaction<'b>>,
+) -> Result<&'a tokio_postgres::Transaction<'b>, PgError> {
+    inner.as_ref().ok_or_else(consumed_refusal)
+}
+
 impl AsyncQueryBackend for PgAsyncTransaction<'_> {
     type Error = PgError;
 
-    fn fetch_raw(
-        &self,
-        query: &BuiltQuery,
-    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
-        fetch_raw_async(&self.inner, query)
+    async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        let inner = live_transaction(&self.inner)?;
+        fetch_raw_async(inner, query).await
     }
 
-    fn fetch_raw_limited(
+    async fn fetch_raw_limited(
         &self,
         query: &BuiltQuery,
         limit: Option<usize>,
-    ) -> impl Future<Output = Result<Vec<Vec<SqlVal>>, PgError>> + Send {
-        fetch_raw_limited_async(&self.inner, query, limit)
+    ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        let inner = live_transaction(&self.inner)?;
+        fetch_raw_limited_async(inner, query, limit).await
     }
 
-    fn execute_raw(&self, query: &BuiltQuery) -> impl Future<Output = Result<u64, PgError>> + Send {
-        execute_raw_async(&self.inner, query)
+    async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
+        let inner = live_transaction(&self.inner)?;
+        execute_raw_async(inner, query).await
     }
 }
