@@ -54,6 +54,7 @@ impl SqliteVersionAtLeast<3, 0> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 25> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 30> for Sqlite3_35 {}
+impl SqliteVersionAtLeast<3, 33> for Sqlite3_35 {}
 impl SqliteVersionAtLeast<3, 35> for Sqlite3_35 {}
 
 /// SQLite 3.38 marker: the first release that always bundles the JSON functions.
@@ -70,6 +71,7 @@ impl SqliteVersionAtLeast<3, 0> for Sqlite3_38 {}
 impl SqliteVersionAtLeast<3, 24> for Sqlite3_38 {}
 impl SqliteVersionAtLeast<3, 25> for Sqlite3_38 {}
 impl SqliteVersionAtLeast<3, 30> for Sqlite3_38 {}
+impl SqliteVersionAtLeast<3, 33> for Sqlite3_38 {}
 impl SqliteVersionAtLeast<3, 35> for Sqlite3_38 {}
 impl SqliteVersionAtLeast<3, 38> for Sqlite3_38 {}
 
@@ -113,8 +115,9 @@ impl SqliteVersionAtLeast<3, 38> for Sqlite3_38 {}
 /// assert_delete_using::<Sqlite<Sqlite3_35>>();
 /// ```
 ///
-/// SQLite gained `UPDATE ... FROM` in 3.33.0, so versions older than the newest
-/// pinned marker do not implement [`SupportsUpdateFrom`]:
+/// SQLite gained `UPDATE ... FROM` in 3.33.0, so the capability is gated on that
+/// introduction threshold and a version older than it does not implement
+/// [`SupportsUpdateFrom`]:
 ///
 /// ```compile_fail
 /// use rurqe_core::dialect::SupportsUpdateFrom;
@@ -191,10 +194,13 @@ impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsReturning for Sqlit
 
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 24>> SupportsOnConflict for Sqlite<V> {}
 
-// `UPDATE ... FROM` belongs to SQLite since 3.33.0, so the newest pinned marker is
-// the first one that satisfies it. SQLite has no `DELETE ... USING` clause at all,
-// so `SupportsDeleteUsing` stays unimplemented for every version.
-impl<V: SqliteVersion + SqliteVersionAtLeast<3, 35>> SupportsUpdateFrom for Sqlite<V> {}
+// `UPDATE ... FROM` belongs to SQLite since 3.33.0, so the gate names that release
+// as the introduction threshold rather than the newest pinned marker. No marker
+// between 3.30 and 3.35 is pinned, so the reachable capability set is unchanged,
+// while a future `Sqlite3_33` marker would satisfy the gate without editing this
+// impl. SQLite has no `DELETE ... USING` clause at all, so `SupportsDeleteUsing`
+// stays unimplemented for every version.
+impl<V: SqliteVersion + SqliteVersionAtLeast<3, 33>> SupportsUpdateFrom for Sqlite<V> {}
 
 impl<V: SqliteVersion + SqliteVersionAtLeast<3, 30>> SupportsAggregateFilter for Sqlite<V> {}
 
@@ -268,6 +274,26 @@ mod tests {
         assert_aggregate_filter::<Sqlite>();
 
         assert_update_from::<Sqlite<Sqlite3_35>>();
+        assert_update_from::<Sqlite>();
+    }
+
+    #[test]
+    fn update_from_is_gated_on_its_introduction_threshold() {
+        fn assert_threshold<V: SqliteVersionAtLeast<3, 33>>() {}
+        fn assert_update_from<D: Dialect + SupportsUpdateFrom>() {}
+
+        // `UPDATE ... FROM` shipped in SQLite 3.33.0, so the capability is gated on
+        // that release instead of on the newest pinned marker: every marker from
+        // there on satisfies the threshold, and a future `Sqlite3_33` marker would
+        // satisfy it without editing the capability impl.
+        assert_threshold::<Sqlite3_35>();
+        assert_threshold::<Sqlite3_38>();
+
+        // No marker between 3.30 and 3.35 is pinned, so the reachable capability set
+        // is unchanged: exactly the markers from 3.35 on expose the clause, and
+        // `Sqlite<Sqlite3_24>` still fails the struct's compile-fail example.
+        assert_update_from::<Sqlite<Sqlite3_35>>();
+        assert_update_from::<Sqlite<Sqlite3_38>>();
         assert_update_from::<Sqlite>();
     }
 
