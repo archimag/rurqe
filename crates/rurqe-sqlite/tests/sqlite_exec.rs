@@ -134,6 +134,7 @@ fn an_array_parameter_binds_as_a_json_document_and_decodes_back() {
         SqlVal::Text("guest".to_owned()),
     ];
     let numbers = vec![SqlVal::I64(1), SqlVal::I64(2)];
+    let ratios = vec![SqlVal::F64(0.5), SqlVal::F64(1.5)];
 
     let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
         .from::<User>()
@@ -142,15 +143,20 @@ fn an_array_parameter_binds_as_a_json_document_and_decodes_back() {
                 .expect("a template with one placeholder"),
             Expr::<Vec<i64>>::raw("?", vec![SqlVal::Array(numbers)])
                 .expect("a template with one placeholder"),
+            Expr::<Vec<f64>>::raw("?", vec![SqlVal::Array(ratios)])
+                .expect("a template with one placeholder"),
         ))
         .where_(Expr::column::<UserId>().eq(1i64));
 
-    let (decoded_names, decoded_numbers) = adapter
+    let (decoded_names, decoded_numbers, decoded_ratios) = adapter
         .fetch_one(&query)
         .expect("the bound arrays decode back");
 
     assert_eq!(decoded_names, vec!["root".to_owned(), "guest".to_owned()]);
     assert_eq!(decoded_numbers, vec![1i64, 2]);
+    // A finite double writes its number notation into the document, so the
+    // value the caller bound is exactly the value that decodes back.
+    assert_eq!(decoded_ratios, vec![0.5, 1.5]);
 }
 
 #[test]
@@ -180,6 +186,60 @@ fn a_nan_parameter_is_refused_instead_of_binding_as_null() {
             );
         }
         other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn a_non_finite_array_element_is_refused_instead_of_binding_as_json_null() {
+    // The JSON document of an array parameter carries no notation for a
+    // non-finite number, so the element is refused instead of being written as
+    // `null`: a top-level infinity keeps binding as a REAL and a top-level NaN
+    // is refused by the scalar path, while the same value inside an array would
+    // otherwise reach the database as a value the caller never carried. Nested
+    // arrays travel through the same recursive arm, so the refusal holds at
+    // every depth.
+    let cases = [
+        (SqlVal::Array(vec![SqlVal::F64(f64::NAN)]), f64::NAN),
+        (SqlVal::Array(vec![SqlVal::F64(f64::INFINITY)]), f64::INFINITY),
+        (
+            SqlVal::Array(vec![SqlVal::F64(f64::NEG_INFINITY)]),
+            f64::NEG_INFINITY,
+        ),
+        (
+            SqlVal::Array(vec![SqlVal::Array(vec![SqlVal::F64(f64::NAN)])]),
+            f64::NAN,
+        ),
+    ];
+
+    for (parameter, offender) in cases {
+        let mut adapter = seeded();
+
+        let element = Expr::<Vec<f64>>::raw("?", vec![parameter])
+            .expect("a template with one placeholder");
+        let query = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+            .from::<User>()
+            .select((element,))
+            .where_(Expr::column::<UserId>().eq(1i64));
+
+        let failed = adapter
+            .fetch_one(&query)
+            .expect_err("a non-finite array element has no JSON notation");
+
+        let backend = failed.as_backend().expect("the refusal is a driver error");
+        match backend {
+            rurqe_sqlite::rusqlite::Error::ToSqlConversionFailure(cause) => {
+                let message = cause.to_string();
+                assert!(
+                    message.contains(&format!("({offender})")),
+                    "the cause names the value: {message}"
+                );
+                assert!(
+                    message.contains("array parameter"),
+                    "the cause names the array context: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 }
 

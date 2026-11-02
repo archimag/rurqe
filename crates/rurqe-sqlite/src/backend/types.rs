@@ -84,8 +84,13 @@ fn push_json_value(out: &mut String, value: &SqlVal) -> ::rusqlite::Result<()> {
         SqlVal::I32(value) => out.push_str(&value.to_string()),
         SqlVal::I64(value) => out.push_str(&value.to_string()),
         SqlVal::F64(value) if value.is_finite() => out.push_str(&value.to_string()),
-        // JSON carries no notation for a non-finite number.
-        SqlVal::F64(_) => out.push_str("null"),
+        // JSON has no notation for a non-finite number, and the document of
+        // an array parameter is the only place such a value would be written:
+        // SQLite stores a top-level infinity faithfully as a REAL and refuses
+        // a top-level NaN outright, so an element is refused here instead of
+        // entering the document as `null`. The recursive call reports the same
+        // refusal at every depth of a nested array.
+        SqlVal::F64(number) => return Err(non_finite_array_failure(*number)),
         SqlVal::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
         SqlVal::Text(value) => push_json_string(out, value),
         // A blob has no JSON counterpart, so its octets render as a list of
@@ -122,6 +127,21 @@ fn push_json_value(out: &mut String, value: &SqlVal) -> ::rusqlite::Result<()> {
     }
 
     Ok(())
+}
+
+/// Builds the conversion failure reported for a non-finite element of an array.
+///
+/// SQLite stores a top-level infinity faithfully as a REAL and refuses a
+/// top-level `NaN` outright, so the scalar path keeps both behaviours. The JSON
+/// document of an array parameter carries no notation for either, so an element
+/// is refused instead of entering the document as `null`, a value the caller
+/// never carried.
+fn non_finite_array_failure(value: f64) -> ::rusqlite::Error {
+    let cause = ::std::io::Error::other(format!(
+        "a non-finite double ({value}) cannot be bound as an array parameter element: \
+         its JSON document has no notation for it"
+    ));
+    ::rusqlite::Error::ToSqlConversionFailure(Box::new(cause))
 }
 
 /// Appends `value` as a quoted JSON string, escaping what JSON requires.
