@@ -77,6 +77,12 @@ pub enum Error {
         /// The refused script, when the reporter knows its name.
         script: Option<String>,
     },
+    /// The migration backend cannot clean the target database.
+    ///
+    /// The refusal is raised before the backend touches the database, so nothing
+    /// was dropped and the recorded history is intact: the command reports a
+    /// capability gap instead of a half-cleaned target.
+    CleanUnsupported,
     /// A non-transactional script changed the schema, but its history row could
     /// not be written.
     ///
@@ -211,6 +217,11 @@ impl fmt::Display for Error {
                      non-transactional execution"
                 ),
             },
+            Error::CleanUnsupported => write!(
+                f,
+                "the migration backend cannot clean the target database: run the clean on a \
+                 backend that can drop the database objects"
+            ),
             Error::HistoryNotRecorded { script, source } => write!(
                 f,
                 "migration `{script}` ran outside a transaction and changed the schema, but its \

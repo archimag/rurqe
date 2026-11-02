@@ -56,6 +56,43 @@ pub trait MigrationBackend {
         Err(Error::NonTransactionalUnsupported { script: None })
     }
 
+    /// Lists the objects a [`clean`](Self::clean) call drops.
+    ///
+    /// The list covers every user object of the target the migration lifecycle
+    /// owns: the relations of the schemas in scope, the `__rurqe_schema_history`
+    /// table among them. Nothing is dropped here and no metadata table is created,
+    /// so a caller can show the list to its operator before the destructive call is
+    /// confirmed; [`clean`](Self::clean) then drops exactly these objects and
+    /// reports the same names back.
+    ///
+    /// The default refuses the call with [`Error::CleanUnsupported`]: a backend
+    /// that cannot drop its objects supports the self-managing lifecycle only. The
+    /// refusal is raised before anything reaches the database, so a refused clean
+    /// leaves both the target and its recorded history untouched.
+    fn clean_manifest(&mut self) -> Result<Vec<String>, Error> {
+        Err(Error::CleanUnsupported)
+    }
+
+    /// Drops every object of the target database, reporting the names dropped.
+    ///
+    /// This is the destructive reset of a target the project owns — a dedicated
+    /// test database, typically — after which the whole migration tail applies
+    /// again from scratch. The recorded history is dropped with the other objects,
+    /// so every script reads as pending on the next run, and a migration whose body
+    /// was edited after being applied is applied again under its new checksum
+    /// instead of being reported as modified.
+    ///
+    /// The call only drops: it applies no migration, rewrites no script body, and
+    /// re-creates no checkpoint marker. The objects it drops are exactly the
+    /// objects [`clean_manifest`](Self::clean_manifest) reports, and the names are
+    /// returned so the caller can report them to its operator.
+    ///
+    /// The default refuses the call with [`Error::CleanUnsupported`] before
+    /// anything reaches the database.
+    fn clean(&mut self) -> Result<Vec<String>, Error> {
+        Err(Error::CleanUnsupported)
+    }
+
     /// Acquires an exclusive migration lock.
     fn acquire_lock(&mut self) -> Result<(), Error> {
         Ok(())

@@ -10,6 +10,10 @@
 //! - [`status`](Migrator::status): inspects schema state without running a
 //!   migration; it takes the run lock while it ensures the metadata table exists,
 //!   exactly like the other lifecycle operations.
+//! - [`clean`](Migrator::clean): drops every object of the target database under
+//!   the run lock and reports the names it dropped, while
+//!   [`clean_manifest`](Migrator::clean_manifest) lists those objects without
+//!   taking the lock.
 //! - [`with_checkpoint`](Migrator::with_checkpoint): attaches a pruning boundary
 //!   that rejects targets older than the pruned history and verifies the live
 //!   catalog against the anchored stage hash.

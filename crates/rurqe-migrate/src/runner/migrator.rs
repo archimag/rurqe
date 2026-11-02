@@ -405,6 +405,55 @@ impl Migrator {
         Ok(statuses)
     }
 
+    /// Drops every object of the target database, returning the names dropped.
+    ///
+    /// The call is the destructive reset of a target the project owns — a
+    /// dedicated test database, typically — after which the whole migration tail
+    /// applies again from scratch. The recorded history goes with the other
+    /// objects, so every script reads as pending on the next run, and a migration
+    /// whose body was edited after being applied is applied again under its new
+    /// checksum instead of being reported as modified.
+    ///
+    /// The call drops only: it applies no migration, rewrites no project file, and
+    /// re-creates no checkpoint marker. What follows is the ordinary lifecycle —
+    /// a classic project applies its versioned tail, while a project with a pruned
+    /// checkpoint initialises from its declarative stage before the tail continues.
+    /// The checkpoint of a marker attached with
+    /// [`with_checkpoint`](Self::with_checkpoint) is neither read nor validated
+    /// here: the call erases the history the boundary check reads.
+    ///
+    /// The objects dropped are the objects
+    /// [`clean_manifest`](Self::clean_manifest) reports. The call runs under the
+    /// exclusive migration lock the other lifecycle operations take, so it cannot
+    /// interleave with a concurrent [`migrate`](Self::migrate), and it blocks the
+    /// calling thread, which Conventions.md §3 forbids on an async worker thread.
+    pub fn clean<B: MigrationBackend>(&self, backend: &mut B) -> Result<Vec<String>, Error> {
+        guard_blocking_entry("Migrator::clean")?;
+
+        let mut guard = LockGuard::acquire(backend)?;
+        let dropped = guard.clean()?;
+        tracing::info!(objects = dropped.len(), "cleaned the target database");
+
+        Ok(dropped)
+    }
+
+    /// Lists the objects [`clean`](Self::clean) drops, without dropping any.
+    ///
+    /// The call reads the catalog alone and creates no metadata table, so unlike
+    /// [`status`](Self::status) it takes no run lock: a caller can show the
+    /// manifest to its operator and wait for a confirmation while a concurrent run
+    /// proceeds. The names reported are exactly the names
+    /// [`clean`](Self::clean) drops.
+    ///
+    /// The call blocks the calling thread like every other lifecycle operation.
+    pub fn clean_manifest<B: MigrationBackend>(
+        &self,
+        backend: &mut B,
+    ) -> Result<Vec<String>, Error> {
+        guard_blocking_entry("Migrator::clean_manifest")?;
+        backend.clean_manifest()
+    }
+
     fn validate_version_uniqueness(&self, migrations: &[Migration]) -> Result<(), Error> {
         let mut seen: BTreeMap<String, &str> = BTreeMap::new();
 

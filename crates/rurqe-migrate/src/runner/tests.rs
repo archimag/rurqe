@@ -872,3 +872,162 @@ fn duplicate_script_names_are_rejected_before_a_status_is_computed() {
         "the run lock is never taken for a rejected status"
     );
 }
+
+/// A backend whose clean protocol is observable.
+///
+/// The manifest it reports is the list it holds, and both protocol calls record
+/// whether the run lock was held while they ran: that is how a test sees `clean`
+/// serialised with `migrate` and `clean_manifest` reading freely.
+#[derive(Debug, Default)]
+struct CleanObservingBackend {
+    inner: InMemoryBackend,
+    manifest: Vec<String>,
+    lock_states_at_manifest: Vec<bool>,
+    lock_states_at_clean: Vec<bool>,
+}
+
+impl MigrationBackend for CleanObservingBackend {
+    type Transaction<'a>
+        = InMemoryTransaction<'a>
+    where
+        Self: 'a;
+
+    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+        self.inner.ensure_schema_history_table()
+    }
+
+    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+        self.inner.read_history()
+    }
+
+    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        self.inner.begin()
+    }
+
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        self.inner.acquire_lock()
+    }
+
+    fn release_lock(&mut self) -> Result<(), Error> {
+        self.inner.release_lock()
+    }
+
+    fn clean_manifest(&mut self) -> Result<Vec<String>, Error> {
+        self.lock_states_at_manifest.push(self.inner.locked);
+        Ok(self.manifest.clone())
+    }
+
+    fn clean(&mut self) -> Result<Vec<String>, Error> {
+        self.lock_states_at_clean.push(self.inner.locked);
+        Ok(self.manifest.clone())
+    }
+}
+
+#[test]
+fn a_backend_without_clean_support_refuses_before_touching_the_database() {
+    let mut backend = InMemoryBackend::new();
+
+    let error = Migrator::new()
+        .clean(&mut backend)
+        .expect_err("the in-memory backend leaves the clean protocol at its default");
+
+    assert_eq!(error, Error::CleanUnsupported);
+    assert!(
+        backend.executed_sql.is_empty(),
+        "the refusal is raised before any statement reaches the backend"
+    );
+    assert!(!backend.table_created, "no metadata table is created");
+    assert!(
+        backend.history.is_empty(),
+        "the recorded history is untouched"
+    );
+    assert!(backend.non_transactional_sql.is_empty());
+    assert!(!backend.locked, "the lock is released on the way out");
+}
+
+#[test]
+fn a_backend_without_clean_support_refuses_a_manifest_read() {
+    let mut backend = InMemoryBackend::new();
+
+    let error = Migrator::new()
+        .clean_manifest(&mut backend)
+        .expect_err("the in-memory backend leaves the clean protocol at its default");
+
+    assert_eq!(error, Error::CleanUnsupported);
+    assert!(backend.executed_sql.is_empty());
+    assert!(!backend.locked, "the manifest read takes no run lock");
+}
+
+#[test]
+fn clean_holds_the_run_lock_a_concurrent_migrate_takes() {
+    let mut backend = CleanObservingBackend {
+        manifest: vec!["users".to_owned(), "__rurqe_schema_history".to_owned()],
+        ..CleanObservingBackend::default()
+    };
+
+    let dropped = Migrator::new()
+        .clean(&mut backend)
+        .expect("the clean succeeds");
+
+    assert_eq!(
+        dropped, backend.manifest,
+        "the report names the manifest objects"
+    );
+    assert_eq!(
+        backend.lock_states_at_clean,
+        vec![true],
+        "the clean runs under the run lock"
+    );
+    assert!(
+        backend.lock_states_at_manifest.is_empty(),
+        "the clean never consults the manifest of its own accord"
+    );
+    assert!(!backend.inner.locked, "the lock is released on the way out");
+}
+
+#[test]
+fn a_clean_is_refused_while_another_run_holds_the_lock() {
+    let mut backend = CleanObservingBackend {
+        manifest: vec!["users".to_owned()],
+        ..CleanObservingBackend::default()
+    };
+    backend.inner.locked = true;
+
+    let error = Migrator::new()
+        .clean(&mut backend)
+        .expect_err("a concurrent run holds the run lock");
+
+    assert!(matches!(error, Error::Backend(_)), "got {error:?}");
+    assert!(
+        backend.lock_states_at_clean.is_empty(),
+        "nothing is dropped while the lock belongs to another run"
+    );
+    assert!(
+        backend.inner.locked,
+        "the lock of the concurrent run stays held"
+    );
+}
+
+#[test]
+fn clean_manifest_reads_the_target_without_taking_the_run_lock() {
+    let mut backend = CleanObservingBackend {
+        manifest: vec!["users".to_owned(), "orders".to_owned()],
+        ..CleanObservingBackend::default()
+    };
+
+    let manifest = Migrator::new()
+        .clean_manifest(&mut backend)
+        .expect("the manifest read succeeds");
+
+    assert_eq!(manifest, backend.manifest);
+    assert_eq!(
+        backend.lock_states_at_manifest,
+        vec![false],
+        "the manifest read holds no run lock"
+    );
+    assert!(
+        backend.lock_states_at_clean.is_empty(),
+        "the manifest read drops nothing"
+    );
+    assert!(!backend.inner.locked);
+}
