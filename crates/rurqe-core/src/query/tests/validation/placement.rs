@@ -1,11 +1,11 @@
-//! Placement rules of an aggregate expression.
+//! Placement rules of an aggregate and a window expression.
 //!
 //! A clause the engine evaluates row by row — the `WHERE` predicate, the `GROUP BY`
 //! entries, the `ON` condition of a join, the `SET` assignment of an update, and the
 //! conflict predicates of an upsert — is resolved before the rows are collapsed into
-//! groups, so an aggregate written there names no value the clause can read. The
-//! tests below pin the rejection down beside the nested statement an aggregate is
-//! allowed to belong to.
+//! groups, so an aggregate written there names no value the clause can read, and a
+//! window call written there names no row set it could read. The tests below pin both
+//! rejections down beside the nested statement each of them is allowed to belong to.
 
 use super::super::{Order, OrderId, OrderTotal};
 use super::{
@@ -109,23 +109,215 @@ fn a_where_predicate_comparing_against_an_aggregate_subquery_is_accepted() {
     assert_eq!(ast.validate(), Ok(()));
 }
 
+/// A `ROW_NUMBER()` window call, which no per-row clause may evaluate.
+fn row_number_window() -> ExprKind {
+    ExprKind::Window {
+        kind: Box::new(WindowExprKind::RowNumber),
+        partition_by: Vec::new(),
+        order_by: Vec::new(),
+        frame: None,
+    }
+}
+
 #[test]
-fn a_where_predicate_reading_a_window_call_is_not_rejected() {
-    // A window call is evaluated over the rows the statement produced rather than
-    // collapsing them, so the placement rule does not report it here.
+fn a_where_predicate_reading_a_window_call_is_rejected_before_rendering() {
+    // The predicate decides which rows take part in the statement, so the engine
+    // evaluates it before a window could read the rows the statement produced. The
+    // builder keeps the call out at the call site, since a window is not a per-row
+    // expression, so the statement is assembled from its AST.
     let mut ast = orders_statement(vec![ExprKind::Column {
         table: "orders",
         name: "id",
     }]);
     ast.filter = Some(ExprKind::Binary {
         op: BinaryOp::Gt,
-        lhs: Box::new(ExprKind::Window {
-            kind: Box::new(WindowExprKind::RowNumber),
-            partition_by: Vec::new(),
-            order_by: Vec::new(),
-            frame: None,
-        }),
+        lhs: Box::new(row_number_window()),
         rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::Where,
+        })
+    );
+}
+
+#[test]
+fn a_group_by_entry_reading_a_window_call_is_rejected_before_rendering() {
+    // The grouping decides how the rows are collapsed, so it cannot read a call that
+    // is evaluated over the rows the statement produced.
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    }]);
+    ast.group_by = vec![row_number_window()];
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::GroupBy,
+        })
+    );
+}
+
+#[test]
+fn a_join_on_condition_reading_a_window_call_is_rejected_before_rendering() {
+    // The `ON` condition decides which pairs of rows the join produces, so it is
+    // evaluated per row of either side, before the produced row set exists.
+    let mut ast = relation_statement("users", "id");
+    ast.joins.push(JoinAst {
+        kind: JoinKind::Inner,
+        table: TableRef::plain("orders"),
+        lateral: None,
+        on: Some(ExprKind::Binary {
+            op: BinaryOp::Eq,
+            lhs: Box::new(row_number_window()),
+            rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+        }),
+    });
+
+    assert_eq!(
+        ast.validate(),
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::JoinOn,
+        })
+    );
+}
+
+#[test]
+fn an_assignment_reading_a_window_call_is_rejected_before_rendering() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The `SET` clause computes one value per affected row, so a window call written
+    // into the assignment asks for a row set the clause never reads.
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set_expr(
+            Expr::<f64>::from_kind(row_number_window()).without_scope(),
+        ))
+        .allow_all()
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::Assignment,
+        })
+    );
+}
+
+#[test]
+fn an_assignment_reading_a_window_call_of_a_nested_statement_is_accepted() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The window belongs to the nested statement, which reads the rows it produced
+    // itself, so the assignment stays a per-row value: the rule stops at the statement
+    // boundary.
+    let mut inner = relation_statement("orders", "total");
+    inner.projections = vec![row_number_window()];
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set_expr(
+            Expr::<f64>::from_kind(scalar_subquery(inner)).without_scope(),
+        ))
+        .allow_all()
+        .build()
+        .expect("a window subquery reads its own row set");
+
+    assert!(built.sql.contains("ROW_NUMBER() OVER ()"));
+    assert!(built.params.is_empty());
+}
+
+#[test]
+fn a_conflict_target_predicate_reading_a_window_call_is_rejected_before_rendering() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    let predicate = Expr::<bool>::from_kind(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(row_number_window()),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
+    });
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set(1i64))
+        .on_conflict((OrderId,))
+        .target_where(predicate)
+        .do_nothing()
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::ConflictTarget,
+        })
+    );
+}
+
+#[test]
+fn a_conflict_update_predicate_reading_a_window_call_is_rejected_before_rendering() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    let predicate = Expr::<bool>::from_kind(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(row_number_window()),
+        rhs: Box::new(ExprKind::Value(SqlVal::I64(0))),
+    });
+
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set(1i64))
+        .on_conflict((OrderId,))
+        .update_where(predicate)
+        .do_update(OrderTotal::set(1.0f64))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::ConflictUpdate,
+        })
+    );
+}
+
+#[test]
+fn a_window_call_in_a_mutation_filter_is_rejected_before_rendering() {
+    use crate::dml::{ColumnAssign, UpdateQuery};
+
+    // The filter of a mutation selects the rows it rewrites, so the engine evaluates
+    // it before a window could read the rows the statement produced.
+    let predicate = Expr::column::<OrderId>().gt(Expr::<i64>::from_kind(row_number_window()));
+
+    let built = UpdateQuery::<UpsertDialect, Order>::new()
+        .set(OrderTotal::set(2.5f64))
+        .where_(predicate)
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::WindowInRowClause {
+            clause: RowClause::Where,
+        })
+    );
+}
+
+#[test]
+fn a_where_predicate_comparing_against_a_window_subquery_is_accepted() {
+    // The window belongs to the nested statement, which reads the rows it produced
+    // itself, while the enclosing predicate compares a per-row column against the one
+    // value the subquery computes: the rule stops at the statement boundary.
+    let mut inner = relation_statement("orders", "id");
+    inner.projections = vec![row_number_window()];
+
+    let mut ast = orders_statement(vec![ExprKind::Column {
+        table: "orders",
+        name: "id",
+    }]);
+    ast.filter = Some(ExprKind::Binary {
+        op: BinaryOp::Gt,
+        lhs: Box::new(ExprKind::Column {
+            table: "orders",
+            name: "id",
+        }),
+        rhs: Box::new(scalar_subquery(inner)),
     });
 
     assert_eq!(ast.validate(), Ok(()));

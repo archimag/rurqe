@@ -14,7 +14,8 @@
 //!   names, the `DISTINCT` and `DISTINCT ON` alignment, the compound ordering, and
 //!   the set operation arity;
 //! - `aggregation` decides whether the projections, the `GROUP BY` clause, and the
-//!   `HAVING` predicate describe one evaluable aggregation;
+//!   `HAVING` predicate describe one evaluable aggregation, and where an aggregate
+//!   or a window call may appear at all;
 //! - `qualifiers` resolves every column reference against the relation namespace
 //!   its statement provides — the qualifier of a `QualifiedColumn`, and the bare
 //!   table name of a `Column` that neither the statement nor the statement
@@ -55,8 +56,13 @@ pub(crate) use self::rules::reject_shadowed_derived;
 /// The `RETURNING` clause of a mutation reaches the same rule from the other side:
 /// it reports the rows the statement already modified, one row at a time, so an
 /// aggregate written there would collapse the rows the statement is handing back.
-/// The clause accepts no window call either, because a window reads a set of rows
-/// where the clause offers one modified row.
+///
+/// A window call is refused by every clause of that family as well: a window is
+/// evaluated over the rows the statement produced, and each of these clauses runs
+/// before that row set exists — the reading clauses decide which rows take part,
+/// while the `RETURNING` clause offers one modified row at a time. SQL admits a
+/// window function in the projection list and in the `ORDER BY` of a statement
+/// alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowClause {
     /// The `WHERE` predicate of a statement.
@@ -503,16 +509,17 @@ pub enum BuildError {
         /// The SQL name of the aggregate function that was placed there.
         aggregate: &'static str,
     },
-    /// A window call appears in a clause the engine evaluates one modified row at
-    /// a time.
+    /// A window call appears in a clause the engine evaluates row by row.
     ///
     /// A window function reads the rows a statement produced rather than one value
-    /// of one row, so the engine evaluates it over a row set — the rows a `SELECT`
-    /// statement produced. A mutation hands its rows back one at a time, so the
-    /// `RETURNING` clause offers a window call no row set to read: PostgreSQL
-    /// answers `window functions are not allowed in RETURNING`, and SQLite refuses
-    /// the statement alike. The placement is therefore reported before any SQL is
-    /// rendered.
+    /// of one row, so the engine evaluates it over a row set — which is why SQL
+    /// admits it in the projection list and in the `ORDER BY` of a statement alone.
+    /// The clauses reported here decide which rows take part, so they are evaluated
+    /// before that row set exists, and the `RETURNING` clause of a mutation hands
+    /// its rows back one at a time: PostgreSQL answers `window functions are not
+    /// allowed in WHERE` for one of them and `window functions are not allowed in
+    /// RETURNING` for the last, and SQLite refuses the statement alike. The
+    /// placement is therefore reported before any SQL is rendered.
     WindowInRowClause {
         /// The per-row clause the call was written into.
         clause: RowClause,
@@ -783,7 +790,7 @@ impl fmt::Display for BuildError {
             BuildError::WindowInRowClause { clause } => {
                 write!(
                     f,
-                    "window function appears in {}, which the engine evaluates one modified row at a time; \
+                    "window function appears in {}, which the engine evaluates without a row set to read; \
                      a window reads the rows a statement produced, so it may only appear in the projection list \
                      or the `ORDER BY` of a statement that reads rows",
                     clause.as_str()

@@ -14,8 +14,14 @@
 //! the rows that clause decides. The `RETURNING` clause of a mutation belongs to
 //! that family from the other side: it reports each modified row on its own, so an
 //! aggregate written there would collapse the rows the statement is handing back.
-//! The same clause accepts no window call either, because a window reads the rows a
-//! statement produced while the clause offers it one row at a time.
+//!
+//! The same family carries a second rule: a window call is evaluated over the rows a
+//! statement produced, and every clause of that family runs before that row set
+//! exists — the reading clauses decide which rows take part, while the `RETURNING`
+//! clause of a mutation hands the modified rows back one at a time. SQL therefore
+//! admits a window function in the projection list and in the `ORDER BY` of a
+//! statement alone, and a call written into this family is refused exactly like the
+//! aggregate placement above.
 
 use crate::expr::{AggregateFunc, ExprKind, StatementRef, WindowExprKind};
 
@@ -130,7 +136,9 @@ impl StatementRef<'_> {
     /// The assignments of a mutation and the predicates of an `ON CONFLICT` clause
     /// live in the DML statements, so they are checked through
     /// [`validate_row_clause`] beside the structural rules of those builders; the
-    /// walk itself is the same one.
+    /// walk itself is the same one. That function carries the companion window rule
+    /// as well, so a window call placed in one of these clauses is refused by the
+    /// same call, before any SQL is rendered.
     fn reject_row_clause_aggregates(&self) -> Result<(), BuildError> {
         if let Some(filter) = self.filter {
             validate_row_clause(filter, RowClause::Where)?;
@@ -194,11 +202,14 @@ impl StatementRef<'_> {
 /// names a value no single row carries, so every engine refuses the statement —
 /// PostgreSQL answers `aggregate functions are not allowed in ...`.
 ///
-/// The `RETURNING` clause carries one further rule: a window call reads the rows a
-/// statement produced, while a mutation hands its rows back one at a time, so the
-/// clause offers no row set to read — PostgreSQL answers `window functions are not
-/// allowed in RETURNING`. The reading clauses leave a window call unreported, since
-/// the rule they carry is the aggregate placement stated above.
+/// Every clause of that family carries the second rule as well: a window call is
+/// evaluated over the rows a statement produced, so the engine resolves it in the
+/// projection list and in the `ORDER BY` of a statement alone. Each clause of this
+/// family runs before that row set exists — the reading clauses decide which rows
+/// take part, and the `RETURNING` clause of a mutation hands the modified rows back
+/// one at a time — so a window call written into any of them is refused too.
+/// PostgreSQL answers `window functions are not allowed in WHERE` for the first
+/// position and `window functions are not allowed in RETURNING` for the last.
 ///
 /// The rule is stated once, here, and the DML builders call it beside their own
 /// structural checks, so a mutation is audited exactly like a `SELECT` statement.
@@ -214,7 +225,7 @@ pub(crate) fn validate_row_clause(expr: &ExprKind, clause: RowClause) -> Result<
             aggregate: aggregate.as_str(),
         });
     }
-    if clause == RowClause::Returning && contains_window_call(expr) {
+    if contains_window_call(expr) {
         return Err(BuildError::WindowInRowClause { clause });
     }
     Ok(())

@@ -526,5 +526,5 @@ fn build_error_display_window_in_row_clause() {
     let msg = window_in_returning().to_string();
     assert!(msg.contains("window function"));
     assert!(msg.contains("the `RETURNING` clause"));
-    assert!(msg.contains("one modified row at a time"));
+    assert!(msg.contains("without a row set to read"));
 }
