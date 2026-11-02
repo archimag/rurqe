@@ -35,6 +35,58 @@ fn an_insert_value_addresses_no_relation_at_all() {
             column: "total",
         })
     );
+    }
+
+#[test]
+fn an_insert_value_referencing_the_excluded_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // `EXCLUDED` names the row an upsert proposed, so it exists only inside the
+    // `ON CONFLICT DO UPDATE` branch of the statement. The `VALUES` list of an
+    // `INSERT` admits no conflict, so the reference renders a relation no engine
+    // resolves there. The type system keeps the typed reference out of the
+    // builder, while a tree assembled past it through `from_kind` reports the
+    // empty scope and is caught here.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(
+            ExprKind::Excluded { column: "id" },
+        )))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::ExcludedWithoutConflict { column: "id" })
+    );
+}
+
+#[test]
+fn an_insert_value_nesting_the_excluded_relation_is_rejected() {
+    use crate::dml::{ColumnAssign, InsertQuery};
+
+    // The rule descends into a computed assignment as well: the reference stays
+    // unresolvable wherever the `VALUES` list reaches it.
+    let built = InsertQuery::<UpsertDialect, Order>::new()
+        .values(OrderId::set_expr(Expr::<i64>::from_kind(
+            ExprKind::Binary {
+                op: BinaryOp::Add,
+                lhs: Box::new(ExprKind::Excluded { column: "id" }),
+                rhs: Box::new(ExprKind::Value(SqlVal::I64(1))),
+            },
+        )))
+        .build();
+
+    assert_eq!(
+        built,
+        Err(BuildError::ExcludedWithoutConflict { column: "id" })
+    );
+}
+
+#[test]
+fn build_error_display_excluded_without_conflict() {
+    let msg = BuildError::ExcludedWithoutConflict { column: "id" }.to_string();
+    assert!(msg.contains("EXCLUDED.id"));
+    assert!(msg.contains("ON CONFLICT DO UPDATE"));
+    assert!(msg.contains("constants and parameters"));
 }
 
 #[test]

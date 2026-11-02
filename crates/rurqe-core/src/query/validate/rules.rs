@@ -826,6 +826,13 @@ fn projection_output_name(projection: &ExprKind) -> Option<&'static str> {
 /// A statement embedded in the expression is left to the statement pass: it
 /// declares its relations itself, so its columns resolve against its own `FROM`
 /// scope.
+///
+/// A reference to the `EXCLUDED` pseudo-relation of an upsert is rejected as
+/// well: the relation exists only inside the `ON CONFLICT DO UPDATE` branch of
+/// the statement, where the engine names the row the statement proposed, so a
+/// clause that resolves no conflict — the `VALUES` list of an `INSERT` first of
+/// all — references no such relation and is reported as
+/// [`BuildError::ExcludedWithoutConflict`].
 pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), BuildError> {
     match expr {
         ExprKind::Column { table, name } => Err(BuildError::ColumnWithoutRelation {
@@ -835,9 +842,18 @@ pub(crate) fn reject_columns_without_relations(expr: &ExprKind) -> Result<(), Bu
         ExprKind::QualifiedColumn { table, column } => {
             Err(BuildError::ColumnWithoutRelation { table, column })
         }
-        // A bound value carries no reference, and the `EXCLUDED` pseudo-relation of
-        // an upsert names the proposed row rather than a column of a relation.
-        ExprKind::Value(_) | ExprKind::Excluded { .. } => Ok(()),
+        // A bound value carries no reference.
+        ExprKind::Value(_) => Ok(()),
+        // `EXCLUDED` names the proposed row of an upsert, and that relation
+        // exists only inside the `ON CONFLICT DO UPDATE` branch of the
+        // statement. This walk is the dedicated defence of the `VALUES` list of
+        // an `INSERT`, which admits no conflict at all, so a reference reaching
+        // it renders `VALUES (EXCLUDED."id")` — a relation no engine resolves
+        // there. The scope of `excluded(...)` keeps the typed reference out of
+        // the fluent builder, while an expression built from AST data through
+        // `Expr::from_kind` reports the empty scope and satisfies every earlier
+        // bound.
+        ExprKind::Excluded { column } => Err(BuildError::ExcludedWithoutConflict { column }),
         // Raw fragments are user text: a reference inside them reached the
         // template already rendered.
         ExprKind::Raw { .. } => Ok(()),

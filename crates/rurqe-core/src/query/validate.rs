@@ -263,6 +263,23 @@ pub enum BuildError {
         /// The SQL identifier of the referenced column.
         column: &'static str,
     },
+    /// A column reference to the `EXCLUDED` pseudo-relation appears where no
+    /// conflict can exist.
+    ///
+    /// `EXCLUDED` is the relation holding the row a statement proposed while the
+    /// `ON CONFLICT DO UPDATE` branch of an upsert rewrites the conflicting row,
+    /// so it exists only inside that branch. The `VALUES` list of an `INSERT`
+    /// renders the values of one row and describes no conflict, so a reference
+    /// there renders `VALUES (EXCLUDED."id")`, which no engine accepts. The scope
+    /// of `excluded(...)` keeps the typed reference out of the fluent builder —
+    /// its `Excluded<T>` scope fails the `ValuesScope` bound — while an
+    /// expression built from AST data through `Expr::from_kind` reports the empty
+    /// scope and satisfies every bound, so the reference is rejected here before
+    /// a single character of the statement is rendered.
+    ExcludedWithoutConflict {
+        /// The SQL identifier of the referenced column.
+        column: &'static str,
+    },
     /// A column reference names a relation the statement neither addresses nor reaches.
     ///
     /// A plain column reference names the relation it reads through the node
@@ -652,6 +669,15 @@ impl fmt::Display for BuildError {
                      the `VALUES` list of an INSERT and the `ORDER BY` of a compound statement are evaluated \
                      without a relation namespace, so they may only compute from constants or name an output \
                      column of the projection list"
+                )
+            }
+            BuildError::ExcludedWithoutConflict { column } => {
+                write!(
+                    f,
+                    "column reference `EXCLUDED.{column}` appears in a clause that resolves no conflict; \
+                     the `EXCLUDED` pseudo-relation exists only inside the `ON CONFLICT DO UPDATE` branch \
+                     of an upsert, where it names the row the statement proposed, \
+                     so a `VALUES` row may only compute from constants and parameters"
                 )
             }
             BuildError::UnresolvedColumn { table, column } => {
