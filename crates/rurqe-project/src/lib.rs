@@ -130,16 +130,28 @@ pub struct CodegenConfig {
 }
 
 impl CodegenConfig {
-    /// Reads the configuration file at `path`, defaulting when it is absent.
+    /// Reads the configuration file at `path`.
     ///
-    /// A missing file means "no overrides, no schemas, no artifact paths, and no
-    /// schema selection", while an unreadable or malformed file is an error:
-    /// silently ignoring a typo would generate wrong types or describe the wrong
-    /// schemas.
+    /// A missing file is an error in its own right — a [`ConfigError::NotFound`]
+    /// carrying the path — exactly like an unreadable or malformed one, so a
+    /// mistyped explicit path can never degrade into the engine-neutral defaults:
+    /// running with default schemas, the conventional artifact layout, and no type
+    /// overrides is precisely the silent misconfiguration this crate refuses.
+    ///
+    /// Defaulting on absence has exactly one home, and it is not here: a caller
+    /// that reads a known conventional path falls back through
+    /// [`CodegenConfig::load_or_default`], and a caller that walks the directory
+    /// tree falls back through [`discover_or_default`]. Both spell the rule out at
+    /// the call site, where the tier the path came from is known, instead of
+    /// hiding it behind a read that cannot tell the two apart.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
             Ok(contents) => Self::parse(&contents),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(ConfigError::NotFound {
+                    path: path.display().to_string(),
+                })
+            }
             Err(error) => Err(ConfigError::Io {
                 path: path.display().to_string(),
                 message: error.to_string(),

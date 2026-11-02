@@ -608,18 +608,34 @@ fn configuration_files_are_read_from_disk() {
 }
 
 #[test]
-fn missing_configuration_yields_the_default() {
+fn a_missing_configuration_is_an_error() {
     let directory = temporary_project("missing");
     let path = directory.join(DEFAULT_CONFIG_PATH);
 
-    let config = CodegenConfig::load(&path).expect("a missing file is not an error");
+    let err = CodegenConfig::load(&path).expect_err("an absent path is not a configuration");
 
     let _ = std::fs::remove_dir_all(&directory);
 
-    assert_eq!(config, CodegenConfig::default());
-    assert_eq!(config.primary_schema(), None);
-    assert!(config.schemas().is_empty());
-    assert!(config.type_override("users", "id").is_none());
+    assert_eq!(
+        err,
+        ConfigError::NotFound {
+            path: path.display().to_string()
+        },
+        "the diagnostic carries the absent path"
+    );
+    assert!(
+        err.to_string().contains("does not exist"),
+        "the diagnostic names the absence: {err}"
+    );
+
+    // The contrast the finding is about: the same absent path reaches the
+    // engine-neutral defaults only through the explicit conventional loader, so
+    // a mistyped explicit path can never silently degrade into them.
+    let fallback = CodegenConfig::load_or_default(&path).expect("the fallback keeps the defaults");
+    assert_eq!(fallback, CodegenConfig::default());
+    assert_eq!(fallback.primary_schema(), None);
+    assert!(fallback.schemas().is_empty());
+    assert!(fallback.type_override("users", "id").is_none());
 }
 
 #[test]
