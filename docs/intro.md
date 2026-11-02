@@ -4,7 +4,7 @@ RURQE is a strictly typed SQL query builder, relational execution engine, and da
 
 ## Guided Query Example
 
-One chain carries the whole promise end to end: the builder declares the relations, the projection names the fields of the result, the compiler derives the type of each field from the clause that introduced its relation, and the statement the engine receives is exactly the one the chain assembled.
+One chain carries the whole promise end to end: the entry point names the first relation, the join adds the second, the projection names the fields of the result, the compiler derives the type of each field from the clause that introduced its relation, and the statement the engine receives is exactly the one the chain assembled.
 
 ```rust,no_run
 {{#rustdoc_include examples/joins.rs:outer}}
@@ -25,14 +25,6 @@ SELECT "users"."id" AS "user_id", "users"."name" AS "user_name",
        "orders"."total" AS "order_total"
 FROM "users" LEFT JOIN "orders" ON ("orders"."user_id" = "users"."id")
 ```
-
-Relations can also be nested into collections within a single round trip, avoiding N+1 queries and manual client-side grouping:
-
-```rust,no_run
-{{#rustdoc_include examples/nested.rs:nested}}
-```
-
-The database aggregates child rows into a JSON structure, and the client deserializes the result directly into typed collections.
 
 ## Core Relational Problems
 

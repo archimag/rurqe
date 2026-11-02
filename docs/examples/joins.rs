@@ -41,6 +41,8 @@ async fn main() -> Result<()> {
     println!("{}", inner_join.len());
 
     // ANCHOR: outer
+    // The entry point names the first relation, the join adds the second, and
+    // the projection follows once the relations the statement reads are declared.
     let outer_join = select_from(User)
         .left_join(Order, OrderUserId.eq(UserId))
         .select(cols!(UserId, UserName, OrderTotal))
@@ -87,4 +89,3 @@ async fn main() -> Result<()> {
     println!("{}", report.len());
     Ok(())
 }
-
