@@ -128,17 +128,31 @@ pub(super) fn decode_address(bytes: &[u8]) -> Result<String, String> {
 }
 
 /// Encodes the textual hardware address `text` into its octets.
+///
+/// PostgreSQL accepts the octets of a `macaddr` as colon-, dash-, or
+/// dot-separated runs of hex digits, and one run may spell several octets, so
+/// `08:00:2b:01:02:03`, `08-00-2b-01-02-03`, `08002b:010203`, `0800.2b01.0203`,
+/// and `08002b010203` all name the same address. Every group therefore holds
+/// whole octets, and the assembled total has to match the width of the column.
 pub(super) fn encode_hardware(text: &str, octets: usize, out: &mut BytesMut) -> Result<(), String> {
     let trimmed = text.trim();
     let mut bytes = Vec::with_capacity(octets);
 
-    for part in trimmed.split([':', '-', '.']) {
-        if part.len() != 2 {
+    for group in trimmed.split([':', '-', '.']) {
+        if group.is_empty() {
             return Err(format!("`{trimmed}` is not a hardware address"));
         }
-        let byte = u8::from_str_radix(part, 16)
-            .map_err(|_| format!("`{trimmed}` is not a hardware address"))?;
-        bytes.push(byte);
+
+        for pair in group.as_bytes().chunks(2) {
+            if pair.len() != 2 {
+                return Err(format!("`{trimmed}` is not a hardware address"));
+            }
+            let pair = core::str::from_utf8(pair)
+                .map_err(|_| format!("`{trimmed}` is not a hardware address"))?;
+            let byte = u8::from_str_radix(pair, 16)
+                .map_err(|_| format!("`{trimmed}` is not a hardware address"))?;
+            bytes.push(byte);
+        }
     }
 
     if bytes.len() != octets {
@@ -214,5 +228,32 @@ mod tests {
         assert_eq!(out.to_vec(), vec![0x08u8, 0x00, 0x2b, 0x01, 0x02, 0x03]);
         assert_eq!(decode_hardware(&out), Ok("08:00:2b:01:02:03".to_owned()));
         assert!(encode_hardware("08:00:2b:01:02:03", 8, &mut BytesMut::new()).is_err());
+    }
+
+    #[test]
+    fn a_compact_hardware_address_round_trips_through_its_octets() {
+        let expected = vec![0x08u8, 0x00, 0x2b, 0x01, 0x02, 0x03];
+
+        for spelling in [
+            "08:00:2b:01:02:03",
+            "08-00-2b-01-02-03",
+            "08002b:010203",
+            "08002b-010203",
+            "0800.2b01.0203",
+            "08002b010203",
+        ] {
+            let mut out = BytesMut::new();
+            encode_hardware(spelling, 6, &mut out).expect("the address is encodable");
+
+            assert_eq!(out.to_vec(), expected, "`{spelling}` names the same address");
+        }
+    }
+
+    #[test]
+    fn an_unusable_hardware_address_is_rejected() {
+        assert!(encode_hardware("08:00:2b:01:02", 6, &mut BytesMut::new()).is_err());
+        assert!(encode_hardware("08:00:2b:01:02:0", 6, &mut BytesMut::new()).is_err());
+        assert!(encode_hardware("08::2b:01:02:03", 6, &mut BytesMut::new()).is_err());
+        assert!(encode_hardware("08:00:2b:01:02:zz", 6, &mut BytesMut::new()).is_err());
     }
 }
