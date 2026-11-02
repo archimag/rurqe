@@ -485,4 +485,8 @@ fn a_refused_creation_stops_without_proposing_another_name() {
         message.contains("CREATEDB"),
         "a refusal names the missing privilege: {message}"
     );
+    assert!(
+        message.contains("dropped again once the replay ends"),
+        "a refusal names the lifecycle the throwaway database runs: {message}"
+    );
 }

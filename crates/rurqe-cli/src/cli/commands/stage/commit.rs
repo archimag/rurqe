@@ -21,7 +21,7 @@ use crate::config::SchemaSelection;
 use crate::drift::{DiffWording, SchemaDiff};
 use crate::introspect::introspect_database_selection_notice;
 use crate::stage::compare_stage_with_live_selection;
-use crate::target::DatabaseTarget;
+use crate::target::{detect_dialect, DatabaseDialect, DatabaseTarget};
 
 use super::lock::CheckpointLock;
 use super::{
@@ -57,6 +57,11 @@ use super::{
 /// connection does. `--scratch-url` redirects that lifecycle onto a disposable
 /// server, and a scratch URL addressing another engine than the sealed database is
 /// refused before the stage or the live catalog is read.
+///
+/// The target the lifecycle ran on is not a detail the operator has to infer: the
+/// success report names it beside the anchored hash, and a commit the parity gate
+/// rejects names it again together with the lifecycle the gate performed, so the
+/// blast radius of a commit is readable from its own output.
 ///
 /// The lock, the boundary, and the marker land in that order, but the marker is
 /// the commit point: [`seal_commit`] parks the previous marker and boundary and
@@ -121,16 +126,16 @@ pub(crate) fn commit_stage(
     // against a summed catalog would report every secondary relation as missing.
     // The scratch state itself is the one `--scratch-url` supplied, falling back
     // to the live URL, so the invocation alone decides which server pays for the
-    // database lifecycle the materialisation runs.
-    let diff = compare_stage_with_live_selection(
-        &stage,
-        &catalog,
-        parity_scratch_url(scratch_url.unwrap_or(database_url)),
-        selection,
-    )
-    .map_err(cli_error)?;
+    // database lifecycle the materialisation runs. The target is classified once,
+    // so the replay, a rejected commit, and the success report all name the very
+    // same server.
+    let parity_target = parity_scratch_url(scratch_url.unwrap_or(database_url));
+    let parity = ParityScratch::of(parity_target);
+
+    let diff = compare_stage_with_live_selection(&stage, &catalog, parity_target, selection)
+        .map_err(cli_error)?;
     if !diff.is_empty() {
-        return Err(stage_parity_failure(stage_dir, &diff));
+        return Err(stage_parity_failure(stage_dir, &diff, &parity));
     }
 
     let lock = catalog.to_lock();
@@ -229,13 +234,14 @@ pub(crate) fn commit_stage(
     output.notices(swap_notices);
     output.line(format!(
         "Committed the stage to {}, snapshotted the boundary to {}, and anchored `{}` up to \
-         version {} (hash {}, schemas `{}`)",
+         version {} (hash {}, schemas `{}`, parity scratch `{}`)",
         lock_path.display(),
         boundary.display(),
         checkpoint_path.display(),
         checkpoint.pruned_up_to_version(),
         catalog.schema_hash(),
-        selection.all().join(", ")
+        selection.all().join(", "),
+        parity.redacted
     ));
     Ok(output)
 }
@@ -283,6 +289,61 @@ fn parity_scratch_url(scratch_url: &str) -> &str {
         // the sandbox gate refuses it with its own redacted diagnostic, which is
         // the one place the absence of an engine is reported.
         Err(_) => scratch_url,
+    }
+}
+
+/// The parity scratch target a commit replays its declarative stage into.
+///
+/// The target is classified once, so the success report and the diagnostic of a
+/// rejected commit describe the same engine and the same redacted location instead
+/// of classifying the string twice and possibly disagreeing. The engine decides how
+/// much lifecycle the failure diagnostic has to state: a PostgreSQL parity scratch
+/// creates and drops a database on its server, while a SQLite one is materialised in
+/// memory and touches no file.
+struct ParityScratch {
+    /// The engine the parity scratch target addresses.
+    dialect: DatabaseDialect,
+    /// The target as it is reported, with every credential redacted.
+    redacted: String,
+}
+
+impl ParityScratch {
+    /// Classifies `url`, the target the parity gate materialises the stage in.
+    fn of(url: &str) -> Self {
+        Self {
+            dialect: detect_dialect(Some(url)),
+            redacted: redact_database_url(url),
+        }
+    }
+
+    /// The server-level lifecycle the parity gate ran on this target.
+    ///
+    /// A PostgreSQL scratch creates a throwaway database on its server as the
+    /// connected role and drops it again once the replay ends, so the sentence
+    /// names the privilege that demands and the sweep the same connection runs
+    /// first — a role provisioned merely to run migrations learns both here instead
+    /// of from an unexplained privilege error. A SQLite scratch lives in memory, so
+    /// its sentence states that the sealed file is never replayed over. Both arms
+    /// name `--scratch-url`, the remedy that moves the lifecycle onto another
+    /// target.
+    fn lifecycle(&self) -> String {
+        match self.dialect {
+            DatabaseDialect::Postgres => format!(
+                "The gate materialised the declarative stage in a throwaway database on the parity \
+                 scratch target `{}` and dropped it again: that database is created as the connected \
+                 role, so the role needs the CREATEDB privilege, and the same connection first sweeps \
+                 this host's stale scratch databases. Pass `--scratch-url` to run the lifecycle on a \
+                 disposable server instead.",
+                self.redacted
+            ),
+            DatabaseDialect::Sqlite => format!(
+                "The gate materialised the declarative stage in a scratch database on the parity \
+                 scratch target `{}` and dropped it again: a SQLite parity scratch lives in memory, \
+                 so the sealed database file is never replayed over. Pass `--scratch-url` to run the \
+                 gate against another target.",
+                self.redacted
+            ),
+        }
     }
 }
 
@@ -345,20 +406,28 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 ///
 /// The findings are rendered with the wording of a commit — the stage against the
 /// database — and the remedy names both descriptions, because re-running the very
-/// same commit is exactly what a bare failure would invite. The gate runs during the
-/// preparation of the commit, before the checkpoint section is taken, so nothing was
-/// written and nothing was repaired: the artifacts of this commit and the parked
-/// copies of an interrupted one are all untouched.
-fn stage_parity_failure(stage_dir: &Path, diff: &SchemaDiff) -> CliError {
+/// same commit is exactly what a bare failure would invite. The diagnostic also
+/// names the parity scratch target the gate materialised the stage in and the
+/// lifecycle it ran there, so the operator reads which server a commit touches from
+/// the failure itself and learns where `--scratch-url` would move that lifecycle.
+/// The gate runs during the preparation of the commit, before the checkpoint
+/// section is taken, so nothing was written and nothing was repaired: the artifacts
+/// of this commit and the parked copies of an interrupted one are all untouched.
+fn stage_parity_failure(
+    stage_dir: &Path,
+    diff: &SchemaDiff,
+    scratch: &ParityScratch,
+) -> CliError {
     CliError(format!(
         "the declarative stage `{}` does not describe the database this commit would anchor:\n{}Hint: \
          bring `schema/` and the database back into agreement — apply the migration that closes \
-         the gap, or re-init the stage from the live catalog — then re-run `stage commit`. The gate \
+         the gap, or re-init the stage from the live catalog — then re-run `stage commit`. {} The gate \
          runs before the commit enters its checkpoint section, so it wrote no artifact and repaired \
          none: `schema.lock`, `checkpoint.toml`, the boundary snapshot, and the parked copies of an \
          interrupted commit are untouched by it",
         stage_dir.display(),
-        StageFindings(diff)
+        StageFindings(diff),
+        scratch.lifecycle()
     ))
 }
 

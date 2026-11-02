@@ -71,7 +71,7 @@ fn committing_the_stage_anchors_the_checkpoint() {
     let lock_path = dir.join("schema.lock");
     let checkpoint_path = dir.join("checkpoint.toml");
 
-    commit_stage(
+    let output = commit_stage(
         version("3.2"),
         ":memory:",
         None,
@@ -81,6 +81,12 @@ fn committing_the_stage_anchors_the_checkpoint() {
         &checkpoint_path,
     )
     .expect("an empty database commits cleanly");
+
+    let report = output.lines().join("\n");
+    assert!(
+        report.contains("parity scratch `:memory:`"),
+        "the report names the target the parity gate touched: {report}"
+    );
 
     let catalog =
         SchemaCatalog::from_lock(&std::fs::read_to_string(&lock_path).expect("read the lock"))
@@ -265,6 +271,10 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
     assert!(
         message.contains("re-run `stage commit`"),
         "the diagnostic names the remedy, got {message}"
+    );
+    assert!(
+        message.contains("parity scratch target `:memory:`"),
+        "the diagnostic names the scratch target the gate materialised the stage in, got {message}"
     );
 
     // The gate stands in front of every artifact, so a rejected commit leaves no

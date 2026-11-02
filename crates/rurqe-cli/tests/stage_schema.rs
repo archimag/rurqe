@@ -486,6 +486,10 @@ fn stage_commit_and_verify_agree_over_the_selected_schema() {
         report.contains("Committed the stage"),
         "the commit sealed the live database: {report}"
     );
+    assert!(
+        report.contains("parity scratch"),
+        "the commit report names the server the parity gate touched: {report}"
+    );
 
     // The snapshot describes the very relations the project declares, and the
     // marker anchors its digest instead of an empty `public` catalog.

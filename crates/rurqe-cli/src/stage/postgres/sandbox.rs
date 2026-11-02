@@ -289,6 +289,12 @@ where
 }
 
 /// Renders the diagnostic a failed name proposal loop reports.
+///
+/// The wording is shared by every caller that opens a scratch database — the parity
+/// gate of `stage commit` and both sides of `stage verify` — so the refusal names the
+/// lifecycle a scratch database always has instead of the command that asked for it:
+/// the throwaway database is created as the connected role, replayed, and dropped
+/// again once the replay ends, which is exactly why the role needs `CREATEDB`.
 pub(super) fn creation_failure_message(failure: CreationFailure, redacted_url: &str) -> String {
     match failure {
         CreationFailure::NamesExhausted => format!(
@@ -296,8 +302,9 @@ pub(super) fn creation_failure_message(failure: CreationFailure, redacted_url: &
              already taken"
         ),
         CreationFailure::Refused(error) => format!(
-            "failed to create the scratch database on `{redacted_url}`: {error}; the connected \
-             role needs the CREATEDB privilege"
+            "failed to create the scratch database on `{redacted_url}`: {error}; the scratch database \
+             is created as the connected role, replayed, and dropped again once the replay ends, so \
+             the role needs the CREATEDB privilege"
         ),
     }
 }
