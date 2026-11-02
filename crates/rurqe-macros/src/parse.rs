@@ -9,6 +9,11 @@ use syn::{
 };
 
 /// Converts an identifier name (e.g. PascalCase or SCREAMING_SNAKE_CASE) to snake_case.
+///
+/// An underscore of the source already separates the words around it, so it stays
+/// the single separator between them: `USER_NAME` becomes `user_name` rather than
+/// `user__name`, and a field name, an SQL alias, or a nested-row JSON key derived
+/// from a marker keeps the spelling the marker declares.
 pub fn to_snake_case(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
@@ -16,7 +21,12 @@ pub fn to_snake_case(s: &str) -> String {
 
     while let Some(c) = chars.next() {
         if c.is_uppercase() {
+            // A separator is inserted only where the source carries none
+            // between the two words. An underscore already sitting at the end
+            // of the result is that separator, so a SCREAMING_SNAKE_CASE name
+            // keeps its single one and never receives a second.
             if !result.is_empty()
+                && !result.ends_with('_')
                 && (!prev_is_upper || chars.peek().is_some_and(|next| next.is_lowercase()))
             {
                 result.push('_');

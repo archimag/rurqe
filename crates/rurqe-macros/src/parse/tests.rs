@@ -107,6 +107,39 @@ fn converts_various_naming_styles_to_snake_case() {
 }
 
 #[test]
+fn screaming_snake_case_keeps_its_single_separator() {
+    assert_eq!(to_snake_case("USER_NAME"), "user_name");
+    assert_eq!(to_snake_case("USER_ID"), "user_id");
+    assert_eq!(to_snake_case("USER_UUID"), "user_uuid");
+    assert_eq!(to_snake_case("User_ID"), "user_id");
+    assert_eq!(to_snake_case("UserName_Email"), "user_name_email");
+    assert_eq!(to_snake_case("A_B"), "a_b");
+    // The conversion adds a separator only where a word boundary has none; it
+    // neither doubles one the author wrote nor merges a repeated one.
+    assert_eq!(to_snake_case("USER__NAME"), "user__name");
+}
+
+#[test]
+fn screaming_snake_case_markers_name_their_field_once() {
+    let item: ProjectionItem = parse_str("users::USER_NAME").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "user_name");
+
+    // The nested-row key follows the field name, so a doubled separator would
+    // have reached the JSON object contract of the record as well.
+    let field = item.field_ident().expect("named");
+    assert_eq!(field_key(&field), "user_name");
+
+    let item: ProjectionItem = parse_str("user_id: USER_ID").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "user_id");
+
+    let item: ProjectionItem = parse_str("users.USER_NAME").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "user_name");
+
+    let item: ProjectionItem = parse_str("USER_NAME as contact_name").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "contact_name");
+}
+
+#[test]
 fn handles_reserved_rust_keywords_as_raw_ident() {
     let item: ProjectionItem = parse_str("users::Type").expect("valid projection");
     let ident = item.field_ident().expect("named");
