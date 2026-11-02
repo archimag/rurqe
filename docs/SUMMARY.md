@@ -2,6 +2,7 @@
 
 - [Introduction](intro.md)
 - [Quickstart](quickstart.md)
+- [Guided Tour](guided_tour.md)
 
 # Querying
 
