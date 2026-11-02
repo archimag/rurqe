@@ -23,6 +23,9 @@
 //! A panic inside the worker thread never unwinds the caller: the operation is
 //! caught, the call receives [`Error::Backend`], and the thread keeps serving the
 //! protocol.
+//!
+//! The session flag follows the proven outcome of the terminal statement: only
+//! a `COMMIT` or a `ROLLBACK` the server accepted proves the session idle.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -96,7 +99,7 @@ type Boot = Box<dyn FnOnce(&Runtime) -> Result<Connection, Error> + Send>;
 struct Session {
     /// The connection the statements run on.
     connection: Connection,
-    /// Whether a `BEGIN` is open on the session.
+    /// Whether the session is known to hold an open transaction.
     transaction: bool,
     /// Whether the session holds the migration advisory lock.
     lock_held: bool,
@@ -430,22 +433,40 @@ fn perform(
         }
         Operation::Commit => {
             let outcome = batch(runtime, session, "COMMIT");
-            session.transaction = false;
-            if let Err(error) = &outcome {
-                // A refused commit leaves a transaction the adapter cannot
-                // vouch for, so the session is rolled back before the failure
-                // reaches the caller.
-                let _ = batch(runtime, session, "ROLLBACK");
-                tracing::warn!(
-                    error = %error,
-                    "committing the migration step failed; the session was rolled back"
-                );
+            match &outcome {
+                Ok(()) => session.transaction = false,
+                Err(error) => {
+                    // A refused commit is compensated by a rollback, and the flag
+                    // follows that rollback's proven outcome: an accepted one
+                    // closes the session, a refused one keeps the mark.
+                    match batch(runtime, session, "ROLLBACK") {
+                        Ok(()) => {
+                            session.transaction = false;
+                            tracing::warn!(
+                                error = %error,
+                                "committing the migration step failed; the session was rolled back"
+                            );
+                        }
+                        Err(rollback) => {
+                            tracing::warn!(
+                                error = %error,
+                                rollback_error = %rollback,
+                                "committing the migration step failed and the compensating rollback \
+                                 was refused; the session stays marked as holding a transaction"
+                            );
+                        }
+                    }
+                }
             }
             outcome.map(|()| Response::Unit)
         }
         Operation::Rollback => {
             let outcome = batch(runtime, session, "ROLLBACK");
-            session.transaction = false;
+            // Only a rollback the server accepted proves the session idle; a
+            // refused one keeps the flag, so the next `Begin` is refused.
+            if outcome.is_ok() {
+                session.transaction = false;
+            }
             outcome.map(|()| Response::Unit)
         }
     }
@@ -696,12 +717,11 @@ impl Drop for PgAsyncMigrationBackend {
 
 /// Transactional boundary of a [`PgAsyncMigrationBackend`] step.
 ///
-/// The boundary is a `BEGIN` issued on the session the worker thread owns, so
-/// the step reads the catalog and writes its history rows exactly as the
-/// enclosing run does. Dropping the boundary without a terminal call rolls the
-/// block back, so an abandoned step never leaves an open transaction behind, and
-/// a commit the driver refuses is followed by a rollback before the failure
-/// reaches the caller.
+/// The boundary issues `BEGIN` on the session the worker thread owns, and the
+/// session is recorded idle only once the server proved the terminal statement:
+/// a commit, a rollback, or the compensating rollback of a refused commit. A
+/// refused one keeps the session marked, so the next boundary is rejected
+/// instead of nesting inside the abandoned transaction.
 pub struct PgAsyncMigrationTransaction<'a> {
     /// The backend the step belongs to.
     backend: &'a mut PgAsyncMigrationBackend,

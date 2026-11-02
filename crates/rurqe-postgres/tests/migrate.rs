@@ -616,6 +616,7 @@ mod client_backend {
 #[cfg(feature = "tokio-postgres")]
 mod async_backend {
     use rurqe_postgres::migrate::PgAsyncMigrationBackend;
+    use rurqe_postgres::rurqe_migrate::error::Error;
     use rurqe_postgres::rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
     use rurqe_postgres::rurqe_migrate::{Migration, Migrator};
     use rurqe_postgres::PgAsyncConnection;
@@ -797,6 +798,87 @@ mod async_backend {
             .get::<_, bool>(0);
 
         assert!(!survived, "the abandoned step rolled its own script back");
+    }
+
+    /// Whether `error` is the worker refusing a boundary over an open
+    /// transaction.
+    fn is_transaction_open(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Backend(message) if message.contains("already holds an open transaction")
+        )
+    }
+
+    #[test]
+    fn a_refused_rollback_keeps_the_session_inside_its_transaction() {
+        let Some(url) = database_url("PgAsyncMigrationBackend refused rollback") else {
+            return;
+        };
+        let runtime = runtime();
+        let schema = "rurqe_async_refused_rollback";
+        let connection = runtime.block_on(connect(&url, schema));
+        let mut backend = PgAsyncMigrationBackend::new(connection)
+            .expect("the migration worker starts")
+            .with_schema(schema);
+
+        let mut step = backend.begin().expect("the step opens its transaction");
+        // The statement ends the session, so the rollback the worker issues
+        // below reaches a connection that no longer exists. The statement may
+        // report the loss of the session it causes, which is why its own outcome
+        // is not asserted.
+        let _ = step.execute("SELECT pg_terminate_backend(pg_backend_pid())");
+
+        let error = step
+            .rollback()
+            .expect_err("the dead session never accepts the rollback");
+        assert!(
+            matches!(&error, Error::Backend(_)),
+            "the refused rollback reports the driver failure: {error:?}"
+        );
+
+        // The flag survived the unproven rollback, so the worker refuses the
+        // next boundary before it touches the dead socket instead of opening a
+        // transaction inside the abandoned one.
+        let refused = match backend.begin() {
+            Ok(_) => panic!("the worker refuses a boundary over an open transaction"),
+            Err(error) => error,
+        };
+        assert!(is_transaction_open(&refused), "got {refused:?}");
+    }
+
+    #[test]
+    fn a_refused_compensating_rollback_keeps_the_session_inside_its_transaction() {
+        let Some(url) = database_url("PgAsyncMigrationBackend refused commit") else {
+            return;
+        };
+        let runtime = runtime();
+        let schema = "rurqe_async_refused_commit";
+        let connection = runtime.block_on(connect(&url, schema));
+        let mut backend = PgAsyncMigrationBackend::new(connection)
+            .expect("the migration worker starts")
+            .with_schema(schema);
+
+        let mut step = backend.begin().expect("the step opens its transaction");
+        // The statement ends the session, so neither the commit nor the rollback
+        // the worker issues to compensate for it reaches a live connection.
+        let _ = step.execute("SELECT pg_terminate_backend(pg_backend_pid())");
+
+        let error = step
+            .commit()
+            .expect_err("the dead session never accepts the commit");
+        assert!(
+            matches!(&error, Error::Backend(_)),
+            "the refused commit reaches the caller: {error:?}"
+        );
+
+        // Neither terminal statement proved the session idle, so the next
+        // boundary is refused instead of persisting both steps' work in one
+        // transaction.
+        let refused = match backend.begin() {
+            Ok(_) => panic!("the worker refuses a boundary over an open transaction"),
+            Err(error) => error,
+        };
+        assert!(is_transaction_open(&refused), "got {refused:?}");
     }
 
     /// The pooled form checks its connection out of the pool on the worker thread
