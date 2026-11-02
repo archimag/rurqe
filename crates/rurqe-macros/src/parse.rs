@@ -159,9 +159,11 @@ impl Parse for ProjectionItem {
 ///
 /// A comma between two projections separates them, while a comma inside a
 /// generic argument list belongs to the item it follows: `AliasedCol::<A, C>`
-/// and `Expr::sum::<A, B>()` are one projection each. Delimiter groups are
-/// already atomic in the token stream, so the angle brackets of a generic
-/// argument list are the only nesting the collector has to track itself.
+/// and `Expr::sum::<A, B>()` are one projection each, and so is a list whose
+/// arguments are themselves generic (`Expr::sum::<Vec<A>, B>()`,
+/// `AliasedCol::<Option<A>, C>`). Delimiter groups are already atomic in the
+/// token stream, so the angle brackets of a generic argument list are the only
+/// nesting the collector has to track itself.
 fn collect_item_tokens(input: ParseStream) -> syn::Result<Vec<TokenTree>> {
     let mut tokens: Vec<TokenTree> = Vec::new();
     let mut angle_depth = 0usize;
@@ -174,7 +176,7 @@ fn collect_item_tokens(input: ParseStream) -> syn::Result<Vec<TokenTree>> {
         let token = input.parse::<TokenTree>()?;
         angle_depth = match &token {
             TokenTree::Punct(punct) => match punct.as_char() {
-                '<' if opens_generic_arguments(&tokens) => angle_depth + 1,
+                '<' if opens_generic_arguments(&tokens, angle_depth) => angle_depth + 1,
                 '>' if angle_depth > 0 && closes_generic_arguments(&tokens) => angle_depth - 1,
                 _ => angle_depth,
             },
@@ -188,10 +190,10 @@ fn collect_item_tokens(input: ParseStream) -> syn::Result<Vec<TokenTree>> {
 
 /// Reports whether a `<` opens a generic argument list.
 ///
-/// The character opens a list only immediately after a `:`, which is exactly
-/// where the item grammar allows an argument list to begin: the turbofish of a
-/// path (`Expr::<T>`, `AliasedCol::<A, C>`) and the ascription of a qualified
-/// path (`alias: <T as X>::Y`).
+/// Outside a list the character opens one only immediately after a `:`, which
+/// is exactly where the item grammar allows an argument list to begin: the
+/// turbofish of a path (`Expr::<T>`, `AliasedCol::<A, C>`) and the ascription of
+/// a qualified path (`alias: <T as X>::Y`).
 ///
 /// A `<` after any other token is an operator. Reading one that follows an
 /// identifier as the beginning of a type would swallow the separator after a
@@ -200,7 +202,20 @@ fn collect_item_tokens(input: ParseStream) -> syn::Result<Vec<TokenTree>> {
 /// projection. A bare `Ident<...>` spelling is not expression syntax at all,
 /// because an argument list in expression position requires the turbofish, so
 /// no projection that parses today loses its separator to this restriction.
-fn opens_generic_arguments(previous: &[TokenTree]) -> bool {
+///
+/// Inside a list every `<` opens a nested one, because an argument is type
+/// syntax: a generic argument that is itself a generic type (`Vec<UserId>`,
+/// `Option<Manager>`, `Blob<[u8; 4]>`) opens a list of its own. Counting only
+/// the outer opening spends the inner `>` on the outer list, so the counter
+/// returns to zero before the arguments that follow it and their comma is read
+/// as the end of the projection. No comparison can sit in that position,
+/// because a const generic argument carrying an expression is brace-delimited
+/// and therefore reaches the collector as one atomic group.
+fn opens_generic_arguments(previous: &[TokenTree], angle_depth: usize) -> bool {
+    if angle_depth > 0 {
+        return true;
+    }
+
     match previous.last() {
         Some(TokenTree::Punct(punct)) => punct.as_char() == ':',
         _ => false,

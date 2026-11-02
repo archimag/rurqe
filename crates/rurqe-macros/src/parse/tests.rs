@@ -279,6 +279,58 @@ fn generic_argument_lists_do_not_split_an_item() {
 }
 
 #[test]
+fn nested_generic_arguments_do_not_split_an_item() {
+    let list: ProjectionList =
+        parse_str("total: Expr::sum::<Vec<UserId>, i64>(), users::EMAIL").expect("valid list");
+
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
+    assert_eq!(list.items[0].field_ident().expect("named"), "total");
+    assert_eq!(list.items[1].field_ident().expect("named"), "email");
+
+    let list: ProjectionList =
+        parse_str("AliasedCol::<Option<Manager>, UserId>, users::EMAIL").expect("valid list");
+
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list.items[0].target, ProjectionTarget::Column(_)));
+    assert_eq!(list.items[0].field_ident().expect("named"), "manager_user_id");
+    assert_eq!(list.items[1].field_ident().expect("named"), "email");
+}
+
+#[test]
+fn deeply_nested_generic_arguments_do_not_split_an_item() {
+    let list: ProjectionList =
+        parse_str("n: Expr::sum::<Option<Vec<UserId>>, i64>(), users::ID").expect("valid list");
+
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
+    assert_eq!(list.items[0].field_ident().expect("named"), "n");
+    assert_eq!(list.items[1].field_ident().expect("named"), "id");
+}
+
+#[test]
+fn an_arrow_inside_nested_generic_arguments_does_not_close_the_list() {
+    let list: ProjectionList =
+        parse_str("n: Expr::sum::<fn(u8) -> Vec<u8>, i64>(), users::ID").expect("valid list");
+
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
+    assert_eq!(list.items[0].field_ident().expect("named"), "n");
+    assert_eq!(list.items[1].field_ident().expect("named"), "id");
+}
+
+#[test]
+fn a_group_inside_nested_generic_arguments_does_not_split_the_item() {
+    let list: ProjectionList =
+        parse_str("n: Expr::sum::<Blob<[u8; 4]>, i64>(), users::ID").expect("valid list");
+
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list.items[0].target, ProjectionTarget::Expr(_)));
+    assert_eq!(list.items[0].field_ident().expect("named"), "n");
+    assert_eq!(list.items[1].field_ident().expect("named"), "id");
+}
+
+#[test]
 fn a_named_generic_projection_keeps_its_alias() {
     let item: ProjectionItem = parse_str("total: Expr::sum::<OrderTotal, i64>()")
         .expect("valid projection");
