@@ -134,7 +134,7 @@ fn sqlite_index_info(index: &str) -> String {
 }
 
 /// Escapes a SQLite identifier for use inside a double-quoted name literal.
-fn escape_sqlite_identifier(identifier: &str) -> String {
+pub(crate) fn escape_sqlite_identifier(identifier: &str) -> String {
     identifier.replace('"', "\"\"")
 }
 

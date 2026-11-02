@@ -666,3 +666,98 @@ fn sqlite_client_backend_reports_the_digest_of_its_catalog() {
         Some(catalog.checksum())
     );
 }
+
+#[test]
+fn sqlite_backend_cleans_every_user_object() {
+    let mut backend = backend();
+    let scripts = migrations(
+        "V1__users.sql",
+        "CREATE TABLE users (id INTEGER NOT NULL PRIMARY KEY);\n\
+         CREATE VIEW active_users AS SELECT id FROM users;\n\
+         CREATE TRIGGER users_touch AFTER INSERT ON users BEGIN SELECT 1; END;",
+    );
+    Migrator::new()
+        .migrate(&mut backend, &scripts)
+        .expect("the tail applies");
+
+    // The manifest is the catalog of the file itself: the history table is a user
+    // object like any other, and reading the manifest drops nothing.
+    let manifest = backend
+        .clean_manifest()
+        .expect("the manifest of the target is readable");
+    assert_eq!(
+        manifest,
+        vec![
+            "__rurqe_schema_history",
+            "users",
+            "users_touch",
+            "active_users"
+        ]
+    );
+    let users: i64 = backend
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the catalog answers");
+    assert_eq!(users, 1, "a manifest read drops nothing");
+
+    let dropped = backend.clean().expect("the target is cleaned");
+    assert_eq!(dropped, manifest, "the drop reports the manifest it erased");
+
+    let left: i64 = backend
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the catalog answers");
+    assert_eq!(left, 0, "the clean leaves no user object behind");
+}
+
+#[test]
+fn a_cleaned_target_applies_an_edited_migration_again() {
+    let mut backend = backend();
+    let applied = migrations("V1__users.sql", "CREATE TABLE users (id INTEGER NOT NULL);");
+    Migrator::new()
+        .migrate(&mut backend, &applied)
+        .expect("the tail applies");
+
+    // Editing a migration that already ran is exactly what the checksum guard
+    // rejects on a target that still keeps its history.
+    let edited = migrations(
+        "V1__users.sql",
+        "CREATE TABLE users (id INTEGER NOT NULL, email TEXT);",
+    );
+    let blocked = Migrator::new()
+        .migrate(&mut backend, &edited)
+        .expect_err("the recorded checksum rejects the edited body");
+    assert!(matches!(blocked, Error::ChecksumMismatch { .. }));
+
+    backend.clean().expect("the target is reset");
+
+    let report = Migrator::new()
+        .migrate(&mut backend, &edited)
+        .expect("the edited script applies to the cleaned target");
+    assert_eq!(report.applied_count, 1);
+
+    // The body that ran is the edited one, and the history records its digest.
+    let columns: i64 = backend
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('users')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the catalog answers");
+    assert_eq!(columns, 2, "the edited body is the one the target carries");
+
+    let history = backend.read_history().expect("the history is readable");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].script, "V1__users.sql");
+    assert_eq!(history[0].checksum, Some(edited[0].checksum));
+}

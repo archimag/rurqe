@@ -33,6 +33,7 @@ use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_migrate::sleeper::warn_if_in_tokio_runtime;
 
 use crate::introspect::introspect_sqlite;
+mod clean;
 mod client;
 mod history;
 
@@ -240,7 +241,32 @@ impl MigrationBackend for SqliteMigrationBackend {
 
         result
     }
+    /// Lists the objects of the target database a clean drops.
+    ///
+    /// The list is the catalog of the file itself: every user table — the
+    /// `__rurqe_schema_history` table among them — every view, and every trigger, in
+    /// a deterministic order. Nothing is dropped here and no metadata table is
+    /// created, so a caller can show the list to its operator before the destructive
+    /// call is confirmed.
+    fn clean_manifest(&mut self) -> Result<Vec<String>, Error> {
+        clean::clean_manifest(&self.conn)
+    }
 
+    /// Drops every object of the target database, returning the names dropped.
+    ///
+    /// This is the destructive reset of a database the project owns — a dedicated
+    /// test database, typically — after which the whole migration tail applies again
+    /// from scratch. The recorded history is dropped with the other objects, so every
+    /// script reads as pending on the next run, and a migration whose body was edited
+    /// after being applied is applied again under its new checksum instead of being
+    /// reported as modified.
+    ///
+    /// The drops run inside one step of the surrounding run, so a failure discards
+    /// the objects already dropped instead of leaving the target half erased. The
+    /// call blocks the calling thread like every other lifecycle operation.
+    fn clean(&mut self) -> Result<Vec<String>, Error> {
+        clean::clean(self)
+    }
     /// Takes the SQLite write lock for the duration of a migration run.
     ///
     /// SQLite materialises its single-writer lock as a transaction, so the lock is
