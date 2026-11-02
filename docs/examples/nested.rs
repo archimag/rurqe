@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
                         order_id: OrderId,
                         total: OrderTotal,
                     })
-                    .where_(OrderUserId.eq(UserId.without_scope()))
+                    .where_(OrderUserId.eq(outer(UserId)))
                     .order_by_desc(OrderTotal),
             ),
         })
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
                         order_id: OrderId,
                         total: OrderTotal,
                     })
-                    .where_(OrderUserId.eq(UserId.without_scope()))
+                    .where_(OrderUserId.eq(outer(UserId)))
                     .order_by_desc(OrderTotal),
             ),
         })
@@ -119,8 +119,8 @@ fn build_correlated() -> Result<(), BuildError> {
     // of the enclosing query is marked as resolved elsewhere instead of being
     // looked up among the relations the child statement declares.
     let _correlated = select_from(Order)
-        .select(cols!(OrderTotal))
-        .where_(OrderUserId.eq(UserId.without_scope()))
+        .select((OrderUserId,))
+        .where_(OrderUserId.eq(outer(UserId)))
         .build()?;
     // ANCHOR_END: correlation
     Ok(())

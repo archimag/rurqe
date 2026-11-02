@@ -31,7 +31,7 @@ Exactly four projection forms survive a grouping:
 Projecting an ungrouped column is rejected at the call site, for `select_from(...).select(...)` and for a `select!` selection alike.
 
 > **Compiler Guard in Action.** `OrderTotal` is not part of `GROUP BY` and is not aggregated — `select((OrderUserId, OrderTotal))` does not compile, with a message saying the column is "neither grouped nor an aggregate".
-However the column is reached for, the rule holds: an expression built over a column keeps that column's relation. `.without_scope()` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
+However the column is reached for, the rule holds: an expression built over a column keeps that column's relation. `outer(...)` does not help either — it drops the relation from the expression but does not turn the expression into a constant, so the grouping still refuses it.
 
 ## The aggregate functions
 

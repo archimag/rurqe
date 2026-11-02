@@ -33,8 +33,7 @@ FROM "users" INNER JOIN "orders" ON ("orders"."user_id" = "users"."id")
 
 The `on` predicate may read the tables already in scope and the joined table; a condition referencing a table absent from `FROM`/`JOIN` is rejected at the call site. Every join extends the relation scope of the query by the joined relation, and an outer join marks that relation nullable for every column projected from it. A `CROSS JOIN` takes no `ON`: it pairs every row unconditionally.
 
-A column marker is a complete operand on its own, on either side of the comparison: `OrderUserId.eq(UserId)` compares two columns without any wrapper, exactly as `OrderTotal.gt(0.0f64)` compares a column with a bound value. Both operands declare the tables they reference, so the predicate's scope carries every relation it reads, and the join builder checks the `ON` clause against the relations the statement declares — a column of a relation the query does not introduce is still refused at the call site. Correlation still goes through `.without_scope()`, because the marker always claims its table.
-
+A column marker is a complete operand on its own, on either side of the comparison: `OrderUserId.eq(UserId)` compares two columns without any wrapper, exactly as `OrderTotal.gt(0.0f64)` compares a column with a bound value. Both operands declare the tables they reference, so the predicate's scope carries every relation it reads, and the join builder checks the `ON` clause against the relations the statement declares — a column of a relation the query does not introduce is still refused at the call site. Correlation still goes through `outer(...)`, because the marker always claims its table.
 ## Nullability of outer joins
 
 `LEFT JOIN`, `FULL OUTER JOIN`, and `LEFT JOIN LATERAL` may leave the joined relation unmatched, so its columns reach the projected row as `Option<T>`:
@@ -46,7 +45,7 @@ A column marker is a complete operand on its own, on either side of the comparis
 The lifting is automatic: the outer-join scope marks the joined relation nullable, so every column projected from it arrives as `Option<T>` — `order_total` arrives as `Option<f64>`. `FULL OUTER JOIN` lifts both sides — the columns of the left and the right relation all arrive as `Option<T>`. Reading an outer-join column as a plain `T` fails to compile, so a missing row can never be decoded into a non-nullable field.
 ## Unaliased duplicate relations
 
-Joining a table the query already addresses renders the same name twice — once in the `FROM` clause and once through the join — which no engine accepts: PostgreSQL reports `table name specified more than once`. The statement is therefore refused deterministically while it is assembled, before a single byte reaches the database, with the typed `BuildError::DuplicateRelation` naming the colliding relation. The predicate of the fragment is written as an unscoped expression, so the duplicate is what the statement reports rather than the reference being ambiguous between the two positions the relation occupies.
+Joining a table the query already addresses renders the same name twice — once in the `FROM` clause and once through the join — which no engine accepts: PostgreSQL reports `table name specified more than once`. The statement is therefore refused deterministically while it is assembled, before a single byte reaches the database, with the typed `BuildError::DuplicateRelation` naming the colliding relation. The predicate of the fragment marks its outer reference through `outer(...)`, so the duplicate is what the statement reports rather than the reference being ambiguous between the two positions the relation occupies.
 The refusal is a pre-flight check of the assembled statement rather than a rendering accident: it fires on every run and no SQL is dispatched. The fix is to alias the second occurrence through the alias markers, so each use of `"users"` carries its own effective name.
 ```rust,no_run
 {{#rustdoc_include ../examples/joins.rs:duplicate_refused}}
@@ -69,5 +68,4 @@ A left-joined derived table lifts its columns to `Option<T>` exactly like a left
 {{#rustdoc_include ../examples/joins.rs:lateral}}
 ```
 
-The subquery is published as the relation marker `LatestOrder` through `as_lateral::<LatestOrder>()`, so the enclosing statement addresses its columns like those of a stored table. A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>` — `latest_order_total` arrives as `Option<f64>`. A correlated reference is written as an unscoped expression and resolved against the enclosing statement's relations.
-
+The subquery is published as the relation marker `LatestOrder` through `as_lateral::<LatestOrder>()`, so the enclosing statement addresses its columns like those of a stored table. A `LEFT JOIN LATERAL` renders its condition as `ON true` and lifts the lateral projections into `Option<T>` — `latest_order_total` arrives as `Option<f64>`. A correlated reference is written through `outer(...)` and resolved against the enclosing statement's relations.

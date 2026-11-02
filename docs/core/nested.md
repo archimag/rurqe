@@ -68,7 +68,7 @@ A missing child is `None`, not an empty collection. `nest_one` adds the limit of
 
 ## Child Query Scope
 
-The nested statement is a query of its own, so its scope holds only its own `FROM`. A column of the outer query enters the inner predicate through `.without_scope()`, which marks the expression as resolved by the enclosing statement:
+The nested statement is a query of its own, so its scope holds only its own `FROM`. A column of the outer query enters the inner predicate through `outer(...)`, which marks the expression as resolved by the enclosing statement:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/nested.rs:correlation}}
@@ -161,4 +161,4 @@ Without the `serde_json` feature there is no document: reading a nested field en
 - A nested statement without a projection (`nest_many(select_from(Order))`) does not compile: there is no row type to collect.
 - A dialect without JSON aggregation does not accept the projection at all, so an unsupported engine fails at the type level instead of inside the driver.
 - The element type has to declare its keys, which is what the `cols!` record does.
-- A nested statement that reads a column of the enclosing query without `.without_scope()` is rejected at the call site, because that relation is absent from the child scope.
+- A nested statement that reads a column of the enclosing query without `outer(...)` is rejected at the call site, because that relation is absent from the child scope.

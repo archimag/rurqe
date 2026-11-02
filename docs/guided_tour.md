@@ -103,7 +103,7 @@ The order history screen returns every account together with its orders, in one 
 {{#rustdoc_include examples/nested.rs:nested}}
 ```
 
-The nested statement carries its own scope, so a column of the enclosing query enters the child predicate through `.without_scope()`, which marks the expression as resolved by the enclosing statement.
+The nested statement carries its own scope, so a column of the enclosing query enters the child predicate through `outer(...)`, which marks the expression as resolved by the enclosing statement.
 
 ## Row mutations
 

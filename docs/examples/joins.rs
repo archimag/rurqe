@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     // and the join both name `users`. No engine accepts the statement, and the
     // builder refuses it before any SQL is sent to the database.
     let duplicate = select_from(User)
-        .inner_join(User, UserManagerId.eq(UserId).without_scope())
+        .inner_join(User, outer(UserManagerId.eq(UserId)))
         .select((Expr::count_all(),))
         .build();
     assert!(matches!(
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     // so the enclosing statement reads its rows like those of a stored table.
     let latest_order = select_from(Order)
         .select((OrderTotal,))
-        .where_(OrderUserId.eq(UserId.without_scope()))
+        .where_(OrderUserId.eq(outer(UserId)))
         .order_by_desc(OrderId)
         .limit(1)
         .as_lateral::<LatestOrder>();
