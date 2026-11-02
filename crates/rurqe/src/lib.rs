@@ -72,6 +72,12 @@ pub use rurqe_macros::{cols, dto, raw_sql, select, sql, SqlType};
 pub use rurqe_macros::embed_migrations;
 
 pub use rurqe_core::dml::{excluded, Excluded, ExecutableDelete, ExecutableUpdate};
+/// The typed expression surface, re-exported under its own name.
+///
+/// The module hosts the expression nodes, the call-site predicate traits, and
+/// `outer`, the constructor that declares a reference to a column of the
+/// statement enclosing the subquery it appears in.
+pub use rurqe_core::expr;
 pub use rurqe_core::expr::{RowExpr, RowValues};
 pub use rurqe_core::query::{LockedQuery, Query, TableSelection};
 pub use rurqe_core::{
@@ -630,10 +636,10 @@ pub mod prelude {
 
     pub use rurqe_core::expr::{
         avg, avg_distinct, coalesce, count, count_all, count_distinct, greatest, is_distinct_from,
-        is_not_distinct_from, least, max, min, nullif, sum, sum_distinct, AnySubquery, CaseBranch,
-        CaseBuilder, Expression, InSubquery, IntoExprList, LockClause, LockStrength, LockWait,
-        RowExpr, RowValues, SqlCastTarget, StringExpression, Subquery, SubqueryOp, WindowFrame,
-        WindowFrameBound, WindowFrameKind,
+        is_not_distinct_from, least, max, min, nullif, outer, sum, sum_distinct, AnySubquery,
+        CaseBranch, CaseBuilder, Expression, InSubquery, IntoExprList, LockClause, LockStrength,
+        LockWait, RowExpr, RowValues, SqlCastTarget, StringExpression, Subquery, SubqueryOp,
+        WindowFrame, WindowFrameBound, WindowFrameKind,
     };
 
     pub use rurqe_core::query::{
