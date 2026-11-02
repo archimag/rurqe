@@ -124,7 +124,11 @@ by the artifact that was baked:
    digest.
 5. The catalog the run produced is compared against the digest the baked
    `schema.lock` anchors, and a divergence is reported as
-   `Error::SchemaHashMismatch` instead of being accepted as up to date.
+   `Error::SchemaHashMismatch` instead of being accepted as up to date. The
+   digest is read under the same exclusive run lock as every other backend
+   interaction of the run, so a concurrent lifecycle operation on the same
+   database can neither drop nor advance the schema between the commit of the
+   tail and the comparison.
 
 A backend that cannot introspect itself reports no catalog, which leaves the
 anchored digest unverified rather than rejecting a schema the backend never

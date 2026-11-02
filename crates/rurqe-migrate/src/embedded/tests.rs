@@ -5,7 +5,7 @@ use super::*;
 // carries the same feature gate as the tests that read it.
 #[cfg(feature = "tokio")]
 use crate::migration::MigrationKind;
-use crate::runner::InMemoryBackend;
+use crate::runner::{InMemoryBackend, InMemoryTransaction};
 
 fn embedded() -> EmbeddedMigrations {
     EmbeddedMigrations::new(&[
@@ -307,4 +307,84 @@ fn baseline_async_runs_the_guard_free_core_inside_a_runtime() {
     assert_eq!(entry.kind, MigrationKind::Baseline);
     assert_eq!(backend.history.len(), 1);
     assert!(backend.history[0].success);
+}
+
+/// An [`InMemoryBackend`] that records whether the exclusive run lock was held
+/// while the final catalog digest was read.
+///
+/// The lifecycle contract is delegated to the wrapped backend, so the inner
+/// `locked` flag mirrors the outer run, and the overridden
+/// [`catalog_checksum`](MigrationBackend::catalog_checksum) records that flag at
+/// each call.
+#[derive(Debug, Default)]
+struct LockObservingBackend {
+    inner: InMemoryBackend,
+    lock_states_at_checksum: Vec<bool>,
+}
+
+impl MigrationBackend for LockObservingBackend {
+    type Transaction<'a>
+        = InMemoryTransaction<'a>
+    where
+        Self: 'a;
+
+    fn ensure_schema_history_table(&mut self) -> Result<(), Error> {
+        self.inner.ensure_schema_history_table()
+    }
+
+    fn read_history(&mut self) -> Result<Vec<SchemaHistoryEntry>, Error> {
+        self.inner.read_history()
+    }
+
+    fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
+        self.inner.begin()
+    }
+
+    fn acquire_lock(&mut self) -> Result<(), Error> {
+        self.inner.acquire_lock()
+    }
+
+    fn release_lock(&mut self) -> Result<(), Error> {
+        self.inner.release_lock()
+    }
+
+    fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        self.lock_states_at_checksum.push(self.inner.locked);
+        self.inner.catalog_checksum()
+    }
+}
+
+/// The final comparison is a backend interaction like every other step of the
+/// lifecycle, so it reads the catalog under the same exclusive run lock: a
+/// concurrent `clean` or `migrate` can then neither drop nor advance the schema
+/// between the commit of the tail and the comparison.
+#[test]
+fn the_final_catalog_digest_is_read_under_the_run_lock() {
+    let catalog = SchemaCatalog::default();
+    let snapshot = catalog.to_lock();
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V1__users.sql", "CREATE TABLE users (id INTEGER);")],
+        checkpoint: None,
+        stage: &[],
+        schema_lock: Some(&snapshot),
+    })
+    .expect("valid artifacts");
+
+    let mut backend = LockObservingBackend::default();
+    backend.inner.catalog_checksum = Some(catalog.checksum());
+
+    embedded
+        .migrate(&mut backend)
+        .expect("the produced catalog matches the baked digest");
+
+    assert_eq!(
+        backend.lock_states_at_checksum,
+        vec![true],
+        "the final catalog read runs under the same run lock as the other steps"
+    );
+    assert!(
+        !backend.inner.locked,
+        "the run lock is released once the run returns"
+    );
 }

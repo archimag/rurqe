@@ -303,7 +303,11 @@ impl EmbeddedMigrations {
     ///   advanced by a partial tail.
     /// * A baked `schema.lock` snapshot anchors the digest the catalog the run
     ///   produced is compared against once every script has been applied; a
-    ///   divergence is reported as [`Error::SchemaHashMismatch`].
+    ///   divergence is reported as [`Error::SchemaHashMismatch`]. The digest is
+    ///   read under the same exclusive run lock as the other backend
+    ///   interactions of the lifecycle, so a concurrent lifecycle operation can
+    ///   neither drop nor advance the schema between the commit of the tail and
+    ///   the comparison.
     ///
     /// A collection built by [`new`](Self::new) or
     /// [`from_migrations`](Self::from_migrations) carries none of those artifacts,
@@ -412,6 +416,12 @@ impl EmbeddedMigrations {
 
     /// Compares the catalog the run produced against the baked digest.
     ///
+    /// The digest is read under the exclusive run lock, exactly like the other
+    /// backend interactions of the lifecycle, so a concurrent `clean` or
+    /// `migrate` cannot drop or advance the schema between the commit of the
+    /// tail and the comparison. A collection that bakes no digest returns
+    /// before the lock is taken.
+    ///
     /// A backend able to introspect itself reports the digest of the catalog it
     /// really holds; one that cannot reports nothing, which leaves the anchor
     /// unverified instead of rejecting a schema the backend never described.
@@ -419,7 +429,9 @@ impl EmbeddedMigrations {
         let Some(expected) = self.schema_hash else {
             return Ok(());
         };
-        let Some(actual) = backend.catalog_checksum()? else {
+
+        let mut guard = LockGuard::acquire(backend)?;
+        let Some(actual) = guard.catalog_checksum()? else {
             return Ok(());
         };
         if actual == expected {
