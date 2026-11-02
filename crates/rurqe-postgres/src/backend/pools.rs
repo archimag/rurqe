@@ -24,7 +24,10 @@
 //! with its transaction open: a block that is cancelled, that unwinds, or whose
 //! control statement the driver refuses destroys its own connection, so the pool
 //! opens a fresh one for the next caller instead of recycling a session that
-//! still holds an abandoned transaction.
+//! still holds an abandoned transaction. A block whose connection a refused
+//! savepoint rollback poisoned is never committed either: it is rolled back and
+//! reported as the poisoned-connection failure, and its checkout is destroyed
+//! the same way.
 //!
 //! Each pool is gated on the driver it pools, so the feature that enables a pool
 //! carries its driver and the module of that pool is compiled on the pair.
@@ -39,7 +42,9 @@ mod deadpool_impl {
     use rurqe_core::expr::SqlVal;
     use rurqe_core::query::{AsyncQueryBackend, BuiltQuery, IsolationLevel};
 
-    use crate::backend::async_conn::{execute_raw_async, fetch_raw_async, fetch_raw_limited_async};
+    use crate::backend::async_conn::{
+        close_block, execute_raw_async, fetch_raw_async, fetch_raw_limited_async,
+    };
     use crate::backend::async_scope::{execute_control, PgAsyncScope, ScopeFuture};
     use crate::backend::poison::{control_failure, PoisonCell};
     use crate::backend::types::PgError;
@@ -134,7 +139,10 @@ mod deadpool_impl {
         /// `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgError`]. A savepoint
         /// rollback the driver refuses inside the block is recorded on the poison
         /// record of the connection, which is the record the guard reads, so the
-        /// connection is destroyed instead of being returned to the pool.
+        /// connection is destroyed instead of being returned to the pool. The same
+        /// record gates the commit: a block that returns `Ok` while its record is
+        /// poisoned is rolled back and reported as [`PgError::ConnectionPoisoned`]
+        /// instead of being committed.
         ///
         /// # Abandoned blocks
         ///
@@ -211,6 +219,10 @@ mod deadpool_impl {
     /// * a `BEGIN`, `COMMIT`, or `ROLLBACK` the driver refused, and a block whose
     ///   savepoint could not be undone, destroy the connection, because the
     ///   session still holds work the adapter cannot roll back;
+    /// * a block whose closure returns `Ok` after a refused savepoint rollback
+    ///   poisoned the record is not committed: it is rolled back and the call
+    ///   reports the poisoned-connection failure instead of the value of the
+    ///   block, and the connection is destroyed like the other unclean endings;
     /// * a block that unwound, or whose future was dropped, never reaches the end
     ///   of this method at all, and the guard destroys the connection on the way
     ///   out.
@@ -248,17 +260,17 @@ mod deadpool_impl {
         }
 
         match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
-            Ok(value) => match execute_control(client, String::from("COMMIT")).await {
-                Ok(()) => {
-                    tracing::info!("committed transaction");
-                    checkout.recycle();
-                    Ok(value)
+            Ok(value) => {
+                let closed = close_block(client, &poison).await;
+                match closed {
+                    Ok(()) => {
+                        tracing::info!("committed transaction");
+                        checkout.recycle();
+                        Ok(value)
+                    }
+                    Err(failure) => Err(E::from(failure)),
                 }
-                Err(failure) => {
-                    poison.mark(control_failure("COMMIT", &failure));
-                    Err(E::from(failure))
-                }
-            },
+            }
             Err(error) => match execute_control(client, String::from("ROLLBACK")).await {
                 Ok(()) => {
                     tracing::warn!("rolled back transaction");

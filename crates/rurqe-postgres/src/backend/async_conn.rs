@@ -122,6 +122,53 @@ async fn rows_from_stream(
     }
     Ok(rows)
 }
+/// Closes the transaction block a closure-scoped form opened on `client`.
+///
+/// The record decides the ending. A clean record commits, and a `COMMIT` the
+/// driver refuses is recorded on it, so the connection refuses further work
+/// instead of running it inside a transaction whose state is unknown. A
+/// poisoned record must not commit at all: the statements the record sealed off
+/// are exactly the ones that could not be undone, so the block is rolled back
+/// and the call reports the poisoned connection instead of the value the
+/// closure returned. The rollback is best effort, because the connection is
+/// discarded either way, and a refusal it meets is recorded on the same record,
+/// whose first reason stays the one that explains the state.
+pub(crate) async fn close_block(
+    client: &tokio_postgres::Client,
+    poison: &PoisonCell,
+) -> Result<(), PgError> {
+    if !poison.is_poisoned() {
+        return match execute_control(client, String::from("COMMIT")).await {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                poison.mark(control_failure("COMMIT", &failure));
+                Err(failure)
+            }
+        };
+    }
+
+    let reason = poison
+        .poison_reason()
+        .unwrap_or_else(|| String::from("the connection recorded no reason"));
+    tracing::error!(
+        reason = %reason,
+        "the connection is poisoned, so the block is rolled back instead of committed"
+    );
+
+    match execute_control(client, String::from("ROLLBACK")).await {
+        Ok(()) => tracing::warn!("rolled back the block of a poisoned connection"),
+        Err(failure) => {
+            poison.mark(control_failure("ROLLBACK", &failure));
+            tracing::error!(
+                failure = %failure,
+                "rolling back the block of a poisoned connection failed; the connection \
+                 must be discarded"
+            );
+        }
+    }
+
+    Err(PgError::ConnectionPoisoned { reason })
+}
 
 /// A [`tokio_postgres::Client`] executing RURQE queries asynchronously.
 ///
@@ -310,6 +357,12 @@ impl PgAsyncConnection {
     /// block reaches the caller, so a connection whose savepoint could not be
     /// undone refuses further work as well.
     ///
+    /// The refusal reaches the commit as well: a block whose closure returns
+    /// `Ok` while the record is poisoned is not committed. The adapter rolls its
+    /// statements back and reports the poisoned-connection error instead of the
+    /// value the closure returned, so the statements whose undo failed are never
+    /// persisted.
+    ///
     /// The record is never cleared: a poisoned connection is discarded by its
     /// owner, and the abandoned transaction closes when the socket of the discarded
     /// connection closes, because closing it needs an awaited driver call that a
@@ -343,17 +396,17 @@ impl PgAsyncConnection {
         }
 
         match f(PgAsyncScope::new(client, Arc::clone(&poison))).await {
-            Ok(value) => match execute_control(client, String::from("COMMIT")).await {
-                Ok(()) => {
-                    guard.mark_completed();
-                    tracing::info!("committed transaction");
-                    Ok(value)
+            Ok(value) => {
+                let closed = close_block(client, &poison).await;
+                match closed {
+                    Ok(()) => {
+                        guard.mark_completed();
+                        tracing::info!("committed transaction");
+                        Ok(value)
+                    }
+                    Err(failure) => Err(E::from(failure)),
                 }
-                Err(failure) => {
-                    poison.mark(control_failure("COMMIT", &failure));
-                    Err(E::from(failure))
-                }
-            },
+            }
             Err(error) => {
                 match execute_control(client, String::from("ROLLBACK")).await {
                     Ok(()) => {

@@ -5,7 +5,7 @@ RURQE offers two transactional surfaces, and the difference between them is what
 - A **closure-scoped block** lends the transaction to a closure. The adapter opens the block, nests a block opened inside it through a SQL savepoint, awaits the commit of a block that returned `Ok`, awaits the rollback of a block that returned `Err`, and returns the connection on either ending. The synchronous connections and pools offer this form, and so do the asynchronous connection and pool.
 - A **transaction guard** lends the transaction itself to the caller. Opening one on the asynchronous connection hands back a handle that owns the transaction until its commit is awaited; the handle neither nests nor selects an isolation level, and dropping it without a commit asks the driver for a rollback the adapter cannot prove was delivered, so the connection is marked poisoned rather than reused.
 
-Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block and awaits the statement that ends it, while a guard is closed by its own `Drop`, which cannot await anything. A guard that ends without a terminal call therefore proves nothing and leaves its connection refusing further work.
+Every guarantee a block carries therefore follows from what closes it: the adapter closes a closure-scoped block and awaits the statement that ends it, while a guard is closed by its own `Drop`, which cannot await anything. A guard that ends without a terminal call therefore proves nothing and leaves its connection refusing further work. A connection a block cannot prove clean is never committed either: the adapter closes such a block with a rollback and reports the poisoned-connection error instead of the value the closure returned.
 
 ## Asynchronous Transaction Guards
 
@@ -70,7 +70,7 @@ The asynchronous closure form nests the same way, one awaited statement at a tim
 {{#rustdoc_include ../examples/pool_transactions.rs:nesting}}
 ```
 
-A rollback the driver refuses is traced instead of replacing the error of the block, and the connection is poisoned from that point on: further statements and further savepoints are refused with the poisoned-connection error, so the connection has to be discarded rather than reused, because the statements of the nested block stay pending inside the enclosing transaction.
+A rollback the driver refuses is traced instead of replacing the error of the block, and the connection is poisoned from that point on: further statements and further savepoints are refused with the poisoned-connection error, so the connection has to be discarded rather than reused, because the statements of the nested block stay pending inside the enclosing transaction. The enclosing block then refuses to commit as well: a closure that swallows the nested error and returns `Ok` is rolled back and the call reports the poisoned-connection error instead of the value the closure returned, so the statements whose undo failed are never persisted.
 
 ## Transaction Isolation Levels
 
@@ -108,6 +108,7 @@ A pool executes a single statement by checking a connection out, running it in a
 - A block that returns `Err` has its statements rolled back before that error reaches the caller.
 - A checkout failure surfaces as `PgError::Pool`, while a failure raised by `BEGIN`, by the block, or by `COMMIT` surfaces as `PgError`.
 - A `ROLLBACK` the driver refuses supersedes the error of the block and surfaces as the poisoned-connection error `PgError::ConnectionPoisoned`, because the transaction state is unknown from that point on.
+- A block whose connection is poisoned before its commit is not committed: the adapter rolls its statements back and reports `PgError::ConnectionPoisoned`, and the poisoned checkout is destroyed rather than returned to the pool.
 - A checkout whose block reached its end returns to the pool, whether the block committed or was rolled back, so several transactions of a shared pool run concurrently, each on its own connection.
 
 A block that is cancelled or unwound never reaches the end of the call, so neither `COMMIT` nor `ROLLBACK` is awaited for it, and a `BEGIN`, `COMMIT`, or `ROLLBACK` the driver refuses leaves the transaction state unknown. Either ending destroys the checkout instead of returning it to the pool, so the connection never reaches another caller: dropping it closes its session, the server rolls the abandoned transaction back when that session ends, and the work of the abandoned block is discarded. The pool replaces the destroyed connection, so the next caller starts on a fresh session; a block that has to survive an abandoned future belongs in a task that finishes or reports its own cancellation.

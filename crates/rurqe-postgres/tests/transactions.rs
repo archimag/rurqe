@@ -669,6 +669,71 @@ mod async_pool {
             "the abandoned checkout was destroyed, so the pool serves a fresh connection"
         );
     }
+
+    /// A block whose connection a refused savepoint rollback poisoned is not
+    /// committed: the closure swallows the nested error and reports success, so
+    /// the poisoned record is the only guard left before the commit.
+    #[tokio::test]
+    async fn a_poisoned_block_refuses_its_commit() {
+        let Some(url) = support::database_url("PgAsyncPool::transaction poisoned commit") else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_async_poisoned").await;
+
+        let outcome: Result<(), PgError> = pool
+            .transaction(|mut scope| {
+                Box::pin(async move {
+                    support::execute(
+                        &scope,
+                        "INSERT INTO rurqe_tx_async_poisoned (id, amount) VALUES (1, 100)",
+                    )
+                    .await?;
+
+                    let nested: Result<(), PgError> = scope
+                        .transaction(|nested| {
+                            Box::pin(async move {
+                                // The statement ends the session, so the
+                                // `ROLLBACK TO SAVEPOINT` the adapter awaits for
+                                // the nested block reaches a connection that no
+                                // longer exists.
+                                let _ = support::execute(
+                                    &nested,
+                                    "SELECT pg_terminate_backend(pg_backend_pid())",
+                                )
+                                .await;
+                                Err(support::deliberate_failure())
+                            })
+                        })
+                        .await;
+                    assert!(
+                        nested.is_err(),
+                        "the nested block reports the failure it returned"
+                    );
+
+                    // The enclosing block swallows the nested failure and
+                    // reports success, which is the ending the commit has to
+                    // refuse on its own.
+                    Ok::<(), PgError>(())
+                })
+            })
+            .await;
+
+        match &outcome {
+            Err(PgError::ConnectionPoisoned { reason }) => assert!(
+                reason.contains("ROLLBACK TO SAVEPOINT"),
+                "the reason names the savepoint rollback that failed: {reason}"
+            ),
+            other => panic!("the poisoned block refuses its commit: {other:?}"),
+        }
+
+        // The destroyed checkout left the uncommitted insert behind, and the pool
+        // serves a fresh connection for the next block.
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_poisoned").await,
+            (0, 0)
+        );
+    }
 }
 
 #[cfg(feature = "tokio-postgres")]
@@ -1034,6 +1099,59 @@ mod async_connection {
         assert!(
             matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
             "the poisoned connection refuses further statements: {refused:?}"
+        );
+    }
+
+    /// A savepoint rollback the driver refuses poisons the connection, and the
+    /// enclosing block must not commit over it: the closure swallows the nested
+    /// error and returns `Ok`, so the record is the only guard left.
+    #[tokio::test]
+    async fn a_poisoned_block_refuses_its_commit() {
+        let Some(url) = support::database_url("PgAsyncConnection poisoned commit") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        let outcome: Result<(), PgError> = connection
+            .transaction_with_isolation(IsolationLevel::ReadCommitted, |mut scope| {
+                Box::pin(async move {
+                    let nested: Result<(), PgError> = scope
+                        .transaction(|nested| {
+                            Box::pin(async move {
+                                // The statement ends the session, so the
+                                // `ROLLBACK TO SAVEPOINT` the adapter awaits for
+                                // the nested block reaches a connection that no
+                                // longer exists.
+                                let _ = support::execute(
+                                    &nested,
+                                    "SELECT pg_terminate_backend(pg_backend_pid())",
+                                )
+                                .await;
+                                Err(support::deliberate_failure())
+                            })
+                        })
+                        .await;
+                    assert!(
+                        nested.is_err(),
+                        "the nested block reports the failure it returned"
+                    );
+
+                    Ok::<(), PgError>(())
+                })
+            })
+            .await;
+
+        match &outcome {
+            Err(PgError::ConnectionPoisoned { reason }) => assert!(
+                reason.contains("ROLLBACK TO SAVEPOINT"),
+                "the reason names the savepoint rollback that failed: {reason}"
+            ),
+            other => panic!("the poisoned block refuses its commit: {other:?}"),
+        }
+
+        assert!(
+            connection.is_poisoned(),
+            "the connection stays poisoned after the refused commit"
         );
     }
 }
