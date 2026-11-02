@@ -973,8 +973,13 @@ The following capabilities represent valuable, high-utility SQL features that re
 12. **Materialized Views Lifecycle & Read-Only Querying:**
     - Live catalog introspection of PostgreSQL materialized views (`pg_matviews`, `pg_class.relkind = 'm'`) into `schema.lock` (`MaterializedViewDef`).
     - Toolchain and migration lifecycle commands (`REFRESH MATERIALIZED VIEW [CONCURRENTLY]`).
-    - Codegen integration as read-only relations (`Table` marker enabling typed `select_from`, while statically forbidding DML mutation builders `insert_into`, `update`, and `delete_from` via compile-time trait bounds).---
+    - Codegen integration as read-only relations (`Table` marker enabling typed `select_from`, while statically forbidding DML mutation builders `insert_into`, `update`, and `delete_from` via compile-time trait bounds).
+13. **Tier-1 Static Scope Resolution for Correlated Subqueries (`ExternalScope` / `ResolveScope`):**
+    - A correlated subquery reads a column of the statement that embeds it. That reference is currently written as an explicitly unscoped expression: it names no relation of its own, so the builder cannot distinguish a legitimate correlation from a column whose table the enclosing statement never introduced.
+    - The item moves the correlation into the type system. `ExternalScope` records the relations an expression borrows from its enclosing statement, `ResolveScope` discharges that obligation against the enclosing statement's `TableScope` at the moment the subquery is embedded, and `ExecutableQuery` refuses to build a statement whose external obligations stay unresolved.
+    - The result is the Tier 1 half of the guarantee for correlated subqueries: a reference to a relation the enclosing statement does not introduce is rejected at the embedding call site by the compiler, while the escape hatch stays available for the exotic correlations the typed API does not model.
 
+---
 ## Architectural Exclusions & Anti-Patterns [Won't Do / YAGNI]
 
 The following constructs contradict RURQE's foundational principles (**Native-or-Nothing**, **Compile-Time Soundness**, **KISS/YAGNI**) and will **not** be implemented:
