@@ -1,12 +1,10 @@
 # Comparing PostgreSQL and SQLite
 
-RURQE targets two engines with a single builder: PostgreSQL as a client-server database and SQLite as an embedded one. The dialect is a compile-time parameter of a statement — it decides how identifiers and parameters are spelled and which clauses the pinned engine release can parse — and nothing about it survives into execution. The same chain therefore composes against either engine, and only the terminal call names the destination.
+RURQE targets two engines with a single builder: PostgreSQL as a client-server database and SQLite as an embedded one. The dialect is a compile-time parameter of a statement — it decides how identifiers and parameters are spelled and which clauses the pinned release of the engine can parse — and nothing about it survives into execution. The same chain therefore composes against either engine, and only the terminal call names the destination.
 
-This chapter compares the two engines where they genuinely diverge: the deployment model each one assumes, the text a statement renders to, the expressions only one of them implements, and the release thresholds that gate a clause inside SQLite.
+This chapter compares the two engines where a choice between them is made: the deployment model each assumes, the way each serialises concurrent work, what a transaction promises, what the two type systems can declare, and which expressions only one of them defines. A clause the pinned release does not provide has no builder method on that dialect, so an unsupported statement is rejected by the compiler instead of by the engine.
 
-## Two Deployment Models
-
-The deployment model decides what the engine guarantees about concurrency, runtime, and lifecycle, never how a query is typed.
+## Deployment Model
 
 - **Concurrency.** PostgreSQL isolates concurrent writers per row: a transaction claims only the rows it modifies, so other transactions keep writing the rest of the table. SQLite serialises writers through the database file: a write takes the whole file, and no statement claims an individual row.
 - **Runtime.** PostgreSQL ships a blocking adapter and an asynchronous one, so one statement executes on a worker thread or on an asynchronous executor. SQLite ships a blocking adapter only, because an embedded statement completes inside the calling process.
@@ -18,11 +16,49 @@ An in-memory database is what a test suite or a local deployment opens:
 {{#rustdoc_include ../../examples/sync_execution.rs:open_in_memory}}
 ```
 
-## How a Statement Is Rendered
+## Concurrency and Locking
 
-Both dialects quote an identifier with double quotes and double every embedded quote, so a reserved word or a mixed-case name needs no attention from the caller. The bind parameter is where the two part: PostgreSQL numbers its parameters (`$1`, `$2`, …), while SQLite writes an anonymous `?` for each one. The parameter list is ordered either way, so the difference stays inside the statement text.
+PostgreSQL runs readers and writers at the same time: a reader works on a consistent snapshot without blocking a writer, and two writers do not block each other unless they modify the same row. Inside a transaction a statement may claim the rows it selects, and the claim lasts until the transaction ends:
 
-The same chain composes under both preludes:
+- `for_update()` renders `FOR UPDATE`, which keeps other transactions from modifying the selected rows, while `for_share()` renders `FOR SHARE`, which lets them read the rows and share the lock.
+- `nowait()` and `skip_locked()` decide what happens when another transaction already holds a conflicting claim: the statement either fails immediately or passes over the rows it cannot claim.
+
+That is how one query hands a row of a queue to exactly one consumer.
+
+SQLite writes one transaction at a time: a write claims the database file with `BEGIN IMMEDIATE`, and the claim is released when the transaction ends. There is no per-row claim, so the locking methods have no builder equivalent on that dialect.
+
+Beyond rows, a PostgreSQL session coordinates with other sessions through advisory locks: such a lock belongs to the session that took it rather than to a row or a table, and the migration runner holds one for the length of a run so two runners cannot interleave. SQLite has no such facility; the open write transaction is what holds a run's place, so the migration runner keeps that transaction open for the whole run instead.
+
+## Transactions
+
+Both adapters expose one block shape: `conn.transaction(|tx| …)` on the blocking adapter and `conn.transaction().await?` on the asynchronous one. The block commits when it returns `Ok` and rolls back when it returns an error or unwinds, so a failed block leaves no partial work behind. A block opened inside another one is carried by a savepoint rather than by a second transaction, so an inner failure rolls back only its own statements.
+
+Isolation is a property of the server: `transaction_with_isolation` opens a PostgreSQL block at `ReadCommitted`, `RepeatableRead`, or `Serializable`. A SQLite block takes no level, because the engine serialises access through database-level locking and a level would have no `BEGIN` clause to map onto.
+
+Some statements refuse a transaction block at all: `VACUUM` and a `PRAGMA` that rewrites the database file are the ones a SQLite migration meets, and a concurrent index build is the one a PostgreSQL migration meets. A migration script that declares itself non-transactional is executed in autocommit, and the run records the attempt before the script starts, so an interrupted script stays visible instead of unrecorded.
+
+## Data Types
+
+Both introspectors describe a catalog in the same vocabulary: boolean, integer, floating-point, numeric, text, bytes, UUID, JSON, timestamp, date, enum, and array kinds. A generated schema module therefore has the same shape on either engine, and the Rust type of a column marker follows from the kind the catalog reports.
+
+What differs is what an engine can declare, and the difference survives into the generated module:
+
+- PostgreSQL carries a native type for a UUID, a native document type (`json` and `jsonb`), an array type (`T[]`), and an enum created with `CREATE TYPE … AS ENUM`. Each of them is a column type the server validates.
+- SQLite has storage classes and type affinity. The introspector maps a declared type onto the shared kinds, recovers an enum from a `CHECK (col IN (...))` constraint, and reads a document as JSON text rather than as a type of its own. The engine has no array column type, so a catalog it produces describes no array column.
+
+A document operation follows the same split: `@>`, `?`, `->`, and `->>` are operators of the PostgreSQL document type, while SQLite evaluates a document through its JSON functions, which is also how a nested collection is assembled there.
+
+## Engine Extensions
+
+The PostgreSQL adapter carries the expressions only that engine defines: the regular-expression predicates (`~`, `~*`, `!~`, `!~*`), the document operators, the array containment and overlap operators, and full-text search. They are not portable sugar over a shared surface — each of them renders an operator the engine itself implements, and a pattern or a document binds as an ordinary parameter.
+
+SQLite defines none of them, and its adapter adds no equivalent expression surface of its own. Its differences from PostgreSQL are rendering-level: a case-insensitive predicate folds both operands through `LOWER`, and a nested collection is aggregated from the JSON functions.
+
+A statement outside the modelled surface is issued as raw SQL — through `sql!` or `raw_sql!`, or through the driver handle — and behaves exactly as the engine defines it.
+
+## Statement Rendering
+
+Both dialects quote an identifier with double quotes and double every embedded quote, so a reserved word or a mixed-case name needs no attention from the caller. The bind parameter is where the two part: PostgreSQL numbers its parameters (`$1`, `$2`, …), while SQLite writes an anonymous `?` for each one. The parameter list is ordered either way, so the difference stays inside the statement text — and a nested statement continues the list of the statement that projects it, so a filter written inside a nested collection stays independent of one written outside it.
 
 ```rust,no_run
 {{#rustdoc_include ../../examples/dialects.rs:postgres}}
@@ -49,137 +85,12 @@ The remaining rendering rules follow the same split:
 | Case-insensitive matching | `ILIKE` | `LIKE` over `LOWER`-folded operands |
 | Nested collection document | `jsonb_agg(to_jsonb(...))` | `json_group_array(json_object(...))` |
 
-## Capability Matrix
+Both chains above assemble one statement over the same clauses, and the dialect shows in the text alone: the entry point comes from the module that binds the engine, and every builder call after it is identical.
 
-Every clause is either implemented by a dialect or absent from it, and inside SQLite a clause is further gated by the pinned release. A clause absent from the target has no builder method there at all, so the statement is rejected by the compiler instead of by the engine.
+## Choosing an Engine
 
-| Clause or feature | PostgreSQL | SQLite |
-|---|---|---|
-| `RETURNING` | Supported | From 3.35 (`sqlite3_35`) |
-| `ON CONFLICT` (`DO NOTHING`, `DO UPDATE`) | Supported | From 3.24 (`sqlite3_24`) |
-| Aliased INSERT target (`INSERT INTO ... AS ...`) | Supported | Unavailable |
-| `UPDATE ... FROM` | Supported | From 3.35 (`sqlite3_35`) |
-| `DELETE ... USING` | Supported | Unavailable |
-| `DISTINCT ON` | Supported | Unavailable |
-| `LATERAL` joins | Supported | Unavailable |
-| `FULL OUTER JOIN` | Supported | Unavailable |
-| Row locking (`FOR UPDATE`, `FOR SHARE`, `NOWAIT`, `SKIP LOCKED`) | Supported | Unavailable |
-| Window functions (`OVER (...)`) | Supported | From 3.25 (`sqlite3_25`) |
-| Aggregate `FILTER (WHERE ...)` | Supported | From 3.30 (`sqlite3_30`) |
-| `NULLS FIRST` / `NULLS LAST` | Supported | From 3.30 (`sqlite3_30`) |
-| `GREATEST` / `LEAST` | Supported | Unavailable |
-| `IS DISTINCT FROM` / `IS NOT DISTINCT FROM` | Supported | Unavailable |
-| Nested collections (`nest_many`, `nest_one`) | Supported | From 3.38 (`sqlite3_38`) |
-| JSON document operators (`@>`, `?`, `->`, `->>`) | Supported | Unavailable |
-| Array columns (`T[]`, `@>`, `<@`, `&&`, `ANY`, `ALL`) | Supported | Unavailable |
-| Regular expressions (`~`, `~*`, `!~`, `!~*`) | Supported | Unavailable |
-| Full-text search (`@@`, `to_tsvector`, `to_tsquery`) | Supported | Unavailable |
+Choose PostgreSQL when the deployment needs several processes writing at once, a claim on individual rows for a queue, an explicit isolation level, a native document or array column, or a predicate the server evaluates itself — a regular expression or a full-text query. The server is a deployment target of its own: it is provisioned, backed up, and reached over a connection or a pool.
 
-## Release Markers Decide the Reachable Clause Set
+Choose SQLite when one process owns the data: a command-line tool, a background worker, an embedded application, or a test suite that opens an in-memory database per case. The database is a file or a private in-memory image, the deployment ships no server, and the engine serialises writers through that file.
 
-Both engines expose their releases as modules, and every module carries the same entry points with the dialect pinned to that release. Pinning decides which clauses a chain can name, never how the named clauses render.
-
-```rust,no_run
-{{#rustdoc_include ../../examples/dialects.rs:pg_versions}}
-```
-
-Both pinned releases render the statement written above, because every clause it names belongs to the oldest pinned release as well.
-
-SQLite gained its clauses across releases, so the pinned release — never the connected database — decides which of them exist. The baseline module reaches the statement surface every release shares:
-
-```rust,no_run
-{{#rustdoc_include ../../examples/dialects.rs:version}}
-```
-
-```sql
-SELECT "id" AS "user_id" FROM "users" WHERE ("id" = ?)
-```
-
-A clause introduced after the pinned release has no builder method at that module, so the statement is rejected by the compiler instead of by the engine:
-
-```rust,compile_fail
-use rurqe::sqlite::sqlite3_24::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-// Rejected at compile time: RETURNING requires SQLite 3.35+.
-let _ = delete_from(User).allow_all().returning(cols!(UserId));
-```
-
-## Text Matching
-
-A case-insensitive predicate is written once and keeps its meaning on both engines: PostgreSQL renders `ILIKE`, and SQLite, which has no such keyword, folds both operands with `LOWER`. The fold covers ASCII letters and keeps the comparison independent of the database collation.
-
-PostgreSQL additionally matches a POSIX regular expression, and the pattern binds as one text parameter:
-
-```rust,no_run
-{{#rustdoc_include ../../examples/dialects.rs:regex}}
-```
-
-```sql
-SELECT "id" AS "profile_id" FROM "profiles" WHERE ("bio" ~ $1)
-```
-
-The negated forms render `!~` and `!~*`. A full-text predicate converts the text column into the document it is searched as, because PostgreSQL defines `@@` only between a `tsvector` and a `tsquery`: the predicate renders `(to_tsvector("bio") @@ to_tsquery($1))`, with the query bound as one parameter. SQLite implements neither operator, so the methods are absent from that dialect.
-
-## JSON Documents and Array Columns
-
-PostgreSQL models a document and an array as native column types with operators of their own. SQLite stores a document as JSON text and has no array type at all.
-
-A JSON or JSONB column filters and projects through the native operators, so a document never leaves the typed builder:
-
-```rust,no_run
-{{#rustdoc_include ../../examples/dialects.rs:jsonb}}
-```
-
-```sql
-SELECT "id" AS "profile_id", ("metadata" ->> $1) AS "owner" FROM "profiles" WHERE ("metadata" ? $2)
-```
-
-An array column compares through containment and overlap, and the element type follows the column:
-
-```rust,no_run
-{{#rustdoc_include ../../examples/dialects.rs:arrays}}
-```
-
-```sql
-SELECT "id" AS "profile_id" FROM "profiles" WHERE ("tags" @> $1)
-```
-
-SQLite evaluates a JSON document with its own JSON functions, which is how a nested collection is assembled on that engine, but it offers neither containment nor extraction as builder methods, and a column holding several values has no typed representation.
-
-## Row Locking
-
-Inside a transaction, a PostgreSQL statement claims the rows it selects and holds them until the transaction ends. The wait modifier decides what happens when another transaction already holds a conflicting lock:
-
-```rust,no_run
-{{#rustdoc_include ../../examples/dialects.rs:for_update}}
-```
-
-```sql
-SELECT "id" AS "user_id" FROM "users" WHERE ("id" = $1) FOR UPDATE SKIP LOCKED
-```
-
-`for_share` takes the weaker claim, which lets other transactions keep reading the rows, while `.nowait()` and `.skip_locked()` decide whether a statement waits for a lock another transaction holds.
-
-SQLite locks the database file for the duration of a write instead of claiming individual rows, so it has no per-row equivalent and the locking methods do not exist on that dialect:
-
-```rust,compile_fail
-use rurqe::sqlite::prelude::*;
-
-table!(
-    Job => "jobs" {
-        JobId => "id": i64,
-    }
-);
-
-// Rejected at compile time: SQLite has no per-row locking, so the clause has
-// no builder method.
-let _ = select_from(Job)
-    .select(cols!(JobId))
-    .for_update();
-```
+The choice does not shape the code base. A statement is pinned to one dialect at the entry point that builds it, and a second engine is reached by composing the same chain under another module; a clause the target does not implement is rejected while the statement is built — by the compiler where the dialect lacks the capability, and by `.build()` where the rule needs the assembled statement to be checked.
