@@ -397,6 +397,30 @@ fn override_path_segments_must_be_non_empty() {
 }
 
 #[test]
+fn an_empty_quoted_key_contributes_an_empty_segment() {
+    // The quoted empty key is a key of its own, so it may not disappear from the
+    // path the entries beneath it spell: otherwise the nested spelling would
+    // address `users.id` and slip past the rules the other spellings obey.
+    for contents in [
+        "[codegen.type_overrides.\"\"]\nusers.id = \"uuid::Uuid\"\n",
+        "[codegen.type_overrides]\n\"\" = { users.id = \"uuid::Uuid\" }\n",
+        "[codegen.type_overrides.users]\n\"\" = \"uuid::Uuid\"\n",
+    ] {
+        let err = CodegenConfig::parse(contents)
+            .expect_err("an empty key names an empty path segment");
+
+        assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
+
+        let message = err.to_string();
+        assert!(message.contains("empty"), "{message}");
+        assert!(
+            message.contains("type_overrides"),
+            "the table the key sits in is named: {message}"
+        );
+    }
+}
+
+#[test]
 fn nested_three_segment_entries_are_reported_at_their_own_line() {
     let err = CodegenConfig::parse(
         "# `auth.users.id` is generated from the database\n\

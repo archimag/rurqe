@@ -213,7 +213,7 @@ impl CodegenConfig {
                         )
                     })?;
                     let section = format!("{CODEGEN_SECTION}.{TYPE_OVERRIDES_KEY}");
-                    self.read_overrides(contents, overrides, &section, "", span, declarations)?;
+                    self.read_overrides(contents, overrides, &section, None, span, declarations)?;
                 }
                 OUTPUT_KEY => {
                     self.codegen_output = Some(read_required_path(
@@ -306,6 +306,12 @@ impl CodegenConfig {
     /// forms flatten onto the same `auth.users.id` entry and the collision between
     /// two of them is detected instead of one silently overwriting the other.
     ///
+    /// `prefix` is `None` only before the first table segment, so the base of the
+    /// recursion is told apart from a key that is itself empty. The empty string is
+    /// never used as a stand-in for "no prefix yet": a quoted empty key names an
+    /// empty segment, and the entry is refused here instead of being flattened onto
+    /// the path its children spell.
+    ///
     /// The schema a three-segment path names is validated once the whole
     /// document has been read, by [`validate_override_schemas`], because the
     /// `schemas` key may follow the table that declares the override.
@@ -314,23 +320,41 @@ impl CodegenConfig {
         contents: &str,
         table: &dyn TableLike,
         section: &str,
-        prefix: &str,
+        prefix: Option<&str>,
         enclosing: Option<Range<usize>>,
         declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
         for (key, item) in table.iter() {
             let span = key_span(table, key).or_else(|| enclosing.clone());
-            let path = if prefix.is_empty() {
-                key.to_owned()
-            } else {
-                format!("{prefix}.{key}")
+
+            if key.is_empty() {
+                return Err(syntax_error(
+                    contents,
+                    span,
+                    format!(
+                        "an empty key in `{section}` names no path segment; every segment of a \
+                         `table.column` or `schema.table.column` path must be non-empty"
+                    ),
+                ));
+            }
+
+            let path = match prefix {
+                Some(prefix) => format!("{prefix}.{key}"),
+                None => key.to_owned(),
             };
 
             if let Some(rust_type) = item.as_str() {
                 let path = require_override_path(contents, span.clone(), &path)?;
                 self.insert_override(contents, span, path, rust_type, declarations)?;
             } else if let Some(nested) = item.as_table_like() {
-                self.read_overrides(contents, nested, section, &path, span, declarations)?;
+                self.read_overrides(
+                    contents,
+                    nested,
+                    section,
+                    Some(path.as_str()),
+                    span,
+                    declarations,
+                )?;
             } else {
                 return Err(syntax_error(
                     contents,
