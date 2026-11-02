@@ -4,7 +4,7 @@
 
 ## Key Features
 
-- **Zero-Boilerplate Ergonomics:** Fluent query syntax and ad-hoc named record projections via `select!` with no generic turbofish noise.
+- **Zero-Boilerplate Ergonomics:** Fluent query syntax and ad-hoc named record projections via `select!` and `cols!` with no generic turbofish noise.
 - **Two-Tier SQL Correctness:** Strict compile-time relational scope and capability enforcement (Tier 1) combined with deterministic pre-flight AST validation in `.build()` (Tier 2).
 - **Automatic Sound Nullability:** Columns participating in outer joins automatically lift to `Option<T>` at compile time.
 - **Database-First Single Source of Truth:** Schema metadata is introspected directly from live database catalogs (`PostgreSQL`, `SQLite`), generating typed schema markers and canonical `schema.lock` snapshots.
@@ -16,17 +16,18 @@
 ```rust
 use rurqe::postgres::prelude::*;
 
-// Assuming generated schema markers Users, Orders
-let active_users = select! {
-    user_id: Users::Id,
-    user_name: Users::Name,
-    order_total: Orders::Total, // Automatically Option<f64> via LEFT JOIN
+// Relational query with LEFT JOIN and automatic compile-time nullability lifting
+let active_users = select_from(User)
+    .left_join(Order, OrderUserId.eq(UserId))
+    .select(cols!(UserId, UserName, OrderTotal))
+    .where_(UserActive.eq(true))
+    .fetch_all(&pool)
+    .await?;
+
+for user in active_users {
+    // `user.order_total` is automatically inferred as `Option<f64>` due to LEFT JOIN
+    println!("{}: spent {:?}", user.user_name, user.order_total);
 }
-.from(Users)
-.left_join(Orders, Orders::UserId.eq(Users::Id))
-.where_(Users::IsActive.eq(true))
-.fetch_all(&pool)
-.await?;
 ```
 
 ## Development & Tooling
