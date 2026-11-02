@@ -94,6 +94,11 @@ struct ColumnLock {
     /// Whether the column accepts `NULL`.
     nullable: bool,
     /// The SQL default expression, when the column declares one.
+    ///
+    /// The key is absent for a column without a default, because TOML has no
+    /// representation for a missing value: the field is skipped instead of
+    /// being rendered as null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     default: Option<String>,
 }
 
@@ -216,10 +221,18 @@ struct IndexLock {
     /// Whether the index is declared `UNIQUE`.
     unique: bool,
     /// The access method (e.g. `btree`), if specified.
+    /// The access method (e.g. `btree`), if specified.
+    ///
+    /// The three optional keys are skipped when absent rather than rendered as
+    /// null, which TOML cannot represent; the reader treats an absent key and
+    /// an explicitly missing attribute alike.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     method: Option<String>,
     /// The partial index predicate, if specified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     predicate: Option<String>,
     /// The expression of an expression-based index, if specified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     expression: Option<String>,
 }
 
@@ -1307,6 +1320,37 @@ definition = "EXECUTE FUNCTION touch()"
             lock.lines()
                 .all(|line| !line.trim_start().starts_with("schema =")),
             "a primary-schema snapshot carries no schema key: {lock}"
+        );
+    }
+    #[test]
+    fn rendering_succeeds_when_the_optional_attributes_are_absent() {
+        // `ColumnDef::new` and `IndexDef::new` leave every optional attribute
+        // unset, so this is the shape of virtually every real catalog: the
+        // writer has to skip the absent keys instead of rejecting the `None`
+        // value, which TOML cannot encode.
+        let catalog = SchemaCatalog::new(vec![TableDef::new(
+            "users",
+            vec![ColumnDef::new("id", TypeKind::Int64, false)],
+            vec!["id".to_owned()],
+        )
+        .with_index(IndexDef::new(
+            "idx_users_id",
+            vec!["id".to_owned()],
+            false,
+        ))]);
+
+        let lock = render_lock_toml(&catalog);
+
+        assert!(lock.starts_with("version = 5"), "got: {lock}");
+        assert!(!lock.contains("rendering failed"), "got: {lock}");
+        assert!(
+            lock.lines()
+                .all(|line| !line.trim_start().starts_with("default =")),
+            "a column without a default carries no default key: {lock}"
+        );
+        assert_eq!(
+            SchemaCatalog::from_lock(&lock).expect("the rendering reparses"),
+            catalog
         );
     }
 }
