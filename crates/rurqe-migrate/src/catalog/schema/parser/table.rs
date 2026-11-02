@@ -20,7 +20,7 @@ pub(super) fn parse_table(
     defaults: Defaults,
 ) -> Result<(TableDef, usize), Error> {
     let header = lines.get(start).copied().unwrap_or_default();
-    let mut table = TableBuilder::new(parse_table_header(header.trim_start())?);
+    let mut table = TableBuilder::new(parse_table_header(header)?);
 
     // Buffer of raw lines belonging to the body item being parsed. A column
     // default may span multiple lines, so items are collected until the next item
@@ -29,13 +29,19 @@ pub(super) fn parse_table(
     let body = lines.get(start + 1..).unwrap_or_default();
 
     for (offset, line) in body.iter().enumerate() {
-        let trimmed = line.trim_start();
+        // The decision is taken on the fully trimmed line: a trailing space after
+        // the closing brace must not hide it, and the indentation of an item must
+        // not keep it from being recognized.
+        let trimmed = line.trim();
 
         if trimmed.is_empty() {
-            if item_lines.is_empty() {
-                return Err(lock_error("unexpected blank line inside a table block"));
+            // Outside an item a blank line is layout, exactly as it is between the
+            // sections of the surrounding snapshot. Inside an item it is content —
+            // a verbatim default may span several lines — so it stays in the
+            // buffer and is dropped together with the item's trailing whitespace.
+            if !item_lines.is_empty() {
+                item_lines.push((*line).to_owned());
             }
-            item_lines.push((*line).to_owned());
             continue;
         }
 
@@ -49,7 +55,7 @@ pub(super) fn parse_table(
 
         if is_close || is_item {
             if !item_lines.is_empty() {
-                apply_table_item(&mut table, &item_lines.join("\n"), defaults)?;
+                apply_table_item(&mut table, &buffered_item(&item_lines), defaults)?;
                 item_lines.clear();
             }
             if is_close {
@@ -65,6 +71,18 @@ pub(super) fn parse_table(
     }
 
     Err(lock_error("unterminated table block: missing `}`"))
+}
+
+/// Joins the buffered lines of one table-body item, dropping the layout
+/// whitespace that trails it.
+///
+/// The trailing whitespace of the last buffered line, and every blank line
+/// buffered after it, belong to the layout of the block rather than to the item.
+/// Dropping them keeps the verbatim default of a v1 snapshot from silently
+/// gaining a newline, and lets the nullability marker and the trailing-text
+/// checks of the item parsers see the definition exactly as it was written.
+fn buffered_item(item_lines: &[String]) -> String {
+    item_lines.join("\n").trim_end().to_owned()
 }
 
 /// Builds a [`TableDef`] while a `table` block is being parsed.
@@ -142,15 +160,19 @@ fn apply_table_item(table: &mut TableBuilder, item: &str, defaults: Defaults) ->
 }
 
 /// Parses a `table "<name>" {` header and returns the table name.
+///
+/// The line is trimmed on both ends, so the indentation of the header and the
+/// trailing whitespace after the opening brace are layout rather than content.
 fn parse_table_header(line: &str) -> Result<String, Error> {
     let rest = line
+        .trim()
         .strip_prefix("table ")
         .ok_or_else(|| lock_error("expected `table` keyword"))?;
     let (name, rest) = parse_quoted_prefix(rest)?;
     let rest = rest
         .strip_prefix(" {")
         .ok_or_else(|| lock_error("expected `{` after the table name"))?;
-    if !rest.is_empty() {
+    if !rest.trim().is_empty() {
         return Err(lock_error("unexpected text after the table header"));
     }
     Ok(name)

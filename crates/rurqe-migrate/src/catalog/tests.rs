@@ -285,6 +285,79 @@ fn a_v1_snapshot_is_still_read_with_verbatim_defaults() {
 }
 
 #[test]
+fn a_v1_default_does_not_absorb_the_blank_line_before_the_brace() {
+    let lock = concat!(
+        "schema lock v1\n",
+        "\n",
+        "table \"events\" {\n",
+        "  column \"payload\": text null default line one\n",
+        "\n",
+        "}\n",
+    );
+
+    let catalog = SchemaCatalog::from_lock(lock).unwrap();
+
+    assert_eq!(
+        catalog.tables[0].columns[0].default.as_deref(),
+        Some("line one")
+    );
+}
+
+#[test]
+fn a_v1_default_keeps_the_blank_line_inside_it() {
+    let lock = concat!(
+        "schema lock v1\n",
+        "\n",
+        "table \"events\" {\n",
+        "  column \"payload\": text null default line one\n",
+        "\n",
+        "line two\n",
+        "}\n",
+    );
+
+    let catalog = SchemaCatalog::from_lock(lock).unwrap();
+
+    assert_eq!(
+        catalog.tables[0].columns[0].default.as_deref(),
+        Some("line one\n\nline two")
+    );
+}
+
+#[test]
+fn blank_lines_and_trailing_whitespace_are_layout_inside_a_table_block() {
+    let lock = concat!(
+        "schema lock v1\n",
+        "\n",
+        "table \"orders\" {   \n",
+        "\n",
+        "  column \"id\": int64 not null   \n",
+        "\n",
+        "  column \"user_id\": int64 not null\n",
+        "\n",
+        "  primary key (\"id\")\n",
+        "\n",
+        "  foreign key \"orders_user_id_fkey\" (\"user_id\") references \"users\" (\"id\")\n",
+        "\n",
+        "  unique index \"orders_user_id_idx\" (\"user_id\")   \n",
+        "\n",
+        "}   \n",
+    );
+
+    let catalog = SchemaCatalog::from_lock(lock).unwrap();
+    let table = &catalog.tables[0];
+
+    assert_eq!(table.columns.len(), 2);
+    assert_eq!(table.columns[0].name, "id");
+    assert!(!table.columns[0].nullable);
+    assert_eq!(table.columns[1].name, "user_id");
+    assert_eq!(table.primary_key, vec!["id".to_owned()]);
+    assert_eq!(table.foreign_keys[0].columns, vec!["user_id".to_owned()]);
+    assert_eq!(table.foreign_keys[0].referenced_table, "users");
+    assert!(table.indexes[0].unique);
+    assert_eq!(table.indexes[0].name, "orders_user_id_idx");
+}
+
+#[test]
 fn from_lock_rejects_an_unterminated_table_block() {
     let lock = "schema lock v1\n\ntable \"t\" {\n  column \"id\": int64 not null\n";
     assert!(SchemaCatalog::from_lock(lock).is_err());
