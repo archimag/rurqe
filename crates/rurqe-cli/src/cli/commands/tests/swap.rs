@@ -174,6 +174,7 @@ fn a_cycle_over_one_marker_leaves_the_parked_pair_of_another_untouched() {
     commit_stage(
         version("3.2"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,

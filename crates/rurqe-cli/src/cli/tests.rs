@@ -280,6 +280,7 @@ fn parses_the_schema_selection_of_each_catalog_command() {
             config: None,
             version: "3.2".parse().unwrap(),
             database_url: None,
+            scratch_url: None,
             stage_dir: None,
             lock_path: None,
             checkpoint_path: None,
@@ -546,6 +547,7 @@ fn parses_stage_commands() {
             config: None,
             version: "3.2".parse().unwrap(),
             database_url: None,
+            scratch_url: None,
             stage_dir: None,
             lock_path: None,
             checkpoint_path: None,
@@ -573,7 +575,36 @@ fn parses_stage_commit_stage_dir() {
             config: None,
             version: "3.2".parse().unwrap(),
             database_url: None,
+            scratch_url: None,
             stage_dir: Some(PathBuf::from("stages/boundary")),
+            lock_path: None,
+            checkpoint_path: None,
+            schema: None,
+        }
+    );
+}
+
+#[test]
+fn parses_an_explicit_scratch_url_for_stage_commit() {
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "stage".into(),
+        "commit".into(),
+        "--version".into(),
+        "3.2".into(),
+        "--scratch-url".into(),
+        "postgres://db.internal:5432/scratch".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::StageCommit {
+            config: None,
+            version: "3.2".parse().unwrap(),
+            database_url: None,
+            scratch_url: Some("postgres://db.internal:5432/scratch".into()),
+            stage_dir: None,
             lock_path: None,
             checkpoint_path: None,
             schema: None,

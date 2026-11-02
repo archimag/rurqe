@@ -74,6 +74,7 @@ fn committing_the_stage_anchors_the_checkpoint() {
     commit_stage(
         version("3.2"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -111,6 +112,7 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     commit_stage(
         version("3.2"),
         &database.to_string_lossy(),
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -141,6 +143,7 @@ fn committing_the_stage_snapshots_the_boundary_verbatim() {
     commit_stage(
         version("4"),
         &database.to_string_lossy(),
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -189,6 +192,7 @@ fn the_committed_boundary_is_never_rewound() {
     commit_stage(
         version("5"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -199,6 +203,7 @@ fn the_committed_boundary_is_never_rewound() {
     let error = commit_stage(
         version("3"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -240,6 +245,7 @@ fn a_stage_that_drifted_from_the_database_is_never_committed() {
     let error = commit_stage(
         version("3.2"),
         &database.to_string_lossy(),
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -299,6 +305,7 @@ fn two_sequential_commits_converge_to_the_last_one() {
     commit_stage(
         version("3"),
         &database.to_string_lossy(),
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -308,6 +315,7 @@ fn two_sequential_commits_converge_to_the_last_one() {
     commit_stage(
         version("4"),
         &database.to_string_lossy(),
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -377,6 +385,7 @@ fn a_stage_rejected_by_the_parity_gate_leaves_an_interrupted_commit_parked() {
     let error = commit_stage(
         version("3.2"),
         &database.to_string_lossy(),
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -412,5 +421,52 @@ fn a_stage_rejected_by_the_parity_gate_leaves_an_interrupted_commit_parked() {
     assert!(
         !dir.join("checkpoint.lock").exists(),
         "the commit never entered its section"
+    );
+}
+
+#[test]
+fn a_cross_engine_scratch_target_is_refused_before_the_stage_is_read() {
+    let dir = workspace("stage-cross-engine-scratch");
+    // The declarative stage is absent on purpose: a guard that ran after the stage
+    // was read would report the missing directory instead of the scratch target.
+    let stage_dir = dir.join("schema");
+    let lock_path = dir.join("schema.lock");
+    let checkpoint_path = dir.join("checkpoint.toml");
+
+    let error = commit_stage(
+        version("3.2"),
+        ":memory:",
+        Some("postgres://db.internal:5432/scratch"),
+        &selection(),
+        &stage_dir,
+        &lock_path,
+        &checkpoint_path,
+    )
+    .expect_err("a PostgreSQL scratch cannot stand in for a SQLite target");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("SQLite"),
+        "the diagnostic names the sealed engine, got {message}"
+    );
+    assert!(
+        message.contains("PostgreSQL"),
+        "the diagnostic names the scratch engine, got {message}"
+    );
+    assert!(
+        message.contains("--scratch-url"),
+        "the diagnostic names the flag that redirects the parity scratch, got {message}"
+    );
+
+    // The refusal stands in front of every artifact write and of the checkpoint
+    // section, so a rejected commit leaves nothing behind.
+    assert!(!lock_path.exists(), "a refused commit writes no lock");
+    assert!(
+        !checkpoint_path.exists(),
+        "a refused commit writes no checkpoint"
+    );
+    assert!(
+        !dir.join("checkpoint.lock").exists(),
+        "a refused commit enters no section"
     );
 }

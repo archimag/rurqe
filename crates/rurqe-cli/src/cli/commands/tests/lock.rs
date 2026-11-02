@@ -30,6 +30,7 @@ fn a_commit_that_cannot_take_the_section_writes_no_artifact() {
     let error = commit_stage(
         version("3.2"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -171,6 +172,7 @@ fn a_commit_takes_over_the_section_of_a_crashed_writer() {
     commit_stage(
         version("3.2"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,
@@ -294,6 +296,7 @@ fn two_markers_commit_independently_in_one_directory() {
     commit_stage(
         version("3.2"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &dir.join("schema.lock"),
@@ -303,6 +306,7 @@ fn two_markers_commit_independently_in_one_directory() {
     commit_stage(
         version("4"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &dir.join("prod-schema.lock"),

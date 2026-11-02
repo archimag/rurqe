@@ -326,6 +326,7 @@ pub(crate) fn run_cli_with_config(
             config,
             version,
             database_url,
+            scratch_url,
             stage_dir,
             lock_path,
             checkpoint_path,
@@ -338,6 +339,7 @@ pub(crate) fn run_cli_with_config(
             commit_stage(
                 version,
                 &url,
+                scratch_url.as_deref(),
                 &selection,
                 &project.stage_dir(stage_dir),
                 &project.lock_path(lock_path),

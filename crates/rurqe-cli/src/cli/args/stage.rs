@@ -147,6 +147,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let mut lock_path = None;
     let mut checkpoint_path = None;
     let mut database_url = None;
+    let mut scratch_url = None;
     let mut schema = None;
 
     let mut idx = 0;
@@ -164,6 +165,9 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             "--checkpoint-path" => checkpoint_path = Some(take_path(tokens, &mut idx, flag)?),
             "--database-url" => {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
+            }
+            "--scratch-url" => {
+                scratch_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             "--stage-dir" => stage_dir = Some(take_path(tokens, &mut idx, flag)?),
             "--schema" => {
@@ -183,6 +187,7 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
         config,
         version,
         database_url,
+        scratch_url,
         stage_dir,
         lock_path,
         checkpoint_path,

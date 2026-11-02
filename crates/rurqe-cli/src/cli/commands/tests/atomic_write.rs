@@ -232,6 +232,7 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
     commit_stage(
         version("3.2"),
         ":memory:",
+        None,
         &selection(),
         &stage_dir,
         &lock_path,

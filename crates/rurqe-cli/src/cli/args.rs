@@ -81,6 +81,7 @@ pub enum CliCommand {
         config: Option<PathBuf>,
         version: MigrationVersion,
         database_url: Option<String>,
+        scratch_url: Option<String>,
         stage_dir: Option<PathBuf>,
         lock_path: Option<PathBuf>,
         checkpoint_path: Option<PathBuf>,

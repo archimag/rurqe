@@ -649,7 +649,8 @@ COMMANDS:
     stage init       Cold start the database from the declarative stage
     stage verify     Verify the golden equation State(schema/) == State(Checkpoint + tail)
     stage commit     Seal the live database as the catalog snapshot, snapshot the boundary stage,
-                     and anchor the checkpoint marker
+                     anchor the checkpoint marker, and drop the throwaway parity scratch database
+                     the gate created on the server
     stage cleanup    Drop the PostgreSQL scratch databases abandoned by earlier verifications
     prune            Delete migration scripts below the committed checkpoint boundary
 
@@ -660,7 +661,7 @@ STAGE OPTIONS:
                      [--checkpoint-path <path>] [--scratch-url <url>] [--schema <name>]
                      [--config <path>]
     stage commit     --version <version> [--stage-dir <dir>] [--lock-path <path>]
-                     [--checkpoint-path <path>] [--config <path>]
+                     [--checkpoint-path <path>] [--scratch-url <url>] [--config <path>]
     stage cleanup    [--scratch-url <url>] [--older-than <secs>] [--yes|--force] [--config <path>]
     prune            --before <version> [--migrations-dir <dir>] [--dry-run] [--config <path>]
 
@@ -708,6 +709,17 @@ NOTES:
     `checkpoint.toml`. `stage verify` loads that snapshot as the base stage when
     `--base-stage-dir` is omitted, and a checkpoint whose non-empty boundary has no
     base stage is rejected instead of replaying the tail over an empty database.
+
+    The parity gate of `stage commit` materialises the declarative stage in a
+    scratch database of its own before it seals anything. A PostgreSQL target
+    creates a throwaway `rurqe_scratch_...` database on the server behind the URL,
+    replays the stage inside it, and drops it with `DROP DATABASE ... WITH (FORCE)`,
+    so the role running the commit needs the `CREATEDB` privilege; the same
+    connection first sweeps this host's stale `rurqe_scratch_*` databases
+    opportunistically, exactly as a `stage verify` connection does. `--scratch-url`
+    redirects that lifecycle onto a disposable server, and a scratch URL naming
+    another engine than the sealed database is refused before the stage is read. A
+    SQLite target is materialised in memory, where no server object is created.
 
     `stage cleanup` drops only a scratch database the connecting host tagged as its
     own, whose recorded creation second aged past `--older-than`, and whose name

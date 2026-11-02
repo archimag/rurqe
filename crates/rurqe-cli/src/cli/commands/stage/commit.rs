@@ -16,7 +16,7 @@ use crate::cli::commands::{
     best_effort, cli_error, sweep_stale_temporaries, sync_directory, write_file,
     STALE_TEMPORARY_AGE,
 };
-use crate::cli::{CliError, CommandOutput};
+use crate::cli::{redact_database_url, CliError, CommandOutput};
 use crate::config::SchemaSelection;
 use crate::drift::{DiffWording, SchemaDiff};
 use crate::introspect::introspect_database_selection_notice;
@@ -48,6 +48,16 @@ use super::{
 /// [`verify_stage`](super::verify_stage) fail on a checkpoint no later commit can
 /// repair.
 ///
+/// The comparison materialises the declarative stage in a scratch database of its
+/// own, so `scratch_url` names where that disposable state lives. A PostgreSQL
+/// commit creates a throwaway `rurqe_scratch_…` database on the server behind the
+/// URL, replays the stage inside it, and drops it again, so the connecting role
+/// needs the `CREATEDB` privilege; the same connection first sweeps this host's
+/// stale scratch databases opportunistically, exactly as a `stage verify`
+/// connection does. `--scratch-url` redirects that lifecycle onto a disposable
+/// server, and a scratch URL addressing another engine than the sealed database is
+/// refused before the stage or the live catalog is read.
+///
 /// The lock, the boundary, and the marker land in that order, but the marker is
 /// the commit point: [`seal_commit`] parks the previous marker and boundary and
 /// discards them only once the new marker is durable, so a process killed
@@ -78,11 +88,19 @@ use super::{
 pub(crate) fn commit_stage(
     version: MigrationVersion,
     database_url: &str,
+    scratch_url: Option<&str>,
     selection: &SchemaSelection,
     stage_dir: &Path,
     lock_path: &Path,
     checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
+    // The parity scratch is redirected before either side is read: the gate
+    // replays the declarative stage in it, so a target of another engine can
+    // never reproduce the catalog this commit is about to seal.
+    if let Some(scratch_url) = scratch_url {
+        refuse_cross_engine_scratch(database_url, scratch_url)?;
+    }
+
     let boundary = boundary_dir(checkpoint_path);
 
     // Preparation runs outside the section: it reads the stage and the database
@@ -101,10 +119,13 @@ pub(crate) fn commit_stage(
     // built in `public` against a catalog read elsewhere would reject a consistent
     // non-public project for a drift it never had, and comparing a single schema
     // against a summed catalog would report every secondary relation as missing.
+    // The scratch state itself is the one `--scratch-url` supplied, falling back
+    // to the live URL, so the invocation alone decides which server pays for the
+    // database lifecycle the materialisation runs.
     let diff = compare_stage_with_live_selection(
         &stage,
         &catalog,
-        parity_scratch_url(database_url),
+        parity_scratch_url(scratch_url.unwrap_or(database_url)),
         selection,
     )
     .map_err(cli_error)?;
@@ -246,23 +267,58 @@ impl Drop for StagedCleanup {
 /// The disposable state the declarative stage is materialised in before a commit.
 ///
 /// A PostgreSQL target keeps the stage on the server behind the URL, where
-/// [`compare_stage_with_live`] builds it in a throwaway database through
+/// [`compare_stage_with_live_selection`] builds it in a throwaway database through
 /// `materialise_stage`; a SQLite target is materialised in memory instead, because
 /// the URL names the very file the commit is sealing and no declarative DDL may be
-/// replayed over it.
-fn parity_scratch_url(database_url: &str) -> &str {
-    match DatabaseTarget::parse(database_url) {
-        Ok(DatabaseTarget::Postgres) => database_url,
+/// replayed over it. The URL is the one `--scratch-url` supplied, falling back to
+/// the live URL when the operator supplied none, so the invocation alone decides
+/// which server carries the whole lifecycle. A value the classifier rejects is
+/// passed through unchanged: the sandbox gate reports it with the redaction it
+/// mandates, so no second parser decides here what the string addresses.
+fn parity_scratch_url(scratch_url: &str) -> &str {
+    match DatabaseTarget::parse(scratch_url) {
+        Ok(DatabaseTarget::Postgres) => scratch_url,
         Ok(DatabaseTarget::SqliteMemory | DatabaseTarget::SqliteFile(_)) => ":memory:",
-        // Unreachable through `commit_stage`, which introspected the very URL
-        // before this helper runs; passing the URL through keeps the helper
-        // total for a value the classifier rejects.
-        Err(_) => database_url,
+        // Reachable through a supplied `--scratch-url` the classifier rejects;
+        // the sandbox gate refuses it with its own redacted diagnostic, which is
+        // the one place the absence of an engine is reported.
+        Err(_) => scratch_url,
     }
 }
 
-/// Removes the staged siblings an interrupted commit abandoned next to its artifacts.
+/// Refuses a parity scratch that addresses another engine than the sealed database.
 ///
+/// The gate replays the declarative stage in the scratch target and compares the
+/// catalog it produces with the live one, so both have to speak the same engine: a
+/// PostgreSQL scratch cannot reproduce a SQLite catalog, and a SQLite scratch never
+/// reaches the server a PostgreSQL commit seals. A value either classifier rejects
+/// is passed through, because the sandbox gate reports it with the redaction it
+/// mandates instead of a second parser deciding what the string addresses.
+fn refuse_cross_engine_scratch(database_url: &str, scratch_url: &str) -> Result<(), CliError> {
+    let Ok(live) = DatabaseTarget::parse(database_url) else {
+        return Ok(());
+    };
+    let Ok(scratch) = DatabaseTarget::parse(scratch_url) else {
+        return Ok(());
+    };
+
+    if live.dialect() == scratch.dialect() {
+        return Ok(());
+    }
+
+    Err(CliError(format!(
+        "the scratch URL `{}` addresses {} while this commit seals a {} database; the parity \
+         gate replays the declarative stage in the scratch target, so `--scratch-url` has to \
+         name a {} target — a `postgres://` URL for PostgreSQL, a SQLite path or `:memory:` \
+         for SQLite",
+        redact_database_url(scratch_url),
+        scratch.dialect(),
+        live.dialect(),
+        live.dialect(),
+    )))
+}
+
+/// Removes the staged siblings an interrupted commit abandoned next to its artifacts.
 /// The sweep is opportunistic: the debris belongs to a process that is already
 /// gone, so a sweep that cannot complete is reported without failing a commit
 /// that is otherwise writable.
