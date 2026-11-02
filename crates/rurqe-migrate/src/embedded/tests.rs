@@ -57,7 +57,67 @@ fn from_migrations_rejects_duplicate_script_names() {
         }
     );
 }
+/// A cold start closes every versioned migration the stage already reflects, and
+/// never a repeatable one: repeatable scripts carry no version, so the marker
+/// cannot cover them and they run on top of the stage the cold start produced.
+///
+/// The re-run is load-bearing. Suppressing it would leave the scripts unrecorded,
+/// so the next plain `migrate` would apply them anyway — after the cold start
+/// created the very objects they build.
+#[test]
+fn a_cold_start_closes_only_the_versioned_tail() {
+    let catalog = SchemaCatalog::default();
+    let snapshot = catalog.to_lock();
 
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[
+            ("V1__users.sql", "CREATE TABLE users (id INTEGER);"),
+            (
+                "R__active_users.sql",
+                "CREATE VIEW active_users AS SELECT id FROM users;",
+            ),
+        ],
+        checkpoint: None,
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER, email TEXT);")],
+        schema_lock: Some(&snapshot),
+    })
+    .expect("valid artifacts");
+
+    let mut backend = InMemoryBackend::new();
+    backend.catalog_checksum = Some(catalog.checksum());
+
+    let report = embedded
+        .migrate(&mut backend)
+        .expect("the database is cold started");
+
+    let cold = report.cold_start.as_ref().expect("the cold start runs");
+    assert_eq!(cold.stage_scripts, vec!["users.sql"]);
+
+    assert_eq!(report.applied_scripts, vec!["R__active_users.sql"]);
+    assert_eq!(report.applied_count, 1);
+
+    assert_eq!(backend.history.len(), 2);
+    assert!(backend.history.iter().all(|entry| entry.success));
+    assert_eq!(backend.history[1].script, "R__active_users.sql");
+
+    let executed: Vec<&str> = backend.executed_sql.iter().map(String::as_str).collect();
+    assert!(
+        !executed.contains(&"CREATE TABLE users (id INTEGER);"),
+        "the stage marker closes the versioned migration the stage already reflects"
+    );
+    assert!(
+        executed.contains(&"CREATE VIEW active_users AS SELECT id FROM users;"),
+        "the repeatable script runs on top of the stage"
+    );
+
+    let rerun = embedded
+        .migrate(&mut backend)
+        .expect("the rerun applies nothing");
+
+    assert_eq!(rerun.applied_count, 0);
+    assert!(rerun.cold_start.is_none());
+    assert_eq!(backend.history.len(), 2);
+}
 #[test]
 #[cfg(feature = "tokio")]
 fn migrate_async_hands_the_backend_back() {

@@ -13,7 +13,10 @@
 //! `schema.lock` snapshot, so the run itself guards the database:
 //!
 //! * an empty target is initialised from the declarative stage, and the recorded
-//!   stage marker closes every migration the stage already reflects;
+//!   stage marker closes every versioned migration at or below its version;
+//! * repeatable scripts carry no version, so a cold start applies them on top of
+//!   the stage it just created; a repeatable script whose objects the declarative
+//!   stage already declares must therefore be written idempotently;
 //! * a baked checkpoint rejects a target sitting below the pruned boundary;
 //! * a baked snapshot anchors the digest the catalog the run produced is compared
 //!   against once every script has been applied.
@@ -280,8 +283,9 @@ impl EmbeddedMigrations {
     /// * An empty target is initialised from the baked declarative stage when the
     ///   collection carries one, exactly like [`cold_start`](crate::cold_start): the
     ///   stage marker sits at the newest version the collection declares and is
-    ///   anchored by the baked `schema.lock` digest, so the tail the stage already
-    ///   reflects does not run a second time.
+    ///   anchored by the baked `schema.lock` digest, so the versioned tail the
+    ///   stage already reflects does not run a second time; repeatable scripts
+    ///   carry no version and therefore still run on top of the stage.
     /// * A baked `checkpoint.toml` marker arms [`Migrator::with_checkpoint`], so a
     ///   target sitting below the pruned boundary is rejected instead of being
     ///   advanced by a partial tail.
@@ -355,10 +359,12 @@ impl EmbeddedMigrations {
     /// Builds the marker the cold start of this collection records.
     ///
     /// The marker sits at the newest version the collection declares, so every
-    /// migration the stage already reflects is reported as applied, and its digest
+    /// versioned migration at or below it is reported as applied, and its digest
     /// is the baked `schema.lock` one, which is exactly the digest the counterpart
     /// tail replay has to produce. A collection without a snapshot anchors the
-    /// digest of its own stage instead.
+    /// digest of its own stage instead. Repeatable scripts carry no version, so the
+    /// marker never covers them: they run on top of the stage like any other
+    /// pending repeatable migration.
     fn stage_marker(&self, stage: &DeclarativeStage) -> Result<StageMarker, Error> {
         let checksum = match self.schema_hash {
             Some(checksum) => checksum,
@@ -367,10 +373,13 @@ impl EmbeddedMigrations {
         Ok(StageMarker::new(self.marker_version()?, StageMarker::DESCRIPTION, checksum))
     }
 
-    /// The version that closes every migration the cold start already reflects.
+    /// The version that closes every versioned migration the cold start already
+    /// reflects.
     ///
     /// That is the newest tail version or the checkpoint boundary, whichever is
-    /// higher, and `0` for a collection declaring neither.
+    /// higher, and `0` for a collection declaring neither. Repeatable migrations
+    /// carry no version, so they stay outside the boundary and run after the cold
+    /// start has created the stage.
     fn marker_version(&self) -> Result<MigrationVersion, Error> {
         let tail = self
             .migrations
