@@ -1,4 +1,4 @@
-default: verify
+    default: verify
 
 # Run full workspace verification (checks, clippy, tests, doc build)
 [group('tauqe')]
@@ -48,7 +48,7 @@ doc-test:
     # chapters sit directly under `docs/`, and the compiled examples crate sits
     # beside them at `docs/examples`.
     cargo test -p rurqe-examples --test doc_coverage
-    mdbook build docs --dest-dir ../target/book
+    mdbook build docs --dest-dir target/book
 
 # Build the mdBook documentation into target/book
 [group('tauqe')]
@@ -56,13 +56,13 @@ doc-test:
 doc-build:
     # `docs/book.toml` sets `src = "."`, so the chapters live directly in
     # `docs/` and the book renders into `target/book` at the repository root.
-    mdbook build docs --dest-dir ../target/book
+    mdbook build docs --dest-dir target/book
 
 # Serve the mdBook documentation locally with live reload
 [group('tauqe')]
 [doc('Serve the mdBook documentation locally with live reload')]
 doc-serve:
-    mdbook serve docs --dest-dir ../target/book --open
+    mdbook serve docs --dest-dir target/book --open
 
 # Format all workspace code
 [group('tauqe')]
