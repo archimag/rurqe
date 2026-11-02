@@ -100,7 +100,7 @@ migrations/V7__add_credits.sql      the same change as a delta for a live databa
 3. **State whether the two descriptions still converge.** `cargo rurqe stage verify` materialises the boundary together with the tail on one side and the stage on the other, and compares the resulting catalogs, so the pair is proven rather than assumed while the change is still local.
 4. **Start a clean environment at the stage.** `cargo rurqe stage init --version <version>` applies `schema/` in one pass and records the stage version as the starting point, so a CI container or a fresh development machine reaches the current schema in the time the stage takes rather than the time the history takes.
 5. **Advance a database that holds data through the tail.** `cargo rurqe migrate up` applies the pending scripts on a database that holds data, in version order, recording each one in the history table as it runs.
-6. **Seal the boundary once every deployed database has passed the release.** `cargo rurqe stage commit --version <version>` writes the boundary snapshot, the marker, and `schema.lock` together, and the scripts the boundary folds in are then deleted from the tail.
+6. **Seal the boundary once every deployed database has passed the release.** `cargo rurqe stage commit --version <version>` proves first that the stage describes the database, then writes the boundary snapshot, the marker, and `schema.lock` together. The parity gate of a PostgreSQL commit materialises the declarative stage in a throwaway `rurqe_scratch_…` database on the parity scratch target — created and dropped as the connected role, so that role needs `CREATEDB`, and the same connection first sweeps this host's stale scratch databases — and `--scratch-url` moves that lifecycle onto a disposable server while `--database-url` keeps naming the database the commit seals. The scripts the boundary folds in are then deleted from the tail.
 
 The version a boundary is sealed at is the newest one every deployed database has already applied, not the newest script in the directory: a target that stopped below the boundary cannot be advanced by a pruned tail, so the marker is cut where the slowest environment already stands.
 
@@ -213,7 +213,7 @@ A SQLite project verifies against `:memory:`, while a PostgreSQL project passes 
 
 ## Sweeping abandoned scratch databases
 
-A verification drops the scratch database it created, but a process killed mid-verification cannot, so a PostgreSQL server accumulates scratch databases nobody owns any more. The sweep removes them:
+A verification and a commit each drop the scratch database they created, but a process killed mid-verification or mid-commit cannot, so a PostgreSQL server accumulates scratch databases nobody owns any more. The sweep removes them:
 
 ```bash
 cargo rurqe stage cleanup --scratch-url postgres://app@db.internal/app --older-than 86400 --yes

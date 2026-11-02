@@ -181,7 +181,8 @@ cargo rurqe stage commit --version 5.0
 | Option | Effect |
 |---|---|
 | `--version <version>` | The boundary version the commit anchors. Required. |
-| `--database-url <url>` | The database whose catalog is sealed. Falls back to `DATABASE_URL`. |
+| `--database-url <url>` | The database whose catalog is sealed, and the parity scratch target of the gate when `--scratch-url` names none. Falls back to `DATABASE_URL`. |
+| `--scratch-url <url>` | The target the parity gate materialises the declarative stage in. A PostgreSQL commit creates a throwaway `rurqe_scratch_…` database there as the connected role and drops it again, so that role needs `CREATEDB`, and the same connection first sweeps this host's stale scratch databases. A SQLite target is materialised in memory, and a URL naming another engine than the sealed database is refused. |
 | `--schema <name>` | The primary schema the snapshot and its digest describe. The secondary schemas come from `schemas` in `rurqe.toml`. |
 | `--config <path>` | The configuration file the command reads. Without it the conventional `rurqe.toml` of the working directory is read when it exists, and a project without one keeps the conventional paths above. |
 
@@ -193,23 +194,35 @@ The command runs in two phases, and the split is what makes it safe beside anoth
 writer.
 
 The parity gate reads the declarative stage, introspects the live catalog over the
-selected schemas, materialises the stage in a disposable scratch state — a
-throwaway database on the server behind the URL for PostgreSQL, an in-memory
-database for SQLite — and compares the two. A stage that drifted from the database
-is refused before a single artifact is written:
+selected schemas, materialises the stage in a disposable scratch state, and compares
+the two. A PostgreSQL commit builds that state on the parity scratch target: it
+creates a throwaway `rurqe_scratch_…` database on the server behind the URL as the
+connected role, replays the declarative stage inside it, and drops it again, falling
+back to `DROP DATABASE ... WITH (FORCE)` when the plain drop fails; the same
+connection first sweeps this host's stale `rurqe_scratch_*` databases
+opportunistically, exactly as a `stage verify` connection does. The role running the
+commit therefore needs the `CREATEDB` privilege, while the database the commit seals
+is only read: every object the gate creates and drops lives in its own throwaway
+database. A SQLite target is materialised in memory instead, where no server object
+is created. `--scratch-url` redirects that lifecycle onto a disposable server, while
+`--database-url` keeps addressing the live database the commit seals, and a scratch
+URL naming another engine than the sealed database is refused before the stage is
+read. A stage that drifted from the database is refused before a single artifact is
+written:
 
 ```text
 the declarative stage `schema` does not describe the database this commit would anchor:
   <the structural differences, rendered clause by clause>
-Hint: bring `schema/` and the database back into agreement — apply the migration that closes the gap, or re-init the stage from the live catalog — then re-run `stage commit`.
+Hint: bring `schema/` and the database back into agreement — apply the migration that closes the gap, or re-init the stage from the live catalog — then re-run `stage commit`. The gate materialised the declarative stage in a throwaway database on the parity scratch target `postgres://app@db.internal/app` and dropped it again: that database is created as the connected role, so the role needs the CREATEDB privilege, and the same connection first sweeps this host's stale scratch databases. Pass `--scratch-url` to run the lifecycle on a disposable server instead. The gate runs before the commit enters its checkpoint section, so it wrote no artifact and repaired none: `schema.lock`, `checkpoint.toml`, the boundary snapshot, and the parked copies of an interrupted commit are untouched by it
 ```
 
 Both remedies are named because either side may be the one that is right: a
 column the database gained from a script the stage does not carry is fixed in
 `schema/`, while a stage that states the intended schema a database has not
-reached yet is closed by the migration. The refusal also states that no artifact
-was written and no interrupted commit repaired, because the gate runs before the
-critical section opens.
+reached yet is closed by the migration. The refusal also names the parity scratch
+target the gate materialised the stage on — the in-memory lifecycle when that target
+is SQLite — and states that no artifact was written and no interrupted commit
+repaired, because the gate runs before the critical section opens.
 
 The critical section is bounded by local filesystem work alone. Inside the
 exclusive section of the marker the commit sweeps the staged siblings an
@@ -220,10 +233,11 @@ assembled boundary into place, and writes the marker last as the commit point. A
 commit that fails at any step leaves the previous pair intact or restores it, and
 the staged snapshot is discarded on every failure path.
 
-A successful commit reports the three artifacts it published:
+A successful commit reports the three artifacts it published and the parity scratch
+target the gate ran on:
 
 ```text
-Committed the stage to rurqe/schema.lock, snapshotted the boundary to rurqe/migrations/checkpoint-stage, and anchored `rurqe/migrations/checkpoint.toml` up to version 5.0 (hash <digest>, schemas `public`)
+Committed the stage to rurqe/schema.lock, snapshotted the boundary to rurqe/migrations/checkpoint-stage, and anchored `rurqe/migrations/checkpoint.toml` up to version 5.0 (hash <digest>, schemas `public`, parity scratch `postgres://app@db.internal/app`)
 ```
 
 A repair renames artifacts into place before the command it belongs to finishes,
