@@ -808,3 +808,67 @@ fn a_repair_whose_checksum_update_fails_rolls_back_the_staged_purge() {
     assert_eq!(backend.state.commits, 0);
     assert_eq!(backend.state.open, 0);
 }
+
+#[test]
+fn duplicate_script_names_are_rejected_before_a_repair_rewrites_a_checksum() {
+    let mut backend = InMemoryBackend::new();
+    let recorded = Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER);")
+        .expect("a valid script name");
+    Migrator::new()
+        .migrate(&mut backend, &[recorded])
+        .expect("the initial run succeeds");
+    let history = backend.history.clone();
+
+    let first = Migration::parse("V1__users.sql", "CREATE TABLE users (id BIGINT);")
+        .expect("a valid script name");
+    let second = Migration::parse("V1__users.sql", "CREATE TABLE users (id SMALLINT);")
+        .expect("a valid script name");
+
+    let error = Migrator::new()
+        .repair(&mut backend, &[first, second])
+        .expect_err("two scripts under one name must be rejected");
+
+    assert_eq!(
+        error,
+        Error::DuplicateScriptName {
+            script: "V1__users.sql".to_owned()
+        }
+    );
+    assert_eq!(
+        backend.history,
+        history,
+        "the recorded checksum is never rewritten against an arbitrary survivor"
+    );
+    assert!(
+        !backend.locked,
+        "the run lock is never taken for a rejected repair"
+    );
+}
+
+#[test]
+fn duplicate_script_names_are_rejected_before_a_status_is_computed() {
+    let mut backend = InMemoryBackend::new();
+    let first = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 1;")
+        .expect("a valid script name");
+    let second = Migration::parse("R__view.sql", "CREATE VIEW v AS SELECT 2;")
+        .expect("a valid script name");
+
+    let error = Migrator::new()
+        .status(&mut backend, &[first, second])
+        .expect_err("two scripts under one name must be rejected");
+
+    assert_eq!(
+        error,
+        Error::DuplicateScriptName {
+            script: "R__view.sql".to_owned()
+        }
+    );
+    assert!(
+        !backend.table_created,
+        "the metadata table is never created for a rejected status"
+    );
+    assert!(
+        !backend.locked,
+        "the run lock is never taken for a rejected status"
+    );
+}

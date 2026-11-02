@@ -228,6 +228,11 @@ impl Migrator {
 
     /// Repairs schema history: updates checksums of modified applied migrations
     /// and purges failed migration entries.
+    ///
+    /// Two entries sharing one script name are rejected with
+    /// [`Error::DuplicateScriptName`] before the backend is touched: one repair
+    /// pass would otherwise rewrite the recorded checksum of an entry against an
+    /// arbitrarily chosen body.
     pub fn repair<B: MigrationBackend>(
         &self,
         backend: &mut B,
@@ -243,6 +248,13 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<RepairReport, Error> {
+        // A script name identifies one migration, so two entries under one name
+        // describe one identity with two bodies. Folding such a list into the
+        // lookup below would keep an arbitrary survivor and rewrite a recorded
+        // checksum against it, so the list is rejected before the backend is
+        // touched — exactly as `migrate_core` rejects it.
+        Self::validate_script_uniqueness(migrations)?;
+
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -280,6 +292,10 @@ impl Migrator {
     /// under the same run lock the other lifecycle operations take, so the write
     /// cannot interleave with a concurrent [`migrate`](Self::migrate) — which on
     /// SQLite holds the write lock for the whole run — and fail spuriously.
+    ///
+    /// Two entries sharing one script name are rejected with
+    /// [`Error::DuplicateScriptName`] before the backend is touched, because the
+    /// statuses of both would otherwise be derived from one collapsed entry.
     pub fn status<B: MigrationBackend>(
         &self,
         backend: &mut B,
@@ -301,6 +317,12 @@ impl Migrator {
         backend: &mut B,
         migrations: &[Migration],
     ) -> Result<Vec<MigrationStatus>, Error> {
+        // Two entries sharing one script name collapse into one lookup entry, so
+        // the status of both would be derived from an arbitrary survivor. The
+        // list is rejected before the backend is touched, exactly as
+        // `migrate_core` does.
+        Self::validate_script_uniqueness(migrations)?;
+
         // Creating the metadata table is a schema write, so it happens under the
         // very run lock the other lifecycle operations take: a concurrent
         // [`migrate`](Self::migrate) — which on SQLite holds the write lock for
