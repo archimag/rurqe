@@ -30,7 +30,7 @@ An `EXISTS` predicate is built from a projected query:
 
 `Expr::exists` and `Expr::not_exists` take the nested statement; an unlocked projected query also exposes `.exists()` / `.not_exists()` directly.
 
-The reference `outer(UserId)` is a correlated one: `outer` drops the relation scope of the reference, so the nested statement accepts it without selecting from `users`, while the reference keeps naming its own table and renders as the explicitly qualified `"users"."id"`. The pre-flight validation resolves it against the relations of the nested statement plus the relations of every enclosing statement — the namespace a correlated reference reaches. A qualifier naming no relation on either side is rejected before any SQL reaches the engine.
+The reference `outer(UserId)` is a correlated one: it reads a column of the statement that embeds the subquery, so the nested statement accepts it without selecting from `users`. The pre-flight validation resolves it against the relations of the nested statement plus the relations of every enclosing statement — the namespace a correlated reference reaches — and a qualifier naming no relation on either side is rejected before any SQL reaches the engine.
 
 ## `IN (SELECT ...)`
 

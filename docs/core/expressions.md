@@ -2,7 +2,7 @@
 
 Everything that produces a value in SQL is an expression: a column, a literal, a comparison, an arithmetic operation, a function call. An expression is a typed value: it decodes to one Rust type, and it records which tables it reads, so an expression cannot name a table the statement does not introduce.
 
-A column marker is an expression of its column type. This chapter covers the surface a value is built from beyond comparison: arithmetic, `CASE`, the scalar functions, and null-safe comparison.
+A column marker is an expression of its column type. This chapter covers the surface a value is built from beyond comparison: arithmetic, `CASE`, the scalar functions, null-safe comparison, and the correlated reference an enclosing statement resolves.
 
 ## Arithmetic
 
@@ -54,6 +54,16 @@ Each operand is a column, an expression, or a literal of the matching type, and 
 | `is_not_distinct_from(a, b)` | `a IS NOT DISTINCT FROM b` |
 
 `is_distinct_from` keeps the rows whose value differs or is absent; `is_not_distinct_from` is its complement and reads two absent values as equal.
+
+## Correlated references (`outer`)
+
+A correlated subquery reads a column of the statement that embeds it, and that reference names no relation of the subquery itself. `outer(...)` marks such a reference as resolved by the enclosing statement: the nested statement accepts it without declaring the relation, while the reference keeps naming its own table and renders explicitly qualified.
+
+The operand is any expression, so a column marker and a whole built predicate are both marked the same way — `outer(UserId)` and `outer(UserManagerId.eq(UserId))`.
+
+```rust,no_run
+{{#rustdoc_include ../examples/subqueries.rs:exists}}
+```
 
 ## The escape hatch
 
