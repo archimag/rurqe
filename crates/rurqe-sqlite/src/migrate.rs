@@ -291,7 +291,19 @@ impl MigrationBackend for SqliteMigrationBackend {
         Ok(())
     }
 
+    /// Releases the SQLite write lock, refusing a poisoned session.
+    ///
+    /// A backend that holds no lock releases nothing: committing whatever transaction
+    /// the session holds would persist a transaction this adapter never opened — after
+    /// a poisoning, exactly the abandoned transaction the failure sealed off. A
+    /// poisoned session refuses the call like every other step, reporting the composed
+    /// cause of the failure that poisoned it, because the connection is still inside
+    /// the abandoned transaction and has to be replaced rather than committed.
     fn release_lock(&mut self) -> Result<(), Error> {
+        self.reject_poisoned()?;
+        if !self.lock_held {
+            return Ok(());
+        }
         // The flag is cleared before the statement runs: a connection that is
         // already unusable cannot commit, and the file lock is released by the
         // driver once the connection closes.
@@ -603,5 +615,88 @@ mod tests {
         };
         assert!(message.contains("unusable"), "{message}");
         assert!(message.contains("rolling it back failed"), "{message}");
+    }
+    #[test]
+    fn a_poisoned_backend_refuses_to_release_its_lock() {
+        let mut backend = backend();
+        backend
+            .conn
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE half (id INTEGER NOT NULL);")
+            .expect("the script opens the abandoned transaction");
+        backend.poisoned = Some(
+            "disk I/O error; the script also left a transaction open and rolling it back failed"
+                .to_owned(),
+        );
+
+        let error = backend
+            .release_lock()
+            .expect_err("a poisoned backend releases no lock");
+        let message = match &error {
+            Error::Backend(message) => message.clone(),
+            other => panic!("unexpected error: {other:?}"),
+        };
+        assert!(message.contains("unusable"), "{message}");
+        assert!(
+            !backend.conn.is_autocommit(),
+            "the abandoned transaction must stay open instead of being committed: {message}"
+        );
+
+        backend
+            .conn
+            .execute_batch("ROLLBACK")
+            .expect("the abandoned transaction rolls back");
+        let remaining: i64 = backend
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'half'",
+                ::rusqlite::params![],
+                |row| row.get(0),
+            )
+            .expect("the catalog is readable");
+        assert_eq!(remaining, 0, "the abandoned statements were rolled back");
+    }
+
+    #[test]
+    fn a_release_without_a_held_lock_leaves_the_transaction_alone() {
+        let mut backend = backend();
+        backend
+            .conn
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE half (id INTEGER NOT NULL);")
+            .expect("the caller's transaction opens");
+
+        backend
+            .release_lock()
+            .expect("a backend holding no lock releases nothing");
+
+        assert!(
+            !backend.conn.is_autocommit(),
+            "the adapter must not commit a transaction it never opened"
+        );
+    }
+
+    #[test]
+    fn a_held_lock_is_still_committed_by_the_release() {
+        let mut backend = backend();
+        backend.acquire_lock().expect("the write lock is taken");
+        backend
+            .conn
+            .execute_batch("CREATE TABLE users (id INTEGER NOT NULL);")
+            .expect("the table is created inside the lock transaction");
+
+        backend.release_lock().expect("the held lock is released");
+
+        assert!(
+            backend.conn.is_autocommit(),
+            "the lock transaction is committed"
+        );
+        let created: i64 = backend
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'users'",
+                ::rusqlite::params![],
+                |row| row.get(0),
+            )
+            .expect("the catalog is readable");
+        assert_eq!(created, 1, "the committed table survives the release");
     }
 }
