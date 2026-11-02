@@ -1,4 +1,4 @@
-    default: verify
+default: verify
 
 # Run full workspace verification (checks, clippy, tests, doc build)
 [group('tauqe')]
