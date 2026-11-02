@@ -13,8 +13,6 @@
 //! [`SchemaCatalog`](crate::catalog::SchemaCatalog), so the migration runner
 //! treats every versioned migration at or below the marked version as already
 //! applied while the active tail above it still runs.
-//!
-//! A script marked non-transactional runs outside any transaction, so a stage
 //! A script marked non-transactional runs outside any transaction, so a stage
 //! holding one cannot be applied atomically: the cold start then commits an
 //! in-progress marker before the first such script and replaces it with the
