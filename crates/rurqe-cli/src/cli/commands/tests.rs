@@ -7,6 +7,7 @@
 mod atomic_write;
 mod fixtures;
 mod lock;
+mod migrate;
 mod prune;
 mod recovery;
 mod stage;

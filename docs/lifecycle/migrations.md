@@ -36,6 +36,11 @@ run reads the directory the project declares.
   follows no convention is reported rather than skipped: a silently ignored
   script would apply an incomplete history.
 
+The directory — and, for `up`, the boundary marker beside it — is read inside the
+exclusive section shared with `prune`, `stage commit`, and `stage verify`, so a
+concurrent prune waits for the read instead of deleting a script between the
+listing and the load of the same tail.
+
 A directory therefore holds scripts of both kinds side by side:
 
 * `V1__create_users.sql` — a versioned script, version `1`;

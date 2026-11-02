@@ -1,13 +1,20 @@
 //! The exclusive `checkpoint.lock` section serialising the artifact writers.
 //!
 //! The commands that read or mutate the checkpoint artifacts — `stage commit`,
-//! `stage verify`, and `prune` — all operate on the same marker, boundary
+//! `stage verify`, `prune`, and the readers of the `migrate` family — all of them
+//! operate on the same marker, boundary
 //! snapshot, and migration tail, so the protocol of `super::swap` guards every
 //! one of them with a single exclusive lock: a sibling of the marker named after
 //! it (`checkpoint.toml` is guarded by `checkpoint.lock`), opened
 //! read+write+create and taken with a non-blocking exclusive advisory lock
 //! (`flock` on Unix, `LockFileEx` on Windows), so exactly one writer can hold
 //! the section at a time.
+//!
+//! The `migrate` family reads rather than mutates: `up` reads the boundary marker
+//! and the tail, `status` and `repair` read the tail, and each of them releases the
+//! section as soon as the artifacts are read, before it reaches the database. The
+//! section is what keeps a `prune` from deleting a script between the listing and
+//! the load of the same tail.
 //!
 //! # Owner record and liveness
 //!

@@ -91,9 +91,17 @@
 //!   per-verification and the catalog work on it is serially safe on its own.
 //! * `prune` holds it across the checkpoint read, the `migrations/` scan, and the
 //!   deletions.
+//! * the `migrate` family holds it across its reads of the same artifacts: `up`
+//!   reads the boundary marker and the tail, `status` and `repair` read the tail,
+//!   and each of them releases the section as soon as the artifacts are read, so
+//!   the section stays bounded by local filesystem work alone.
 //!
-//! Command signatures do not change: the dispatcher reaches the same entry points,
-//! and each of them takes the section itself, so no caller can forget it.
+//! The writer entry points keep the signatures they had — the dispatcher reaches
+//! the same functions, and each of them takes the section itself, so no caller can
+//! forget it — while the readers take the section the same way around their own
+//! reads, so a reader of the guarded artifacts is a section holder like every
+//! writer. The commands that read the database alone — `migrate clean` and
+//! `baseline` — take no section, because they read no lifecycle artifact.
 //!
 //! ## Commit transitions
 //!
@@ -196,11 +204,24 @@
 //! committed marker and removes only what that marker already excludes, or entirely after
 //! it, where the advanced marker excludes at least as much.
 //!
+//! ### prune × migrate
+//!
+//! A prune deletes scripts while the `migrate` family reads them. Unlocked, the
+//! family performs a list-then-read walk: a deletion landing between the
+//! `sql_scripts` listing and the `read()` of one script turns a legal concurrent
+//! prune into a spurious failed-to-read failure, and a scan landing mid-deletion
+//! observes a transient tail. Nothing is corrupted — the deleted scripts sit below
+//! the boundary the migrator enforces — but a command fails against a project that
+//! is perfectly consistent. Inside the section the family either waits for the
+//! prune or is refused with a diagnostic naming the live owner, and what it reads
+//! is a complete tail.
+//!
 //! | Interleaving | Failure the section removes | Invariants |
 //! | --- | --- | --- |
 //! | commit × commit | discarding the only recoverable copy; restoring over a fresh boundary | I1, I2, I3, I4 |
 //! | commit × verify | a repair underneath a swap; a comparison of a half-swapped pair | I1, I4, I6 |
 //! | commit × prune | a marker read in its parked window; deletions racing a tail replay | I2, I4, I6 |
+//! | prune × migrate | deletions interleaving the family's list-then-read walk | I4, I6 |
 //!
 //! ## The lock itself
 //!
@@ -265,6 +286,10 @@
 //! negative pin refuses the repair and leaves the parked pair exactly where its dead
 //! writer left it, and the positive pin converges once the section is taken and the
 //! record rewritten with the caller's own scope — and a prune concurrent with a reader.
+//! The `migrate` family follows the same pattern on each of its three commands: a
+//! held section refuses the command before it touches the database, and the same
+//! command converges once the section is free and the record rewritten with the
+//! caller's own scope.
 //! Two markers in one directory pin the artifact identity itself: the disjoint sections
 //! (`two_markers_in_one_directory_hold_their_sections_at_once`), the disjoint boundaries
 //! (`two_markers_commit_independently_in_one_directory`), and the non-interference of a full

@@ -181,9 +181,10 @@ pub(crate) fn run_cli_with_config(
         } => {
             let project = load_project(config)?;
             let migrations_dir = project.migrations_dir();
+            let checkpoint_path = project.checkpoint_path();
             let selection = project.selection(schema.as_deref());
             with_migration_backend!(database_url, selection, |backend| {
-                report_status(&mut backend, &migrations_dir)
+                report_status(&mut backend, &migrations_dir, &checkpoint_path)
             })
         }
         CliCommand::MigrateRepair {
@@ -193,9 +194,10 @@ pub(crate) fn run_cli_with_config(
         } => {
             let project = load_project(config)?;
             let migrations_dir = project.migrations_dir();
+            let checkpoint_path = project.checkpoint_path();
             let selection = project.selection(schema.as_deref());
             with_migration_backend!(database_url, selection, |backend| {
-                repair_history(&mut backend, &migrations_dir)
+                repair_history(&mut backend, &migrations_dir, &checkpoint_path)
             })
         }
         CliCommand::MigrateClean {

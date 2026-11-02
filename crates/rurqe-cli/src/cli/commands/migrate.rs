@@ -10,6 +10,7 @@ use crate::cli::{CliError, CommandOutput};
 use crate::loader::load_migrations_from_dir;
 
 use super::cli_error;
+use super::stage::lock::CheckpointLock;
 
 /// Builds the migration runner guarded by the committed checkpoint, if any.
 ///
@@ -26,15 +27,24 @@ fn load_migrator(checkpoint_path: &Path) -> Result<Migrator, CliError> {
 }
 
 /// Applies every pending migration and reports what ran.
+///
+/// The tail and the boundary marker are shared with the writers of the checkpoint
+/// artifacts, so both are read inside the exclusive [`CheckpointLock`] section of
+/// the marker and the section is released before the backend is touched: a
+/// concurrent `prune` waits for the read instead of deleting a script between the
+/// listing and the load, while the database work keeps its own exclusive run lock
+/// and no lock ordering arises between the two.
 pub(crate) fn apply_migrations<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
     checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
-    let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
-    let report = load_migrator(checkpoint_path)?
-        .migrate(backend, &migrations)
-        .map_err(cli_error)?;
+    let (migrations, migrator) = {
+        let _section = CheckpointLock::acquire(checkpoint_path)?;
+        let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+        (migrations, load_migrator(checkpoint_path)?)
+    };
+    let report = migrator.migrate(backend, &migrations).map_err(cli_error)?;
 
     let mut output = CommandOutput::new();
     output.line(format!(
@@ -51,8 +61,16 @@ pub(crate) fn apply_migrations<B: MigrationBackend>(
 pub(crate) fn report_status<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
+    checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
-    let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    // The tail is shared with the writers of the checkpoint artifacts, so it is
+    // read inside the exclusive section of the marker and the section is released
+    // before the backend is driven: the history read keeps its own exclusive run
+    // lock, and no lock ordering arises between the two.
+    let migrations = {
+        let _section = CheckpointLock::acquire(checkpoint_path)?;
+        load_migrations_from_dir(migrations_dir).map_err(cli_error)?
+    };
     let statuses = Migrator::new()
         .status(backend, &migrations)
         .map_err(cli_error)?;
@@ -99,8 +117,16 @@ pub(crate) fn report_status<B: MigrationBackend>(
 pub(crate) fn repair_history<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
+    checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
-    let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+    // The tail is read inside the section the writers of the checkpoint artifacts
+    // hold, and the section is released before the recorded history is touched: a
+    // concurrent prune can neither delete a script between the listing and the
+    // load of the same tail nor leave the repair observing a transient one.
+    let migrations = {
+        let _section = CheckpointLock::acquire(checkpoint_path)?;
+        load_migrations_from_dir(migrations_dir).map_err(cli_error)?
+    };
     let report = Migrator::new()
         .repair(backend, &migrations)
         .map_err(cli_error)?;

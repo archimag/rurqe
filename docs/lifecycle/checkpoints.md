@@ -125,7 +125,10 @@ lock file beside it — so no commit, verification, or prune observes a half-wri
 pair or a half-pruned tail: between the read of the marker and the last artifact
 it touches, no other writer interleaves, and a second writer on the same marker
 either waits for the section or is refused with a diagnostic naming the live
-owner.
+owner. The `migrate` family reads its artifacts inside the same section: `up`
+reads the boundary marker and the tail, `status` and `repair` read the tail, and
+each of them releases the section before it touches the database, so a concurrent
+prune waits for the read instead of deleting a script the reader is loading.
 
 The boundary only moves forward. A commit whose version sits below the recorded
 one is refused:
@@ -283,7 +286,9 @@ scripts — sits below every boundary by definition and is refused by the first
 check, which reports no recorded version instead of a number.
 
 The marker takes part in `up` alone. `status` and `repair` read the history table
-without a boundary, so no part of the checkpoint lifecycle is resolved for them.
+without a boundary, so the boundary check is armed for `up` alone, while all three
+commands take the marker's exclusive section around their reads of the artifacts a
+writer may mutate.
 
 ## Pruning the folded history
 
@@ -354,8 +359,8 @@ cargo rurqe prune --before 5.0
   version itself stays, and it is inert, because every route through the
   lifecycle already skips what the boundary has folded in.
 - The whole prune runs inside the exclusive section of the marker, so no commit,
-  verification, or second prune observes a half-pruned tail — a marker anchored to
-  scripts that are already gone.
+  verification, second prune, or `migrate` read observes a half-pruned tail — a
+  marker anchored to scripts that are already gone.
 - A directory with nothing to delete reports it instead of rendering an empty run:
 
 ```text
