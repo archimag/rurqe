@@ -1115,3 +1115,97 @@ fn a_declared_path_resolves_inside_the_configuration_directory() {
         module.display()
     );
 }
+
+#[test]
+fn load_or_default_falls_back_only_when_the_file_is_absent() {
+    let directory = temporary_project("load-or-default");
+    let path = directory.join(DEFAULT_CONFIG_PATH);
+
+    let absent = CodegenConfig::load_or_default(&path).expect("an absent file is the default");
+    assert_eq!(absent, CodegenConfig::default());
+
+    std::fs::write(
+        &path,
+        "primary_schema = \"app\"\n[codegen.type_overrides]\n\"users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect("the configuration is written");
+
+    let present = CodegenConfig::load_or_default(&path).expect("the file is valid");
+    assert_eq!(present.primary_schema(), Some("app"));
+    assert_eq!(present.type_override("users", "id"), Some("uuid::Uuid"));
+
+    std::fs::write(&path, "[codegen]\ndomain_type = true\n")
+        .expect("the malformed configuration is written");
+    let malformed =
+        CodegenConfig::load_or_default(&path).expect_err("a malformed file is an error");
+
+    let unreadable = CodegenConfig::load_or_default(&directory)
+        .expect_err("a directory is not a configuration file");
+
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert!(
+        matches!(&malformed, ConfigError::Syntax { .. }),
+        "{malformed}"
+    );
+    assert!(
+        matches!(&unreadable, ConfigError::Io { .. }),
+        "{unreadable}"
+    );
+}
+
+#[test]
+fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
+    let root = temporary_project("discover-or-default");
+    let member = root.join("crates").join("app");
+    std::fs::create_dir_all(&member).expect("the nested directories are created");
+    std::fs::write(
+        root.join(DEFAULT_CONFIG_PATH),
+        "primary_schema = \"app\"\n[codegen.type_overrides]\n\"users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect("the configuration is written");
+
+    let discovered = discover_or_default(&member);
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    let (configuration, directory) = discovered.expect("the configuration is discovered");
+
+    assert_eq!(configuration.primary_schema(), Some("app"));
+    assert_eq!(
+        configuration.type_override("users", "id"),
+        Some("uuid::Uuid")
+    );
+    assert_eq!(
+        directory, root,
+        "the configuration is anchored at its directory"
+    );
+}
+
+#[test]
+fn discover_or_default_without_a_configuration_yields_the_default() {
+    let root = temporary_project("discover-default");
+    let nested = root.join("crates").join("app");
+    std::fs::create_dir_all(&nested).expect("the nested directories are created");
+
+    // Directories above the temporary root belong to the host, so the assertion
+    // is made only when none of them declares a configuration of its own.
+    let outside = root
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH).is_file());
+    let discovered = discover_or_default(&nested);
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    if outside.is_none() {
+        let (configuration, directory) =
+            discovered.expect("a tree without a configuration answers the defaults");
+
+        assert_eq!(configuration, CodegenConfig::default());
+        assert_eq!(
+            directory, nested,
+            "the default is anchored at the caller's directory"
+        );
+    }
+}

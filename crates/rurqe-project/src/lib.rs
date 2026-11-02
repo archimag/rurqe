@@ -147,6 +147,27 @@ impl CodegenConfig {
         }
     }
 
+    /// Reads the configuration file at `path`, falling back to the default when it is absent.
+    ///
+    /// This is the conventional zero-config entry point, for a location the caller already
+    /// knows: the `rurqe.toml` of a working directory, or the file [`discover_config`]
+    /// answered with. A project that keeps no configuration is an ordinary project, so an
+    /// absent file means the engine-neutral defaults — and nothing else does. Every other
+    /// failure is reported exactly as [`CodegenConfig::load`] reports it: a file that exists
+    /// but cannot be read is a [`ConfigError::Io`], and a malformed one is a
+    /// [`ConfigError::Syntax`] carrying the position of the rejected declaration.
+    ///
+    /// The 'absent means default' rule lives here and not in `load`, which reads the file
+    /// once and reports an absence in its own right through [`ConfigError::NotFound`], so a
+    /// path an operator named explicitly — a mistyped `--config` argument — can never be
+    /// mistaken for a project that declares nothing.
+    pub fn load_or_default(path: &Path) -> Result<Self, ConfigError> {
+        match Self::load(path) {
+            Err(ConfigError::NotFound { .. }) => Ok(Self::default()),
+            result => result,
+        }
+    }
+
     /// Parses the root-level schema and artifact keys, the `[migrations]` and
     /// `[stage]` tables, the `[codegen]` table, and the `[codegen.type_overrides]`
     /// sub-table out of `contents`.
@@ -357,6 +378,16 @@ pub enum ConfigError {
         /// What is wrong with the declaration.
         message: String,
     },
+    /// The configuration file named by the path does not exist.
+    ///
+    /// An absence is reported in its own right instead of as an [`Io`](ConfigError::Io)
+    /// failure, so the caller that reads the file decides what it means: a conventional path
+    /// falls back to the defaults through [`CodegenConfig::load_or_default`], while a path an
+    /// operator named explicitly is the mistake it is.
+    NotFound {
+        /// The path that does not exist.
+        path: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -373,6 +404,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "invalid configuration at line {line}, column {column}: {message}"
             ),
+            ConfigError::NotFound { path } => {
+                write!(f, "configuration file `{path}` does not exist")
+            }
         }
     }
 }
@@ -402,4 +436,34 @@ pub fn discover_config(start: &Path) -> Option<PathBuf> {
         .ancestors()
         .map(config_path_in)
         .find(|candidate| candidate.is_file())
+}
+
+/// The configuration of the project at or above `start`, or the default when none exists.
+///
+/// This is the discovery-walk form of the rule [`CodegenConfig::load_or_default`] applies to
+/// a known path: a project that declares no configuration is an ordinary project, so a walk
+/// that finds nothing answers with the engine-neutral defaults instead of an error. The walk
+/// is the one [`discover_config`] performs — the nearest `rurqe.toml` at or above `start` —
+/// and the directory answered beside the configuration is the one holding that file, which is
+/// what every declared path of the document resolves against. Without a configuration the
+/// answer is the default anchored at `start` itself, so the conventional artifact layout
+/// applies beneath the caller's own directory.
+///
+/// A configuration the walk does find is read through [`CodegenConfig::load`], so a malformed
+/// file is reported with the position of its offending declaration instead of being silently
+/// replaced by the defaults.
+pub fn discover_or_default(start: &Path) -> Result<(CodegenConfig, PathBuf), ConfigError> {
+    let Some(path) = discover_config(start) else {
+        return Ok((CodegenConfig::default(), start.to_path_buf()));
+    };
+
+    let configuration = CodegenConfig::load(&path)?;
+
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    Ok((configuration, directory))
 }
