@@ -37,7 +37,6 @@ pub enum StageError {
         actual: String,
     },
     /// Both sides of the equation describe different schemas.
-    /// Both sides of the equation describe different schemas.
     Diverged(Box<GoldenReport>),
     /// A failed replay could not be discarded from the scratch database.
     ///

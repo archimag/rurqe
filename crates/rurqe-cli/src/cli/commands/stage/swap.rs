@@ -42,6 +42,8 @@
 //! an earlier one. A commit takes that scope from the owner record the section
 //! installed when it was acquired, never from a later re-read of the record, so a
 //! record another writer rewrote later cannot make the writer park under an
+//! identity that is not its own, so every parked copy stays attributable to the
+//! scope that created it.
 //!
 //! * marker — live `<dir>/checkpoint.toml`, staged
 //!   `<dir>/.checkpoint.toml.<pid>.<seq>.tmp`, parked
@@ -202,30 +204,31 @@
 //!
 //! ## The lock itself
 //!
-//! `checkpoint.lock` is a sibling of the marker, opened read+write+create so the entry
-//! `LockFileEx` on Windows) through the `fs4` crate. The entry itself carries no
-//! content and is never written into, because the kernel arbitrates the section on
-//! the identity of the file alone; the owner record of the writer (pid, nonce, and
-//! the instant it entered the section) lives in a `checkpoint.lock.record` sibling,
-//! published once the section is held and removed when the guard drops. The record
-//! publishes atomically — its body staged in a hidden sibling and renamed over the
-//! record file only once complete, sound because nothing holds an advisory lock on
-//! the record file — so a concurrent reader meets either the whole previous record
-//! or the whole fresh one, never a torn body. The record names that owner in a
+//! `checkpoint.lock` is a sibling of the marker, opened read+write+create instead
+//! of create-new, because the entry is never removed and never written into, and
+//! taken with a non-blocking exclusive advisory lock (`flock` on Unix,
+//! `LockFileEx` on Windows) through the `fs4` crate. The entry carries no content,
+//! because the kernel arbitrates the section on the identity of the file alone;
+//! the owner record of the writer (pid, nonce, and the instant it entered the
+//! section) lives in a `checkpoint.lock.record` sibling, published once the
+//! section is held and removed when the guard drops. The record publishes
+//! atomically — its body staged in a hidden sibling and renamed over the record
+//! file only once complete, sound because nothing holds an advisory lock on the
+//! record file — so a concurrent reader meets either the whole previous record or
+//! the whole fresh one, never a torn body. The record names that owner in a
 //! refusal and scopes the copies a commit parks. Acquisition polls the lock for a
-//! bounded time and then fails naming that owner — or stating that the holder cannot
-//! be identified, when no record can be read from it; it never takes a section
-//! over, because it cannot: the kernel
-//! naming that owner; it never takes a section over, because it cannot: the kernel
-//! releases the advisory lock when its holder's file description closes, which happens for
-//! every process that exits however it dies, so a section held by a live writer is never
-//! preempted and a section held by a crashed writer is simply free. Release is RAII:
-//! RAII: dropping the guard removes the record it published and closes the
-//! the kernel releases the section, so a released writer leaves no identity behind — a
-//! recycled pid inherits none — and no writer ever removes an entry another writer owns.
-//! Contention is observable between two
-//! descriptions of one process, so the refusal and the recovery are testable without a
-//! second process. The lock adds one dependency, and is panic-free.
+//! bounded time and then fails naming that owner — or stating that the holder
+//! cannot be identified, when no record can be read from it; it never takes a
+//! section over, because it cannot: the kernel releases the advisory lock when
+//! its holder's file description closes, which happens for every process that
+//! exits however it dies, so a section held by a live writer is never preempted
+//! and a section held by a crashed writer is simply free. Release is RAII:
+//! dropping the guard removes the record it published and closes the description,
+//! so the kernel releases the section, and a released writer leaves no identity
+//! behind — a recycled pid inherits none — while no writer ever removes an entry
+//! another writer owns. Contention is observable between two descriptions of one
+//! process, so the refusal and the recovery are testable without a second
+//! process. The lock adds one dependency, and is panic-free.
 //!
 //! ## Invariants
 //!
