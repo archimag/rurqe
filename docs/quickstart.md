@@ -50,10 +50,16 @@ cargo rurqe codegen --database-url postgres://app@localhost:5432/app
 
 The command introspects the declared schemas and writes two artifacts from one catalog:
 
-* the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, so a query addresses a schema the database actually has rather than a schema somebody remembered to update;
+* the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, so a query addresses a relation the database actually has;
 * the snapshot `rurqe/schema.lock` beneath the artifact directory, which is the normalized catalog the lifecycle compares against.
 
-The module embeds the digest of the snapshot as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database.
+The module embeds the digest of the snapshot as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database. For a `users` table of three columns the module declares the table, its columns, and the digest it was generated from:
+
+```rust,no_run
+{{#rustdoc_include examples/quickstart.rs:schema}}
+```
+
+A project ships that file as `src/schema.rs` and declares `mod schema;` in its crate root, then imports the markers it queries. The example below keeps the module beside the code that addresses it, because an example target is a single file. The generator also emits a row record per table beside the markers, which a query that names its own projection does not need.
 
 The database is named by `--database-url`, or by the `DATABASE_URL` environment variable when the flag is absent, so a project that exports the variable regenerates both artifacts with the bare `cargo rurqe codegen`. Both engines are addressed the same way: a `postgres://` or `postgresql://` URL and a libpq keyword string address PostgreSQL, while a `sqlite:` URL, `:memory:`, or a path ending in `.db`, `.sqlite`, or `.sqlite3` addresses SQLite.
 
@@ -80,17 +86,7 @@ WHERE ("email" = $1)
 ORDER BY "id" ASC
 ```
 
-## 5. Manual schema declarations
-
-Schema code generation is the primary route, because it keeps the markers, the snapshot, and the database catalog in step. A hand-written `table!` declaration stays available as a low-level fallback for isolated unit tests and rapid prototypes, where the crate is built with no reachable database:
-
-```rust,no_run
-{{#rustdoc_include examples/quickstart.rs:schema}}
-```
-
-The generated module declares its markers the same way, so a relation and its columns are values under both forms, and the builder calls a test exercises are the calls the generated module receives. A hand-written declaration carries no snapshot and no `SCHEMA_HASH`, so it never stands in for the generated module when drift is verified.
-
-## 6. Error model
+## 5. Error model
 
 Failures are returned as explicit, structured `Result` types:
 
@@ -99,3 +95,13 @@ Failures are returned as explicit, structured `Result` types:
 * **`ExecutionError`:** Returned by terminal query calls, preserving the underlying driver error while providing classification helpers (`is_not_found`, `is_multiple_rows`, `is_row_decode`, `as_backend`).
 
 A failure travels in the type that produced it, so a terminal call is propagated with `?` and the typed error surfaces at the runtime boundary of the application.
+
+## 6. Hand-written schema declarations
+
+Schema code generation is the primary route, because it keeps the markers, the snapshot, and the database catalog in step. A hand-written `table!` declaration stays available as a low-level fallback for isolated unit tests and rapid prototypes, where the crate is built with no reachable database:
+
+```rust,no_run
+{{#rustdoc_include examples/quickstart.rs:fallback}}
+```
+
+The generated module declares its markers the same way, so a relation and its columns are values under both forms, and the builder calls a test exercises are the calls the generated module receives. A hand-written declaration carries no snapshot and no `SCHEMA_HASH`, so it never stands in for the generated module when drift is verified.
