@@ -1,6 +1,6 @@
 # Introduction
 
-RURQE is a strictly typed SQL query builder, relational execution engine, and database-first code generation toolkit for Rust. Its central promise: every query that compiles is a syntactically and semantically valid statement for the targeted database dialect and engine version, and an invalid query fails to compile.
+RURQE is a strictly typed SQL query builder, relational execution engine, and database-first code generation toolkit for Rust. Correctness is established in two tiers: the type system rejects at compile time every relational violation it can express (relation scoping, projection typing, outer-join nullability, statement typestates, and dialect and version capabilities), and `.build()` rejects, before a statement is dispatched, the rules the type system cannot express, such as an unaliased duplicate relation or the `ORDER BY` alignment of `DISTINCT ON`. A query that passes both gates is a valid statement for the targeted dialect and engine version, provided its schema markers describe the live catalog.
 
 ## Guided Query Example
 
@@ -34,7 +34,7 @@ The boundary between application code and a relational database typically suffer
 2. **Untyped SQL strings:** Raw strings bypass the compiler. Typos in column identifiers, omitted joins, or invalid nullability expectations remain invisible until execution.
 3. **Loss of type guarantees:** Relational structures are flattened into tuples or weakly typed rows, losing provenance and nullability invariants.
 
-RURQE resolves these challenges using compiler checks, zero-cost monomorphized abstractions, and deterministic catalog introspection. The database engine is never the first place where structural query defects are discovered.
+RURQE resolves these challenges using compiler checks, zero-cost monomorphized abstractions, and deterministic catalog introspection. A query written through the typed DSL passes both validation gates before it is dispatched; a statement issued through the raw SQL escape hatches (`sql!`, `raw_sql!`) bypasses them by design, and its failures surface as typed execution errors at runtime.
 
 ## The Four Architectural Pillars
 
@@ -62,7 +62,9 @@ RURQE unifies four foundational design principles into a cohesive developer expe
 ## Design Principles
 
 * **The Schema Is the Single Source of Truth:** Table and column markers, DTO definitions, and catalog lock files (`schema.lock`) are derived from database catalog introspection rather than manually maintained.
-* **No Invalid Statement Reaches the Database:** Validation operates across two gates: the Rust compiler catches positive invariant violations (relation scoping, nullability lifting, typestates, capability checks), and client-side AST inspection during `.build()` catches negative invariants (duplicate unaliased relations) and cross-clause alignments.
+* **Two-Tier Validation:** A query written through the typed DSL is validated at two gates before it is dispatched, and each gate owns the rules it can decide without the database.
+  * **Tier 1 (compile time):** relation scope isolation, projection and `IN` subquery typing, outer-join nullability lifted to `Option<T>`, the typestates of a statement (a `SELECT` without a projection, an `UPDATE` without `SET`, an unfiltered `UPDATE` or `DELETE`), the projection rules of a grouped query, and dialect and version capability gates. A violation does not compile.
+  * **Tier 2 (pre-flight in `.build()`):** the rules that need a negative assertion (a relation must be *absent* from the scope) or the alignment of a clause with another one written later in the chain. Among them: an unaliased duplicate relation, the leading `ORDER BY` prefix of `DISTINCT ON`, the `ORDER BY` coverage of `DISTINCT`, the ordering targets of a compound statement, and an aggregate projected alongside a bare column without `GROUP BY`. A violation returns `Err(BuildError)` instead of a statement, before any network I/O.
 * **Native or Nothing:** Engine features that cannot be expressed natively are not simulated with synthetic runtime workarounds. If a database engine lacks a capability (such as row-level locking on SQLite), the builder method does not exist.
 * **Zero Cost:** Monomorphized query chains and zero-sized markers compile directly to parameterized SQL strings and zero-allocation decoders without virtual dispatch or garbage collection.
 * **Panic-Free Architecture:** Fallible operations consistently return typed errors (`Result<T, E>`), distinguishing build validation failures (`BuildError`), decoding mismatches (`RowDecodeError`), and backend failures (`ExecutionError`).
