@@ -33,7 +33,7 @@ for user in active_users {
 
 ## Development & Tooling
 
-This project is engineered using [TAUQE](https://github.com/archimag/tauqe), an AI-native engineering control environment built on the literal harness paradigm.
+This project is engineered using [TAUQE](https://github.com/archimag/tauqe).
 
 ## Contributing
 
