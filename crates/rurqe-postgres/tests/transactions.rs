@@ -127,6 +127,7 @@ mod support {
 
 #[cfg(feature = "r2d2")]
 mod sync_pool {
+    use std::error::Error as StdError;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     use postgres::NoTls;
@@ -393,11 +394,27 @@ mod sync_pool {
 
         // The checkout of the dead session is refused instead of handed out, and
         // the refusal names the reset the broken session could not complete.
-        match pool.get() {
-            Err(PgPoolError::Query(PgError::AbandonedTransaction { .. })) => {}
-            Err(other) => panic!("the checkout reports the broken session: {other:?}"),
+        let refused = match pool.get() {
             Ok(_) => panic!("the checkout of a session without a backend is refused"),
-        }
+            Err(failure) => failure,
+        };
+        let abandoned = match &refused {
+            PgPoolError::Query(error) => error,
+            other => panic!("the checkout reports the broken session: {other:?}"),
+        };
+        let PgError::AbandonedTransaction { failure } = abandoned else {
+            panic!("the checkout reports the abandoned transaction: {abandoned:?}");
+        };
+        // The driver failure the reset observed is kept whole instead of being
+        // flattened into a message, so the checkout hands it back through
+        // `source` and the cause stays reachable from the returned value.
+        let cause = StdError::source(abandoned)
+            .unwrap_or_else(|| panic!("the refusal keeps the driver failure it observed"));
+        assert_eq!(
+            cause.to_string(),
+            failure.to_string(),
+            "the driver failure the reset reported is reachable through `source`"
+        );
 
         // The refused checkout dropped the dead connection, so the pool opens a
         // fresh one for the next caller.
