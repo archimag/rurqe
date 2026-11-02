@@ -24,6 +24,27 @@ fn load_user(conn: &mut SqliteConnection) -> Result<Option<i64>, Error> {
 }
 // ANCHOR_END: load_user
 
+// ANCHOR: fetch_iter
+/// Lazily streams matching rows one at a time.
+fn stream_users(conn: &mut SqliteConnection) -> Result<i64, Error> {
+    let query = select_from(User).select(cols!(UserId));
+    let mut count = 0;
+    for row in conn.fetch_iter(&query)? {
+        let _id = row?.user_id;
+        count += 1;
+    }
+    Ok(count)
+}
+// ANCHOR_END: fetch_iter
+
+// ANCHOR: fetch_collect
+/// Collects query rows directly into any collection implementing `FromIterator`.
+fn collect_user_deque(conn: &mut SqliteConnection) -> Result<usize, Error> {
+    let query = select_from(User).select(cols!(UserId));
+    let rows: std::collections::VecDeque<_> = conn.fetch_collect(&query)?;
+    Ok(rows.len())
+}
+// ANCHOR_END: fetch_collect
 fn main() -> Result<()> {
     // ANCHOR: open_in_memory
     let mut conn = SqliteConnection::open_in_memory()?;
@@ -34,6 +55,9 @@ fn main() -> Result<()> {
         Some(id) => println!("user {id}"),
         None => println!("no user"),
     }
+
+    let _ = stream_users(&mut conn)?;
+    let _ = collect_user_deque(&mut conn)?;
 
     Ok(())
 }
