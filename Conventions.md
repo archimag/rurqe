@@ -77,9 +77,9 @@ kH4W |   * The supported-escape-hatch option is ratified over gating the handles
 * **Runtime Orthogonality of Query Construction:**
   * Assembling a statement — `select_from` / `insert_into` / `update` / `delete_from`, `.where_()`, joins, grouping, ordering, and the `select!` / `cols!` projections — performs no I/O and carries no executor, runtime, or connection type in its signature. The identical chain therefore compiles against a synchronous and an asynchronous driver, and the runtime is chosen at the terminal call alone.
   * The runtime difference is localized strictly in the terminal method and its suffix: an asynchronous backend returns a future consumed with `.await?` (`fetch_all`, `fetch_one`, `fetch_optional`, `execute`), while the synchronous backend returns the same `Result` directly. No earlier line of the chain changes, and no duplicated builder exists per runtime.
-* **Async-First Standard for Documentation and Examples:**
-  * Asynchronous execution is the primary, application-facing standard: application examples, tutorials, book chapters, and the root `examples/` crate target tokio and an asynchronous connection pool, because that is how services and web applications execute queries.
-  * Synchronous execution is a first-class positioning, not a deprecated fallback: `rusqlite` and the synchronous PostgreSQL driver serve CLI tooling, background migration runners, and embedded deployments, and the runtime documentation presents them explicitly in dedicated sections rather than leaving them undocumented.
+* **Async-First Architectural Standard:**
+  * Asynchronous execution is the primary, application-facing standard: services and web applications execute queries against tokio and an asynchronous connection pool.
+  * Synchronous execution is a first-class positioning, not a deprecated fallback: `rusqlite` and the synchronous PostgreSQL driver serve CLI tooling, background migration runners, and embedded deployments.
 
 ---
 
@@ -91,9 +91,9 @@ kH4W |   * The supported-escape-hatch option is ratified over gating the handles
   * Every new feature must be verified by automated unit or integration tests.
   * Every bug fix must include an accompanying regression test.
 * **Typed Zero-Cost Errors (No `Box<dyn std::error::Error>`):**
-  * Application code, the root `examples/` crate, and every runnable documentation snippet declare a fallible entry point as `async fn main() -> Result<()>`, taking the `Error` and `Result` aliases from the prelude of the active dialect (`rurqe::postgres::prelude::*`, `rurqe::sqlite::prelude::*`, or a version-pinned prelude).
+  * Application code and the root `examples/` crate declare a fallible entry point as `async fn main() -> Result<()>`, taking the `Error` and `Result` aliases from the prelude of the active dialect (`rurqe::postgres::prelude::*`, `rurqe::sqlite::prelude::*`, or a version-pinned prelude).
   * Those aliases pin the concrete driver error — `ExecutionError<PgError>` for PostgreSQL and `ExecutionError<rusqlite::Error>` for SQLite — so a failure keeps its typed variants (`Build`, `Backend`, `RowDecode`, `NoRows`, `MultipleRows`) and the signature costs neither a heap allocation nor a virtual call.
-  * `Box<dyn std::error::Error>` and every other type-erased error wrapper are forbidden in examples, tutorials, and book snippets: they discard the driver error type the library deliberately keeps visible and teach a signature the application never writes. A snippet that has to stay dialect-agnostic names `ExecutionError` over the driver error in scope instead of erasing it.
+  * `Box<dyn std::error::Error>` and every other type-erased error wrapper are forbidden in application code, examples, and tests: they discard the driver error type the library deliberately keeps visible and teach a signature the application never writes. A snippet that has to stay dialect-agnostic names `ExecutionError` over the driver error in scope instead of erasing it.
   * A query or mutation result is propagated with `?`, so the typed error surfaces at the runtime boundary and a terminal call stays a single `?`-terminated expression.
 
 ---
