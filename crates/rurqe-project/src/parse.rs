@@ -372,6 +372,11 @@ impl CodegenConfig {
 
     /// Records one override, rejecting an empty type or a repeated path.
     ///
+    /// The declared Rust type is trimmed like every other declared string, so a
+    /// value written with surrounding whitespace — or as a multi-line string
+    /// carrying a trailing newline — is stored as the type it names rather than
+    /// as the bytes that happen to surround it.
+    ///
     /// The declaration keeps the position of its own key, which is where the
     /// schema cross-check reports it once the whole document is read.
     fn insert_override(
@@ -382,7 +387,9 @@ impl CodegenConfig {
         rust_type: &str,
         declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
-        if rust_type.trim().is_empty() {
+        let rust_type = rust_type.trim();
+
+        if rust_type.is_empty() {
             return Err(syntax_error(
                 contents,
                 span,

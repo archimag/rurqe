@@ -463,6 +463,35 @@ fn whitespace_around_override_segments_is_trimmed() {
 }
 
 #[test]
+fn declared_override_rust_types_are_stored_trimmed() {
+    let config = CodegenConfig::parse(
+        "[codegen.type_overrides]\n\
+         \"users.id\" = \"  uuid::Uuid  \"\n\
+         \"users.created_at\" = '''\n\
+         chrono::NaiveDateTime\n\
+         '''\n",
+    )
+    .expect("the declared types are valid");
+
+    assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
+    assert_eq!(
+        config.type_override("users", "created_at"),
+        Some("chrono::NaiveDateTime"),
+        "a multi-line declared type is stored as the type it names"
+    );
+
+    let overrides = config.type_overrides();
+    assert_eq!(
+        overrides.get("users.id").map(String::as_str),
+        Some("uuid::Uuid")
+    );
+    assert_eq!(
+        overrides.get("users.created_at").map(String::as_str),
+        Some("chrono::NaiveDateTime")
+    );
+}
+
+#[test]
 fn unknown_sections_are_rejected() {
     let err = CodegenConfig::parse(
         "# project configuration\n\
