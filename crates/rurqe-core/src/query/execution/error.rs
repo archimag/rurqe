@@ -3,7 +3,17 @@
 use core::fmt;
 
 /// Error raised while executing a query through [`QueryBackendExt`](super::QueryBackendExt).
+///
+/// The enumeration is `#[non_exhaustive]`: it separates the outcomes this crate
+/// observes itself — a statement that failed pre-flight validation, a produced row
+/// that does not match the row type of the query, and a single-row call that found
+/// none or several — from the driver failure it reports verbatim, so a further
+/// terminal concern arrives as a variant of its own rather than as a change of
+/// contract. The set of variants a downstream crate observes therefore grows over
+/// time, and matching code outside this crate has to keep a wildcard arm, which
+/// stays correct no matter which variants exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExecutionError<E> {
     /// Pre-flight query validation detected invalid SQL semantics.
     Build(crate::query::BuildError),

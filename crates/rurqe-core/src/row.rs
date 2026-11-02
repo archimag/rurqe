@@ -17,7 +17,16 @@ use std::fmt;
 use crate::expr::SqlVal;
 
 /// The reason a bound SQL value or a produced row cannot be decoded into Rust.
+///
+/// The enumeration is `#[non_exhaustive]`: it names one variant per kind of
+/// decoding failure, and every value type reached through a cargo feature, every
+/// engine reporting a value in another form, and every nullable layer wrapping the
+/// one below it can describe a failure the current set does not name. A new kind
+/// therefore arrives as a variant of its own rather than as a change of contract,
+/// so matching code outside this crate has to keep a wildcard arm, which stays
+/// correct no matter which decoders are compiled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RowDecodeError {
     /// The value holds a kind the target type does not accept.
     TypeMismatch {

@@ -98,7 +98,18 @@ impl RowClause {
 }
 
 /// An error returned when pre-flight query validation detects invalid SQL semantics.
+///
+/// The enumeration is `#[non_exhaustive]`: it carries one variant per pre-flight
+/// SQL rule, and the rule set is never finished — a clause, a typestate, or a
+/// dialect capability the validation does not cover yet arrives together with its
+/// own variant, and an existing variant is split when a single rule has to
+/// distinguish cases it previously reported together. Both are ordinary extensions
+/// of the rule set rather than a change of contract, so the set of variants a
+/// downstream crate observes keeps growing. Matching code outside this crate
+/// therefore has to keep a wildcard arm, which stays correct no matter which rules
+/// are compiled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BuildError {
     /// A relation was referenced or joined multiple times under one effective name.
     ///
