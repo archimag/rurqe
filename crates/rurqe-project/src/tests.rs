@@ -651,12 +651,10 @@ fn a_missing_configuration_is_an_error() {
 
     let _ = std::fs::remove_dir_all(&directory);
 
-    assert_eq!(
-        err,
-        ConfigError::NotFound {
-            path: path.display().to_string()
-        },
-        "the diagnostic carries the absent path"
+    let absent = path.display().to_string();
+    assert!(
+        matches!(&err, ConfigError::NotFound { path } if path == &absent),
+        "the diagnostic carries the absent path: {err}"
     );
     assert!(
         err.to_string().contains("does not exist"),
@@ -685,6 +683,39 @@ fn an_unreadable_configuration_is_an_error() {
     assert!(
         err.to_string().contains("failed to read configuration"),
         "{err}"
+    );
+}
+
+/// The operating-system failure stays the source of the error, so a caller still
+/// observes the `ErrorKind` that decided the read failed and an error reporter
+/// down the chain receives the underlying cause.
+#[test]
+fn an_unreadable_configuration_keeps_the_operating_system_error() {
+    use std::error::Error as _;
+
+    let directory = temporary_project("io-source");
+    let path = directory.join(DEFAULT_CONFIG_PATH);
+    std::fs::write(&path, [0xffu8, 0xfe]).expect("the invalid configuration is written");
+
+    let err = CodegenConfig::load(&path).expect_err("the contents are not UTF-8");
+
+    let _ = std::fs::remove_dir_all(&directory);
+
+    let source = err
+        .source()
+        .expect("the operating-system error is the source of the failure");
+    let io = source
+        .downcast_ref::<std::io::Error>()
+        .expect("the source is the operating-system error itself");
+
+    assert_eq!(
+        io.kind(),
+        std::io::ErrorKind::InvalidData,
+        "the kind survives, so the failure is programmatically readable"
+    );
+    assert!(
+        err.to_string().contains("failed to read configuration"),
+        "the diagnostic keeps its wording: {err}"
     );
 }
 

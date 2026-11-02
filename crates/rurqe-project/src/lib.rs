@@ -154,7 +154,7 @@ impl CodegenConfig {
             }
             Err(error) => Err(ConfigError::Io {
                 path: path.display().to_string(),
-                message: error.to_string(),
+                source: error,
             }),
         }
     }
@@ -367,14 +367,22 @@ impl CodegenConfig {
 }
 
 /// Error raised while reading the project configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ConfigError {
     /// The configuration file exists but could not be read.
+    ///
+    /// The operating-system failure is kept as the
+    /// [`source`](std::error::Error::source) of the error rather than flattened
+    /// into a string, so the caller still observes the
+    /// [`ErrorKind`](std::io::ErrorKind) that decided the read failed —
+    /// `PermissionDenied` for a file the process may not read, `InvalidData`
+    /// for contents that are not UTF-8 — and an error reporter down the chain
+    /// receives the underlying cause.
     Io {
         /// The path that was read.
         path: String,
         /// The underlying operating-system error.
-        message: String,
+        source: std::io::Error,
     },
     /// A line of the configuration is malformed.
     ///
@@ -405,8 +413,8 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::Io { path, message } => {
-                write!(f, "failed to read configuration `{path}`: {message}")
+            ConfigError::Io { path, source } => {
+                write!(f, "failed to read configuration `{path}`: {source}")
             }
             ConfigError::Syntax {
                 line,
@@ -423,7 +431,18 @@ impl fmt::Display for ConfigError {
     }
 }
 
-impl std::error::Error for ConfigError {}
+impl std::error::Error for ConfigError {
+    /// The operating-system failure behind a configuration that could not be read.
+    ///
+    /// `Syntax` is a failure of the document's own content and `NotFound` is an
+    /// absence at the named path, so neither carries a cause beneath it.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConfigError::Io { source, .. } => Some(source),
+            ConfigError::Syntax { .. } | ConfigError::NotFound { .. } => None,
+        }
+    }
+}
 
 /// The configuration file of the project rooted at `directory`.
 ///
