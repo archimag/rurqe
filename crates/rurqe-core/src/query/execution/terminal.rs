@@ -285,7 +285,8 @@ where
 {
 }
 
-impl<'a, D, T, Values, Returning, B> QueryTerminals<'a, B> for InsertQuery<D, T, Values, Returning>
+impl<'a, D, T, Values, Returning, ConflictState, B> QueryTerminals<'a, B>
+    for InsertQuery<D, T, Values, Returning, ConflictState>
 where
     D: Dialect,
     T: Table,

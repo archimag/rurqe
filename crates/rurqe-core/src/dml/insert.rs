@@ -9,12 +9,19 @@
 //! INSERT INTO "users" ("id", "name") VALUES ($1, $2), ($3, $4)
 //! ```
 
-use core::fmt;
+mod columns;
+mod source;
+mod state;
+
+pub use self::columns::InsertColumns;
+pub use self::source::{EmptyRows, InsertColumnsTarget, InsertSource, InsertedSelect};
+pub use self::state::{HasConflict, NoConflict};
+
 use core::marker::PhantomData;
 
 use super::conflict::{Conflict, ConflictAction, OnConflict};
 use super::scope::ValuesScope;
-use super::{AssignValue, Assignment, AssignmentScope, AssignmentSet};
+use super::{AssignValue, AssignmentScope, AssignmentSet};
 use crate::dialect::{Dialect, SupportsAliasedInsertTarget, SupportsOnConflict, SupportsReturning};
 use crate::dml::render_expr;
 use crate::expr::{DialectInScope, ExprKind, SelectAst, StatementRef};
@@ -23,135 +30,7 @@ use crate::query::{
     validate_row_clause, BuildError, BuiltQuery, HasProjection, RowClause, SelectQuery, Selection,
     TableScope, TableSelection,
 };
-use crate::schema::{Aliased, Column, ColumnBelongsTo, Table, TableAlias};
-
-/// Marker representing rows produced by a `SELECT` query in an `INSERT INTO ... SELECT` statement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct InsertedSelect<Row>(PhantomData<fn() -> Row>);
-
-/// Marker representing target columns configured for an `INSERT INTO ... SELECT` statement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct InsertColumnsTarget<Cols>(PhantomData<fn() -> Cols>);
-
-/// The error returned when an `INSERT` is given no row to insert.
-///
-/// An `INSERT` without rows could only render the syntactically invalid
-/// `INSERT INTO "users" () VALUES` statement, so [`InsertQuery::values_many`]
-/// rejects an empty row source instead of moving the query into the
-/// [`InsertSource`] state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmptyRows;
-
-impl fmt::Display for EmptyRows {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("refusing to build an INSERT without rows: the row source is empty")
-    }
-}
-
-impl std::error::Error for EmptyRows {}
-
-/// A column or tuple of columns for the target column list of an `INSERT INTO ... SELECT` statement.
-///
-/// Ensures at compile time that every column belongs to table `T` and infers the expected
-/// row type for the corresponding `SELECT` subquery.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` is not a valid column list for table `{T}`",
-    label = "columns must belong to table `{T}`",
-    note = "ensure all columns are members of `{T}` using column markers or tuples of column markers"
-)]
-pub trait InsertColumns<T: Table> {
-    /// The tuple of Rust types matching the selected column values.
-    type Row;
-
-    /// Appends the target column names to `out`.
-    fn push_column_names(&self, out: &mut Vec<&'static str>);
-}
-
-impl<T: Table, C: Column + ColumnBelongsTo<T>> InsertColumns<T> for C {
-    type Row = (C::RustType,);
-
-    fn push_column_names(&self, out: &mut Vec<&'static str>) {
-        out.push(C::NAME);
-    }
-}
-
-macro_rules! impl_insert_columns {
-    ($($col:ident),+) => {
-        impl<T: Table, $($col: Column + ColumnBelongsTo<T>),+> InsertColumns<T> for ($($col,)+) {
-            type Row = ($($col::RustType,)+);
-
-            fn push_column_names(&self, out: &mut Vec<&'static str>) {
-                $(out.push($col::NAME);)+
-            }
-        }
-    };
-}
-
-// The column-list arities stop at eight, and `merge_assignments` scans within
-// that bound instead of building a position map; widening these invocations is
-// what would make the map worth its constant cost again.
-impl_insert_columns!(C1);
-impl_insert_columns!(C1, C2);
-impl_insert_columns!(C1, C2, C3);
-impl_insert_columns!(C1, C2, C3, C4);
-impl_insert_columns!(C1, C2, C3, C4, C5);
-impl_insert_columns!(C1, C2, C3, C4, C5, C6);
-impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7);
-impl_insert_columns!(C1, C2, C3, C4, C5, C6, C7, C8);
-
-/// A source of rows recorded by an [`InsertQuery`].
-///
-/// The trait is implemented by the [`Assignment`] and tuple row values accepted
-/// by [`InsertQuery::values`] and [`InsertQuery::values_many`], and by the
-/// [`InsertedSelect`] marker produced by [`InsertQuery::from_select`]. Since an
-/// `INSERT` without rows cannot be rendered, [`InsertQuery::build`] is only
-/// reachable once a source has been recorded:
-///
-/// ```compile_fail
-/// use rurqe_core::dml::InsertQuery;
-/// # use rurqe_core::dialect::Dialect;
-/// # struct MockDialect;
-/// # impl Dialect for MockDialect {
-/// #     fn push_quoted_identifier(_: &mut String, _: &str) {}
-/// #     fn push_placeholder(_: &mut String, _: usize) {}
-/// # }
-/// # rurqe_core::table!(User => "users" { UserId => "id": i64, });
-/// // Fails to compile: no rows and no source SELECT were supplied:
-/// let query = InsertQuery::<MockDialect, User>::new();
-/// query.build();
-/// ```
-#[diagnostic::on_unimplemented(
-    message = "refusing to build an INSERT without rows",
-    label = "this INSERT has neither `VALUES` rows nor a source `SELECT`",
-    note = "supply rows with `.values(...)`, `.values_many(...)`, or `.from_select(...)` before building the statement"
-)]
-pub trait InsertSource<T: Table> {}
-
-impl<C: Column, V, Scope, D> InsertSource<C::Table> for Assignment<C, V, Scope, D> {}
-
-macro_rules! impl_insert_source_for_tuple {
-    ($($element:ident),+) => {
-        impl<T: Table, $($element),+> InsertSource<T> for ($($element,)+)
-        where
-            ($($element,)+): AssignmentSet<T>,
-        {
-        }
-    };
-}
-
-// The row-source arities stop at eight, the same bound `merge_assignments`
-// scans within when it folds repeated assignments; see the note on the
-// column-list invocations above before widening them.
-impl_insert_source_for_tuple!(A);
-impl_insert_source_for_tuple!(A, B);
-impl_insert_source_for_tuple!(A, B, C);
-impl_insert_source_for_tuple!(A, B, C, D);
-impl_insert_source_for_tuple!(A, B, C, D, E);
-impl_insert_source_for_tuple!(A, B, C, D, E, F);
-impl_insert_source_for_tuple!(A, B, C, D, E, F, G);
-impl_insert_source_for_tuple!(A, B, C, D, E, F, G, H);
-
-impl<T: Table, Row> InsertSource<T> for InsertedSelect<Row> {}
+use crate::schema::{Aliased, Table, TableAlias};
 
 /// An `INSERT` statement over the table `T`.
 ///
@@ -159,24 +38,39 @@ impl<T: Table, Row> InsertSource<T> for InsertedSelect<Row> {}
 /// and changes from `()` once [`InsertQuery::values`], [`InsertQuery::values_many`],
 /// or [`InsertQuery::from_select`] is called, so rows may only be supplied once.
 /// `Returning` becomes the row type of the [`InsertQuery::returning`] selection once
-/// it is set, and the optional [`Conflict`] clause is recorded by
+/// it is set.
+///
+/// `ConflictState` records whether the statement already carries an `ON CONFLICT`
+/// clause. It starts as [`NoConflict`], where
 /// [`on_conflict`](InsertQuery::on_conflict) and
-/// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing).
-pub struct InsertQuery<D: Dialect, T: Table, Values = (), Returning = ()> {
+/// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing) are reachable,
+/// and moves into [`HasConflict`] once a clause is recorded. A second call
+/// therefore fails to compile instead of replacing the clause that is already
+/// there, so the conflict handling the caller recorded cannot be dropped
+/// silently.
+pub struct InsertQuery<
+    D: Dialect,
+    T: Table,
+    Values = (),
+    Returning = (),
+    ConflictState = NoConflict,
+> {
     columns: Vec<&'static str>,
     rows: Vec<Vec<(&'static str, AssignValue)>>,
     select: Option<SelectAst>,
     conflict: Option<Conflict>,
     returning: Vec<ExprKind>,
-    _marker: InsertMarker<D, T, Values, Returning>,
+    _marker: InsertMarker<D, T, Values, Returning, ConflictState>,
 }
 
-/// Phantom marker carrying the dialect, target table, inserted row type, and
-/// `RETURNING` clause type of an `INSERT` statement.
+/// Phantom marker carrying the dialect, the target table, the inserted row
+/// type, the `RETURNING` clause type, and the `ON CONFLICT` typestate of an
+/// `INSERT` statement.
 ///
 /// The parameters are wrapped in a function result, so they are treated as
 /// covariant and no drop-check obligations are introduced.
-type InsertMarker<D, T, Values, Returning> = PhantomData<fn() -> (D, T, Values, Returning)>;
+type InsertMarker<D, T, Values, Returning, ConflictState> =
+    PhantomData<fn() -> (D, T, Values, Returning, ConflictState)>;
 
 impl<D: Dialect, T: Table> InsertQuery<D, T, (), ()> {
     /// Creates an `INSERT` statement without any rows to insert.
@@ -267,7 +161,9 @@ impl<D: Dialect + SupportsAliasedInsertTarget, T: Table, A: TableAlias>
     }
 }
 
-impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
+impl<D: Dialect, T: Table, Returning, ConflictState>
+    InsertQuery<D, T, (), Returning, ConflictState>
+{
     /// Inserts a single row described by the assignment set `set`.
     ///
     /// An assigned value is rendered inside the `VALUES` list of the statement,
@@ -315,7 +211,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     /// let _ = InsertQuery::<MockDialect, User>::new()
     ///     .values(UserId::set_expr(Expr::column::<AccountId>().without_scope()));
     /// ```
-    pub fn values<S>(mut self, set: S) -> InsertQuery<D, T, S, Returning>
+    pub fn values<S>(mut self, set: S) -> InsertQuery<D, T, S, Returning, ConflictState>
     where
         S: AssignmentSet<T> + AssignmentScope,
         // A `VALUES` list addresses no relation at all, so an assigned
@@ -337,7 +233,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     pub fn values_many<I, S>(
         mut self,
         rows: I,
-    ) -> Result<InsertQuery<D, T, S, Returning>, EmptyRows>
+    ) -> Result<InsertQuery<D, T, S, Returning, ConflictState>, EmptyRows>
     where
         I: IntoIterator<Item = S>,
         S: AssignmentSet<T> + AssignmentScope,
@@ -359,7 +255,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     pub fn columns<Cols: InsertColumns<T>>(
         mut self,
         columns: Cols,
-    ) -> InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning> {
+    ) -> InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning, ConflictState> {
         columns.push_column_names(&mut self.columns);
         self.with_row_source()
     }
@@ -373,7 +269,7 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
         mut self,
         columns: Cols,
         select: SelectQuery<D, S, Cols::Row, HasProjection>,
-    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning>
+    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning, ConflictState>
     where
         Cols: InsertColumns<T>,
         S: TableScope,
@@ -386,8 +282,8 @@ impl<D: Dialect, T: Table, Returning> InsertQuery<D, T, (), Returning> {
     }
 }
 
-impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
-    InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning>
+impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning, ConflictState>
+    InsertQuery<D, T, InsertColumnsTarget<Cols>, Returning, ConflictState>
 {
     /// Configures the statement to insert rows produced by `select` into the specified columns.
     ///
@@ -396,13 +292,15 @@ impl<D: Dialect, T: Table, Cols: InsertColumns<T>, Returning>
     pub fn from_select<S: TableScope>(
         mut self,
         select: SelectQuery<D, S, Cols::Row, HasProjection>,
-    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning> {
+    ) -> InsertQuery<D, T, InsertedSelect<Cols::Row>, Returning, ConflictState> {
         self.select = Some(select.into_ast());
         self.with_row_source()
     }
 }
 
-impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values, ()> {
+impl<D: Dialect + SupportsReturning, T: Table, Values, ConflictState>
+    InsertQuery<D, T, Values, (), ConflictState>
+{
     /// Adds a `RETURNING` clause projecting `selection` for every affected row.
     ///
     /// The query row type becomes [`Selection::Row`], keeping the projected
@@ -412,7 +310,7 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
     pub fn returning<S: Selection + TableSelection<T>>(
         mut self,
         selection: S,
-    ) -> InsertQuery<D, T, Values, <S as Selection>::Row> {
+    ) -> InsertQuery<D, T, Values, <S as Selection>::Row, ConflictState> {
         // The clause is assembled from the projected items themselves, so a
         // computed projection stays in the rendered statement exactly like a
         // plain column: the row type of the statement keeps naming every item the
@@ -423,12 +321,51 @@ impl<D: Dialect + SupportsReturning, T: Table, Values> InsertQuery<D, T, Values,
 }
 
 impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
-    InsertQuery<D, T, Values, Returning>
+    InsertQuery<D, T, Values, Returning, NoConflict>
 {
     /// Adds an `ON CONFLICT DO NOTHING` clause without a conflict target.
     ///
     /// Conflicting rows are skipped silently, whatever unique constraint they
     /// violate. Available only for dialects implementing [`SupportsOnConflict`].
+    ///
+    /// The statement carries at most one `ON CONFLICT` clause: the call records
+    /// the clause and moves the statement into [`HasConflict`]. Both entry
+    /// points — this method and [`on_conflict`](InsertQuery::on_conflict) —
+    /// exist only before that transition, so a second call is rejected at
+    /// compile time instead of replacing the clause already recorded.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::{Dialect, SupportsOnConflict};
+    /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsOnConflict for MockDialect {}
+    ///
+    /// rurqe_core::table!(
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// );
+    ///
+    /// // Fails to compile: a conflict clause is already recorded, so a second
+    /// // one would replace it silently.
+    /// let _ = InsertQuery::<MockDialect, User>::new()
+    ///     .values(UserId::set(1i64))
+    ///     .on_conflict((UserId,))
+    ///     .do_nothing()
+    ///     .on_conflict_do_nothing();
+    /// ```
     ///
     /// ```compile_fail
     /// use rurqe_core::dml::InsertQuery;
@@ -442,13 +379,14 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     /// // Fails to compile because `MockDialect` does not implement `SupportsOnConflict`:
     /// let query = InsertQuery::<MockDialect, User>::new().on_conflict_do_nothing();
     /// ```
-    pub fn on_conflict_do_nothing(mut self) -> Self {
-        self.conflict = Some(Conflict {
+    pub fn on_conflict_do_nothing(
+        self,
+    ) -> InsertQuery<D, T, Values, Returning, HasConflict> {
+        self.with_conflict(Conflict {
             target: Vec::new(),
             target_predicate: None,
             action: ConflictAction::DoNothing,
-        });
-        self
+        })
     }
 
     /// Starts an `ON CONFLICT (target) DO ...` clause for the columns `target`.
@@ -457,6 +395,45 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     /// [`OnConflict::do_nothing`] or [`OnConflict::do_update`]. Available only for
     /// dialects implementing [`SupportsOnConflict`]. Every target column must
     /// belong to `T`, so a conflict target of another table fails to compile.
+    ///
+    /// The statement carries at most one `ON CONFLICT` clause: the call starts
+    /// the clause, and choosing an action records it, which moves the statement
+    /// into [`HasConflict`]. Both entry points — this method and
+    /// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing) — exist
+    /// only before that transition, so a second call is rejected at compile
+    /// time instead of replacing the clause the caller already recorded.
+    ///
+    /// ```compile_fail
+    /// use rurqe_core::dialect::{Dialect, SupportsOnConflict};
+    /// use rurqe_core::dml::{ColumnAssign, InsertQuery};
+    ///
+    /// struct MockDialect;
+    ///
+    /// impl Dialect for MockDialect {
+    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
+    ///         out.push_str(ident);
+    ///     }
+    ///
+    ///     fn push_placeholder(out: &mut String, index: usize) {
+    ///         let _ = index;
+    ///     }
+    /// }
+    ///
+    /// impl SupportsOnConflict for MockDialect {}
+    ///
+    /// rurqe_core::table!(
+    ///     User => "users" {
+    ///         UserId => "id": i64,
+    ///     }
+    /// );
+    ///
+    /// // Fails to compile: the statement already records an `ON CONFLICT`
+    /// // clause, so a second one would replace it silently.
+    /// let _ = InsertQuery::<MockDialect, User>::new()
+    ///     .values(UserId::set(1i64))
+    ///     .on_conflict_do_nothing()
+    ///     .on_conflict((UserId,));
+    /// ```
     pub fn on_conflict<S: Selection + TableSelection<T>>(
         self,
         target: S,
@@ -467,16 +444,25 @@ impl<D: Dialect + SupportsOnConflict, T: Table, Values, Returning>
     }
 }
 
-impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
+impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning, NoConflict> {
     /// Attaches a rendered [`Conflict`] clause to the statement.
-    pub(crate) fn with_conflict(mut self, conflict: Conflict) -> Self {
+    ///
+    /// A statement carries at most one clause: attaching it moves the statement
+    /// into [`HasConflict`], where
+    /// [`on_conflict`](InsertQuery::on_conflict) and
+    /// [`on_conflict_do_nothing`](InsertQuery::on_conflict_do_nothing) are no
+    /// longer reachable, so a second clause cannot replace the recorded one.
+    pub(crate) fn with_conflict(
+        mut self,
+        conflict: Conflict,
+    ) -> InsertQuery<D, T, Values, Returning, HasConflict> {
         self.conflict = Some(conflict);
-        self
+        self.retyped()
     }
 }
 
-impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
-    InsertQuery<D, T, Values, Returning>
+impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning, ConflictState>
+    InsertQuery<D, T, Values, Returning, ConflictState>
 {
     /// Renders the statement into SQL text and its ordered parameter list.
     ///
@@ -700,7 +686,9 @@ impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning>
     }
 }
 
-impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returning> {
+impl<D: Dialect, T: Table, Values, Returning, ConflictState>
+    InsertQuery<D, T, Values, Returning, ConflictState>
+{
     fn push_row<S: AssignmentSet<T>>(&mut self, set: S) {
         let mut raw_assignments = Vec::new();
         set.into_assignments(&mut raw_assignments);
@@ -728,24 +716,27 @@ impl<D: Dialect, T: Table, Values, Returning> InsertQuery<D, T, Values, Returnin
     /// Supplying `VALUES` rows, the target column list of an
     /// `INSERT INTO ... SELECT`, and the source statement itself all change what
     /// the statement inserts, so those builders restate the recorded source here.
-    /// The dialect, the inserted table, and the row type of the recorded
-    /// `RETURNING` clause stay exactly as they were.
-    fn with_row_source<Source>(self) -> InsertQuery<D, T, Source, Returning> {
-        InsertQuery {
-            columns: self.columns,
-            rows: self.rows,
-            select: self.select,
-            conflict: self.conflict,
-            returning: self.returning,
-            _marker: PhantomData,
-        }
+    /// The dialect, the inserted table, the row type of the recorded `RETURNING`
+    /// clause, and the recorded `ON CONFLICT` typestate stay exactly as they were.
+    fn with_row_source<Source>(self) -> InsertQuery<D, T, Source, Returning, ConflictState> {
+        self.retyped()
     }
 
     /// Restates the row type of the recorded `RETURNING` clause.
     ///
     /// The projected selection fixes the rows the statement hands back, while the
-    /// dialect, the inserted table, and the recorded row source stay untouched.
-    fn with_returning<Row>(self) -> InsertQuery<D, T, Values, Row> {
+    /// dialect, the inserted table, the recorded row source, and the recorded
+    /// `ON CONFLICT` typestate stay untouched.
+    fn with_returning<Row>(self) -> InsertQuery<D, T, Values, Row, ConflictState> {
+        self.retyped()
+    }
+
+    /// Restates the phantom markers of the statement, keeping the recorded clauses.
+    ///
+    /// Every transition of the builder moves the statement into another typestate
+    /// while the fields carrying what the caller recorded stay exactly as they
+    /// are.
+    fn retyped<Source, Row, State>(self) -> InsertQuery<D, T, Source, Row, State> {
         InsertQuery {
             columns: self.columns,
             rows: self.rows,

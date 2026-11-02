@@ -16,7 +16,7 @@
 use core::marker::PhantomData;
 
 use crate::dialect::{Dialect, SupportsOnConflict};
-use crate::dml::insert::merge_assignments;
+use crate::dml::insert::{merge_assignments, HasConflict, NoConflict};
 use crate::dml::{AssignValue, AssignmentScope, AssignmentSet, Excluded, InsertQuery};
 use crate::expr::{BinaryOp, DialectInScope, Expr, ExprKind, NonAggregate, Unscoped};
 use crate::schema::Table;
@@ -142,9 +142,13 @@ type ConflictMarker<Predicate> = PhantomData<fn() -> Predicate>;
 /// criterion into the recorded one with the SQL `AND` operator, so no
 /// restriction is dropped when a conditional upsert chains them.
 /// [`OnConflict::do_nothing`] and [`OnConflict::do_update`] then choose the
-/// action and hand the statement back for rendering.
+/// action and hand the statement back for rendering. The clause belongs to the
+/// statement only once an action is chosen: both methods record it and move the
+/// [`InsertQuery`] into its [`HasConflict`] state, where the entry points of the
+/// clause are no longer reachable, so a second clause cannot replace the one
+/// under construction.
 pub struct OnConflict<D: Dialect, T: Table, Values, Returning, Predicate = NoUpdatePredicate> {
-    query: InsertQuery<D, T, Values, Returning>,
+    query: InsertQuery<D, T, Values, Returning, NoConflict>,
     target: Vec<&'static str>,
     target_predicate: Option<ExprKind>,
     update_predicate: Option<ExprKind>,
@@ -158,7 +162,7 @@ where
 {
     /// Starts the `ON CONFLICT` clause of `query` on the target `columns`.
     pub(crate) fn new(
-        query: InsertQuery<D, T, Values, Returning>,
+        query: InsertQuery<D, T, Values, Returning, NoConflict>,
         target: Vec<&'static str>,
     ) -> Self {
         OnConflict {
@@ -208,7 +212,7 @@ where
     ///     .update_where(Expr::column::<UserId>().gt(1i64))
     ///     .do_nothing();
     /// ```
-    pub fn do_nothing(self) -> InsertQuery<D, T, Values, Returning> {
+    pub fn do_nothing(self) -> InsertQuery<D, T, Values, Returning, HasConflict> {
         self.query.with_conflict(Conflict {
             target: self.target,
             target_predicate: self.target_predicate,
@@ -366,7 +370,10 @@ where
     /// because the grammar of every engine places the target column list before
     /// `DO UPDATE`. The bare `ON CONFLICT DO NOTHING` clause is the one form
     /// that needs no target.
-    pub fn do_update<A>(self, assignments: A) -> InsertQuery<D, T, Values, Returning>
+    pub fn do_update<A>(
+        self,
+        assignments: A,
+    ) -> InsertQuery<D, T, Values, Returning, HasConflict>
     where
         A: AssignmentSet<T> + AssignmentScope,
         <A as AssignmentScope>::Scope: ConflictUpdateScope<T>,

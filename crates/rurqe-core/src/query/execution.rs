@@ -60,8 +60,8 @@ impl<D: Dialect, Tables: TableScope, Output, Lock> ExecutableQuery
     }
 }
 
-impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning> ExecutableQuery
-    for InsertQuery<D, T, Values, Returning>
+impl<D: Dialect, T: Table, Values: InsertSource<T>, Returning, ConflictState> ExecutableQuery
+    for InsertQuery<D, T, Values, Returning, ConflictState>
 {
     type Row = Returning;
 

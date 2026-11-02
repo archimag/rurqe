@@ -1,7 +1,7 @@
 use super::*;
 use crate::dml::{AssignColumn, Assignment, ColumnAssign, DeleteQuery, UpdateQuery};
 use crate::expr::{Expr, SqlVal};
-use crate::schema::AliasedCol;
+use crate::schema::{AliasedCol, Column};
 use core::fmt::Write;
 
 struct MockDialect;
@@ -784,7 +784,38 @@ fn on_conflict_renders_before_returning() {
         ]
     );
 }
+#[test]
+fn the_conflict_clause_is_recorded_in_the_typestate() {
+    let inserted = InsertQuery::<MockDialect, User>::new().values(UserId::set(1i64));
 
+    // The clause is part of the typestate of the statement, so the annotated
+    // type pins the state a recorded clause leaves behind.
+    let query: InsertQuery<MockDialect, User, Assignment<UserId, i64>, (), HasConflict> =
+        inserted.on_conflict_do_nothing();
+
+    assert_eq!(
+        query.build().expect("valid query").sql,
+        "INSERT INTO \"users\" (\"id\") VALUES ($1) ON CONFLICT DO NOTHING"
+    );
+}
+
+#[test]
+fn a_recorded_conflict_clause_survives_a_returning_projection() {
+    let conflicting = InsertQuery::<MockDialect, User>::new()
+        .values(UserId::set(1i64))
+        .on_conflict((UserId,))
+        .do_update(UserId::set(2i64));
+
+    // The projection restates the row type of the statement while the recorded
+    // clause keeps the typestate it already reached.
+    let query: InsertQuery<MockDialect, User, Assignment<UserId, i64>, (i64,), HasConflict> =
+        conflicting.returning((UserId,));
+
+    assert_eq!(
+        query.build().expect("valid query").sql,
+        "INSERT INTO \"users\" (\"id\") VALUES ($1) ON CONFLICT (\"id\") DO UPDATE SET \"id\" = $2 RETURNING \"id\""
+    );
+}
 #[test]
 fn from_select_with_columns_renders_insert_select_sql_and_binds_parameters() {
     use crate::expr::Expr;
