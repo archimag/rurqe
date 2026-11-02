@@ -39,6 +39,10 @@ clippy:
 test:
     cargo test --workspace
     cargo test -p rurqe-sqlite --features r2d2 --doc
+    # The migration protocol of the PostgreSQL adapter is gated on its `migrate`
+    # feature, so its scenario target is named with the feature that compiles it
+    # instead of depending on the feature set another workspace member requests.
+    cargo test -p rurqe-postgres --features migrate --test migrate
 
 # Verify the book: example coverage guard and a clean mdBook build
 [group('tauqe')]

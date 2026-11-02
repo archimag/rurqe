@@ -398,6 +398,20 @@ fn an_undecodable_catalog_column_names_the_query_and_the_column() {
     assert!(message.contains("unexpected type"), "{message}");
 }
 
+/// The URL of the server the server-bound scenarios run against.
+///
+/// A scenario that cannot run reports itself and returns, so an environment
+/// without PostgreSQL runs the suite to completion instead of failing it.
+fn database_url(scenario: &str) -> Option<String> {
+    match std::env::var("RURQE_TEST_POSTGRES_URL") {
+        Ok(url) if !url.trim().is_empty() => Some(url),
+        _ => {
+            println!("skipping `{scenario}`: RURQE_TEST_POSTGRES_URL is not set");
+            None
+        }
+    }
+}
+
 /// Migration scenarios driven through the client backend.
 ///
 /// Every scenario needs a live server named by `RURQE_TEST_POSTGRES_URL` and
@@ -414,19 +428,7 @@ mod client_backend {
     use rurqe_postgres::rurqe_migrate::{Migration, Migrator};
     use rurqe_postgres::PgConnection;
 
-    /// The URL of the server the client-backend scenarios run against.
-    ///
-    /// A scenario that cannot run reports itself and returns, so an environment
-    /// without PostgreSQL runs the suite to completion instead of failing it.
-    fn database_url(scenario: &str) -> Option<String> {
-        match std::env::var("RURQE_TEST_POSTGRES_URL") {
-            Ok(url) if !url.trim().is_empty() => Some(url),
-            _ => {
-                println!("skipping `{scenario}`: RURQE_TEST_POSTGRES_URL is not set");
-                None
-            }
-        }
-    }
+    use super::database_url;
 
     /// Connects to the scenario server and prepares a schema of its own.
     ///
@@ -605,6 +607,161 @@ mod client_backend {
     }
 }
 
+/// Migration scenarios driven through the backend that owns its session.
+///
+/// Every scenario needs a live server named by `RURQE_TEST_POSTGRES_URL` and
+/// reports a skip when it is absent. The adapter owns the client it drives, so a
+/// scenario prepares the fixture schema on that very session, while the result it
+/// left behind is read back through a second connection of its own.
+mod standalone_backend {
+    use postgres::NoTls;
+
+    use rurqe_postgres::migrate::PostgresMigrationBackend;
+    use rurqe_postgres::rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
+    use rurqe_postgres::rurqe_migrate::{Migration, Migrator};
+
+    use super::database_url;
+
+    /// Connects a blocking client to the server of the scenario.
+    fn connect(url: &str) -> postgres::Client {
+        postgres::Client::connect(url, NoTls).expect("the test server accepts the connection")
+    }
+
+    /// Builds the adapter over a session whose fixture schema is prepared.
+    ///
+    /// The schema becomes the `search_path` of the session, so the history table
+    /// and the tables of a scenario land inside it, and the backend is told the
+    /// same schema through `with_schema`, so the catalog digest it records
+    /// describes that schema alone.
+    fn fixture(url: &str, schema: &str) -> PostgresMigrationBackend {
+        let mut client = connect(url);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
+            ))
+            .expect("the fixture schema is created");
+        client
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .expect("the fixture schema is selected");
+
+        PostgresMigrationBackend::new(client).with_schema(schema)
+    }
+
+    /// Connects a second session that reads what the adapter has written.
+    ///
+    /// Selecting the fixture schema makes the recorded history table and the
+    /// committed tables reachable under the names the migration scripts use.
+    fn probe(url: &str, schema: &str) -> postgres::Client {
+        let mut client = connect(url);
+        client
+            .batch_execute(&format!("SET search_path TO {schema}"))
+            .expect("the fixture schema is selected");
+        client
+    }
+
+    #[test]
+    fn an_owned_session_applies_every_script_once() {
+        let Some(url) = database_url("PostgresMigrationBackend::migrate") else {
+            return;
+        };
+        let schema = "rurqe_standalone_apply";
+        let mut backend = fixture(&url, schema);
+
+        let migrations = vec![
+            Migration::parse("V1__users.sql", "CREATE TABLE users (id INTEGER PRIMARY KEY);")
+                .expect("a valid script name"),
+            Migration::parse("V2__orders.sql", "CREATE TABLE orders (id INTEGER PRIMARY KEY);")
+                .expect("a valid script name"),
+        ];
+
+        let first = Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("the owned session applies the tail");
+
+        assert_eq!(first.applied_count, 2);
+        assert_eq!(
+            first.applied_scripts,
+            vec!["V1__users.sql", "V2__orders.sql"]
+        );
+
+        let second = Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("a second run finds nothing pending");
+
+        assert_eq!(second.applied_count, 0, "an applied script never runs twice");
+        assert!(second.applied_scripts.is_empty());
+
+        let recorded = probe(&url, schema)
+            .query_one("SELECT COUNT(*) FROM __rurqe_schema_history", &[])
+            .expect("the recorded history is readable")
+            .get::<_, i64>(0);
+
+        assert_eq!(recorded, 2, "both scripts left one history row each");
+    }
+
+    #[test]
+    fn the_owned_session_records_the_catalog_digest_of_its_schema() {
+        let Some(url) = database_url("PostgresMigrationBackend::catalog_checksum") else {
+            return;
+        };
+        let schema = "rurqe_standalone_catalog";
+        let mut backend = fixture(&url, schema);
+
+        let migrations = vec![Migration::parse(
+            "V1__users.sql",
+            "CREATE TABLE users (id INTEGER PRIMARY KEY);",
+        )
+        .expect("a valid script name")];
+
+        Migrator::new()
+            .migrate(&mut backend, &migrations)
+            .expect("the tail applies through the owned session");
+
+        let before = backend
+            .catalog_checksum()
+            .expect("the selected schema is introspectable")
+            .expect("the backend reports a catalog digest");
+
+        // The catalog moves on through a step of the adapter itself, so the
+        // second digest describes a change the adapter committed.
+        let mut step = backend.begin().expect("the step opens its transaction");
+        step.execute("ALTER TABLE users ADD COLUMN email TEXT;")
+            .expect("the script applies inside the step");
+        step.commit().expect("the step commits its script");
+
+        let after = backend
+            .catalog_checksum()
+            .expect("the selected schema is introspectable")
+            .expect("the backend reports a catalog digest");
+
+        assert_ne!(before, after, "the digest follows the catalog it describes");
+    }
+
+    #[test]
+    fn an_abandoned_owned_step_rolls_back() {
+        let Some(url) = database_url("PostgresMigrationBackend abandoned step") else {
+            return;
+        };
+        let schema = "rurqe_standalone_abandoned";
+        let mut backend = fixture(&url, schema);
+
+        {
+            let mut step = backend.begin().expect("the step opens its transaction");
+            step.execute("CREATE TABLE abandoned_rows (id INTEGER PRIMARY KEY);")
+                .expect("the script applies inside the step");
+            // The step is dropped without a terminal call, so the adapter rolls
+            // its transaction back instead of leaving it open.
+        }
+
+        let survived = probe(&url, schema)
+            .query_one("SELECT to_regclass('abandoned_rows') IS NOT NULL", &[])
+            .expect("the catalog answers")
+            .get::<_, bool>(0);
+
+        assert!(!survived, "the abandoned step rolled its own script back");
+    }
+}
+
 /// Migration scenarios driven through the blocking adapter over an asynchronous
 /// connection.
 ///
@@ -622,6 +779,8 @@ mod async_backend {
     use rurqe_postgres::PgAsyncConnection;
     use tokio_postgres::NoTls;
 
+    use super::database_url;
+
     /// The multi-threaded runtime that drives the connection of a scenario.
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -629,20 +788,6 @@ mod async_backend {
             .enable_all()
             .build()
             .expect("the scenario runtime builds")
-    }
-
-    /// The URL of the server the scenarios run against.
-    ///
-    /// A scenario that cannot run reports itself and returns, so an environment
-    /// without PostgreSQL runs the suite to completion instead of failing it.
-    fn database_url(scenario: &str) -> Option<String> {
-        match std::env::var("RURQE_TEST_POSTGRES_URL") {
-            Ok(url) if !url.trim().is_empty() => Some(url),
-            _ => {
-                println!("skipping `{scenario}`: RURQE_TEST_POSTGRES_URL is not set");
-                None
-            }
-        }
     }
 
     /// Connects asynchronously and prepares a schema of its own.
