@@ -32,6 +32,14 @@ use proc_macro::TokenStream;
 /// The synthesized record is generic over its field types, so a `LEFT JOIN`ed
 /// table lifts its projected fields into `Option<T>` at the call site. The
 /// selection can also start a query directly with `select!(..).from(table)`.
+///
+/// An outer attribute written on a projection is carried onto the record field of
+/// the same name, exactly as `dto!` carries the attributes of its declaration, so
+/// a `#[doc]` comment or a lint level describes the field it was written for. An
+/// attribute that compiles the field away (`#[cfg]`) is not supported: the
+/// projection list fixes the row arity and the nested-row keys of the record, so
+/// the statement would keep projecting a column its record no longer has a field
+/// to decode into.
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     crate::select::expand(input.into())

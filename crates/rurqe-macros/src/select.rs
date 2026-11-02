@@ -48,6 +48,11 @@
 //! nested-row keys, and the JSON object arms — is rendered by
 //! [`crate::record`], the single emitter `dto!` uses as well, so the two macros
 //! cannot drift apart.
+//!
+//! An outer attribute written on a projection is carried onto the record field of
+//! the same name, exactly as `dto!` carries the attributes of its declaration, so
+//! a `#[doc]` comment or a lint level describes the field it was written for
+//! instead of being dropped.
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -88,6 +93,7 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
 
     for (index, item) in projections.as_slice().iter().enumerate() {
         let field = item.field_ident()?;
+        let field_attrs = &item.attrs;
 
         let key = Literal::string(&field_key(&field));
 
@@ -103,9 +109,12 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
 
         // The record contract — the row decode, the nested-row keys, and the
         // JSON object read and write — is shared with `dto!`, so a projection
-        // contributes its field name and its type and nothing else.
+        // contributes its field name, its type, and the attributes written on
+        // it. `dto!` carries the same list onto its declaration, and a
+        // projection that dropped it would leave a `#[doc]` comment or a lint
+        // level describing nothing.
         record_fields.push(RecordField {
-            attrs: TokenStream::new(),
+            attrs: quote! { #(#field_attrs)* },
             vis: Visibility::Inherited,
             ident: field,
             ty: quote! { #record_param },
@@ -394,5 +403,29 @@ mod tests {
         // mutated row, so no implementation is emitted for any table.
         assert!(!rendered.contains("TableSelection"));
         assert!(!rendered.contains("ColumnBelongsTo"));
+    }
+
+    /// Renders an expansion without the whitespace the token stream interleaves,
+    /// so an attribute and the field it decorates compare as one fragment.
+    fn compact(tokens: &TokenStream) -> String {
+        tokens.to_string().split_whitespace().collect()
+    }
+
+    #[test]
+    fn projection_attributes_decorate_the_field_they_are_written_on() {
+        let projections = projection_list("#[doc = \"identifier\"] UserId, UserEmail");
+        let expanded = expand_projections(&projections).expect("projections expand");
+        let rendered = compact(&expanded);
+
+        // The attribute is input the parser accepted, so it reaches the record
+        // field of the same name instead of being dropped.
+        assert!(
+            rendered.contains("#[doc=\"identifier\"]user_id:T0"),
+            "the attribute does not decorate the projected field:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("#[doc=\"identifier\"]user_email"),
+            "the attribute decorates a projection it was not written on:\n{rendered}"
+        );
     }
 }
