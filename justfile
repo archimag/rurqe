@@ -75,3 +75,15 @@ fmt:
 [doc('Check formatting across all workspace targets')]
 fmt-check:
     cargo fmt --all -- --check
+
+# Install the rurqe CLI toolchain into ~/.cargo/bin (`cargo rurqe` and `rurqe`)
+[group('tauqe')]
+[doc('Install the rurqe CLI toolchain into ~/.cargo/bin')]
+install-cli:
+    cargo install --path crates/rurqe-cli --force
+
+# Run rurqe CLI without installation
+[group('tauqe')]
+[doc('Run rurqe CLI without installation')]
+cli *ARGS:
+    cargo run -p rurqe-cli --bin rurqe -- {{ARGS}}
