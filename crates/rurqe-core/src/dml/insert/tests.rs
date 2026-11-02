@@ -59,6 +59,10 @@ impl Dialect for AliasedInsertMockDialect {
 
 impl SupportsAliasedInsertTarget for AliasedInsertMockDialect {}
 
+// The marker admits the aliased constructor while the builder reads the
+// constant, so the mock states both halves of the one capability together.
+const _: () = assert!(<AliasedInsertMockDialect as Dialect>::SUPPORTS_ALIASED_INSERT_TARGET);
+
 impl SupportsReturning for AliasedInsertMockDialect {}
 
 crate::table_alias! {

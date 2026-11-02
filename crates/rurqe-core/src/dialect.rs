@@ -39,6 +39,16 @@ pub trait Dialect: 'static + Send + Sync {
     /// [`SupportsAliasedInsertTarget`] states the same capability as a bound,
     /// which keeps the aliased constructor of an `INSERT` unreachable at compile
     /// time.
+    ///
+    /// The two declarations are linked by machine rather than by convention:
+    /// every implementation of [`SupportsAliasedInsertTarget`] carries an
+    /// anonymous
+    /// `const _: () = assert!(<D as Dialect>::SUPPORTS_ALIASED_INSERT_TARGET);`
+    /// beside it, so a dialect that admits the aliased constructor while leaving
+    /// this constant at its default fails to compile, instead of degrading the
+    /// compile-time guarantee into a
+    /// [`BuildError::AliasedInsertTarget`](crate::query::BuildError::AliasedInsertTarget)
+    /// raised by every `build()` call downstream.
     const SUPPORTS_ALIASED_INSERT_TARGET: bool = false;
 
     /// Appends a quoted identifier to the output SQL buffer.
@@ -127,10 +137,19 @@ pub trait SupportsUpdateFrom: Dialect {}
 /// clause and in the assignments of an `ON CONFLICT` clause. ISO SQL defines no
 /// alias production for the `INSERT` target, so the clause is an extension of
 /// the standard: PostgreSQL parses the statement, while SQLite has no such
-/// production and rejects it. A dialect declaring the capability also sets
-/// [`Dialect::SUPPORTS_ALIASED_INSERT_TARGET`] to `true`, which is what the
-/// builder reads when it assembles a statement from a target it cannot inspect
-/// at compile time.
+/// production and rejects it.
+///
+/// The marker and [`Dialect::SUPPORTS_ALIASED_INSERT_TARGET`] declare one
+/// capability, and the workspace links the two by machine rather than by
+/// convention: an implementation carries an anonymous
+/// `const _: () = assert!(<D as Dialect>::SUPPORTS_ALIASED_INSERT_TARGET);`
+/// next to it, which is the constant the builder reads when it assembles a
+/// statement from a target it cannot inspect at compile time. A dialect that
+/// implements the marker while leaving the constant at its default therefore
+/// fails to compile, instead of admitting the aliased constructor and deferring
+/// the refusal into a
+/// [`BuildError::AliasedInsertTarget`](crate::query::BuildError::AliasedInsertTarget)
+/// raised by every `build()` call downstream.
 #[diagnostic::on_unimplemented(
     message = "dialect `{Self}` does not support an alias on the INSERT target",
     label = "an aliased INSERT target is not supported by this dialect",

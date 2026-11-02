@@ -101,8 +101,20 @@ impl<V: PgVersion> SupportsLateralJoin for Postgres<V> {}
 // An alias on the target of an `INSERT` is an extension ISO SQL does not
 // define; PostgreSQL is the engine of this workspace that parses it.
 impl<V: PgVersion> SupportsAliasedInsertTarget for Postgres<V> {}
-impl<V: PgVersion> SupportsDeleteUsing for Postgres<V> {}
+
+// The marker admits `InsertQuery::into_aliased_table`, while the builder
+// consults `Dialect::SUPPORTS_ALIASED_INSERT_TARGET` when it assembles the
+// statement: both describe one capability, so every form the marker admits is
+// linked to the constant right beside it. The bare `Postgres` alias resolves to
+// `Pg16`, so the three pinned markers cover every instantiable form of the
+// dialect.
+const _: () = assert!(<Postgres<Pg14> as Dialect>::SUPPORTS_ALIASED_INSERT_TARGET);
+const _: () = assert!(<Postgres<Pg15> as Dialect>::SUPPORTS_ALIASED_INSERT_TARGET);
+const _: () = assert!(<Postgres<Pg16> as Dialect>::SUPPORTS_ALIASED_INSERT_TARGET);
 impl<V: PgVersion> SupportsUpdateFrom for Postgres<V> {}
+// `DELETE ... USING` selects the deleted rows through another relation, which
+// PostgreSQL implements on every pinned release; SQLite has no such clause.
+impl<V: PgVersion> SupportsDeleteUsing for Postgres<V> {}
 impl<V: PgVersion> SupportsFullOuterJoin for Postgres<V> {}
 impl<V: PgVersion> SupportsRowLocking for Postgres<V> {}
 impl<V: PgVersion> SupportsAggregateFilter for Postgres<V> {}
