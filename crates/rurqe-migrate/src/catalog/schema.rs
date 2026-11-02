@@ -69,12 +69,19 @@ impl SchemaCatalog {
         lock_toml::render_lock_toml(self)
     }
 
-    /// The SHA-256 digest of the canonical snapshot.
+    /// The SHA-256 digest of the canonical encoding of the catalog.
+    ///
+    /// The digest is taken over the canonical byte stream the catalog encodes
+    /// into — the format the digest module of this catalog specifies — rather
+    /// than over the rendered [`to_lock`](Self::to_lock) text: the line
+    /// breaking, inline-table layout, and string escaping of that text are the
+    /// `toml` writer's implementation detail, so a digest anchored to it would
+    /// move with a serializer upgrade against a schema that did not change.
     pub fn checksum(&self) -> Checksum {
-        Checksum::of(self.to_lock().as_bytes())
+        super::digest::checksum(self)
     }
 
-    /// The hexadecimal digest of the canonical snapshot.
+    /// The hexadecimal digest of the canonical encoding of the catalog.
     pub fn schema_hash(&self) -> String {
         self.checksum().to_hex()
     }

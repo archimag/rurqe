@@ -36,9 +36,9 @@ impl StageMarker {
 
     /// Creates a marker carrying the digest of `catalog`.
     ///
-    /// The catalog digest is the SHA-256 of the canonical `schema.lock`
-    /// snapshot, so two cold starts of the same schema always record the same
-    /// checksum.
+    /// The catalog digest is the SHA-256 of the canonical byte encoding of the
+    /// catalog, so two cold starts of the same schema always record the same
+    /// checksum, independently of how the `schema.lock` snapshot is laid out.
     pub fn from_catalog(version: MigrationVersion, catalog: &SchemaCatalog) -> Self {
         Self::new(version, Self::DESCRIPTION, catalog.checksum())
     }

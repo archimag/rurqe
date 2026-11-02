@@ -84,15 +84,21 @@ fn an_empty_catalog_renders_a_versioned_empty_snapshot() {
 }
 
 #[test]
-fn schema_hash_follows_the_canonical_snapshot() {
+fn schema_hash_follows_the_canonical_encoding() {
     let catalog = SchemaCatalog::new(vec![users()]);
 
     assert_eq!(
         catalog.checksum(),
-        Checksum::of(catalog.to_lock().as_bytes())
+        Checksum::of(&super::digest::encode(&catalog))
     );
     assert_eq!(catalog.schema_hash(), catalog.checksum().to_hex());
     assert_eq!(catalog.schema_hash().len(), 64);
+    // The snapshot text is the `toml` writer's own layout, so the digest never
+    // hashes that text: a serializer change moves text without moving a digest.
+    assert_ne!(
+        catalog.checksum(),
+        Checksum::of(catalog.to_lock().as_bytes())
+    );
 }
 
 #[test]

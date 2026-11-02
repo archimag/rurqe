@@ -9,8 +9,9 @@
 //!
 //! Determinism is achieved by sorting enum types, tables, columns, foreign keys,
 //! and indexes by name, so two catalogs built in a different declaration order
-//! still produce the very same snapshot — and therefore the very same
-//! [`SchemaCatalog::schema_hash`].
+//! still produce the very same snapshot — and the very same
+//! [`SchemaCatalog::schema_hash`], which is computed over the canonical byte
+//! encoding of the catalog rather than over the rendered snapshot text.
 //!
 //! ```
 //! use rurqe_migrate::{ColumnDef, SchemaCatalog, TableDef, TypeKind};
@@ -35,6 +36,7 @@
 //! assert_eq!(catalog.schema_hash().len(), 64);
 //! ```
 
+mod digest;
 mod lock;
 mod schema;
 mod types;
