@@ -78,10 +78,12 @@ RURQE is designed as a modular Cargo workspace, enabling minimal dependency foot
 
 - **`rurqe`**: The primary facade crate providing high-level re-exports and fluent entrypoints.
 - **`rurqe-core`**: Pure, lightweight AST representation, schema markers (`Table`, `Column`), dialect traits (`Dialect`), capability marker traits, and expression operator logic.
-- **`rurqe-macros`**: Declarative and procedural macros (`select!`, `dto!`, `table!`) for zero-cost projection synthesis and compile-time schema DSLs.
-- **`rurqe-postgres`**: PostgreSQL dialect renderer, version markers (`Pg14`, `Pg15`, `Pg16`), and execution adapters for `tokio-postgres` and synchronous `postgres`.
-- **`rurqe-sqlite`**: SQLite dialect renderer, version bounds (`Sqlite3_35`, etc.), and driver adapter for `rusqlite`.
-- **`rurqe-cli`**: Developer toolchain for live catalog introspection, code generation, migration execution, and CI schema drift verification (`schema.lock`).
+- **`rurqe-macros`**: Declarative and procedural macros (`select!`, `dto!`, `table!`) for zero-cost projection synthesis and compile-time schema DSLs, and `embed_migrations!`, which bakes the project artifacts named by a `rurqe.toml` into a binary as raw text.
+- **`rurqe-migrate`**: The engine-neutral migration runner — script grammar, SHA-256 digests, schema history, checkpoint markers, the declarative stage, the embedded collection, and the shared catalog vocabulary (`Raw*` metadata, the SQL-type mapping, and the `SchemaCatalog` assembly).
+- **`rurqe-postgres`**: PostgreSQL dialect renderer, version markers (`Pg14`, `Pg15`, `Pg16`), and execution adapters for `tokio-postgres` and synchronous `postgres`. Behind its `migrate` feature it also carries the PostgreSQL half of the migration protocol — the history table, the advisory locks, the transactions, and the catalog introspection — together with the migration backends of the synchronous connection and of the asynchronous clients.
+- **`rurqe-sqlite`**: SQLite dialect renderer, version bounds (`Sqlite3_35`, etc.), and driver adapter for `rusqlite`. Behind its `migrate` feature it carries the same protocol for SQLite, including `BEGIN IMMEDIATE` locking, savepoints, catalog introspection, and the migration backend of a connection the application owns.
+- **`rurqe-project`**: The single copy of the `rurqe.toml` model — the strict parser with positional diagnostics, the schema selection, and the resolution of every declared path — shared by the toolchain and the macro crate.
+- **`rurqe-cli`**: Developer toolchain for schema code generation, migration execution, and CI schema drift verification (`schema.lock`). It owns no engine protocol of its own: the backends and the catalog introspection it drives come from the driver crates, and every path it reads comes from the project configuration named by `--config` rather than from a per-invocation flag.
 
 ---
 

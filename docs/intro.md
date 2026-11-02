@@ -61,6 +61,7 @@ RURQE unifies four foundational design principles into a cohesive developer expe
   * Instant cold-start initialization: clean environments initialize directly from declarative schema DDL (`schema/`) in milliseconds.
   * Cryptographic checkpoint markers (`checkpoint.toml`) anchor migration tails and permit pruning historical migrations without rewriting baselines.
   * Continuous verification of the Golden Equation catches schema divergence in CI.
+  * Both routes run from application code: the migration protocol and the catalog introspection of an engine live in its driver crate behind a `migrate` feature, so a binary applies the artifacts it bakes into itself over the connection it already holds — the command line is a convenience for the working loop, never a prerequisite.
 * **Compile-Time Soundness and Zero-Cost Guarantees:**
   * Monomorphized builders compile down to static SQL string buffers and direct deserialization passes with zero virtual calls or runtime overhead.
   * Dialect and version capability traits (`SupportsReturning`, `SupportsOnConflict`, `SupportsRowLocking`) enforce engine-specific syntax at compile time; unsupported methods do not exist on incompatible dialect targets.

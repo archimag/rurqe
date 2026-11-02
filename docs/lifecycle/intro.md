@@ -93,6 +93,11 @@ history table, one script naming grammar, and one checksum algorithm, so a proje
 adopts the declarative route without rewriting a single entry the sequential route
 already recorded.
 
+The protocol both routes run lives in the driver crate of the engine rather than in
+the command line: an application bakes the artifacts into its own binary and applies
+them through the connection it already holds, while the command line runs the same
+protocol over the artifacts the project configuration declares.
+
 ### Sequential migrations
 
 A directory of versioned and repeatable scripts applied in order. A versioned

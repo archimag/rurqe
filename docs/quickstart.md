@@ -21,7 +21,7 @@ rurqe = { version = "0.1", features = ["sqlite", "macros"] }
 | `tokio-postgres` | Asynchronous PostgreSQL connection adapter (`PgAsyncConnection`) |
 | `deadpool-postgres` | Asynchronous PostgreSQL connection pool (`PgAsyncPool`) |
 | `macros` | Procedural and declarative macros: `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
-| `migrate` | Embedded migration engine (`EmbeddedMigrations`, `embed_migrations!`) |
+| `migrate` | Embedded migration engine (`EmbeddedMigrations`, `embed_migrations!`); it also enables the `migrate` feature of every driver in the build, so a baked collection applies over a connection the application already owns |
 | `uuid`, `chrono`, `serde_json`, `decimal` | Ecosystem data type mappings |
 
 ## 2. Schema Markers
