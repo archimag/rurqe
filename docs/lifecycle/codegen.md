@@ -7,7 +7,7 @@ the Rust type the column decodes into, so a query addresses a schema the
 database actually has rather than a schema somebody remembered to update.
 
 A normalized snapshot of the same catalog is written into the artifact directory
-as `rurqe/schema.lock`, and the generated module embeds the digest of that snapshot
+as `rurqe/schema.lock`, and the generated module embeds the digest of that catalog
 as `SCHEMA_HASH`. The two artifacts are therefore two views of one catalog, and a
 module that no longer matches its snapshot is detectable without opening a
 database.
@@ -422,11 +422,17 @@ does not know are both refused, so a snapshot is never read halfway.
 
 ## The schema digest
 
-`SCHEMA_HASH` is the SHA-256 digest of the snapshot text. The generated module
-embeds it, so the module states which snapshot it was generated from: a module
-regenerated after a schema change carries a different digest, and a module whose
-digest no longer matches the committed snapshot is refused by verification
-instead of being trusted.
+`SCHEMA_HASH` is the SHA-256 digest of the catalog, not of the text that
+describes it. The catalog is encoded into a canonical byte stream — a versioned
+document whose fields are unambiguously delimited and whose entities are ordered
+by the schema content alone — and the digest is taken over that stream, so the
+line breaking, the inline-table layout, and the string escaping of the snapshot
+take no part in the identity it carries.
+
+The generated module embeds the digest, so the module states which catalog it was
+generated from: a module regenerated after a schema change carries a different
+digest, and a module whose digest no longer matches the committed snapshot is
+refused by verification instead of being trusted.
 
 The generated module and the snapshot close the loop the rest of the lifecycle
 depends on. The catalog a database holds is described once, and every later

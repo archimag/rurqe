@@ -53,7 +53,7 @@ The command introspects the declared schemas and writes two artifacts from one c
 * the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, so a query addresses a relation the database actually has;
 * the snapshot `rurqe/schema.lock` beneath the artifact directory, which is the normalized catalog the lifecycle compares against.
 
-The module embeds the digest of the snapshot as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database. For a `users` table of three columns the module declares the table, its columns, and the digest it was generated from:
+The module embeds the digest of the catalog as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database. For a `users` table of three columns the module declares the table, its columns, and the digest it was generated from:
 
 ```rust,no_run
 {{#rustdoc_include examples/quickstart.rs:schema}}

@@ -34,15 +34,18 @@ the orders
 that carry meaning are kept: the labels of an enum, the columns of a primary
 key, of a foreign key, and of an index stay in the order they were declared.
 
-The digest of that text is the identity of the schema. The generator embeds it
-as `pub const SCHEMA_HASH: &str = "...";`, so the snapshot and the generated
-module state the same identity, and both gates compare digests before they
-compare anything else.
+The identity of the schema is the digest of the catalog itself, not of the text
+that carries it: the catalog is encoded into a canonical byte stream and the
+SHA-256 of that stream is the digest. The generator embeds it as
+`pub const SCHEMA_HASH: &str = "...";`, so the snapshot and the generated module
+state the same identity, and both gates compare digests before they compare
+anything else.
 
-Formatting is not part of the identity. Both sides of a comparison are parsed
-into the catalog and rendered again, so line endings and surrounding whitespace
-of the committed snapshot never surface as a finding: two equal catalogs are
-equal however the file that carries one of them is spelled.
+Formatting is not part of the identity. The digest is taken over the encoded
+catalog rather than over the snapshot text, and every structural comparison
+parses both sides into the catalog before comparing them, so line endings and
+surrounding whitespace of the committed snapshot never surface as a finding: two
+equal catalogs are equal however the file that carries one of them is spelled.
 
 A comparison is structural, and covers:
 

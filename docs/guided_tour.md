@@ -10,7 +10,7 @@ The tour starts at the model. A table is a zero-sized marker type, and each of i
 {{#rustdoc_include examples/quickstart.rs:schema}}
 ```
 
-The module above has the shape the generator writes: the digest of the catalog snapshot it was generated from, one marker per table, and one marker per column. An application imports that module and addresses the markers it declares; the example files of this tour declare the tables they read in the same form, because an example target is a single file. A hand-written `table!` declaration stays available where no database is reachable while the crate is built, and the markers of both forms are addressed identically.
+The module above has the shape the generator writes: the digest of the catalog it was generated from, one marker per table, and one marker per column. An application imports that module and addresses the markers it declares; the example files of this tour declare the tables they read in the same form, because an example target is a single file. A hand-written `table!` declaration stays available where no database is reachable while the crate is built, and the markers of both forms are addressed identically.
 
 ## Reading rows
 
