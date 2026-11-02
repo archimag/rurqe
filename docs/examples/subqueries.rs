@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
         .where_(Expr::exists(
             select_from(Order)
                 .select((OrderUserId,))
-                .where_(OrderUserId.eq(UserId.without_scope())),
+                .where_(OrderUserId.eq(outer(UserId))),
         ))
         .fetch_all(&pool)
         .await?;

@@ -1,7 +1,7 @@
 //! Nested statements used as predicates.
 
 use super::{MockDialect, Order, OrderId, OrderTotal, OrderUserId, User, UserId};
-use crate::expr::{Expr, SqlVal};
+use crate::expr::{outer, Expr, SqlVal};
 use crate::query::*;
 
 #[test]
@@ -37,12 +37,13 @@ fn subquery_predicates_render_nested_queries_with_sequential_parameters() {
 fn a_correlated_reference_names_its_table_inside_a_single_relation_subquery() {
     // The inner statement addresses `orders` alone, so a bare reference would read
     // as a column of that statement and silently compare the outer row with
-    // itself. Dropping the scope makes the reference name its own table, so the
-    // correlated reading stays explicit even when both statements scan one table.
+    // itself. `outer` drops the reference out of the inner scope while it keeps
+    // naming its own table, so the correlated reading stays explicit even when
+    // both statements scan one table.
     let earlier = SelectQuery::<MockDialect>::new()
         .from::<Order>()
         .select((OrderId,))
-        .where_(Expr::column::<OrderId>().lt(Expr::column::<OrderId>().without_scope()))
+        .where_(Expr::column::<OrderId>().lt(outer(Expr::column::<OrderId>())))
         .order_by_asc(OrderId)
         .limit(1);
 
