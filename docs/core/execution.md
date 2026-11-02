@@ -37,14 +37,14 @@ Synchronous execution is supported for CLI tools, embedded applications, and bac
 ```rust,no_run
 {{#rustdoc_include ../examples/sync_execution.rs:load_user}}
 ```
-## Streaming and Custom Collections (fetch_iter & fetch_collect)
+## Iterative Decoding and Custom Collections (fetch_iter & fetch_collect)
 
 In addition to the standard terminal methods, RURQE provides backend-driven execution helpers via `QueryBackendExt` and `AsyncQueryBackendExt`:
 
-* **`fetch_iter` (Synchronous only):** Returns a lazy `QueryRowIter`. The connection's raw result set is buffered, immediately releasing the connection handle, while row decoding with `FromRow` is deferred until `.next()` is called on each iteration. This avoids allocating a full vector of decoded domain structs.
-* **`fetch_collect` (Sync & Async):** Executes the query and collects decoded rows directly into any collection implementing `FromIterator<Row>` (such as `std::collections::HashSet`, `BTreeSet`, or `VecDeque`), without intermediate `Vec` allocation.
+* **`fetch_iter` (Synchronous only):** Returns a lazy `QueryRowIter`. The driver's raw result set is buffered in full, so the connection handle is released immediately, while decoding with `FromRow` is deferred until each row is read through `.next()`. No vector of decoded domain structs is allocated.
+* **`fetch_collect` (Sync & Async):** Executes the query and collects the decoded rows directly into any collection implementing `FromIterator<Row>` (such as `std::collections::HashSet`, `BTreeSet`, or `VecDeque`), without an intermediate `Vec` allocation.
 
-### Streaming with `fetch_iter`
+### Lazy row decoding with `fetch_iter`
 
 ```rust,no_run
 {{#rustdoc_include ../examples/sync_execution.rs:fetch_iter}}

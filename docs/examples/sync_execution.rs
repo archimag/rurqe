@@ -25,8 +25,8 @@ fn load_user(conn: &mut SqliteConnection) -> Result<Option<i64>, Error> {
 // ANCHOR_END: load_user
 
 // ANCHOR: fetch_iter
-/// Lazily streams matching rows one at a time.
-fn stream_users(conn: &mut SqliteConnection) -> Result<i64, Error> {
+/// Iterates over matching rows, decoding each one as it is read.
+fn iterate_users(conn: &mut SqliteConnection) -> Result<i64, Error> {
     let query = select_from(User).select(cols!(UserId));
     let mut count = 0;
     for row in conn.fetch_iter(&query)? {
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
         None => println!("no user"),
     }
 
-    let _ = stream_users(&mut conn)?;
+    let _ = iterate_users(&mut conn)?;
     let _ = collect_user_deque(&mut conn)?;
 
     Ok(())
