@@ -42,7 +42,7 @@ Pull requests containing raw code are not accepted. In the modern LLM paradigm, 
 Not a single line of code in this repository was written by a human, and never will be.
 
 If you would like to contribute:
-- Open an issue to discuss conceptual ideas, architectural trade-offs, or UX workflows.
+- Open an issue to discuss conceptual ideas or architectural trade-offs.
 - Better yet, contribute well-defined, ready-to-implement engineering specifications and formal invariants.
 
 ## License
