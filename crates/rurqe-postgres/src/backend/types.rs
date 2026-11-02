@@ -221,6 +221,15 @@ fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chron
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
         return Ok(parsed.with_timezone(&chrono::Utc));
     }
+    // PostgreSQL accepts a space between the date and the time, and the offset
+    // may be spelled in a compact or a colon-separated form, so the textual
+    // spellings are tried before the value falls back to the naive form that
+    // assumes UTC.
+    for format in ["%Y-%m-%d %H:%M:%S%.f%z", "%Y-%m-%dT%H:%M:%S%.f%z"] {
+        if let Ok(parsed) = chrono::DateTime::parse_from_str(value, format) {
+            return Ok(parsed.with_timezone(&chrono::Utc));
+        }
+    }
     let naive = parse_timestamp(value)?;
     Ok(chrono::DateTime::from_naive_utc_and_offset(
         naive,

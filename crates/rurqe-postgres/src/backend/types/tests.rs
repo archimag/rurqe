@@ -703,6 +703,24 @@ fn text_parameters_bind_to_uuid_json_and_temporal_types() {
     ));
 }
 
+#[cfg(feature = "chrono")]
+#[test]
+fn a_space_separated_timestamp_binds_with_its_offset() {
+    let mut buffer = BytesMut::new();
+    SqlValParam(&SqlVal::Text("2024-01-02 05:04:05+02:00".to_owned()))
+        .to_sql_checked(&Type::TIMESTAMPTZ, &mut buffer)
+        .expect("a space-separated timestamp with an offset fills a timestamptz column");
+
+    let expected = chrono::DateTime::parse_from_rfc3339("2024-01-02T03:04:05+00:00")
+        .expect("the expected instant is valid")
+        .with_timezone(&chrono::Utc);
+
+    assert_eq!(
+        decode_value(&Type::TIMESTAMPTZ, &buffer[..]).expect("the timestamp is decodable"),
+        SqlVal::DateTimeUtc(expected)
+    );
+}
+
 #[cfg(not(any(feature = "uuid", feature = "serde_json", feature = "chrono")))]
 #[test]
 fn textual_values_bind_uuid_json_and_temporal_columns_without_their_crates() {
