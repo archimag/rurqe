@@ -139,6 +139,34 @@ impl<B: BorrowMut<Connection>> SqliteConnection<B> {
 fn quoted_savepoint(name: &str) -> String {
     Sqlite::<Sqlite3_35>::quote_identifier(name)
 }
+/// Returns the session of a checked-out connection to a provably idle state.
+///
+/// A connection recycled by a pool carries the session state of the block that
+/// drove it last: a transaction a raw handle opened, a `BEGIN` whose `COMMIT`
+/// the caller never issued, or a block whose rollback the driver refused. The
+/// bookkeeping of an adapter dies with the adapter, while the session of the
+/// connection outlives it, so a checkout is where that state can still be
+/// closed.
+///
+/// SQLite reports the state directly: the autocommit flag is true exactly while
+/// the connection is outside a transaction, so a session that is already idle
+/// issues no statement at all, and a session that still holds a transaction has
+/// it ended by a single `ROLLBACK`. The repair is therefore sound by the
+/// observation rather than by classifying the statements that arrived, and it is
+/// the same observation the adapter uses to classify a rollback the driver
+/// refused.
+///
+/// A reset the driver refuses means the connection could not be brought back to
+/// a known state, so the failure is reported instead of handing the connection
+/// to a caller that would run its work inside the abandoned transaction.
+#[cfg_attr(not(feature = "r2d2"), allow(dead_code))]
+pub(crate) fn ensure_idle(connection: &mut Connection) -> Result<(), ::rusqlite::Error> {
+    if connection.is_autocommit() {
+        return Ok(());
+    }
+    connection.execute_batch("ROLLBACK")
+}
+
 impl<B: BorrowMut<Connection>> TransactionalConnection for SqliteConnection<B> {
     fn transaction_status(&mut self) -> &mut TransactionStatus<::rusqlite::Error> {
         &mut self.status

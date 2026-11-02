@@ -203,7 +203,7 @@ SQLite has no asynchronous adapter: every terminal call returns its result direc
 SELECT "id" AS "user_id" FROM "users"
 ```
 
-A pooled deployment enables the `r2d2` feature and executes through `SqlitePool`, which implements the same execution contract: the pool checks a connection out, runs the statement, and returns the connection to the pool, while the builder chain and the terminal call stay unchanged.
+A pooled deployment enables the `r2d2` feature and executes through `SqlitePool`, which implements the same execution contract: the pool checks a connection out, runs the statement, and returns the connection to the pool, while the builder chain and the terminal call stay unchanged. A checkout returns the connection to an idle session before handing it out, so a transaction a previous block left open is rolled back before the next statement runs, and a session that cannot be brought back to a known state is refused with `SqlitePoolError::AbandonedTransaction` instead of carrying the abandoned transaction into the next statement.
 
 A transaction block runs between `BEGIN` and `COMMIT`: the block commits when it returns `Ok`, and it rolls back when it returns an error or panics, so no partial work is left behind. A block opened inside another one becomes a `SAVEPOINT`, so an inner failure rolls back only its own statements while the enclosing block stays intact. The block takes no isolation level: SQLite serialises access through database-level locking, so a level would have no `BEGIN` clause to map onto.
 

@@ -7,7 +7,10 @@
 //! one, and the rollback of a failing or unwinding block behave exactly as they
 //! do on an owned connection. The pooled handle itself returns to the pool on
 //! every exit path, because the checkout guard is dropped however the block
-//! ends.
+//! ends. The session of a pooled connection outlives the block, so every
+//! checkout returns it to an idle state before handing the connection out: a
+//! transaction a previous block left open is rolled back there instead of
+//! enclosing the next block.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -16,7 +19,9 @@ use r2d2::ManageConnection;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{BuiltQuery, QueryBackend};
 
-use super::rusqlite::{execute_raw_with, fetch_raw_limited_with, fetch_raw_with, SqliteConnection};
+use super::rusqlite::{
+    ensure_idle, execute_raw_with, fetch_raw_limited_with, fetch_raw_with, SqliteConnection,
+};
 
 /// An `r2d2` pool of SQLite connections.
 ///
@@ -68,14 +73,31 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
         &self.pool
     }
 
-    /// Checks a connection out of the pool.
+    /// Checks a connection out of the pool and returns it to an idle session.
     ///
     /// A checkout failure surfaces as [`SqlitePoolError::Pool`], so the whole
     /// pool API speaks one error vocabulary: a checkout failure and a
     /// statement failure both propagate with `?` into a function returning
     /// [`SqlitePoolError`].
+    ///
+    /// The connection of a recycled checkout may still hold a transaction a
+    /// previous block left open, because `r2d2` validates that a connection is
+    /// alive rather than that it is outside a transaction, so every checkout
+    /// returns the session to an idle state before handing the connection out.
+    /// The reset reads the engine's own observation of the session: a
+    /// connection that is already outside a transaction issues no statement at
+    /// all, and one that still holds a transaction has it ended by a single
+    /// `ROLLBACK`.
+    ///
+    /// A reset the driver refuses means the session could not be brought back
+    /// to a known state, so the checkout itself fails with
+    /// [`SqlitePoolError::AbandonedTransaction`] instead of handing the
+    /// connection to a caller that would run its work inside the abandoned
+    /// transaction.
     pub fn get(&self) -> Result<r2d2::PooledConnection<M>, SqlitePoolError> {
-        self.pool.get().map_err(SqlitePoolError::Pool)
+        let mut connection = self.pool.get().map_err(SqlitePoolError::Pool)?;
+        ensure_idle(&mut connection).map_err(SqlitePoolError::AbandonedTransaction)?;
+        Ok(connection)
     }
 
     /// Runs `f` inside a transaction on a pooled connection, committing on
@@ -97,6 +119,10 @@ impl<M: ManageConnection<Connection = ::rusqlite::Connection>> SqlitePool<M> {
     /// A checkout failure surfaces as [`SqlitePoolError::Pool`]; a failure
     /// raised by `BEGIN`, by `f`, or by `COMMIT` surfaces as
     /// [`SqlitePoolError::Query`].
+    ///
+    /// The block starts on a connection [`SqlitePool::get`] has returned to an
+    /// idle session, so a transaction a previous checkout left open is closed
+    /// before this block opens its own.
     pub fn transaction<T, F>(&self, f: F) -> Result<T, SqlitePoolError>
     where
         F: FnOnce(&mut SqliteConnection<&mut ::rusqlite::Connection>) -> Result<T, ::rusqlite::Error>,
@@ -120,6 +146,8 @@ pub enum SqlitePoolError {
     Pool(r2d2::Error),
     /// The statement failed to execute.
     Query(::rusqlite::Error),
+    /// The checked-out connection could not be returned to an idle session.
+    AbandonedTransaction(::rusqlite::Error),
 }
 
 impl fmt::Display for SqlitePoolError {
@@ -127,6 +155,9 @@ impl fmt::Display for SqlitePoolError {
         match self {
             SqlitePoolError::Pool(error) => write!(f, "connection pool error: {error}"),
             SqlitePoolError::Query(error) => write!(f, "SQLite query error: {error}"),
+            SqlitePoolError::AbandonedTransaction(error) => {
+                write!(f, "abandoned transaction: {error}")
+            }
         }
     }
 }
@@ -136,6 +167,7 @@ impl StdError for SqlitePoolError {
         match self {
             SqlitePoolError::Pool(error) => Some(error),
             SqlitePoolError::Query(error) => Some(error),
+            SqlitePoolError::AbandonedTransaction(error) => Some(error),
         }
     }
 }
@@ -262,6 +294,20 @@ mod tests {
         let failure = SqlitePoolError::from(::rusqlite::Error::InvalidQuery);
 
         assert!(matches!(failure, SqlitePoolError::Query(_)));
+    }
+
+    #[test]
+    fn a_refused_reset_keeps_the_driver_failure() {
+        let failure = SqlitePoolError::AbandonedTransaction(::rusqlite::Error::InvalidQuery);
+
+        assert!(
+            matches!(&failure, SqlitePoolError::AbandonedTransaction(_)),
+            "the checkout refuses the connection instead of reporting a query failure"
+        );
+        assert!(
+            std::error::Error::source(&failure).is_some(),
+            "the driver failure stays reachable through the checkout error"
+        );
     }
 
     #[test]

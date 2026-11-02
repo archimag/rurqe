@@ -16,6 +16,32 @@ use rurqe_sqlite::{SqlitePool, SqlitePoolError};
 /// The pool every scenario of this file drives.
 type Pool = SqlitePool<SqliteConnectionManager>;
 
+/// A pool manager that keeps a connection in whatever state it arrived in.
+///
+/// `SqliteConnectionManager` reports a connection left inside a transaction as
+/// broken, and the pool then discards it, so the repair the pool adapter
+/// performs cannot be observed through that manager. This manager keeps every
+/// connection, which is what makes the repair visible: the checkout after a
+/// leaked transaction receives the connection the leaked block left inside it.
+struct KeepConnection(SqliteConnectionManager);
+
+impl r2d2::ManageConnection for KeepConnection {
+    type Connection = rurqe_sqlite::rusqlite::Connection;
+    type Error = rurqe_sqlite::rusqlite::Error;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        r2d2::ManageConnection::connect(&self.0)
+    }
+
+    fn is_valid(&self, connection: &mut Self::Connection) -> Result<(), Self::Error> {
+        r2d2::ManageConnection::is_valid(&self.0, connection)
+    }
+
+    fn has_broken(&self, _connection: &mut Self::Connection) -> bool {
+        false
+    }
+}
+
 /// Builds a one-connection pool over an in-memory database holding `table`.
 ///
 /// A single connection keeps the in-memory database alive across checkouts, so
@@ -42,6 +68,44 @@ fn totals(pool: &Pool, table: &str) -> (i64, i64) {
         connection.query_row(&sql, [], |row| Ok((row.get(0)?, row.get(1)?)))
     })
     .expect("the counting block commits")
+}
+
+#[test]
+fn a_transaction_left_open_by_a_checkout_is_rolled_back_at_the_next_one() {
+    let pool = SqlitePool::new(
+        r2d2::Pool::builder()
+            .max_size(1)
+            .build(KeepConnection(SqliteConnectionManager::memory()))
+            .expect("a one-connection in-memory pool builds"),
+    );
+
+    // A block that opens a transaction through the raw handle and returns
+    // without closing it leaves the connection in the pool inside that
+    // transaction.
+    let leaked = pool.get().expect("the checkout is served");
+    leaked
+        .execute_batch("BEGIN")
+        .expect("the transaction opens");
+    leaked
+        .execute_batch("CREATE TABLE rurqe_pool_leaked (id INTEGER PRIMARY KEY)")
+        .expect("the table is created inside the abandoned transaction");
+    drop(leaked);
+
+    // The checkout returns the session to an idle state, so the next block
+    // starts outside the transaction the previous one left behind.
+    let repaired = pool.get().expect("the checkout is served");
+    assert!(
+        repaired.is_autocommit(),
+        "the repaired checkout is outside a transaction"
+    );
+    assert!(
+        repaired
+            .query_row("SELECT count(*) FROM rurqe_pool_leaked", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .is_err(),
+        "the DDL of the abandoned transaction was rolled back"
+    );
 }
 
 #[test]
