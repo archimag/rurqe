@@ -7,17 +7,13 @@ use super::backend::MigrationBackend;
 /// RAII guard managing exclusive migration locking on a [`MigrationBackend`].
 pub struct LockGuard<'a, B: MigrationBackend + ?Sized> {
     backend: &'a mut B,
-    active: bool,
 }
 
 impl<'a, B: MigrationBackend + ?Sized> LockGuard<'a, B> {
     /// Acquires the lock via `backend.acquire_lock()` and wraps `backend`.
     pub fn acquire(backend: &'a mut B) -> Result<Self, Error> {
         backend.acquire_lock()?;
-        Ok(Self {
-            backend,
-            active: true,
-        })
+        Ok(Self { backend })
     }
 
     /// Convenience alias for [`acquire`](Self::acquire).
@@ -42,10 +38,8 @@ impl<B: MigrationBackend + ?Sized> std::ops::DerefMut for LockGuard<'_, B> {
 
 impl<B: MigrationBackend + ?Sized> Drop for LockGuard<'_, B> {
     fn drop(&mut self) {
-        if self.active {
-            if let Err(err) = self.backend.release_lock() {
-                tracing::warn!(error = %err, "failed to release migration lock");
-            }
+        if let Err(err) = self.backend.release_lock() {
+            tracing::warn!(error = %err, "failed to release migration lock");
         }
     }
 }
