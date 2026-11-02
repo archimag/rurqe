@@ -14,10 +14,12 @@
 //!
 //! The sections of a statement are enumerated exactly once, by `walk_sections`.
 //! The entry points of the module differ only in the checks that walk applies to
-//! each section: `validate_clauses` validates the clauses structurally as well,
-//! together with the statements they embed, while the qualifier pass reached from
-//! `reject_unresolved_qualifiers` resolves the references of a statement whose
-//! structure its caller has already validated.
+//! each section. `validate_clauses` resolves the references a clause itself
+//! writes and then applies the structural rules, which validate the statements
+//! the clause embeds in full, so an embedded statement is walked once — by the
+//! pass that validates it — rather than once per pass. The qualifier pass
+//! reached from `reject_unresolved_qualifiers` descends into those statements
+//! itself, because nothing else walks them where it is called.
 //!
 //! One section is the exception both entry points share. The `ORDER BY` clause of
 //! a compound statement sorts the rows the combination produced, so it names an
@@ -27,6 +29,8 @@
 //! decided by the statement rules (`validate_compound_order`), never by the
 //! qualifier resolution: an output column of a compound statement names no
 //! relation at all, so resolving it against one would reject valid SQL.
+
+use std::borrow::Cow;
 
 use crate::expr::{ExprKind, RawSqlError, SelectAst, StatementRef, WindowExprKind};
 use crate::schema::TableRef;
@@ -42,7 +46,8 @@ pub(super) const ROOT_SCOPE: &[TableRef] = &[];
 /// the relations the statement renders itself or one of the statements enclosing
 /// it, while a statement embedded in the expression reaches only the first set by
 /// correlation together with whatever those relations reach themselves.
-/// `enclosing` is therefore the concatenation of both sets, which is what an
+/// `enclosing` is therefore the concatenation of both sets — or, when nothing
+/// encloses the statement, the relations in scope themselves — which is what an
 /// embedded subquery or a lateral join is validated with.
 #[derive(Clone, Copy)]
 struct ClauseScope<'a> {
@@ -59,11 +64,12 @@ struct ClauseScope<'a> {
 ///
 /// The walk enumerates the sections of a statement the same way under either mode
 /// — that is what keeps the enumeration in one place — while the checks themselves
-/// differ: [`ClauseChecks::Full`] validates a clause structurally, resolves its
-/// references, and validates the statements it embeds in full, whereas
-/// [`ClauseChecks::Qualifiers`] resolves the references alone and descends into the
-/// embedded statements the same way. The second mode serves the callers that reach
-/// a statement through an expression whose structure they audited separately: the
+/// differ: [`ClauseChecks::Full`] validates a clause structurally and resolves its
+/// references, leaving the statements it embeds to the structural pass, which
+/// validates them in full right afterwards; [`ClauseChecks::Qualifiers`] resolves
+/// the references alone and descends into the embedded statements itself, because
+/// nothing else walks them there. The second mode serves the callers that reach a
+/// statement through an expression whose structure they audited separately: the
 /// DML builders check the structure of their expressions through `validate_expr`
 /// and leave the resolution of the references to this walk.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,11 +96,16 @@ pub(super) fn validate_clauses(
 ) -> Result<(), BuildError> {
     match outer_relations {
         Some(outer_relations) => {
+            // A statement nothing encloses it into — a `WITH` body, a derived
+            // table, or an operand of a set operation — passes no outer
+            // relations, and the namespace its subqueries may reach is then the
+            // relations in scope themselves, borrowed rather than copied into a
+            // second vector.
             let enclosing = enclosing_scope(relations, outer_relations);
             let scope = ClauseScope {
                 relations,
                 outer_relations,
-                enclosing: &enclosing,
+                enclosing: enclosing.as_ref(),
             };
             walk_sections(statement, Some(scope), ClauseChecks::Full)
         }
@@ -260,14 +271,22 @@ fn visit_clause(
 /// Validates a clause expression of a statement.
 ///
 /// The clause is checked in two passes, because they answer different questions:
-/// `reject_unresolved_qualifiers` resolves the qualifier of every column
-/// reference against the relation namespace the expression is written in, and
-/// `validate_expr_tree` applies the structural rules and descends into the
-/// statements the expression embeds. `scope` is `None` for a clause whose relation
-/// scope this pass does not know, which leaves only the structural rules to run.
+/// `walk_qualifiers` resolves the qualifier of every column reference against the
+/// relation namespace the expression is written in, and `validate_expr_tree`
+/// applies the structural rules and validates the statements the expression embeds
+/// in full. The first pass therefore stops at a statement boundary — the statement
+/// it reaches is validated, its references resolved, by the second pass — so an
+/// embedded statement is walked once instead of once per pass. `scope` is `None`
+/// for a clause whose relation scope this pass does not know, which leaves only the
+/// structural rules to run.
 fn validate_clause(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result<(), BuildError> {
     if let Some(scope) = scope {
-        reject_unresolved_qualifiers(expr, scope.relations, scope.outer_relations)?;
+        walk_qualifiers(
+            expr,
+            scope.relations,
+            scope.outer_relations,
+            EmbeddedStatements::Defer,
+        )?;
     }
     validate_expr_tree(expr, scope)
 }
@@ -289,6 +308,10 @@ pub(crate) fn validate_expr(expr: &ExprKind) -> Result<(), BuildError> {
 
 /// Applies the structural rules to every node of an expression tree and validates
 /// the statements it embeds in `scope`.
+///
+/// In the clause validation of a statement this is the pass that validates every
+/// embedded statement in full, its references included — which is why the
+/// qualifier walk preceding it stops at a statement boundary and leaves them here.
 fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result<(), BuildError> {
     match expr {
         ExprKind::Column { .. }
@@ -449,11 +472,49 @@ fn validate_expr_tree(expr: &ExprKind, scope: Option<ClauseScope<'_>>) -> Result
 /// The walk mirrors `validate_expr` over the composite nodes of the current
 /// statement and continues into the embedded statements through the section walk
 /// of `walk_sections`, so a correlated reference stays accepted while a qualifier
-/// nothing declares is still rejected.
+/// nothing declares is still rejected. It descends into those statements because it
+/// is the only pass running where its callers reach it: the full validation defers
+/// them to `validate_expr_tree`, while a caller resolving the references of a clause
+/// on its own has no second pass to leave them to.
 pub(crate) fn reject_unresolved_qualifiers(
     expr: &ExprKind,
     relations: &[TableRef],
     outer_relations: &[TableRef],
+) -> Result<(), BuildError> {
+    walk_qualifiers(
+        expr,
+        relations,
+        outer_relations,
+        EmbeddedStatements::Resolve,
+    )
+}
+
+/// What the qualifier walk does with the statements an expression embeds.
+///
+/// Both passes that resolve references share one traversal over the nodes of an
+/// expression, which is what keeps their coverage in step, while they differ at a
+/// statement boundary: [`EmbeddedStatements::Resolve`] descends into the embedded
+/// statement with the namespace its clause grants it, and
+/// [`EmbeddedStatements::Defer`] leaves it to `validate_expr_tree`, which reaches
+/// the same statement right afterwards and validates it in full. Deferring is what
+/// keeps a nested statement from being walked once per enclosing level.
+#[derive(Clone, Copy)]
+enum EmbeddedStatements {
+    /// Descend into the statements the expression embeds.
+    Resolve,
+    /// Leave the embedded statements to the pass that validates them in full.
+    Defer,
+}
+
+/// Resolves every column reference of an expression against the relations in scope.
+///
+/// `embedded` decides whether the statements the expression embeds are walked as
+/// well — see [`EmbeddedStatements`].
+fn walk_qualifiers(
+    expr: &ExprKind,
+    relations: &[TableRef],
+    outer_relations: &[TableRef],
+    embedded: EmbeddedStatements,
 ) -> Result<(), BuildError> {
     match expr {
         // A plain column reference names its own table without spelling a
@@ -495,65 +556,74 @@ pub(crate) fn reject_unresolved_qualifiers(
             }
         }
         ExprKind::Row { values } | ExprKind::InList { values, .. } => {
-            reject_unresolved_qualifiers_each(values, relations, outer_relations)
+            walk_qualifiers_each(values, relations, outer_relations, embedded)
         }
         ExprKind::Binary { lhs, rhs, .. } | ExprKind::DialectOp { lhs, rhs, .. } => {
-            reject_unresolved_qualifiers(lhs, relations, outer_relations)?;
-            reject_unresolved_qualifiers(rhs, relations, outer_relations)
+            walk_qualifiers(lhs, relations, outer_relations, embedded)?;
+            walk_qualifiers(rhs, relations, outer_relations, embedded)
         }
         ExprKind::Aggregate { arg, filter, .. } => {
             if let Some(arg) = arg {
-                reject_unresolved_qualifiers(arg, relations, outer_relations)?;
+                walk_qualifiers(arg, relations, outer_relations, embedded)?;
             }
             if let Some(filter) = filter {
-                reject_unresolved_qualifiers(filter, relations, outer_relations)?;
+                walk_qualifiers(filter, relations, outer_relations, embedded)?;
             }
             Ok(())
         }
         ExprKind::Subquery { operand, query, .. } => {
             if let Some(operand) = operand {
-                reject_unresolved_qualifiers(operand, relations, outer_relations)?;
+                walk_qualifiers(operand, relations, outer_relations, embedded)?;
             }
             // The embedded statement resolves its own references through its
             // `FROM` scope and reaches an enclosing one by correlation, so the
             // relations in scope here become the outer scope of that statement.
-            reject_unresolved_qualifiers_in_statement(
-                &StatementRef::from(query.ast()),
-                &enclosing_scope(relations, outer_relations),
-            )
+            // The structural pass reaches the same statement through
+            // `validate_expr_tree` with that namespace, so the walk descends into
+            // it only when it is the only pass running.
+            match embedded {
+                EmbeddedStatements::Resolve => {
+                    let enclosing = enclosing_scope(relations, outer_relations);
+                    reject_unresolved_qualifiers_in_statement(
+                        &StatementRef::from(query.ast()),
+                        enclosing.as_ref(),
+                    )
+                }
+                EmbeddedStatements::Defer => Ok(()),
+            }
         }
         ExprKind::IsNull { operand, .. } | ExprKind::Cast { operand, .. } => {
-            reject_unresolved_qualifiers(operand, relations, outer_relations)
+            walk_qualifiers(operand, relations, outer_relations, embedded)
         }
         ExprKind::Like {
             operand, pattern, ..
         } => {
-            reject_unresolved_qualifiers(operand, relations, outer_relations)?;
-            reject_unresolved_qualifiers(pattern, relations, outer_relations)
+            walk_qualifiers(operand, relations, outer_relations, embedded)?;
+            walk_qualifiers(pattern, relations, outer_relations, embedded)
         }
         ExprKind::Between { operand, low, high } => {
-            reject_unresolved_qualifiers(operand, relations, outer_relations)?;
-            reject_unresolved_qualifiers(low, relations, outer_relations)?;
-            reject_unresolved_qualifiers(high, relations, outer_relations)
+            walk_qualifiers(operand, relations, outer_relations, embedded)?;
+            walk_qualifiers(low, relations, outer_relations, embedded)?;
+            walk_qualifiers(high, relations, outer_relations, embedded)
         }
         ExprKind::Function { args, .. } => {
-            reject_unresolved_qualifiers_each(args, relations, outer_relations)
+            walk_qualifiers_each(args, relations, outer_relations, embedded)
         }
         ExprKind::DistinctFrom { lhs, rhs, .. } => {
-            reject_unresolved_qualifiers(lhs, relations, outer_relations)?;
-            reject_unresolved_qualifiers(rhs, relations, outer_relations)
+            walk_qualifiers(lhs, relations, outer_relations, embedded)?;
+            walk_qualifiers(rhs, relations, outer_relations, embedded)
         }
         ExprKind::Case {
             branches,
             else_branch,
         } => {
             for branch in branches {
-                reject_unresolved_qualifiers(&branch.condition, relations, outer_relations)?;
-                reject_unresolved_qualifiers(&branch.result, relations, outer_relations)?;
+                walk_qualifiers(&branch.condition, relations, outer_relations, embedded)?;
+                walk_qualifiers(&branch.result, relations, outer_relations, embedded)?;
             }
             match else_branch {
                 Some(fallback) => {
-                    reject_unresolved_qualifiers(fallback, relations, outer_relations)
+                    walk_qualifiers(fallback, relations, outer_relations, embedded)
                 }
                 None => Ok(()),
             }
@@ -566,56 +636,72 @@ pub(crate) fn reject_unresolved_qualifiers(
         } => {
             match kind.as_ref() {
                 WindowExprKind::Lag { column, .. } | WindowExprKind::Lead { column, .. } => {
-                    reject_unresolved_qualifiers(column, relations, outer_relations)?;
+                    walk_qualifiers(column, relations, outer_relations, embedded)?;
                 }
                 WindowExprKind::Expr(inner) => {
-                    reject_unresolved_qualifiers(inner, relations, outer_relations)?;
+                    walk_qualifiers(inner, relations, outer_relations, embedded)?;
                 }
                 WindowExprKind::RowNumber | WindowExprKind::Rank | WindowExprKind::DenseRank => {}
             }
-            reject_unresolved_qualifiers_each(partition_by, relations, outer_relations)?;
+            walk_qualifiers_each(partition_by, relations, outer_relations, embedded)?;
             for criterion in order_by {
-                reject_unresolved_qualifiers(&criterion.expr, relations, outer_relations)?;
+                walk_qualifiers(&criterion.expr, relations, outer_relations, embedded)?;
             }
             Ok(())
         }
         // A nested collection embeds a whole statement, which reaches the
-        // enclosing statement by correlating a reference to it.
-        ExprKind::Multiset { query, .. } => reject_unresolved_qualifiers_in_statement(
-            &StatementRef::from(query.ast()),
-            &enclosing_scope(relations, outer_relations),
-        ),
+        // enclosing statement by correlating a reference to it, exactly like a
+        // subquery.
+        ExprKind::Multiset { query, .. } => match embedded {
+            EmbeddedStatements::Resolve => {
+                let enclosing = enclosing_scope(relations, outer_relations);
+                reject_unresolved_qualifiers_in_statement(
+                    &StatementRef::from(query.ast()),
+                    enclosing.as_ref(),
+                )
+            }
+            EmbeddedStatements::Defer => Ok(()),
+        },
         // An alias names the output column of a projection; the expression it
         // wraps is what the statement computes.
         ExprKind::Aliased { expr, .. } => {
-            reject_unresolved_qualifiers(expr, relations, outer_relations)
+            walk_qualifiers(expr, relations, outer_relations, embedded)
         }
     }
 }
 
-/// Applies `reject_unresolved_qualifiers` to every expression of a list.
-fn reject_unresolved_qualifiers_each(
+/// Applies `walk_qualifiers` to every expression of a list.
+fn walk_qualifiers_each(
     expressions: &[ExprKind],
     relations: &[TableRef],
     outer_relations: &[TableRef],
+    embedded: EmbeddedStatements,
 ) -> Result<(), BuildError> {
     for expression in expressions {
-        reject_unresolved_qualifiers(expression, relations, outer_relations)?;
+        walk_qualifiers(expression, relations, outer_relations, embedded)?;
     }
     Ok(())
 }
-
-/// Collects the relations a statement embedded in `relations` may reach.
-///
 /// The embedded statement resolves a reference through its own `FROM` scope and
 /// reaches an enclosing statement by correlation, so the namespace it is judged
 /// against holds the relations in scope where it is embedded together with the
 /// outer relations those already reach.
-fn enclosing_scope(relations: &[TableRef], outer_relations: &[TableRef]) -> Vec<TableRef> {
+///
+/// A statement nothing encloses it into — a `WITH` body, a derived table, an
+/// operand of a set operation, or the statement at the top of a build chain —
+/// passes no outer relations, and the namespace is then exactly the relations in
+/// scope: the value borrows them instead of copying them into a second vector.
+fn enclosing_scope<'a>(
+    relations: &'a [TableRef],
+    outer_relations: &'a [TableRef],
+) -> Cow<'a, [TableRef]> {
+    if outer_relations.is_empty() {
+        return Cow::Borrowed(relations);
+    }
     let mut scope = Vec::with_capacity(relations.len() + outer_relations.len());
     scope.extend_from_slice(relations);
     scope.extend_from_slice(outer_relations);
-    scope
+    Cow::Owned(scope)
 }
 
 /// Whether `qualifier` names one of the relations in scope.
@@ -678,7 +764,7 @@ fn reject_unresolved_qualifiers_in_statement(
     let scope = ClauseScope {
         relations: &relations,
         outer_relations,
-        enclosing: &enclosing,
+        enclosing: enclosing.as_ref(),
     };
     walk_sections(statement, Some(scope), ClauseChecks::Qualifiers)
 }

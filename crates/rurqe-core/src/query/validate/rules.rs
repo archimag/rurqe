@@ -30,8 +30,9 @@ impl StatementRef<'_> {
     /// Performs recursive pre-flight validation on the borrowed statement and all
     /// embedded subqueries.
     ///
-    /// The statement is read in place, so validating a query allocates nothing for
-    /// the clauses it validates.
+    /// The statement is read in place, so validating a query copies no clause
+    /// vector: the relation registry the rules need is built once and handed to
+    /// the section walk that follows.
     ///
     /// A statement at the top of a build chain encloses nothing, so a column
     /// qualifier it reads has to resolve against the relations the statement
@@ -53,14 +54,13 @@ impl StatementRef<'_> {
     /// alignment, and the compound ordering — and the clauses are validated
     /// afterwards by the single section walk of the `qualifiers` module, which
     /// enumerates every section of the statement and every statement a section
-    /// embeds, the aggregation consistency included.
+    /// embeds, the aggregation consistency included. The registry the rules pass
+    /// validated is the namespace the walk resolves against, so it is built once.
     pub(super) fn validate_in(
         &self,
         outer_relations: Option<&[TableRef]>,
     ) -> Result<(), BuildError> {
-        self.validate_rules()?;
-
-        let relations = self.statement_relations();
+        let relations = self.validate_rules()?;
         validate_clauses(self, &relations, outer_relations)
     }
 
@@ -91,21 +91,27 @@ impl StatementRef<'_> {
         self.validate_in(outer_relations)
     }
 
-    /// Validates the rules that read the statement data alone.
+    /// Validates the rules that read the statement data alone and returns the
+    /// relation registry they validated.
     ///
     /// The aggregation consistency belongs to the same statement-level family,
     /// but it constrains the projections and the `HAVING` predicate the section
     /// walk visits, so it runs at the head of that walk — see
     /// `qualifiers::walk_sections`.
-    fn validate_rules(&self) -> Result<(), BuildError> {
+    ///
+    /// The registry the relation rule builds is the namespace the section walk
+    /// resolves its references against, so the pass hands it over instead of
+    /// letting the walk materialise the same relations a second time.
+    fn validate_rules(&self) -> Result<Vec<TableRef>, BuildError> {
         self.validate_projections()?;
-        self.validate_relations()?;
+        let relations = self.validate_relations()?;
         self.validate_cte_names()?;
         self.validate_distinct_on_prefix()?;
         self.validate_distinct_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
-        self.validate_set_operand_arity()
+        self.validate_set_operand_arity()?;
+        Ok(relations)
     }
 
     /// Rejects a statement that records no projected column.
@@ -137,9 +143,19 @@ impl StatementRef<'_> {
     /// against.
     pub(super) fn statement_relations(&self) -> Vec<TableRef> {
         let mut relations = Vec::with_capacity(self.joins.len() + 1);
-        relations.extend(self.from);
-        relations.extend(self.joins.iter().map(|join| join.table));
+        relations.extend(self.introduced_relations().copied());
         relations
+    }
+
+    /// Enumerates the relations the statement introduces itself.
+    ///
+    /// The enumeration is the one `statement_relations` materialises and the one
+    /// `validate_relations` validates, so the two can never disagree about which
+    /// relations the statement declares.
+    fn introduced_relations(&self) -> impl Iterator<Item = &TableRef> {
+        self.from
+            .iter()
+            .chain(self.joins.iter().map(|join| &join.table))
     }
 
     /// Rejects a statement whose relations collide under one effective name or
@@ -158,17 +174,17 @@ impl StatementRef<'_> {
     /// with, so a registration that only matches the bare table name of an
     /// aliased relation would be dropped and the statement would read the stored
     /// table instead — see `reject_shadowed_derived`.
-    fn validate_relations(&self) -> Result<(), BuildError> {
+    ///
+    /// The registry the rule accepts is returned, because it is exactly the
+    /// namespace the section walk resolves the clause references against: the
+    /// walk reuses it instead of materialising the same relations a second time.
+    fn validate_relations(&self) -> Result<Vec<TableRef>, BuildError> {
         let mut relations = Vec::with_capacity(self.joins.len() + 1);
-        if let Some(from) = self.from {
-            reject_shadowed_derived(&from, self.derived)?;
-            register_relation(&mut relations, from)?;
+        for relation in self.introduced_relations() {
+            reject_shadowed_derived(relation, self.derived)?;
+            register_relation(&mut relations, *relation)?;
         }
-        for join in self.joins {
-            reject_shadowed_derived(&join.table, self.derived)?;
-            register_relation(&mut relations, join.table)?;
-        }
-        Ok(())
+        Ok(relations)
     }
 
     /// Rejects a statement whose `WITH` clause declares one name twice.
