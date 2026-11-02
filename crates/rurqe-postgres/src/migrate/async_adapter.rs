@@ -1,31 +1,18 @@
 //! Blocking migration adapter over the asynchronous PostgreSQL clients.
 //!
-//! The migration protocol is synchronous: the runner applies a script, reads the
-//! history, and opens the next boundary one call at a time. The asynchronous
-//! driver answers through futures instead, so the adapter gives the protocol a
-//! thread of its own. The thread owns a current-thread runtime and the
-//! connection, every protocol operation travels to it as one task, and the call
-//! that submitted the task waits for its answer. This is the discipline
-//! `Migrator::migrate_async` already establishes — blocking database work never
-//! runs on an asynchronous worker thread — applied to a client the application
-//! already holds.
+//! The migration protocol is synchronous while the asynchronous driver answers
+//! through futures, so the adapter gives the protocol a thread of its own: the
+//! thread owns a current-thread runtime and the connection, every operation
+//! travels to it as one task, and the call that submitted it parks until the
+//! answer arrives — the discipline `Migrator::migrate_async` establishes,
+//! applied to a client the application already holds.
 //!
-//! Two shapes are supported. [`PgAsyncMigrationBackend::new`] wraps a connection
-//! the caller has opened and drives, while
-//! [`PgAsyncMigrationBackend::from_pool`] checks a connection out of a
-//! `deadpool-postgres` pool on the worker thread and holds it for the whole run,
-//! so the session that takes the advisory lock is the session that keeps it.
-//!
-//! The advisory lock is session-scoped, which is why the connection is owned by
-//! the thread: the session that takes the lock releases it in the `Drop` of the
-//! backend, and a pooled session is never handed back with its lock still held.
-//!
-//! A panic inside the worker thread never unwinds the caller: the operation is
-//! caught, the call receives [`Error::Backend`], and the thread keeps serving the
-//! protocol.
-//!
-//! The session flag follows the proven outcome of the terminal statement: only
-//! a `COMMIT` or a `ROLLBACK` the server accepted proves the session idle.
+//! Both sides block, so the caller belongs on a blocking thread of its own, and
+//! the wait is reported through `warn_if_in_tokio_runtime`: a current-thread
+//! runtime cannot finish under a parked caller, because that caller is the
+//! thread that would have to poll the socket task of a [`PgAsyncConnection`] the
+//! worker awaits. A panic inside the worker travels back as [`Error::Backend`],
+//! and the session flag follows the proven outcome of the terminal statement.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -38,7 +25,7 @@ use rurqe_migrate::error::Error;
 use rurqe_migrate::history::{create_schema_history_table_sql, SchemaHistoryEntry};
 use rurqe_migrate::introspect::SchemaSelection;
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
-use rurqe_migrate::sleeper::ThreadSleeper;
+use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, ThreadSleeper};
 use tokio::runtime::{Builder, Runtime};
 
 use crate::backend::async_conn::PgAsyncConnection;
@@ -65,6 +52,9 @@ const UNEXPECTED_REPLY: &str = "the PostgreSQL migration worker answered unexpec
 /// Reason reported when a step opens a boundary over an already open one.
 const TRANSACTION_OPEN: &str = "the migration session already holds an open transaction";
 
+/// The adapter named in the report of a caller that blocks a Tokio-managed thread.
+const BLOCKING_OPERATION: &str = "PgAsyncMigrationBackend";
+
 /// The connection the worker thread drives for one migration run.
 enum Connection {
     /// A connection the caller opened and drives.
@@ -87,12 +77,9 @@ impl Connection {
 
 /// The closure that prepares the connection of a run on the worker thread.
 ///
-/// The boot closure owns whatever the connection needs — a connection the
-/// caller already drives, or a pooled checkout — and it runs inside the
-/// runtime of the worker thread, so a checkout that dials a connection has a
-/// runtime to schedule that work on. Naming the shape once keeps the
-/// signatures of the worker and of the backend readable and gives both
-/// constructors one bound to satisfy.
+/// It runs inside the runtime of the worker thread, so a pooled checkout that
+/// dials a connection has a runtime to schedule that work on, and it names the
+/// shape both constructors share.
 type Boot = Box<dyn FnOnce(&Runtime) -> Result<Connection, Error> + Send>;
 
 /// The state of the session the worker thread owns.
@@ -204,6 +191,9 @@ fn unexpected_reply() -> Error {
 }
 
 /// Handle to the thread executing the protocol of one migration run.
+///
+/// Starting the worker and submitting an operation both park the calling thread,
+/// so both report a caller that blocks a Tokio-managed thread.
 struct Worker {
     /// The queue the operations of the run are submitted through.
     commands: Option<Sender<Command>>,
@@ -215,12 +205,12 @@ impl Worker {
     /// Starts the worker thread and reports the outcome of its first action.
     ///
     /// `boot` runs on the worker thread before the first operation, so the
-    /// runtime and a pooled checkout are both prepared where the protocol
-    /// waits for them. A failure there is reported to the caller instead of
-    /// leaving a worker that can never serve an operation.
-    fn start(
-        boot: Boot,
-    ) -> Result<Self, Error> {
+    /// runtime and a pooled checkout are prepared where the protocol waits for
+    /// them; a failure there reaches the caller.
+    fn start(boot: Boot) -> Result<Self, Error> {
+        // Starting the worker parks the caller until the connection of the run is
+        // ready, so the caller's discipline is reported before the wait begins.
+        warn_if_in_tokio_runtime(BLOCKING_OPERATION);
         let (commands, queue) = mpsc::channel();
         let (started, boot_outcome) = mpsc::channel();
 
@@ -266,8 +256,12 @@ impl Worker {
         }
     }
 
-    /// Sends one operation to the worker and waits for its answer.
+    /// Sends one operation to the worker and parks until it answers.
+    ///
+    /// The answer arrives from the worker thread, so the wait blocks the caller
+    /// and is reported before it starts.
     fn submit(&self, operation: Operation) -> Result<Response, Error> {
+        warn_if_in_tokio_runtime(BLOCKING_OPERATION);
         let commands = self.commands.as_ref().ok_or_else(worker_gone)?;
         let (reply, answer) = mpsc::channel();
         commands
@@ -312,8 +306,7 @@ fn run_worker(runtime: Runtime, mut session: Option<Session>, queue: Receiver<Co
 /// Runs one queued operation, reporting a panic inside it as a typed failure.
 ///
 /// A panic is caught at the boundary of the operation and travels back as
-/// [`Error::Backend`], so the worker thread keeps serving the protocol and the
-/// caller never unwinds.
+/// [`Error::Backend`], so the thread keeps serving the protocol.
 fn guarded(
     runtime: &Runtime,
     session: &mut Session,
@@ -561,12 +554,12 @@ async fn read_catalog(
 ///
 /// The adapter owns a thread that drives the asynchronous driver on a
 /// current-thread runtime of its own, so the synchronous lifecycle of
-/// [`rurqe_migrate::Migrator`] runs against a client the application already
-/// holds without blocking a runtime the application depends on.
+/// [`rurqe_migrate::Migrator`] runs against a client the application already holds.
+/// The connection is session-scoped: the advisory lock the runner takes is held
+/// by the session the adapter owns for the whole run and released before it ends.
 ///
-/// The connection is session-scoped, so the advisory lock the runner takes is
-/// held by the session that the adapter owns for the whole run and released
-/// before the session ends.
+/// Every operation parks the calling thread until the worker answers, so the
+/// caller belongs on a blocking thread of its own and never on a Tokio worker.
 pub struct PgAsyncMigrationBackend {
     /// The thread serving the protocol of this run.
     worker: Worker,
@@ -581,10 +574,9 @@ pub struct PgAsyncMigrationBackend {
 impl PgAsyncMigrationBackend {
     /// Wraps a connection the caller has opened and drives.
     ///
-    /// The socket of an asynchronous client is driven by the runtime that
-    /// spawned its connection task, so the caller keeps that task alive for the
-    /// whole run. The adapter awaits the statements of the run on a runtime of
-    /// its own and never performs socket work itself.
+    /// The socket of an asynchronous client is driven by the runtime that spawned
+    /// its connection task, so the caller keeps that task alive for the whole run;
+    /// the run itself belongs on a blocking thread, as the type documents.
     pub fn new(connection: PgAsyncConnection) -> Result<Self, Error> {
         let boot = move |_runtime: &Runtime| -> Result<Connection, Error> {
             Ok(Connection::Direct(connection))
@@ -608,9 +600,7 @@ impl PgAsyncMigrationBackend {
     }
 
     /// Starts the worker thread and wraps it in the backend.
-    fn bootstrap(
-        boot: Boot,
-    ) -> Result<Self, Error> {
+    fn bootstrap(boot: Boot) -> Result<Self, Error> {
         Ok(PgAsyncMigrationBackend {
             worker: Worker::start(boot)?,
             selection: SchemaSelection::single(DEFAULT_SCHEMA),
