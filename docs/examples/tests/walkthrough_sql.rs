@@ -77,7 +77,7 @@ const SUBQUERIES: &str = include_str!("../../core/subqueries.md");
 const GROUP_BY: &str = include_str!("../../core/group_by.md");
 
 /// The chapter walking through the nested-collection fragments.
-const MULTISET: &str = include_str!("../../core/multiset.md");
+const MULTISET: &str = include_str!("../../core/nested.md");
 
 /// Asserts that `built` emits `sql` and that `chapter` quotes that statement.
 fn assert_quoted(chapter: &str, built: &BuiltQuery, sql: &str) {
