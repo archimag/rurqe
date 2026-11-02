@@ -57,6 +57,30 @@ fn from_migrations_rejects_duplicate_script_names() {
         }
     );
 }
+
+/// Cloning a collection shares every script with the original, so the clone stays
+/// value-equal, keeps the canonical order, and materialises that order only when it
+/// is consumed by value.
+#[test]
+fn a_cloned_collection_keeps_the_canonical_order() {
+    let embedded = embedded();
+    let clone = embedded.clone();
+
+    assert_eq!(clone, embedded);
+
+    let owned: Vec<Migration> = clone.into_iter().collect();
+    let names: Vec<&str> = owned
+        .iter()
+        .map(|migration| migration.script.as_str())
+        .collect();
+    assert_eq!(names, vec!["V1__users.sql", "V2__orders.sql"]);
+
+    assert_eq!(
+        embedded.len(),
+        2,
+        "the clone shares its scripts with the original"
+    );
+}
 /// A cold start closes every versioned migration the stage already reflects, and
 /// never a repeatable one: repeatable scripts carry no version, so the marker
 /// cannot cover them and they run on top of the stage the cold start produced.

@@ -66,6 +66,7 @@
 //! ```
 //!
 use core::ops::Deref;
+use std::sync::Arc;
 
 use crate::catalog::SchemaCatalog;
 use crate::checkpoint::Checkpoint;
@@ -115,11 +116,15 @@ use crate::version::MigrationVersion;
 /// [`migrate`](Self::migrate) runs the guarded lifecycle: it initialises an empty
 /// target from the stage, rejects a target sitting below the pruned boundary, and
 /// compares the catalog the run produced against the baked digest.
+///
+/// Every artifact is held behind an [`Arc`], so cloning a collection — which the
+/// asynchronous lifecycle does on each invocation — copies one pointer per artifact
+/// instead of every script body the collection carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedMigrations {
-    migrations: Vec<Migration>,
+    migrations: Arc<[Migration]>,
     checkpoint: Option<Checkpoint>,
-    stage: Option<DeclarativeStage>,
+    stage: Option<Arc<DeclarativeStage>>,
     schema_hash: Option<Checksum>,
 }
 
@@ -159,7 +164,7 @@ impl EmbeddedMigrations {
         for &(script, sql) in scripts {
             parsed.push(Migration::parse(script, sql)?);
         }
-        Self::assemble(&parsed)
+        Self::assemble(parsed)
     }
 
     /// Creates a collection from the raw artifacts of a project configuration.
@@ -196,13 +201,13 @@ impl EmbeddedMigrations {
             None => None,
         };
 
-        Self::with_artifacts(&parsed, checkpoint, stage, schema_hash)
+        Self::with_artifacts(parsed, checkpoint, stage, schema_hash)
     }
 
     /// Creates an empty embedded migration set.
     pub fn empty() -> Self {
         Self {
-            migrations: Vec::new(),
+            migrations: Arc::from(Vec::new()),
             checkpoint: None,
             stage: None,
             schema_hash: None,
@@ -216,28 +221,32 @@ impl EmbeddedMigrations {
     /// [`Error::DuplicateScriptName`] for the same reason [`new`](Self::new)
     /// rejects them.
     pub fn from_migrations(migrations: Vec<Migration>) -> Result<Self, Error> {
-        Self::assemble(&migrations)
+        Self::assemble(migrations)
     }
 
     /// Assembles a pure-tail collection: no checkpoint, stage, or snapshot.
-    fn assemble(migrations: &[Migration]) -> Result<Self, Error> {
+    fn assemble(migrations: Vec<Migration>) -> Result<Self, Error> {
         Self::with_artifacts(migrations, None, None, None)
     }
 
-    /// Sorts `migrations`, refuses two entries sharing one script name, and
+    /// Orders `migrations` in place, refuses two entries sharing one script name, and
     /// attaches the artifacts the collection carries.
+    ///
+    /// The scripts were parsed into a list this collection owns, so they are ordered
+    /// where they already sit instead of being cloned into a second list, and the
+    /// ordered result is shared behind an [`Arc`] rather than duplicated per run.
     fn with_artifacts(
-        migrations: &[Migration],
+        migrations: Vec<Migration>,
         checkpoint: Option<Checkpoint>,
         stage: Option<DeclarativeStage>,
         schema_hash: Option<Checksum>,
     ) -> Result<Self, Error> {
-        let sorted = Migrator::sort_migrations(migrations);
-        Migrator::validate_script_uniqueness(&sorted)?;
+        let ordered = Migrator::order_scripts(migrations);
+        Migrator::validate_script_uniqueness(&ordered)?;
         Ok(Self {
-            migrations: sorted,
+            migrations: Arc::from(ordered),
             checkpoint,
-            stage,
+            stage: stage.map(Arc::new),
             schema_hash,
         })
     }
@@ -264,7 +273,7 @@ impl EmbeddedMigrations {
 
     /// The declarative stage baked into the collection, if any.
     pub fn stage(&self) -> Option<&DeclarativeStage> {
-        self.stage.as_ref()
+        self.stage.as_deref()
     }
 
     /// The digest anchored by the baked `schema.lock` snapshot, if any.
@@ -273,8 +282,11 @@ impl EmbeddedMigrations {
     }
 
     /// Converts this collection into a vector of [`Migration`]s.
+    ///
+    /// The returned vector owns a copy of every script body, while the collection
+    /// shares the scripts it holds with every clone it hands out.
     pub fn to_vec(&self) -> Vec<Migration> {
-        self.migrations.clone()
+        self.migrations.to_vec()
     }
 
     /// Runs the embedded lifecycle: the cold start, the migration tail, and the
@@ -428,9 +440,11 @@ impl EmbeddedMigrations {
     ///
     /// The backend is moved into the blocking task and handed back together with
     /// the report, so a connection that cannot be shared across threads stays
-    /// usable after the run. A panic inside the blocking task — which this crate
-    /// never produces — surfaces as [`Error::Backend`] instead of unwinding the
-    /// caller.
+    /// usable after the run. The collection itself is shared with the task instead
+    /// of copied, so a binary carrying the whole DDL of a project pays one pointer
+    /// per artifact on every invocation. A panic inside the blocking task — which
+    /// this crate never produces — surfaces as [`Error::Backend`] instead of
+    /// unwinding the caller.
     ///
     /// The task runs the guard-free core of the lifecycle, so it never trips the
     /// `strict-async` refusal: a blocking-pool thread is exactly where this work
@@ -472,8 +486,9 @@ impl EmbeddedMigrations {
 
     /// Inspects the status of the embedded migrations on a dedicated blocking thread.
     ///
-    /// Delegates to [`Migrator::status_async`], which owns the offload mechanics,
-    /// so this wrapper and the runner counterpart cannot drift apart.
+    /// Delegates to the shared offload entry point of [`Migrator`], which owns the
+    /// mechanics, so this wrapper and the runner counterpart cannot drift apart, and
+    /// hands over the scripts this collection already shares instead of copying them.
     ///
     /// The backend is moved into the blocking task and handed back with the
     /// statuses, so the caller keeps the connection it inspected. A panic inside
@@ -486,7 +501,7 @@ impl EmbeddedMigrations {
         backend: B,
     ) -> Result<(Vec<MigrationStatus>, B), Error> {
         Migrator::new()
-            .status_async(backend, &self.migrations)
+            .status_shared_async(backend, Arc::clone(&self.migrations))
             .await
     }
 
@@ -505,8 +520,9 @@ impl EmbeddedMigrations {
 
     /// Repairs the schema history on a dedicated blocking thread.
     ///
-    /// Delegates to [`Migrator::repair_async`], which owns the offload mechanics
-    /// and runs the guard-free core on a blocking thread, so an async worker thread
+    /// Delegates to the shared offload entry point of [`Migrator`], which owns the
+    /// mechanics, hands over the scripts this collection already shares, and runs the
+    /// guard-free core on a blocking thread, so an async worker thread
     /// never performs the blocking database I/O Conventions.md §3 forbids.
     ///
     /// The backend is moved into the blocking task and handed back together with
@@ -521,7 +537,7 @@ impl EmbeddedMigrations {
         backend: B,
     ) -> Result<(RepairReport, B), Error> {
         Migrator::new()
-            .repair_async(backend, &self.migrations)
+            .repair_shared_async(backend, Arc::clone(&self.migrations))
             .await
     }
 
@@ -598,8 +614,10 @@ impl IntoIterator for EmbeddedMigrations {
     type Item = Migration;
     type IntoIter = std::vec::IntoIter<Migration>;
 
+    /// Consuming the collection by value materialises its scripts, which the
+    /// collection shares with every clone it hands out.
     fn into_iter(self) -> Self::IntoIter {
-        self.migrations.into_iter()
+        Vec::from(&*self.migrations).into_iter()
     }
 }
 

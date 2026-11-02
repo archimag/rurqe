@@ -1,5 +1,6 @@
 //! The migration lifecycle runner.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::checkpoint::Checkpoint;
@@ -57,33 +58,41 @@ impl Migrator {
     ///
     /// The values are cloned because the caller asks for an owned ordering — a
     /// collection that owns the list it hands on. A lifecycle run needs the order
-    /// alone and borrows it through `ordered_migrations` instead.
+    /// alone and borrows it through `ordered_migrations` instead, while a collection
+    /// that already owns its parsed scripts orders them in place with
+    /// `order_scripts`.
     pub fn sort_migrations(migrations: &[Migration]) -> Vec<Migration> {
-        Self::ordered_migrations(migrations)
-            .into_iter()
-            .cloned()
-            .collect()
+        Self::order_scripts(migrations.to_vec())
+    }
+
+    /// Orders `migrations` into the sequence every lifecycle run applies them in.
+    ///
+    /// Versioned migrations come first in ascending version order, followed by
+    /// repeatable migrations sorted by script name. The list is reordered where it
+    /// already sits, so a caller that parsed its own scripts — an embedded collection
+    /// is one — pays no copy of a single body to establish the order. An entry that
+    /// is neither versioned nor repeatable is not a script of a run: such an entry is
+    /// dropped here, exactly as [`sort_migrations`](Self::sort_migrations) never
+    /// returned one.
+    pub(crate) fn order_scripts(mut migrations: Vec<Migration>) -> Vec<Migration> {
+        migrations.retain(is_script);
+        migrations.sort_by(migration_order);
+        migrations
     }
 
     /// Orders the migrations of a run without copying their script bodies.
     ///
-    /// Versioned migrations come first in ascending version order, followed by
-    /// repeatable migrations sorted by script name — exactly the order
-    /// [`sort_migrations`](Self::sort_migrations) materialises. A lifecycle run
+    /// The entries come out in exactly the order
+    /// [`order_scripts`](Self::order_scripts) puts the same list in. A lifecycle run
     /// reads the order only, so it borrows the entries it was handed rather than
     /// cloning every script name, description, and SQL body on each invocation.
     fn ordered_migrations(migrations: &[Migration]) -> Vec<&Migration> {
-        let mut versioned: Vec<&Migration> =
-            migrations.iter().filter(|m| m.is_versioned()).collect();
-        versioned.sort_by(|a, b| a.version.cmp(&b.version));
-
-        let mut repeatable: Vec<&Migration> =
-            migrations.iter().filter(|m| m.is_repeatable()).collect();
-        repeatable.sort_by(|a, b| a.script.cmp(&b.script));
-
-        let mut result = versioned;
-        result.extend(repeatable);
-        result
+        let mut ordered: Vec<&Migration> = migrations
+            .iter()
+            .filter(|migration| is_script(migration))
+            .collect();
+        ordered.sort_by(|left, right| migration_order(left, right));
+        ordered
     }
 
     /// Runs all pending versioned and modified repeatable migrations.
@@ -515,5 +524,27 @@ impl Migrator {
             recorded_hash: actual.to_hex(),
             expected_hash: checkpoint.schema_hash().to_hex(),
         })
+    }
+}
+
+/// Whether `migration` is a script a lifecycle run applies.
+///
+/// A baseline marker is synthetic: [`Migrator::baseline`] records one in the history
+/// table, and no script is ever parsed into that kind, so a list assembled by hand
+/// treats such an entry as absent rather than as a script without a version.
+fn is_script(migration: &Migration) -> bool {
+    migration.is_versioned() || migration.is_repeatable()
+}
+
+/// The order in which two scripts of one run are applied.
+///
+/// Versioned migrations come first in ascending version order, followed by
+/// repeatable migrations sorted by script name.
+fn migration_order(left: &Migration, right: &Migration) -> Ordering {
+    match (left.is_versioned(), right.is_versioned()) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (true, true) => left.version.cmp(&right.version),
+        (false, false) => left.script.cmp(&right.script),
     }
 }

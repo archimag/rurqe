@@ -12,14 +12,18 @@
 //! the run. A panic inside the blocking task — which this crate never produces —
 //! surfaces as [`Error::Backend`] instead of unwinding the caller.
 //!
-//! The script slice is copied exactly once per call: the `'static` bound of the
-//! blocking task requires an owned list, and the lifecycle core orders that list
-//! by reference, so the script bodies are never duplicated a second time.
+//! A caller that hands over a script slice pays exactly one copy per call, because
+//! the `'static` bound of the blocking task requires an owned list and a slice is
+//! borrowed; a collection that already shares its scripts behind an [`Arc`] hands
+//! that allocation over instead and pays nothing. The lifecycle core orders the list
+//! by reference, so the script bodies are never duplicated a second time either way.
 //! Under the `strict-async` feature these wrappers are the sanctioned way to drive
 //! the lifecycle from inside a runtime: the synchronous entry points then refuse to
 //! run there, while the wrappers keep working because they call the guard-free
 //! cores. That also covers a runner anchored by [`Migrator::with_checkpoint`],
 //! which has no Tokio-safe synchronous alternative at all.
+
+use std::sync::Arc;
 
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
@@ -41,11 +45,29 @@ impl Migrator {
     /// synchronous method.
     pub async fn migrate_async<B: MigrationBackend + Send + 'static>(
         &self,
-        mut backend: B,
+        backend: B,
         migrations: &[Migration],
     ) -> Result<(MigrationReport, B), Error> {
+        self.migrate_shared_async(backend, Arc::from(migrations))
+            .await
+    }
+
+    /// Runs all pending versioned and modified repeatable migrations from a script
+    /// list the caller already shares on a dedicated blocking thread.
+    ///
+    /// [`migrate_async`](Self::migrate_async) copies the slice it is handed into such
+    /// a list; a caller that owns one — an embedded collection, whose scripts live
+    /// behind an [`Arc`] — passes it here and pays no copy at all. Every other
+    /// guarantee of the public entry point holds: the run happens on a
+    /// `spawn_blocking` thread, the backend comes back with the report, and a panic
+    /// inside the task surfaces as [`Error::Backend`] instead of unwinding the
+    /// caller.
+    pub(crate) async fn migrate_shared_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        mut backend: B,
+        migrations: Arc<[Migration]>,
+    ) -> Result<(MigrationReport, B), Error> {
         let migrator = self.clone();
-        let migrations = migrations.to_vec();
 
         let joined = tokio::task::spawn_blocking(move || {
             let report = migrator.migrate_core(&mut backend, &migrations);
@@ -74,11 +96,27 @@ impl Migrator {
     /// synchronous method.
     pub async fn status_async<B: MigrationBackend + Send + 'static>(
         &self,
-        mut backend: B,
+        backend: B,
         migrations: &[Migration],
     ) -> Result<(Vec<MigrationStatus>, B), Error> {
+        self.status_shared_async(backend, Arc::from(migrations))
+            .await
+    }
+
+    /// Inspects the status of migrations from a script list the caller already shares
+    /// on a dedicated blocking thread.
+    ///
+    /// [`status_async`](Self::status_async) copies the slice it is handed into such a
+    /// list; a caller that owns one passes it here and pays no copy. The read happens
+    /// on a `spawn_blocking` thread, the backend comes back with the statuses, and a
+    /// panic inside the task surfaces as [`Error::Backend`] instead of unwinding the
+    /// caller.
+    pub(crate) async fn status_shared_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        mut backend: B,
+        migrations: Arc<[Migration]>,
+    ) -> Result<(Vec<MigrationStatus>, B), Error> {
         let migrator = self.clone();
-        let migrations = migrations.to_vec();
 
         let joined = tokio::task::spawn_blocking(move || {
             let statuses = migrator.status_core(&mut backend, &migrations);
@@ -141,11 +179,27 @@ impl Migrator {
     /// method.
     pub async fn repair_async<B: MigrationBackend + Send + 'static>(
         &self,
-        mut backend: B,
+        backend: B,
         migrations: &[Migration],
     ) -> Result<(RepairReport, B), Error> {
+        self.repair_shared_async(backend, Arc::from(migrations))
+            .await
+    }
+
+    /// Repairs the schema history against a script list the caller already shares on
+    /// a dedicated blocking thread.
+    ///
+    /// [`repair_async`](Self::repair_async) copies the slice it is handed into such a
+    /// list; a caller that owns one passes it here and pays no copy. The repair runs
+    /// on a `spawn_blocking` thread, the backend comes back with the report, and a
+    /// panic inside the task surfaces as [`Error::Backend`] instead of unwinding the
+    /// caller.
+    pub(crate) async fn repair_shared_async<B: MigrationBackend + Send + 'static>(
+        &self,
+        mut backend: B,
+        migrations: Arc<[Migration]>,
+    ) -> Result<(RepairReport, B), Error> {
         let migrator = self.clone();
-        let migrations = migrations.to_vec();
 
         let joined = tokio::task::spawn_blocking(move || {
             let report = migrator.repair_core(&mut backend, &migrations);
