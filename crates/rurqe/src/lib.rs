@@ -708,7 +708,7 @@ pub mod prelude {
     };
 
     #[cfg(feature = "r2d2")]
-    pub use rurqe_postgres::{PgPool, PgPoolError};
+    pub use rurqe_postgres::{PgPool, PgPoolError, PgPooledConnection};
 
     #[cfg(feature = "r2d2")]
     pub use rurqe_sqlite::{SqlitePool, SqlitePoolError};

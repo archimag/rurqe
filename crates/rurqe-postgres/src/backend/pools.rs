@@ -10,13 +10,14 @@
 //! path, because the checkout guard is dropped however the block ends.
 //!
 //! A block is still one checkout, so the transaction state the adapter guards
-//! is the state of a session that outlives it. `PgPool::get` therefore returns
-//! every checked-out connection to an idle session before handing it out,
-//! which is what makes the guarantee hold on the pooled surface as well: a
-//! connection whose session still holds a transaction — one opened through the
-//! raw handle, or one whose block ended without closing it — is repaired at
-//! the next checkout instead of running the next block inside the abandoned
-//! transaction.
+//! is the state of a session that outlives it. `PgPool::get` therefore hands the
+//! connection out as a guard, and the guard repairs the session when the
+//! checkout ends — but only when the pool cannot prove the session to be idle
+//! already: a statement and a transaction block the pool drives close the work
+//! they open, so a checkout of its own costs no round trip, while a session a
+//! raw handle left inside a transaction, or one whose block ended without
+//! closing it, is repaired on the way out instead of enclosing the next block.
+//!
 //! The asynchronous `PgAsyncPool` exposes the same closure-scoped form: its
 //! `transaction` and `transaction_with_isolation` keep one pooled connection for
 //! the whole block, let the block nest through savepoints, and close it with an
@@ -329,15 +330,103 @@ pub use deadpool_impl::PgAsyncPool;
 mod r2d2_impl {
     use std::error::Error as StdError;
     use std::fmt;
+    use std::ops::{Deref, DerefMut};
 
     use r2d2::ManageConnection;
     use rurqe_core::expr::SqlVal;
-    use rurqe_core::query::{BuiltQuery, IsolationLevel, QueryBackend};
+    use rurqe_core::query::{BuiltQuery, IsolationLevel, QueryBackend, TransactionalConnection};
 
     use crate::backend::sync_conn::{
         ensure_idle, execute_raw_sync, fetch_raw_limited_sync, fetch_raw_sync, PgConnection,
     };
     use crate::backend::types::PgError;
+
+    /// A connection checked out of a [`PgPool`], returned to the pool when it drops.
+    ///
+    /// The synchronous driver exposes no transaction state, so the pool cannot ask
+    /// a session whether it is outside a transaction. The guard closes that gap
+    /// from the other side: it repairs the session when the checkout ends, so every
+    /// connection the pool hands out is in the state the pool promises, whatever
+    /// the previous checkout did with it.
+    ///
+    /// The repair is not paid by every checkout, because the pool can prove the
+    /// session idle for the work it drives itself: a statement runs in autocommit
+    /// and a transaction block ends with an awaited `COMMIT` or `ROLLBACK`, so a
+    /// checkout the pool drove to a clean ending returns the connection without a
+    /// repair. A session the caller reaches through the handle is the other case —
+    /// the statements issued there stay outside the bookkeeping of the pool — so
+    /// the proof is forfeited as soon as the handle is borrowed mutably, and the
+    /// reset runs when the checkout ends.
+    pub struct PgPooledConnection<M: ManageConnection<Connection = postgres::Client>> {
+        /// The checked-out connection, returned to the pool when the guard drops.
+        connection: r2d2::PooledConnection<M>,
+        /// Whether the pool proved that the session is outside a transaction.
+        idle: bool,
+    }
+
+    impl<M: ManageConnection<Connection = postgres::Client>> PgPooledConnection<M> {
+        /// Wraps a checked-out connection whose session the pool has yet to prove.
+        fn new(connection: r2d2::PooledConnection<M>) -> Self {
+            Self {
+                connection,
+                idle: false,
+            }
+        }
+
+        /// Records that the session is proven to be outside a transaction.
+        fn mark_idle(&mut self) {
+            self.idle = true;
+        }
+    }
+
+    impl<M: ManageConnection<Connection = postgres::Client>> Deref for PgPooledConnection<M> {
+        type Target = postgres::Client;
+
+        fn deref(&self) -> &postgres::Client {
+            &self.connection
+        }
+    }
+
+    impl<M: ManageConnection<Connection = postgres::Client>> DerefMut for PgPooledConnection<M> {
+        /// Borrows the handle, forfeiting the proof that the session is idle.
+        ///
+        /// The handle reaches statements the typed builder does not model, so the
+        /// pool cannot vouch for the state the session ends in, and the checkout
+        /// is repaired when it ends.
+        fn deref_mut(&mut self) -> &mut postgres::Client {
+            self.idle = false;
+            &mut self.connection
+        }
+    }
+
+    impl<M: ManageConnection<Connection = postgres::Client>> Drop for PgPooledConnection<M> {
+        /// Returns the session to an idle state when the pool cannot vouch for it.
+        ///
+        /// The reset is one round trip of the simple protocol carrying
+        /// `BEGIN; ROLLBACK`, the statement pair a session accepts in every state:
+        /// the leading `BEGIN` makes the trailing `ROLLBACK` legitimate whatever
+        /// the session held before, so a session that was already idle pays only
+        /// the round trip of the repair and a session that still holds a
+        /// transaction has it ended.
+        ///
+        /// A reset the driver refuses leaves the session in a state the pool
+        /// cannot vouch for, so the failure is logged here and the connection
+        /// leaves the pool once the driver marks it closed, instead of being
+        /// served to the next caller.
+        fn drop(&mut self) {
+            if self.idle {
+                return;
+            }
+
+            if let Err(failure) = ensure_idle(&mut self.connection) {
+                tracing::error!(
+                    failure = %failure,
+                    "the pooled connection could not be returned to an idle session; \
+                     the pool discards it once the driver marks it closed"
+                );
+            }
+        }
+    }
 
     /// An `r2d2` pool of synchronous PostgreSQL connections.
     ///
@@ -374,63 +463,73 @@ mod r2d2_impl {
         }
 
         /// Checks a connection out of the pool.
-        /// Checks a connection out of the pool and returns it to an idle session.
+        ///
+        /// The checkout costs no round trip of its own. The connection is handed
+        /// out as a [`PgPooledConnection`] guard, and the guard repairs the
+        /// session when the checkout ends — but only when the pool cannot prove
+        /// it to be idle already, because the reset a synchronous client needs is
+        /// never probed for: the pool drives every connection it hands out to a
+        /// known state instead.
+        ///
+        /// The repair covers the session the previous checkout left behind. A
+        /// connection whose session still holds a transaction — one opened
+        /// through the raw handle, or one whose block ended without closing it —
+        /// is reset with one round trip of the simple protocol before it returns
+        /// to the pool, so it never encloses the work of the next caller. A reset
+        /// the driver refuses leaves the session in a state the pool cannot vouch
+        /// for: the guard reports it, and the connection leaves the pool once the
+        /// driver marks it closed instead of being served again.
         ///
         /// A checkout failure surfaces as [`PgPoolError::Pool`], so the whole
         /// pool API speaks one error vocabulary: a checkout failure and a
         /// statement failure both propagate with `?` into a function returning
         /// [`PgPoolError`].
-        ///
-        /// The session of a recycled connection may still hold a transaction a
-        /// previous block left open, because `r2d2` validates that a connection
-        /// is alive rather than that it is outside a transaction, so every
-        /// checkout returns the session to an idle state before handing the
-        /// connection out. The reset is one round trip of the simple protocol
-        /// and leaves no trace on a session that was already idle; it is what
-        /// carries the transaction guarantee across checkouts, because the
-        /// bookkeeping of a single adapter dies with the adapter while the
-        /// session of the reused connection does not.
-        ///
-        /// A reset the driver refuses means the session could not be brought
-        /// back to a known state, so the checkout itself fails with
-        /// [`PgPoolError::Query`] carrying [`PgError::AbandonedTransaction`]
-        /// instead of handing the connection to a block that would run inside
-        /// the abandoned transaction. The refused connection is dropped rather
-        /// than returned to the caller, so `r2d2` discards it once the driver
-        /// marks it closed.
-        pub fn get(&self) -> Result<r2d2::PooledConnection<M>, PgPoolError> {
-            let mut connection = self.pool.get().map_err(PgPoolError::Pool)?;
-            ensure_idle(&mut connection).map_err(PgPoolError::Query)?;
-            Ok(connection)
+        pub fn get(&self) -> Result<PgPooledConnection<M>, PgPoolError> {
+            let connection = self.pool.get().map_err(PgPoolError::Pool)?;
+            Ok(PgPooledConnection::new(connection))
         }
+
         /// Runs `f` inside a transaction on a pooled connection, committing on
         /// `Ok` and rolling back on `Err`.
         ///
         /// The connection stays checked out for the whole block, so every
         /// statement of `f` runs on one physical connection and the block is
         /// atomic exactly as it is on an owned connection: the outermost call
-        /// runs between `BEGIN` and `COMMIT`, a call made while a transaction
-        /// is already open nests inside a `SAVEPOINT` through
-        /// [`PgConnection::transaction`], and a block returning `Err` or
-        /// panicking is rolled back. The pooled handle returns to the pool
-        /// however the block ends, because the checkout guard is dropped on
-        /// every exit path.
+        /// runs between `BEGIN` and `COMMIT`, a call made while a transaction is
+        /// already open nests inside a `SAVEPOINT` through
+        /// [`PgConnection::transaction`], and a block returning `Err` or panicking
+        /// is rolled back. The pooled handle returns to the pool however the block
+        /// ends, because the checkout guard is dropped on every exit path.
         ///
-        /// A checkout failure surfaces as [`PgPoolError::Pool`]; a failure
-        /// raised by `BEGIN`, by `f`, or by `COMMIT` surfaces as
-        /// [`PgPoolError::Query`].
+        /// A checkout failure surfaces as [`PgPoolError::Pool`]; a failure raised
+        /// by `BEGIN`, by `f`, or by `COMMIT` surfaces as [`PgPoolError::Query`].
         ///
-        /// The block starts on a connection [`PgPool::get`] has returned to an
-        /// idle session, so a transaction a previous checkout left open is
-        /// closed before this block opens its own.
+        /// The block starts on the session the checkout proves: the pool drove
+        /// the previous block to its ending, and the guard repaired the session
+        /// otherwise, so the adapter neither probes nor resets the connection
+        /// before it opens the block. A block that ends in a state the pool cannot
+        /// vouch for — a rollback the driver refused — is repaired by the guard on
+        /// the way out.
         pub fn transaction<T, F>(&self, f: F) -> Result<T, PgPoolError>
         where
             F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
         {
             let mut pooled = self.get()?;
-            PgConnection::borrowed(&mut pooled)
-                .transaction(f)
-                .map_err(PgPoolError::Query)
+            // The checkout knows the session: the pool closed it in the previous
+            // block and the guard repaired it otherwise, so the adapter does not
+            // probe it again before the block opens.
+            let mut connection = PgConnection::borrowed_idle(&mut pooled);
+            let result = connection.transaction(f);
+            let poisoned = connection.transaction_status().is_poisoned();
+            drop(connection);
+
+            // A refused rollback leaves the transaction state unknown, so the
+            // checkout is not proven: the guard repairs it on the way out.
+            if !poisoned {
+                pooled.mark_idle();
+            }
+
+            result.map_err(PgPoolError::Query)
         }
 
         /// Runs `f` inside a transaction at the requested `isolation` level,
@@ -442,9 +541,9 @@ mod r2d2_impl {
         /// coming from [`IsolationLevel::as_str`], so every statement of `f`
         /// observes the isolation the caller asked for. A call made while a
         /// transaction is already open nests inside a `SAVEPOINT` and the
-        /// requested level is ignored for that nested block, because SQL
-        /// defines no per-savepoint isolation and the enclosing transaction
-        /// keeps the level it was opened with.
+        /// requested level is ignored for that nested block, because SQL defines
+        /// no per-savepoint isolation and the enclosing transaction keeps the
+        /// level it was opened with.
         ///
         /// The error mapping is the same as for [`PgPool::transaction`]: a
         /// checkout failure surfaces as [`PgPoolError::Pool`], while a failure
@@ -459,9 +558,16 @@ mod r2d2_impl {
             F: FnOnce(&mut PgConnection<&mut postgres::Client>) -> Result<T, PgError>,
         {
             let mut pooled = self.get()?;
-            PgConnection::borrowed(&mut pooled)
-                .transaction_with_isolation(isolation, f)
-                .map_err(PgPoolError::Query)
+            let mut connection = PgConnection::borrowed_idle(&mut pooled);
+            let result = connection.transaction_with_isolation(isolation, f);
+            let poisoned = connection.transaction_status().is_poisoned();
+            drop(connection);
+
+            if !poisoned {
+                pooled.mark_idle();
+            }
+
+            result.map_err(PgPoolError::Query)
         }
     }
 
@@ -477,8 +583,7 @@ mod r2d2_impl {
     pub enum PgPoolError {
         /// The connection could not be checked out of the pool.
         Pool(r2d2::Error),
-        /// The statement failed to execute, or the checkout could not return
-        /// the connection to an idle session.
+        /// The statement failed to execute.
         Query(PgError),
     }
 
@@ -517,7 +622,11 @@ mod r2d2_impl {
 
         fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
             let mut connection = self.get()?;
-            fetch_raw_sync(&mut connection, query).map_err(PgPoolError::Query)
+            let rows = fetch_raw_sync(&mut connection, query).map_err(PgPoolError::Query);
+            // A statement runs in autocommit, so it leaves the session outside a
+            // transaction whether the driver executed it or refused it.
+            connection.mark_idle();
+            rows
         }
 
         /// Reads at most `limit` rows from the checked-out connection.
@@ -531,12 +640,17 @@ mod r2d2_impl {
             limit: Option<usize>,
         ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
             let mut connection = self.get()?;
-            fetch_raw_limited_sync(&mut connection, query, limit).map_err(PgPoolError::Query)
+            let rows = fetch_raw_limited_sync(&mut connection, query, limit)
+                .map_err(PgPoolError::Query);
+            connection.mark_idle();
+            rows
         }
 
         fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
             let mut connection = self.get()?;
-            execute_raw_sync(&mut connection, query).map_err(PgPoolError::Query)
+            let affected = execute_raw_sync(&mut connection, query).map_err(PgPoolError::Query);
+            connection.mark_idle();
+            affected
         }
     }
 
@@ -557,4 +671,4 @@ mod r2d2_impl {
 }
 
 #[cfg(all(feature = "r2d2", feature = "postgres"))]
-pub use r2d2_impl::{PgPool, PgPoolError};
+pub use r2d2_impl::{PgPool, PgPoolError, PgPooledConnection};

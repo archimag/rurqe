@@ -129,7 +129,6 @@ mod support {
 
 #[cfg(feature = "r2d2")]
 mod sync_pool {
-    use std::error::Error as StdError;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     use postgres::NoTls;
@@ -362,8 +361,8 @@ mod sync_pool {
     }
 
     #[test]
-    fn a_broken_connection_is_refused_at_checkout() {
-        let Some(url) = support::database_url("PgPool::get refused checkout") else {
+    fn a_session_that_lost_its_backend_is_reported_by_its_statement() {
+        let Some(url) = support::database_url("PgPool::get session without a backend") else {
             return;
         };
         let pool = pool(&url);
@@ -380,8 +379,10 @@ mod sync_pool {
 
         // Terminating the backend from another session leaves the recycled
         // connection in a state the pool does not inspect: `r2d2` validates that
-        // a connection is alive rather than that it is usable, and a session
-        // that lost its backend still looks open to the pool.
+        // a connection is alive rather than that it is usable, and a session that
+        // lost its backend still looks open to the pool. A checkout proves the
+        // state of the session instead of probing it, so the failure reaches the
+        // statement of the caller rather than the checkout.
         let config: postgres::Config = url.parse().expect("the test URL parses");
         let mut killer = config
             .connect(NoTls)
@@ -394,36 +395,23 @@ mod sync_pool {
             "the server accepted the termination of backend {backend}"
         );
 
-        // The checkout of the dead session is refused instead of handed out, and
-        // the refusal names the reset the broken session could not complete.
-        let refused = match pool.get() {
-            Ok(_) => panic!("the checkout of a session without a backend is refused"),
-            Err(failure) => failure,
-        };
-        let abandoned = match &refused {
-            PgPoolError::Query(error) => error,
-            other => panic!("the checkout reports the broken session: {other:?}"),
-        };
-        let PgError::AbandonedTransaction { failure } = abandoned else {
-            panic!("the checkout reports the abandoned transaction: {abandoned:?}");
-        };
-        // The driver failure the reset observed is kept whole instead of being
-        // flattened into a message, so the checkout hands it back through
-        // `source` and the cause stays reachable from the returned value.
-        let cause = StdError::source(abandoned)
-            .unwrap_or_else(|| panic!("the refusal keeps the driver failure it observed"));
-        assert_eq!(
-            cause.to_string(),
-            failure.to_string(),
-            "the driver failure the reset reported is reachable through `source`"
-        );
+        {
+            let mut connection = pool.get().expect("the checkout costs no round trip");
+            let refused = connection.query_one("SELECT 1", &[]);
+            assert!(
+                refused.is_err(),
+                "the session without a backend reports the failure of its statement"
+            );
+        }
 
-        // The refused checkout dropped the dead connection, so the pool opens a
-        // fresh one for the next caller.
-        let served = pool.get();
+        // The repair the guard performed on the way out failed with the same
+        // session, so the pool discarded the connection it could not vouch for and
+        // opens a fresh one for the next caller.
+        let mut served = pool.get().expect("the pool serves a connection");
+        let served = served.query_one("SELECT 1", &[]);
         assert!(
             served.is_ok(),
-            "the pool replaces the connection it refused: {:?}",
+            "the pool replaces the connection it discarded: {:?}",
             served.err()
         );
     }

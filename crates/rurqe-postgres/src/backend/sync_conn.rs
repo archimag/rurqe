@@ -79,27 +79,29 @@ pub(crate) fn fetch_raw_limited_sync(
 
 /// Returns the session of a checked-out client to a provably idle state.
 ///
-/// A connection recycled by a pool carries the session state of the block that
+/// A connection a pool hands back carries the session state of the block that
 /// drove it last: a transaction a raw handle opened, a `BEGIN` whose `COMMIT`
 /// the caller never issued, or a block whose rollback the driver refused. The
 /// bookkeeping of an adapter dies with the adapter, while the session of the
-/// server outlives it, so a checkout is the place where that state can still
-/// be closed.
+/// server outlives it, so the return of a checkout is the place where that
+/// state can still be closed, and the guard of the pool closes it there.
 ///
 /// The reset is one round trip of the simple protocol carrying `BEGIN;
 /// ROLLBACK`. Opening the transaction first makes the trailing `ROLLBACK`
-/// legitimate in every session state, so a checkout that finds an idle session
-/// logs nothing at all, while a session that still holds a transaction has it
-/// ended by the `ROLLBACK`. The idle handout is therefore guaranteed by
+/// legitimate in every session state, so a return that is already idle logs
+/// nothing at all, while a session that still holds a transaction has it
+/// ended by the `ROLLBACK`. The idle return is therefore guaranteed by
 /// construction instead of by classifying the state the session arrived in,
 /// and the only trace the reset leaves is the server-side warning it emits
 /// when it actually repairs an abandoned transaction.
 ///
 /// A reset the driver refuses means the connection could not be brought back
-/// to a known state, so the failure is reported instead of handing the
-/// connection to a block that would run inside the abandoned transaction.
-/// The driver failure travels in [`PgError::AbandonedTransaction`] whole, so
-/// a caller reaches the cause the driver reported through
+/// to a known state, so the failure is reported instead of the session being
+/// handed to the next caller: the guard of the pool traces it, and the pool
+/// discards the connection once the driver marks it closed, so the work of the
+/// next caller never runs inside the abandoned transaction. The driver failure
+/// travels in [`PgError::AbandonedTransaction`] whole, so an operator reading
+/// the trace reaches the cause the driver reported through
 /// [`source`](std::error::Error::source).
 #[cfg_attr(not(any(feature = "r2d2", debug_assertions)), allow(dead_code))]
 pub(crate) fn ensure_idle(client: &mut postgres::Client) -> Result<(), PgError> {
@@ -125,6 +127,15 @@ pub(crate) fn ensure_idle(client: &mut postgres::Client) -> Result<(), PgError> 
 pub struct PgConnection<B = postgres::Client> {
     client: B,
     status: TransactionStatus<PgError>,
+    /// Whether the session behind the handle is proven to be outside a transaction.
+    ///
+    /// The proof is consulted by the debug-build repair of the typed entry points,
+    /// and it only outlives a session the adapter observed from a known state: the
+    /// raw handle and the construction of an unproven checkout clear it, so a
+    /// session that may hold a transaction the adapter never recorded is never
+    /// treated as idle.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    idle: bool,
 }
 
 impl PgConnection<postgres::Client> {
@@ -133,6 +144,7 @@ impl PgConnection<postgres::Client> {
         Self {
             client,
             status: TransactionStatus::new(),
+            idle: false,
         }
     }
 
@@ -161,6 +173,25 @@ impl PgConnection<&mut postgres::Client> {
         PgConnection {
             client,
             status: TransactionStatus::new(),
+            idle: false,
+        }
+    }
+
+    /// Wraps a borrowed client handle whose session the caller has proven idle.
+    ///
+    /// The constructor is the one place a caller can state that the session is
+    /// outside a transaction, and the typed entry points skip the repair a debug
+    /// build performs on an unproven handle: the proof is the caller's, and a session
+    /// that in fact still holds a transaction would let a `BEGIN` join it, which is
+    /// exactly what the repair prevents. A pooled checkout is the caller that can
+    /// state it, because the connection was returned to the pool in an idle state.
+    pub(crate) fn borrowed_idle(
+        client: &mut postgres::Client,
+    ) -> PgConnection<&mut postgres::Client> {
+        PgConnection {
+            client,
+            status: TransactionStatus::new(),
+            idle: true,
         }
     }
 }
@@ -181,10 +212,11 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// a manual `BEGIN` leaves the connection inside a transaction the adapter
     /// never records. The caller owns that state and leaves the connection
     /// idle when it is done. A session that is not repaired is reset at the
-    /// next pooled checkout and, in a debug build, at the next typed
-    /// transaction entry, so the leak is contained instead of being inherited
-    /// by the following caller.
+    /// next typed transaction entry, and the guard of the pool repairs it on the
+    /// way out, so the leak is contained instead of being inherited by the
+    /// following caller.
     pub fn client_mut(&mut self) -> &mut postgres::Client {
+        self.idle = false;
         self.client.borrow_mut()
     }
 
@@ -210,8 +242,12 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
         #[cfg(debug_assertions)]
         self.repair_idle_session().map_err(E::from)?;
         let mut guard = TransactionGuard::begin(self).map_err(E::from)?;
+        let outer = guard.is_outer();
         let value = f(&mut guard)?;
         guard.commit().map_err(E::from)?;
+        if outer {
+            self.idle = true;
+        }
         Ok(value)
     }
 
@@ -263,8 +299,12 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
         #[cfg(debug_assertions)]
         self.repair_idle_session().map_err(E::from)?;
         let mut guard = TransactionGuard::begin_with(self, Some(isolation)).map_err(E::from)?;
+        let outer = guard.is_outer();
         let value = f(&mut guard)?;
         guard.commit().map_err(E::from)?;
+        if outer {
+            self.idle = true;
+        }
         Ok(value)
     }
     /// Repairs a session left inside a transaction by a raw driver handle.
@@ -272,8 +312,8 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// A typed entry point is the only place where the adapter can still tell
     /// that the caller is about to open a transaction of its own, so a debug
     /// build returns the session to an idle state here. The repair runs only
-    /// while the bookkeeping records neither an open transaction nor a
-    /// poisoning: a nested savepoint block belongs to the transaction the
+    /// while the session is unproven and the bookkeeping records neither an open
+    /// transaction nor a poisoning: a nested savepoint block belongs to the
     /// enclosing guard opened and must not be reset, and a poisoned connection
     /// belongs to the recovery of [`TransactionGuard`], which retries the
     /// rollback the driver refused instead of closing the transaction behind
@@ -284,10 +324,12 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// guarantee of the typed API.
     #[cfg(debug_assertions)]
     fn repair_idle_session(&mut self) -> Result<(), PgError> {
-        if self.status.is_open() || self.status.is_poisoned() {
+        if self.idle || self.status.is_open() || self.status.is_poisoned() {
             return Ok(());
         }
-        ensure_idle(self.client.borrow_mut())
+        ensure_idle(self.client.borrow_mut())?;
+        self.idle = true;
+        Ok(())
     }
 }
 

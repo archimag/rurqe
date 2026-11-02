@@ -26,7 +26,7 @@ pub use backend::async_scope::{PgAsyncScope, ScopeFuture};
 #[cfg(all(feature = "deadpool-postgres", feature = "tokio-postgres"))]
 pub use backend::pools::PgAsyncPool;
 #[cfg(all(feature = "r2d2", feature = "postgres"))]
-pub use backend::pools::{PgPool, PgPoolError};
+pub use backend::pools::{PgPool, PgPoolError, PgPooledConnection};
 #[cfg(feature = "postgres")]
 pub use backend::sync_conn::PgConnection;
 #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
