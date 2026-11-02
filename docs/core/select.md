@@ -1,4 +1,4 @@
-# The SELECT statement
+# SELECT
 
 `SELECT` reads rows, and it is the one statement whose clauses are documented by a family of chapters. This page is the head of that family: it carries the anatomy of the whole statement, the order in which the engine evaluates its clauses, the mapping from every clause to the builder, the capability matrix, and the guards that make an invalid statement unwritable. A clause that has more to say than a paragraph owns a chapter, and that chapter is named in the mapping table below.
 

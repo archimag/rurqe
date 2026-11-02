@@ -1,4 +1,4 @@
-# The WITH statement
+# Common Table Expressions (WITH)
 
 A report that needs one number per user — how much each user has spent in total — states the aggregate once and then joins it to the users. Written as a **common table expression**, that aggregate is named inside the statement and read back as a relation of the same statement: it is computed once, the statement stays readable, and nothing leaves the database.
 

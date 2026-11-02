@@ -6,7 +6,7 @@
 
 # Querying
 
-- [The SELECT statement](core/select.md)
+- [SELECT](core/select.md)
   - [Joins](core/joins.md)
   - [Aliases](core/aliasing.md)
   - [Predicates and `WHERE`](core/filtering.md)
@@ -16,15 +16,15 @@
   - [Set Operations](core/set_ops.md)
   - [Ordering and pagination](core/ordering.md)
 - [Expressions](core/expressions.md)
-- [Projections and typed rows](core/projections.md)
-- [The WITH statement](core/cte.md)
+- [Projections and Result Types](core/projections.md)
+- [Common Table Expressions (WITH)](core/cte.md)
 - [Nested Results (MULTISET)](core/nested.md)
 
 # Data Modification
 
-- [The INSERT statement](core/insert.md)
-- [The UPDATE statement](core/update.md)
-- [The DELETE statement](core/delete.md)
+- [INSERT](core/insert.md)
+- [UPDATE](core/update.md)
+- [DELETE](core/delete.md)
 
 # Execution
 

@@ -1,4 +1,4 @@
-# Projections and typed rows
+# Projections and Result Types
 
 A `SELECT` statement reads relations and produces rows, and the shape of a row is decided by the projection that was written. RURQE derives the row type from the projected items, so a field is named once and is read under that name, without a positional index and without a column type repeated beside the schema.
 

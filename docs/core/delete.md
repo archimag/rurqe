@@ -1,4 +1,4 @@
-# The DELETE statement
+# DELETE
 
 A `DELETE` removes rows of one table. The chain records the filter that selects the rows, optionally an extra relation the decision is read from, and optionally a projection of the removed rows. Like an `UPDATE`, a statement that silently matches every row is unwritable by accident. Every fragment on this page is included from `examples/crud.rs`.
 

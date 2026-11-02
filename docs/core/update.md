@@ -1,4 +1,4 @@
-# The UPDATE statement
+# UPDATE
 
 An `UPDATE` rewrites rows of one table. The chain records the assignments, the filter that selects the rows, and optionally an extra source relation to read from and a projection of the rewritten rows. The filter is a typestate, not a convention: a statement that silently matches every row is unwritable by accident. Every fragment on this page is included from `examples/crud.rs`.
 
