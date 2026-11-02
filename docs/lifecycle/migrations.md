@@ -483,6 +483,119 @@ than a recorded digest to rewrite. A failed non-transactional script deserves a
 look at the schema before the entry is cleared: its statements committed one by
 one, so part of the work may already be in place and a blind re-run would apply
 it twice.
+## Cleaning a target database
+
+`clean` is the destructive reset of a database the project owns. It drops the
+objects the migration lifecycle owns — the `__rurqe_schema_history` table among
+them — and applies no migration afterwards, so the next run replays the whole
+tail against an empty history. The reset belongs to a test database whose schema
+the project rebuilds at will, not to a deployment.
+
+### The reset cycle
+
+A versioned script that already ran is reworked in place, and the database is
+rebuilt from the reworked script instead of being repaired against it:
+
+```text
+edit      rurqe/migrations/V5__add_orders_total.sql   the reworked script
+reset     cargo rurqe migrate clean --yes             the target reset
+apply     cargo rurqe migrate up                      the whole tail runs again
+```
+
+The reset is what makes that edit possible. Without it, a reworked versioned
+script is a script whose recorded digest no longer matches: `migrate up` refuses
+to continue, and `repair` realigns the digest without running the body again, so
+the schema keeps what the old body produced. The reset removes both at once —
+the schema the old body produced, and the digest recorded for it — so the script
+runs from scratch under the digest of its new contents.
+
+### Walking through the reset
+
+A run without the confirmation drops nothing: it reads the catalog and fails
+with the objects a confirmed call would drop, which makes the refusal the dry
+run. The list the operator sees is the list `--yes` drops.
+
+```bash
+cargo rurqe migrate clean
+```
+
+```text
+`migrate clean` requires `--yes` (or `--force`) to confirm dropping every object of `sqlite:app.db`; found 3 object(s):
+  - __rurqe_schema_history
+  - orders
+  - users
+```
+
+`--yes` (or `-y`, or `--force`) confirms the same list, and the report repeats
+the names that were dropped:
+
+```bash
+cargo rurqe migrate clean --yes
+```
+
+```text
+Dropped 3 object(s) of `sqlite:app.db`:
+  - __rurqe_schema_history
+  - orders
+  - users
+```
+
+The tail then applies from an empty history, where every script is pending again
+and the reworked one runs under the digest of its new contents:
+
+```bash
+cargo rurqe migrate up
+```
+
+```text
+Applied 3 migration(s) in 24 ms
+  - V1__create_users.sql
+  - V2__add_orders.sql
+  - V5__add_orders_total.sql
+```
+
+A project that carries a pruned checkpoint takes the first step with the
+declarative stage instead of the tail: `stage init` initialises the empty
+database from `schema/`, records the stage marker, and the tail above the marker
+applies afterwards through the same `migrate up`.
+
+```bash
+cargo rurqe stage init --version <version>
+```
+
+| Option | Effect |
+|---|---|
+| `--yes`, `-y`, `--force` | Confirms the drop. Without one of them the command reports the objects it would drop and drops nothing. |
+| `--database-url <url>` | The database to reset. Falls back to `DATABASE_URL`. |
+| `--schema <name>` | The schema selection the invocation resolves, as on every action of the family: the flag, then `primary_schema`, then `public`, with the secondary schemas taken from `schemas` in `rurqe.toml`. |
+| `--config <path>` | The configuration file whose keys resolve the paths of the invocation. Defaults to the `rurqe.toml` of the working directory. |
+
+### Operational constraints
+
+A database that holds no object the migration lifecycle owns is reported instead
+of being dropped again:
+
+```text
+Nothing to clean: `sqlite:app.db` holds no object the migration lifecycle owns
+```
+
+The command neither reads nor validates the boundary marker: it erases the
+history the boundary guard reads. A project with a pruned checkpoint therefore
+meets that guard on its next `migrate up`, which refuses the run and names the
+version the history was pruned at. The refusal is the guard working as designed,
+and `stage init` is the step that moves the database past the boundary.
+
+The reset drops database objects only. It rewrites no project file — no script,
+no boundary marker — and it applies no migration of its own: a script keeps the
+contents it has, and the digest recorded for it is gone with the history.
+
+A backend that cannot drop the objects of its target refuses the command before
+the database is touched, so nothing is dropped and the recorded history stays
+intact:
+
+```text
+the migration backend cannot clean the target database: run the clean on a backend that can drop the database objects
+```
 
 ## Baselining an existing database
 
