@@ -1,8 +1,8 @@
 # Nested Results (MULTISET)
 
-A nested collection is not stitched together on the client: it becomes one aggregate subquery inside the statement, and the parent row carries it as a value of its own. The engine aggregates the child rows of every parent into a JSON document, and the client decodes that document into the row type of the child projection.
+`nest_many` and `nest_one` project a child query as one JSON aggregate subquery inside the enclosing statement. The engine groups the child rows of every parent into a JSON document, and the row decoder converts that document into the row type of the child projection, so the parent rows and their nested rows arrive in a single round trip.
 
-The naive alternatives cost either N+1 statements (one per parent) or a `JOIN` with a Cartesian product that the client folds into lists by hand. One statement produces neither: the children arrive grouped by the engine.
+A per-parent fetch issues N+1 statements, and a plain `JOIN` multiplies each parent row by its children and requires client-side folding. The aggregate form avoids both: the children are grouped by the engine.
 
 ```rust,no_run
 {{#rustdoc_include ../examples/nested.rs:nested}}
@@ -10,7 +10,7 @@ The naive alternatives cost either N+1 statements (one per parent) or a `JOIN` w
 
 `user.orders` is a `Vec` of a record with `order_id` and `total`; nothing is decoded by index, and no second statement was sent.
 
-## The shape of the statement
+## Nested Query Rendering
 
 The nested statement is a query of its own, so it decides which rows the collection holds. The enclosing statement aggregates them into one JSON document per parent:
 
@@ -28,7 +28,7 @@ FROM "users"
 
 PostgreSQL aggregates rows natively, so a collection is `jsonb_agg(to_jsonb(...))` over the nested query, and a parent without children receives an empty array instead of a missing field. The ordering, the filter, and the row limit of the nested query decide what the collection holds, because the engine aggregates the rows that statement produces. The parameters of the nested query continue the placeholder numbering of the outer statement, which is why a filter in the outer query and one in the inner query never collide.
 
-## The collection is a named field
+## Named Field Collections
 
 A projection names the collection like any other projected item, so the row exposes it as a field and the client never parses the document by hand:
 
@@ -46,7 +46,7 @@ FROM "users"
 
 `user.orders` is a `Vec` of a record with `order_id` and `total`, and `user.user_id` is the parent key. Nothing is decoded by index: the statement is the one the tuple projection produced, with the two output names its fields carry. The outer projection is a `cols!`, because `nest_many(...)` and `nest_one(...)` are computed projections: `dto!` accepts column markers only, and its message points at `select!` for a computed projection.
 
-## `nest_one`: at most one row
+## Single-Row Results (`nest_one`)
 
 The single-row form reads as an `Option` of the nested projection, so "no row" and "a row without values" stay distinguishable. It differs from the collection in two details: the aggregate is not wrapped in `COALESCE`, and the nested statement is limited to one row.
 
@@ -66,7 +66,7 @@ FROM "users"
 
 A missing child is `None`, not an empty collection. `nest_one` adds the limit of one row inside the nested statement, so the engine never sends the children of one parent to be trimmed afterwards. When the nested statement combines statements (`UNION`, `INTERSECT`, `EXCEPT`), that limit applies to the combined rows.
 
-## Correlating the child with the parent
+## Child Query Scope
 
 The nested statement is a query of its own, so its scope holds only its own `FROM`. A column of the outer query enters the inner predicate through `.without_scope()`, which marks the expression as resolved by the enclosing statement:
 
@@ -76,15 +76,15 @@ The nested statement is a query of its own, so its scope holds only its own `FRO
 
 Without it the child query would reference `"users"`, a relation it never declares, and the call is rejected at the call site.
 
-## The keys are the field names
+## JSON Keys and Field Names
 
 The nested `cols!` names the JSON keys of every child row: `cols! { order_id: OrderId, total: OrderTotal }` produces documents of the shape `{"order_id": …, "total": …}`. The declaration and the document cannot drift apart, because both come from the same list.
 
-## What the child query controls
+## Child Query Composition
 
 The filter, the ordering, the row limit, and any grouping of the nested statement decide the contents of the collection — not the client. `DISTINCT` and `DISTINCT ON` belong to the nested statement itself, where they are called on the query before it is nested; they are not a property of the projection.
 
-## Multiset, not set
+## Multiset Semantics
 
 - `Vec<Row>` keeps the ordering the nested `ORDER BY` asked for and keeps duplicates: SQL without `DISTINCT` does not remove rows.
 - `nest_one` reads as `Option<Row>`: a missing child is `None`, not an empty collection.
@@ -94,7 +94,7 @@ The filter, the ordering, the row limit, and any grouping of the nested statemen
 
 A `sql!` / `raw_sql!` template is censused where the macro expands, so a literal template whose placeholders disagree with the parameters it is given is refused before it becomes part of a statement. A raw expression assembled from fragments without the macro — including one written inside a nested query — is caught by the pre-flight validation of the enclosing statement, which reports the mismatch as `BuildError::RawSql` before any SQL is rendered, so a value never binds into a lost or shifted slot.
 
-## SQLite: the same document, assembled field by field
+## SQLite Rendering
 
 SQLite has no native row aggregation, so a dialect without it builds every object with `json_object` and collects the objects with `json_group_array`:
 
@@ -113,7 +113,7 @@ FROM "users"
 
 Both forms produce the same JSON document, so the client decodes one representation regardless of the engine that produced it. The fragment stops at the assembled statement: it pins a SQLite version and claims the SQL that version renders, without opening a connection.
 
-## Engines, capability gates, and rendering form
+## Dialect Capability Gates
 
 The projection exists only for a dialect that can aggregate a set of rows into a JSON document: PostgreSQL always, SQLite from 3.38. The JSON functions of SQLite were an optional build extension before that release, so a default build of an older version would reject the statement at runtime — the projection is refused at compile time instead, and the compiler reports that the dialect does not support JSON aggregation of a row set.
 
@@ -125,7 +125,7 @@ The projection exists only for a dialect that can aggregate a set of rows into a
 
 A dialect that cannot aggregate a row set never receives SQL it cannot parse. Nested rendering is never emulated: a dialect declares the native aggregation form it supports, and a dialect that declares none never receives a nested projection in a form its engine would reject. The nested statement belongs to the same dialect as the enclosing query (or is dialect-neutral), so a PostgreSQL collection is not nested into a SQLite statement.
 
-## Decoding the document
+## JSON Document Decoding
 
 PostgreSQL reports a nested row document as a JSON value (`SqlVal::Json`), while SQLite reports it as text (`SqlVal::Text`). The decoder accepts both forms, and the collection — a list of child rows or a single optional child row — is assembled from the document without manual JSON parsing. The keys of the document are the field names of the nested projection, so a declared row type reads them by name:
 

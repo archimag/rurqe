@@ -1,6 +1,6 @@
 # SELECT
 
-`SELECT` reads rows, and it is the one statement whose clauses are documented by a family of chapters. This page is the head of that family: it carries the anatomy of the whole statement, the order in which the engine evaluates its clauses, the mapping from every clause to the builder, the capability matrix, and the guards that make an invalid statement unwritable. A clause that has more to say than a paragraph owns a chapter, and that chapter is named in the mapping table below.
+`SELECT` reads rows. This page is the head of the statement's chapter family: it carries the anatomy of the whole statement, the order in which the engine evaluates its clauses, the mapping from every clause to the builder, the capability matrix, and the guards that make an invalid statement unwritable. A clause that needs more than a paragraph owns a chapter, and that chapter is named in the mapping table below.
 
 ## Clause anatomy
 
@@ -61,7 +61,7 @@ FROM → WHERE → GROUP BY → HAVING → WINDOW → SELECT → DISTINCT
 | `ORDER BY` | ordered rows | nothing in the row type |
 | `LIMIT` / `OFFSET` | the final window of rows | nothing |
 
-Three of those steps are the ones a query is felt through.
+Three of those steps carry most of a query's semantics.
 
 **`WHERE` runs before the projection exists.** A field name produced by `select!` or `cols!` is an output name, and an output name is created by `SELECT`, so a filter addresses the column markers of the relations, not the field names of the row. The projection below renames `UserId` and `UserEmail` to `user_id` and `contact_email`, while its filter keeps working with `UserActive`: the renames are names the result carries, not names a predicate may read. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly with `.order_by_output*` / `.order_by_index*`.
 
@@ -93,7 +93,7 @@ The table is the deterministic reference: every clause of the anatomy has a row,
 
 ## Clause-by-clause walkthrough
 
-### The minimal complete query
+### Minimal query
 
 The shortest chain that both compiles and executes reads a relation, projects it, filters it, and builds:
 
@@ -103,7 +103,7 @@ The shortest chain that both compiles and executes reads a relation, projects it
 
 Assembling the statement opened no connection: the terminal call renders it and runs it on the asynchronous pool, while `build()` is the same step without execution — the one place that can refuse a syntactically sound but semantically invalid statement, so such a refusal arrives before any network I/O.
 
-### The projection
+### Projection
 
 `select!` and `cols!` expand to the same macro: `select!` heads a chain, `cols!` names a projection handed to `.select(...)`. Every element becomes one field of the produced row, named after its marker unless the field name is written out:
 
@@ -129,7 +129,7 @@ projection field `id` is produced by more than one projection; rename one of the
 
 A positional tuple projection still exists — for low-level code, and for a row that feeds a typed collection of pairs directly. A named projection is preferred, because a field name survives a change in the column order.
 
-`select!` is anonymous — right inside a query, useless in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them; the declaration implements the row-decoding contracts, so the row crosses function boundaries wherever a projection is accepted. The statement projects with `select!` or `cols!`; the DTO names what the row is.
+`select!` is anonymous: it produces a row type usable inside a query and unusable in a signature. `dto!` declares the shape once and reads the field types from the schema instead of repeating them; the declaration implements the row-decoding contracts, so the row crosses function boundaries wherever a projection is accepted. The statement projects with `select!` or `cols!`; the DTO names what the row is.
 
 ### `DISTINCT` and `DISTINCT ON`
 
@@ -139,9 +139,9 @@ A positional tuple projection still exists — for low-level code, and for a row
 {{#rustdoc_include ../examples/select.rs:distinct}}
 ```
 
-### The nullable shape, explicitly
+### Explicit nullability
 
-Sometimes the nullable form is needed without an outer join — to align a projection with an already computed result. `query.nullable::<OrderTotal>()` marks the projected column as optional: it is the same column with `Option<f64>` as its value type, and a second layer never appears, because `Option<Option<T>>` collapses into `Option<T>`.
+A nullable form is also available without an outer join, to align a projection with an already computed result. `query.nullable::<OrderTotal>()` marks the projected column as optional: it is the same column with `Option<f64>` as its value type, and a second layer never appears, because `Option<Option<T>>` collapses into `Option<T>`.
 
 ## Dialect capability gates
 

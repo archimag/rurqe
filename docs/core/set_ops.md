@@ -1,10 +1,10 @@
 # Set Operations
 
-`UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT` combine the rows of two statements. The operators live on a projected query and consume the other operand entirely.
+`UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT` combine the rows of two statements. Each operator is a method on a projected query that takes the other statement as its operand.
 
 A set operation is the step of the logical query processing order that combines finished statements: each operand is projected first, and the combination then fixes the output columns of the whole statement.
 
-## The family
+## Set Operation Semantics
 
 | Method | SQL | Rows |
 |---|---|---|
@@ -23,14 +23,14 @@ The two statements must share the dialect and the output row type — the signat
 (SELECT "name" FROM "users") UNION ALL (SELECT "name" FROM "archived_users")
 ```
 
-## What the combination changes
+## Effect on Scope and Typestate
 
 - The combined rows no longer belong to a table, so every table-qualified method — `.where_` over table columns, `.order_by` with columns, joins — no longer applies.
 - The projection is fixed by the first list: `.select(...)` is unreachable on the combined statement.
 - A combined statement can neither keep the row-level lock of an operand nor accept a new one.
 - `limit` / `offset` apply to the combined rows.
 
-## Ordering the combined rows
+## Compound ORDER BY
 
 Ordering the combined statement goes through the output-oriented forms: `.order_by_output*` addresses an output column, and `.order_by_index*` addresses it by a 1-based position.
 
@@ -40,7 +40,7 @@ Ordering the combined statement goes through the output-oriented forms: `.order_
 
 A criterion recorded before the set operation belongs to the left operand and renders inside its parentheses; a criterion recorded after it applies to the combined rows. The first combined-row criterion closes the statement: no further operand can follow the ordering of the combined rows.
 
-## What `.build()` adds
+## Pre-Flight Validation in `.build()`
 
 The rules that compare assembled clauses rather than types run pre-flight:
 
