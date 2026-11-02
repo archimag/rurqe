@@ -116,7 +116,56 @@ pub(crate) fn repair_history<B: MigrationBackend>(
     }
     Ok(output)
 }
+/// Drops every object of the target database, gated by the `--yes` confirmation.
+///
+/// The catalogue is read exactly once per invocation, and that one reading is
+/// what the gate is for: without the confirmation the command fails with the
+/// manifest the call would drop, so the list the operator sees is the list a
+/// confirmed call erases, and the refusal doubles as the dry run. The URL is
+/// supplied already redacted, so no message of this command echoes a credential.
+pub(crate) fn clean_database<B: MigrationBackend>(
+    backend: &mut B,
+    database_url: &str,
+    force: bool,
+) -> Result<CommandOutput, CliError> {
+    let migrator = Migrator::new();
 
+    if !force {
+        let manifest = migrator.clean_manifest(backend).map_err(cli_error)?;
+
+        if manifest.is_empty() {
+            return Ok(CommandOutput::single(nothing_to_clean(database_url)));
+        }
+
+        let mut message = format!(
+            "`migrate clean` requires `--yes` (or `--force`) to confirm dropping every object of \
+             `{database_url}`; found {} object(s):",
+            manifest.len()
+        );
+        for name in &manifest {
+            message.push_str(&format!("\n  - {name}"));
+        }
+        return Err(CliError(message));
+    }
+
+    let dropped = migrator.clean(backend).map_err(cli_error)?;
+
+    if dropped.is_empty() {
+        return Ok(CommandOutput::single(nothing_to_clean(database_url)));
+    }
+
+    let mut output = CommandOutput::new();
+    output.line(format!("Dropped {} object(s) of `{database_url}`:", dropped.len()));
+    for name in &dropped {
+        output.line(format!("  - {name}"));
+    }
+    Ok(output)
+}
+
+/// The report of a target that holds nothing the migration lifecycle owns.
+fn nothing_to_clean(database_url: &str) -> String {
+    format!("Nothing to clean: `{database_url}` holds no object the migration lifecycle owns")
+}
 /// Records a baseline marker without running the earlier migrations.
 pub(crate) fn baseline_database<B: MigrationBackend>(
     backend: &mut B,

@@ -83,7 +83,7 @@ fn the_migrate_family_rejects_path_options() {
     // The tail and the boundary marker are resolved from the project
     // configuration, so a path option of the retired cascade is reported instead
     // of being accepted and then ignored.
-    for action in ["up", "status", "repair"] {
+    for action in ["up", "status", "repair", "clean"] {
         for flag in ["--migrations-dir", "--checkpoint-path"] {
             let argv: Vec<String> = ["rurqe", "migrate", action, flag, "somewhere"]
                 .iter()
@@ -103,6 +103,125 @@ fn the_migrate_family_rejects_path_options() {
             );
         }
     }
+}
+
+#[test]
+fn parses_migrate_clean_with_its_confirmation() {
+    for flag in ["--yes", "-y", "--force"] {
+        let cmd = parse_args(&["rurqe".into(), "migrate".into(), "clean".into(), flag.into()])
+            .unwrap();
+
+        assert_eq!(
+            cmd,
+            CliCommand::MigrateClean {
+                config: None,
+                database_url: None,
+                schema: None,
+                force: true,
+            },
+            "flag {flag}"
+        );
+    }
+
+    let cmd = parse_args(&[
+        "rurqe".into(),
+        "migrate".into(),
+        "clean".into(),
+        "--config".into(),
+        "project/rurqe.toml".into(),
+        "--database-url".into(),
+        "postgres://db.internal:5432/app".into(),
+        "--schema".into(),
+        "app".into(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cmd,
+        CliCommand::MigrateClean {
+            config: Some(PathBuf::from("project/rurqe.toml")),
+            database_url: Some("postgres://db.internal:5432/app".into()),
+            schema: Some("app".into()),
+            force: false,
+        }
+    );
+
+    // The confirmation belongs to the destructive action alone: the other
+    // actions advance or rewrite the recorded history instead of erasing it.
+    let error = parse_args(&[
+        "rurqe".into(),
+        "migrate".into(),
+        "up".into(),
+        "--yes".into(),
+    ])
+    .expect_err("the confirmation does not apply to another action");
+    assert!(error.to_string().contains("--yes"), "got {error}");
+}
+
+#[test]
+fn migrate_clean_lists_the_manifest_and_drops_it_with_confirmation() {
+    let dir = scratch("migrate-clean");
+    let database = dir.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&database).expect("open the sqlite database");
+        conn.execute_batch(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);\n\
+             CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL);\n\
+             CREATE VIEW active_users AS SELECT id FROM users;",
+        )
+        .expect("create the schema");
+    }
+
+    let argv = |extra: &[&str]| {
+        let mut argv = vec![
+            "rurqe".to_owned(),
+            "migrate".to_owned(),
+            "clean".to_owned(),
+            "--database-url".to_owned(),
+            database.display().to_string(),
+        ];
+        argv.extend(extra.iter().map(|arg| (*arg).to_owned()));
+        argv
+    };
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+
+    // Without the confirmation the catalogue is read once and the command fails
+    // with the manifest it would drop, so the list the operator sees is the
+    // list a confirmed call erases.
+    let refusal = run_cli_with_config(argv(&[]), &configuration)
+        .expect_err("the clean is refused without --yes");
+    let message = refusal.to_string();
+    for name in ["users", "orders", "active_users"] {
+        assert!(message.contains(name), "the refusal lists `{name}`: {message}");
+    }
+    assert!(message.contains("--yes"), "the refusal names the gate: {message}");
+
+    assert_eq!(user_objects(&database), 3, "the refusal drops nothing");
+
+    let output = run_cli_with_config(argv(&["--yes"]), &configuration)
+        .expect("the confirmed clean drops the manifest");
+    let mut rendered = Vec::new();
+    output
+        .write_into(&mut rendered)
+        .expect("writing to a buffer cannot fail");
+    let report = String::from_utf8(rendered).expect("the channel wrote UTF-8");
+    for name in ["users", "orders", "active_users"] {
+        assert!(report.contains(name), "the report lists `{name}`: {report}");
+    }
+
+    assert_eq!(user_objects(&database), 0, "no user object survives the clean");
+}
+
+/// Counts the user objects a clean removes from the SQLite catalog.
+fn user_objects(database: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(database).expect("open the sqlite database");
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type IN ('table', 'view', 'trigger') AND name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )
+    .expect("count the user objects of the catalog")
 }
 #[test]
 fn parses_the_cargo_rurqe_codegen_invocation() {
@@ -1122,6 +1241,7 @@ fn every_command_validates_the_project_configuration() {
         vec!["rurqe", "migrate", "up"],
         vec!["rurqe", "migrate", "status"],
         vec!["rurqe", "migrate", "repair"],
+        vec!["rurqe", "migrate", "clean", "--yes", "--database-url", ":memory:"],
         vec!["rurqe", "baseline", "--version", "1"],
         vec!["rurqe", "codegen", "--database-url", ":memory:"],
         vec!["rurqe", "verify", "--database-url", ":memory:"],

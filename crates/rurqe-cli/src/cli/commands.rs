@@ -27,7 +27,7 @@ mod stage;
 mod tests;
 
 pub(crate) use self::migrate::{
-    apply_migrations, baseline_database, repair_history, report_status,
+    apply_migrations, baseline_database, clean_database, repair_history, report_status,
 };
 pub(crate) use self::prune::prune_migrations;
 pub(crate) use self::stage::{cleanup_stage, commit_stage, initialise_stage, verify_stage};
@@ -632,6 +632,8 @@ pub(super) fn help_text() -> &'static str {
 USAGE:
     cargo db-migrate up [--database-url <url>] [--schema <name>] [--config <path>]
     cargo db-migrate [status|repair] [--database-url <url>] [--schema <name>] [--config <path>]
+    cargo db-migrate clean [--yes|-y|--force] [--database-url <url>] [--schema <name>]
+                           [--config <path>]
     cargo db-baseline --version <version> [--description <desc>] [--config <path>]
     cargo db-codegen [--output <path>] [--lock-path <path>] [--domain-types] [--schema <name>]
                      [--config <path>]
@@ -643,6 +645,7 @@ COMMANDS:
     migrate up       Apply all pending migrations, guarded by the checkpoint marker
     migrate status   Inspect status of migrations against history table
     migrate repair   Fix checksums and purge failed migration attempts
+    migrate clean    Drop every object of the target database, recorded history included
     baseline         Mark current schema as baseline without running past migrations
     codegen          Introspect database, generate Rust schema, and write the catalog snapshot
     verify           Verify bit-for-bit parity between live database and the catalog snapshot
@@ -703,7 +706,17 @@ NOTES:
     guard that refuses a database older than the pruned boundary cannot be armed
     with a file another command never reads. A path option of the family is
     reported as an unknown option instead of being accepted and then ignored.
-
+    `migrate clean` is the destructive reset of a database the project owns: it
+    drops every object of the target, the `__rurqe_schema_history` table among
+    them, and applies nothing afterwards, so `migrate up` replays the whole tail
+    from an empty history. The catalogue is read once per invocation, so the
+    manifest the confirmation names is the list `--yes` drops; without `--yes`
+    (or `-y` / `--force`) the command fails with that manifest instead of
+    dropping anything, which is also its dry run. A project with a pruned
+    checkpoint runs `stage init` after the clean rather than `migrate up`, whose
+    fail-safe boundary guard refuses a database whose recorded history is empty.
+    The command neither reads nor validates the checkpoint marker: it erases the
+    history the boundary check reads.
     `stage commit` snapshots the declarative stage verbatim into the boundary
     directory beside the marker — `<stem>-stage/`, so `checkpoint-stage/` next to
     `checkpoint.toml`. `stage verify` loads that snapshot as the base stage when

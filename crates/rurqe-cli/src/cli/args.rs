@@ -38,6 +38,12 @@ pub enum CliCommand {
         database_url: Option<String>,
         schema: Option<String>,
     },
+    MigrateClean {
+        config: Option<PathBuf>,
+        database_url: Option<String>,
+        schema: Option<String>,
+        force: bool,
+    },
     Baseline {
         config: Option<PathBuf>,
         version: MigrationVersion,
@@ -117,6 +123,7 @@ impl CliCommand {
             CliCommand::MigrateUp { config, .. }
             | CliCommand::MigrateStatus { config, .. }
             | CliCommand::MigrateRepair { config, .. }
+            | CliCommand::MigrateClean { config, .. }
             | CliCommand::Baseline { config, .. }
             | CliCommand::Codegen { config, .. }
             | CliCommand::Verify { config, .. }

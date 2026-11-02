@@ -29,8 +29,9 @@ pub use redact::redact_database_url;
 pub use report::CommandOutput;
 
 use self::commands::{
-    apply_migrations, baseline_database, cleanup_stage, commit_stage, help_text, initialise_stage,
-    prune_migrations, repair_history, report_status, verify_stage, write_file, Project,
+    apply_migrations, baseline_database, clean_database, cleanup_stage, commit_stage, help_text,
+    initialise_stage, prune_migrations, repair_history, report_status, verify_stage, write_file,
+    Project,
 };
 use self::connection::resolve_database_url;
 
@@ -195,6 +196,21 @@ pub(crate) fn run_cli_with_config(
             let selection = project.selection(schema.as_deref());
             with_migration_backend!(database_url, selection, |backend| {
                 repair_history(&mut backend, &migrations_dir)
+            })
+        }
+        CliCommand::MigrateClean {
+            config,
+            database_url,
+            schema,
+            force,
+        } => {
+            let project = load_project(config)?;
+            let selection = project.selection(schema.as_deref());
+            // The refusal and the report name the target, so the URL is resolved
+            // and redacted once here instead of being echoed from the invocation.
+            let target = redact_database_url(&resolve_database_url(database_url.clone())?);
+            with_migration_backend!(database_url, selection, |backend| {
+                clean_database(&mut backend, &target, force)
             })
         }
         CliCommand::Baseline {
