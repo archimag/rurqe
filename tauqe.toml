@@ -17,7 +17,7 @@ models = [
 # `primary` is mandatory and must list at least one model; its first entry is the
 # active model in the idle state and the deterministic default for the other roles.
 primary = [
-  { model = "GLM", effort = "high" },
+  { model = "GLM", effort = "max" },
   "Gemini Flash",
 ]
 scribe = "Claude Haiku"    # history compaction, git squash commit messages, diff summarization
@@ -68,7 +68,7 @@ budget_tokens = 20000  # session history token budget before compaction is trigg
 # tail_turns = 10        # number of recent turns kept uncompressed in original form (default: 10)
 
 [context]
-max_discovery_rounds = 12     # maximum rounds for autonomous context discovery
+max_discovery_rounds = 9     # maximum rounds for autonomous context discovery
 files_token_budget = 1000000  # token budget for files in active context (default: 300000)
 repomap_token_budget = 40000 # token budget for the repository map (default: 4000)
 # max_pattern_batch = 150     # maximum files admitted by one glob request (default: 150)
