@@ -94,7 +94,7 @@ impl Project {
         }
 
         Ok(Self {
-            config: load_config(path)?,
+            config: load_config(path, required)?,
             directory: artifact_directory(path).to_path_buf(),
         })
     }
@@ -194,12 +194,22 @@ impl Project {
 ///
 /// The path comes from the caller instead of being read from the working
 /// directory here, so a command resolves the configuration of the project it was
-/// pointed at. The file is optional: a project without it keeps the engine-neutral
-/// types and the default schema, while a malformed file aborts the command instead
-/// of silently emitting wrong types for overridden columns or describing the wrong
-/// schema.
-fn load_config(path: &Path) -> Result<CodegenConfig, CliError> {
-    CodegenConfig::load(path).map_err(cli_error)
+/// pointed at. `required` states which tier of the cascade the path came from, and
+/// therefore what an absent file means: a file the invocation named has to exist,
+/// so it is read through the strict entry point that reports its absence in its own
+/// right, while the conventional `rurqe.toml` is read through the fallback entry
+/// point that spells the absence out and keeps the engine-neutral types and the
+/// default schema. A file the conventional path does name is validated exactly
+/// like a named one, so a malformed file aborts the command instead of silently
+/// emitting wrong types for overridden columns or describing the wrong schema.
+fn load_config(path: &Path, required: bool) -> Result<CodegenConfig, CliError> {
+    let config = if required {
+        CodegenConfig::load(path)
+    } else {
+        CodegenConfig::load_or_default(path)
+    };
+
+    config.map_err(cli_error)
 }
 
 /// Builds the schema selection of an already loaded configuration.

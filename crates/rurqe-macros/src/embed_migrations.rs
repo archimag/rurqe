@@ -59,7 +59,7 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{LitStr, Token};
 
-use rurqe_project::{discover_config, CodegenConfig};
+use rurqe_project::{discover_or_default, CodegenConfig};
 
 /// The file extension naming a script of an artifact directory.
 const SCRIPT_EXTENSION: &str = "sql";
@@ -171,19 +171,18 @@ fn resolve_artifacts(argument: Option<&Path>, manifest: &Path) -> Result<Artifac
 /// Resolves the configuration the expansion reads and the directory it anchors.
 ///
 /// `argument` is the path of the single argument, already resolved against
-/// `manifest`, and `None` selects the discovery walk. The returned directory is
-/// the one every artifact path of the configuration resolves against: the
-/// directory holding the configuration file, or `manifest` itself when the
-/// conventional artifact layout applies.
+/// `manifest`, and `None` selects the discovery walk the configuration crate
+/// answers through [`discover_or_default`]: the nearest `rurqe.toml` at or above
+/// `manifest` when one exists, and the conventional artifact layout beneath
+/// `manifest` itself otherwise. The returned directory is the one every artifact
+/// path of the configuration resolves against: the directory holding the
+/// configuration file, or `manifest` itself when the conventional layout applies.
 fn configuration(
     argument: Option<&Path>,
     manifest: &Path,
 ) -> Result<(CodegenConfig, PathBuf), String> {
     let Some(path) = argument else {
-        return match discover_config(manifest) {
-            Some(path) => configuration_of(&path),
-            None => Ok((CodegenConfig::default(), manifest.to_path_buf())),
-        };
+        return discover_or_default(manifest).map_err(|error| error.to_string());
     };
 
     if path.is_dir() {
@@ -513,6 +512,27 @@ mod tests {
         assert_eq!(directory, project);
     }
 
+    #[test]
+    fn a_malformed_discovered_configuration_is_rejected_by_the_parser() {
+        let root = temporary_directory("malformed-discovery");
+        let project = root.join("project");
+        write(
+            &project.join("rurqe.toml"),
+            "# a section the toolchain does not know\n[workspace]\nmembers = [\"app\"]\n",
+        );
+        let member = project.join("crates/application");
+        std::fs::create_dir_all(&member).expect("create the member directory");
+
+        let error = configuration(None, &member)
+            .expect_err("a configuration the walk discovers is read, never defaulted");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(error.contains("invalid configuration"), "{error}");
+        assert!(
+            error.contains("workspace"),
+            "the diagnostic names the offending declaration: {error}"
+        );
+    }
     #[test]
     fn the_conventional_artifact_directory_applies_without_a_configuration() {
         let root = temporary_directory("convention");
