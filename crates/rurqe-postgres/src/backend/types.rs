@@ -79,12 +79,13 @@ pub enum PgError {
     /// The reset a checkout performs ends whatever transaction the session of
     /// a recycled connection still held, so a driver failure during it leaves
     /// that session in a state the pool cannot vouch for. The connection is
-    /// therefore not handed out; the failure the driver reported is rendered
-    /// into `detail`, because the checkout that produced it is the only place
-    /// that observed it.
+    /// therefore not handed out, and the driver failure is kept whole: the
+    /// variant renders it in its own message and hands it back through
+    /// [`source`](std::error::Error::source), because the checkout that
+    /// produced it is the only place that observed it.
     AbandonedTransaction {
         /// The driver failure the reset reported.
-        detail: String,
+        failure: DriverError,
     },
     /// The connection could not be checked out of a `deadpool-postgres` pool.
     #[cfg(feature = "deadpool-postgres")]
@@ -110,9 +111,9 @@ impl fmt::Display for PgError {
             PgError::ConnectionPoisoned { reason } => {
                 write!(f, "the PostgreSQL connection is poisoned: {reason}")
             }
-            PgError::AbandonedTransaction { detail } => write!(
+            PgError::AbandonedTransaction { failure } => write!(
                 f,
-                "the PostgreSQL connection could not be returned to an idle session: {detail}"
+                "the PostgreSQL connection could not be returned to an idle session: {failure}"
             ),
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(error) => write!(f, "connection pool error: {error}"),
@@ -128,7 +129,7 @@ impl StdError for PgError {
             PgError::InvalidValue { .. } => None,
             PgError::Catalog(_) => None,
             PgError::ConnectionPoisoned { .. } => None,
-            PgError::AbandonedTransaction { .. } => None,
+            PgError::AbandonedTransaction { failure } => Some(failure),
             #[cfg(feature = "deadpool-postgres")]
             PgError::Pool(_) => None,
         }

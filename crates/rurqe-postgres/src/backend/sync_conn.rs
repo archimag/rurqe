@@ -98,13 +98,14 @@ pub(crate) fn fetch_raw_limited_sync(
 /// A reset the driver refuses means the connection could not be brought back
 /// to a known state, so the failure is reported instead of handing the
 /// connection to a block that would run inside the abandoned transaction.
+/// The driver failure travels in [`PgError::AbandonedTransaction`] whole, so
+/// a caller reaches the cause the driver reported through
+/// [`source`](std::error::Error::source).
 #[cfg_attr(not(any(feature = "r2d2", debug_assertions)), allow(dead_code))]
 pub(crate) fn ensure_idle(client: &mut postgres::Client) -> Result<(), PgError> {
     client
         .batch_execute("BEGIN; ROLLBACK")
-        .map_err(|failure| PgError::AbandonedTransaction {
-            detail: failure.to_string(),
-        })
+        .map_err(|failure| PgError::AbandonedTransaction { failure })
 }
 
 /// A synchronous PostgreSQL handle executing RURQE queries.
