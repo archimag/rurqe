@@ -1030,4 +1030,38 @@ fn clean_manifest_reads_the_target_without_taking_the_run_lock() {
         "the manifest read drops nothing"
     );
     assert!(!backend.inner.locked);
+    assert!(!backend.inner.locked);
+}
+
+#[test]
+fn a_baseline_description_beyond_the_history_column_is_rejected_before_the_backend() {
+    let mut backend = InMemoryBackend::new();
+    let description = "d".repeat(crate::history::DESCRIPTION_COLUMN_WIDTH + 1);
+
+    let error = Migrator::new()
+        .baseline(
+            &mut backend,
+            "1.0.0".parse().expect("a valid version"),
+            &description,
+        )
+        .expect_err("the description does not fit the history column");
+
+    assert_eq!(
+        error,
+        Error::MetadataTooLong {
+            script: crate::history::BASELINE_SCRIPT.to_owned(),
+            column: "description",
+            actual: crate::history::DESCRIPTION_COLUMN_WIDTH + 1,
+            limit: crate::history::DESCRIPTION_COLUMN_WIDTH,
+        }
+    );
+    assert!(
+        !backend.table_created,
+        "the metadata table is never created for a rejected baseline"
+    );
+    assert!(
+        backend.history.is_empty(),
+        "the refused baseline records no entry"
+    );
+    assert!(!backend.locked, "the run lock is never taken");
 }

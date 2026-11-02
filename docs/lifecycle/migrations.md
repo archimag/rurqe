@@ -68,6 +68,15 @@ The rules the names obey:
   the history table and the status report as `add orders`.
 * Repeatable scripts carry no version at all. They run after every versioned
   script, ordered by script name.
+* The history table is narrower than the file system: the version is recorded in
+  `VARCHAR(50)`, the description in `VARCHAR(200)`, and the script name in
+  `VARCHAR(1000)`. A name whose version or description does not fit is refused
+  before any connection is opened, with the column and the limit in the
+  diagnostic:
+
+  ```text
+  the history entry of `V1__init.sql` records a `description` of 240 characters, but the history table declares `description` VARCHAR(200): shorten the value to at most 200 characters
+  ```
 
 A name outside the grammar is refused before any connection is opened:
 
@@ -621,6 +630,10 @@ Baselined database at rank 1 (production snapshot)
 * `--version` is required and parses with the same grammar a script version uses.
   A missing value is refused with `missing required `--version` argument`, and a
   malformed one with `invalid baseline version `v1`: …`.
+* The recorded version and description occupy the `VARCHAR(50)` and
+  `VARCHAR(200)` columns of the history table, so a value that does not fit is
+  refused before the backend is touched, with the column and the limit in the
+  diagnostic.
 * The command refuses a database that already carries history, so a second
   baseline can never silently reset the starting point:
 

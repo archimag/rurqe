@@ -61,7 +61,23 @@ pub enum Error {
         /// The duplicated script name.
         script: String,
     },
-    /// Executing a migration script failed.
+    /// A script's metadata does not fit the column that records it.
+    ///
+    /// The widths are a storage contract of the history table: an engine that
+    /// enforces them rejects the value inside the transaction the entry is
+    /// written in, with a diagnostic that names neither the script nor the
+    /// limit. The value is therefore checked before the backend is touched, so
+    /// a script that cannot be recorded is refused while it is still a name.
+    MetadataTooLong {
+        /// The script whose metadata does not fit.
+        script: String,
+        /// The column of the history table the value is recorded in.
+        column: &'static str,
+        /// The width of the value, in characters.
+        actual: usize,
+        /// The width the column declares, in characters.
+        limit: usize,
+    },
     MigrationExecutionFailed {
         /// The script that failed to execute.
         script: String,
@@ -198,6 +214,17 @@ impl fmt::Display for Error {
                 f,
                 "duplicate migration script name `{script}`: every migration of a run must \
                  declare a distinct script name"
+            ),
+            Error::MetadataTooLong {
+                script,
+                column,
+                actual,
+                limit,
+            } => write!(
+                f,
+                "the history entry of `{script}` records a `{column}` of {actual} characters, \
+                 but the history table declares `{column}` VARCHAR({limit}): shorten the value to \
+                 at most {limit} characters"
             ),
             Error::MigrationExecutionFailed { script, source } => write!(
                 f,

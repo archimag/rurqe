@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::checkpoint::Checkpoint;
 use crate::error::Error;
-use crate::history::SchemaHistoryEntry;
+use crate::history::{validate_metadata, SchemaHistoryEntry, BASELINE_SCRIPT};
 use crate::migration::{Migration, MigrationKind};
 use crate::sleeper::guard_blocking_entry;
 use crate::version::MigrationVersion;
@@ -47,6 +47,10 @@ impl Migrator {
     /// been pruned. A target sitting exactly at the boundary is additionally
     /// measured against [`Checkpoint::schema_hash`], so a schema that drifted from
     /// the anchored stage is caught before the tail rewrites it.
+    ///
+    /// The `version` and the `description` are recorded in the metadata columns of
+    /// the history table, so a value wider than the column is rejected with
+    /// [`Error::MetadataTooLong`] before the backend is touched.
     pub fn with_checkpoint(checkpoint: Checkpoint) -> Self {
         Self {
             checkpoint: Some(checkpoint),
@@ -120,7 +124,7 @@ impl Migrator {
         // without taking the run lock and without creating the metadata table.
         Self::validate_script_uniqueness(migrations)?;
         self.validate_version_uniqueness(migrations)?;
-
+        Self::validate_metadata_widths(migrations)?;
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -209,6 +213,13 @@ impl Migrator {
         version: MigrationVersion,
         description: &str,
     ) -> Result<SchemaHistoryEntry, Error> {
+        // The version and the description are supplied by the caller, so
+        // nothing bounds their length; the metadata columns of the history
+        // table are bounded. The check runs before the backend is touched, so
+        // an over-long value is refused with the column and the limit instead
+        // of surfacing the storage error of the engine.
+        validate_metadata(BASELINE_SCRIPT, Some(&version), description)?;
+
         let mut guard = LockGuard::acquire(backend)?;
         guard.ensure_schema_history_table()?;
         let history = guard.read_history()?;
@@ -496,6 +507,24 @@ impl Migrator {
         Ok(())
     }
 
+    /// Rejects a script whose recorded metadata does not fit the history table.
+    ///
+    /// [`Migration::parse`] performs the same check, so a list of parsed scripts
+    /// already passed it; this gate covers a list assembled by hand, whose fields
+    /// the parser never saw. It runs with the other checks — before the run takes
+    /// the lock and before the metadata table is created — so a script that
+    /// cannot be recorded never reaches the backend.
+    fn validate_metadata_widths(migrations: &[Migration]) -> Result<(), Error> {
+        for migration in migrations {
+            validate_metadata(
+                &migration.script,
+                migration.version.as_ref(),
+                &migration.description,
+            )?;
+        }
+
+        Ok(())
+    }
     fn validate_history(
         &self,
         history: &[SchemaHistoryEntry],

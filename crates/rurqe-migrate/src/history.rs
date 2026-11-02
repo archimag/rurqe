@@ -6,11 +6,28 @@
 //! [`Checksum`] no longer matching the file content.
 
 use crate::checksum::Checksum;
+use crate::error::Error;
 use crate::migration::{Migration, MigrationKind};
 use crate::version::MigrationVersion;
 
 /// Name of the table tracking the migration lifecycle.
 pub const SCHEMA_HISTORY_TABLE: &str = "__rurqe_schema_history";
+
+/// Width of the `version` column of the history table, in characters.
+///
+/// The column is declared `VARCHAR(n)`, and an engine that enforces the width
+/// counts characters rather than bytes, so the validation below measures the
+/// very unit the engine measures.
+pub const VERSION_COLUMN_WIDTH: usize = 50;
+
+/// Width of the `description` column of the history table, in characters.
+pub const DESCRIPTION_COLUMN_WIDTH: usize = 200;
+
+/// Width of the `script` column of the history table, in characters.
+pub const SCRIPT_COLUMN_WIDTH: usize = 1000;
+
+/// The script name recorded by a synthetic baseline entry.
+pub const BASELINE_SCRIPT: &str = "<< Baseline >>";
 
 /// DDL query to initialize the metadata history table.
 pub fn create_schema_history_table_sql() -> &'static str {
@@ -27,6 +44,46 @@ pub fn create_schema_history_table_sql() -> &'static str {
 );"
 }
 
+/// Verifies that a script's metadata fits the columns of the history table.
+///
+/// The widths are a storage contract of the metadata table: an engine that
+/// enforces them — PostgreSQL — rejects an over-long value inside the
+/// transaction the entry is written in, with a diagnostic that names neither
+/// the script nor the limit. Every value the table records passes this check
+/// first, so a script that cannot be recorded is refused while it is still a
+/// name instead of in the middle of a run.
+pub fn validate_metadata(
+    script: &str,
+    version: Option<&MigrationVersion>,
+    description: &str,
+) -> Result<(), Error> {
+    if let Some(version) = version {
+        check_width(script, "version", &version.to_string(), VERSION_COLUMN_WIDTH)?;
+    }
+    check_width(script, "description", description, DESCRIPTION_COLUMN_WIDTH)?;
+    check_width(script, "script", script, SCRIPT_COLUMN_WIDTH)
+}
+
+/// Rejects `value` when it is wider than the column `column` declares.
+fn check_width(
+    script: &str,
+    column: &'static str,
+    value: &str,
+    limit: usize,
+) -> Result<(), Error> {
+    let actual = value.chars().count();
+
+    if actual <= limit {
+        return Ok(());
+    }
+
+    Err(Error::MetadataTooLong {
+        script: script.to_owned(),
+        column,
+        actual,
+        limit,
+    })
+}
 /// A single row of the [`SCHEMA_HISTORY_TABLE`] metadata table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaHistoryEntry {
@@ -83,7 +140,7 @@ impl SchemaHistoryEntry {
             version: Some(version),
             description: description.into(),
             kind: MigrationKind::Baseline,
-            script: "<< Baseline >>".to_owned(),
+            script: BASELINE_SCRIPT.to_owned(),
             checksum: None,
             installed_on: installed_on.into(),
             execution_time_ms: 0,
@@ -161,5 +218,83 @@ mod tests {
         entry.checksum = None;
 
         assert!(!entry.is_modified(&migration("SELECT 2;")));
+    }
+    #[test]
+    fn the_declared_widths_match_the_metadata_ddl() {
+        let ddl = create_schema_history_table_sql();
+
+        for (column, width) in [
+            ("version", VERSION_COLUMN_WIDTH),
+            ("description", DESCRIPTION_COLUMN_WIDTH),
+            ("script", SCRIPT_COLUMN_WIDTH),
+        ] {
+            assert!(
+                ddl.contains(&format!("{column} VARCHAR({width})")),
+                "the DDL must declare `{column}` with the width the validation enforces: {ddl}"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_at_the_declared_width_is_accepted() {
+        let version = "1".parse::<MigrationVersion>().expect("a valid version");
+        let description = "d".repeat(DESCRIPTION_COLUMN_WIDTH);
+        let script = "s".repeat(SCRIPT_COLUMN_WIDTH);
+
+        assert_eq!(
+            validate_metadata(&script, Some(&version), &description),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_description_beyond_the_declared_width_is_rejected() {
+        let version = "1".parse::<MigrationVersion>().expect("a valid version");
+        let description = "d".repeat(DESCRIPTION_COLUMN_WIDTH + 1);
+
+        assert_eq!(
+            validate_metadata("V1__init.sql", Some(&version), &description),
+            Err(Error::MetadataTooLong {
+                script: "V1__init.sql".to_owned(),
+                column: "description",
+                actual: DESCRIPTION_COLUMN_WIDTH + 1,
+                limit: DESCRIPTION_COLUMN_WIDTH,
+            })
+        );
+    }
+
+    #[test]
+    fn a_version_beyond_the_declared_width_is_rejected() {
+        // Every part parses as a `u64`, so the version is valid; only its
+        // rendered text outgrows the column that records it.
+        let parts = vec!["1"; VERSION_COLUMN_WIDTH + 1].join("_");
+        let version = parts.parse::<MigrationVersion>().expect("a valid version");
+        let rendered = VERSION_COLUMN_WIDTH * 2 + 1;
+
+        assert_eq!(version.to_string().chars().count(), rendered);
+        assert_eq!(
+            validate_metadata("V1__init.sql", Some(&version), "init"),
+            Err(Error::MetadataTooLong {
+                script: "V1__init.sql".to_owned(),
+                column: "version",
+                actual: rendered,
+                limit: VERSION_COLUMN_WIDTH,
+            })
+        );
+    }
+
+    #[test]
+    fn a_script_name_beyond_the_declared_width_is_rejected() {
+        let script = "s".repeat(SCRIPT_COLUMN_WIDTH + 1);
+
+        assert_eq!(
+            validate_metadata(&script, None, "init"),
+            Err(Error::MetadataTooLong {
+                script: script.clone(),
+                column: "script",
+                actual: SCRIPT_COLUMN_WIDTH + 1,
+                limit: SCRIPT_COLUMN_WIDTH,
+            })
+        );
     }
 }
