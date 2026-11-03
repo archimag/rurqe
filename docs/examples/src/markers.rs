@@ -16,7 +16,24 @@ table!(
     User => "users" {
         UserId => "id": i64,
         UserName => "name": String,
+        UserEmail => "email": String,
         UserManagerId => "manager_id": i64,
+    }
+);
+
+table!(
+    /// The `archived_users` table.
+    ArchivedUser => "archived_users" {
+        ArchivedUserId => "id": i64,
+        ArchivedUserName => "name": String,
+        ArchivedUserEmail => "email": String,
+    }
+);
+
+table!(
+    /// The `accounts` table.
+    Account => "accounts" {
+        AccountId => "id": i64,
     }
 );
 

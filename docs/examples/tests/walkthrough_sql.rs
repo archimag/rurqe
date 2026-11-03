@@ -56,7 +56,11 @@ const GROUP_BY: &str = include_str!("../../core/group_by.md");
 
 /// The chapter walking through the nested-collection fragments.
 const MULTISET: &str = include_str!("../../core/nested.md");
+/// The chapter walking through the `UPDATE` fragments.
+const UPDATE_STATEMENT: &str = include_str!("../../core/update.md");
 
+/// The chapter walking through the `DELETE` fragments.
+const DELETE_STATEMENT: &str = include_str!("../../core/delete.md");
 /// Asserts that `built` emits `sql` and that `chapter` quotes that statement.
 fn assert_quoted(chapter: &str, built: &BuiltQuery, sql: &str) {
     assert_eq!(built.sql, sql, "the renderer emits the quoted statement");
@@ -349,4 +353,69 @@ fn the_dialect_walkthrough_quotes_its_row_lock() {
          FOR UPDATE SKIP LOCKED",
     );
     assert_eq!(built.params, vec![SqlVal::I64(7)]);
+}
+
+#[test]
+fn the_update_walkthrough_quotes_its_single_row_update() {
+    // `crud.rs`, anchor `update`: one relation, so the assigned column and the
+    // filtered column both render bare.
+    let built = fragments::crud_update()
+        .expect("the `update` fragment of `crud.rs` builds its statement");
+
+    assert_quoted(
+        UPDATE_STATEMENT,
+        &built,
+        "UPDATE \"users\" SET \"name\" = $1 WHERE (\"id\" = $2)",
+    );
+    assert_eq!(
+        built.params,
+        vec![SqlVal::Text("admin".to_owned()), SqlVal::I64(1)]
+    );
+}
+
+#[test]
+fn the_update_walkthrough_quotes_its_from_clause() {
+    // `crud.rs`, anchor `update_from`: the source relation widens the scope, so
+    // the filter qualifies both relations.
+    let built = fragments::crud_update_from()
+        .expect("the `update_from` fragment of `crud.rs` builds its statement");
+
+    assert_quoted(
+        UPDATE_STATEMENT,
+        &built,
+        "UPDATE \"users\" SET \"name\" = $1 FROM \"accounts\" \
+         WHERE (\"users\".\"id\" = \"accounts\".\"id\")",
+    );
+    assert_eq!(built.params, vec![SqlVal::Text("root".to_owned())]);
+}
+
+#[test]
+fn the_delete_walkthrough_quotes_its_single_row_delete() {
+    // `crud.rs`, anchor `delete`: the filter is the clause that makes the
+    // statement executable.
+    let built = fragments::crud_delete()
+        .expect("the `delete` fragment of `crud.rs` builds its statement");
+
+    assert_quoted(
+        DELETE_STATEMENT,
+        &built,
+        "DELETE FROM \"users\" WHERE (\"id\" = $1)",
+    );
+    assert_eq!(built.params, vec![SqlVal::I64(1)]);
+}
+
+#[test]
+fn the_delete_walkthrough_quotes_its_using_clause() {
+    // `crud.rs`, anchor `delete_using`: the source relation takes part in the
+    // filter exactly like the deleted table.
+    let built = fragments::crud_delete_using()
+        .expect("the `delete_using` fragment of `crud.rs` builds its statement");
+
+    assert_quoted(
+        DELETE_STATEMENT,
+        &built,
+        "DELETE FROM \"users\" USING \"accounts\" \
+         WHERE (\"users\".\"id\" = \"accounts\".\"id\")",
+    );
+    assert!(built.params.is_empty());
 }

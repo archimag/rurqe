@@ -3,33 +3,14 @@
 //! Every mutation except the bulk insert terminates against an asynchronous
 //! pool, so a chapter includes the shape an application actually writes; the
 //! bulk insert is assembled as a build fragment of its own.
+//!
+//! The markers the fragments read come from `rurqe_examples::markers`, the
+//! module every example shares, so a fragment the walkthrough parity test
+//! rebuilds resolves the same declaration the chapter documents.
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table!(
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-        UserEmail => "email": String,
-    }
-);
-
-table!(
-    /// The `archived_users` table.
-    ArchivedUser => "archived_users" {
-        ArchivedUserId => "id": i64,
-        ArchivedUserName => "name": String,
-        ArchivedUserEmail => "email": String,
-    }
-);
-
-table!(
-    /// The `accounts` table.
-    Account => "accounts" {
-        AccountId => "id": i64,
-    }
-);
+use rurqe_examples::markers::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {

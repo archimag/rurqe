@@ -42,8 +42,12 @@ const OUT_DIR: &str = "OUT_DIR";
 const MANIFEST_DIR: &str = "CARGO_MANIFEST_DIR";
 
 /// The terminal a fragment ends in when it executes the statement it builds.
-const FETCH_TERMINAL: &str = ".fetch_all(&pool)";
-
+/// The terminals a fragment ends in when it executes the statement it builds.
+///
+/// A selection reports the rows it read and a mutation reports the rows it
+/// wrote; both execute the statement, so a fragment ending in either terminal
+/// is rebuilt into the build terminal below.
+const EXECUTION_TERMINALS: &[&str] = &[".fetch_all(&pool)", ".execute(&pool)"];
 /// The `await` that follows the execution terminal of a fragment.
 const AWAIT_TERMINAL: &str = ".await?;";
 
@@ -87,6 +91,10 @@ const FRAGMENTS: &[Fragment] = &[
     ("ordering.rs", "order_by", "page"),
     ("subqueries.rs", "scalar", "above_average"),
     ("subqueries.rs", "in_subquery", "with_orders"),
+    ("crud.rs", "update", "updated"),
+    ("crud.rs", "update_from", "linked"),
+    ("crud.rs", "delete", "removed"),
+    ("crud.rs", "delete_using", "cleaned"),
 ];
 
 fn main() {
@@ -260,19 +268,27 @@ fn strip_indent(line: &str, width: usize) -> &str {
 
 /// Rewrites the execution terminal of `region` into the build terminal.
 ///
-/// A fragment that ends in `.fetch_all(&pool)` … `.await?;` executes the
-/// statement it builds, so the generated function ends the same statement in
-/// `.build()?` instead. Any other ending is emitted verbatim and has to compile
-/// as it stands.
+/// A fragment that ends in an execution terminal — `.fetch_all(&pool)` for a
+/// selection, `.execute(&pool)` for a mutation — followed by `.await?;` runs
+/// the statement it builds, so the generated function ends the same statement
+/// in `.build()?` instead. Any other ending is emitted verbatim and has to
+/// compile as it stands.
 fn build_terminal(file: &str, anchor: &str, region: &str) -> Result<String, String> {
     let statement = region.trim_end();
     if !statement.ends_with(AWAIT_TERMINAL) {
         return Ok(statement.to_owned());
     }
-    let fetch = statement.rfind(FETCH_TERMINAL).ok_or_else(|| {
-        format!("`{anchor}` of `{file}` ends in `{AWAIT_TERMINAL}` without `{FETCH_TERMINAL}`")
-    })?;
-    let tail = &statement[fetch + FETCH_TERMINAL.len()..];
+    let Some((terminal, start)) = EXECUTION_TERMINALS
+        .iter()
+        .filter_map(|terminal| statement.rfind(*terminal).map(|start| (*terminal, start)))
+        .max_by_key(|&(_, start)| start)
+    else {
+        return Err(format!(
+            "`{anchor}` of `{file}` ends in `{AWAIT_TERMINAL}` without one of {}",
+            EXECUTION_TERMINALS.join(" / ")
+        ));
+    };
+    let tail = &statement[start + terminal.len()..];
     if tail.trim() != AWAIT_TERMINAL {
         return Err(format!(
             "`{anchor}` of `{file}` carries `{}` between its statement and its await",
@@ -280,7 +296,7 @@ fn build_terminal(file: &str, anchor: &str, region: &str) -> Result<String, Stri
         ));
     }
     let mut rewritten = String::with_capacity(statement.len());
-    rewritten.push_str(&statement[..fetch]);
+    rewritten.push_str(&statement[..start]);
     rewritten.push_str(BUILD_TERMINAL);
     Ok(rewritten)
 }
