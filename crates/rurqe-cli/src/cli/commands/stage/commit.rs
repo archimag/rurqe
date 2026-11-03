@@ -56,7 +56,11 @@ use super::{
 /// stale scratch databases opportunistically, exactly as a `stage verify`
 /// connection does. `--scratch-url` redirects that lifecycle onto a disposable
 /// server, and a scratch URL addressing another engine than the sealed database is
-/// refused before the stage or the live catalog is read.
+/// refused before the stage or the live catalog is read. A `--scratch-url` the
+/// operator supplied is honoured verbatim, so a SQLite file it names becomes the
+/// replay target — the sandbox requires that file to be empty and deletes it once
+/// the gate ends — while a SQLite target naming the sealed database file itself is
+/// refused, because the replay would remove the database being anchored.
 ///
 /// The target the lifecycle ran on is not a detail the operator has to infer: the
 /// success report names it beside the anchored hash, and a commit the parity gate
@@ -101,9 +105,11 @@ pub(crate) fn commit_stage(
 ) -> Result<CommandOutput, CliError> {
     // The parity scratch is redirected before either side is read: the gate
     // replays the declarative stage in it, so a target of another engine can
-    // never reproduce the catalog this commit is about to seal.
+    // never reproduce the catalog this commit is about to seal, and a SQLite
+    // file naming the sealed database would be deleted once the replay ends.
     if let Some(scratch_url) = scratch_url {
         refuse_cross_engine_scratch(database_url, scratch_url)?;
+        refuse_scratch_over_sealed_file(database_url, scratch_url)?;
     }
 
     let boundary = boundary_dir(checkpoint_path);
@@ -131,10 +137,12 @@ pub(crate) fn commit_stage(
     // against a summed catalog would report every secondary relation as missing.
     // The scratch state itself is the one `--scratch-url` supplied, falling back
     // to the live URL, so the invocation alone decides which server pays for the
-    // database lifecycle the materialisation runs. The target is classified once,
-    // so the replay, a rejected commit, and the success report all name the very
-    // same server.
-    let parity_target = parity_scratch_url(scratch_url.unwrap_or(database_url));
+    // database lifecycle the materialisation runs, while a scratch defaulted from
+    // a SQLite live URL becomes the in-memory lifecycle instead, because that URL
+    // names the very file the commit is sealing. The target is classified once, so
+    // the replay, a rejected commit, and the success report all name the very same
+    // server.
+    let parity_target = parity_scratch_url(scratch_url, database_url);
     let parity = ParityScratch::of(parity_target);
 
     let diff = compare_stage_with_live_selection(&stage, &catalog, parity_target, selection)
@@ -284,23 +292,31 @@ impl Drop for StagedCleanup {
 
 /// The disposable state the declarative stage is materialised in before a commit.
 ///
-/// A PostgreSQL target keeps the stage on the server behind the URL, where
-/// [`compare_stage_with_live_selection`] builds it in a throwaway database through
-/// `materialise_stage`; a SQLite target is materialised in memory instead, because
-/// the URL names the very file the commit is sealing and no declarative DDL may be
-/// replayed over it. The URL is the one `--scratch-url` supplied, falling back to
-/// the live URL when the operator supplied none, so the invocation alone decides
-/// which server carries the whole lifecycle. A value the classifier rejects is
-/// passed through unchanged: the sandbox gate reports it with the redaction it
+/// An explicit `--scratch-url` is honoured verbatim, so the invocation alone
+/// decides which server carries the whole lifecycle: a PostgreSQL target keeps the
+/// stage in a throwaway database there, a SQLite file is replayed inside the file
+/// the operator named — the sandbox requires it to be empty and deletes it once
+/// the replay ends — and `:memory:` is materialised in memory. Only a scratch
+/// defaulted from the live URL falls back to `":memory:"` when that URL addresses
+/// SQLite, because it names the very file the commit is sealing and no declarative
+/// DDL may be replayed over it. A value the classifier rejects is passed through
+/// unchanged in either case: the sandbox gate reports it with the redaction it
 /// mandates, so no second parser decides here what the string addresses.
-fn parity_scratch_url(scratch_url: &str) -> &str {
-    match DatabaseTarget::parse(scratch_url) {
-        Ok(DatabaseTarget::Postgres) => scratch_url,
+fn parity_scratch_url<'a>(scratch_url: Option<&'a str>, database_url: &'a str) -> &'a str {
+    if let Some(scratch_url) = scratch_url {
+        return scratch_url;
+    }
+
+    match DatabaseTarget::parse(database_url) {
+        Ok(DatabaseTarget::Postgres) => database_url,
+        // The defaulted scratch names the live SQLite database itself, so the
+        // gate must never replay declarative DDL over it nor delete it once the
+        // replay ends.
         Ok(DatabaseTarget::SqliteMemory | DatabaseTarget::SqliteFile(_)) => ":memory:",
-        // Reachable through a supplied `--scratch-url` the classifier rejects;
-        // the sandbox gate refuses it with its own redacted diagnostic, which is
-        // the one place the absence of an engine is reported.
-        Err(_) => scratch_url,
+        // Reachable through a live URL the classifier rejects; the sandbox gate
+        // refuses it with its own redacted diagnostic, which is the one place
+        // the absence of an engine is reported.
+        Err(_) => database_url,
     }
 }
 
@@ -310,11 +326,19 @@ fn parity_scratch_url(scratch_url: &str) -> &str {
 /// rejected commit describe the same engine and the same redacted location instead
 /// of classifying the string twice and possibly disagreeing. The engine decides how
 /// much lifecycle the failure diagnostic has to state: a PostgreSQL parity scratch
-/// creates and drops a database on its server, while a SQLite one is materialised in
-/// memory and touches no file.
+/// creates and drops a database on its server, while a SQLite one lives in memory
+/// or in a file the sandbox requires to be empty and deletes once the replay
+/// ends.
 struct ParityScratch {
     /// The engine the parity scratch target addresses.
     dialect: DatabaseDialect,
+    /// Whether the target names the in-memory SQLite lifecycle.
+    ///
+    /// A file-backed SQLite scratch is a real file the sandbox requires to be
+    /// empty and deletes once the replay ends, while the in-memory lifecycle is
+    /// discarded with its connection, so the diagnostic of a rejected commit
+    /// states which of the two the gate ran instead of assuming the memory one.
+    in_memory: bool,
     /// The target as it is reported, with every credential redacted.
     redacted: String,
 }
@@ -324,6 +348,7 @@ impl ParityScratch {
     fn of(url: &str) -> Self {
         Self {
             dialect: detect_dialect(Some(url)),
+            in_memory: matches!(DatabaseTarget::parse(url), Ok(DatabaseTarget::SqliteMemory)),
             redacted: redact_database_url(url),
         }
     }
@@ -334,8 +359,10 @@ impl ParityScratch {
     /// connected role and drops it again once the replay ends, so the sentence
     /// names the privilege that demands and the sweep the same connection runs
     /// first — a role provisioned merely to run migrations learns both here instead
-    /// of from an unexplained privilege error. A SQLite scratch lives in memory, so
-    /// its sentence states that the sealed file is never replayed over. Both arms
+    /// of from an unexplained privilege error. A SQLite scratch lives in memory or
+    /// in a file the replay requires to be empty and removes once it ends, so the
+    /// sentence states which one ran and that the sealed file is never replayed
+    /// over. Both arms
     /// name `--scratch-url`, the remedy that moves the lifecycle onto another
     /// target.
     fn lifecycle(&self) -> String {
@@ -348,11 +375,18 @@ impl ParityScratch {
                  disposable server instead.",
                 self.redacted
             ),
+            DatabaseDialect::Sqlite if self.in_memory => format!(
+                "The gate materialised the declarative stage in an in-memory SQLite scratch database \
+                 on the parity scratch target `{}` and dropped it again: an in-memory SQLite scratch \
+                 is discarded with the connection that holds it, so the sealed database file is \
+                 never replayed over. Pass `--scratch-url` to run the gate against another target.",
+                self.redacted
+            ),
             DatabaseDialect::Sqlite => format!(
-                "The gate materialised the declarative stage in a scratch database on the parity \
-                 scratch target `{}` and dropped it again: a SQLite parity scratch lives in memory, \
-                 so the sealed database file is never replayed over. Pass `--scratch-url` to run the \
-                 gate against another target.",
+                "The gate materialised the declarative stage in the SQLite scratch file on the parity \
+                 scratch target `{}` and deleted it again: a file-backed SQLite scratch has to be \
+                 empty before the replay starts and is removed once it ends, so `--scratch-url` has \
+                 to name a disposable file rather than a database that holds data.",
                 self.redacted
             ),
         }
@@ -389,6 +423,45 @@ fn refuse_cross_engine_scratch(database_url: &str, scratch_url: &str) -> Result<
         live.dialect(),
         live.dialect(),
     )))
+}
+
+/// Refuses a SQLite scratch naming the very file the commit seals.
+///
+/// A file-backed SQLite parity scratch is deleted once its replay ends, so a
+/// `--scratch-url` pointing at the sealed database would remove the database the
+/// commit is anchoring as soon as the gate finished with it. The declared
+/// locations are resolved before they are compared, so two spellings of one file
+/// collide while two distinct files never do. A value the classifier rejects is
+/// passed through, because the sandbox gate reports it with the redaction it
+/// mandates instead of a second parser deciding what the string addresses.
+fn refuse_scratch_over_sealed_file(database_url: &str, scratch_url: &str) -> Result<(), CliError> {
+    let Ok(DatabaseTarget::SqliteFile(sealed)) = DatabaseTarget::parse(database_url) else {
+        return Ok(());
+    };
+    let Ok(DatabaseTarget::SqliteFile(scratch)) = DatabaseTarget::parse(scratch_url) else {
+        return Ok(());
+    };
+
+    if resolved_sqlite_file(&sealed) != resolved_sqlite_file(&scratch) {
+        return Ok(());
+    }
+
+    Err(CliError::message(format!(
+        "the scratch URL `{}` names the SQLite database this commit seals; the parity gate replays \
+         the declarative stage in the scratch target and deletes it once the replay ends, so \
+         `--scratch-url` has to name a disposable file (or `:memory:`) instead of the database \
+         being anchored",
+        redact_database_url(scratch_url)
+    )))
+}
+
+/// The filesystem location a SQLite path resolves to.
+///
+/// An existing file resolves through its symbolic links, so two spellings of it
+/// collide; a file that does not exist yet keeps the spelling it was declared
+/// with, because there is nothing to resolve and the replay creates it.
+fn resolved_sqlite_file(path: &str) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
 }
 
 /// Removes the staged siblings an interrupted commit abandoned next to its artifacts.
@@ -473,7 +546,9 @@ impl fmt::Display for StageFindings<'_> {
 mod tests {
     use std::path::Path;
 
-    use super::{stage_parity_failure, ParityScratch};
+    use super::{
+        parity_scratch_url, refuse_scratch_over_sealed_file, stage_parity_failure, ParityScratch,
+    };
     use crate::drift::SchemaDiff;
 
     /// The warning the catalog read produces when the selected schemas describe
@@ -537,6 +612,83 @@ mod tests {
         assert!(
             !message.contains("warning:"),
             "no warning is invented, got {message}"
+        );
+    }
+
+    /// An explicit `--scratch-url` is the target the gate materialises the stage
+    /// in, whatever engine it names: only a scratch defaulted from the live URL
+    /// falls back to the in-memory lifecycle, because that URL names the very
+    /// file the commit seals.
+    #[test]
+    fn an_explicit_scratch_target_is_honoured_verbatim() {
+        for scratch in [
+            "sqlite:/tmp/parity.db",
+            ":memory:",
+            "postgres://db.internal/scratch",
+        ] {
+            assert_eq!(
+                parity_scratch_url(Some(scratch), "sqlite:/srv/app.db"),
+                scratch,
+                "{scratch}"
+            );
+        }
+
+        assert_eq!(parity_scratch_url(None, "sqlite:/srv/app.db"), ":memory:");
+        assert_eq!(parity_scratch_url(None, ":memory:"), ":memory:");
+        assert_eq!(
+            parity_scratch_url(None, "postgres://db.internal/app"),
+            "postgres://db.internal/app"
+        );
+    }
+
+    /// A file-backed SQLite scratch is a real file the gate requires to be empty
+    /// and deletes once the replay ends, so the diagnostic of a rejected commit
+    /// states that lifecycle instead of certifying an in-memory one.
+    #[test]
+    fn the_lifecycle_of_a_file_backed_sqlite_scratch_names_the_file() {
+        let lifecycle = ParityScratch::of("sqlite:/tmp/parity.db").lifecycle();
+
+        assert!(
+            lifecycle.contains("SQLite scratch file"),
+            "the lifecycle names the file the replay ran in, got {lifecycle}"
+        );
+        assert!(
+            !lifecycle.contains("in-memory"),
+            "a file-backed scratch is not described as the in-memory lifecycle, got {lifecycle}"
+        );
+
+        let in_memory = ParityScratch::of(":memory:").lifecycle();
+        assert!(
+            in_memory.contains("in-memory SQLite scratch"),
+            "the memory lifecycle stays described as memory, got {in_memory}"
+        );
+    }
+
+    /// A SQLite scratch naming the sealed database would be deleted once the
+    /// replay ended, so the commit refuses it before the stage is read.
+    #[test]
+    fn a_scratch_naming_the_sealed_sqlite_file_is_refused() {
+        let sealed = format!(
+            "sqlite:{}",
+            std::env::temp_dir().join("rurqe-parity-sealed.db").display()
+        );
+        let scratch = format!(
+            "sqlite:{}",
+            std::env::temp_dir().join("rurqe-parity-scratch.db").display()
+        );
+
+        let error = refuse_scratch_over_sealed_file(&sealed, &sealed)
+            .expect_err("the sealed file cannot be its own scratch");
+        assert!(
+            error
+                .to_string()
+                .contains("names the SQLite database this commit seals"),
+            "got {error}"
+        );
+
+        assert!(
+            refuse_scratch_over_sealed_file(&sealed, &scratch).is_ok(),
+            "a distinct scratch file stays accepted"
         );
     }
 }
