@@ -1272,6 +1272,16 @@ fn every_command_validates_the_project_configuration() {
         let error = run_cli_with_config(argv, configuration.path())
             .expect_err("a malformed configuration aborts the command");
 
+        // The typed cause survives the command boundary: the file is validated
+        // through one loader, so an embedder distinguishes a malformed
+        // configuration from a drift refusal or a failed stage lifecycle
+        // without matching on the rendered line.
+        assert!(
+            matches!(error.cause(), Some(CliCause::Config(_))),
+            "argv {args:?}: the failure carries the configuration cause, got {:?}",
+            error.cause()
+        );
+
         assert!(
             error.to_string().contains("workspace"),
             "argv {args:?}: {error}"

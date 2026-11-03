@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rurqe_cli::run_cli;
+use rurqe_cli::{run_cli, CliCause, StageError};
 use rurqe_cli::stage::materialise_stage;
 use rurqe_cli::SqliteMigrationBackend;
 use rurqe_migrate::catalog::SchemaCatalog;
@@ -640,6 +640,12 @@ fn the_golden_equation_reports_a_tail_that_lost_a_column() {
         ":memory:",
     ]))
     .expect_err("the tail never creates the email column");
+
+    // The divergence is a stage lifecycle failure, and its typed cause survives
+    // the public boundary, so an embedder reads it without matching on prose.
+    let Some(CliCause::Stage(StageError::Diverged(_))) = error.cause() else {
+        panic!("expected a diverged stage cause, got {:?}", error.cause());
+    };
 
     let message = error.to_string();
     assert!(message.contains("golden equation"), "got {message}");

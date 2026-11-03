@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rurqe_cli::cli::{parse_args, CliCommand};
+use rurqe_cli::cli::{parse_args, CliCause, CliCommand, CliError};
 use rurqe_cli::codegen::{generate_schema_rs, CodegenOptions};
 use rurqe_cli::drift::{verify_drift, DriftError};
 use rurqe_cli::introspect::{
@@ -177,21 +177,25 @@ fn drift_verification_catches_divergence_with_actionable_error() {
     )]);
 
     let err = verify_drift(&live, &lock, None).unwrap_err();
-    match err {
-        DriftError::Drift(report) => {
-            let msg = report.to_string();
-            assert!(msg.starts_with("Schema drift detected!"));
-            assert!(
-                !msg.contains("Error: "),
-                "the report leaves the channel marker to the single write point: {msg}"
-            );
-            assert!(msg.contains(
-                "Table `products`: column `sku` exists in database but is missing from snapshot."
-            ));
-            assert!(msg.contains("Hint: Run `cargo db-codegen` to update code and snapshot."));
-        }
-        other => panic!("expected Drift, got {other:?}"),
-    }
+
+    // The dispatcher wraps the drift taxonomy instead of flattening it into a
+    // line, so the embedder's contract — the typed cause — reaches the drift
+    // failure without matching on prose.
+    let error = CliError::with_cause(CliCause::Drift(err));
+    let Some(CliCause::Drift(DriftError::Drift(report))) = error.cause() else {
+        panic!("expected a drift cause, got {:?}", error.cause());
+    };
+
+    let msg = report.to_string();
+    assert!(msg.starts_with("Schema drift detected!"));
+    assert!(
+        !msg.contains("Error: "),
+        "the report leaves the channel marker to the single write point: {msg}"
+    );
+    assert!(msg.contains(
+        "Table `products`: column `sku` exists in database but is missing from snapshot."
+    ));
+    assert!(msg.contains("Hint: Run `cargo db-codegen` to update code and snapshot."));
 }
 
 #[test]
@@ -755,6 +759,14 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
         &path_string(&lock),
     ]))
     .expect_err("drift is reported");
+
+    // The public boundary keeps the typed cause, so an embedder distinguishes a
+    // drift refusal from a transport or lifecycle failure without parsing prose.
+    assert!(
+        matches!(drift_err.cause(), Some(CliCause::Drift(_))),
+        "the drift refusal carries its typed cause, got {:?}",
+        drift_err.cause()
+    );
     let message = drift_err.to_string();
     assert!(
         message.contains("Schema drift detected!"),
