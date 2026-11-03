@@ -61,7 +61,7 @@ SELECT "user_id" AS "owner_id", SUM("amount") AS "total" FROM "orders" GROUP BY 
 {{#rustdoc_include ../examples/cte.rs:report}}
 ```
 
-The statement below renders as one round trip:
+The fragment states the aggregate as well, because an included region stands on its own: it declares the relation it reads instead of relying on a binding established elsewhere. The statement it assembles is one round trip:
 
 ```sql
 WITH "user_totals" AS (
@@ -72,7 +72,7 @@ SELECT "users"."name" AS "user_name", "user_totals"."total" AS "total_spent"
 FROM "users" INNER JOIN "user_totals" ON ("user_totals"."owner_id" = "users"."id")
 ```
 
-`.with(totals)` places the relation in front of the query, and from that point it is part of the scope of the statement. `.inner_join(UserTotals, TotalsOwnerId.eq(UserId))` therefore joins it on the same terms as a stored table — the `ON` predicate compares a column of the relation with a column of `users` — and the projection reads `TotalsTotal` as an ordinary non-nullable `f64`. `.build()` returns the rendered statement without touching a database.
+`.as_cte::<UserTotals>()` publishes the aggregate as the relation `user_totals`, and `.with(totals)` places it in front of the query. From that point the relation is part of the scope of the statement: `.inner_join(UserTotals, TotalsOwnerId.eq(UserId))` joins it on the same terms as a stored table — the `ON` predicate compares a column of the relation with a column of `users` — and the projection reads `TotalsTotal` as an ordinary non-nullable `f64`, because the inner join drops every user the aggregate has no row for. `.fetch_all(&pool)` sends the statement to the database once and returns one row per user that has orders.
 
 Every other clause keeps working unchanged: a filter, an ordering, a second join, or a pagination added to the statement sees the columns of the relation under the names the marker declares.
 

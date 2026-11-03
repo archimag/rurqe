@@ -42,7 +42,19 @@ async fn main() -> Result<()> {
         .as_cte::<UserTotals>();
     // ANCHOR_END: summary
 
+    // The `report` fragment below repeats the aggregate so the included region
+    // stands on its own; the binding this fragment leaves behind is discarded.
+    let _ = totals;
+
     // ANCHOR: report
+    // The aggregate is repeated here so the fragment stands on its own.
+    let totals = select_from(Order)
+        .group_by(OrderUserId)
+        .select(cols! {
+            owner_id: OrderUserId,
+            total: sum(OrderAmount),
+        })
+        .as_cte::<UserTotals>();
     let report = select_from(User)
         .with(totals)
         .inner_join(UserTotals, TotalsOwnerId.eq(UserId))
