@@ -257,8 +257,17 @@ pub(crate) fn run_cli_with_config(
             if domain_types {
                 options.domain_types = true;
             }
+            // Every failure below this point folds the notice the catalog read
+            // produced: a selection that describes nothing makes the generated
+            // artifacts describe nothing either, and the failure channel is the
+            // only output a failing command guarantees, so the warning travels
+            // inside the error instead of being discarded together with the
+            // report that never materialised.
+            let with_notice = |error: CliError| carry_notice(notice.as_deref(), error);
+
             let code = generate_schema_rs(&catalog, &options)
-                .map_err(|err| CliError::message(format!("failed to generate schema code: {err}")))?;
+                .map_err(|err| CliError::message(format!("failed to generate schema code: {err}")))
+                .map_err(with_notice)?;
             // Both artifacts are published through the staged write `write_file`
             // performs, and the generated module lands in a directory no
             // lifecycle command scans, so the generation that publishes them
@@ -270,8 +279,8 @@ pub(crate) fn run_cli_with_config(
             // surfaces as the actionable mismatch whose hint names `cargo db-codegen`,
             // while the opposite order would leave a stale snapshot that the next
             // `verify` reports as structural drift of the database.
-            write_file(&lock_path, &catalog.to_lock())?;
-            write_file(&output, &code)?;
+            write_file(&lock_path, &catalog.to_lock()).map_err(with_notice)?;
+            write_file(&output, &code).map_err(with_notice)?;
 
             let mut report = CommandOutput::new();
             report.notice(notice);
