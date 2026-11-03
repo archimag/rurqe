@@ -769,12 +769,17 @@ fn position(contents: &str, span: Option<Range<usize>>) -> (usize, usize) {
 }
 
 /// Builds a [`ConfigError::Syntax`] located at the start of `span`.
+///
+/// The document is read from text the caller handed over, so the refusal names
+/// no file: the path is attached by `CodegenConfig::load`, which is the entry
+/// point that knows which file it read.
 fn syntax_error(contents: &str, span: Option<Range<usize>>, message: String) -> ConfigError {
     let (line, column) = position(contents, span);
     ConfigError::Syntax {
         line,
         column,
         message,
+        path: None,
     }
 }
 

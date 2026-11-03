@@ -138,6 +138,11 @@ impl CodegenConfig {
     /// running with default schemas, the conventional artifact layout, and no type
     /// overrides is precisely the silent misconfiguration this crate refuses.
     ///
+    /// A malformed document is reported with the position of the rejected
+    /// declaration and with the file it was read from: this is the entry point
+    /// that knows the path, so it is the one that attaches it to the refusal
+    /// [`CodegenConfig::parse`] produced.
+    ///
     /// Defaulting on absence has exactly one home, and it is not here: a caller
     /// that reads a known conventional path falls back through
     /// [`CodegenConfig::load_or_default`], and a caller that walks the directory
@@ -146,7 +151,7 @@ impl CodegenConfig {
     /// hiding it behind a read that cannot tell the two apart.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
-            Ok(contents) => Self::parse(&contents),
+            Ok(contents) => Self::parse(&contents).map_err(|error| error.locate(path)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Err(ConfigError::NotFound {
                     path: path.display().to_string(),
@@ -167,7 +172,8 @@ impl CodegenConfig {
     /// absent file means the engine-neutral defaults — and nothing else does. Every other
     /// failure is reported exactly as [`CodegenConfig::load`] reports it: a file that exists
     /// but cannot be read is a [`ConfigError::Io`], and a malformed one is a
-    /// [`ConfigError::Syntax`] carrying the position of the rejected declaration.
+    /// [`ConfigError::Syntax`] carrying the position of the rejected declaration
+    /// and the file it was read from.
     ///
     /// The 'absent means default' rule lives here and not in `load`, which reads the file
     /// once and reports an absence in its own right through [`ConfigError::NotFound`], so a
@@ -222,6 +228,9 @@ impl CodegenConfig {
     /// root key may declare an override before the `schemas` key that
     /// authorises it.
     ///
+    /// Every refusal carries the position of the declaration that caused it but
+    /// no file, because the document arrives as text: [`CodegenConfig::load`] is
+    /// the entry point that knows the path it read and attaches it.
     pub fn parse(contents: &str) -> Result<Self, ConfigError> {
         parse::document(contents)
     }
@@ -384,12 +393,19 @@ pub enum ConfigError {
         /// The underlying operating-system error.
         source: std::io::Error,
     },
-    /// A line of the configuration is malformed.
+    /// A declaration of the configuration is refused.
     ///
     /// The position is the one of the rejected declaration. A rejection that
     /// concerns two declarations — the legacy `schema` declared beside
     /// `primary_schema` — reports the position of the alias here and names the
     /// position of the other key in the message, so both are readable at once.
+    ///
+    /// The file the declaration was read from is carried whenever the caller
+    /// knew it: a command reads the document through [`CodegenConfig::load`],
+    /// which attaches its path, while [`CodegenConfig::parse`] has no path to
+    /// attach and leaves the field empty. The rendered line names the file
+    /// exactly when it is known, so the diagnostic of a direct parse keeps the
+    /// position-and-message wording it has always had.
     Syntax {
         /// The one-based line number of the offending declaration.
         line: usize,
@@ -397,6 +413,8 @@ pub enum ConfigError {
         column: usize,
         /// What is wrong with the declaration.
         message: String,
+        /// The file the declaration was read from, when the caller knew it.
+        path: Option<String>,
     },
     /// The configuration file named by the path does not exist.
     ///
@@ -410,6 +428,30 @@ pub enum ConfigError {
     },
 }
 
+impl ConfigError {
+    /// Attaches the file the document was read from to a position-bearing refusal.
+    ///
+    /// [`CodegenConfig::parse`] reads a document it was handed and knows no file,
+    /// so its refusals carry a position and a message alone. [`CodegenConfig::load`]
+    /// is the entry point that knows which file it read, so it attaches the path
+    /// here; that is what lets a diagnostic name the configuration that is
+    /// actually malformed, whether the file came from a discovery walk that may
+    /// select an ancestor's `rurqe.toml` among several or from an explicit
+    /// `--config` path naming any file at all. The other variants already carry a
+    /// path of their own and pass through unchanged.
+    fn locate(self, path: &Path) -> Self {
+        match self {
+            ConfigError::Syntax { line, column, message, .. } => ConfigError::Syntax {
+                line,
+                column,
+                message,
+                path: Some(path.display().to_string()),
+            },
+            other => other,
+        }
+    }
+}
+
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -420,10 +462,17 @@ impl fmt::Display for ConfigError {
                 line,
                 column,
                 message,
-            } => write!(
-                f,
-                "invalid configuration at line {line}, column {column}: {message}"
-            ),
+                path,
+            } => match path {
+                Some(path) => write!(
+                    f,
+                    "invalid configuration in `{path}` at line {line}, column {column}: {message}"
+                ),
+                None => write!(
+                    f,
+                    "invalid configuration at line {line}, column {column}: {message}"
+                ),
+            },
             ConfigError::NotFound { path } => {
                 write!(f, "configuration file `{path}` does not exist")
             }

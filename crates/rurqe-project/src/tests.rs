@@ -1321,3 +1321,88 @@ fn discover_or_default_without_a_configuration_yields_the_default() {
         );
     }
 }
+
+#[test]
+fn a_malformed_document_reports_the_file_it_was_read_from() {
+    let directory = temporary_project("syntax-path");
+    let path = directory.join(DEFAULT_CONFIG_PATH);
+    std::fs::write(&path, "[codegen]\ndomain_type = true\n")
+        .expect("the malformed configuration is written");
+
+    let err = CodegenConfig::load(&path).expect_err("the misspelled key is refused");
+
+    let _ = std::fs::remove_dir_all(&directory);
+
+    let declared = path.display().to_string();
+    assert!(
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                path: Some(file),
+                line: 2,
+                column: 1,
+                ..
+            } if file == &declared
+        ),
+        "the refusal names the file it was read from: {err}"
+    );
+    assert!(
+        err.to_string()
+            .contains(&format!("invalid configuration in `{declared}` at line 2, column 1:")),
+        "the rendered diagnostic identifies the file: {err}"
+    );
+}
+
+#[test]
+fn a_discovered_malformed_document_reports_the_file_the_walk_selected() {
+    let root = temporary_project("discover-syntax-path");
+    let member = root.join("crates").join("app");
+    std::fs::create_dir_all(&member).expect("the nested directories are created");
+    let path = root.join(DEFAULT_CONFIG_PATH);
+    std::fs::write(&path, "roots = \"rurqe\"\n").expect("the malformed configuration is written");
+
+    let err = discover_or_default(&member).expect_err("the misspelled key is refused");
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    let declared = path.display().to_string();
+    assert!(
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                path: Some(file),
+                line: 1,
+                ..
+            } if file == &declared
+        ),
+        "the walk names the file it selected among the ancestors: {err}"
+    );
+    assert!(
+        err.to_string().contains("unknown configuration key `roots`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_direct_parse_reports_no_file() {
+    let err = CodegenConfig::parse("[codegen]\ndomain_type = true\n")
+        .expect_err("the misspelled key is refused");
+
+    assert!(
+        matches!(
+            &err,
+            ConfigError::Syntax {
+                path: None,
+                line: 2,
+                column: 1,
+                ..
+            }
+        ),
+        "a document handed over as text names no file: {err}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "invalid configuration at line 2, column 1: \
+         unknown key `domain_type` in the `codegen` section"
+    );
+}
