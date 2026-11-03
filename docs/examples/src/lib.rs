@@ -53,13 +53,70 @@ use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
 use tokio_postgres::NoTls;
 
+/// The environment variable naming the PostgreSQL server the examples talk to.
+///
+/// It is the variable the toolchain reads as well, so one exported value drives
+/// both the documented walkthrough and the commands it mentions.
+const DATABASE_URL_VARIABLE: &str = "DATABASE_URL";
+
+/// The endpoint the shared pool targets when `DATABASE_URL` names none.
+///
+/// It points at a stock local server: a reader who starts one and runs an
+/// example needs no exported variable, and the documented value states which
+/// server that is instead of leaving it implicit.
+const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost:5432/postgres";
+
 /// Builds the shared asynchronous connection pool used across documentation examples.
 ///
-/// The pool is lazy — it opens no connection until the first statement is sent —
-/// allowing examples to compile and run without a reachable database.
+/// The endpoint is the one `DATABASE_URL` names — the variable the toolchain
+/// reads as well — and falls back to `DEFAULT_DATABASE_URL` when the variable is
+/// unset or blank, so the examples can be pointed at a live server without
+/// editing this file.
+///
+/// Building the pool opens no connection and touches no network: it parses the
+/// URL and stores the configuration. That laziness is what allows the
+/// verification pipeline to compile every example target without a reachable
+/// database, and it says nothing about running one: an example that is executed
+/// sends its statements to the server the URL names, so it needs that server,
+/// and the pipeline executes none of them for exactly that reason.
+///
+/// # Panics
+///
+/// Panics when `DATABASE_URL` is set but is neither valid UTF-8 nor a valid
+/// PostgreSQL connection string. The variable is named in the message and its
+/// value is never echoed, because a connection string may carry a password.
 pub fn example_pool() -> PgAsyncPool {
-    let pool = deadpool_postgres::Config::new()
+    let pool = pool_config(&example_database_url())
         .create_pool(Some(Runtime::Tokio1), NoTls)
-        .unwrap_or_else(|error| panic!("the example pool configuration is valid: {error}"));
+        .unwrap_or_else(|error| {
+            panic!(
+                "the example pool endpoint is not a usable PostgreSQL connection string: \
+                 {error}; set `{DATABASE_URL_VARIABLE}` to a valid connection string, or \
+                 unset it to reach the built-in local server"
+            )
+        });
     PgAsyncPool::new(pool)
+}
+
+/// The connection string the shared example pool targets.
+fn example_database_url() -> String {
+    match std::env::var(DATABASE_URL_VARIABLE) {
+        Ok(url) if !url.trim().is_empty() => url,
+        Ok(_) | Err(std::env::VarError::NotPresent) => DEFAULT_DATABASE_URL.to_owned(),
+        Err(std::env::VarError::NotUnicode(_)) => panic!(
+            "the `{DATABASE_URL_VARIABLE}` environment variable is not valid UTF-8: set it to \
+             UTF-8 text, since a connection string is read as text"
+        ),
+    }
+}
+
+/// The pool configuration targeting `url`.
+fn pool_config(url: &str) -> deadpool_postgres::Config {
+    // The endpoint reaches the pool as the connection string the driver parses
+    // itself, so the host, the port, the credentials, and the transport mode
+    // stay a single declaration a reader can replace through `DATABASE_URL`
+    // instead of being restated field by field here.
+    let mut config = deadpool_postgres::Config::new();
+    config.url = Some(url.to_owned());
+    config
 }
