@@ -388,3 +388,132 @@ fn the_final_catalog_digest_is_read_under_the_run_lock() {
         "the run lock is released once the run returns"
     );
 }
+
+/// A collection baking a checkpoint and a stage but no snapshot anchors its cold
+/// start marker with the boundary hash the checkpoint carries, never with the
+/// digest of the stage text.
+///
+/// The marker recorded at the pruned boundary is measured against that hash, and a
+/// digest over file bodies can never equal a digest over a catalog. Anchoring the
+/// stage digest would therefore reject the target the stage had just initialised,
+/// and — the cold start commits before the tail runs — keep rejecting it on every
+/// later run, leaving the target unusable for the binary that created it.
+#[test]
+fn a_baked_checkpoint_anchors_the_cold_start_marker() {
+    let boundary = Checksum::of(b"the catalog of the boundary stage");
+    let marker = format!(
+        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
+        boundary.to_hex()
+    );
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[],
+        checkpoint: Some(marker.as_str()),
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: None,
+    })
+    .expect("valid artifacts");
+
+    let mut backend = InMemoryBackend::new();
+    let report = embedded
+        .migrate(&mut backend)
+        .expect("the checkpoint accepts the database its own stage initialised");
+
+    assert_eq!(
+        report.cold_start.expect("the cold start runs").stage_scripts,
+        vec!["users.sql"]
+    );
+
+    let recorded = backend
+        .history
+        .first()
+        .expect("the cold start records its marker");
+    assert!(recorded.success);
+    assert_eq!(
+        recorded.version.as_ref().map(ToString::to_string),
+        Some("2".to_owned()),
+        "the marker sits at the pruned boundary the checkpoint declares"
+    );
+    assert_eq!(
+        recorded.checksum,
+        Some(boundary),
+        "the marker anchors the boundary catalog digest, not the stage text digest"
+    );
+
+    let rerun = embedded
+        .migrate(&mut backend)
+        .expect("the initialised target is accepted again");
+    assert!(rerun.cold_start.is_none());
+    assert_eq!(rerun.applied_count, 0);
+    assert_eq!(backend.history.len(), 1);
+}
+
+/// The baked `schema.lock` digest outranks the boundary hash: it anchors the
+/// catalog the final check measures the run against, so it stays the digest
+/// whenever the collection bakes one.
+#[test]
+fn a_baked_snapshot_outranks_the_checkpoint_boundary_hash() {
+    let catalog = SchemaCatalog::default();
+    let snapshot = catalog.to_lock();
+    let boundary = Checksum::of(b"an earlier boundary stage");
+    let marker = format!(
+        "[checkpoint]\npruned_up_to_version = \"2\"\nschema_hash = \"{}\"\n",
+        boundary.to_hex()
+    );
+
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[("V3__orders.sql", "CREATE TABLE orders (id INTEGER);")],
+        checkpoint: Some(marker.as_str()),
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: Some(&snapshot),
+    })
+    .expect("valid artifacts");
+
+    let mut backend = InMemoryBackend::new();
+    backend.catalog_checksum = Some(catalog.checksum());
+
+    embedded
+        .migrate(&mut backend)
+        .expect("the catalog matches the baked snapshot");
+
+    let recorded = backend
+        .history
+        .first()
+        .expect("the cold start records its marker");
+    assert_eq!(
+        recorded.checksum,
+        Some(catalog.checksum()),
+        "the snapshot digest anchors the marker, not the boundary hash"
+    );
+    assert_eq!(
+        recorded.version.as_ref().map(ToString::to_string),
+        Some("3".to_owned()),
+        "the marker covers the newest tail version above the boundary"
+    );
+}
+
+/// A collection baking no catalog artifact keeps the digest of its own stage: no
+/// checkpoint and no snapshot measures it against a catalog, so it stays the
+/// change detector of the stage text the database was initialised from.
+#[test]
+fn a_stage_without_a_catalog_artifact_anchors_its_own_digest() {
+    let embedded = EmbeddedMigrations::from_artifacts(EmbeddedArtifacts {
+        tail: &[],
+        checkpoint: None,
+        stage: &[("users.sql", "CREATE TABLE users (id INTEGER);")],
+        schema_lock: None,
+    })
+    .expect("valid artifacts");
+
+    let mut backend = InMemoryBackend::new();
+    embedded
+        .migrate(&mut backend)
+        .expect("the cold start succeeds");
+
+    let expected = DeclarativeStage::new(vec![StageScript::new(
+        "users.sql",
+        "CREATE TABLE users (id INTEGER);",
+    )])
+    .checksum();
+    assert_eq!(backend.history[0].checksum, Some(expected));
+}

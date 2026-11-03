@@ -112,9 +112,11 @@ by the artifact that was baked:
    stage when the collection bakes one. The cold start records a single marker
    instead of the DDL of the stage, and the marker sits at the newest version the
    collection declares — the higher of the newest tail version and the pruned
-   boundary, `0` when it declares neither. Its digest is the baked `schema.lock`
-   one, or the digest of the stage itself when the collection bakes no snapshot, so
-   the counterpart tail replay has to produce the same catalog to agree with it. A
+   boundary, `0` when it declares neither. Its digest is a catalog digest: it is
+   the baked `schema.lock` one when the collection carries a snapshot, otherwise
+   the boundary hash of a baked `checkpoint.toml`, and the digest of the stage
+   text only when the collection bakes neither, so the counterpart tail replay
+   has to produce the same catalog to agree with it. A
    database that already carries history is never cold-started.
 3. A baked boundary marker arms the checkpoint guard: a target sitting below the
    pruned boundary is rejected instead of being advanced by a partial tail, and a

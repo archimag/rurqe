@@ -294,8 +294,9 @@ impl EmbeddedMigrations {
     ///
     /// * An empty target is initialised from the baked declarative stage when the
     ///   collection carries one, exactly like [`cold_start`](crate::cold_start): the
-    ///   stage marker sits at the newest version the collection declares and is
-    ///   anchored by the baked `schema.lock` digest, so the versioned tail the
+    ///   stage marker sits at the newest version the collection declares, and it
+    ///   anchors the catalog digest the collection bakes — the `schema.lock` digest
+    ///   or the boundary hash of a baked checkpoint — so the versioned tail the
     ///   stage already reflects does not run a second time; repeatable scripts
     ///   carry no version and therefore still run on top of the stage.
     /// * A baked `checkpoint.toml` marker arms [`Migrator::with_checkpoint`], so a
@@ -375,16 +376,33 @@ impl EmbeddedMigrations {
     /// Builds the marker the cold start of this collection records.
     ///
     /// The marker sits at the newest version the collection declares, so every
-    /// versioned migration at or below it is reported as applied, and its digest
-    /// is the baked `schema.lock` one, which is exactly the digest the counterpart
-    /// tail replay has to produce. A collection without a snapshot anchors the
-    /// digest of its own stage instead. Repeatable scripts carry no version, so the
-    /// marker never covers them: they run on top of the stage like any other
-    /// pending repeatable migration.
+    /// versioned migration at or below it is reported as applied. Repeatable
+    /// scripts carry no version, so the marker never covers them: they run on top
+    /// of the stage like any other pending repeatable migration.
+    ///
+    /// The digest names the catalog the collection bakes, in this order:
+    ///
+    /// 1. the digest of the baked `schema.lock` snapshot, which is exactly the
+    ///    digest the counterpart tail replay has to produce;
+    /// 2. the boundary hash of a baked `checkpoint.toml`, which names the catalog of
+    ///    the stage the history was pruned at — the digest a cold start of that
+    ///    stage produces;
+    /// 3. the digest of the stage text, only when the collection bakes neither.
+    ///
+    /// The first two are catalog digests, and the marker is read as one:
+    /// [`Checkpoint::validate_history`] measures a marker recorded at the pruned
+    /// boundary against the boundary hash, and the final catalog check measures the
+    /// run against the snapshot. A digest over the stage text names file bodies
+    /// instead, so anchoring it at the boundary would reject the target the stage
+    /// had just initialised and — the cold start commits before the tail runs —
+    /// keep rejecting it on every later run. Nothing compares that digest with a
+    /// catalog, so it stays the honest anchor of a collection baking no catalog
+    /// artifact at all.
     fn stage_marker(&self, stage: &DeclarativeStage) -> Result<StageMarker, Error> {
-        let checksum = match self.schema_hash {
-            Some(checksum) => checksum,
-            None => stage.checksum(),
+        let checksum = match (self.schema_hash, &self.checkpoint) {
+            (Some(snapshot), _) => snapshot,
+            (None, Some(checkpoint)) => checkpoint.schema_hash(),
+            (None, None) => stage.checksum(),
         };
         Ok(StageMarker::new(self.marker_version()?, StageMarker::DESCRIPTION, checksum))
     }
