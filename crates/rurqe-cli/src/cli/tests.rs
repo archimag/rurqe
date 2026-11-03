@@ -1449,7 +1449,7 @@ fn the_declared_codegen_output_is_the_shared_middle_tier() {
         Project::load(None, &absent).expect("an absent configuration is the default project");
     assert_eq!(
         conventional.codegen_output(None),
-        PathBuf::from("src/schema.rs")
+        default_dir.join("src").join("schema.rs")
     );
 
     // The catalog snapshot carries no key of the document, so the codegen key
@@ -1589,7 +1589,7 @@ fn a_project_without_declarations_keeps_the_conventional_layout() {
         project.lock_path(None),
         dir.join("rurqe").join("schema.lock")
     );
-    assert_eq!(project.codegen_output(None), PathBuf::from("src/schema.rs"));
+    assert_eq!(project.codegen_output(None), dir.join("src").join("schema.rs"));
     assert_eq!(
         project
             .selection(None)

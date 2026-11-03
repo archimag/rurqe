@@ -157,10 +157,27 @@ impl Project {
         flag.unwrap_or_else(|| self.config.schema_lock_path(&self.directory))
     }
 
-    /// Resolves the generated schema module: the flag, then `[codegen].output`, then the generator default.
+    /// Resolves the generated schema module: the flag, then `[codegen].output`, then the generator
+    /// default beneath the project directory.
+    ///
+    /// The built-in default is the last tier of the cascade, so it resolves against
+    /// the directory holding the configuration file exactly like every declared path
+    /// does: `codegen` writes the module and the catalog snapshot into one project,
+    /// and `verify` reads them back from that same project whatever the working
+    /// directory of the invocation is.
     pub(super) fn codegen_output(&self, flag: Option<PathBuf>) -> PathBuf {
         self.named_codegen_output(flag)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_SCHEMA_OUTPUT))
+            .unwrap_or_else(|| self.conventional_codegen_output())
+    }
+
+    /// The generated module of the conventional layout, resolved against the project.
+    ///
+    /// The path is the built-in default of the generator, which carries no key of the
+    /// document and therefore has no directory of its own: joining it onto the
+    /// artifact directory keeps it a sibling of the catalog snapshot its drift gate
+    /// compares against, instead of following the working directory of the process.
+    fn conventional_codegen_output(&self) -> PathBuf {
+        self.directory.join(DEFAULT_SCHEMA_OUTPUT)
     }
 
     /// The generated module the invocation names: the flag, then `[codegen].output`.
@@ -191,7 +208,7 @@ impl Project {
             return read_schema_code(&path).map(Some);
         }
 
-        let default = PathBuf::from(DEFAULT_SCHEMA_OUTPUT);
+        let default = self.conventional_codegen_output();
         if !default.exists() {
             tracing::warn!(
                 schema_code = %default.display(),
