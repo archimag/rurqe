@@ -48,8 +48,7 @@ Given `only_active: bool` and `name: Option<&str>`, a handler builds the stateme
 {{#rustdoc_include ../examples/filtering.rs:dynamic}}
 ```
 
-With both branches taken the filter renders as `WHERE ("active" = $1)`; with neither, the statement carries no `WHERE` at all.
-With the active branch taken and the option absent, the filter renders as `WHERE ("active" = $1)`; with neither, the statement carries no `WHERE` at all.
+With the flag set and the search term present, both predicates land in the statement: `WHERE (("active" = $1) AND ("name" = $2))`, in the order they were added. With the flag clear and the option absent, the statement carries no `WHERE` at all — the snippet above takes the first branch only, so it renders `WHERE ("active" = $1)`.
 
 - `.where_(pred)`: adds the condition with `AND`.
 - `.where_opt(Option<pred>)`: adds it when the option is `Some`.
