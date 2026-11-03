@@ -259,8 +259,14 @@ pub(crate) fn run_cli_with_config(
             }
             let code = generate_schema_rs(&catalog, &options)
                 .map_err(|err| CliError::message(format!("failed to generate schema code: {err}")))?;
-            write_file(&output, &code)?;
+            // The snapshot is published before the generated module, because the
+            // order decides which partial state a failure leaves behind: a module
+            // still embedding the previous `SCHEMA_HASH` beside the current snapshot
+            // surfaces as the actionable mismatch whose hint names `cargo db-codegen`,
+            // while the opposite order would leave a stale snapshot that the next
+            // `verify` reports as structural drift of the database.
             write_file(&lock_path, &catalog.to_lock())?;
+            write_file(&output, &code)?;
 
             let mut report = CommandOutput::new();
             report.notice(notice);
