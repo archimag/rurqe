@@ -1,6 +1,8 @@
 use super::*;
 use crate::dml::{AssignColumn, Assignment, ColumnAssign, DeleteQuery, UpdateQuery};
+use crate::dml::{AssignmentScope, AssignmentSet};
 use crate::expr::{Expr, SqlVal};
+use crate::query::SelectQuery;
 use crate::schema::{AliasedCol, Column};
 use core::fmt::Write;
 
