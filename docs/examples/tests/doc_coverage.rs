@@ -7,11 +7,16 @@
 //! included by at least one chapter under `docs/`, so dead
 //! documentation cannot accumulate unnoticed.
 //!
-//! The direction of the inclusion matters as much as its target: a fragment is
-//! included into a `rust,no_run` fence, because that is the fence the book
-//! compiles and the one a reader meets as code. A directive quoted inside a
-//! `text` block documents the syntax instead of including anything, and the
-//! guard refuses it so the two notions cannot drift apart.
+//! The direction of the inclusion matters as much as its target, and the fence
+//! it sits in follows the class of the file it addresses. A fragment of a
+//! registered example target is included into a `rust,no_run` fence, because
+//! that is the fence the book compiles and the one a reader meets as code. A
+//! compile-failure fixture under `guards/` is included into a
+//! `rust,compile_fail` fence instead: the fragment exists to render a
+//! rejection, and the crate's doctest catalogue asserts that rejection. A
+//! directive quoted inside a `text` block documents the syntax instead of
+//! including anything, and the guard refuses it so the two notions cannot
+//! drift apart.
 //!
 //! The guard reads source text only and never compiles anything: compiling
 //! the targets is the job of `cargo check --workspace --all-targets` in the
@@ -31,24 +36,85 @@ use serde::Deserialize;
 /// The directive tag every chapter inclusion starts with.
 const INCLUDE_TAG: &str = "{{#rustdoc_include";
 
-/// The fence a chapter includes a fragment into.
+/// The fence a chapter includes a fragment of a registered example target into.
+const TARGET_FENCE: &str = "rust,no_run";
+
+/// The fence a chapter includes a guard fixture into.
 ///
-/// The tag is matched whole, because the other Rust fences carry blocks the
-/// book never substitutes: `rust,compile_fail` demonstrates a rejection and
-/// `rust,ignore` is reserved for an illustrative sketch, so neither of them
-/// can hold an inclusion.
-const INCLUSION_FENCE: &str = "rust,no_run";
+/// A fixture is a compile-failure demonstration: the block is written to be
+/// rejected, so it is tagged exactly like the rejection the crate's doctest
+/// catalogue asserts.
+const FIXTURE_FENCE: &str = "rust,compile_fail";
+
+/// Directory of the compile-failure fixtures a chapter quotes.
+const GUARDS_DIR: &str = "guards";
+
+/// Module of the crate that lists every guard fixture as a doctest.
+///
+/// `cargo test --doc` compiles the code blocks a module carries, so a fixture
+/// becomes an asserted rejection only once this module bakes it into a doc
+/// attribute with `include_str!`. The guard reads the module's source text and
+/// compares the fixture paths it names with the files on disk, in both
+/// directions.
+const CATALOGUE_MODULE: &str = "src/guards.rs";
+
+/// Build script of the package, which is compiled infrastructure rather than a
+/// documentation target.
+const BUILD_SCRIPT: &str = "build.rs";
 
 /// One `{{#rustdoc_include}}` directive of a chapter.
 struct Directive {
     /// The chapter file carrying the directive.
     chapter: String,
-    /// The example file the directive addresses.
-    file: String,
+    /// Path of the addressed file relative to the package root, `/`-separated.
+    ///
+    /// The directive resolves the path the chapter names rather than a file
+    /// stem some later check reinterprets: an include addresses the registered
+    /// `path` of an example target, or a fixture under `guards/`, and both
+    /// classes are resolved against this one field.
+    path: String,
     /// The anchor region the directive names, empty when it names none.
     anchor: String,
     /// The info string of the fence the directive sits in, empty outside one.
     fence: String,
+}
+
+/// The class of file an include directive addresses.
+enum IncludeClass<'a> {
+    /// A registered `[[example]]` target, audited as the file Cargo compiles.
+    Target(&'a ExampleTarget),
+    /// A compile-failure fixture under `guards/`, asserted by the doctest
+    /// catalogue.
+    Fixture,
+    /// A file of the examples crate that neither ships nor asserts anything.
+    Unregistered,
+}
+
+/// Whether `path` addresses a file under the guard fixture directory.
+///
+/// The directory segment is matched whole, so a `guards.rs` file at the
+/// package root stays a documentation target rather than a fixture.
+fn is_under_guards(path: &str) -> bool {
+    path.strip_prefix(GUARDS_DIR)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Classifies the package-relative `path` a directive addresses.
+///
+/// An example target is found by the name a chapter addresses it with, and the
+/// audit then reads the `path` the manifest registers for it, so the file that
+/// ships is the file that is checked. The identity of the name-derived path and
+/// the registered one is asserted on its own, so a divergence is a failing
+/// guard rather than an audited stub.
+fn classify_include<'a>(registered: &'a [ExampleTarget], path: &str) -> IncludeClass<'a> {
+    let name = path.strip_suffix(".rs").unwrap_or(path);
+    if let Some(target) = registered.iter().find(|target| target.name == name) {
+        return IncludeClass::Target(target);
+    }
+    if is_under_guards(path) {
+        return IncludeClass::Fixture;
+    }
+    IncludeClass::Unregistered
 }
 /// Root of the `rurqe-examples` package.
 fn package_root() -> PathBuf {
@@ -142,16 +208,18 @@ fn declared_anchors(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The example file an include path addresses, or `None` when the directive
-/// does not point into the `examples/` crate.
+/// The path an include directive addresses, relative to the package root.
 ///
-/// Chapters sit at different depths and the conventions document even shows
-/// a doubled-slash path, so the file is taken as the segment that follows the
-/// `examples` directory segment instead of being counted from the left.
-fn example_file_of(path: &str) -> Option<&str> {
+/// Chapters sit at different depths and the conventions document even shows a
+/// doubled-slash path, so the file is taken as the segments that follow the
+/// `examples` directory segment instead of being counted from the left. Every
+/// segment after that directory belongs to the package-relative path, so a
+/// fixture under `guards/` keeps the directory segment that classifies it.
+fn example_path_of(path: &str) -> Option<String> {
     let mut segments = path.split('/').filter(|segment| !segment.is_empty());
     segments.position(|segment| segment == "examples")?;
-    segments.next()
+    let rest: Vec<&str> = segments.collect();
+    (!rest.is_empty()).then(|| rest.join("/"))
 }
 
 /// Directory holding the book sources next to the examples crate.
@@ -236,7 +304,8 @@ fn relative_chapter_files(dir: &Path, book: &Path, chapters: &mut Vec<String>) {
         }
     }
 }
-/// Anchor regions the chapters include, keyed by the example file name.
+/// Anchor regions the chapters include, keyed by the package-relative path of
+/// the addressed file.
 ///
 /// The walk reads `docs/` alone: the conventions documents state the
 /// include syntax inside fenced samples, and a sample is not an inclusion.
@@ -244,7 +313,7 @@ fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
     let mut included: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for directive in example_directives() {
         included
-            .entry(directive.file)
+            .entry(directive.path)
             .or_default()
             .insert(directive.anchor);
     }
@@ -252,8 +321,8 @@ fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
 }
 
 /// Every include directive of the book that addresses the `examples/` crate,
-/// as the chapter that carries it, the example file name, and the anchor
-/// region it names.
+/// as the chapter that carries it, the package-relative path of the addressed
+/// file, and the anchor region it names.
 ///
 /// A directive that names no anchor region is collected with an empty anchor:
 /// mdbook substitutes the whole file when no region is named, and a whole
@@ -322,10 +391,10 @@ fn collect_file_directives(path: &Path, directives: &mut Vec<Directive>) {
                 Some((path_part, anchor)) => (path_part, anchor.trim()),
                 None => (directive, ""),
             };
-            if let Some(file) = example_file_of(path_part) {
+            if let Some(addressed) = example_path_of(path_part) {
                 directives.push(Directive {
                     chapter: path.display().to_string(),
-                    file: file.to_owned(),
+                    path: addressed,
                     anchor: anchor.to_owned(),
                     fence: fence.clone(),
                 });
@@ -430,13 +499,21 @@ fn example_targets_match_the_files_on_disk() {
             target.name,
             target.path
         );
-        let from_name = root.join(format!("{}.rs", target.name));
-        assert!(
-            from_name.is_file(),
-            "example target `{}` is registered in examples/Cargo.toml, but `{}.rs` does not \
-             exist at the package root",
-            target.name,
-            target.name
+
+        // The chapters address a target by its name and this guard audits the
+        // file the manifest registers. The two are one file only while the
+        // registered path is the name-derived one, so the identity is asserted
+        // here instead of assumed by every later audit: an entry whose `path`
+        // points elsewhere would make Cargo compile one file while the guard
+        // reads another.
+        let from_name = format!("{}.rs", target.name);
+        assert_eq!(
+            target.path, from_name,
+            "example target `{}` is registered in examples/Cargo.toml with `path = {:?}`, but \
+             nothing else knows that file: a chapter includes the name-derived `{}` and the \
+             anchor audits address it too, so the registered path has to be the name-derived \
+             file",
+            target.name, target.path, from_name
         );
     }
 
@@ -451,15 +528,19 @@ fn example_targets_match_the_files_on_disk() {
         })
         .filter(|path| path.is_file())
         .filter_map(|path| {
-            let name = path.file_name()?.to_str()?;
-            name.ends_with(".rs").then(|| name.to_owned())
+            let name = path.file_name()?.to_str()?.to_owned();
+            // `build.rs` is the build script Cargo compiles to run the
+            // package's build-time step; it is compiled build infrastructure,
+            // never a file a chapter includes, so it carries no `[[example]]`
+            // target and the enumeration leaves it out.
+            (name.ends_with(".rs") && name != BUILD_SCRIPT).then_some(name)
         })
         .collect();
     on_disk.sort();
 
     let mut registered_files: Vec<String> = registered
         .iter()
-        .map(|target| format!("{}.rs", target.name))
+        .map(|target| target.path.clone())
         .collect();
     registered_files.sort();
 
@@ -467,68 +548,87 @@ fn example_targets_match_the_files_on_disk() {
         on_disk, registered_files,
         "every Rust file at the package root must be a registered [[example]] target: an \
          unregistered file never reaches `cargo check --workspace --all-targets` and is dead \
-         documentation"
+         documentation. `{}` is exempt as compiled build infrastructure, and a registered target \
+         is compared by its manifest `path`, the file Cargo actually compiles",
+        BUILD_SCRIPT
     );
 }
 
 #[test]
 fn every_anchor_is_included_by_a_chapter() {
+    let root = package_root();
     let included = included_anchors();
 
     for target in registered_examples() {
-        let file = format!("{}.rs", target.name);
-        let path = package_root().join(&file);
-        let anchors = declared_anchors(&path);
+        let anchors = declared_anchors(&root.join(&target.path));
         assert!(
             !anchors.is_empty(),
-            "example `{}` declares no `// ANCHOR: ...` region, so no chapter can include \
-             a fragment of it",
-            target.name
+            "example `{}` (examples/{}) declares no `// ANCHOR: ...` region, so no chapter can \
+             include a fragment of it",
+            target.name,
+            target.path
         );
         for anchor in anchors {
             let is_included = included
-                .get(&file)
+                .get(&target.path)
                 .is_some_and(|used| used.contains(&anchor));
             assert!(
                 is_included,
-                "anchor `{anchor}` of examples/{file} is included by no chapter under \
-                 docs/: include the fragment from the chapter that documents it, or \
-                 delete the anchor together with its fragment"
+                "anchor `{anchor}` of examples/{} is included by no chapter under docs/: include \
+                 the fragment from the chapter that documents it, or delete the anchor together \
+                 with its fragment",
+                target.path
             );
         }
     }
 }
 
 #[test]
-fn every_include_names_a_registered_example_and_a_declared_anchor() {
-    let registered = registered_example_names();
+fn every_include_addresses_a_known_file_and_a_declared_anchor() {
+    let root = package_root();
+    let registered = registered_examples();
     let mut checked = 0usize;
 
-    for Directive { chapter, file, anchor, .. } in example_directives() {
+    for Directive { chapter, path, anchor, .. } in example_directives() {
         assert!(
             !anchor.is_empty(),
-            "chapter {chapter} includes the whole example file `{file}` without naming \
-             an `// ANCHOR: ...` region: mdbook substitutes the entire file, whose \
-             crate-level imports and `#[tokio::main]` entry point do not compile as \
-             a doctest; include an anchored fragment of the file instead"
+            "chapter {chapter} includes the whole file `examples/{path}` without naming an \
+             `// ANCHOR: ...` region: mdbook substitutes the entire file, whose crate-level \
+             imports and `#[tokio::main]` entry point do not compile as a doctest; include an \
+             anchored fragment of the file instead"
         );
-        let name = file.strip_suffix(".rs").unwrap_or_else(|| {
-            panic!(
-                "a chapter includes `{file}:{anchor}`, but `{file}` is not a Rust example \
-                 file of the examples crate"
-            )
-        });
         assert!(
-            registered.iter().any(|target| target == name),
-            "a chapter includes `{file}:{anchor}`, but `{name}` is not a registered \
-             [[example]] target in examples/Cargo.toml"
+            path.ends_with(".rs"),
+            "chapter {chapter} includes `examples/{path}:{anchor}`, but `{path}` is not a Rust \
+             file of the examples crate"
         );
 
-        let path = package_root().join(&file);
-        let anchors = declared_anchors(&path);
+        let addressed = match classify_include(&registered, &path) {
+            IncludeClass::Target(target) => target.path.clone(),
+            IncludeClass::Fixture => {
+                let fixture = root.join(&path);
+                assert!(
+                    fixture.is_file(),
+                    "a chapter includes `examples/{path}:{anchor}`, but the guard fixture does \
+                     not exist: a compile-failure demonstration is quoted from a file of the \
+                     crate that `cargo test --doc` asserts, never referenced into the void"
+                );
+                path.clone()
+            }
+            IncludeClass::Unregistered => panic!(
+                "a chapter includes `examples/{path}:{anchor}`, but no `[[example]]` target of \
+                 examples/Cargo.toml registers that path and it is not a guard fixture under \
+                 `{GUARDS_DIR}/`: the book quotes only code the crate compiles, so the file is \
+                 either registered with a target whose `path` names it or moved under \
+                 `{GUARDS_DIR}/`. The registered targets are {:?}",
+                registered_example_names()
+            ),
+        };
+
+        let anchors = declared_anchors(&root.join(&addressed));
         assert!(
             anchors.iter().any(|declared| declared == &anchor),
-            "a chapter includes `{file}:{anchor}`, but examples/{file} declares no \
+            "a chapter includes `examples/{addressed}:{anchor}`, but that file declares no \
              `// ANCHOR: {anchor}` region: fix the include directive or rename the anchor \
              together with its fragment"
         );
@@ -538,17 +638,22 @@ fn every_include_names_a_registered_example_and_a_declared_anchor() {
 
     assert!(
         checked > 0,
-        "no chapter under docs/ includes a fragment of the examples crate, so the \
-         book documents no compiled code at all"
+        "no chapter under docs/ includes a fragment of the examples crate, so the book documents \
+         no compiled code at all"
     );
 }
 
 #[test]
-fn every_include_sits_inside_a_rust_no_run_fence() {
+fn every_include_sits_inside_the_fence_of_its_file_class() {
+    let registered = registered_examples();
     let mut misplaced = Vec::new();
     for directive in example_directives() {
-        let Directive { chapter, file, anchor, fence } = directive;
-        if fence == INCLUSION_FENCE {
+        let Directive { chapter, path, anchor, fence } = directive;
+        let expected = match classify_include(&registered, &path) {
+            IncludeClass::Fixture => FIXTURE_FENCE,
+            IncludeClass::Target(_) | IncludeClass::Unregistered => TARGET_FENCE,
+        };
+        if fence == expected {
             continue;
         }
         let placement = if fence.is_empty() {
@@ -556,15 +661,20 @@ fn every_include_sits_inside_a_rust_no_run_fence() {
         } else {
             format!("a `{fence}` fence")
         };
-        misplaced.push(format!("{chapter}: includes {file}:{anchor} inside {placement}"));
+        misplaced.push(format!(
+            "{chapter}: includes examples/{path}:{anchor} inside {placement}, \
+             expected `{expected}`"
+        ));
     }
     assert!(
         misplaced.is_empty(),
-        "include directives found outside a `{INCLUSION_FENCE}` fence:\n{misplaced:#?}\nA \
-         fragment is included into the fence the book compiles, so the block around the \
-         directive has to be `{INCLUSION_FENCE}`; a `text`, `sql`, `toml`, or `bash` fence \
-         documents the directive instead of performing it, and `rust,compile_fail` or \
-         `rust,ignore` carries a block that the book never substitutes"
+        "include directives found outside the fence their file class requires:\n{misplaced:#?}\n\
+         A fragment of a registered example target is included into `{TARGET_FENCE}`, because \
+         that is the fence the book compiles and the one a reader meets as code. A guard fixture \
+         of `{GUARDS_DIR}/` is included into `{FIXTURE_FENCE}`, because the block is the \
+         rejection the crate's doctest catalogue asserts. A `text`, `sql`, `toml`, or `bash` \
+         fence documents the directive instead of performing it, and `rust,ignore` carries a \
+         sketch the book never substitutes"
     );
 }
 
@@ -660,13 +770,15 @@ fn check_anchor_pairing(path: &Path) -> Vec<AnchorViolation> {
 
 #[test]
 fn every_anchor_is_properly_paired_and_closed() {
+    let root = package_root();
     let mut violations = Vec::new();
     for target in registered_examples() {
-        let file = format!("{}.rs", target.name);
-        let path = package_root().join(&file);
-        violations.extend(check_anchor_pairing(&path));
+        violations.extend(check_anchor_pairing(&root.join(&target.path)));
     }
-    let lib_path = package_root().join("src").join("lib.rs");
+    for fixture in guard_fixtures() {
+        violations.extend(check_anchor_pairing(&root.join(&fixture)));
+    }
+    let lib_path = root.join("src").join("lib.rs");
     if lib_path.is_file() {
         violations.extend(check_anchor_pairing(&lib_path));
     }
@@ -676,7 +788,7 @@ fn every_anchor_is_properly_paired_and_closed() {
         .collect();
     assert!(
         violations.is_empty(),
-        "anchor pairing violations found in example files:\n{rendered:#?}\nEvery \
+        "anchor pairing violations found in example and fixture files:\n{rendered:#?}\nEvery \
          `// ANCHOR: <name>` must have a unique name and be properly closed with a matching \
          `// ANCHOR_END: <name>`"
     );
@@ -912,4 +1024,130 @@ fn every_chapter_is_reachable_from_the_table_of_contents() {
          table of contents does not reach is not part of the book, so it is either listed or \
          deleted together with the fragments it documents"
     );
+}
+
+/// Guard fixture files under `guards/`, as package-relative paths.
+///
+/// The walk descends into subdirectories, so a fixture may be grouped by the
+/// rule it demonstrates, and it yields nothing while the directory does not
+/// exist: every fixture-side rule below holds vacuously until the first
+/// fixture lands.
+fn guard_fixtures() -> Vec<String> {
+    let mut fixtures = Vec::new();
+    let guards = package_root().join(GUARDS_DIR);
+    if guards.is_dir() {
+        collect_fixture_files(&guards, GUARDS_DIR, &mut fixtures);
+    }
+    fixtures.sort();
+    fixtures
+}
+
+fn collect_fixture_files(dir: &Path, prefix: &str, fixtures: &mut Vec<String>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("guard fixture directory {dir:?} is not readable: {error}"));
+    for entry in entries {
+        let path = entry
+            .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
+            .path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let relative = format!("{prefix}/{name}");
+        if path.is_dir() {
+            collect_fixture_files(&path, &relative, fixtures);
+        } else if name.ends_with(".rs") {
+            fixtures.push(relative);
+        }
+    }
+}
+
+/// Fixture paths the doctest catalogue lists, as package-relative paths.
+///
+/// The catalogue lists a fixture by naming its path inside a string literal —
+/// `#[doc = include_str!("../guards/<name>.rs")]` is the shape that bakes the
+/// file's `compile_fail` blocks into `cargo test --doc`. The extraction reads
+/// every string literal of the module and keeps the ones addressing a file
+/// under `guards/`, so the listing is compared as a set of paths rather than
+/// as the spelling of the item that carries it.
+fn catalogue_entries(text: &str) -> BTreeSet<String> {
+    let mut listed = BTreeSet::new();
+    let mut rest = text;
+    while let Some(opening) = rest.find('"') {
+        rest = &rest[opening + 1..];
+        let Some(closing) = rest.find('"') else {
+            break;
+        };
+        if let Some(fixture) = catalogue_path(&rest[..closing]) {
+            listed.insert(fixture);
+        }
+        rest = &rest[closing + 1..];
+    }
+    listed
+}
+
+/// The package-relative fixture path a catalogue literal spells, or `None` when
+/// the literal addresses no fixture.
+///
+/// The catalogue module sits in `src/`, so its `include_str!` path climbs one
+/// directory before it enters `guards/`. The leading `../` is dropped and the
+/// remaining path is accepted only when it addresses the fixture directory
+/// itself, so a literal naming anything else is not a listing.
+fn catalogue_path(literal: &str) -> Option<String> {
+    let trimmed = literal.trim();
+    let relative = trimmed.strip_prefix("../").unwrap_or(trimmed);
+    is_under_guards(relative).then(|| relative.to_owned())
+}
+
+#[test]
+fn every_fixture_anchor_is_included_by_a_chapter() {
+    let root = package_root();
+    let included = included_anchors();
+    for fixture in guard_fixtures() {
+        for anchor in declared_anchors(&root.join(&fixture)) {
+            let is_included = included
+                .get(&fixture)
+                .is_some_and(|used| used.contains(&anchor));
+            assert!(
+                is_included,
+                "anchor `{anchor}` of the guard fixture examples/{fixture} is included by no \
+                 chapter under docs/: quote the fragment from the chapter whose rule it \
+                 demonstrates, or delete the anchor together with the fragment"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_doctest_catalogue_lists_every_guard_fixture() {
+    let fixtures = guard_fixtures();
+    if fixtures.is_empty() {
+        return;
+    }
+    let catalogue = package_root().join(CATALOGUE_MODULE);
+    assert!(
+        catalogue.is_file(),
+        "the guard fixtures {fixtures:?} exist, but the doctest catalogue `{CATALOGUE_MODULE}` \
+         does not: `cargo test --doc` compiles the blocks a module carries, so a fixture that no \
+         catalogue lists demonstrates a rejection nothing asserts"
+    );
+    let text = fs::read_to_string(&catalogue).unwrap_or_else(|error| {
+        panic!("the doctest catalogue {catalogue:?} is not readable: {error}")
+    });
+    let listed = catalogue_entries(&text);
+    for fixture in &fixtures {
+        assert!(
+            listed.contains(fixture),
+            "the guard fixture examples/{fixture} is listed by no entry of the doctest catalogue \
+             `{CATALOGUE_MODULE}`: bake it into a doc attribute there, so `cargo test --doc` \
+             asserts the rejection it demonstrates"
+        );
+    }
+    for entry in &listed {
+        assert!(
+            fixtures.contains(entry),
+            "the doctest catalogue `{CATALOGUE_MODULE}` lists `examples/{entry}`, but no such \
+             file exists under `{GUARDS_DIR}/`: a listed fixture is a file the catalogue \
+             compiles, so a stale entry names a demonstration the crate no longer ships"
+        );
+    }
 }
