@@ -78,6 +78,63 @@ fn parses_the_cargo_rurqe_migrate_invocation() {
     );
 }
 
+/// A platform suffix on the executable name never hides the entrypoint it names.
+///
+/// Windows appends `.exe` to a produced binary, so `argv[0]` of a
+/// cargo-dispatched subcommand carries the suffix into the argument list. The
+/// executable is classified by its file stem, so each entrypoint keeps the
+/// default command it forces instead of degrading into a direct invocation
+/// that answers the help.
+#[test]
+fn a_platform_suffixed_executable_keeps_its_cargo_entrypoint() {
+    let migrate = ["cargo-db-migrate.exe".to_owned()];
+    assert_eq!(
+        parse_args(&migrate).expect("the suffixed entrypoint is answered"),
+        CliCommand::MigrateUp {
+            config: None,
+            database_url: None,
+            schema: None,
+        }
+    );
+
+    let codegen = ["cargo-db-codegen.exe".to_owned()];
+    assert_eq!(
+        parse_args(&codegen).expect("the suffixed entrypoint is answered"),
+        CliCommand::Codegen {
+            config: None,
+            database_url: None,
+            output: None,
+            lock_path: None,
+            domain_types: false,
+            schema: None,
+        }
+    );
+
+    let verify = ["cargo-db-verify.exe".to_owned()];
+    assert_eq!(
+        parse_args(&verify).expect("the suffixed entrypoint is answered"),
+        CliCommand::Verify {
+            config: None,
+            database_url: None,
+            schema_path: None,
+            lock_path: None,
+            schema: None,
+        }
+    );
+
+    // A cargo dispatch repeats the subcommand name after the executable it ran,
+    // and the suffix changes nothing about that token either.
+    let dispatched = ["cargo-db-migrate.exe".to_owned(), "db-migrate".to_owned()];
+    assert_eq!(
+        parse_args(&dispatched).expect("the suffixed entrypoint is answered"),
+        CliCommand::MigrateUp {
+            config: None,
+            database_url: None,
+            schema: None,
+        }
+    );
+}
+
 #[test]
 fn the_migrate_family_rejects_path_options() {
     // The tail and the boundary marker are resolved from the project

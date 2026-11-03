@@ -193,7 +193,10 @@ enum Entrypoint {
 }
 
 impl Entrypoint {
-    /// Classifies the executable name extracted from `argv[0]`.
+    /// Classifies the file stem of the executable extracted from `argv[0]`.
+    ///
+    /// The stem carries no extension, so the `.exe` suffix a Windows binary
+    /// arrives with never hides the subcommand the invocation names.
     fn from_program(program: &str) -> Self {
         match program {
             "cargo-db-migrate" => Entrypoint::CargoDbMigrate,
@@ -383,9 +386,15 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         return Ok(CliCommand::Help);
     };
 
+    // The executable is classified by its file stem, because a produced binary
+    // carries a platform suffix: on Windows `argv[0]` of a cargo-dispatched
+    // subcommand ends in `.exe`, and an exact match against the bare name would
+    // degrade every such invocation into a direct one. The stem is lexical and
+    // identical everywhere, so one argument list classifies alike on every
+    // platform.
     let program = Path::new(program)
-        .file_name()
-        .and_then(|n| n.to_str())
+        .file_stem()
+        .and_then(|name| name.to_str())
         .unwrap_or("");
 
     let entrypoint = Entrypoint::from_program(program);
