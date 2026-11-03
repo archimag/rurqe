@@ -45,7 +45,7 @@ use super::history::{
     backend_error, delete_entry_sql, insert_entry_sql, read_history_rows, release_savepoint_sql,
     rollback_savepoint_sql, update_checksum_sql, SQLITE_STEP_SAVEPOINT,
 };
-use super::{left_open_message, DEFAULT_SQLITE_LOCK_TIMEOUT};
+use super::{error_message, left_open_message, DEFAULT_SQLITE_LOCK_TIMEOUT};
 
 /// The write lock a run holds on the client connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +85,13 @@ pub struct SqliteConnectionMigrationBackend<'c, B: BorrowMut<::rusqlite::Connect
     /// following `BEGIN` with a transaction-state diagnostic instead of the failure
     /// that caused it, so the adapter is poisoned with the composed cause and every
     /// later step reports it.
+    ///
+    /// The release of the run lock poisons the adapter the same way: a `COMMIT`
+    /// the driver refuses leaves the run's `BEGIN IMMEDIATE` open on the connection
+    /// the caller keeps, so the failure is recorded here while the lock state stays
+    /// `RunLock::Owned` for the `Drop` retry. A successful release — the retry
+    /// included — clears the record together with the lock state, because the
+    /// session state it described no longer holds.
     poisoned: Option<String>,
 }
 
@@ -132,17 +139,18 @@ impl<'c, B: BorrowMut<::rusqlite::Connection>> SqliteConnectionMigrationBackend<
         introspect_sqlite(self.connection.connection()).map_err(backend_error)
     }
 
-    /// Rejects a step on a connection a failed rollback left unusable.
+    /// Rejects a step on a connection a failure left unusable.
     ///
     /// Nothing can be recovered from inside the adapter: the connection is still
-    /// inside the abandoned transaction the script opened, so SQLite answers every
-    /// `BEGIN IMMEDIATE` with its transaction-state diagnostic. Reporting the
-    /// composed cause of the poisoning instead keeps the failure of the script — and
-    /// of the rollback that could not undo it — in front of the operator.
+    /// inside the abandoned transaction that failure left open, so SQLite answers
+    /// every `BEGIN IMMEDIATE` with its transaction-state diagnostic. Reporting the
+    /// recorded cause instead keeps the failure — of the script, of its rollback, or
+    /// of the release that could not commit the run — in front of the operator.
     fn reject_poisoned(&self) -> Result<(), Error> {
         match &self.poisoned {
             Some(cause) => Err(Error::Backend(format!(
-                "the SQLite migration connection is unusable after a failed rollback: {cause}"
+                "the SQLite migration connection is unusable after a failure this adapter \
+                 could not recover from: {cause}"
             ))),
             None => Ok(()),
         }
@@ -319,23 +327,50 @@ impl<B: BorrowMut<::rusqlite::Connection>> MigrationBackend
     }
 
     fn release_lock(&mut self) -> Result<(), Error> {
-        let lock = core::mem::replace(&mut self.run_lock, RunLock::None);
-
         // A run that holds nothing — or nests inside a transaction of the caller —
         // has nothing to commit: the caller owns the outcome of that transaction.
-        if lock != RunLock::Owned {
+        if self.run_lock != RunLock::Owned {
             return Ok(());
         }
 
-        let connection = self.connection.connection_mut();
-        // A non-transactional script ends the lock transaction and a failed re-take
-        // leaves the connection in autocommit, so a connection holding no
-        // transaction has nothing to commit — the driver would reject the statement
-        // with `cannot commit - no transaction is active`.
-        if connection.is_autocommit() {
-            return Ok(());
+        let committed = {
+            let connection = self.connection.connection_mut();
+            // A non-transactional script ends the lock transaction and a failed
+            // re-take leaves the connection in autocommit, so a connection holding
+            // no transaction has nothing to commit — the driver would reject the
+            // statement with `cannot commit - no transaction is active`.
+            if connection.is_autocommit() {
+                Ok(())
+            } else {
+                connection.execute_batch("COMMIT").map_err(backend_error)
+            }
+        };
+
+        match committed {
+            Ok(()) => {
+                // The lock state is cleared only once the releasing `COMMIT` has
+                // succeeded, so a failed commit keeps `RunLock::Owned` for `Drop`
+                // to retry. The session state the poison record described no longer
+                // holds, so the record is cleared together with the lock state.
+                self.run_lock = RunLock::None;
+                self.poisoned = None;
+                Ok(())
+            }
+            Err(error) => {
+                // The driver refused the `COMMIT` while the connection still holds
+                // the `BEGIN IMMEDIATE` that serialises the run, so the retained
+                // lock is recorded instead of being handed back to the caller as a
+                // session in an unproven state.
+                let message = format!(
+                    "could not commit the SQLite migration lock: {}; the connection still holds \
+                     the open `BEGIN IMMEDIATE` that serialises the run, so that transaction has \
+                     to be committed or rolled back before the connection is reused",
+                    error_message(error)
+                );
+                self.poisoned = Some(message.clone());
+                Err(Error::Backend(message))
+            }
         }
-        connection.execute_batch("COMMIT").map_err(backend_error)
     }
 }
 
@@ -343,7 +378,9 @@ impl<B: BorrowMut<::rusqlite::Connection>> Drop for SqliteConnectionMigrationBac
     fn drop(&mut self) {
         // The connection outlives the adapter, so a lock the run still holds is
         // committed here instead of being left open on the connection the caller
-        // keeps.
+        // keeps. A failed release keeps `RunLock::Owned` for exactly this retry, so
+        // a commit the driver refused once — because a reader still held the file —
+        // is attempted again before the caller sees the connection.
         if self.run_lock != RunLock::Owned {
             return;
         }

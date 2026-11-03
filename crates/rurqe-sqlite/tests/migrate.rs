@@ -761,3 +761,99 @@ fn a_cleaned_target_applies_an_edited_migration_again() {
     assert_eq!(history[0].script, "V1__users.sql");
     assert_eq!(history[0].checksum, Some(edited[0].checksum));
 }
+
+/// A blocked release commit keeps the lock state and reports the retained transaction.
+#[test]
+fn a_blocked_release_commit_poisons_the_adapter_and_is_retried_after_the_reader_leaves() {
+    let path = scratch_database("release");
+
+    let mut connection = SqliteConnection::new(
+        rusqlite::Connection::open(&path).expect("the writer connection opens"),
+    );
+    connection
+        .connection()
+        .execute_batch("CREATE TABLE events (id INTEGER NOT NULL);")
+        .expect("the fixture table is created");
+
+    // A reading transaction holds the shared lock for as long as it stays open, so
+    // the writer takes the run lock and applies its work, but cannot commit the
+    // run until the reader ends.
+    let reader = rusqlite::Connection::open(&path).expect("the reader connection opens");
+    reader
+        .execute_batch("BEGIN; SELECT count(*) FROM events;")
+        .expect("the reader holds its read transaction");
+
+    let mut backend =
+        SqliteConnectionMigrationBackend::new(&mut connection).with_lock_timeout(Duration::ZERO);
+    backend.acquire_lock().expect("the write lock is taken");
+
+    {
+        let mut step = backend.begin().expect("a step opens inside the lock");
+        step.execute("CREATE TABLE users (id INTEGER NOT NULL);")
+            .expect("the run records its work");
+        step.commit().expect("the step is released");
+    }
+
+    let error = backend
+        .release_lock()
+        .expect_err("the commit is blocked by the reading transaction");
+    let message = match &error {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(
+        message.contains("could not commit the SQLite migration lock"),
+        "{message}"
+    );
+    assert!(
+        message.contains("BEGIN IMMEDIATE"),
+        "the retained lock transaction is named: {message}"
+    );
+    assert!(
+        backend.is_poisoned(),
+        "a failed release commit poisons the adapter"
+    );
+
+    let refused = match backend.begin() {
+        Ok(_) => panic!("a poisoned backend opens no step"),
+        Err(error) => error,
+    };
+    let message = match &refused {
+        Error::Backend(message) => message.clone(),
+        other => panic!("unexpected error: {other:?}"),
+    };
+    assert!(
+        message.contains("unusable"),
+        "the refusal reports the recorded cause: {message}"
+    );
+
+    reader
+        .execute_batch("COMMIT")
+        .expect("the reader leaves its transaction");
+
+    backend
+        .release_lock()
+        .expect("the retry commits the run once the reader is gone");
+    assert!(
+        !backend.is_poisoned(),
+        "a successful release clears the poison record"
+    );
+
+    drop(backend);
+    assert!(
+        connection.connection().is_autocommit(),
+        "the caller's connection is back in autocommit mode"
+    );
+
+    let created: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name = 'users'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("the catalog answers");
+    assert_eq!(created, 1, "the run's work is durable");
+
+    drop(reader);
+    let _ = std::fs::remove_file(&path);
+}
