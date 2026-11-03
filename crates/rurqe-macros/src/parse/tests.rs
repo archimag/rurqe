@@ -638,6 +638,50 @@ fn field_removing_attributes_are_rejected_inside_a_projection_list() {
 }
 
 #[test]
+fn a_namespaced_attribute_ending_in_cfg_is_kept_as_an_ordinary_attribute() {
+    let item: ProjectionItem = parse_str("#[mytool::cfg(feature = \"extra\")] users::ID")
+        .expect("a namespaced attribute removes no field");
+
+    assert_eq!(item.attrs.len(), 1);
+    assert_eq!(item.attrs[0].path().segments.len(), 2);
+    assert_eq!(item.field_ident().expect("named"), "id");
+
+    let item: ProjectionItem =
+        parse_str("#[mytool::cfg_attr(feature = \"extra\", doc = \"identifier\")] users::NAME")
+            .expect("a namespaced attribute removes no field");
+
+    assert_eq!(item.attrs.len(), 1);
+    assert_eq!(item.field_ident().expect("named"), "name");
+}
+
+#[test]
+fn a_namespaced_attribute_is_kept_inside_a_projection_list() {
+    let list: ProjectionList =
+        parse_str("users::ID, #[mytool::cfg(feature = \"extra\")] users::EMAIL")
+            .expect("a namespaced attribute removes no field");
+
+    assert_eq!(list.len(), 2);
+    assert_eq!(list.items[1].attrs.len(), 1);
+    assert_eq!(list.items[1].field_ident().expect("named"), "email");
+}
+
+#[test]
+fn the_raw_spelling_of_a_built_in_attribute_is_still_a_field_removal() {
+    for source in [
+        "#[r#cfg(feature = \"extra\")] users::ID",
+        "#[r#cfg_attr(feature = \"extra\", doc = \"identifier\")] users::NAME",
+    ] {
+        let error = parse_str::<ProjectionItem>(source)
+            .expect_err("the raw spelling names the same built-in attribute");
+
+        assert!(
+            error.to_string().contains("cannot be written on a projection"),
+            "unexpected message for `{source}`: {error}"
+        );
+    }
+}
+
+#[test]
 fn a_bare_marker_spelling_reports_the_turbofish_and_the_alias_remedy() {
     for source in [
         "Nullable<UserId>",

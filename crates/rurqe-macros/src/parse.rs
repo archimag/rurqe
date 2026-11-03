@@ -195,9 +195,21 @@ impl Parse for ProjectionItem {
 /// it, so the emitted code would stop compiling inside the expansion on the
 /// configuration that removed the field. The attribute is rejected here
 /// instead, where the offending projection and its remedy can be named.
+///
+/// The guard recognises the built-in attribute by its whole path: `cfg` and
+/// `cfg_attr` are addressed by a path of exactly one segment, while a
+/// namespaced attribute whose final segment reads the same (`#[mytool::cfg]`)
+/// names an attribute of that tool. Such an attribute removes no field, so it
+/// stays a plain attribute of the projection instead of being reported with the
+/// remedy of an attribute the author never wrote.
 fn reject_field_removing_attributes(attrs: &[Attribute]) -> syn::Result<()> {
     for attr in attrs {
-        let Some(segment) = attr.path().segments.last() else {
+        let path = attr.path();
+        if path.leading_colon.is_some() || path.segments.len() != 1 {
+            continue;
+        }
+
+        let Some(segment) = path.segments.first() else {
             continue;
         };
         let label = segment.ident.to_string();
