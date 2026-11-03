@@ -47,7 +47,7 @@ pub(crate) fn cleanup_stage(
         // the box before the admin session borrows it mutably.
         Connection::Postgres(client) => *client,
         Connection::Sqlite(_) => {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "`{}` does not address a PostgreSQL database",
                 redact_database_url(scratch_url)
             )))
@@ -103,7 +103,7 @@ pub(crate) fn cleanup_scratch_catalog<S: ScratchAdminSession + ?Sized>(
         for database in &candidates {
             message.push_str(&format!("\n  - {database}"));
         }
-        return Err(CliError(message));
+        return Err(CliError::message(message));
     }
 
     let dropped = drop_stale_scratch_databases(session, &candidates, scratch_url);

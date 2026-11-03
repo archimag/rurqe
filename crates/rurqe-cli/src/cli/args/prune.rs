@@ -28,13 +28,13 @@ pub(super) fn parse_prune(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 idx += 1;
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for prune")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for prune")).into());
             }
         }
     }
 
     let before = before
-        .ok_or_else(|| CliError("missing required `--before` argument for prune".to_owned()))?;
+        .ok_or_else(|| CliError::message("missing required `--before` argument for prune".to_owned()))?;
 
     Ok(CliCommand::Prune {
         config,

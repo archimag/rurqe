@@ -11,7 +11,7 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::stage::DeclarativeStage;
 
 use crate::cli::commands::{cli_error, sweep_stale_temporaries, STALE_TEMPORARY_AGE};
-use crate::cli::{redact_database_url, CliError, CommandOutput};
+use crate::cli::{redact_database_url, CliCause, CliError, CommandOutput};
 use crate::config::SchemaSelection;
 use crate::loader::load_migrations_from_dir;
 use crate::stage::GoldenEquation;
@@ -108,7 +108,7 @@ pub(crate) fn verify_stage(
     }
     let report = equation
         .verify(scratch_url)
-        .map_err(cli_error)
+        .map_err(|error| CliError::with_cause(CliCause::Stage(error)))
         .map_err(fail)?;
 
     // The notices travel in the report of the command, so a selection that

@@ -7,11 +7,13 @@
 //! tokens into typed [`CliCommand`] values, `redact` masks the credentials a
 //! connection string carries, `connection` owns the database connection
 //! lifecycle, and `commands` implements the behaviour of every CLI command. This
-//! facade keeps only the command dispatch in [`run_cli`].
+//! facade keeps only the command dispatch in [`run_cli`], while the `error`
+//! module owns the failure contract every command reports through.
 
 mod args;
 mod commands;
 mod connection;
+pub mod error;
 mod redact;
 mod report;
 
@@ -21,8 +23,9 @@ use std::time::Duration;
 #[cfg(test)]
 mod tests;
 
-pub use args::{parse_args, CliCommand, CliError};
+pub use args::{parse_args, CliCommand};
 pub(crate) use args::{resolve_cleanup_url, resolve_equation_url};
+pub use error::{CliCause, CliError};
 pub(crate) use commands::best_effort;
 pub(crate) use connection::{connect, Connection};
 pub use redact::redact_database_url;
@@ -247,7 +250,7 @@ pub(crate) fn run_cli_with_config(
                 options.domain_types = true;
             }
             let code = generate_schema_rs(&catalog, &options)
-                .map_err(|err| CliError(format!("failed to generate schema code: {err}")))?;
+                .map_err(|err| CliError::message(format!("failed to generate schema code: {err}")))?;
             write_file(&output, &code)?;
             write_file(&lock_path, &catalog.to_lock())?;
 
@@ -273,7 +276,7 @@ pub(crate) fn run_cli_with_config(
             let lock_path = project.lock_path(lock_path);
             let url = resolve_database_url(database_url)?;
             let expected_lock = std::fs::read_to_string(&lock_path).map_err(|e| {
-                CliError(format!(
+                CliError::message(format!(
                     "failed to read schema lock `{}`: {e}",
                     lock_path.display()
                 ))
@@ -281,7 +284,7 @@ pub(crate) fn run_cli_with_config(
             let schema_code = project.resolve_schema_code(schema_path)?;
             let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
             verify_drift(&catalog, &expected_lock, schema_code.as_deref())
-                .map_err(|err| CliError(err.to_string()))?;
+                .map_err(|err| CliError::with_cause(CliCause::Drift(err)))?;
 
             // A selection that describes nothing compares nothing against
             // nothing, so the pass is reported together with the notice that

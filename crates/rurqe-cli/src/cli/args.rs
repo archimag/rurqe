@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use rurqe_migrate::version::MigrationVersion;
 
+use super::error::CliError;
+
 mod baseline;
 mod codegen;
 mod migrate;
@@ -137,25 +139,13 @@ impl CliCommand {
     }
 }
 
-/// Errors occurring during CLI argument parsing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CliError(pub String);
-
-impl std::fmt::Display for CliError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for CliError {}
-
 /// Why a per-action parsing walk stopped before producing a command.
 ///
 /// The universal flags are answered in every position they can occupy, including
 /// the position of a value, so a walk reports that answer as an interruption
 /// instead of consuming the flag as data: whoever started the walk collapses the
 /// interruption into the result the caller sees.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum Interrupt {
     /// The walk reached a universal flag and answers it instead of its action.
     ///
@@ -270,7 +260,7 @@ pub(crate) fn resolve_equation_url(supplied: Option<String>) -> Result<String, C
     supplied
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
-            CliError(
+            CliError::message(
                 "no scratch database URL provided: pass `--scratch-url <url>` (or \
                  `--database-url <url>`); the golden equation needs a disposable target such as \
                  `:memory:`, an empty SQLite file, or a PostgreSQL URL, and never reads \
@@ -283,7 +273,7 @@ pub(crate) fn resolve_equation_url(supplied: Option<String>) -> Result<String, C
 /// Resolves the server `stage cleanup` sweeps the abandoned scratch databases on.
 pub(crate) fn resolve_cleanup_url(supplied: Option<String>) -> Result<String, CliError> {
     scratch_url(supplied).ok_or_else(|| {
-        CliError(
+        CliError::message(
             "no scratch database URL provided: pass `--scratch-url <url>` (or \
              `--database-url <url>`, or set the DATABASE_URL environment variable); the sweep \
              names the PostgreSQL server that keeps the scratch databases"
@@ -314,7 +304,7 @@ fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a
     let value = tokens
         .get(*idx + 1)
         .copied()
-        .ok_or_else(|| CliError(format!("option `{flag}` requires a value")))?;
+        .ok_or_else(|| CliError::message(format!("option `{flag}` requires a value")))?;
 
     // `--version` is deliberately not answered here: `baseline`, `stage init`,
     // and `stage commit` take it as their own argument, so a bare `--version`
@@ -325,7 +315,7 @@ fn take_value<'a>(tokens: &[&'a str], idx: &mut usize, flag: &str) -> Result<&'a
     }
 
     if value.starts_with("--") {
-        return Err(CliError(format!(
+        return Err(CliError::message(format!(
             "option `{flag}` requires a value, but `{value}` is another option"
         ))
         .into());
@@ -353,7 +343,7 @@ fn take_schema(tokens: &[&str], idx: &mut usize, flag: &str) -> Result<String, I
     let name = value.trim();
 
     if name.is_empty() {
-        return Err(CliError(format!("option `{flag}` requires a database schema name")).into());
+        return Err(CliError::message(format!("option `{flag}` requires a database schema name")).into());
     }
 
     Ok(name.to_owned())
@@ -455,7 +445,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         "db-stage" | "stage" => stage::parse_stage(tokens),
         "db-prune" | "prune" => prune::parse_prune(tokens),
 
-        other => Err(CliError(format!("unknown command `{other}`")).into()),
+        other => Err(CliError::message(format!("unknown command `{other}`")).into()),
     };
 
     // A walk that answered a universal flag reports the answer it reached, while
@@ -470,5 +460,5 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
 fn parse_version(flag: &str, value: &str) -> Result<MigrationVersion, CliError> {
     value
         .parse::<MigrationVersion>()
-        .map_err(|error| CliError(format!("invalid `{flag}` value `{value}`: {error}")))
+        .map_err(|error| CliError::message(format!("invalid `{flag}` value `{value}`: {error}")))
 }

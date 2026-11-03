@@ -27,7 +27,7 @@ pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 database_url = Some(take_value(tokens, &mut idx, flag)?.to_owned());
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for baseline")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for baseline")).into());
             }
         }
     }
@@ -35,9 +35,9 @@ pub(super) fn parse_baseline(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
     let version = match version_str {
         Some(v) => v
             .parse::<MigrationVersion>()
-            .map_err(|e| CliError(format!("invalid baseline version `{v}`: {e}")))?,
+            .map_err(|e| CliError::message(format!("invalid baseline version `{v}`: {e}")))?,
         None => {
-            return Err(CliError("missing required `--version` argument".to_owned()).into());
+            return Err(CliError::message("missing required `--version` argument").into());
         }
     };
 

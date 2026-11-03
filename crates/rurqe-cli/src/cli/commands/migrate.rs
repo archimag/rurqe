@@ -171,7 +171,7 @@ pub(crate) fn clean_database<B: MigrationBackend>(
         for name in &manifest {
             message.push_str(&format!("\n  - {name}"));
         }
-        return Err(CliError(message));
+        return Err(CliError::message(message));
     }
 
     let dropped = migrator.clean(backend).map_err(cli_error)?;

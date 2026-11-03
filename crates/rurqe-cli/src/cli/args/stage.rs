@@ -19,7 +19,7 @@ pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             if let Some(command) = other.copied().and_then(universal_flag) {
                 return Ok(command);
             }
-            return Err(CliError(
+            return Err(CliError::message(
                 "missing stage action (expected `init`, `verify`, `commit`, or `cleanup`)"
                     .to_owned(),
             )
@@ -32,7 +32,7 @@ pub(super) fn parse_stage(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
         "verify" => parse_stage_verify(&tokens[1..]),
         "commit" => parse_stage_commit(&tokens[1..]),
         "cleanup" => parse_stage_cleanup(&tokens[1..]),
-        other => Err(CliError(format!(
+        other => Err(CliError::message(format!(
             "unknown stage action `{other}` (expected `init`, `verify`, `commit`, or `cleanup`)"
         ))
         .into()),
@@ -70,13 +70,13 @@ fn parse_stage_init(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for stage init")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for stage init")).into());
             }
         }
     }
 
     let version = version.ok_or_else(|| {
-        CliError("missing required `--version` argument for stage init".to_owned())
+        CliError::message("missing required `--version` argument for stage init".to_owned())
     })?;
 
     Ok(CliCommand::StageInit {
@@ -122,7 +122,7 @@ fn parse_stage_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for stage verify")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for stage verify")).into());
             }
         }
     }
@@ -174,13 +174,13 @@ fn parse_stage_commit(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for stage commit")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for stage commit")).into());
             }
         }
     }
 
     let version = version.ok_or_else(|| {
-        CliError("missing required `--version` argument for stage commit".to_owned())
+        CliError::message("missing required `--version` argument for stage commit".to_owned())
     })?;
 
     Ok(CliCommand::StageCommit {
@@ -225,7 +225,7 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 idx += 1;
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for stage cleanup")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for stage cleanup")).into());
             }
         }
     }
@@ -243,5 +243,5 @@ fn parse_stage_cleanup(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
 fn parse_seconds(flag: &str, value: &str) -> Result<u64, CliError> {
     value
         .parse::<u64>()
-        .map_err(|error| CliError(format!("invalid `{flag}` value `{value}`: {error}")))
+        .map_err(|error| CliError::message(format!("invalid `{flag}` value `{value}`: {error}")))
 }

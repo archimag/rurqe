@@ -15,8 +15,7 @@ use crate::config::{CodegenConfig, SchemaSelection};
 use crate::introspect::DEFAULT_SCHEMA;
 use crate::stage::postgres::{process_may_be_alive, process_nonce};
 
-use super::args::CliError;
-
+use super::error::{CliCause, CliError};
 use self::stage::lock::WriterId;
 
 mod migrate;
@@ -34,7 +33,7 @@ pub(crate) use self::stage::{cleanup_stage, commit_stage, initialise_stage, veri
 
 /// Formats a displayable error as a [`CliError`].
 pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
-    CliError(err.to_string())
+    CliError::message(err.to_string())
 }
 
 /// The generated module code generation writes when the project declares no path.
@@ -78,7 +77,7 @@ impl Project {
         };
 
         if required && !path.exists() {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "configuration file `{}` named by `--config` does not exist; a path the flag names \
                  is required, while the conventional `{}` is optional",
                 path.display(),
@@ -87,7 +86,7 @@ impl Project {
         }
 
         if required && !path.is_file() {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "configuration file `{}` named by `--config` is not a regular file",
                 path.display()
             )));
@@ -209,7 +208,7 @@ fn load_config(path: &Path, required: bool) -> Result<CodegenConfig, CliError> {
         CodegenConfig::load_or_default(path)
     };
 
-    config.map_err(cli_error)
+    config.map_err(|error| CliError::with_cause(CliCause::Config(error)))
 }
 
 /// Builds the schema selection of an already loaded configuration.
@@ -240,7 +239,7 @@ fn selection_of(
         .iter()
         .find(|name| name.as_str() == primary.as_str())
     {
-        return Err(CliError(format!(
+        return Err(CliError::message(format!(
             "the secondary schema `{collision}` of the project configuration repeats the primary \
              schema `{primary}` selected for this command; a schema is declared either as the \
              primary one or as a secondary one, never both"
@@ -252,7 +251,7 @@ fn selection_of(
 
 fn read_schema_code(path: &Path) -> Result<String, CliError> {
     std::fs::read_to_string(path).map_err(|e| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to read schema code `{}`: {e}",
             path.display()
         ))
@@ -263,7 +262,7 @@ pub(super) fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                CliError(format!(
+                CliError::message(format!(
                     "failed to create directory `{}`: {e}",
                     parent.display()
                 ))
@@ -293,11 +292,11 @@ pub(super) fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
 fn rename_durable(temporary: &Path, path: &Path) -> Result<(), CliError> {
     std::fs::rename(temporary, path).map_err(|error| {
         let _ = std::fs::remove_file(temporary);
-        CliError(format!("failed to write `{}`: {error}", path.display()))
+        CliError::message(format!("failed to write `{}`: {error}", path.display()))
     })?;
 
     sync_directory(artifact_directory(path)).map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to flush the directory holding `{}` after writing it: {error}",
             path.display()
         ))
@@ -509,7 +508,7 @@ pub(super) fn sweep_stale_temporaries(
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "failed to scan `{}` for staged artifacts: {error}",
                 directory.display()
             )))
@@ -520,7 +519,7 @@ pub(super) fn sweep_stale_temporaries(
 
     for entry in entries {
         let entry = entry.map_err(|error| {
-            CliError(format!(
+            CliError::message(format!(
                 "failed to scan `{}` for staged artifacts: {error}",
                 directory.display()
             ))
@@ -596,7 +595,7 @@ fn write_temporary(temporary: &Path, contents: &str, path: &Path) -> Result<(), 
 /// Removes the staged file a failed write left behind and names the artifact.
 fn write_failure(temporary: &Path, path: &Path, error: &std::io::Error) -> CliError {
     let _ = std::fs::remove_file(temporary);
-    CliError(format!("failed to write `{}`: {error}", path.display()))
+    CliError::message(format!("failed to write `{}`: {error}", path.display()))
 }
 
 /// Flushes the entries of `dir` to the device.
@@ -613,14 +612,14 @@ fn write_failure(temporary: &Path, path: &Path, error: &std::io::Error) -> CliEr
 #[cfg(unix)]
 pub(super) fn sync_directory(dir: &Path) -> Result<(), CliError> {
     let handle = std::fs::File::open(dir).map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to open the directory `{}`: {error}",
             dir.display()
         ))
     })?;
 
     handle.sync_all().map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to flush the directory `{}`: {error}",
             dir.display()
         ))

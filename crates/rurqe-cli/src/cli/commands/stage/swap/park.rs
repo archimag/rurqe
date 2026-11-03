@@ -78,7 +78,7 @@ pub(super) fn parked_copies(artifact: &Path) -> Result<Vec<(PathBuf, WriterId)>,
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "failed to scan `{}` for parked artifacts: {error}",
                 directory.display()
             )))
@@ -89,7 +89,7 @@ pub(super) fn parked_copies(artifact: &Path) -> Result<Vec<(PathBuf, WriterId)>,
 
     for entry in entries {
         let entry = entry.map_err(|error| {
-            CliError(format!(
+            CliError::message(format!(
                 "failed to scan `{}` for parked artifacts: {error}",
                 directory.display()
             ))
@@ -135,7 +135,7 @@ pub(super) fn park(artifact: &Path, backup: &Path) -> Result<Option<PathBuf>, Cl
     match std::fs::rename(artifact, backup) {
         Ok(()) => Ok(Some(backup.to_owned())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(CliError(format!(
+        Err(error) => Err(CliError::message(format!(
             "failed to park `{}` at `{}`: {error}",
             artifact.display(),
             backup.display()

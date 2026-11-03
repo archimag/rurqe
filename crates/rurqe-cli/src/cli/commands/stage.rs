@@ -60,7 +60,7 @@ fn load_stage(dir: &Path) -> Result<DeclarativeStage, CliError> {
     DeclarativeStage::load(dir)
         .map_err(cli_error)?
         .ok_or_else(|| {
-            CliError(format!(
+            CliError::message(format!(
                 "declarative stage `{}` does not exist; it holds the `*.sql` DDL of the target \
                  schema",
                 dir.display()
@@ -87,7 +87,7 @@ pub(crate) fn initialise_stage<B: MigrationBackend>(
     let stage = load_stage(stage_dir)?;
 
     if stage.is_empty() {
-        return Err(CliError(format!(
+        return Err(CliError::message(format!(
             "declarative stage `{}` holds no `*.sql` script to apply",
             stage_dir.display()
         )));
@@ -134,10 +134,13 @@ const RECOVERY_NOTE: &str =
 /// success path alone would drop it exactly when it matters most: the failure
 /// channel is the only output a command guarantees once it errors, so the report
 /// travels inside the error instead of beside it.
-fn carry_recovery(recovery: Option<&str>, error: CliError) -> CliError {
+fn carry_recovery(recovery: Option<&str>, mut error: CliError) -> CliError {
     let Some(recovery) = recovery else {
         return error;
     };
 
-    CliError(format!("{}\n{RECOVERY_NOTE}\n{recovery}", error.0))
+    // The context is folded into the line instead of replacing it, so a repaired
+    // commit keeps its report and the typed cause of the failure stays readable.
+    error.extend_message(format!("\n{RECOVERY_NOTE}\n{recovery}"));
+    error
 }

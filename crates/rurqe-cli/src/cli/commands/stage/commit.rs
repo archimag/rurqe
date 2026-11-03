@@ -13,10 +13,9 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::commands::{
-    best_effort, cli_error, sweep_stale_temporaries, sync_directory, write_file,
-    STALE_TEMPORARY_AGE,
+    best_effort, sweep_stale_temporaries, sync_directory, write_file, STALE_TEMPORARY_AGE,
 };
-use crate::cli::{redact_database_url, CliError, CommandOutput};
+use crate::cli::{redact_database_url, CliCause, CliError, CommandOutput};
 use crate::config::SchemaSelection;
 use crate::drift::{DiffWording, SchemaDiff};
 use crate::introspect::introspect_database_selection_notice;
@@ -133,7 +132,7 @@ pub(crate) fn commit_stage(
     let parity = ParityScratch::of(parity_target);
 
     let diff = compare_stage_with_live_selection(&stage, &catalog, parity_target, selection)
-        .map_err(cli_error)?;
+        .map_err(|error| CliError::with_cause(CliCause::Stage(error)))?;
     if !diff.is_empty() {
         return Err(stage_parity_failure(stage_dir, &diff, &parity));
     }
@@ -199,14 +198,14 @@ pub(crate) fn commit_stage(
     // The marker is re-read inside the section, so a writer that committed while
     // this one prepared cannot have its boundary rewound here.
     if let Some(existing) = Checkpoint::load(checkpoint_path)
-        .map_err(cli_error)
+        .map_err(|error| CliError::message(error.to_string()))
         .map_err(fail)?
     {
         // The version this commit anchors is the one the rendered checkpoint
         // already carries, so the guard reads it from there instead of holding a
         // second copy the preparation phase would have to keep alive across the move.
         if existing.pruned_up_to_version() > checkpoint.pruned_up_to_version() {
-            return Err(fail(CliError(format!(
+            return Err(fail(CliError::message(format!(
                 "`{}` already anchors the history up to version {}; rewinding it to {} \
                  would re-open pruned migrations",
                 checkpoint_path.display(),
@@ -367,7 +366,7 @@ fn refuse_cross_engine_scratch(database_url: &str, scratch_url: &str) -> Result<
         return Ok(());
     }
 
-    Err(CliError(format!(
+    Err(CliError::message(format!(
         "the scratch URL `{}` addresses {} while this commit seals a {} database; the parity \
          gate replays the declarative stage in the scratch target, so `--scratch-url` has to \
          name a {} target — a `postgres://` URL for PostgreSQL, a SQLite path or `:memory:` \
@@ -418,7 +417,7 @@ fn stage_parity_failure(
     diff: &SchemaDiff,
     scratch: &ParityScratch,
 ) -> CliError {
-    CliError(format!(
+    CliError::message(format!(
         "the declarative stage `{}` does not describe the database this commit would anchor:\n{}Hint: \
          bring `schema/` and the database back into agreement — apply the migration that closes \
          the gap, or re-init the stage from the live catalog — then re-run `stage commit`. {} The gate \

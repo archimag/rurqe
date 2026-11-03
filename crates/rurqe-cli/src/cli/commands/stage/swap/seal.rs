@@ -95,7 +95,7 @@ pub(crate) fn seal_commit(
             );
             let mut failure = error;
             if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
-                failure.0.push_str(&format!("; {notice}"));
+                failure.extend_message(format!("; {notice}"));
             }
             return Err(failure);
         }
@@ -104,7 +104,7 @@ pub(crate) fn seal_commit(
     if let Err(error) = std::fs::rename(staged, &dir) {
         let mut failure = move_failure(&dir, staged, &error, parked_boundary.as_deref());
         if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
-            failure.0.push_str(&format!("; {notice}"));
+            failure.extend_message(format!("; {notice}"));
         }
         best_effort(
             std::fs::remove_dir_all(staged),
@@ -130,10 +130,10 @@ pub(crate) fn seal_commit(
         );
         let mut failure = error;
         if let Some(notice) = restore(&dir, parked_boundary.as_deref()) {
-            failure.0.push_str(&format!("\n{notice}"));
+            failure.extend_message(format!("\n{notice}"));
         }
         if let Some(notice) = restore(checkpoint_path, parked_marker.as_deref()) {
-            failure.0.push_str(&format!("\n{notice}"));
+            failure.extend_message(format!("\n{notice}"));
         }
         return Err(failure);
     }
@@ -169,7 +169,7 @@ pub(crate) fn seal_commit(
 pub(crate) fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
     let parent = artifact_directory(dir);
     std::fs::create_dir_all(parent).map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to prepare the directory `{}` holding the staging directory: {error}",
             parent.display()
         ))
@@ -194,7 +194,7 @@ pub(crate) fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
                 }
             }
             Err(error) => {
-                return Err(CliError(format!(
+                return Err(CliError::message(format!(
                     "failed to prepare the staging directory `{}`: {error}",
                     staged.display()
                 )))
@@ -204,7 +204,7 @@ pub(crate) fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
 
     match occupied {
         Some(error) => Err(error),
-        None => Err(CliError(format!(
+        None => Err(CliError::message(format!(
             "failed to prepare a staging directory for `{}`: no candidate staging path stayed free",
             dir.display()
         ))),
@@ -219,7 +219,7 @@ pub(crate) fn create_staging_dir(dir: &Path) -> Result<PathBuf, CliError> {
 /// still be running — a foreign host whose process id collides with this one
 /// included.
 fn occupied_failure(staged: &Path, owner: WriterId) -> CliError {
-    CliError(format!(
+    CliError::message(format!(
         "the staging path `{}` belongs to the in-flight staging of writer pid {} (nonce {}), \
          which may still be alive; staging happens outside the checkpoint section, so another \
          writer can be filling that path right now and it is never removed",
@@ -242,7 +242,7 @@ fn discard_staged_path(staged: &Path) -> Result<(), CliError> {
         Ok(_) => std::fs::remove_file(staged),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "failed to inspect the staging path `{}`: {error}",
                 staged.display()
             )))
@@ -252,7 +252,7 @@ fn discard_staged_path(staged: &Path) -> Result<(), CliError> {
     match removal {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(CliError(format!(
+        Err(error) => Err(CliError::message(format!(
             "failed to discard the abandoned staging path `{}`: {error}",
             staged.display()
         ))),
@@ -307,7 +307,7 @@ pub(crate) fn move_failure(
         }
     }
 
-    CliError(message)
+    CliError::message(message)
 }
 
 /// Flushes the directory whose entries the installed snapshot was renamed into.

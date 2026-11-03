@@ -35,7 +35,7 @@ pub(crate) fn prune_migrations(
     let checkpoint = Checkpoint::load(checkpoint_path)
         .map_err(cli_error)?
         .ok_or_else(|| {
-            CliError(format!(
+            CliError::message(format!(
                 "`{}` is missing; commit the stage with `cargo rurqe stage commit --version {}` \
                  before pruning the history",
                 checkpoint_path.display(),
@@ -44,7 +44,7 @@ pub(crate) fn prune_migrations(
         })?;
 
     if checkpoint.pruned_up_to_version() < &before {
-        return Err(CliError(format!(
+        return Err(CliError::message(format!(
             "`{}` anchors the history up to version {} only; pruning below {before} would drop \
              scripts the active tail still needs",
             checkpoint_path.display(),
@@ -90,7 +90,7 @@ pub(crate) fn prune_migrations(
             continue;
         }
         std::fs::remove_file(path)
-            .map_err(|error| CliError(format!("failed to remove `{}`: {error}", path.display())))?;
+            .map_err(|error| CliError::message(format!("failed to remove `{}`: {error}", path.display())))?;
         output.line(format!("pruned {}", path.display()));
     }
 

@@ -32,7 +32,7 @@ pub(super) fn parse_codegen(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for codegen")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for codegen")).into());
             }
         }
     }
@@ -72,7 +72,7 @@ pub(super) fn parse_verify(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 schema = Some(take_schema(tokens, &mut idx, flag)?);
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for verify")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for verify")).into());
             }
         }
     }

@@ -32,7 +32,7 @@ use postgres::error::SqlState;
 
 use crate::target::{DatabaseTarget, TargetError};
 
-use super::args::CliError;
+use super::error::CliError;
 use super::redact::{host_name, redact_database_url};
 
 /// Resolves the target database URL from the flag or the `DATABASE_URL` environment variable.
@@ -41,7 +41,7 @@ pub(super) fn resolve_database_url(supplied: Option<String>) -> Result<String, C
         .or_else(|| std::env::var("DATABASE_URL").ok())
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
-            CliError(
+            CliError::message(
                 "no database URL provided: pass `--database-url <url>` or set the \
                  DATABASE_URL environment variable"
                     .to_owned(),
@@ -94,7 +94,7 @@ fn unrecognised_target(error: TargetError, url: &str) -> CliError {
         TargetError::Unrecognised => "names no database engine".to_owned(),
     };
 
-    CliError(format!(
+    CliError::message(format!(
         "`{}` {reason}: PostgreSQL is addressed by a `postgres://` or `postgresql://` URL or a \
          libpq keyword/value string such as `host=db.internal dbname=app`, and SQLite by a \
          `sqlite:` URL, `:memory:`, or a path ending in `.db`, `.sqlite`, or `.sqlite3`",
@@ -110,7 +110,7 @@ fn open_sqlite(path: Option<&str>, url: &str) -> Result<rusqlite::Connection, Cl
     };
 
     conn.map_err(|e| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to open SQLite database at `{}`: {e}",
             redact_database_url(url)
         ))
@@ -138,7 +138,7 @@ fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
         url.parse::<postgres::Config>()
             .map_err(|error| match unmodelled_tls_demand(url) {
                 Some(spelling) => tls_unavailable(spelling, url),
-                None => CliError(format!(
+                None => CliError::message(format!(
                     "invalid PostgreSQL connection string `{}`: {error}",
                     redact_database_url(url)
                 )),
@@ -156,7 +156,7 @@ fn connect_postgres(url: &str) -> Result<postgres::Client, CliError> {
             ""
         };
 
-        CliError(format!(
+        CliError::message(format!(
             "failed to connect to PostgreSQL at `{}`: {error}{hint}",
             redact_database_url(url)
         ))
@@ -254,7 +254,7 @@ fn enforce_transport_policy(config: &postgres::Config, url: &str) -> Result<(), 
         return Ok(());
     }
 
-    Err(CliError(format!(
+    Err(CliError::message(format!(
         "`{}` would reach the remote host `{host}` in cleartext (`sslmode={}`), because this \
          build of rurqe-cli links no TLS backend; refusing to send credentials and data \
          unencrypted. Terminate TLS in front of the server and connect to that local hop, or \
@@ -274,7 +274,7 @@ fn enforce_transport_policy(config: &postgres::Config, url: &str) -> Result<(), 
 /// plaintext path explicitly with `sslmode=disable`; a Unix-domain socket needs
 /// neither.
 fn tls_unavailable(ssl_mode: &str, url: &str) -> CliError {
-    CliError(format!(
+    CliError::message(format!(
         "`{}` demands TLS (`sslmode={ssl_mode}`), but this build of rurqe-cli links no TLS \
          backend; refusing to send credentials and data in cleartext. Terminate TLS in front of \
          the server and connect to that local hop, or acknowledge the plaintext path explicitly \

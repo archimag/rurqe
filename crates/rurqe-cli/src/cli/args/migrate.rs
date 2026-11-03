@@ -26,7 +26,7 @@ impl MigrateAction {
             "status" => Ok(MigrateAction::Status),
             "repair" => Ok(MigrateAction::Repair),
             "clean" => Ok(MigrateAction::Clean),
-            other => Err(CliError(format!(
+            other => Err(CliError::message(format!(
                 "unknown migrate action `{other}` (expected `up`, `status`, `repair`, or `clean`)"
             ))
             .into()),
@@ -76,7 +76,7 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
             }
             "--yes" | "-y" | "--force" => {
                 if action != MigrateAction::Clean {
-                    return Err(CliError(format!(
+                    return Err(CliError::message(format!(
                         "option `{flag}` confirms `migrate clean`; the `up`, `status`, and \
                          `repair` actions take no confirmation"
                     ))
@@ -86,7 +86,7 @@ pub(super) fn parse_migrate(tokens: &[&str]) -> Result<CliCommand, Interrupt> {
                 idx += 1;
             }
             other => {
-                return Err(CliError(format!("unknown option `{other}` for migrate")).into());
+                return Err(CliError::message(format!("unknown option `{other}` for migrate")).into());
             }
         }
     }

@@ -29,7 +29,7 @@ use super::seal::{boundary_dir, flush_boundary_parent};
 /// reported, and mutates nothing.
 fn refuse_foreign_record(checkpoint_path: &Path, scope: WriterId) -> Result<(), CliError> {
     match recorded_writer(checkpoint_path)? {
-        Some(owner) if owner != scope => Err(CliError(format!(
+        Some(owner) if owner != scope => Err(CliError::message(format!(
             "refusing to repair the checkpoint artifacts beside `{}`: the checkpoint lock records \
              the writer pid {} (nonce {}), while the caller reports the scope of writer pid {} \
              (nonce {}), so these artifacts belong to a section this caller does not provably \
@@ -59,7 +59,7 @@ pub(crate) fn path_exists(path: &Path) -> Result<bool, CliError> {
         {
             Ok(false)
         }
-        Err(error) => Err(CliError(format!(
+        Err(error) => Err(CliError::message(format!(
             "failed to inspect `{}`: {error}",
             path.display()
         ))),
@@ -141,7 +141,7 @@ pub(crate) fn recover_interrupted_commit(
     if let Some((parked, _)) = boundary_copies.last() {
         if boundary_live {
             std::fs::remove_dir_all(&dir).map_err(|error| {
-                CliError(format!(
+                CliError::message(format!(
                     "failed to discard the boundary `{}` an interrupted commit installed without \
                      its marker: {error}",
                     dir.display()
@@ -149,7 +149,7 @@ pub(crate) fn recover_interrupted_commit(
             })?;
         }
         std::fs::rename(parked, &dir).map_err(|error| {
-            CliError(format!(
+            CliError::message(format!(
                 "failed to restore the boundary snapshot `{}` parked at `{}`: {error}; `mv {} {}` \
                  puts it back",
                 dir.display(),
@@ -163,7 +163,7 @@ pub(crate) fn recover_interrupted_commit(
     if let Some((parked, _)) = marker_copies.last() {
         if marker_live {
             std::fs::remove_file(checkpoint_path).map_err(|error| {
-                CliError(format!(
+                CliError::message(format!(
                     "failed to discard the marker `{}` an interrupted commit installed without \
                      its boundary: {error}",
                     checkpoint_path.display()
@@ -171,7 +171,7 @@ pub(crate) fn recover_interrupted_commit(
             })?;
         }
         std::fs::rename(parked, checkpoint_path).map_err(|error| {
-            CliError(format!(
+            CliError::message(format!(
                 "failed to restore the checkpoint marker `{}` parked at `{}`: {error}; `mv {} {}` \
                  puts it back",
                 checkpoint_path.display(),

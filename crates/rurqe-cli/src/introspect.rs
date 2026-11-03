@@ -291,5 +291,5 @@ pub(crate) fn vacuous_selection_notice(
 /// read, so the wording is carried over unchanged and only the error type changes
 /// at the boundary.
 fn catalog_error(error: impl std::fmt::Display) -> CliError {
-    CliError(error.to_string())
+    CliError::message(error.to_string())
 }

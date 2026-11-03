@@ -156,7 +156,7 @@ impl CheckpointLock {
         // from being reported as a lock failure.
         let directory = artifact_directory(&lock_path);
         std::fs::create_dir_all(directory).map_err(|error| {
-            CliError(format!(
+            CliError::message(format!(
                 "failed to prepare the directory `{}` for the checkpoint lock: {error}",
                 directory.display()
             ))
@@ -177,7 +177,7 @@ impl CheckpointLock {
                     thread::sleep(ACQUIRE_POLL);
                 }
                 Err(error) => {
-                    return Err(CliError(format!(
+                    return Err(CliError::message(format!(
                         "failed to take the checkpoint lock `{}`: {error}",
                         lock_path.display()
                     )))
@@ -340,7 +340,7 @@ fn read_record(record_path: &Path) -> Result<RecordEntry, CliError> {
             return Ok(RecordEntry::Absent)
         }
         Err(error) => {
-            return Err(CliError(format!(
+            return Err(CliError::message(format!(
                 "failed to read the checkpoint lock owner record `{}`: {error}",
                 record_path.display()
             )))
@@ -388,7 +388,7 @@ fn open_entry(lock_path: &Path) -> Result<File, CliError> {
         .truncate(false)
         .open(lock_path)
         .map_err(|error| {
-            CliError(format!(
+            CliError::message(format!(
                 "failed to open the checkpoint lock `{}`: {error}",
                 lock_path.display()
             ))
@@ -404,7 +404,7 @@ fn open_entry(lock_path: &Path) -> Result<File, CliError> {
 /// the complete previous record beside a staged sibling nothing ever reads.
 fn publish_record(record_path: &Path, record: &OwnerRecord) -> Result<(), CliError> {
     write_file(record_path, &record.render()).map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to record the owner of the checkpoint lock into `{}`: {error}",
             record_path.display()
         ))
@@ -469,7 +469,7 @@ fn held_failure(lock_path: &Path) -> CliError {
         _ => "a writer whose owner record cannot be read".to_owned(),
     };
 
-    CliError(format!(
+    CliError::message(format!(
         "the checkpoint lock `{}` is held by {holder}; refusing to mutate the checkpoint artifacts \
          concurrently. The operating system holds the lock for that writer, releases it the moment \
          the writer exits, and never preempts it while the writer lives, so re-running this command \
@@ -492,7 +492,7 @@ pub(crate) fn simulate_section_holder(
     let lock_path = lock_path_of(checkpoint_path);
     let directory = artifact_directory(&lock_path);
     std::fs::create_dir_all(directory).map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to prepare the directory `{}` for the checkpoint lock: {error}",
             directory.display()
         ))
@@ -504,7 +504,7 @@ pub(crate) fn simulate_section_holder(
     // kernel takes the section instead of waiting for a holder that cannot
     // exist yet.
     FileExt::try_lock_exclusive(&file).map_err(|error| {
-        CliError(format!(
+        CliError::message(format!(
             "failed to hold the checkpoint lock `{}`: {error}",
             lock_path.display()
         ))
