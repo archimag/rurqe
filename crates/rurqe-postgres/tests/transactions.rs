@@ -12,9 +12,12 @@
 //! The regression scenarios pin the disposition of a checkout whose transaction
 //! was abandoned. On the synchronous pool a leaked transaction and a leaked
 //! aborted transaction are repaired by the reset of the next checkout, while a
-//! session that lost its backend is refused there; on the asynchronous surfaces
+//! session that lost its backend is caught at the checkout: the probe of
+//! the pool beneath replaces the dead connection, and with that probe
+//! turned off the loss reaches the statement of the caller; on the
+//! asynchronous surfaces
 //! a cancelled block, a panicking block, and a refused rollback destroy their
-// own checkout instead of returning it to the pool, and a transaction handle
+//! own checkout instead of returning it to the pool, and a transaction handle
 //! dropped without a terminal call poisons the connection it borrows, and so does
 //! an entry whose `BEGIN` the driver refused or whose future was dropped before
 //! the transaction opened.
@@ -130,6 +133,7 @@ mod support {
 #[cfg(feature = "r2d2")]
 mod sync_pool {
     use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::time::{Duration, Instant};
 
     use postgres::NoTls;
     use r2d2_postgres::PostgresConnectionManager;
@@ -175,7 +179,61 @@ mod sync_pool {
         })
         .expect("the counting block commits")
     }
+    /// Terminates `backend` and waits until the server reports it gone.
+    ///
+    /// `pg_terminate_backend` returns when the termination is queued, not when
+    /// the backend has processed it, so a caller that proceeds immediately
+    /// races the death of the session it wants to observe. The poll reads
+    /// `pg_stat_activity` until the process leaves it: a role sees the
+    /// backends of its own sessions, so the probe needs no privileges beyond
+    /// the ones the test URL already carries, and once the row is gone the
+    /// terminated backend no longer serves its connection.
+    fn terminate_and_await(killer: &mut postgres::Client, backend: i32) {
+        let terminated = killer
+            .query_one("SELECT pg_terminate_backend($1)", &[&backend])
+            .expect("the termination request is dispatched");
+        assert!(
+            terminated.get::<_, bool>(0),
+            "the server accepted the termination of backend {backend}"
+        );
 
+        // The poll bounds itself, so a backend that never dies fails the
+        // scenario with a diagnostic instead of hanging the suite.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let listed = killer
+                .query_opt("SELECT 1 FROM pg_stat_activity WHERE pid = $1", &[&backend])
+                .expect("the activity probe runs");
+            if listed.is_none() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "backend {backend} stayed in pg_stat_activity past the poll budget"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    /// Builds a one-connection pool that hands its connections out unprobed.
+    ///
+    /// `r2d2` checks every connection it hands out by default
+    /// (`test_on_check_out`), which silently replaces a connection whose
+    /// session died. The scenario that observes a dead session reaching the
+    /// caller therefore disables the probe, so the checkout hands the
+    /// connection out as it is and the caller's own statement meets the
+    /// failure.
+    fn unprobed_pool(url: &str) -> Pool {
+        let config: postgres::Config = url.parse().expect("the test URL parses");
+        let manager = PostgresConnectionManager::new(config, NoTls);
+        PgPool::new(
+            r2d2::Pool::builder()
+                .max_size(1)
+                .test_on_check_out(false)
+                .build(manager)
+                .expect("a one-connection pool builds"),
+        )
+    }
     #[test]
     fn a_committed_block_persists_its_work() {
         let Some(url) = support::database_url("PgPool::transaction commit") else {
@@ -362,8 +420,8 @@ mod sync_pool {
     }
 
     #[test]
-    fn a_session_that_lost_its_backend_is_reported_by_its_statement() {
-        let Some(url) = support::database_url("PgPool::get session without a backend") else {
+    fn a_lost_backend_is_replaced_at_the_checkout() {
+        let Some(url) = support::database_url("PgPool::get lost backend replacement") else {
             return;
         };
         let pool = pool(&url);
@@ -378,43 +436,61 @@ mod sync_pool {
             row.get::<_, i32>(0)
         };
 
-        // Terminating the backend from another session leaves the recycled
-        // connection in a state the pool does not inspect: `r2d2` validates that
-        // a connection is alive rather than that it is usable, and a session that
-        // lost its backend still looks open to the pool. A checkout proves the
-        // state of the session instead of probing it, so the failure reaches the
-        // statement of the caller rather than the checkout.
         let config: postgres::Config = url.parse().expect("the test URL parses");
         let mut killer = config
             .connect(NoTls)
             .expect("the second client connects to the server");
-        let terminated = killer
-            .query_one("SELECT pg_terminate_backend($1)", &[&backend])
-            .expect("the termination request is dispatched");
-        assert!(
-            terminated.get::<_, bool>(0),
-            "the server accepted the termination of backend {backend}"
-        );
+        terminate_and_await(&mut killer, backend);
 
+        // The recycled session died with its backend. `r2d2` probes every
+        // connection it hands out, the probe fails on the session without a
+        // backend, and the pool discards the connection and opens a fresh
+        // one: the checkout observes the loss instead of the caller, whose
+        // statement runs on a healthy session.
+        let mut served = pool.get().expect("the pool serves a fresh connection");
+        let served = served.query_one("SELECT 1", &[]);
+        assert!(
+            served.is_ok(),
+            "the pool replaces the connection whose backend died: {:?}",
+            served.err()
+        );
+    }
+
+    #[test]
+    fn a_lost_backend_is_reported_by_the_callers_statement() {
+        let Some(url) = support::database_url("PgPool::get unprobed lost backend") else {
+            return;
+        };
+        let pool = unprobed_pool(&url);
+
+        let backend = {
+            let mut connection = pool.get().expect("the fixture connection is checked out");
+            let row = connection
+                .query_one("SELECT pg_backend_pid()", &[])
+                .expect("the backend reports its process id");
+            // The handle returns to the pool while its session is still healthy,
+            // so the pool recycles the connection instead of discarding it.
+            row.get::<_, i32>(0)
+        };
+
+        let config: postgres::Config = url.parse().expect("the test URL parses");
+        let mut killer = config
+            .connect(NoTls)
+            .expect("the second client connects to the server");
+        terminate_and_await(&mut killer, backend);
+
+        // The checkout hands the dead session out without probing it, so the
+        // loss reaches the statement of the caller: the session a query
+        // addresses no longer has a backend to answer it.
         {
-            let mut connection = pool.get().expect("the checkout costs no round trip");
+            let mut connection =
+                pool.get().expect("the unprobed checkout hands the session out");
             let refused = connection.query_one("SELECT 1", &[]);
             assert!(
                 refused.is_err(),
                 "the session without a backend reports the failure of its statement"
             );
         }
-
-        // The repair the guard performed on the way out failed with the same
-        // session, so the pool discarded the connection it could not vouch for and
-        // opens a fresh one for the next caller.
-        let mut served = pool.get().expect("the pool serves a connection");
-        let served = served.query_one("SELECT 1", &[]);
-        assert!(
-            served.is_ok(),
-            "the pool replaces the connection it discarded: {:?}",
-            served.err()
-        );
     }
 
     /// A refused savepoint rollback poisons the connection, so a bare

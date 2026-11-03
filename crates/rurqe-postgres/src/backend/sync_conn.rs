@@ -1,5 +1,4 @@
 //! Synchronous execution adapter over a [`postgres::Client`] handle.
-//! Synchronous execution adapter over a [`postgres::Client`] handle.
 //!
 //! The adapter refuses every bare statement while its bookkeeping records a
 //! poison, which is the state a refused transaction-control statement leaves
@@ -99,14 +98,16 @@ pub(crate) fn fetch_raw_limited_sync(
 /// server outlives it, so the return of a checkout is the place where that
 /// state can still be closed, and the guard of the pool closes it there.
 ///
-/// The reset is one round trip of the simple protocol carrying `BEGIN;
-/// ROLLBACK`. Opening the transaction first makes the trailing `ROLLBACK`
-/// legitimate in every session state, so a return that is already idle logs
-/// nothing at all, while a session that still holds a transaction has it
-/// ended by the `ROLLBACK`. The idle return is therefore guaranteed by
-/// construction instead of by classifying the state the session arrived in,
-/// and the only trace the reset leaves is the server-side warning it emits
-/// when it actually repairs an abandoned transaction.
+/// The reset is one round trip of the simple protocol carrying a single
+/// `ROLLBACK`, the one transaction-control statement PostgreSQL answers in
+/// every session state: a session that still holds a transaction has it
+/// ended — including the aborted one, where the server rejects a `BEGIN`
+/// with `25P02` and would abort the rest of a multi-statement reset — and
+/// a return that is already idle answers with the warning `25P01` instead
+/// of an error. The idle return is therefore guaranteed without
+/// classifying the state the session arrived in, and the only trace the
+/// reset leaves is the server-side warning it emits when the session held
+/// no transaction to end.
 ///
 /// A reset the driver refuses means the connection could not be brought back
 /// to a known state, so the failure is reported instead of the session being
@@ -119,7 +120,7 @@ pub(crate) fn fetch_raw_limited_sync(
 #[cfg_attr(not(any(feature = "r2d2", debug_assertions)), allow(dead_code))]
 pub(crate) fn ensure_idle(client: &mut postgres::Client) -> Result<(), PgError> {
     client
-        .batch_execute("BEGIN; ROLLBACK")
+        .batch_execute("ROLLBACK")
         .map_err(|failure| PgError::AbandonedTransaction { failure })
 }
 

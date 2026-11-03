@@ -462,13 +462,13 @@ mod r2d2_impl {
     impl<M: ManageConnection<Connection = postgres::Client>> Drop for PgPooledConnection<M> {
         /// Returns the session to an idle state when the pool cannot vouch for it.
         ///
-        /// The reset is one round trip of the simple protocol carrying
-        /// `BEGIN; ROLLBACK`, the statement pair a session accepts in every state:
-        /// the leading `BEGIN` makes the trailing `ROLLBACK` legitimate whatever
-        /// the session held before, so a session that was already idle pays only
-        /// the round trip of the repair and a session that still holds a
-        /// transaction has it ended.
-        ///
+        /// The reset is one round trip of the simple protocol carrying a
+        /// single `ROLLBACK`, the one transaction-control statement
+        /// PostgreSQL answers in every session state: a session that still
+        /// holds a transaction has it ended — including the aborted one,
+        /// where the server rejects a `BEGIN` with `25P02` — and a session
+        /// that was already idle pays only the round trip of the repair,
+        /// because the warning `25P01` it answers with is not an error.
         /// A reset the driver refuses leaves the session in a state the pool
         /// cannot vouch for, so the failure is logged here and the connection
         /// leaves the pool once the driver marks it closed, instead of being
