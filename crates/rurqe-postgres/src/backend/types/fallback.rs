@@ -423,9 +423,9 @@ fn date_text(payload: &[u8]) -> Result<String, String> {
 
 /// Renders microseconds since 2000-01-01 as the text a `String` column carries.
 ///
-/// The fraction follows the shape of the value: a whole second renders none, a
-/// millisecond-aligned value renders three digits, and every other value renders
-/// the six digits PostgreSQL stores.
+/// The fraction follows the canonical form PostgreSQL prints for the type: a
+/// whole second renders none, and a fractional part carries no trailing zero, so
+/// 500000 microseconds render as `.5` and 123400 as `.1234`.
 #[cfg(not(feature = "chrono"))]
 fn render_timestamp(microseconds: i64, separator: char, suffix: &str) -> String {
     let seconds = microseconds.div_euclid(MICROSECONDS_PER_SECOND);
@@ -441,11 +441,11 @@ fn render_timestamp(microseconds: i64, separator: char, suffix: &str) -> String 
         format!("{year:04}-{month:02}-{day:02}{separator}{hour:02}:{minute:02}:{second:02}");
 
     if fraction > 0 {
-        if fraction % 1_000 == 0 {
-            text.push_str(&format!(".{:03}", fraction / 1_000));
-        } else {
-            text.push_str(&format!(".{fraction:06}"));
-        }
+        let digits = format!("{fraction:06}");
+        // PostgreSQL prints the canonical form, which carries no trailing zero
+        // in the fractional part.
+        text.push('.');
+        text.push_str(digits.trim_end_matches('0'));
     }
 
     text.push_str(suffix);
@@ -552,6 +552,28 @@ mod tests {
             decode(&Type::TIMESTAMPTZ, &payload),
             Some(Ok("2024-01-02T03:04:05.123456+00:00".to_owned()))
         );
+
+        payload.clear();
+        payload.extend_from_slice(&757_479_845_500_000i64.to_be_bytes());
+        assert_eq!(
+            decode(&Type::TIMESTAMP, &payload),
+            Some(Ok("2024-01-02 03:04:05.5".to_owned()))
+        );
+
+        payload.clear();
+        payload.extend_from_slice(&757_479_845_123_400i64.to_be_bytes());
+        assert_eq!(
+            decode(&Type::TIMESTAMP, &payload),
+            Some(Ok("2024-01-02 03:04:05.1234".to_owned()))
+        );
+
+        // The trimmed form is the one the encoder parses back, so a value read
+        // from a column stays writable to it.
+        let mut out = BytesMut::new();
+        encode(&Type::TIMESTAMP, "2024-01-02 03:04:05.5", &mut out)
+            .expect("a timestamp column is encoded from text")
+            .expect("the value is a timestamp");
+        assert_eq!(out.to_vec(), 757_479_845_500_000i64.to_be_bytes().to_vec());
 
         assert!(decode(&Type::TIMESTAMP, &[0u8; 4])
             .expect("a timestamp column is rendered as text")
