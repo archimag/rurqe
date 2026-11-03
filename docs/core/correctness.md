@@ -47,6 +47,8 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 | A compound statement must order by a name or a position it produces | `CompoundOrderColumn`, `CompoundOrderIndex` |
 | A set operation must combine operands projecting the same number of columns | `SetOperandArity` |
 | Two relations must not share one effective name | `DuplicateRelation` |
+| A plain column reference must name a relation the statement introduces or reaches by correlation | `UnresolvedColumn` |
+| A qualified column reference must name a relation the statement renders | `UnresolvedQualifier` |
 | An assembled raw SQL expression carries as many placeholders as it has parameters | `RawSql` |
 | An ungrouped statement projects an aggregate beside a bare column | `UngroupedColumnWithAggregate` |
 | A collapsed statement orders or deduplicates by a column the collapse dropped | `UngroupedColumn` |
@@ -56,7 +58,9 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 
 The grouping rules sit on both gates, and the split follows the two contracts. A query that grouped its rows through `.group_by(...)` is a grouped statement at the call site, so a projection, a `HAVING` predicate, or a window specification reading a column the grouping dropped is refused by the compiler. The three grouping variants above are the residuals the second gate owns: a statement that projects an aggregate beside a stored column without grouping its rows carries no grouped typestate, so it compiles and is refused when it is built, and the ordering, the `DISTINCT ON` expressions, and the `HAVING` predicate are re-checked on the assembled statement before any SQL is rendered.
 When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias resolves the conflict: `table_alias!` declares the alias marker, and `User.as_alias(Manager)` hands the aliased relation to the builder.
+When two occurrences of the same unaliased table share a relation name in `FROM` and `JOIN`, `.build()` rejects the query with `DuplicateRelation`. Introducing an explicit table alias resolves the conflict: `table_alias!` declares the alias marker, and `User.as_alias(Manager)` hands the aliased relation to the builder.
 
+Column references are resolved against one namespace from both gates. The compiler refuses a reference to a relation the statement never introduces, so a fluent chain cannot describe one. The second gate re-checks the assembled statement, which an implementation of `Selection` or a statement built from AST data can still describe: a plain column reference names its relation through the node itself, a qualified reference names the alias the statement renders, and the namespace of either is the `FROM` clause, its joins, and its derived tables together with the relations every statement enclosing it provides for correlation. A reference that resolves to nothing in that namespace is refused as `UnresolvedColumn` or `UnresolvedQualifier` before any SQL is rendered.
 ## Verification Gates Comparison
 
 | Gate | Execution timing | Evaluated invariants | Caller outcome |
