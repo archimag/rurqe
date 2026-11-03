@@ -16,6 +16,7 @@ use crate::cli::commands::staged_owner_may_live;
 use crate::cli::commands::sync_directory;
 use crate::cli::commands::temporary_sibling;
 use crate::cli::commands::write_file;
+use crate::cli::commands::write_staged_file;
 use crate::cli::CliError;
 
 use super::super::lock::WriterId;
@@ -261,15 +262,23 @@ fn discard_staged_path(staged: &Path) -> Result<(), CliError> {
 
 /// Writes every script of `stage` into the staging directory `staged`.
 ///
-/// Each script lands through the atomic [`write_file`] discipline, so a failure
-/// among them only ever touches the staging directory: the committed boundary is
-/// left exactly as it was.
+/// The batch has a durability shape of its own. The data of every script is
+/// flushed as it is written, so a crash never installs a truncated script, while
+/// the directory entry of none of them is: the staging directory stays invisible
+/// under the live path until the swap renames the whole directory into place, so
+/// the caller flushes `staged` once after the batch instead of once per script.
+/// A stage of N scripts therefore pays N data syncs and one directory flush,
+/// which matters on the network filesystems the writer-scope staging supports,
+/// where every directory flush is a metadata round trip.
+///
+/// A failure among the scripts only ever touches the staging directory: the
+/// committed boundary is left exactly as it was.
 pub(crate) fn write_staged_boundary(
     stage: &DeclarativeStage,
     staged: &Path,
 ) -> Result<(), CliError> {
     for script in stage.scripts() {
-        write_file(&staged.join(script.name()), script.sql())?;
+        write_staged_file(&staged.join(script.name()), script.sql())?;
     }
 
     Ok(())
@@ -333,6 +342,8 @@ pub(crate) fn flush_boundary_parent(dir: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use rurqe_migrate::StageScript;
+
     use super::*;
 
     /// A scratch directory unique to one test, removed however the test ends.
@@ -410,5 +421,66 @@ mod tests {
 
         assert!(!staged.exists(), "the debris path is gone");
         discard_staged_path(&staged).expect("an absent staging path is not an error");
+    }
+
+    #[test]
+    fn the_staged_boundary_lands_every_script_under_its_own_name() {
+        let scratch = Scratch::new("write-staged-boundary");
+        let staged = scratch.0.join(".checkpoint-stage.4242.17.3.tmp");
+        std::fs::create_dir_all(&staged).expect("create the staging directory");
+
+        let stage = DeclarativeStage::new(vec![
+            StageScript::new("orders.sql", "CREATE TABLE orders (id INTEGER);"),
+            StageScript::new("users.sql", "CREATE TABLE users (id BIGINT);"),
+        ]);
+
+        write_staged_boundary(&stage, &staged).expect("the batch is written");
+
+        // The batch lands at the names of the scripts themselves, with no staged
+        // sibling beside them: the commit flushes the directory once instead of
+        // once per script, and nothing else has to be published or removed.
+        let mut names: Vec<String> = std::fs::read_dir(&staged)
+            .expect("read the staging directory")
+            .map(|entry| {
+                entry
+                    .expect("a directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec!["orders.sql".to_owned(), "users.sql".to_owned()],
+            "the scripts are alone in the staging directory"
+        );
+        assert_eq!(
+            std::fs::read_to_string(staged.join("users.sql")).expect("read the staged script"),
+            "CREATE TABLE users (id BIGINT);"
+        );
+    }
+
+    #[test]
+    fn a_missing_staging_directory_is_reported_instead_of_created() {
+        let scratch = Scratch::new("write-staged-absent");
+        let staged = scratch.0.join(".checkpoint-stage.4242.17.4.tmp");
+        let stage = DeclarativeStage::new(vec![StageScript::new(
+            "users.sql",
+            "CREATE TABLE users (id INTEGER);",
+        )]);
+
+        // The batch writes into the directory the commit prepared and never
+        // creates one of its own: a missing directory is a defect of the caller,
+        // not something a script write silently repairs.
+        let error =
+            write_staged_boundary(&stage, &staged).expect_err("the batch needs its directory");
+
+        assert!(
+            error.to_string().contains("users.sql"),
+            "the diagnostic names the script that could not be written, got {error}"
+        );
+        assert!(!staged.exists(), "the write creates no staging directory");
     }
 }
