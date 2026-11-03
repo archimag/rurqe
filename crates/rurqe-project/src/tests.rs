@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -643,15 +644,53 @@ fn malformed_entries_are_reported_with_their_line() {
     );
 }
 
+/// The nearest `rurqe.toml` at or above `start`, spelled out as the walk is specified.
+///
+/// The scratch trees live in the host's temporary directory, and the directories above
+/// it belong to the host, so a test that pins the absence tier compares against this
+/// expectation unconditionally instead of asserting only when no ancestor declares a
+/// configuration: the expectation is `None` on a host that keeps none, and the host's
+/// own file otherwise.
+fn nearest_declared_config(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .map(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH))
+        .find(|candidate| candidate.is_file())
+}
+
+/// A scratch project directory that removes itself when the test ends.
+///
+/// The tree is named after the test's label and the process, so two tests of one run
+/// never share a directory. `Drop` removes it on the way out of the test body — after a
+/// returned value, a failed assertion, or an unwound panic — so a failing expectation no
+/// longer leaves the tree behind in the temporary directory.
+struct TemporaryProject {
+    path: PathBuf,
+}
+
+impl Deref for TemporaryProject {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryProject {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A private temporary directory a test builds its project tree in.
-fn temporary_project(label: &str) -> PathBuf {
+fn temporary_project(label: &str) -> TemporaryProject {
     let path = std::env::temp_dir().join(format!(
         "rurqe-project-{label}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).expect("the temporary project directory is created");
-    path
+    TemporaryProject { path }
 }
 
 #[test]
@@ -666,8 +705,6 @@ fn configuration_files_are_read_from_disk() {
 
     let config = CodegenConfig::load(&path).expect("the file is valid");
 
-    let _ = std::fs::remove_dir_all(&directory);
-
     assert_eq!(config.primary_schema(), Some("app"));
     assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
 }
@@ -678,8 +715,6 @@ fn a_missing_configuration_is_an_error() {
     let path = directory.join(DEFAULT_CONFIG_PATH);
 
     let err = CodegenConfig::load(&path).expect_err("an absent path is not a configuration");
-
-    let _ = std::fs::remove_dir_all(&directory);
 
     let absent = path.display().to_string();
     assert!(
@@ -707,8 +742,6 @@ fn an_unreadable_configuration_is_an_error() {
 
     let err = CodegenConfig::load(&directory).expect_err("a directory is not a configuration file");
 
-    let _ = std::fs::remove_dir_all(&directory);
-
     assert!(matches!(&err, ConfigError::Io { .. }), "{err}");
     assert!(
         err.to_string().contains("failed to read configuration"),
@@ -728,8 +761,6 @@ fn an_unreadable_configuration_keeps_the_operating_system_error() {
     std::fs::write(&path, [0xffu8, 0xfe]).expect("the invalid configuration is written");
 
     let err = CodegenConfig::load(&path).expect_err("the contents are not UTF-8");
-
-    let _ = std::fs::remove_dir_all(&directory);
 
     let source = err
         .source()
@@ -1100,30 +1131,23 @@ fn discovery_answers_with_the_nearest_configuration_file() {
 
     let discovered = discover_config(&nested);
 
-    let _ = std::fs::remove_dir_all(&root);
-
     assert_eq!(discovered, Some(nearest));
 }
 
 #[test]
 fn a_directory_tree_without_a_configuration_file_yields_none() {
-    let root = temporary_project("absent");
+    let project = temporary_project("absent");
+    let root: &Path = &project;
     let nested = root.join("crates").join("app");
     std::fs::create_dir_all(&nested).expect("the nested directories are created");
 
-    // Directories above the temporary root belong to the host, so the assertion
-    // is made only when none of them declares a configuration of its own.
-    let outside = root
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH).is_file());
+    // The tree declares no configuration of its own, so the walk leaves it and answers
+    // with the nearest declaration above it: `None` on a host that keeps none, and the
+    // host's own file otherwise. Comparing against the exact expectation keeps the tier
+    // checked in both cases instead of skipping it when an ancestor declares one.
     let discovered = discover_config(&nested);
 
-    let _ = std::fs::remove_dir_all(&root);
-
-    if outside.is_none() {
-        assert_eq!(discovered, None);
-    }
+    assert_eq!(discovered, nearest_declared_config(&nested), "the nearest declaration above");
 }
 
 #[test]
@@ -1280,11 +1304,8 @@ fn load_or_default_falls_back_only_when_the_file_is_absent() {
         .expect("the malformed configuration is written");
     let malformed =
         CodegenConfig::load_or_default(&path).expect_err("a malformed file is an error");
-
     let unreadable = CodegenConfig::load_or_default(&directory)
         .expect_err("a directory is not a configuration file");
-
-    let _ = std::fs::remove_dir_all(&directory);
 
     assert!(
         matches!(&malformed, ConfigError::Syntax { .. }),
@@ -1309,8 +1330,6 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
 
     let discovered = discover_or_default(&member);
 
-    let _ = std::fs::remove_dir_all(&root);
-
     let (configuration, directory) = discovered.expect("the configuration is discovered");
 
     assert_eq!(configuration.primary_schema(), Some("app"));
@@ -1319,36 +1338,35 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
         Some("uuid::Uuid")
     );
     assert_eq!(
-        directory, root,
+        directory, root.to_path_buf(),
         "the configuration is anchored at its directory"
     );
 }
 
 #[test]
 fn discover_or_default_without_a_configuration_yields_the_default() {
-    let root = temporary_project("discover-default");
+    let project = temporary_project("discover-default");
+    let root: &Path = &project;
     let nested = root.join("crates").join("app");
     std::fs::create_dir_all(&nested).expect("the nested directories are created");
 
-    // Directories above the temporary root belong to the host, so the assertion
-    // is made only when none of them declares a configuration of its own.
-    let outside = root
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH).is_file());
-    let discovered = discover_or_default(&nested);
+    // The tree declares no configuration, so the walk leaves it: the answer is the
+    // defaults anchored at the caller's directory on a host that keeps none, and the
+    // host's own declaration otherwise. Both branches assert, so the test never passes
+    // without checking the tier it describes.
+    let (configuration, directory) =
+        discover_or_default(&nested).expect("the walk answers or reports a failure");
 
-    let _ = std::fs::remove_dir_all(&root);
+    match nearest_declared_config(&nested) {
+        None => {
+            assert_eq!(configuration, CodegenConfig::default());
+            assert_eq!(directory, nested, "the default is anchored at the caller");
+        }
+        Some(declared) => {
+            let anchor = declared.parent().expect("a configuration file sits in a directory");
 
-    if outside.is_none() {
-        let (configuration, directory) =
-            discovered.expect("a tree without a configuration answers the defaults");
-
-        assert_eq!(configuration, CodegenConfig::default());
-        assert_eq!(
-            directory, nested,
-            "the default is anchored at the caller's directory"
-        );
+            assert_eq!(directory.as_path(), anchor, "the answer comes from the host above");
+        }
     }
 }
 
@@ -1360,9 +1378,6 @@ fn a_malformed_document_reports_the_file_it_was_read_from() {
         .expect("the malformed configuration is written");
 
     let err = CodegenConfig::load(&path).expect_err("the misspelled key is refused");
-
-    let _ = std::fs::remove_dir_all(&directory);
-
     let declared = path.display().to_string();
     assert!(
         matches!(
@@ -1392,9 +1407,6 @@ fn a_discovered_malformed_document_reports_the_file_the_walk_selected() {
     std::fs::write(&path, "roots = \"rurqe\"\n").expect("the malformed configuration is written");
 
     let err = discover_or_default(&member).expect_err("the misspelled key is refused");
-
-    let _ = std::fs::remove_dir_all(&root);
-
     let declared = path.display().to_string();
     assert!(
         matches!(
@@ -1455,9 +1467,6 @@ fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
     std::fs::remove_file(&path).expect("the configuration is removed");
 
     let answer = read_discovered(&path, &member);
-
-    let _ = std::fs::remove_dir_all(&root);
-
     let (configuration, directory) = answer.expect("an absent file is the walk's own tier");
     assert_eq!(configuration, CodegenConfig::default());
     assert_eq!(
@@ -1471,7 +1480,8 @@ fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
 /// the outcome describes the state of the tree rather than the timing of the two calls.
 #[test]
 fn a_vanished_configuration_answers_like_a_tree_without_one() {
-    let root = temporary_project("vanished-tier");
+    let project = temporary_project("vanished-tier");
+    let root: &Path = &project;
     let member = root.join("crates").join("app");
     std::fs::create_dir_all(&member).expect("the nested directories are created");
     let path = root.join(DEFAULT_CONFIG_PATH);
@@ -1481,26 +1491,64 @@ fn a_vanished_configuration_answers_like_a_tree_without_one() {
     )
     .expect("the configuration is written");
 
-    // Directories above the temporary root belong to the host, so the comparison is made
-    // only when none of them declares a configuration of its own.
-    let outside = root
-        .ancestors()
-        .skip(1)
-        .find(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH).is_file());
-
     assert_eq!(discover_config(&member), Some(path.clone()));
     std::fs::remove_file(&path).expect("the configuration is removed");
 
-    let vanished = read_discovered(&path, &member);
-    let absent = discover_or_default(&member);
+    // The removed file is the walk's own absence tier: the read answers the defaults
+    // anchored at the caller's directory, exactly as a tree that declares none does.
+    let vanished =
+        read_discovered(&path, &member).expect("an absent file is the walk's own tier");
+    assert_eq!(vanished, (CodegenConfig::default(), member.clone()));
 
-    let _ = std::fs::remove_dir_all(&root);
+    // A tree that never declared one answers the same tuple whenever the host above the
+    // scratch tree declares none either; when the host does declare one, the answer comes
+    // from that file. Both cases are asserted instead of skipping the comparison.
+    let absent = discover_or_default(&member).expect("the walk answers or reports a failure");
+    match nearest_declared_config(&member) {
+        None => assert_eq!(absent, vanished),
+        Some(declared) => {
+            let anchor = declared.parent().expect("a configuration file sits in a directory");
 
-    if outside.is_none() {
-        let (vanished, vanished_at) = vanished.expect("the vanished file answers the defaults");
-        let (absent, absent_at) = absent.expect("a tree without a configuration answers the defaults");
-
-        assert_eq!(vanished, absent);
-        assert_eq!(vanished_at, absent_at);
+            assert_eq!(absent.1.as_path(), anchor, "the answer comes from the host above");
+        }
     }
+}
+
+/// The walk's absence tier answers with the defaults, so a file the walk did find is not
+/// absent: a malformed one is reported in its own right and never replaced by them.
+#[test]
+fn a_discovered_malformed_configuration_never_falls_back_to_the_defaults() {
+    let project = temporary_project("discover-malformed");
+    let member = project.join("crates").join("app");
+    std::fs::create_dir_all(&member).expect("the nested directories are created");
+    std::fs::write(project.join(DEFAULT_CONFIG_PATH), "[stage]\ndir = \"\"\n")
+        .expect("the malformed configuration is written");
+
+    let err = discover_or_default(&member).expect_err("a malformed file is an error");
+
+    assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
+    assert!(
+        err.to_string().contains("`stage.dir` requires a non-empty value"),
+        "{err}"
+    );
+}
+
+/// Only the `Io` variant keeps a cause beneath it: `Syntax` is a failure of the document's
+/// own content and `NotFound` is an absence at the named path, so neither carries a source
+/// an error reporter could walk into.
+#[test]
+fn only_an_unreadable_configuration_carries_a_source() {
+    use std::error::Error as _;
+
+    let project = temporary_project("source-tier");
+    let syntax = CodegenConfig::parse("[codegen]\ndomain_type = true\n")
+        .expect_err("the misspelled key is refused");
+    let absent = CodegenConfig::load(&project.join("absent.toml"))
+        .expect_err("an absent path is not a configuration");
+
+    assert!(matches!(&syntax, ConfigError::Syntax { .. }), "{syntax}");
+    assert!(syntax.source().is_none(), "a malformed document has no cause");
+
+    assert!(matches!(&absent, ConfigError::NotFound { .. }), "{absent}");
+    assert!(absent.source().is_none(), "an absence has no cause");
 }
