@@ -428,6 +428,40 @@ fn index_divergences_are_reported_by_name() {
     assert!(message.contains("users_name_idx"));
 }
 
+#[test]
+fn a_diverged_report_renders_its_schema_notices() {
+    // A selection that describes nothing manufactures exactly the findings above
+    // it, so the warning has to travel inside the failure those findings rejected.
+    let notice = "warning: none of the selected schemas (public) holds a table or view";
+
+    let report = GoldenReport {
+        stage_catalog: SchemaCatalog::default(),
+        tail_catalog: SchemaCatalog::default(),
+        diff: SchemaDiff {
+            missing_tables: vec!["users".to_owned()],
+            ..SchemaDiff::default()
+        },
+        schema_notices: vec![notice.to_owned()],
+    };
+
+    let message = StageError::Diverged(Box::new(report)).to_string();
+
+    let finding = message
+        .find("Table `users` is declared in the stage")
+        .unwrap_or_else(|| panic!("the findings are rendered, got {message}"));
+    let warning = message
+        .find(notice)
+        .unwrap_or_else(|| panic!("the notice is rendered, got {message}"));
+    let hint = message
+        .find("Hint:")
+        .unwrap_or_else(|| panic!("the remedy is rendered, got {message}"));
+
+    assert!(
+        finding < warning && warning < hint,
+        "the notice renders between the findings and the remedy, got {message}"
+    );
+}
+
 /// A unique, not-yet-created file scratch database for one test.
 fn scratch_path(label: &str) -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

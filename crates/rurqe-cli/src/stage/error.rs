@@ -82,6 +82,15 @@ impl fmt::Display for StageError {
                 writeln!(f, "  stage hash: {}", report.stage_hash())?;
                 writeln!(f, "  tail hash:  {}", report.tail_hash())?;
                 report.write_details(f)?;
+
+                // The notice a side produced belongs to the diagnostic: a selection
+                // that describes nothing manufactures exactly the misleading findings
+                // rendered above, so the warning travels next to them instead of being
+                // dropped with the report that never materialised.
+                for notice in &report.schema_notices {
+                    writeln!(f, "{notice}")?;
+                }
+
                 write!(
                     f,
                     "Hint: update `schema/` to match the replayed tail, or add the migration that closes the gap."

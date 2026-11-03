@@ -102,6 +102,10 @@ cargo rurqe stage verify --scratch-url :memory: --schema app
 ```
 
 When the configuration file already names the schemas, the flags are unnecessary.
+A selection that describes nothing is reported rather than certified: the warning
+travels in the output of a gate that passes and inside the failure of a gate that
+rejects, after its findings, so a wrong `--schema` is recognizable from the gate's
+own output instead of surfacing only as relations the catalog claims to miss.
 A malformed `rurqe.toml` aborts either command instead of being partially applied.
 
 ## The snapshot gate
@@ -279,7 +283,10 @@ no scratch database URL provided: pass `--scratch-url <url>` (or `--database-url
   `CREATE INDEX CONCURRENTLY` stays replayable.
 - A selection whose schemas hold no relation while the scratch keeps user relations
   elsewhere contributes the vacuous-selection warning to the report, so a
-  comparison over an empty catalog is never certified silently.
+  comparison over an empty catalog is never certified silently. A gate that rejects
+  renders that warning inside its failure, after the findings and before the remedy,
+  so the one warning that explains the misleading findings is not lost with the
+  report that never materialised.
 
 ### The boundary the tail replays over
 A committed checkpoint anchors a boundary version and a digest. The boundary is
