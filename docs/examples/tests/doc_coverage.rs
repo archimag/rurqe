@@ -22,19 +22,23 @@
 //! the targets is the job of `cargo check --workspace --all-targets` in the
 //! same pipeline.
 //!
-//! The anchor grammar comes from `rurqe_examples::anchors`, which classifies
-//! every marker once, so the inclusion checks and the pairing check of this
-//! guard cannot disagree about what an anchor line is.
+//! The anchor grammar and the book walk come from the library of this package:
+//! `rurqe_examples::anchors` classifies every marker once, so the inclusion
+//! checks and the pairing check of this guard cannot disagree about what an
+//! anchor line is, and `rurqe_examples::includes` owns the directive model and
+//! the book walk, so this guard and the walkthrough parity audit cannot
+//! disagree about what an inclusion is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rurqe_examples::anchors::{self, AnchorLine};
+use rurqe_examples::includes::{
+    Directive, book_source, example_directives, is_skipped_directory, package_root,
+    relative_chapter_files, summary_entries,
+};
 use serde::Deserialize;
-
-/// The directive tag every chapter inclusion starts with.
-const INCLUDE_TAG: &str = "{{#rustdoc_include";
 
 /// The fence a chapter includes a fragment of a registered example target into.
 const TARGET_FENCE: &str = "rust,no_run";
@@ -78,23 +82,6 @@ const DERIVATION_TEST: &str = "tests/generated_module.rs";
 /// Build script of the package, which is compiled infrastructure rather than a
 /// documentation target.
 const BUILD_SCRIPT: &str = "build.rs";
-
-/// One `{{#rustdoc_include}}` directive of a chapter.
-struct Directive {
-    /// The chapter file carrying the directive.
-    chapter: String,
-    /// Path of the addressed file relative to the package root, `/`-separated.
-    ///
-    /// The directive resolves the path the chapter names rather than a file
-    /// stem some later check reinterprets: an include addresses the registered
-    /// `path` of an example target, or a fixture under `guards/`, and both
-    /// classes are resolved against this one field.
-    path: String,
-    /// The anchor region the directive names, empty when it names none.
-    anchor: String,
-    /// The info string of the fence the directive sits in, empty outside one.
-    fence: String,
-}
 
 /// The class of file an include directive addresses.
 enum IncludeClass<'a> {
@@ -151,10 +138,6 @@ fn classify_include<'a>(registered: &'a [ExampleTarget], path: &str) -> IncludeC
         return IncludeClass::Generated;
     }
     IncludeClass::Unregistered
-}
-/// Root of the `rurqe-examples` package.
-fn package_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// The parts of `examples/Cargo.toml` the guard reads.
@@ -326,102 +309,6 @@ fn declared_anchors(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The path an include directive addresses, relative to the package root.
-///
-/// Chapters sit at different depths and the conventions document even shows a
-/// doubled-slash path, so the file is taken as the segments that follow the
-/// `examples` directory segment instead of being counted from the left. Every
-/// segment after that directory belongs to the package-relative path, so a
-/// fixture under `guards/` keeps the directory segment that classifies it.
-fn example_path_of(path: &str) -> Option<String> {
-    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
-    segments.position(|segment| segment == "examples")?;
-    let rest: Vec<&str> = segments.collect();
-    (!rest.is_empty()).then(|| rest.join("/"))
-}
-
-/// Directory holding the book sources next to the examples crate.
-fn book_source() -> PathBuf {
-    let book = package_root().join("..");
-    assert!(
-        book.is_dir(),
-        "the book source directory {book:?} must exist as the parent of the examples crate"
-    );
-    book
-}
-
-/// File name of the table of contents inside the book source.
-const SUMMARY_FILE: &str = "SUMMARY.md";
-
-/// Whether a directory of the book source holds no chapter.
-///
-/// The example crate carries its own tests, `target` and `book` are build
-/// output, and `.git` is not part of the working tree at all.
-fn is_skipped_directory(path: &Path) -> bool {
-    let Some(name) = path.file_name() else {
-        return false;
-    };
-    name == "examples" || name == "target" || name == "book" || name == ".git"
-}
-
-/// Whether a Markdown file is a book-level document rather than a chapter.
-///
-/// The table of contents defines the chapter set and the conventions document
-/// states how the book is written, so neither is a chapter of its own.
-fn is_book_metadata(path: &Path) -> bool {
-    let Some(name) = path.file_name() else {
-        return false;
-    };
-    name == SUMMARY_FILE || name == "Conventions.md"
-}
-
-/// Chapters the table of contents links, as paths relative to the book source.
-///
-/// `SUMMARY.md` is the single statement of what the book contains: mdbook
-/// builds exactly the chapters it names, so an entry without a file aborts the
-/// build while a chapter without an entry never reaches a reader. The target
-/// of every list item is reduced to its path, so neither the title nor a
-/// fragment reaches the comparison.
-fn summary_entries() -> Vec<String> {
-    let path = book_source().join(SUMMARY_FILE);
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("{path:?} is not readable: {error}"));
-    text.lines()
-        .filter_map(|line| {
-            let target = line.split_once("](")?.1.split_once(')')?.0.trim();
-            let chapter = target.split('#').next()?.trim();
-            (!chapter.is_empty()).then(|| chapter.to_owned())
-        })
-        .collect()
-}
-
-/// Markdown files under `dir`, relative to the book source and `/`-separated.
-///
-/// The walk skips the directories the inclusion guards skip, so a file the
-/// book never reads cannot appear as a chapter of it.
-fn relative_chapter_files(dir: &Path, book: &Path, chapters: &mut Vec<String>) {
-    let entries = fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
-    for entry in entries {
-        let path = entry
-            .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
-            .path();
-        if path.is_dir() {
-            if is_skipped_directory(&path) {
-                continue;
-            }
-            relative_chapter_files(&path, book, chapters);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            if is_book_metadata(&path) {
-                continue;
-            }
-            let relative = path
-                .strip_prefix(book)
-                .unwrap_or_else(|error| panic!("chapter {path:?} lies under {book:?}: {error}"));
-            chapters.push(relative.to_string_lossy().replace('\\', "/"));
-        }
-    }
-}
 /// Anchor regions the chapters include, keyed by the package-relative path of
 /// the addressed file.
 ///
@@ -436,89 +323,6 @@ fn included_anchors() -> BTreeMap<String, BTreeSet<String>> {
             .insert(directive.anchor);
     }
     included
-}
-
-/// Every include directive of the book that addresses the `examples/` crate,
-/// as the chapter that carries it, the package-relative path of the addressed
-/// file, and the anchor region it names.
-///
-/// A directive that names no anchor region is collected with an empty anchor:
-/// mdbook substitutes the whole file when no region is named, and a whole
-/// example file — crate-level imports and a `#[tokio::main]` entry point —
-/// does not compile as a doctest. Every entry is collected before anything
-/// is resolved, so a directive naming a missing file, a missing anchor, or
-/// no anchor at all stays visible instead of disappearing from the walk.
-fn example_directives() -> Vec<Directive> {
-    let mut directives = Vec::new();
-    collect_directives(&book_source(), &mut directives);
-    directives
-}
-
-fn collect_directives(dir: &Path, directives: &mut Vec<Directive>) {
-    let entries = fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("book directory {dir:?} is not readable: {error}"));
-    for entry in entries {
-        let path = entry
-            .unwrap_or_else(|error| panic!("a directory entry of {dir:?} is not readable: {error}"))
-            .path();
-        if path.is_dir() {
-            if is_skipped_directory(&path) {
-                continue;
-            }
-            collect_directives(&path, directives);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            if path
-                .file_name()
-                .is_some_and(|name| name == "Conventions.md")
-            {
-                continue;
-            }
-            collect_file_directives(&path, directives);
-        }
-    }
-}
-
-fn collect_file_directives(path: &Path, directives: &mut Vec<Directive>) {
-    let text = fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("chapter {path:?} is not readable: {error}"));
-    let mut in_fence = false;
-    // The info string of the fence the walk is inside; it is cleared when the
-    // block closes, so a directive outside every fence records an empty one.
-    let mut fence = String::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if let Some(opening) = trimmed.strip_prefix("```") {
-            if in_fence {
-                in_fence = false;
-                fence.clear();
-            } else {
-                in_fence = true;
-                fence = opening.trim().to_owned();
-            }
-            continue;
-        }
-        let mut rest = line;
-        while let Some(start) = rest.find(INCLUDE_TAG) {
-            rest = rest[start + INCLUDE_TAG.len()..].trim_start();
-            let Some(end) = rest.find("}}") else {
-                break;
-            };
-            let directive = rest[..end].trim();
-            rest = &rest[end + 2..];
-            let (path_part, anchor) = match directive.split_once(':') {
-                Some((path_part, anchor)) => (path_part, anchor.trim()),
-                None => (directive, ""),
-            };
-            if let Some(addressed) = example_path_of(path_part) {
-                directives.push(Directive {
-                    chapter: path.display().to_string(),
-                    path: addressed,
-                    anchor: anchor.to_owned(),
-                    fence: fence.clone(),
-                });
-            }
-        }
-    }
 }
 
 /// Prefix of a rustdoc hiding line, which a chapter never carries.

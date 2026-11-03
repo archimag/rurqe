@@ -26,13 +26,16 @@
 //! the fragment reads on its own in the rendered chapter.
 //!
 //! The library target provides shared infrastructure for the example targets
-//! and for the guard that audits them: the centralized [`example_pool`]
-//! function and the anchor grammar in [`anchors`], which classifies every
-//! fragment marker exactly once. The example files are registered in
-//! `Cargo.toml` as explicit `[[example]]` targets, because Cargo discovers
-//! example targets only under `<package>/examples/`.
+//! and for the guards that audit them: the centralized [`example_pool`]
+//! function, the anchor grammar in [`anchors`], which classifies every
+//! fragment marker exactly once, and the book-scanning machinery in
+//! [`includes`], which resolves every chapter inclusion exactly once. The
+//! example files are registered in `Cargo.toml` as explicit `[[example]]`
+//! targets, because Cargo discovers example targets only under
+//! `<package>/examples/`.
 
 pub mod anchors;
+pub mod includes;
 pub mod markers;
 
 /// The compile-failure fixtures the book quotes, compiled as doctests.
