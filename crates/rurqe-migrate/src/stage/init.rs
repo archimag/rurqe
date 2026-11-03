@@ -20,11 +20,11 @@ pub struct ColdStartReport {
 
 /// Initialises an empty database from the declarative stage.
 ///
-/// The transactional DDL scripts of `stage` share one transaction — a failure
-/// among them leaves the database untouched — while a script marked
-/// non-transactional runs on its own, outside any transaction. The resulting
-/// schema is anchored
-/// by a synthetic [`StageMarker`] row in the schema history. Because the marker
+/// The transactional DDL scripts of `stage` share one transaction with the
+/// synthetic [`StageMarker`] row that anchors them — a failure among the
+/// scripts, a failing catalog read, or an unwritable marker discards the whole
+/// attempt — while a script marked non-transactional runs on its own, outside
+/// any transaction. Because the marker
 /// is recorded as a baseline, every versioned migration at or below
 /// [`StageMarker::version`] is reported as applied while the active tail above
 /// it still runs.
@@ -148,7 +148,9 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
     // transaction, so nothing would record the attempt if the process died
     // midway. The in-progress marker is committed first and replaced by the
     // applied one at the end, so an interrupted cold start stays visible in the
-    // history instead of leaving a schema nobody can name.
+    // history instead of leaving a schema nobody can name. A fully transactional
+    // stage needs none of that: its scripts and the marker that records them
+    // share one transaction, so the database carries both or neither of them.
     let in_progress = stage
         .scripts()
         .iter()
@@ -161,17 +163,21 @@ pub(crate) fn cold_start_core<B: MigrationBackend>(
         None
     };
 
-    apply_stage(&mut guard, stage, in_progress_rank)?;
-
-    let elapsed_ms = start_time.elapsed().as_millis() as i64;
-
     // The marker anchors the digest of the catalog the stage produced, so the
     // checkpoint written by `stage commit` recognises the initialised database
     // whatever engine executed the DDL. The digest is read inside the very
     // transaction that records the marker, so the row and the schema it
     // describes become visible together; a backend that cannot introspect itself
     // keeps the digest the caller supplied.
-    let entry = record_applied_marker(&mut guard, marker, in_progress_rank)?;
+    let entry = match in_progress_rank {
+        Some(installed_rank) => {
+            apply_stage(&mut guard, stage, installed_rank)?;
+            record_applied_marker(&mut guard, marker, installed_rank)?
+        }
+        None => apply_stage_atomically(&mut guard, stage, marker)?,
+    };
+
+    let elapsed_ms = start_time.elapsed().as_millis() as i64;
 
     tracing::info!(
         version = %marker.version(),
@@ -260,7 +266,7 @@ fn record_marker<B: MigrationBackend>(
 fn record_applied_marker<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     marker: &StageMarker,
-    replaces: Option<i64>,
+    replaces: i64,
 ) -> Result<SchemaHistoryEntry, Error> {
     let mut tx = guard.begin()?;
 
@@ -275,12 +281,58 @@ fn record_applied_marker<B: MigrationBackend>(
 
     let entry = marker.entry(1, current_timestamp(), checksum, true);
 
-    if let Some(installed_rank) = replaces {
-        if let Err(error) = tx.delete_entry(installed_rank) {
+    if let Err(error) = tx.delete_entry(replaces) {
+        let _ = tx.rollback();
+        return Err(error);
+    }
+
+    if let Err(error) = tx.record_entry(&entry) {
+        let _ = tx.rollback();
+        return Err(error);
+    }
+
+    tx.commit()?;
+
+    Ok(entry)
+}
+
+/// Applies a fully transactional stage and records its marker in one transaction.
+///
+/// None of the scripts of such a stage has to run outside a transaction, so the
+/// DDL and the row that records it share one: a failing script, a failing catalog
+/// read, an unwritable marker, or a failing commit discards the whole attempt, and
+/// the database stays as cold as it was instead of holding a schema the history
+/// knows nothing about.
+///
+/// The digest is read through [`MigrationTransaction::catalog_checksum`] once
+/// every script has been applied and inside the very transaction that records the
+/// marker, so the row anchors the catalog the stage produced under the engine that
+/// produced it and becomes visible together with it; a backend that cannot
+/// introspect itself keeps the digest of the marker.
+fn apply_stage_atomically<B: MigrationBackend>(
+    guard: &mut LockGuard<'_, B>,
+    stage: &DeclarativeStage,
+    marker: &StageMarker,
+) -> Result<SchemaHistoryEntry, Error> {
+    let mut tx = guard.begin()?;
+
+    for script in stage.scripts() {
+        if let Err(error) = tx.execute(script.sql()) {
+            let _ = tx.rollback();
+            return Err(stage_script_failed(script, &error));
+        }
+    }
+
+    let checksum = match tx.catalog_checksum() {
+        Ok(Some(checksum)) => checksum,
+        Ok(None) => marker.checksum(),
+        Err(error) => {
             let _ = tx.rollback();
             return Err(error);
         }
-    }
+    };
+
+    let entry = marker.entry(1, current_timestamp(), checksum, true);
 
     if let Err(error) = tx.record_entry(&entry) {
         let _ = tx.rollback();
@@ -343,13 +395,15 @@ fn partial_initialisation(entry: &SchemaHistoryEntry) -> Error {
     ))
 }
 
-/// Applies the DDL of `stage`, honouring each script's transactional attribute.
+/// Applies a stage holding at least one non-transactional script.
 ///
 /// Consecutive transactional scripts share one transaction, so a failure among
 /// them leaves the database untouched. A script marked non-transactional commits
 /// the work staged so far and then runs on its own: engines refuse such
 /// statements inside a transaction, so wrapping them would abort the cold start
-/// on a perfectly valid stage.
+/// on a perfectly valid stage. Such a stage cannot share one boundary with the
+/// marker, which follows in a transaction of its own; a fully transactional
+/// stage goes through [`apply_stage_atomically`] instead.
 ///
 /// `in_progress_rank` names the marker a cold start committed before the first
 /// non-transactional script. A backend that cannot run such a script refuses it
@@ -360,7 +414,7 @@ fn partial_initialisation(entry: &SchemaHistoryEntry) -> Error {
 fn apply_stage<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     stage: &DeclarativeStage,
-    in_progress_rank: Option<i64>,
+    in_progress_rank: i64,
 ) -> Result<(), Error> {
     let scripts = stage.scripts();
     let mut index = 0usize;
@@ -377,8 +431,8 @@ fn apply_stage<B: MigrationBackend>(
                     // stage has been applied: an earlier script proves the schema
                     // really is partially initialised, and then the marker has to
                     // stay.
-                    if let Some(installed_rank) = in_progress_rank.filter(|_| index == 0) {
-                        withdraw_marker(guard, installed_rank);
+                    if index == 0 {
+                        withdraw_marker(guard, in_progress_rank);
                     }
                     return Err(Error::NonTransactionalUnsupported {
                         script: Some(script.name().to_owned()),

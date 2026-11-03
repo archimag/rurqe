@@ -189,6 +189,57 @@ fn a_failing_script_aborts_the_cold_start() {
 }
 
 #[test]
+fn a_transactional_stage_and_its_marker_share_one_transaction() {
+    let mut backend = InMemoryBackend::new();
+    backend.fail_success_entry = true;
+
+    let error = cold_start(&mut backend, &stage(), &marker())
+        .expect_err("an unwritable marker rolls the whole stage back");
+
+    assert!(matches!(error, Error::Backend(_)), "got {error:?}");
+    assert!(backend.history.is_empty());
+    assert_eq!(
+        backend.executed_sql,
+        vec![create_schema_history_table_sql().to_owned()],
+        "the DDL of the stage never commits without the marker that records it"
+    );
+    assert!(!backend.locked, "the lock is released on the way out");
+
+    backend.fail_success_entry = false;
+    let report = cold_start(&mut backend, &stage(), &marker())
+        .expect("the database is still cold, so the retry initialises it");
+    assert_eq!(report.stage_scripts, vec!["orders.sql", "users.sql"]);
+    assert_eq!(report.installed_rank, Some(1));
+    assert_eq!(backend.history.len(), 1);
+    assert!(backend.history[0].success);
+}
+
+#[test]
+fn a_cold_start_that_cannot_commit_the_marker_leaves_the_database_cold() {
+    let mut backend = InMemoryBackend::new();
+    backend.fail_success_commit = true;
+
+    let error = cold_start(&mut backend, &stage(), &marker())
+        .expect_err("the marker cannot be committed");
+
+    assert!(matches!(error, Error::Backend(_)), "got {error:?}");
+    assert!(backend.history.is_empty());
+    assert_eq!(
+        backend.executed_sql,
+        vec![create_schema_history_table_sql().to_owned()],
+        "the failing commit discards the staged DDL together with the marker"
+    );
+    assert!(!backend.locked, "the lock is released on the way out");
+
+    backend.fail_success_commit = false;
+    let report = cold_start(&mut backend, &stage(), &marker())
+        .expect("the database is still cold, so the retry initialises it");
+    assert_eq!(report.installed_rank, Some(1));
+    assert_eq!(backend.history.len(), 1);
+    assert!(backend.history[0].success);
+}
+
+#[test]
 fn the_marker_carries_the_catalog_digest() {
     let catalog = SchemaCatalog::default();
     let marker = StageMarker::from_catalog(version("3.2"), &catalog);
@@ -202,10 +253,13 @@ fn the_marker_carries_the_catalog_digest() {
 ///
 /// The connection reports no digest at all, so only the transaction hook can
 /// supply the anchor a cold start records: a cold start reading the digest
-/// through the connection would fall back to the digest of the stage marker.
+/// through the connection would fall back to the digest of the stage marker. A
+/// transaction can also refuse the read, which is how a cold start that cannot
+/// anchor its marker is exercised.
 struct TransactionDigestBackend {
     inner: InMemoryBackend,
     observed: Checksum,
+    refuse_catalog: bool,
 }
 
 impl MigrationBackend for TransactionDigestBackend {
@@ -221,8 +275,13 @@ impl MigrationBackend for TransactionDigestBackend {
 
     fn begin(&mut self) -> Result<Self::Transaction<'_>, Error> {
         let observed = self.observed;
+        let refuse_catalog = self.refuse_catalog;
         let inner = self.inner.begin()?;
-        Ok(TransactionDigestTransaction { inner, observed })
+        Ok(TransactionDigestTransaction {
+            inner,
+            observed,
+            refuse_catalog,
+        })
     }
 }
 
@@ -230,6 +289,7 @@ impl MigrationBackend for TransactionDigestBackend {
 struct TransactionDigestTransaction<'a> {
     inner: InMemoryTransaction<'a>,
     observed: Checksum,
+    refuse_catalog: bool,
 }
 
 impl MigrationTransaction for TransactionDigestTransaction<'_> {
@@ -238,6 +298,9 @@ impl MigrationTransaction for TransactionDigestTransaction<'_> {
     }
 
     fn catalog_checksum(&mut self) -> Result<Option<Checksum>, Error> {
+        if self.refuse_catalog {
+            return Err(Error::Backend("simulated catalog failure".to_owned()));
+        }
         Ok(Some(self.observed))
     }
 
@@ -268,6 +331,7 @@ fn the_stage_marker_anchors_the_digest_its_transaction_observes() {
     let mut backend = TransactionDigestBackend {
         inner: InMemoryBackend::new(),
         observed,
+        refuse_catalog: false,
     };
 
     let report = cold_start(&mut backend, &stage(), &marker()).expect("the database is cold");
@@ -286,6 +350,29 @@ fn the_stage_marker_anchors_the_digest_its_transaction_observes() {
         "the marker row never inherits the digest of the stage marker"
     );
     assert!(entry.success);
+}
+
+#[test]
+fn a_failing_catalog_read_rolls_the_stage_back() {
+    let mut backend = TransactionDigestBackend {
+        inner: InMemoryBackend::new(),
+        observed: Checksum::of(b"a digest the run never reads"),
+        refuse_catalog: true,
+    };
+
+    let error = cold_start(&mut backend, &stage(), &marker())
+        .expect_err("the marker cannot anchor a catalog the transaction never read");
+
+    assert!(matches!(error, Error::Backend(_)), "got {error:?}");
+    assert!(
+        backend.inner.history.is_empty(),
+        "the marker is rolled back with the failed read"
+    );
+    assert_eq!(
+        backend.inner.executed_sql,
+        vec![create_schema_history_table_sql().to_owned()],
+        "the DDL of the stage never commits without the marker that records it"
+    );
 }
 
 #[test]
