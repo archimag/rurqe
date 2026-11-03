@@ -662,8 +662,10 @@ cannot baseline database: history already contains migration or baseline version
 
 The command line reads `rurqe/migrations/` as a process of its own, which is what
 a development loop and a deployment step need.
-inside itself instead: the scripts are compiled in, parsed and digested at
-startup, and applied through the connection the application already opens.
+An application can carry the scripts inside itself instead: `embed_migrations!`
+compiles them into the binary, and the collection it produces is parsed and
+digested at startup, then applied through the connection the application
+already opens.
 
 * The entries are the ones a command-line run records: the same file name, the
   same version grammar, the same digest, and the same row in the history table.
