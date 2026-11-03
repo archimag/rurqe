@@ -130,6 +130,41 @@ fn drift_detected_when_column_added_in_database() {
 }
 
 #[test]
+fn drift_report_carries_no_in_band_channel_marker() {
+    let baseline = SchemaCatalog::new(vec![TableDef::new(
+        "users",
+        vec![ColumnDef::new("id", TypeKind::Int64, false)],
+        vec!["id".to_owned()],
+    )]);
+    let lock = baseline.to_lock();
+
+    let live = SchemaCatalog::new(vec![TableDef::new(
+        "users",
+        vec![
+            ColumnDef::new("id", TypeKind::Int64, false),
+            ColumnDef::new("phone_number", TypeKind::Text, true),
+        ],
+        vec!["id".to_owned()],
+    )]);
+
+    match verify_drift(&live, &lock, None).unwrap_err() {
+        DriftError::Drift(report) => {
+            let msg = report.to_string();
+            assert!(
+                msg.starts_with("Schema drift detected!"),
+                "the report opens with its own subject rather than the channel marker: {msg}"
+            );
+            assert!(
+                !msg.contains("Error: "),
+                "prefixing a failure belongs to the single write point, not to the report: {msg}"
+            );
+            assert!(msg.contains("phone_number"));
+        }
+        other => panic!("expected Drift, got {other:?}"),
+    }
+}
+
+#[test]
 fn primary_key_drift_is_reported() {
     let baseline = SchemaCatalog::new(vec![TableDef::new(
         "users",

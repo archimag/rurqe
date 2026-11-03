@@ -180,7 +180,11 @@ fn drift_verification_catches_divergence_with_actionable_error() {
     match err {
         DriftError::Drift(report) => {
             let msg = report.to_string();
-            assert!(msg.contains("Schema drift detected!"));
+            assert!(msg.starts_with("Schema drift detected!"));
+            assert!(
+                !msg.contains("Error: "),
+                "the report leaves the channel marker to the single write point: {msg}"
+            );
             assert!(msg.contains(
                 "Table `products`: column `sku` exists in database but is missing from snapshot."
             ));
@@ -755,6 +759,10 @@ fn run_cli_verify_passes_on_match_and_reports_drift() {
     assert!(
         message.contains("Schema drift detected!"),
         "unexpected error: {message}"
+    );
+    assert!(
+        !message.contains("Error: "),
+        "the failure channel prefixes the marker once, so the report carries none: {message}"
     );
     assert!(message.contains("phone"), "unexpected error: {message}");
     assert!(

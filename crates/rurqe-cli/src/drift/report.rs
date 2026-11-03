@@ -14,7 +14,7 @@ pub struct DriftReport {
 
 impl fmt::Display for DriftReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Error: Schema drift detected!")?;
+        writeln!(f, "Schema drift detected!")?;
         writeln!(
             f,
             "Expected schema hash: {}\nLive schema hash:     {}",
@@ -51,7 +51,6 @@ pub enum DriftError {
         diff: Box<SchemaDiff>,
     },
     InvalidLock(String),
-    Io(String),
 }
 
 impl fmt::Display for DriftError {
@@ -88,7 +87,6 @@ impl fmt::Display for DriftError {
             DriftError::InvalidLock(message) => {
                 write!(f, "invalid schema lock snapshot: {message}")
             }
-            DriftError::Io(err) => write!(f, "I/O error during drift verification: {err}"),
         }
     }
 }
