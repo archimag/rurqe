@@ -47,7 +47,7 @@ test:
 # Run integration tests against a live PostgreSQL database
 [group('tauqe')]
 [doc('Run integration tests against a live PostgreSQL database')]
-test-postgres url="postgres://rurqe@localhost/rurqe-test":
+test-postgres url="postgres://rurqe@localhost:5433/rurqe-test":
     RURQE_TEST_POSTGRES_URL="{{url}}" TEST_DATABASE_URL="{{url}}" DATABASE_URL="{{url}}" cargo test -p rurqe-postgres --all-features --test transactions --test migrate
     RURQE_TEST_POSTGRES_URL="{{url}}" TEST_DATABASE_URL="{{url}}" DATABASE_URL="{{url}}" cargo test -p rurqe-cli --test stage_schema --test non_transactional
 
