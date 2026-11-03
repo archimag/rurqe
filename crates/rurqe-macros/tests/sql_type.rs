@@ -78,6 +78,14 @@ pub enum Mood {
     Sad,
 }
 
+/// A database enum type with a variant spelled as a raw identifier.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SqlType)]
+pub enum Kind {
+    r#type,
+    Plain,
+}
+
 rurqe_core::table!(
     Account => "accounts" {
         AccountId => "id": UserId,
@@ -672,4 +680,27 @@ fn borrowed_newtypes_bind_as_parameters() {
             params: vec![SqlVal::Text("addr_1".to_owned())],
         }
     );
+}
+
+#[test]
+fn enum_newtypes_store_raw_identifier_variants_under_their_bare_name() {
+    assert_eq!(Kind::r#type.to_sql_val(), SqlVal::Text("type".to_owned()));
+    assert_eq!(SqlVal::from(Kind::r#type), SqlVal::Text("type".to_owned()));
+    assert_eq!(Kind::r#type.to_string(), "type");
+    assert_eq!("type".parse::<Kind>(), Ok(Kind::r#type));
+    assert_eq!(Kind::Plain.to_string(), "Plain");
+    assert_eq!("Plain".parse::<Kind>(), Ok(Kind::Plain));
+
+    assert_eq!(
+        Kind::from_sql_value(&SqlVal::Text("type".to_owned())),
+        Ok(Kind::r#type)
+    );
+
+    let unknown = "Type"
+        .parse::<Kind>()
+        .expect_err("labels are case sensitive");
+    assert!(unknown.contains("`Type`"));
+    assert!(unknown.contains("`Kind`"));
+    assert!(unknown.contains("expected one of type, Plain"));
+    assert!(!unknown.contains("r#"));
 }

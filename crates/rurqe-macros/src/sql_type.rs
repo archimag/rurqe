@@ -19,7 +19,10 @@
 //! `Display` renders the label, `FromStr` parses it back, and a variant renames
 //! itself with `#[sql(rename = "...")]` when the database label differs from the
 //! Rust identifier. Every variant needs a distinct label, and a `#[sql(rename)]`
-//! repeating the label of another variant is rejected at expansion time.
+//! repeating the label of another variant is rejected at expansion time. A
+//! variant spelled as a raw identifier (`r#type`) is stored under the name the
+//! spelling denotes (`type`), because the escape belongs to the Rust source and
+//! never to the database label.
 //!
 //! The derive applies to a concrete type only: every emitted impl spells the
 //! self type as the bare type name, so an input carrying type, lifetime, or
@@ -426,7 +429,24 @@ struct DeclaredLabel {
     span: Span,
 }
 
-/// Reads the database label of `variant`, defaulting to its identifier.
+/// The name an identifier publishes, without a raw-identifier marker.
+///
+/// A raw spelling denotes the same name as its bare form — `r#type` names
+/// `type` — so publishing the rendered token text would leak the Rust escape
+/// into the database label, its `Display` rendering, the parsed labels of
+/// `FromStr`, and the expected-label list of its parse error. The marker is
+/// dropped for the same reason `field_key` drops it from a nested-row JSON key:
+/// it is a property of the Rust source, never of the published name.
+fn bare_name(ident: &Ident) -> String {
+    let rendered = ident.to_string();
+    match rendered.strip_prefix("r#") {
+        Some(bare) => bare.to_owned(),
+        None => rendered,
+    }
+}
+
+/// Reads the database label of `variant`, defaulting to the name of its
+/// identifier.
 fn variant_label(variant: &syn::Variant) -> syn::Result<DeclaredLabel> {
     let mut label: Option<LitStr> = None;
 
@@ -456,7 +476,7 @@ fn variant_label(variant: &syn::Variant) -> syn::Result<DeclaredLabel> {
         },
         None => DeclaredLabel {
             span: variant.ident.span(),
-            label: variant.ident.to_string(),
+            label: bare_name(&variant.ident),
         },
     })
 }
@@ -476,6 +496,9 @@ fn label_impls(name: &Ident, variants: &[EnumVariant]) -> TokenStream {
     }
 
     let expected = labels.join(", ");
+    // The parse error names the enum the way its declaration spells it, so a
+    // raw identifier reaches the message without the Rust escape.
+    let enum_label = LitStr::new(&bare_name(name), Span::call_site());
 
     quote! {
         impl ::core::fmt::Display for #name {
@@ -494,7 +517,7 @@ fn label_impls(name: &Ident, variants: &[EnumVariant]) -> TokenStream {
                     #parse_arms
                     other => ::core::result::Result::Err(::std::format!(
                         "`{other}` is not a label of the `{}` enum; expected one of {}",
-                        ::core::stringify!(#name),
+                        #enum_label,
                         #expected,
                     )),
                 }
@@ -808,8 +831,9 @@ fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    //! Rejection of an invalid derive input: a repeated enum label, or a
-    //! generic type.
+    //! The derive input contract and the names it publishes: a repeated enum
+    //! label and a generic type are rejected, and a raw identifier is published
+    //! under the name it spells rather than under its escaped spelling.
 
     use super::*;
     use syn::parse_quote;
@@ -937,5 +961,67 @@ mod tests {
         };
 
         assert_eq!(rejection(input), GENERIC_REJECTION);
+    }
+    /// The tokens the derive emits for an accepted input, rendered as text.
+    fn expansion(input: DeriveInput) -> String {
+        expand(input)
+            .expect("the input is accepted")
+            .to_string()
+    }
+
+    #[test]
+    fn a_raw_identifier_variant_is_stored_under_its_bare_name() {
+        let input: DeriveInput = parse_quote! {
+            enum Kind {
+                r#type,
+                Plain,
+            }
+        };
+        let emitted = expansion(input);
+
+        assert!(
+            emitted.contains("\"type\""),
+            "the label is the name the variant spells: {emitted}"
+        );
+        assert!(
+            !emitted.contains("\"r#type\""),
+            "the Rust escape never reaches the database label: {emitted}"
+        );
+    }
+
+    #[test]
+    fn a_raw_identifier_enum_names_itself_without_the_marker() {
+        let input: DeriveInput = parse_quote! {
+            enum r#Kind {
+                Plain,
+            }
+        };
+        let emitted = expansion(input);
+
+        assert!(
+            emitted.contains("\"Kind\""),
+            "the parse error names the enum as it is declared: {emitted}"
+        );
+        assert!(
+            !emitted.contains("\"r#Kind\""),
+            "the Rust escape never reaches the error message: {emitted}"
+        );
+    }
+
+    #[test]
+    fn a_rename_colliding_with_a_raw_identifier_variant_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            enum Kind {
+                r#type,
+                #[sql(rename = "type")]
+                Other,
+            }
+        };
+
+        assert_eq!(
+            rejection(input),
+            "label `type` is shared by `r#type` and `Other`; every variant of a \
+             `SqlType` enum needs a distinct label"
+        );
     }
 }
