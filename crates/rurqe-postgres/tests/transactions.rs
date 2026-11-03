@@ -539,6 +539,14 @@ mod sync_pool {
                 "the nested block reports the savepoint release it lost: {nested:?}"
             );
 
+            // The adapter reports the state it records, so the caller holding the
+            // connection learns that the abandoned savepoint is still pending
+            // rather than inferring it from the refusal of the next statement.
+            assert!(
+                tx.is_poisoned(),
+                "the refused savepoint rollback marks the connection poisoned"
+            );
+
             // A bare statement never runs inside the abandoned transaction: the
             // record refuses it before it reaches the driver.
             let statement = BuiltQuery {

@@ -252,6 +252,30 @@ impl<B: Borrow<postgres::Client>> PgConnection<B> {
     }
 }
 
+impl<B> PgConnection<B> {
+    /// Reports whether the connection is poisoned and refuses bare statements.
+    ///
+    /// The state is recorded when the adapter can no longer prove that the
+    /// session is outside a transaction: a rollback, a savepoint rollback, or a
+    /// savepoint release the driver refused leaves the work of the block
+    /// pending, so a statement would run inside that abandoned transaction,
+    /// which PostgreSQL accepts with a warning and persists with the next
+    /// `COMMIT`. A bare statement is therefore refused with
+    /// [`PgError::ConnectionPoisoned`] before it reaches the driver, and a
+    /// caller that owns the handle detects the state here instead of observing
+    /// work that nobody committed.
+    ///
+    /// The state is not permanent, because a synchronous connection can still
+    /// close what it could not undo: the next transaction entry retries the
+    /// refused control statement, and a retry the driver accepts clears the
+    /// record. A caller therefore reads `false` once the abandoned transaction
+    /// is closed for real, and the connection serves work again without being
+    /// discarded.
+    pub fn is_poisoned(&self) -> bool {
+        self.status.is_poisoned()
+    }
+}
+
 impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
     /// Returns a mutable reference to the wrapped client.
     ///
