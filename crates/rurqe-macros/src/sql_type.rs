@@ -137,7 +137,7 @@ fn reject_generics(generics: &syn::Generics) -> syn::Result<()> {
 
 /// Expands the derive on a newtype struct.
 fn expand_struct(name: &Ident, attrs: &[Attribute], data: &DataStruct) -> syn::Result<TokenStream> {
-    let storage = storage_of(attrs)?;
+    let storage = storage_of(attrs, name.span())?;
     let field = single_field(name, data)?;
 
     let encode = encode_impls(name, &storage, &field);
@@ -163,7 +163,7 @@ fn expand_enum(name: &Ident, attrs: &[Attribute], data: &DataEnum) -> syn::Resul
     // The storage reader also validates that the enum is not asked to be stored
     // as anything but its label.
     let _text = enum_storage_of(attrs)?;
-    let variants = enum_variants(data)?;
+    let variants = enum_variants(data, name.span())?;
 
     let labels = label_impls(name, &variants);
     let encode = text_encode_impls(name);
@@ -222,9 +222,10 @@ fn sql_options_of(attrs: &[Attribute]) -> syn::Result<SqlOptions> {
     Ok(options)
 }
 
-/// Reads the storage mode from the `#[sql(..)]` attributes of the input.
-fn storage_of(attrs: &[Attribute]) -> syn::Result<Storage> {
-    sql_options_of(attrs)?.resolve()
+/// Reads the storage mode from the `#[sql(..)]` attributes of the input,
+/// reporting a missing option on `span`.
+fn storage_of(attrs: &[Attribute], span: Span) -> syn::Result<Storage> {
+    sql_options_of(attrs)?.resolve(span)
 }
 
 /// Reads the storage mode of an enum, which is its label unless stated otherwise.
@@ -278,10 +279,14 @@ impl SqlOptions {
     }
 
     /// Resolves the recorded options into a storage mode of a newtype struct.
-    fn resolve(self) -> syn::Result<Storage> {
+    ///
+    /// A struct that states no mode at all is rejected on `span`, the span of
+    /// the derived item, so the diagnostic points at the declaration instead of
+    /// at the derive invocation as a whole.
+    fn resolve(self, span: Span) -> syn::Result<Storage> {
         match (self.transparent, self.storage) {
-            (Some(span), Some(storage)) => Err(syn::Error::new(
-                span,
+            (Some(transparent), Some(storage)) => Err(syn::Error::new(
+                transparent,
                 format!("`transparent` cannot be combined with `as = {storage}`"),
             )),
             (Some(_), None) => match self.len {
@@ -306,7 +311,7 @@ impl SqlOptions {
                 }
             }
             (None, None) => Err(syn::Error::new(
-                Span::call_site(),
+                span,
                 "`SqlType` needs a storage option: `#[sql(transparent)]`, \
                  `#[sql(as = Bytes)]`, or `#[sql(as = Text)]`",
             )),
@@ -372,15 +377,19 @@ fn single_field(name: &Ident, data: &DataStruct) -> syn::Result<SingleField> {
 }
 
 /// Collects the unit variants of a derived enum together with their labels.
+/// Collects the unit variants of a derived enum together with their labels.
 ///
 /// Two variants sharing one label would make the textual representation
 /// non-injective: `Display` renders both of them to the same text, and `FromStr`
 /// decodes that text back to whichever variant was declared first. A repeated
 /// label is therefore rejected at the declaration that repeats it.
-fn enum_variants(data: &DataEnum) -> syn::Result<Vec<EnumVariant>> {
+///
+/// An enum declaring no variant at all has no representation to publish, so it
+/// is rejected on `span`, the span of the derived item.
+fn enum_variants(data: &DataEnum, span: Span) -> syn::Result<Vec<EnumVariant>> {
     if data.variants.is_empty() {
         return Err(syn::Error::new(
-            Span::call_site(),
+            span,
             "`SqlType` derives on an enum with at least one variant",
         ));
     }
@@ -832,9 +841,10 @@ fn borrowed_function_operand_impl(name: &Ident) -> TokenStream {
 #[cfg(test)]
 mod tests {
     //! The derive input contract and the names it publishes: a repeated enum
-    //! label and a generic type are rejected, and a raw identifier is published
-    //! under the name it spells rather than under its escaped spelling.
-
+    //! The derive input contract and the names it publishes: a repeated enum
+    //! label, a generic type, a newtype without a storage option, and an enum
+    //! without variants are rejected, and a raw identifier is published under
+    //! the name it spells rather than under its escaped spelling.
     use super::*;
     use syn::parse_quote;
 
@@ -962,6 +972,32 @@ mod tests {
 
         assert_eq!(rejection(input), GENERIC_REJECTION);
     }
+
+    #[test]
+    fn a_newtype_without_a_storage_option_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            struct UserId(i64);
+        };
+
+        assert_eq!(
+            rejection(input),
+            "`SqlType` needs a storage option: `#[sql(transparent)]`, \
+             `#[sql(as = Bytes)]`, or `#[sql(as = Text)]`"
+        );
+    }
+
+    #[test]
+    fn an_enum_without_variants_is_rejected() {
+        let input: DeriveInput = parse_quote! {
+            enum Mood {}
+        };
+
+        assert_eq!(
+            rejection(input),
+            "`SqlType` derives on an enum with at least one variant"
+        );
+    }
+
     /// The tokens the derive emits for an accepted input, rendered as text.
     fn expansion(input: DeriveInput) -> String {
         expand(input)
