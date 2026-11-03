@@ -324,7 +324,6 @@ fn alias_ident(alias: &Ident) -> syn::Result<Ident> {
 }
 
 /// Derives the field identifier of a schema column marker path.
-/// Derives the field identifier of a schema column marker path.
 ///
 /// A marker whose type arguments admit no naming rule — an array or a slice
 /// argument such as `Blob<[u8; 4]>` — names no field: inventing one would
@@ -473,6 +472,13 @@ fn is_ascii_identifier(label: &str) -> bool {
 /// - `users::ID, total: Expr::count_all()`
 /// - `(users::ID, users::EMAIL as contact_email)`
 /// - `{ users::ID, users::NAME }`
+///
+/// The list is the whole of the stream it is parsed from: an item written after
+/// a parenthesized or braced group is reported instead of being dropped, because
+/// a macro that embeds the list in a sub-stream (`dto!` parses the struct body
+/// on its own) cannot rely on the top-level consumption check of `syn::parse2`.
+///
+/// A single trailing comma is tolerated in every form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectionList {
     pub items: Vec<ProjectionItem>,
@@ -553,6 +559,29 @@ impl Parse for ProjectionList {
                 Span::call_site(),
                 "at least one projection column must be specified",
             ));
+        }
+
+        // A consumed group carries the whole list, so it also has to end the
+        // stream that contained it: a projection written after `(...)` or
+        // `{...}` belongs to no item, and a partial read of the enclosing stream
+        // would drop it without a diagnostic. `syn::parse2` verifies consumption
+        // only for the outermost stream of a macro, so an embedding in a
+        // sub-stream would otherwise lose the tokens silently. A single trailing
+        // comma is tolerated, exactly as it is after an ungrouped list. When no
+        // group was consumed, `reader` and `input` are the same buffer and the
+        // check above has already established that nothing is left.
+        if !input.is_empty() {
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
+
+            if !input.is_empty() {
+                return Err(input.error(
+                    "unexpected tokens after the projection list: a parenthesized or braced \
+                     list carries every projection, so nothing may follow it; write the \
+                     remaining items inside the list",
+                ));
+            }
         }
 
         Ok(Self { items })

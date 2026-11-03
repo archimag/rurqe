@@ -3,6 +3,30 @@
 use super::*;
 use syn::parse_str;
 
+/// Parses a braced body carrying a projection list, the way `dto!` does.
+///
+/// `syn::parse_str` and `syn::parse2` verify only the outermost stream of a
+/// macro, so a list embedded in a sub-stream is the one shape that exercises the
+/// consumption check of `ProjectionList::parse` on its own.
+struct BracedBody {
+    list: ProjectionList,
+}
+
+impl Parse for BracedBody {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let content;
+        syn::braced!(content in input);
+        let list = content.parse()?;
+
+        Ok(Self { list })
+    }
+}
+
+fn parse_braced_body(source: &str) -> syn::Result<ProjectionList> {
+    let body: BracedBody = parse_str(source)?;
+
+    Ok(body.list)
+}
 #[test]
 fn parses_single_column_without_alias() {
     let item: ProjectionItem = parse_str("users::ID").expect("valid projection");
@@ -436,4 +460,50 @@ fn field_keys_strip_the_raw_identifier_prefix() {
 
     let keyword: Ident = parse_str("r#type").expect("identifier");
     assert_eq!(field_key(&keyword), "type");
+}
+
+#[test]
+fn a_grouped_projection_list_ends_the_stream_it_is_parsed_from() {
+    let body = parse_braced_body("{ (users::ID, users::EMAIL) }")
+        .expect("the parentheses carry the list");
+    assert_eq!(body.len(), 2);
+    assert_eq!(body.items[0].field_ident().expect("named"), "id");
+    assert_eq!(body.items[1].field_ident().expect("named"), "email");
+
+    let body =
+        parse_braced_body("{ { users::ID, users::EMAIL } }").expect("the braces carry the list");
+    assert_eq!(body.len(), 2);
+    assert_eq!(body.items[0].field_ident().expect("named"), "id");
+    assert_eq!(body.items[1].field_ident().expect("named"), "email");
+}
+
+#[test]
+fn a_trailing_comma_after_a_grouped_projection_list_is_tolerated() {
+    let body = parse_braced_body("{ (users::ID, users::EMAIL), }")
+        .expect("a trailing comma ends the list");
+
+    assert_eq!(body.len(), 2);
+    assert_eq!(body.items[0].field_ident().expect("named"), "id");
+    assert_eq!(body.items[1].field_ident().expect("named"), "email");
+}
+
+#[test]
+fn a_projection_written_after_a_grouped_list_is_reported() {
+    for source in [
+        "{ (users::ID, users::EMAIL), extra: i64 }",
+        "{ { users::ID }, extra }",
+    ] {
+        let error =
+            parse_braced_body(source).expect_err("the trailing item belongs to no projection");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("unexpected tokens after the projection list"),
+            "unexpected message for `{source}`: {message}"
+        );
+        assert!(
+            message.contains("write the remaining items inside the list"),
+            "no remedy in `{source}`: {message}"
+        );
+    }
 }

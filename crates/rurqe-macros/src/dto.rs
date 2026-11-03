@@ -54,6 +54,9 @@ impl Parse for Dto {
 
         let content;
         syn::braced!(content in input);
+        // `ProjectionList::parse` verifies that it consumes the whole struct
+        // body, so a declaration written after a parenthesized or braced list is
+        // reported there rather than dropped silently here.
         let fields: ProjectionList = content.parse()?;
 
         Ok(Self {
@@ -135,6 +138,70 @@ mod tests {
         .expect("the alias names the field");
 
         assert!(expanded.to_string().contains("struct Good"));
+    }
+
+    #[test]
+    fn a_grouped_projection_list_declares_the_fields() {
+        let expanded = expand(quote! {
+            pub struct Good {
+                (UserId, UserName)
+            }
+        })
+        .expect("the group carries the projections");
+        let rendered = expanded.to_string();
+
+        assert!(rendered.contains("user_id"), "missing field: {rendered}");
+        assert!(rendered.contains("user_name"), "missing field: {rendered}");
+
+        let expanded = expand(quote! {
+            pub struct Braced {
+                { UserId, UserName }
+            }
+        })
+        .expect("the braces carry the projections");
+        let rendered = expanded.to_string();
+
+        assert!(rendered.contains("user_id"), "missing field: {rendered}");
+        assert!(rendered.contains("user_name"), "missing field: {rendered}");
+    }
+
+    #[test]
+    fn tokens_after_a_grouped_projection_list_are_rejected() {
+        for source in [
+            quote! {
+                pub struct Bad {
+                    (UserId, UserName),
+                    extra: i64,
+                }
+            },
+            quote! {
+                pub struct Bad {
+                    { UserId },
+                    extra: i64,
+                }
+            },
+        ] {
+            let error = expand(source).expect_err("the trailing declaration belongs to no field");
+
+            assert!(
+                error.to_string().contains("unexpected tokens after the projection list"),
+                "unexpected message: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trailing_comma_after_a_grouped_projection_list_is_tolerated() {
+        let expanded = expand(quote! {
+            pub struct Good {
+                (UserId, UserName),
+            }
+        })
+        .expect("a trailing comma ends the list");
+        let rendered = expanded.to_string();
+
+        assert!(rendered.contains("user_id"), "missing field: {rendered}");
+        assert!(rendered.contains("user_name"), "missing field: {rendered}");
     }
 
     #[test]
