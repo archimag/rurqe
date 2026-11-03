@@ -57,4 +57,4 @@ WHERE ("total" > $1 AND EXISTS (SELECT ... WHERE "user_id" = $2))
 
 ## Subqueries as relations
 
-A projected query can also become a relation of the outer statement: `as_table` exposes it as a derived table that `from` and the joins accept, and `into_subquery` converts it into a subquery node. The `WITH` chapters cover the same mechanism under its named form.
+A projected query can also become a relation of the outer statement: `as_table` exposes it as a derived table that `from` and the joins accept, and `into_subquery` converts it into a subquery node.

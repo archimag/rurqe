@@ -19,13 +19,12 @@ The macro declares a unit struct — the alias marker — bound to the table it 
 
 The alias marker is handed to the table it references — `User.as_alias(Manager)` — and the builders accept the resulting relation wherever they accept a table. The relation keeps the schema identity of `User` — its columns still belong to `User` — while rendering the table under its alias in `FROM` and `JOIN` clauses:
 
-```text
+```sql
 FROM "users" AS "m"
 ```
 
 A column addressed through the alias keeps the column's Rust type and owning table, while its SQL reference becomes the qualified form:
-
-```text
+```sql
 "m"."name"
 ```
 
@@ -35,7 +34,7 @@ A column addressed through the alias keeps the column's Rust type and owning tab
 {{#rustdoc_include ../examples/aliasing.rs:self_join}}
 ```
 
-```text
+```sql
 SELECT "m"."name" AS "manager_name", "e"."name" AS "employee_name"
 FROM "users" AS "m"
 INNER JOIN "users" AS "e" ON ("e"."manager_id" = "m"."id")

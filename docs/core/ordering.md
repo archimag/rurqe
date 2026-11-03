@@ -77,4 +77,4 @@ The row operators: `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `in_subquery`, `not_in_
 
 ## Order and set operations
 
-A criterion recorded before `UNION`/`INTERSECT`/`EXCEPT` belongs to the left operand and renders inside its parentheses. The same call after the combination applies to the combined rows and requires the `.order_by_output*` / `.order_by_index*` forms — the Set operations chapter covers them.
+A criterion recorded before `UNION`/`INTERSECT`/`EXCEPT` belongs to the left operand and renders inside its parentheses. The same call after the combination applies to the combined rows and requires the `.order_by_output*` / `.order_by_index*` forms.
