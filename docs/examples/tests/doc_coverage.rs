@@ -151,12 +151,31 @@ struct PackageSection {
     name: String,
 }
 
-/// One `[[example]]` target: its target name and the file it is built from.
+/// One `[[example]]` target: the name and the file the guard reads, plus
+/// the other keys a target table carries.
+///
+/// The guard reads `name` and `path` alone, but a target table carries options
+/// the manifest author sets for Cargo's benefit (gating an example behind a
+/// feature with `required-features` is the routine one), and a manifest naming
+/// one of them is a correct manifest. The keys are modelled so that
+/// `deny_unknown_fields` keeps rejecting a misspelling instead of rejecting a
+/// setting Cargo itself accepts; the guard never acts on them, so they stay
+/// unread.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+#[allow(dead_code)]
 struct ExampleTarget {
     name: String,
     path: String,
+    test: Option<bool>,
+    doctest: Option<bool>,
+    bench: Option<bool>,
+    doc: Option<bool>,
+    doc_scrape_examples: Option<bool>,
+    harness: Option<bool>,
+    edition: Option<String>,
+    crate_type: Option<Vec<String>>,
+    required_features: Option<Vec<String>>,
 }
 
 /// The example targets registered in `examples/Cargo.toml`, parsed as TOML.
@@ -171,7 +190,10 @@ fn registered_examples() -> Vec<ExampleTarget> {
     let parsed: ExamplesManifest = toml::from_str(&manifest).unwrap_or_else(|error| {
         panic!(
             "examples/Cargo.toml parses as a typed manifest with a [[example]] target list: \
-             {error}"
+             {error}\nAn `[[example]]` target models the whole table Cargo defines (`name`, \
+             `path`, `test`, `bench`, `doc`, `doctest`, `doc-scrape-examples`, `harness`, \
+             `edition`, `crate-type`, and `required-features`), so the rejection above names \
+             a key no target table defines: correct the key the error points at"
         )
     });
     assert_eq!(
@@ -187,6 +209,66 @@ fn registered_example_names() -> Vec<String> {
         .into_iter()
         .map(|target| target.name)
         .collect()
+}
+
+/// A `[[example]]` target table accepts options beyond `name` and `path`, so a
+/// manifest that names one of them is read rather than rejected.
+///
+/// Gating an example behind a feature is the routine use of such an option, and
+/// it used to fail the typed parse before a single chapter was audited: the
+/// model carries the whole target table, not the two keys the guard reads.
+#[test]
+fn the_manifest_model_accepts_every_example_target_key() {
+    let manifest = r#"
+        [package]
+        name = "rurqe-examples"
+
+        [[example]]
+        name = "gated"
+        path = "gated.rs"
+        required-features = ["postgres"]
+        test = false
+        bench = false
+        doc = false
+        doctest = false
+        doc-scrape-examples = true
+        harness = true
+        edition = "2021"
+        crate-type = ["bin"]
+    "#;
+    let parsed: ExamplesManifest = toml::from_str(manifest).unwrap_or_else(|error| {
+        panic!("a whole `[[example]]` target table parses: {error}")
+    });
+    let target = parsed
+        .example
+        .first()
+        .unwrap_or_else(|| panic!("the sample manifest declares one `[[example]]` target"));
+    assert_eq!(target.name, "gated");
+    assert_eq!(target.path, "gated.rs");
+    assert_eq!(target.required_features, Some(vec!["postgres".to_owned()]));
+}
+
+/// The tolerance stops at the boundary of the target table: a key Cargo does
+/// not define there is still rejected, and the rejection names it.
+#[test]
+fn the_manifest_model_rejects_a_key_no_target_table_defines() {
+    let manifest = r#"
+        [package]
+        name = "rurqe-examples"
+
+        [[example]]
+        name = "gated"
+        path = "gated.rs"
+        required-feature = ["postgres"]
+    "#;
+    let Err(error) = toml::from_str::<ExamplesManifest>(manifest) else {
+        panic!("`required-feature` is not a key of any Cargo target table");
+    };
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("required-feature"),
+        "the rejection names the key it refuses, so a misspelling is correctable: {rendered}"
+    );
 }
 
 /// Anchor regions one example file declares: every `// ANCHOR: <name>` line.
