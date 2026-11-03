@@ -135,13 +135,15 @@ Conflict handling is expressed natively, so an insert that meets an existing row
 
 ## Transactions
 
-Opening the two balances of a new account pair writes two rows that must succeed or fail together. A transaction is a guard over a live handle: it commits only when the handle commits and rolls the transaction back when it is dropped without one, so a returned error or a cancelled future leaves no partial work behind:
+Opening the two balances of a new account pair writes two rows that must succeed or fail together. A transaction is a guard over a live handle: the handle owns the transaction until its commit is awaited, so the work is persisted only by an explicit `commit` call:
 
 ```rust,no_run
 {{#rustdoc_include examples/transactions.rs:transaction}}
 ```
 
 The guard hands the standard terminal calls a transactional scope, so a statement executed against it participates in the transaction the guard opened.
+
+Dropping the handle without a commit is not the inverse of committing. The drop asks the driver for a rollback, and that request is a statement the driver neither awaits nor reports, so the adapter cannot prove that the transaction was closed. The connection is marked poisoned rather than reused: it refuses every further statement and every further transaction, while the statements that already completed stay pending in the open transaction until the session of the discarded connection ends, which is where the server rolls it back. A block that has to survive a returned error or a cancelled future therefore belongs in a closure-scoped block, which awaits the commit or the rollback before the result reaches the caller; the Transactions chapter works through each of those failure modes in turn.
 
 ## Dialect pinning
 

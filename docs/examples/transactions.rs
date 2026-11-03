@@ -1,5 +1,6 @@
-//! Transactional integrity: an RAII guard commits explicitly, rolls back on
-//! drop, and hands its transaction to the standard terminal calls.
+//! Transactional integrity: a guard commits explicitly, asks the driver for a
+//! rollback it neither awaits nor reports when it is dropped, and hands its
+//! transaction to the standard terminal calls.
 
 use rurqe::postgres::prelude::*;
 use rurqe::postgres::PgAsyncConnection;
@@ -18,9 +19,11 @@ table!(
 // ANCHOR: transaction
 /// Records both opening balances in one transaction.
 ///
-/// The handle commits only when `commit` is awaited and rolls the transaction
-/// back when it is dropped without one, so a returned error or a cancelled
-/// future leaves no partial work behind.
+/// The handle owns the transaction until `commit` is awaited. Dropping it
+/// without a commit asks the driver for a rollback the driver neither awaits
+/// nor reports, so the connection is marked poisoned instead of reused, and the
+/// statements that completed stay pending until the session of the discarded
+/// connection ends.
 async fn record_opening_balances(conn: &mut PgAsyncConnection) -> Result<(), Error> {
     let tx = conn.transaction().await?;
 
