@@ -39,7 +39,7 @@ use super::history::{
     delete_entry_sql, insert_entry_sql, update_checksum_sql, HISTORY_COLUMN_COUNT,
 };
 use super::{
-    apply_unlock_answer, backend_error, poll_advisory_lock, read_history_rows,
+    apply_unlock_answer, backend_error, backend_failure, poll_advisory_lock, read_history_rows,
     ADVISORY_LOCK_RETRY_INTERVAL, DEFAULT_ADVISORY_LOCK_TIMEOUT, MIGRATION_LOCK_ID,
 };
 
@@ -124,7 +124,7 @@ impl<'c, B: BorrowMut<postgres::Client>> PgConnectionMigrationBackend<'c, B> {
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
         let selection = self.selection.clone();
         introspect_postgres_selection(self.connection.client_mut(), &selection)
-            .map_err(backend_error)
+            .map_err(backend_failure)
     }
 }
 
@@ -155,7 +155,7 @@ impl<B: BorrowMut<postgres::Client>> MigrationBackend for PgConnectionMigrationB
         // The guard of the connection decides whether this step opens a
         // transaction or nests inside a savepoint of the one the caller holds, so
         // the adapter never issues its own control statement.
-        let guard = TransactionGuard::begin(&mut *self.connection).map_err(backend_error)?;
+        let guard = TransactionGuard::begin(&mut *self.connection).map_err(backend_failure)?;
 
         Ok(PgConnectionMigrationTransaction {
             guard: Some(guard),
@@ -304,7 +304,7 @@ impl<'c, B: BorrowMut<postgres::Client>> PgConnectionMigrationTransaction<'c, B>
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
         let selection = self.selection.clone();
         introspect_postgres_selection(self.guard_mut()?.client_mut(), &selection)
-            .map_err(backend_error)
+            .map_err(backend_failure)
     }
 }
 
@@ -368,7 +368,7 @@ impl<B: BorrowMut<postgres::Client>> MigrationTransaction
         // guard rolls the block back on the way out, so no open transaction
         // survives the call.
         let guard = self.take_guard()?;
-        guard.commit().map_err(backend_error)
+        guard.commit().map_err(backend_failure)
     }
 
     fn rollback(mut self) -> Result<(), Error> {
@@ -392,6 +392,6 @@ impl<B: BorrowMut<postgres::Client>> MigrationTransaction
 
         drop(guard);
 
-        answer.map_err(backend_error)
+        answer.map_err(backend_failure)
     }
 }

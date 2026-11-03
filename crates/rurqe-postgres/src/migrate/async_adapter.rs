@@ -36,8 +36,8 @@ use super::history::{
     HISTORY_COLUMN_COUNT,
 };
 use super::{
-    apply_unlock_answer, backend_error, poll_advisory_lock, ADVISORY_LOCK_RETRY_INTERVAL,
-    DEFAULT_ADVISORY_LOCK_TIMEOUT, MIGRATION_LOCK_ID,
+    apply_unlock_answer, backend_error, backend_failure, poll_advisory_lock,
+    ADVISORY_LOCK_RETRY_INTERVAL, DEFAULT_ADVISORY_LOCK_TIMEOUT, MIGRATION_LOCK_ID,
 };
 
 /// Reason reported when the worker thread no longer serves the protocol.
@@ -220,7 +220,7 @@ impl Worker {
                 let runtime = match Builder::new_current_thread().enable_all().build() {
                     Ok(runtime) => runtime,
                     Err(error) => {
-                        let _ = started.send(Err(backend_error(error)));
+                        let _ = started.send(Err(backend_failure(error)));
                         return;
                     }
                 };
@@ -236,7 +236,7 @@ impl Worker {
                 let _ = started.send(Ok(()));
                 run_worker(runtime, Some(Session::new(connection)), queue);
             })
-            .map_err(backend_error)?;
+            .map_err(backend_failure)?;
 
         match boot_outcome.recv() {
             Ok(Ok(())) => Ok(Worker {
@@ -546,8 +546,8 @@ async fn read_catalog(
     let schemas = selection.all();
     let rows = query_catalog_rows_async(client, &schemas)
         .await
-        .map_err(backend_error)?;
-    decode_catalog(selection, rows).map_err(backend_error)
+        .map_err(backend_failure)?;
+    decode_catalog(selection, rows).map_err(backend_failure)
 }
 
 /// [`MigrationBackend`] over the asynchronous PostgreSQL clients.
@@ -594,7 +594,7 @@ impl PgAsyncMigrationBackend {
     pub fn from_pool(pool: crate::PgAsyncPool) -> Result<Self, Error> {
         let pooled = pool.pool().clone();
         Self::bootstrap(Box::new(move |runtime: &Runtime| -> Result<Connection, Error> {
-            let object = runtime.block_on(pooled.get()).map_err(backend_error)?;
+            let object = runtime.block_on(pooled.get()).map_err(backend_failure)?;
             Ok(Connection::Pooled(object))
         }))
     }

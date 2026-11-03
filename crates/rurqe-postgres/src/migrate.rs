@@ -32,6 +32,7 @@ use rurqe_migrate::introspect::SchemaSelection;
 use rurqe_migrate::runner::{MigrationBackend, MigrationTransaction};
 use rurqe_migrate::sleeper::{warn_if_in_tokio_runtime, Sleeper, ThreadSleeper};
 
+use crate::backend::types::driver_failure;
 use crate::introspect::{introspect_postgres_selection, DEFAULT_SCHEMA};
 
 #[cfg(feature = "tokio-postgres")]
@@ -167,7 +168,28 @@ fn advisory_lock_not_held(lock_id: i64) -> Error {
 }
 
 /// Wraps a driver failure into the engine-neutral backend error.
-fn backend_error(err: impl std::fmt::Display) -> Error {
+///
+/// The driver renders a refusal the server described as a bare `db error`
+/// label, and the text, the detail, and the hint the server sent live behind
+/// `as_db_error()` rather than in that rendering. The failure is rendered
+/// through [`driver_failure`] here, so the reason the server reported survives
+/// the whole chain — driver, adapter, [`Error::Backend`], and the diagnostic of
+/// `MigrationExecutionFailed` — instead of collapsing into the label. A failure
+/// the server did not describe — a lost connection, a closed socket — keeps the
+/// full `Display` of the driver, which for those failures is the complete
+/// description.
+fn backend_error(err: postgres::Error) -> Error {
+    Error::Backend(driver_failure(&err))
+}
+
+/// Wraps a failure that never reached the driver into the backend error.
+///
+/// The protocol also meets failures of its own surroundings: the bookkeeping of
+/// the transaction guard a step runs under, the decoding of a catalog digest,
+/// the runtime of the worker thread, and the checkout of a pooled connection.
+/// Each of them describes itself completely — a [`PgError`] carries the
+/// rendering of the driver failure it wraps — so its text is kept as it stands.
+fn backend_failure(err: impl std::fmt::Display) -> Error {
     Error::Backend(err.to_string())
 }
 
@@ -295,7 +317,7 @@ impl PostgresMigrationBackend {
     /// describes the primary schema and every secondary schema the project
     /// declares, and the recorded digest covers all of them.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
-        introspect_postgres_selection(&mut self.client, &self.selection).map_err(backend_error)
+        introspect_postgres_selection(&mut self.client, &self.selection).map_err(backend_failure)
     }
 }
 
@@ -438,7 +460,7 @@ impl<'a> PostgresMigrationTransaction<'a> {
     /// schema exactly like the one its connection records.
     pub fn introspect_catalog(&mut self) -> Result<SchemaCatalog, Error> {
         let selection = self.selection.clone();
-        introspect_postgres_selection(self.transaction()?, &selection).map_err(backend_error)
+        introspect_postgres_selection(self.transaction()?, &selection).map_err(backend_failure)
     }
 }
 
