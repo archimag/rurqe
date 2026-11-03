@@ -40,7 +40,20 @@ const GROUP_DIGITS: usize = 4;
 const HEADER_OCTETS: usize = 8;
 
 /// Encodes the decimal `text` into the binary representation of a `NUMERIC`.
+///
+/// The keywords [`decode`] renders for the sentinel signs are read back here,
+/// so a `NaN` or an infinity taken from a column stays writable to it.
 pub(super) fn encode(text: &str, out: &mut BytesMut) -> Result<(), String> {
+    if let Some(sign) = sentinel_sign(text) {
+        // A keyword value carries no digits: its payload is the sign sentinel
+        // alone, with a zero digit count, weight, and displayed scale.
+        out.extend_from_slice(&0i16.to_be_bytes());
+        out.extend_from_slice(&0i16.to_be_bytes());
+        out.extend_from_slice(&sign.to_be_bytes());
+        out.extend_from_slice(&0i16.to_be_bytes());
+        return Ok(());
+    }
+
     let decimal = Decimal::parse(text)?;
 
     let ndigits = i16::try_from(decimal.groups.len())
@@ -59,6 +72,28 @@ pub(super) fn encode(text: &str, out: &mut BytesMut) -> Result<(), String> {
     }
 
     Ok(())
+}
+/// Reports the sign sentinel a keyword value is encoded with.
+///
+/// The sentinel signs are the ones [`decode`] renders as keywords, and the name
+/// is matched case-insensitively, in the spellings the server and a float's
+/// rendering use; a leading sign selects the infinity it names.
+fn sentinel_sign(text: &str) -> Option<u16> {
+    let keyword = text.trim();
+    let name = keyword.strip_prefix(['-', '+']).unwrap_or(keyword);
+
+    if name.eq_ignore_ascii_case("nan") {
+        return Some(SIGN_NAN);
+    }
+    if !name.eq_ignore_ascii_case("infinity") && !name.eq_ignore_ascii_case("inf") {
+        return None;
+    }
+
+    if keyword.starts_with('-') {
+        Some(SIGN_NEGATIVE_INFINITY)
+    } else {
+        Some(SIGN_POSITIVE_INFINITY)
+    }
 }
 
 /// Decodes the binary representation of a `NUMERIC` into its decimal text.
@@ -302,6 +337,25 @@ mod tests {
             decode(&[0, 0, 0, 0, 0xF0, 0x00, 0, 0]),
             Ok("-Infinity".to_owned())
         );
+    }
+
+    #[test]
+    fn the_sentinels_encode_into_the_headers_they_decode_from() {
+        for (text, header) in [
+            ("NaN", [0u8, 0, 0, 0, 0xC0, 0x00, 0, 0]),
+            ("Infinity", [0u8, 0, 0, 0, 0xD0, 0x00, 0, 0]),
+            ("-Infinity", [0u8, 0, 0, 0, 0xF0, 0x00, 0, 0]),
+        ] {
+            assert_eq!(binary(text), header.to_vec());
+            assert_eq!(decode(&binary(text)), Ok(text.to_owned()));
+        }
+
+        // The sentinel keywords are matched the way the server reads them, and
+        // in the spelling a float renders.
+        assert_eq!(binary("nan"), binary("NaN"));
+        assert_eq!(binary(" NaN "), binary("NaN"));
+        assert_eq!(binary("inf"), binary("Infinity"));
+        assert_eq!(binary("-infinity"), binary("-Infinity"));
     }
 
     #[test]
