@@ -168,11 +168,9 @@ fn write_out_file(name: &str, contents: &str) -> Result<(), String> {
 ///
 /// The fixture reaches the wrapper verbatim, anchor marker lines included: the
 /// markers are comments, and copying them keeps the file that is compiled byte
-/// for byte the file the book quotes. The allowance the wrapper adds covers the
-/// row decoder the generator emits — it reads the first value of a row with
-/// `.get(0)`, which the workspace lints as `get_first` — and it is written as an
-/// inner attribute of the module, so the module carries a single attribute style
-/// and the shipped text stays exactly as the generator writes it.
+/// for byte the file the book quotes. The wrapper adds no lint allowance and no
+/// other attribute of its own, so the module a test compiles carries exactly the
+/// attributes the generator emits and the shipped text stays as it is written.
 fn wrap_schema_module(root: &Path) -> Result<(), String> {
     let fixture = read_example(root, SCHEMA_MODULE_FIXTURE)?;
 
@@ -181,12 +179,6 @@ fn wrap_schema_module(root: &Path) -> Result<(), String> {
     wrapper.push_str("`.\n");
     wrapper.push_str("// Do not edit: edit the fixture the book quotes instead.\n");
     wrapper.push_str("pub mod schema_module {\n");
-    // The allowance is an inner attribute of the module it governs: a lint
-    // attribute on the module item itself would meet the inner attributes the
-    // fixture carries — its `//!` documentation and its own
-    // `allow(dead_code)` — and an item holding both styles at once is refused
-    // by the compiler.
-    wrapper.push_str("#![allow(clippy::get_first)]\n");
     wrapper.push_str(&fixture);
     if !fixture.ends_with('\n') {
         wrapper.push('\n');
