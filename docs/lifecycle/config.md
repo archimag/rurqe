@@ -363,13 +363,13 @@ no database URL provided: pass `--database-url <url>` or set the DATABASE_URL en
 
 ## Reading a configuration diagnostic
 
-Four failures are possible before any key is accepted:
+Five failures are possible before any key is accepted:
 
 | Failure | Diagnostic |
 |---|---|
-| The file named by `--config` does not exist | `configuration file <path> named by `--config` does not exist; a path the flag names is required, while the conventional `rurqe.toml` is optional` |
-| The path named by `--config` is not a regular file | `configuration file <path> named by `--config` is not a regular file` |
-| The file cannot be read | `failed to read configuration `rurqe.toml`: <operating-system error>` |
+| The file named by `--config` does not exist | ``configuration file <path> named by `--config` does not exist; a path the flag names is required, while the conventional `rurqe.toml` is optional`` |
+| The path named by `--config` is not a regular file | ``configuration file <path> named by `--config` is not a regular file`` |
+| The file cannot be read | ``failed to read configuration `rurqe.toml`: <operating-system error>`` |
 | The document is not valid TOML | `invalid configuration at line <line>, column <column>: malformed TOML section or entry: <parser diagnostic>` |
 | A declaration is refused | `invalid configuration at line <line>, column <column>: <what is wrong>` |
 
