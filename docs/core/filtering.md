@@ -48,7 +48,7 @@ Given `only_active: bool` and `name: Option<&str>`, a handler builds the stateme
 {{#rustdoc_include ../examples/filtering.rs:dynamic}}
 ```
 
-With the flag set and the search term present, both predicates land in the statement: `WHERE (("active" = $1) AND ("name" = $2))`, in the order they were added. In the snippet above the flag holds and the option is absent, so the search predicate is skipped and the statement renders `WHERE ("active" = $1)`; with the flag clear as well, no `WHERE` clause is rendered at all.
+With the flag set and the search term present, both predicates land in the statement: `WHERE (("active" = $1) AND ("name" = $2))`, in the order they were added. Each input combination follows from the same two calls. The snippet above has the flag set and the option absent, so only the `when` closure runs and the statement renders `WHERE ("active" = $1)`. With the flag cleared as well, neither closure runs and the statement carries no `WHERE` clause at all.
 
 The surface is one, partitioned by the statements that offer it.
 
