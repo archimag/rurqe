@@ -30,6 +30,21 @@
 //! reported as the poisoned-connection failure, and its checkout is destroyed
 //! the same way.
 //!
+//! A single statement driven through either pool — `fetch_raw`,
+//! `fetch_raw_limited`, or `execute_raw` — runs in autocommit, and the idle
+//! proof of such a checkout is granted by that contract instead of being
+//! verified. Issuing a transaction-control statement (`BEGIN`, `SAVEPOINT`,
+//! `COMMIT`, `ROLLBACK`) through that path breaks the contract rather than
+//! being refused: the session returns to the pool with a transaction still
+//! open, and the next checkout inherits it, because the synchronous pool has
+//! granted an idle proof its `ensure_idle` repair never ran, and the
+//! asynchronous pool recycles an object its driver checked for socket
+//! liveness alone. Work that spans several statements belongs in
+//! `PgPool::transaction`, `PgPool::transaction_with_isolation`,
+//! `PgAsyncPool::transaction`, or `PgAsyncPool::transaction_with_isolation`,
+//! which keep one connection checked out for the whole block and settle the
+//! transaction state it ends in.
+//!
 //! Each pool is gated on the driver it pools, so the feature that enables a pool
 //! carries its driver and the module of that pool is compiled on the pair.
 
@@ -64,6 +79,19 @@ mod deadpool_impl {
     /// A multi-statement block goes through
     /// [`transaction`](PgAsyncPool::transaction), which keeps one connection
     /// checked out for the whole block and commits it as a whole.
+    ///
+    /// A single statement is the other path: `fetch_raw`, `fetch_raw_limited`,
+    /// and `execute_raw` check a connection out, await one statement in
+    /// autocommit, and drop the checkout back into the pool. The pool grants
+    /// the idle proof of that checkout by contract instead of verifying it, and
+    /// the object it recycles is one the pooled driver checked for socket
+    /// liveness alone, so a transaction-control statement (`BEGIN`,
+    /// `SAVEPOINT`, `COMMIT`, `ROLLBACK`) issued through that path breaks the
+    /// contract instead of being refused, and the session returns to the pool
+    /// inside a transaction the next checkout inherits. Every statement that
+    /// opens, closes, or nests a transaction therefore belongs in
+    /// [`transaction`](PgAsyncPool::transaction) or
+    /// [`transaction_with_isolation`](PgAsyncPool::transaction_with_isolation).
     #[derive(Clone)]
     pub struct PgAsyncPool {
         pool: deadpool_postgres::Pool,
@@ -297,6 +325,13 @@ mod deadpool_impl {
     impl AsyncQueryBackend for PgAsyncPool {
         type Error = PgError;
 
+        /// Reads every row of `query` on the checked-out connection.
+        ///
+        /// The statement runs in autocommit and the checkout returns to the
+        /// pool under the autocommit contract: a transaction-control statement
+        /// issued here breaks that contract instead of being refused, and
+        /// leaves its transaction open on a session the next checkout
+        /// inherits.
         async fn fetch_raw(&self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
             let client = self.pool.get().await?;
             fetch_raw_async(&**client, query).await
@@ -307,6 +342,9 @@ mod deadpool_impl {
         /// The limit reaches the row stream of the underlying
         /// `tokio_postgres` client, so a single-row lookup stops after the
         /// second row instead of materialising the whole result set.
+        ///
+        /// The statement runs in autocommit, under the same contract as the
+        /// other statement paths of the pool.
         async fn fetch_raw_limited(
             &self,
             query: &BuiltQuery,
@@ -316,6 +354,14 @@ mod deadpool_impl {
             fetch_raw_limited_async(&**client, query, limit).await
         }
 
+        /// Executes `query` on the checked-out connection and reports the
+        /// number of affected rows.
+        ///
+        /// The statement runs in autocommit and the checkout returns to the
+        /// pool under the autocommit contract: a transaction-control statement
+        /// issued here breaks that contract instead of being refused, and
+        /// leaves its transaction open on a session the next checkout
+        /// inherits.
         async fn execute_raw(&self, query: &BuiltQuery) -> Result<u64, PgError> {
             let client = self.pool.get().await?;
             execute_raw_async(&**client, query).await
@@ -350,17 +396,26 @@ mod r2d2_impl {
     /// the previous checkout did with it.
     ///
     /// The repair is not paid by every checkout, because the pool can prove the
-    /// session idle for the work it drives itself: a statement runs in autocommit
-    /// and a transaction block ends with an awaited `COMMIT` or `ROLLBACK`, so a
-    /// checkout the pool drove to a clean ending returns the connection without a
-    /// repair. A session the caller reaches through the handle is the other case —
-    /// the statements issued there stay outside the bookkeeping of the pool — so
-    /// the proof is forfeited as soon as the handle is borrowed mutably, and the
-    /// reset runs when the checkout ends.
+    /// session idle for the work it drives itself: a statement path requires its
+    /// statement to run in autocommit, and a transaction block ends with an
+    /// awaited `COMMIT` or `ROLLBACK`, so a checkout the pool drove to a clean
+    /// ending returns the connection without a repair. The proof of the
+    /// statement path is that recorded contract rather than an observation: the
+    /// pool grants it because a statement which runs in autocommit cannot
+    /// change the transaction state of the session, and a statement that does —
+    /// a transaction-control statement issued through the bare statement path —
+    /// breaks the contract, so this guard never repairs it and the next
+    /// checkout inherits the open transaction. A session the caller reaches
+    /// through the handle is the other case — the statements issued there stay
+    /// outside the bookkeeping of the pool — so the proof is forfeited as soon
+    /// as the handle is borrowed mutably, and the reset runs when the checkout
+    /// ends.
     pub struct PgPooledConnection<M: ManageConnection<Connection = postgres::Client>> {
         /// The checked-out connection, returned to the pool when the guard drops.
         connection: r2d2::PooledConnection<M>,
-        /// Whether the pool proved that the session is outside a transaction.
+        /// Whether the pool holds the idle proof of the session, granted for a
+        /// statement path under the autocommit contract or observed for a
+        /// transaction block that ended.
         idle: bool,
     }
 
@@ -373,7 +428,12 @@ mod r2d2_impl {
             }
         }
 
-        /// Records that the session is proven to be outside a transaction.
+        /// Records that the pool holds the idle proof of the session.
+        ///
+        /// A transaction block the pool drove ends with an awaited `COMMIT` or
+        /// `ROLLBACK`, and a statement path requires its statement to run in
+        /// autocommit, so the pool records the proof without probing a session
+        /// the synchronous driver cannot ask.
         fn mark_idle(&mut self) {
             self.idle = true;
         }
@@ -620,11 +680,21 @@ mod r2d2_impl {
     impl<M: ManageConnection<Connection = postgres::Client>> QueryBackend for PgPool<M> {
         type Error = PgPoolError;
 
+        /// Reads every row of `query` on a checked-out connection.
+        ///
+        /// The statement runs in autocommit and the checkout returns the
+        /// connection under the pool's autocommit contract: a
+        /// transaction-control statement issued here breaks that contract
+        /// instead of being refused, and leaves its transaction open on a
+        /// session the next checkout inherits.
         fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
             let mut connection = self.get()?;
             let rows = fetch_raw_sync(&mut connection, query).map_err(PgPoolError::Query);
-            // A statement runs in autocommit, so it leaves the session outside a
-            // transaction whether the driver executed it or refused it.
+            // The contract of this path: the statement runs in autocommit, so it
+            // leaves the session outside a transaction whether the driver
+            // executed it or refused it, and the pool records the idle proof it
+            // never verified. A transaction-control statement issued here breaks
+            // the contract, which is why this path repairs nothing.
             connection.mark_idle();
             rows
         }
@@ -634,6 +704,9 @@ mod r2d2_impl {
         /// The limit reaches the row iterator of the underlying `postgres`
         /// client, so a single-row lookup stops after the second row instead of
         /// materialising the whole result set.
+        ///
+        /// The statement runs in autocommit, under the same contract as the
+        /// other statement paths of the pool.
         fn fetch_raw_limited(
             &mut self,
             query: &BuiltQuery,
@@ -646,6 +719,14 @@ mod r2d2_impl {
             rows
         }
 
+        /// Executes `query` on a checked-out connection and reports the number
+        /// of affected rows.
+        ///
+        /// The statement runs in autocommit and the checkout returns the
+        /// connection under the pool's autocommit contract: a
+        /// transaction-control statement issued here breaks that contract
+        /// instead of being refused, and leaves its transaction open on a
+        /// session the next checkout inherits.
         fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
             let mut connection = self.get()?;
             let affected = execute_raw_sync(&mut connection, query).map_err(PgPoolError::Query);
