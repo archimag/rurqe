@@ -44,6 +44,14 @@ test:
     # instead of depending on the feature set another workspace member requests.
     cargo test -p rurqe-postgres --features migrate --test migrate
 
+# Run integration tests against a live PostgreSQL database
+[group('tauqe')]
+[doc('Run integration tests against a live PostgreSQL database')]
+test-postgres url="postgres://rurqe@localhost/rurqe-test":
+    RURQE_TEST_POSTGRES_URL="{{url}}" TEST_DATABASE_URL="{{url}}" DATABASE_URL="{{url}}" cargo test -p rurqe-postgres --all-features --test transactions --test migrate
+    RURQE_TEST_POSTGRES_URL="{{url}}" TEST_DATABASE_URL="{{url}}" DATABASE_URL="{{url}}" cargo test -p rurqe-cli --test stage_schema --test non_transactional
+
+alias test-db := test-postgres
 # Verify the book: example coverage guard and a clean mdBook build
 [group('tauqe')]
 [doc('Verify the book: example coverage guard and a clean mdBook build')]
