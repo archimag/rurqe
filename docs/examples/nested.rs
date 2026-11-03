@@ -92,7 +92,12 @@ async fn main() -> Result<()> {
     // ANCHOR_END: single
     println!("{}", parents_with_one.len());
 
-    let _ = (build_correlated, build_sqlite_collection, decode_document);
+    // The fragments that need no connection run on every execution, so a
+    // statement that stops assembling or a document that stops decoding fails
+    // the run instead of compiling unseen.
+    build_correlated().map_err(ExecutionError::Build)?;
+    build_sqlite_collection().map_err(ExecutionError::Build)?;
+    decode_document().map_err(|source| ExecutionError::RowDecode { row_index: 0, source })?;
 
     Ok(())
 }

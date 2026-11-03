@@ -74,7 +74,14 @@ async fn main() -> Result<()> {
     // ANCHOR_END: upsert
     println!("upserted {upserted} row(s)");
 
-    let _ = assemble_bulk_insert;
+    // The bulk insert is assembled rather than executed: its row source is
+    // refused by the builder instead of the engine, so the fragment needs no
+    // database. A literal list holds rows, so the refusal cannot fire, and the
+    // demonstration stops instead of continuing past a statement it failed to
+    // assemble.
+    if let Err(refusal) = assemble_bulk_insert() {
+        panic!("the documented bulk insert assembles its statement: {refusal}");
+    }
 
     // ANCHOR: from_select
     // The source projection is a tuple of the inserted columns: `from_select`

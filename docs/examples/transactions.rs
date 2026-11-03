@@ -12,6 +12,9 @@ table!(
     }
 );
 
+// The block needs a live session, so the example compiles it without running
+// it; the allowance states that the function is documentation.
+#[allow(dead_code)]
 // ANCHOR: transaction
 /// Records both opening balances in one transaction.
 ///
@@ -35,7 +38,7 @@ async fn record_opening_balances(conn: &mut PgAsyncConnection) -> Result<(), Err
 #[tokio::main]
 async fn main() -> Result<()> {
     // The connection is never opened: a transaction block is entered through a
-    // live handle, and the pipeline compiles this example without running it.
-    let _ = record_opening_balances;
+    // live handle, and the pipeline compiles this example without running it,
+    // so the function above carries the block a chapter includes.
     Ok(())
 }

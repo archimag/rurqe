@@ -1,8 +1,8 @@
 //! Pooled transactions on the asynchronous PostgreSQL adapter.
 //!
-//! Every block below runs inside a pooled transaction, so the example only
-//! refers to the functions that own them: the pipeline compiles the file and
-//! executes none of it, exactly as a chapter that includes a fragment needs.
+//! Every block below runs inside a pooled transaction, so the example carries
+//! the functions that own them: the pipeline compiles the file and executes
+//! none of it, exactly as a chapter that includes a fragment needs.
 
 use rurqe::postgres::prelude::*;
 
@@ -14,6 +14,9 @@ table!(
     }
 );
 
+// The block needs a live pooled session, so the example compiles it without
+// running it; the allowance states that the function is documentation.
+#[allow(dead_code)]
 // ANCHOR: transaction
 /// Records both opening balances in one pooled transaction.
 ///
@@ -38,6 +41,9 @@ async fn record_opening_balances(pool: &PgAsyncPool) -> Result<(), Error> {
 }
 // ANCHOR_END: transaction
 
+// The block needs a live pooled session, so the example compiles it without
+// running it; the allowance states that the function is documentation.
+#[allow(dead_code)]
 // ANCHOR: isolation
 /// Settles one opening balance inside a `SERIALIZABLE` pooled transaction.
 ///
@@ -57,6 +63,9 @@ async fn settle_account(pool: &PgAsyncPool) -> Result<(), Error> {
 }
 // ANCHOR_END: isolation
 
+// The block needs a live pooled session, so the example compiles it without
+// running it; the allowance states that the function is documentation.
+#[allow(dead_code)]
 // ANCHOR: nesting
 /// Records an opening balance around a nested block that moves a second one.
 ///
@@ -91,7 +100,7 @@ async fn record_around_nested_block(pool: &PgAsyncPool) -> Result<(), Error> {
 #[tokio::main]
 async fn main() -> Result<()> {
     // The pool is never built: a transaction block is entered through a live
-    // pool handle, and the pipeline compiles this example without running it.
-    let _ = (record_opening_balances, settle_account, record_around_nested_block);
+    // pool handle, and the pipeline compiles this example without running it,
+    // so the functions above carry the blocks a chapter includes.
     Ok(())
 }
