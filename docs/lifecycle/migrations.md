@@ -441,9 +441,10 @@ A run that finds nothing pending reports `Applied 0 migration(s) in 0 ms`.
 The checkpoint marker belongs to the stage-based lifecycle: a project that pruned
 migrations below a boundary records that boundary in a marker file, and `migrate up`
 resolves it from the project configuration, where it arms the guard that refuses a
-target older than the boundary instead of applying a partial tail. `status` and
-`repair` read the history table only, so no boundary takes part in them, and no
-invocation can arm one command with a marker the others never read.
+target older than the boundary instead of applying a partial tail. `repair` reads the
+history table only, while `status` evaluates the same boundary over the recorded
+history and reports it beneath its table, so the listing never presents a tail the
+next run refuses without saying why.
 
 ## Inspecting the status
 
@@ -476,7 +477,18 @@ without scripts is reported rather than rendered as an empty table:
 ```text
 No migrations found in rurqe/migrations
 ```
+A project with a checkpoint evaluates its boundary as well, and reports it beneath
+the table whenever the recorded history stops below it:
 
+```text
+`migrate up` would refuse this database at the checkpoint `rurqe/migrations/checkpoint.toml`: target database is at version `1` but the checkpoint pruned history up to `2` (stage hash <digest>): advance it to the boundary or rebuild it from `schema/` before applying the migration tail
+```
+
+The rows above the line stay `Pending`, because a status describes the recorded
+history rather than the run: what the notice adds is the reason the next `up` stops
+instead of applying them. A target at or above the boundary is not refused by its
+recorded history and gets no such line; a live catalog that drifted from the
+anchored digest is measured by the run itself.
 ## Repairing the history
 
 ```bash

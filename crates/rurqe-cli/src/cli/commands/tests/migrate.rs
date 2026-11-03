@@ -11,7 +11,7 @@ use crate::driver::SqliteMigrationBackend;
 
 use super::super::stage::lock::{simulate_section_holder, CheckpointLock};
 use super::super::{apply_migrations, repair_history, report_status};
-use super::fixtures::{scripts, workspace};
+use super::fixtures::{checkpoint_file, scripts, workspace};
 
 /// The process id the planted section holder records.
 const HOLDER_PID: u32 = 4242;
@@ -178,4 +178,62 @@ fn repair_history_reads_the_tail_inside_the_checkpoint_section() {
     );
 
     CheckpointLock::acquire(&checkpoint_path).expect("the section is released after the read");
+}
+
+#[test]
+fn report_status_reports_the_boundary_the_next_run_would_refuse() {
+    let dir = workspace("migrate-status-boundary");
+    let migrations_dir = dir.join("migrations");
+    scripts(&migrations_dir, &["V1__init.sql"]);
+    let checkpoint_path = dir.join("checkpoint.toml");
+    let database = dir.join("app.db");
+    let mut backend = backend(&database);
+
+    apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
+        .expect("the initial migration applies without a boundary");
+
+    // The active tail, and a boundary the database sits below: the scripts that
+    // would carry it across were pruned, so the run can only refuse.
+    scripts(&migrations_dir, &["V3__orders.sql"]);
+    checkpoint_file(&checkpoint_path, "2");
+
+    let refusal = apply_migrations(&mut backend, &migrations_dir, &checkpoint_path)
+        .expect_err("the pruned boundary refuses the tail");
+    assert!(
+        refusal.to_string().contains("pruned history up to `2`"),
+        "got {refusal}"
+    );
+
+    let output = report_status(&mut backend, &migrations_dir, &checkpoint_path)
+        .expect("the status of the tail is reported");
+
+    assert!(
+        output
+            .lines()
+            .iter()
+            .any(|line| line.contains("V3__orders.sql") && line.contains("Pending")),
+        "the tail script is listed: {:?}",
+        output.lines()
+    );
+    assert!(
+        output.lines().iter().any(|line| line
+            .contains("`migrate up` would refuse this database")
+            && line.contains("pruned history up to `2`")),
+        "the boundary is reported beside the table: {:?}",
+        output.lines()
+    );
+
+    // Without a marker the project runs the plain sequential lifecycle, so no
+    // boundary is reported at all.
+    std::fs::remove_file(&checkpoint_path).expect("drop the boundary marker");
+    let output = report_status(&mut backend, &migrations_dir, &checkpoint_path)
+        .expect("the status of the tail is reported");
+    assert!(
+        !output
+            .lines()
+            .iter()
+            .any(|line| line.contains("would refuse this database")),
+        "no boundary is reported without a marker: {:?}",
+        output.lines()
+    );
 }

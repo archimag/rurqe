@@ -20,10 +20,20 @@ use super::stage::lock::CheckpointLock;
 /// being silently advanced by the remaining tail. A project without a marker
 /// keeps the classic sequential lifecycle.
 fn load_migrator(checkpoint_path: &Path) -> Result<Migrator, CliError> {
-    match Checkpoint::load(checkpoint_path).map_err(cli_error)? {
+    match load_checkpoint(checkpoint_path)? {
         Some(checkpoint) => Ok(Migrator::with_checkpoint(checkpoint)),
         None => Ok(Migrator::new()),
     }
+}
+
+/// Loads the committed checkpoint marker, if the project carries one.
+///
+/// The marker is read through this one function by every command that needs the
+/// boundary, so its absence means one thing everywhere: a project that never
+/// pruned its history. A marker that is present but unreadable stays an error,
+/// because reading it as absent would hide a boundary the run obeys.
+fn load_checkpoint(checkpoint_path: &Path) -> Result<Option<Checkpoint>, CliError> {
+    Checkpoint::load(checkpoint_path).map_err(cli_error)
 }
 
 /// Applies every pending migration and reports what ran.
@@ -58,22 +68,36 @@ pub(crate) fn apply_migrations<B: MigrationBackend>(
 }
 
 /// Reports the status of every known migration against the recorded history.
+///
+/// The table states what the tail holds, not whether the tail may run. The
+/// boundary marker guards the run, and every status is derived from the recorded
+/// history alone, so a database the next `up` refuses is listed exactly like one
+/// it advances. The boundary is therefore evaluated beside the table and reported
+/// as a notice: the operator reads the refusal the run would produce instead of a
+/// list of `Pending` rows that will never apply.
 pub(crate) fn report_status<B: MigrationBackend>(
     backend: &mut B,
     migrations_dir: &Path,
     checkpoint_path: &Path,
 ) -> Result<CommandOutput, CliError> {
-    // The tail is shared with the writers of the checkpoint artifacts, so it is
-    // read inside the exclusive section of the marker and the section is released
-    // before the backend is driven: the history read keeps its own exclusive run
-    // lock, and no lock ordering arises between the two.
-    let migrations = {
+    // The tail and the marker are shared with the writers of the checkpoint
+    // artifacts, so both are read inside the exclusive section of the marker and
+    // the section is released before the backend is driven: the history read
+    // keeps its own exclusive run lock, and no lock ordering arises between the
+    // two.
+    let (migrations, checkpoint) = {
         let _section = CheckpointLock::acquire(checkpoint_path)?;
-        load_migrations_from_dir(migrations_dir).map_err(cli_error)?
+        let migrations = load_migrations_from_dir(migrations_dir).map_err(cli_error)?;
+        (migrations, load_checkpoint(checkpoint_path)?)
     };
     let statuses = Migrator::new()
         .status(backend, &migrations)
         .map_err(cli_error)?;
+
+    // Evaluated after the statuses: `status` has just ensured the metadata table
+    // exists, so the history the boundary check reads is the one a run would see
+    // rather than a missing table.
+    let boundary = boundary_refusal(backend, checkpoint.as_ref(), checkpoint_path)?;
 
     let mut output = CommandOutput::new();
 
@@ -82,6 +106,7 @@ pub(crate) fn report_status<B: MigrationBackend>(
             "No migrations found in {}",
             migrations_dir.display()
         ));
+        output.notice(boundary);
         return Ok(output);
     }
 
@@ -110,7 +135,36 @@ pub(crate) fn report_status<B: MigrationBackend>(
             state
         ));
     }
+    output.notice(boundary);
     Ok(output)
+}
+
+/// The refusal a run of the tail would produce for this database, if any.
+///
+/// The condition is the one [`Migrator`] evaluates over the recorded history, so
+/// the report and the run it precedes cannot word the same boundary differently.
+/// Only the history participates, because the live catalog of a target sitting
+/// exactly at the boundary is measured by the run itself and by `stage verify`,
+/// which introspect the database they are about to advance; a project without a
+/// marker carries no boundary, and nothing is reported.
+fn boundary_refusal<B: MigrationBackend>(
+    backend: &mut B,
+    checkpoint: Option<&Checkpoint>,
+    checkpoint_path: &Path,
+) -> Result<Option<String>, CliError> {
+    let Some(checkpoint) = checkpoint else {
+        return Ok(None);
+    };
+
+    let history = backend.read_history().map_err(cli_error)?;
+
+    match checkpoint.validate_history(&history) {
+        Ok(()) => Ok(None),
+        Err(refusal) => Ok(Some(format!(
+            "`migrate up` would refuse this database at the checkpoint `{}`: {refusal}",
+            checkpoint_path.display()
+        ))),
+    }
 }
 
 /// Rewrites the recorded checksums and purges failed attempts.

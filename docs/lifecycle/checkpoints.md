@@ -285,10 +285,14 @@ A history that never recorded a version at all — one holding only repeatable
 scripts — sits below every boundary by definition and is refused by the first
 check, which reports no recorded version instead of a number.
 
-The marker takes part in `up` alone. `status` and `repair` read the history table
-without a boundary, so the boundary check is armed for `up` alone, while all three
-commands take the marker's exclusive section around their reads of the artifacts a
-writer may mutate.
+The marker gates `up` alone: `repair` rewrites the recorded history without a
+boundary, and `status` applies nothing, so neither command is refused by one. A
+status table listing a tail the next run refuses would hide the one condition the
+command exists to explain, so `status` evaluates the same check over the recorded
+history and reports the refusal as a line beneath its table — the rows stay
+`Pending`, because they describe the recorded history rather than the run — while
+the boundary itself stops `up` alone. All three commands take the marker's exclusive
+section around their reads of the artifacts a writer may mutate.
 
 ## Pruning the folded history
 
