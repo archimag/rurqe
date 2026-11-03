@@ -133,6 +133,7 @@ mod sync_pool {
 
     use postgres::NoTls;
     use r2d2_postgres::PostgresConnectionManager;
+    use rurqe_postgres::rurqe_core::query::{BuiltQuery, QueryBackend};
     use rurqe_postgres::{PgError, PgPool, PgPoolError};
 
     use crate::support;
@@ -413,6 +414,87 @@ mod sync_pool {
             served.is_ok(),
             "the pool replaces the connection it discarded: {:?}",
             served.err()
+        );
+    }
+
+    /// A refused savepoint rollback poisons the connection, so a bare
+    /// statement never reaches the abandoned transaction, while the next scope
+    /// still reports the driver failure of the retried recovery.
+    #[test]
+    fn a_poisoned_connection_refuses_its_statements() {
+        let Some(url) = support::database_url("PgConnection poisoned statements") else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_poisoned");
+
+        // The termination arrives from another session, because the session
+        // that holds the savepoint is exactly the one the scenario has to lose.
+        let config: postgres::Config = url.parse().expect("the test URL parses");
+        let mut killer = config
+            .connect(NoTls)
+            .expect("the second client connects to the server");
+
+        let outcome = pool.transaction(|tx| {
+            let backend = tx
+                .client_mut()
+                .query_one("SELECT pg_backend_pid()", &[])?
+                .get::<_, i32>(0);
+            tx.client_mut().batch_execute(
+                "INSERT INTO rurqe_tx_poisoned (id, amount) VALUES (1, 100)",
+            )?;
+
+            // The nested block loses its session, so the `ROLLBACK TO SAVEPOINT`
+            // its guard issues cannot reach a server: the refused statement
+            // poisons the connection.
+            let nested: Result<(), PgError> = tx.transaction(|nested| {
+                nested.client_mut().batch_execute(
+                    "INSERT INTO rurqe_tx_poisoned (id, amount) VALUES (2, 200)",
+                )?;
+                let terminated = killer.query_one("SELECT pg_terminate_backend($1)", &[&backend])?;
+                assert!(
+                    terminated.get::<_, bool>(0),
+                    "the server accepted the termination of backend {backend}"
+                );
+                Ok(())
+            });
+            assert!(
+                matches!(&nested, Err(PgError::Driver(_))),
+                "the nested block reports the savepoint release it lost: {nested:?}"
+            );
+
+            // A bare statement never runs inside the abandoned transaction: the
+            // record refuses it before it reaches the driver.
+            let statement = BuiltQuery {
+                sql: String::from("SELECT 1"),
+                params: Vec::new(),
+            };
+            let refused = tx.execute_raw(&statement);
+            assert!(
+                matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+                "the poisoned connection refuses its statements: {refused:?}"
+            );
+
+            // The recovery a poisoned connection offers is the next transaction
+            // entry: it retries the abandoned savepoint rollback, and the retry
+            // reports the driver failure of the session that is gone.
+            let recovered: Result<(), PgError> = tx.transaction(|_| Ok(()));
+            assert!(
+                matches!(&recovered, Err(PgError::Driver(_))),
+                "the retried savepoint recovery reports the driver failure: {recovered:?}"
+            );
+
+            Ok::<(), PgError>(())
+        });
+
+        assert!(
+            matches!(&outcome, Err(PgPoolError::Query(PgError::Driver(_)))),
+            "the poisoned block refuses its commit with the recorded failure: {outcome:?}"
+        );
+        assert_eq!(
+            totals(&pool, "rurqe_tx_poisoned"),
+            (0, 0),
+            "the abandoned transaction was discarded with the session"
         );
     }
 }

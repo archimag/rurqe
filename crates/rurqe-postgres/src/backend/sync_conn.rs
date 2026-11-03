@@ -1,11 +1,24 @@
 //! Synchronous execution adapter over a [`postgres::Client`] handle.
-
+//! Synchronous execution adapter over a [`postgres::Client`] handle.
+//!
+//! The adapter refuses every bare statement while its bookkeeping records a
+//! poison, which is the state a refused transaction-control statement leaves
+//! behind: the session may still hold the transaction whose statement failed,
+//! and PostgreSQL accepts the `BEGIN` of the next caller inside it with a
+//! warning before persisting that caller's work with its own `COMMIT`. The
+//! refusal mirrors the asynchronous adapter, which answers the same hazard with
+//! [`PgError::ConnectionPoisoned`].
+//!
+//! The guard protocol keeps running through the transaction-control path,
+//! because the rollback a dropping scope issues, the savepoint recovery of the
+//! next scope, and the retry performed by the next transaction entry are
+//! exactly the statements that end the state.
 use std::borrow::{Borrow, BorrowMut};
 
 use postgres::fallible_iterator::FallibleIterator;
 use rurqe_core::expr::SqlVal;
 use rurqe_core::query::{
-    BuiltQuery, IsolationLevel, QueryBackend, TransactionBackend, TransactionGuard,
+    BuiltQuery, IsolationLevel, QueryBackend, SavepointName, TransactionBackend, TransactionGuard,
     TransactionStatus, TransactionalConnection,
 };
 
@@ -109,6 +122,40 @@ pub(crate) fn ensure_idle(client: &mut postgres::Client) -> Result<(), PgError> 
         .batch_execute("BEGIN; ROLLBACK")
         .map_err(|failure| PgError::AbandonedTransaction { failure })
 }
+
+/// Executes a transaction-control statement on a session the adapter cannot
+/// vouch for.
+///
+/// The guard protocol has to keep running while the connection records a
+/// poison: the rollback a dropping scope issues, the savepoint recovery of the
+/// next scope, and the retry performed by the next transaction entry are
+/// exactly the statements that end the state. The wrapper hands them to the
+/// driver directly, with the text the shared [`TransactionBackend`] contract
+/// renders and the error mapping that contract applies, so it bypasses only
+/// the refusal every bare statement of [`PgConnection`] receives.
+struct ControlPath<'a>(&'a mut postgres::Client);
+
+impl QueryBackend for ControlPath<'_> {
+    type Error = PgError;
+
+    fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        fetch_raw_sync(self.0, query)
+    }
+
+    fn fetch_raw_limited(
+        &mut self,
+        query: &BuiltQuery,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        fetch_raw_limited_sync(self.0, query, limit)
+    }
+
+    fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, PgError> {
+        execute_raw_sync(self.0, query)
+    }
+}
+
+impl TransactionBackend for ControlPath<'_> {}
 
 /// A synchronous PostgreSQL handle executing RURQE queries.
 ///
@@ -307,6 +354,29 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
         }
         Ok(value)
     }
+
+    /// Refuses to execute a statement while the connection records a poison.
+    ///
+    /// The adapter can no longer prove that the session is outside the
+    /// transaction whose control statement the driver refused, so a bare
+    /// statement would run inside the abandoned transaction: PostgreSQL
+    /// accepts its `BEGIN` with a warning and persists its work with the next
+    /// `COMMIT`. The refusal mirrors the asynchronous adapter, which answers
+    /// every statement on a poisoned connection with
+    /// [`PgError::ConnectionPoisoned`]. The recovery a synchronous connection
+    /// offers is the next transaction entry, which retries the abandoned
+    /// rollback instead of joining it.
+    fn refuse_if_poisoned(&self) -> Result<(), PgError> {
+        match self.status.poison() {
+            Some(error) => Err(PgError::ConnectionPoisoned {
+                reason: format!(
+                    "the connection recorded a refused transaction-control statement: {error}"
+                ),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Repairs a session left inside a transaction by a raw driver handle.
     ///
     /// A typed entry point is the only place where the adapter can still tell
@@ -336,24 +406,96 @@ impl<B: BorrowMut<postgres::Client>> PgConnection<B> {
 impl<B: BorrowMut<postgres::Client>> QueryBackend for PgConnection<B> {
     type Error = PgError;
 
+    /// Reads every row of `query` on a session the adapter can vouch for.
+    ///
+    /// A poisoned connection refuses the statement before it reaches the
+    /// driver, because the session may still hold the transaction whose
+    /// control statement failed: the rows would otherwise observe work nobody
+    /// committed.
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        self.refuse_if_poisoned()?;
         fetch_raw_sync(self.client.borrow_mut(), query)
     }
 
+    /// Reads at most `limit` rows of `query` on a session the adapter can
+    /// vouch for, refusing a poisoned connection exactly as
+    /// [`fetch_raw`](QueryBackend::fetch_raw) does.
     fn fetch_raw_limited(
         &mut self,
         query: &BuiltQuery,
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, PgError> {
+        self.refuse_if_poisoned()?;
         fetch_raw_limited_sync(self.client.borrow_mut(), query, limit)
     }
 
+    /// Executes `query` on a session the adapter can vouch for.
+    ///
+    /// A poisoned connection refuses the statement before it reaches the
+    /// driver: a write would otherwise join the abandoned transaction and be
+    /// discarded by the rollback that eventually closes it, while the caller
+    /// observed it succeed.
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, PgError> {
+        self.refuse_if_poisoned()?;
         execute_raw_sync(self.client.borrow_mut(), query)
     }
 }
 
-impl<B: BorrowMut<postgres::Client>> TransactionBackend for PgConnection<B> {}
+impl<B: BorrowMut<postgres::Client>> TransactionBackend for PgConnection<B> {
+    /// Opens a transaction outside the poison gate.
+    ///
+    /// The statement is rendered exactly as the shared contract renders it, so
+    /// the override changes only the path that executes it: the transaction
+    /// entry is where a poisoned connection recovers, and its block is refused
+    /// by the recovery itself when the abandoned work cannot be closed.
+    fn begin(&mut self, isolation: Option<IsolationLevel>) -> Result<(), PgError> {
+        let mut path = ControlPath(self.client.borrow_mut());
+        TransactionBackend::begin(&mut path, isolation)
+    }
+
+    /// Commits the open transaction outside the poison gate.
+    ///
+    /// The guard refuses the commit of a poisoned connection before it reaches
+    /// this method, and the rollback a dropping guard issues afterwards is one
+    /// of the statements that ends the state, so the statement itself is never
+    /// gated.
+    fn commit(&mut self) -> Result<(), PgError> {
+        let mut path = ControlPath(self.client.borrow_mut());
+        TransactionBackend::commit(&mut path)
+    }
+
+    /// Rolls the open transaction back outside the poison gate.
+    ///
+    /// The rollback a dropping guard issues is the statement that closes an
+    /// abandoned transaction, so refusing it here would leave the state
+    /// unrepairable.
+    fn rollback(&mut self) -> Result<(), PgError> {
+        let mut path = ControlPath(self.client.borrow_mut());
+        TransactionBackend::rollback(&mut path)
+    }
+
+    /// Opens a savepoint outside the poison gate.
+    fn savepoint(&mut self, name: &SavepointName) -> Result<(), PgError> {
+        let mut path = ControlPath(self.client.borrow_mut());
+        TransactionBackend::savepoint(&mut path, name)
+    }
+
+    /// Releases a savepoint outside the poison gate.
+    fn release_savepoint(&mut self, name: &SavepointName) -> Result<(), PgError> {
+        let mut path = ControlPath(self.client.borrow_mut());
+        TransactionBackend::release_savepoint(&mut path, name)
+    }
+
+    /// Rolls back to a savepoint outside the poison gate.
+    ///
+    /// The recovery of the next transaction entry retries exactly this
+    /// statement on a poisoned connection, so gating it would leave the
+    /// abandoned savepoint unrepairable.
+    fn rollback_to_savepoint(&mut self, name: &SavepointName) -> Result<(), PgError> {
+        let mut path = ControlPath(self.client.borrow_mut());
+        TransactionBackend::rollback_to_savepoint(&mut path, name)
+    }
+}
 
 impl<B: BorrowMut<postgres::Client>> TransactionalConnection for PgConnection<B> {
     fn transaction_status(&mut self) -> &mut TransactionStatus<PgError> {

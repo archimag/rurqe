@@ -91,6 +91,17 @@ impl<E> TransactionStatus<E> {
         self.poison.is_some()
     }
 
+    /// The driver error of the refused rollback that poisoned the connection.
+    ///
+    /// The accessor borrows the recorded failure, so a statement boundary can
+    /// refuse work while the record stays readable to the recovery that ends
+    /// the state. Consuming the record belongs to the commit refusal of the
+    /// guard, which hands the failure back to the caller instead of persisting
+    /// the work the rollback was supposed to discard.
+    pub fn poison(&self) -> Option<&E> {
+        self.poison.as_ref()
+    }
+
     /// Whether a live guard owns the outermost transaction block.
     ///
     /// Ownership is what tells one poison apart from the other: a failure left
