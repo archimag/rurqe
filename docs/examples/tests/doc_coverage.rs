@@ -49,6 +49,13 @@ const FIXTURE_FENCE: &str = "rust,compile_fail";
 /// Directory of the compile-failure fixtures a chapter quotes.
 const GUARDS_DIR: &str = "guards";
 
+/// Directory of the generator-output fixtures a chapter quotes.
+///
+/// The class holds the modules the code generator emits: the chapter documents
+/// the shape of those modules, so it quotes a fixture the book regenerates from
+/// a catalog instead of transcribing the text.
+const GENERATED_DIR: &str = "generated";
+
 /// Module of the crate that lists every guard fixture as a doctest.
 ///
 /// `cargo test --doc` compiles the code blocks a module carries, so a fixture
@@ -57,6 +64,16 @@ const GUARDS_DIR: &str = "guards";
 /// compares the fixture paths it names with the files on disk, in both
 /// directions.
 const CATALOGUE_MODULE: &str = "src/guards.rs";
+
+/// Test that derives every generator-output fixture from the generator.
+///
+/// The fixture is the module the code generator emits, so a test of the crate
+/// constructs the catalog the chapter describes, renders the module from it
+/// with the generator the toolchain itself uses, and compares the two texts.
+/// The guard reads the test's source text and compares the fixture paths it
+/// names with the files on disk, in both directions, so a fixture cannot exist
+/// unpinned and a pin cannot name a file the crate does not ship.
+const DERIVATION_TEST: &str = "tests/generated_module.rs";
 
 /// Build script of the package, which is compiled infrastructure rather than a
 /// documentation target.
@@ -86,17 +103,30 @@ enum IncludeClass<'a> {
     /// A compile-failure fixture under `guards/`, asserted by the doctest
     /// catalogue.
     Fixture,
+    /// A generator-output fixture under `generated/`, derived from a catalog by
+    /// the code generator and asserted by the derivation test.
+    Generated,
     /// A file of the examples crate that neither ships nor asserts anything.
     Unregistered,
 }
 
-/// Whether `path` addresses a file under the guard fixture directory.
+/// Whether `path` addresses a file under the fixture directory `directory`.
 ///
-/// The directory segment is matched whole, so a `guards.rs` file at the
-/// package root stays a documentation target rather than a fixture.
-fn is_under_guards(path: &str) -> bool {
-    path.strip_prefix(GUARDS_DIR)
+/// The directory segment is matched whole, so a `guards.rs` or `generated.rs`
+/// file at the package root stays a documentation target rather than a fixture.
+fn is_under(path: &str, directory: &str) -> bool {
+    path.strip_prefix(directory)
         .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether `path` addresses a compile-failure fixture under `guards/`.
+fn is_under_guards(path: &str) -> bool {
+    is_under(path, GUARDS_DIR)
+}
+
+/// Whether `path` addresses a generator-output fixture under `generated/`.
+fn is_under_generated(path: &str) -> bool {
+    is_under(path, GENERATED_DIR)
 }
 
 /// Classifies the package-relative `path` a directive addresses.
@@ -105,7 +135,10 @@ fn is_under_guards(path: &str) -> bool {
 /// audit then reads the `path` the manifest registers for it, so the file that
 /// ships is the file that is checked. The identity of the name-derived path and
 /// the registered one is asserted on its own, so a divergence is a failing
-/// guard rather than an audited stub.
+/// guard rather than an audited stub. A path under one of the fixture
+/// directories is classified by that directory — the compile-failure fixtures
+/// of `guards/` and the generator-output fixtures of `generated/` — and every
+/// other path is a file no chapter may include.
 fn classify_include<'a>(registered: &'a [ExampleTarget], path: &str) -> IncludeClass<'a> {
     let name = path.strip_suffix(".rs").unwrap_or(path);
     if let Some(target) = registered.iter().find(|target| target.name == name) {
@@ -113,6 +146,9 @@ fn classify_include<'a>(registered: &'a [ExampleTarget], path: &str) -> IncludeC
     }
     if is_under_guards(path) {
         return IncludeClass::Fixture;
+    }
+    if is_under_generated(path) {
+        return IncludeClass::Generated;
     }
     IncludeClass::Unregistered
 }
@@ -697,12 +733,24 @@ fn every_include_addresses_a_known_file_and_a_declared_anchor() {
                 );
                 path.clone()
             }
+            IncludeClass::Generated => {
+                let fixture = root.join(&path);
+                assert!(
+                    fixture.is_file(),
+                    "a chapter includes `examples/{path}:{anchor}`, but the generator-output \
+                     fixture does not exist: the module a chapter shows is a file of the crate \
+                     that the derivation test regenerates and the compilation test includes, \
+                     never referenced into the void"
+                );
+                path.clone()
+            }
             IncludeClass::Unregistered => panic!(
                 "a chapter includes `examples/{path}:{anchor}`, but no `[[example]]` target of \
-                 examples/Cargo.toml registers that path and it is not a guard fixture under \
-                 `{GUARDS_DIR}/`: the book quotes only code the crate compiles, so the file is \
-                 either registered with a target whose `path` names it or moved under \
-                 `{GUARDS_DIR}/`. The registered targets are {:?}",
+                 examples/Cargo.toml registers that path and it is not a fixture under \
+                 `{GUARDS_DIR}/` or `{GENERATED_DIR}/`: the book quotes only code the crate \
+                 compiles, so the file is either registered with a target whose `path` names it \
+                 or moved under one of the two fixture directories. The registered targets are \
+                 {:?}",
                 registered_example_names()
             ),
         };
@@ -733,7 +781,9 @@ fn every_include_sits_inside_the_fence_of_its_file_class() {
         let Directive { chapter, path, anchor, fence } = directive;
         let expected = match classify_include(&registered, &path) {
             IncludeClass::Fixture => FIXTURE_FENCE,
-            IncludeClass::Target(_) | IncludeClass::Unregistered => TARGET_FENCE,
+            IncludeClass::Target(_) | IncludeClass::Generated | IncludeClass::Unregistered => {
+                TARGET_FENCE
+            }
         };
         if fence == expected {
             continue;
@@ -752,8 +802,10 @@ fn every_include_sits_inside_the_fence_of_its_file_class() {
         misplaced.is_empty(),
         "include directives found outside the fence their file class requires:\n{misplaced:#?}\n\
          A fragment of a registered example target is included into `{TARGET_FENCE}`, because \
-         that is the fence the book compiles and the one a reader meets as code. A guard fixture \
-         of `{GUARDS_DIR}/` is included into `{FIXTURE_FENCE}`, because the block is the \
+         that is the fence the book compiles and the one a reader meets as code, and a \
+         generator-output fixture of `{GENERATED_DIR}/` is included into the same fence for the \
+         same reason. A guard fixture of `{GUARDS_DIR}/` is included into `{FIXTURE_FENCE}`, \
+         because the block is the \
          rejection the crate's doctest catalogue asserts. A `text`, `sql`, `toml`, or `bash` \
          fence documents the directive instead of performing it, and `rust,ignore` carries a \
          sketch the book never substitutes"
@@ -858,6 +910,9 @@ fn every_anchor_is_properly_paired_and_closed() {
         violations.extend(check_anchor_pairing(&root.join(&target.path)));
     }
     for fixture in guard_fixtures() {
+        violations.extend(check_anchor_pairing(&root.join(&fixture)));
+    }
+    for fixture in generated_fixtures() {
         violations.extend(check_anchor_pairing(&root.join(&fixture)));
     }
     let lib_path = root.join("src").join("lib.rs");
@@ -1115,10 +1170,29 @@ fn every_chapter_is_reachable_from_the_table_of_contents() {
 /// exist: every fixture-side rule below holds vacuously until the first
 /// fixture lands.
 fn guard_fixtures() -> Vec<String> {
+    fixtures_under(GUARDS_DIR)
+}
+
+/// Generator-output fixture files under `generated/`, as package-relative paths.
+///
+/// The class holds the modules the code generator emits: a chapter quotes one
+/// instead of transcribing the text, the derivation test regenerates it from
+/// the catalog it documents, and the compilation test includes it.
+fn generated_fixtures() -> Vec<String> {
+    fixtures_under(GENERATED_DIR)
+}
+
+/// Fixture files of the directory `directory`, as package-relative paths.
+///
+/// The walk descends into subdirectories, so a fixture may be grouped by the
+/// rule it demonstrates or the catalog it documents, and it yields nothing
+/// while the directory does not exist: every fixture-side rule below holds
+/// vacuously until the first fixture lands.
+fn fixtures_under(directory: &str) -> Vec<String> {
     let mut fixtures = Vec::new();
-    let guards = package_root().join(GUARDS_DIR);
-    if guards.is_dir() {
-        collect_fixture_files(&guards, GUARDS_DIR, &mut fixtures);
+    let found = package_root().join(directory);
+    if found.is_dir() {
+        collect_fixture_files(&found, directory, &mut fixtures);
     }
     fixtures.sort();
     fixtures
@@ -1152,6 +1226,30 @@ fn collect_fixture_files(dir: &Path, prefix: &str, fixtures: &mut Vec<String>) {
 /// under `guards/`, so the listing is compared as a set of paths rather than
 /// as the spelling of the item that carries it.
 fn catalogue_entries(text: &str) -> BTreeSet<String> {
+    literals_under(text, GUARDS_DIR)
+}
+
+/// Fixture paths the derivation test names, as package-relative paths.
+///
+/// The derivation test names the fixture it regenerates the way the catalogue
+/// names the fixture it asserts: inside a string literal, through
+/// `include_str!`. The listing is compared in both directions, so a fixture
+/// cannot exist unpinned and a pin cannot name a file that does not exist.
+fn derivation_entries(text: &str) -> BTreeSet<String> {
+    literals_under(text, GENERATED_DIR)
+}
+
+/// File paths the string literals of `text` address under the fixture directory
+/// `directory`, as package-relative paths.
+///
+/// A fixture is named inside a string literal:
+/// `#[doc = include_str!("../guards/<name>.rs")]` bakes a guard fixture's
+/// `compile_fail` blocks into `cargo test --doc`, and
+/// `include_str!("../generated/<name>.rs")` hands a generator-output fixture to
+/// the derivation test. The extraction reads every literal of the consumer and
+/// keeps the ones addressing a file under `directory`, so a listing is compared
+/// as a set of paths rather than as the spelling of the item that carries it.
+fn literals_under(text: &str, directory: &str) -> BTreeSet<String> {
     let mut listed = BTreeSet::new();
     let mut rest = text;
     while let Some(opening) = rest.find('"') {
@@ -1159,7 +1257,7 @@ fn catalogue_entries(text: &str) -> BTreeSet<String> {
         let Some(closing) = rest.find('"') else {
             break;
         };
-        if let Some(fixture) = catalogue_path(&rest[..closing]) {
+        if let Some(fixture) = literal_path(&rest[..closing], directory) {
             listed.insert(fixture);
         }
         rest = &rest[closing + 1..];
@@ -1167,33 +1265,39 @@ fn catalogue_entries(text: &str) -> BTreeSet<String> {
     listed
 }
 
-/// The package-relative fixture path a catalogue literal spells, or `None` when
-/// the literal addresses no fixture.
+/// The package-relative fixture path a literal spells under `directory`, or
+/// `None` when the literal addresses no fixture of that class.
 ///
-/// The catalogue module sits in `src/`, so its `include_str!` path climbs one
-/// directory before it enters `guards/`. The leading `../` is dropped and the
-/// remaining path is accepted only when it addresses the fixture directory
-/// itself, so a literal naming anything else is not a listing.
-fn catalogue_path(literal: &str) -> Option<String> {
+/// The consumers sit one directory below the package root — the catalogue
+/// module in `src/`, the derivation test in `tests/` — so an `include_str!`
+/// path climbs one directory before it enters the fixture directory. The
+/// leading `../` is dropped and the remaining path is accepted only when it
+/// addresses `directory` itself, so a literal naming anything else is not a
+/// listing.
+fn literal_path(literal: &str, directory: &str) -> Option<String> {
     let trimmed = literal.trim();
     let relative = trimmed.strip_prefix("../").unwrap_or(trimmed);
-    is_under_guards(relative).then(|| relative.to_owned())
+    is_under(relative, directory).then(|| relative.to_owned())
 }
 
 #[test]
 fn every_fixture_anchor_is_included_by_a_chapter() {
     let root = package_root();
     let included = included_anchors();
-    for fixture in guard_fixtures() {
+    let fixtures: Vec<String> = guard_fixtures()
+        .into_iter()
+        .chain(generated_fixtures())
+        .collect();
+    for fixture in fixtures {
         for anchor in declared_anchors(&root.join(&fixture)) {
             let is_included = included
                 .get(&fixture)
                 .is_some_and(|used| used.contains(&anchor));
             assert!(
                 is_included,
-                "anchor `{anchor}` of the guard fixture examples/{fixture} is included by no \
-                 chapter under docs/: quote the fragment from the chapter whose rule it \
-                 demonstrates, or delete the anchor together with the fragment"
+                "anchor `{anchor}` of the fixture examples/{fixture} is included by no chapter \
+                 under docs/: quote the fragment from the chapter that documents it, or delete \
+                 the anchor together with its fragment"
             );
         }
     }
@@ -1230,6 +1334,42 @@ fn the_doctest_catalogue_lists_every_guard_fixture() {
             "the doctest catalogue `{CATALOGUE_MODULE}` lists `examples/{entry}`, but no such \
              file exists under `{GUARDS_DIR}/`: a listed fixture is a file the catalogue \
              compiles, so a stale entry names a demonstration the crate no longer ships"
+        );
+    }
+}
+
+#[test]
+fn the_derivation_test_pins_every_generated_fixture() {
+    let fixtures = generated_fixtures();
+    if fixtures.is_empty() {
+        return;
+    }
+    let derivation = package_root().join(DERIVATION_TEST);
+    assert!(
+        derivation.is_file(),
+        "the generator-output fixtures {fixtures:?} exist, but the derivation test \
+         `{DERIVATION_TEST}` does not: a fixture is the module the code generator emits, so a \
+         test that renders it from its catalog and compares the two texts is what keeps the \
+         fixture from documenting a shape the generator no longer writes"
+    );
+    let text = fs::read_to_string(&derivation).unwrap_or_else(|error| {
+        panic!("the derivation test {derivation:?} is not readable: {error}")
+    });
+    let listed = derivation_entries(&text);
+    for fixture in &fixtures {
+        assert!(
+            listed.contains(fixture),
+            "the generator-output fixture examples/{fixture} is named by no entry of the \
+             derivation test `{DERIVATION_TEST}`: name it there with an `include_str!`, so the \
+             test regenerates the module from its catalog and the compilation test includes it"
+        );
+    }
+    for entry in &listed {
+        assert!(
+            fixtures.contains(entry),
+            "the derivation test `{DERIVATION_TEST}` names `examples/{entry}`, but no such file \
+             exists under `{GENERATED_DIR}/`: a listed fixture is a file the test reads, so a \
+             stale entry names a module the crate no longer ships"
         );
     }
 }
