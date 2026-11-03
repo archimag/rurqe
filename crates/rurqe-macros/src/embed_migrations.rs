@@ -45,6 +45,26 @@
 //! and the workspace compiles on stable Rust, so the inclusion is the tracking
 //! mechanism.
 //!
+//! # Ordering
+//!
+//! The bake order is the lexicographic order of script file names, because a
+//! directory reports its entries in whatever order the file system chooses and a
+//! binary has to be built deterministically. That order belongs to the build
+//! alone: a version suffix sorts as text, so `V10__regions.sql` precedes
+//! `V1__init.sql` among the scripts this expansion bakes.
+//!
+//! The order the scripts run in is settled at startup, by the migration crate,
+//! from the same file names: `EmbeddedMigrations::from_artifacts` orders the tail
+//! by the version parsed out of each name — versioned scripts ascending, then
+//! repeatable ones by name — while `DeclarativeStage::new` compares numeric runs
+//! of a name by their value, so `2_users.sql` precedes `10_orders.sql`. A
+//! collection therefore applies exactly like the directory it was baked from, and
+//! the expansion never parses a version of its own: it hands the scripts over
+//! under their file names, and the implementation that owns the naming grammar
+//! derives the run order from them. The unit tests of this module build the real
+//! collection from a plan and assert both orders, so the contract is verified
+//! rather than assumed.
+//!
 //! # Rejections
 //!
 //! A directory argument, a path naming nothing, a configuration the strict parser
@@ -77,10 +97,16 @@ struct Script {
 #[derive(Debug, Default)]
 struct Artifacts {
     /// The top-level `*.sql` scripts of the migration directory.
+    ///
+    /// Ordered by file name, which is the bake order alone: the collection orders
+    /// the tail by the version it parses out of each name at startup.
     tail: Vec<Script>,
     /// The `checkpoint.toml` marker guarding the tail, when it exists.
     checkpoint: Option<PathBuf>,
     /// The `*.sql` scripts of the declarative stage.
+    ///
+    /// Ordered by file name, which is the bake order alone: the declarative stage
+    /// compares numeric runs of a name by their value at startup.
     stage: Vec<Script>,
     /// The `schema.lock` snapshot, when it exists.
     schema_lock: Option<PathBuf>,
@@ -224,6 +250,10 @@ fn configuration_of(path: &Path) -> Result<(CodegenConfig, PathBuf), String> {
 /// directory that exists contributes the top-level `*.sql` scripts it holds. A
 /// configuration baking no script at all is refused: a collection with nothing to
 /// apply cannot initialise a database.
+///
+/// The scripts of both sets are ordered by file name alone, which is the bake
+/// order the module documents: the run order is derived from the names by the
+/// migration crate at startup, so a version suffix is never compared as text here.
 fn plan(configuration: &CodegenConfig, directory: &Path) -> Result<Artifacts, String> {
     let tail_directory = configuration.migrations_dir(directory);
     let stage_directory = configuration.stage_dir(directory);
@@ -249,6 +279,13 @@ fn plan(configuration: &CodegenConfig, directory: &Path) -> Result<Artifacts, St
 }
 
 /// Reads the top-level `*.sql` scripts of `directory` in lexicographic order.
+///
+/// The order belongs to the build: a directory reports its entries in whatever
+/// order the file system chooses, and a binary has to be built deterministically.
+/// It is never the order the scripts run in, because a version suffix sorts as
+/// text — `V10__regions.sql` precedes `V1__init.sql` here while the collection
+/// applies `1` before `2` before `10`. The migration crate derives the run order
+/// from the file names at startup, which is the contract the module documents.
 ///
 /// An absent directory holds no script, which is how an artifact a project does
 /// not keep switches itself off. A directory that cannot be listed is an error:
@@ -613,5 +650,91 @@ mod tests {
 
         assert_eq!(rendered.matches("Option::None").count(), 2);
         assert!(rendered.contains("stage:&["));
+    }
+
+    /// The file name and the text of every planned script, read back from disk.
+    fn read_pairs(scripts: &[Script]) -> Vec<(String, String)> {
+        scripts
+            .iter()
+            .map(|script| {
+                let text = std::fs::read_to_string(&script.path).expect("read the fixture script");
+                (script.name.clone(), text)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_bake_order_is_lexicographic_while_the_run_order_is_versioned() {
+        let root = temporary_directory("run-order");
+        write(
+            &root.join("migrations/V1__init.sql"),
+            "CREATE TABLE users (id INTEGER);",
+        );
+        write(
+            &root.join("migrations/V2__orders.sql"),
+            "CREATE TABLE orders (id INTEGER);",
+        );
+        write(
+            &root.join("migrations/V10__regions.sql"),
+            "CREATE TABLE regions (id INTEGER);",
+        );
+        write(
+            &root.join("schema/2_users.sql"),
+            "CREATE TABLE users (id INTEGER);",
+        );
+        write(
+            &root.join("schema/10_orders.sql"),
+            "CREATE TABLE orders (id INTEGER);",
+        );
+
+        let artifacts = plan(&fixture_configuration("migrations", "schema"), &root)
+            .expect("both artifact directories hold scripts");
+        let baked_tail = names(&artifacts.tail);
+        let baked_stage = names(&artifacts.stage);
+        let tail = read_pairs(&artifacts.tail);
+        let stage = read_pairs(&artifacts.stage);
+        let _ = std::fs::remove_dir_all(&root);
+
+        let tail_pairs: Vec<(&str, &str)> = tail
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str()))
+            .collect();
+        let stage_pairs: Vec<(&str, &str)> = stage
+            .iter()
+            .map(|(name, text)| (name.as_str(), text.as_str()))
+            .collect();
+
+        let embedded = rurqe::migrate::EmbeddedMigrations::from_artifacts(
+            rurqe::migrate::EmbeddedArtifacts {
+                tail: &tail_pairs,
+                checkpoint: None,
+                stage: &stage_pairs,
+                schema_lock: None,
+            },
+        )
+        .expect("the planned artifacts are valid");
+
+        let run_tail: Vec<&str> = embedded
+            .iter()
+            .map(|migration| migration.script.as_str())
+            .collect();
+        let run_stage: Vec<&str> = embedded
+            .stage()
+            .expect("the collection bakes the stage")
+            .scripts()
+            .iter()
+            .map(|script| script.name())
+            .collect();
+
+        assert_eq!(
+            baked_tail,
+            ["V10__regions.sql", "V1__init.sql", "V2__orders.sql"]
+        );
+        assert_eq!(
+            run_tail,
+            ["V1__init.sql", "V2__orders.sql", "V10__regions.sql"]
+        );
+        assert_eq!(baked_stage, ["10_orders.sql", "2_users.sql"]);
+        assert_eq!(run_stage, ["2_users.sql", "10_orders.sql"]);
     }
 }
