@@ -532,12 +532,40 @@ pub fn discover_config(start: &Path) -> Option<PathBuf> {
 /// A configuration the walk does find is read through [`CodegenConfig::load`], so a malformed
 /// file is reported with the position of its offending declaration instead of being silently
 /// replaced by the defaults.
+///
+/// The walk decides existence with one filesystem call and the read performs another, so a
+/// configuration the walk selected can be removed before it is read — a concurrent checkout,
+/// an editor save, a synchronisation job. An absence at read time is the walk's own absence
+/// tier and answers with the defaults anchored at `start`, exactly as a walk that found
+/// nothing does, so the answer describes the state of the tree rather than the timing of the
+/// two calls. A file that exists and cannot be read, and a malformed one, stay errors.
 pub fn discover_or_default(start: &Path) -> Result<(CodegenConfig, PathBuf), ConfigError> {
     let Some(path) = discover_config(start) else {
         return Ok((CodegenConfig::default(), start.to_path_buf()));
     };
 
-    let configuration = CodegenConfig::load(&path)?;
+    read_discovered(&path, start)
+}
+
+/// Reads the configuration the discovery walk selected at `path` for the tree rooted at
+/// `start`.
+///
+/// The walk and the read are two filesystem operations, so the file the walk selected can be
+/// removed before it is read. [`CodegenConfig::load`] reports that removal as
+/// [`ConfigError::NotFound`] — the operator-facing refusal of an explicitly named path —
+/// while a discovered path answers with the defaults anchored at `start`: the walk's own
+/// absence tier, because the tree holds no readable declaration either way. Every other
+/// failure passes through unchanged, so a file that exists and cannot be read stays
+/// [`ConfigError::Io`] and a malformed one stays [`ConfigError::Syntax`] carrying the
+/// position of its offending declaration and the file it was read from.
+fn read_discovered(path: &Path, start: &Path) -> Result<(CodegenConfig, PathBuf), ConfigError> {
+    let configuration = match CodegenConfig::load(path) {
+        Ok(configuration) => configuration,
+        Err(ConfigError::NotFound { .. }) => {
+            return Ok((CodegenConfig::default(), start.to_path_buf()));
+        }
+        Err(error) => return Err(error),
+    };
 
     let directory = path
         .parent()

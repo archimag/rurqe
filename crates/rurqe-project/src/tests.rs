@@ -1406,3 +1406,71 @@ fn a_direct_parse_reports_no_file() {
          unknown key `domain_type` in the `codegen` section"
     );
 }
+
+/// The walk and the read are two filesystem operations, so the configuration the walk
+/// selected can be removed before it is read — a concurrent checkout, an editor save, or a
+/// synchronisation job. An absence at read time is the walk's own absence tier, so the
+/// caller receives the defaults anchored at `start` rather than the operator-facing absence
+/// error of an explicitly named path.
+#[test]
+fn a_configuration_vanishing_between_discovery_and_read_yields_the_default() {
+    let root = temporary_project("vanished");
+    let member = root.join("crates").join("app");
+    std::fs::create_dir_all(&member).expect("the nested directories are created");
+    let path = root.join(DEFAULT_CONFIG_PATH);
+    std::fs::write(&path, "primary_schema = \"app\"\n").expect("the configuration is written");
+
+    // The walk observes the file, and the read that follows finds it gone.
+    assert_eq!(discover_config(&member), Some(path.clone()));
+    std::fs::remove_file(&path).expect("the configuration is removed");
+
+    let answer = read_discovered(&path, &member);
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    let (configuration, directory) = answer.expect("an absent file is the walk's own tier");
+    assert_eq!(configuration, CodegenConfig::default());
+    assert_eq!(
+        directory, member,
+        "the default is anchored at the directory the walk started from"
+    );
+}
+
+/// A caller cannot observe which of the two filesystem operations the removal landed
+/// between: the vanished configuration answers exactly like a tree that declares none, so
+/// the outcome describes the state of the tree rather than the timing of the two calls.
+#[test]
+fn a_vanished_configuration_answers_like_a_tree_without_one() {
+    let root = temporary_project("vanished-tier");
+    let member = root.join("crates").join("app");
+    std::fs::create_dir_all(&member).expect("the nested directories are created");
+    let path = root.join(DEFAULT_CONFIG_PATH);
+    std::fs::write(
+        &path,
+        "primary_schema = \"app\"\n[codegen.type_overrides]\n\"users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect("the configuration is written");
+
+    // Directories above the temporary root belong to the host, so the comparison is made
+    // only when none of them declares a configuration of its own.
+    let outside = root
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| ancestor.join(DEFAULT_CONFIG_PATH).is_file());
+
+    assert_eq!(discover_config(&member), Some(path.clone()));
+    std::fs::remove_file(&path).expect("the configuration is removed");
+
+    let vanished = read_discovered(&path, &member);
+    let absent = discover_or_default(&member);
+
+    let _ = std::fs::remove_dir_all(&root);
+
+    if outside.is_none() {
+        let (vanished, vanished_at) = vanished.expect("the vanished file answers the defaults");
+        let (absent, absent_at) = absent.expect("a tree without a configuration answers the defaults");
+
+        assert_eq!(vanished, absent);
+        assert_eq!(vanished_at, absent_at);
+    }
+}
