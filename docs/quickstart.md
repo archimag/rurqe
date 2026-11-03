@@ -20,6 +20,7 @@ rurqe = { version = "0.1", features = ["postgres", "tokio-postgres", "deadpool-p
 | `postgres` | Synchronous PostgreSQL driver (`PgConnection`) based on `postgres` |
 | `tokio-postgres` | Asynchronous PostgreSQL connection adapter (`PgAsyncConnection`) |
 | `deadpool-postgres` | Asynchronous PostgreSQL connection pool (`PgAsyncPool`) |
+| `r2d2` | Synchronous PostgreSQL connection pool (`PgPool`) and SQLite connection pool (`SqlitePool`) |
 | `macros` | Procedural and declarative macros: `select!`, `cols!`, `dto!`, `sql!`, `raw_sql!`, `#[derive(SqlType)]` |
 | `migrate` | Embedded migration engine (`EmbeddedMigrations`, `embed_migrations!`); it also enables the `migrate` feature of every driver in the build, so a baked collection applies over a connection the application already owns |
 | `uuid`, `chrono`, `serde_json`, `decimal` | Ecosystem data type mappings |
