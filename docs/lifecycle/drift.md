@@ -296,13 +296,17 @@ filtered tail is replayed over the schema it actually advances:
 - the snapshot the commit wrote next to the marker is loaded, so the filtered tail is
   replayed over the schema it actually advances;
 - the boundary digest is verified against `schema_hash` before a single tail script
-  runs, and a snapshot that drifted from its marker is rejected with `base stage
-  catalog hash mismatch: expected <checkpoint hash>, got <boundary hash>`;
+  runs, and a snapshot that drifted from its marker is rejected with:
+  ```text
+  base stage catalog hash mismatch: expected <checkpoint hash>, got <boundary hash>
+  ```
 - a checkpoint whose boundary describes a non-empty schema requires that snapshot.
-  Without one the run is refused with `checkpoint pruned up to version 5.0 requires a
-  base stage to reproduce the boundary, but none was supplied; re-run `stage commit`
-  to snapshot the boundary next to `checkpoint.toml``, because replaying the tail over
-  an empty database would report a consistent project as diverged.
+  Without one the run is refused with:
+  ```text
+  checkpoint pruned up to version 5.0 requires a base stage to reproduce the boundary, but none was supplied; re-run `stage commit` to snapshot the boundary next to `checkpoint.toml`
+  ```
+  Replaying the tail over an empty database would report a consistent project as
+  diverged.
 
 The artifacts are read inside the exclusive section the checkpoint marker guards,
 so a verification that overlaps a commit waits for it and reads the committed
