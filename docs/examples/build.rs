@@ -41,13 +41,20 @@ const OUT_DIR: &str = "OUT_DIR";
 /// The environment variable naming the root of the package.
 const MANIFEST_DIR: &str = "CARGO_MANIFEST_DIR";
 
-/// The terminal a fragment ends in when it executes the statement it builds.
-/// The terminals a fragment ends in when it executes the statement it builds.
+/// The terminals an asynchronous fragment ends in when it executes the statement
+/// it builds.
 ///
-/// A selection reports the rows it read and a mutation reports the rows it
-/// wrote; both execute the statement, so a fragment ending in either terminal
-/// is rebuilt into the build terminal below.
-const EXECUTION_TERMINALS: &[&str] = &[".fetch_all(&pool)", ".execute(&pool)"];
+/// A selection reports the rows it read, a single-row selection reports the one
+/// row it read, and a mutation reports the rows it wrote; each of these executes
+/// the statement, so a fragment ending in one of them is rebuilt into the build
+/// terminal below. The list is the closed set of terminals this script
+/// recognises, so an ending it does not name is reported instead of emitted: the
+/// generated function holds no connection to execute the call against.
+const EXECUTION_TERMINALS: &[&str] = &[
+    ".fetch_all(&pool)",
+    ".fetch_one(&pool)",
+    ".execute(&pool)",
+];
 /// The `await` that follows the execution terminal of a fragment.
 const AWAIT_TERMINAL: &str = ".await?;";
 
@@ -269,9 +276,12 @@ fn strip_indent(line: &str, width: usize) -> &str {
 /// Rewrites the execution terminal of `region` into the build terminal.
 ///
 /// A fragment that ends in an execution terminal — `.fetch_all(&pool)` for a
-/// selection, `.execute(&pool)` for a mutation — followed by `.await?;` runs
-/// the statement it builds, so the generated function ends the same statement
-/// in `.build()?` instead. Any other ending is emitted verbatim and has to
+/// selection, `.fetch_one(&pool)` for a single-row selection, `.execute(&pool)`
+/// for a mutation — followed by `.await?;` runs the statement it builds, so the
+/// generated function ends the same statement in `.build()?` instead. A region
+/// that awaits a call the list above does not name is reported, because the
+/// statement would otherwise reach the generated function with an execution call
+/// it has no connection for. Any other ending is emitted verbatim and has to
 /// compile as it stands.
 fn build_terminal(file: &str, anchor: &str, region: &str) -> Result<String, String> {
     let statement = region.trim_end();
