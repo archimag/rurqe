@@ -206,7 +206,7 @@ impl Project {
     /// Reads the code generation options out of the project configuration.
     pub(super) fn codegen_options(&self) -> CodegenOptions {
         CodegenOptions {
-            type_overrides: self.config.type_overrides().clone(),
+            type_overrides: self.config.type_overrides(),
             domain_types: self.config.domain_types(),
             ..CodegenOptions::default()
         }

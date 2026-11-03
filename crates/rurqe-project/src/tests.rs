@@ -12,12 +12,15 @@ fn quoted_and_bare_entries_are_read() {
     )
     .expect("the table is valid");
 
-    assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
     assert_eq!(
-        config.type_override("users", "created_at"),
+        config.type_override(None, "users", "id"),
+        Some("uuid::Uuid")
+    );
+    assert_eq!(
+        config.type_override(None, "users", "created_at"),
         Some("chrono::NaiveDateTime")
     );
-    assert_eq!(config.type_override("users", "email"), None);
+    assert_eq!(config.type_override(None, "users", "email"), None);
 }
 
 #[test]
@@ -396,6 +399,68 @@ fn the_schema_cross_check_considers_the_whole_document() {
 }
 
 #[test]
+fn a_secondary_schema_override_is_answered_from_the_column_parts() {
+    let config = CodegenConfig::parse(
+        "schemas = [\"auth\"]\n\
+         [codegen.type_overrides]\n\
+         users.id = \"UsersId\"\n\
+         \"auth.users.id\" = \"uuid::Uuid\"\n",
+    )
+    .expect("both spellings address a column of a declared schema");
+
+    // The primary schema is addressed without a schema name, exactly as its
+    // override path is written.
+    assert_eq!(config.type_override(None, "users", "id"), Some("UsersId"));
+
+    // A secondary-schema column is answered from the three parts a catalog
+    // attributes it with, so no caller assembles `auth.users.id` to look it up.
+    assert_eq!(
+        config.type_override(Some("auth"), "users", "id"),
+        Some("uuid::Uuid")
+    );
+}
+
+#[test]
+fn the_flat_rendering_and_the_parts_name_the_same_overrides() {
+    let config = CodegenConfig::parse(
+        "schemas = [\"auth\"]\n\
+         [codegen.type_overrides]\n\
+         users.id = \"uuid::Uuid\"\n\
+         \"auth.sessions.token\" = \"SessionToken\"\n",
+    )
+    .expect("both schemas declare their column");
+
+    let rendered = config.type_overrides();
+
+    assert_eq!(rendered.len(), 2);
+    assert_eq!(
+        rendered.get("users.id").map(String::as_str),
+        Some("uuid::Uuid")
+    );
+    assert_eq!(
+        rendered.get("auth.sessions.token").map(String::as_str),
+        Some("SessionToken")
+    );
+
+    // Every rendered path addresses the entry the parts answer, so the flat view
+    // a consumer keyed by the path reads and the lookup a catalog drives can never
+    // describe different overrides.
+    for (path, rust_type) in &rendered {
+        let (head, column) = path.rsplit_once('.').expect("a rendered path carries a column");
+        let (schema, table) = match head.rsplit_once('.') {
+            Some((schema, table)) => (Some(schema), table),
+            None => (None, head),
+        };
+
+        assert_eq!(
+            config.type_override(schema, table, column),
+            Some(rust_type.as_str()),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn override_paths_carry_two_or_three_segments() {
     let bare = CodegenConfig::parse(
         "[codegen.type_overrides]\n\
@@ -490,7 +555,10 @@ fn whitespace_around_override_segments_is_trimmed() {
     )
     .expect("the segments are trimmed");
 
-    assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
+    assert_eq!(
+        config.type_override(None, "users", "id"),
+        Some("uuid::Uuid")
+    );
 }
 
 #[test]
@@ -504,9 +572,12 @@ fn declared_override_rust_types_are_stored_trimmed() {
     )
     .expect("the declared types are valid");
 
-    assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
     assert_eq!(
-        config.type_override("users", "created_at"),
+        config.type_override(None, "users", "id"),
+        Some("uuid::Uuid")
+    );
+    assert_eq!(
+        config.type_override(None, "users", "created_at"),
         Some("chrono::NaiveDateTime"),
         "a multi-line declared type is stored as the type it names"
     );
@@ -706,7 +777,10 @@ fn configuration_files_are_read_from_disk() {
     let config = CodegenConfig::load(&path).expect("the file is valid");
 
     assert_eq!(config.primary_schema(), Some("app"));
-    assert_eq!(config.type_override("users", "id"), Some("uuid::Uuid"));
+    assert_eq!(
+        config.type_override(None, "users", "id"),
+        Some("uuid::Uuid")
+    );
 }
 
 #[test]
@@ -733,7 +807,7 @@ fn a_missing_configuration_is_an_error() {
     assert_eq!(fallback, CodegenConfig::default());
     assert_eq!(fallback.primary_schema(), None);
     assert!(fallback.schemas().is_empty());
-    assert!(fallback.type_override("users", "id").is_none());
+    assert!(fallback.type_override(None, "users", "id").is_none());
 }
 
 #[test]
@@ -1298,7 +1372,10 @@ fn load_or_default_falls_back_only_when_the_file_is_absent() {
 
     let present = CodegenConfig::load_or_default(&path).expect("the file is valid");
     assert_eq!(present.primary_schema(), Some("app"));
-    assert_eq!(present.type_override("users", "id"), Some("uuid::Uuid"));
+    assert_eq!(
+        present.type_override(None, "users", "id"),
+        Some("uuid::Uuid")
+    );
 
     std::fs::write(&path, "[codegen]\ndomain_type = true\n")
         .expect("the malformed configuration is written");
@@ -1334,7 +1411,7 @@ fn discover_or_default_anchors_a_found_configuration_at_its_directory() {
 
     assert_eq!(configuration.primary_schema(), Some("app"));
     assert_eq!(
-        configuration.type_override("users", "id"),
+        configuration.type_override(None, "users", "id"),
         Some("uuid::Uuid")
     );
     assert_eq!(

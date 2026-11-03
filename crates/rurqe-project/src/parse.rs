@@ -21,7 +21,7 @@ use std::path::{Component, Path};
 
 use toml_edit::{ImDocument, Item, TableLike};
 
-use super::{CodegenConfig, ConfigError, DEFAULT_SCHEMA};
+use super::{CodegenConfig, ConfigError, DEFAULT_SCHEMA, OverridePath};
 
 /// The document-root key naming the database schema every catalog digest describes.
 const SCHEMA_KEY: &str = "schema";
@@ -58,12 +58,6 @@ const TYPE_OVERRIDES_KEY: &str = "type_overrides";
 
 /// The key naming the generated schema module inside the `codegen` section.
 const OUTPUT_KEY: &str = "output";
-
-/// The number of segments a primary-schema override path carries.
-const PRIMARY_SCHEMA_PATH_SEGMENTS: usize = 2;
-
-/// The number of segments a secondary-schema override path carries.
-const SCHEMA_QUALIFIED_PATH_SEGMENTS: usize = 3;
 
 /// Reads `contents` into a [`CodegenConfig`].
 pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
@@ -342,8 +336,8 @@ impl CodegenConfig {
             };
 
             if let Some(rust_type) = item.as_str() {
-                let path = require_override_path(contents, span.clone(), &path)?;
-                self.insert_override(contents, span, path, rust_type, declarations)?;
+                let declared = require_override_path(contents, span.clone(), &path)?;
+                self.insert_override(contents, span, declared, rust_type, declarations)?;
             } else if let Some(nested) = item.as_table_like() {
                 self.read_overrides(
                     contents,
@@ -378,7 +372,7 @@ impl CodegenConfig {
         &mut self,
         contents: &str,
         span: Option<Range<usize>>,
-        schema_path: String,
+        path: OverridePath,
         rust_type: &str,
         declarations: &mut Vec<OverrideDeclaration>,
     ) -> Result<(), ConfigError> {
@@ -392,21 +386,25 @@ impl CodegenConfig {
             ));
         }
 
+        // The flat spelling a diagnostic quotes is rendered from the segments
+        // once, instead of being assembled again by every lookup.
+        let declared = path.to_string();
+
         // The three spellings of one path are distinct TOML keys, so their
         // collision only surfaces here; TOML rejects a repeat of one spelling.
         if self
             .type_overrides
-            .insert(schema_path.clone(), rust_type.to_owned())
+            .insert(&path, rust_type.to_owned())
             .is_some()
         {
             return Err(syntax_error(
                 contents,
                 span,
-                format!("duplicate type override `{schema_path}`"),
+                format!("duplicate type override `{declared}`"),
             ));
         }
 
-        declarations.push((schema_path, span));
+        declarations.push((path, span));
 
         Ok(())
     }
@@ -589,26 +587,26 @@ fn read_schemas(
     Ok(names)
 }
 
-/// Validates an override path and returns it with every segment trimmed.
+/// Validates an override path and answers the segments it addresses.
 ///
 /// A path names a primary-schema column as `table.column` and a secondary-schema
-/// column as `schema.table.column`, so it carries two or three non-empty segments;
-/// the segments are trimmed and rejoined because the path is compared against the
-/// catalog spelling of the names.
+/// column as `schema.table.column`, so it carries two or three non-empty segments.
+/// The segments are trimmed as they are read, because the path is compared against
+/// the catalog spelling of the names and against the schemas the document declares.
 fn require_override_path(
     contents: &str,
     span: Option<Range<usize>>,
     path: &str,
-) -> Result<String, ConfigError> {
+) -> Result<OverridePath, ConfigError> {
     let segments: Vec<&str> = path.split('.').map(str::trim).collect();
 
-    if !(PRIMARY_SCHEMA_PATH_SEGMENTS..=SCHEMA_QUALIFIED_PATH_SEGMENTS).contains(&segments.len()) {
-        return Err(syntax_error(
-            contents,
-            span,
-            format!("expected a `table.column` or `schema.table.column` schema path, got `{path}`"),
-        ));
-    }
+    // The grammar admits two spellings, so the number of segments decides the
+    // shape before any segment is read into it.
+    let (schema, table, column) = match segments.as_slice() {
+        [table, column] => (None, *table, *column),
+        [schema, table, column] => (Some(*schema), *table, *column),
+        _ => return Err(path_shape_error(contents, span, path)),
+    };
 
     if let Some(empty) = segments.iter().position(|segment| segment.is_empty()) {
         return Err(syntax_error(
@@ -622,32 +620,30 @@ fn require_override_path(
         ));
     }
 
-    Ok(segments.join("."))
+    Ok(OverridePath {
+        schema: schema.map(str::to_owned),
+        table: table.to_owned(),
+        column: column.to_owned(),
+    })
 }
-/// The declaration of one override: its flattened path and the position of its key.
-type OverrideDeclaration = (String, Option<Range<usize>>);
 
-/// Splits a `schema.table.column` path into its three segments.
-///
-/// `None` means the path is a `table.column` one, which needs no cross-check.
-fn schema_qualified_path(path: &str) -> Option<(&str, &str, &str)> {
-    let (schema, rest) = path.split_once('.')?;
-    let (table, column) = rest.split_once('.')?;
-
-    // `require_override_path` refuses a fourth segment.
-    if column.contains('.') {
-        return None;
-    }
-
-    Some((schema, table, column))
+/// The rejection of a path carrying neither two nor three segments.
+fn path_shape_error(contents: &str, span: Option<Range<usize>>, path: &str) -> ConfigError {
+    syntax_error(
+        contents,
+        span,
+        format!("expected a `table.column` or `schema.table.column` schema path, got `{path}`"),
+    )
 }
+/// The declaration of one override: the path it addresses and the position of its key.
+type OverrideDeclaration = (OverridePath, Option<Range<usize>>);
 
 /// Refuses an override path whose schema segment can never reach a column.
 ///
 /// A primary-schema column is addressed as `table.column` and a column of a
 /// secondary schema as `schema.table.column` for a schema the document declares
-/// in `schemas`, so a three-segment path naming anything else addresses no column
-/// the generator ever looks up and would silently keep the default mapping. The
+/// in `schemas`, so a path naming another schema addresses no column the
+/// generator ever looks up and would silently keep the default mapping. The
 /// check runs once the whole document has been read, because a dotted root key
 /// may declare an override before the `schemas` key that authorises it.
 fn validate_override_schemas(
@@ -659,13 +655,15 @@ fn validate_override_schemas(
     let primary = primary.unwrap_or(DEFAULT_SCHEMA);
 
     for (path, span) in declarations {
-        let Some((schema, table, column)) = schema_qualified_path(path) else {
+        let Some(schema) = path.schema.as_deref() else {
             continue;
         };
 
         if schemas.iter().any(|declared| declared.as_str() == schema) {
             continue;
         }
+
+        let (table, column) = (path.table.as_str(), path.column.as_str());
 
         let message = if schema == primary {
             format!(

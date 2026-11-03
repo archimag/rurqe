@@ -114,8 +114,12 @@ pub struct CodegenConfig {
     primary_schema: Option<String>,
     /// The secondary schemas declared through `schemas`, in document order.
     schemas: Vec<String>,
-    /// Rust types keyed by their `schema.table.column` (or `table.column`) path.
-    type_overrides: BTreeMap<String, String>,
+    /// The per-column Rust types declared for the project, keyed by their path segments.
+    ///
+    /// The index keeps the segments the document spelled rather than a flattened
+    /// path, so [`CodegenConfig::type_override`] answers a column from the parts a
+    /// catalog already carries and no lookup renders a key of its own.
+    type_overrides: OverrideIndex,
     /// Whether domain types (`Uuid`, `Json`, `Timestamp`, `Date`) are enabled.
     domain_types: bool,
     /// The artifact directory declared through the root-level `root` key.
@@ -238,11 +242,24 @@ impl CodegenConfig {
         parse::document(contents)
     }
 
-    /// Returns the Rust type declared for `table`.`column` of the primary schema.
-    pub fn type_override(&self, table: &str, column: &str) -> Option<&str> {
-        self.type_overrides
-            .get(&format!("{table}.{column}"))
-            .map(String::as_str)
+    /// Returns the Rust type declared for `table`.`column` of `schema`.
+    ///
+    /// `schema` names the schema owning the column, and `None` addresses the
+    /// primary one, because that is how the file spells an override path: a column
+    /// of the primary schema is declared as `table.column` and a column of a
+    /// secondary schema as `schema.table.column` for a schema the document lists in
+    /// [`schemas`](CodegenConfig::schemas). A schema the document does not declare
+    /// holds no override, so the answer is `None` rather than a default mapping.
+    ///
+    /// The lookup matches the parts, so a consumer resolving the type of every
+    /// column of a catalog pays no key spelling and no allocation per column: the
+    /// schema, the table, and the column a catalog already reports are compared
+    /// against the segments the document declared, and the caller never assembles
+    /// `schema.table.column` itself only to look it back up. A consumer whose own
+    /// model is keyed by that path renders the whole set once through
+    /// [`CodegenConfig::type_overrides`].
+    pub fn type_override(&self, schema: Option<&str>, table: &str, column: &str) -> Option<&str> {
+        self.type_overrides.get(schema, table, column)
     }
 
     /// Returns whether domain types are enabled in configuration.
@@ -282,18 +299,28 @@ impl CodegenConfig {
         &self.schemas
     }
 
-    /// Returns the declared overrides keyed by their schema path.
+    /// Renders the declared overrides onto their schema paths.
     ///
     /// A primary-schema column is keyed as `table.column` and a secondary-schema
-    /// one as `schema.table.column` for a schema declared in `schemas`, with
-    /// every segment trimmed.
-    pub fn type_overrides(&self) -> &BTreeMap<String, String> {
-        &self.type_overrides
+    /// one as `schema.table.column` for a schema declared in `schemas`, with every
+    /// segment trimmed. The rendering is a projection of the very entries
+    /// [`CodegenConfig::type_override`] answers, so a consumer keyed by the path and
+    /// a consumer resolving one column never describe different overrides.
+    ///
+    /// The rendering exists for such a consumer — the code generator carries its
+    /// overrides in a map of its own — while a per-column lookup belongs to
+    /// [`CodegenConfig::type_override`], which neither spells a key nor allocates
+    /// one per column.
+    pub fn type_overrides(&self) -> BTreeMap<String, String> {
+        self.type_overrides.flatten()
     }
 
     /// Consumes the configuration, yielding the overrides for code generation.
+    ///
+    /// The entries are rendered onto their schema paths exactly as
+    /// [`CodegenConfig::type_overrides`] renders them.
     pub fn into_type_overrides(self) -> BTreeMap<String, String> {
-        self.type_overrides
+        self.type_overrides.flatten()
     }
 
     /// Returns the artifact directory the project layout is built beneath.
@@ -375,6 +402,112 @@ impl CodegenConfig {
             Some(declared) => directory.join(declared),
             None => directory.join(self.root()).join(default_name),
         }
+    }
+}
+
+/// One declared override path: the schema owning the column, its table, and its column.
+///
+/// The document spells a path as `table.column` or `schema.table.column`, and the
+/// path is kept as the segments it carries rather than as the flattened string:
+/// the index is keyed by those segments, so a column is answered from the parts a
+/// catalog reports instead of from a key the caller assembles. The flattened
+/// spelling stays a rendering of them, so a diagnostic and a lookup can never
+/// disagree about how a declaration is written.
+#[derive(Debug)]
+struct OverridePath {
+    /// The secondary schema owning the column, or `None` for the primary schema.
+    schema: Option<String>,
+    /// The table declaring the column.
+    table: String,
+    /// The column the override addresses.
+    column: String,
+}
+
+impl fmt::Display for OverridePath {
+    /// Renders the path the way `rurqe.toml` spells it.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.schema.as_deref() {
+            Some(schema) => write!(f, "{schema}.{}.{}", self.table, self.column),
+            None => write!(f, "{}.{}", self.table, self.column),
+        }
+    }
+}
+
+/// The Rust types declared for individual columns, keyed by their path segments.
+///
+/// The primary schema owns a `table -> column` map and every secondary schema owns
+/// the same map one level deeper, which is the shape a lookup driven by a catalog
+/// walks: the schema selects the namespace, the table selects the columns of one
+/// relation, and the column selects the type. Keeping the segments is what leaves
+/// the lookup allocation-free, because nothing has to be rendered into a key
+/// before an entry can be found. The flat spelling is a rendering of the same
+/// entries ([`OverrideIndex::flatten`]), so the two views cannot drift apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OverrideIndex {
+    /// The overrides of the primary schema, keyed by table and then by column.
+    primary: BTreeMap<String, BTreeMap<String, String>>,
+    /// The overrides of every secondary schema, keyed the same way one level deeper.
+    secondary: BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+impl OverrideIndex {
+    /// Answers the Rust type declared for `table`.`column` of `schema`.
+    ///
+    /// `None` addresses the primary schema, exactly as the document spells its
+    /// overrides; a schema holding no override answers `None` without walking the
+    /// tables of any other.
+    fn get(&self, schema: Option<&str>, table: &str, column: &str) -> Option<&str> {
+        let columns = match schema {
+            Some(schema) => self.secondary.get(schema)?.get(table)?,
+            None => self.primary.get(table)?,
+        };
+
+        columns.get(column).map(String::as_str)
+    }
+
+    /// Records one override, answering the type it displaced when the path repeats.
+    fn insert(&mut self, path: &OverridePath, rust_type: String) -> Option<String> {
+        match &path.schema {
+            Some(schema) => self
+                .secondary
+                .entry(schema.clone())
+                .or_default()
+                .entry(path.table.clone())
+                .or_default()
+                .insert(path.column.clone(), rust_type),
+            None => self
+                .primary
+                .entry(path.table.clone())
+                .or_default()
+                .insert(path.column.clone(), rust_type),
+        }
+    }
+
+    /// Renders every entry onto its schema path, in canonical path order.
+    ///
+    /// The rendering is what a consumer keyed by the path reads, and it is derived
+    /// from the very segments the lookup answers, so the two views of one entry
+    /// cannot describe different overrides.
+    fn flatten(&self) -> BTreeMap<String, String> {
+        let mut overrides = BTreeMap::new();
+
+        for (table, columns) in &self.primary {
+            for (column, rust_type) in columns {
+                overrides.insert(format!("{table}.{column}"), rust_type.clone());
+            }
+        }
+
+        for (schema, tables) in &self.secondary {
+            for (table, columns) in tables {
+                for (column, rust_type) in columns {
+                    let path = format!("{schema}.{table}.{column}");
+
+                    overrides.insert(path, rust_type.clone());
+                }
+            }
+        }
+
+        overrides
     }
 }
 
