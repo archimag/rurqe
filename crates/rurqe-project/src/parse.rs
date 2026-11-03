@@ -552,9 +552,10 @@ fn read_schema_name(
 ///
 /// Every entry is trimmed and has to be non-empty, and a name may appear once: the
 /// array describes the schemas the project declares beside the primary one, so a
-/// repeated entry would introspect the same catalog twice. TOML records no span of
-/// its own for an array element, so a diagnostic carries the position of the
-/// `schemas` key and names the offending entry by its index.
+/// repeated entry would introspect the same catalog twice. A rejected entry is
+/// reported at the entry itself — the immutable document retains the span of every
+/// parsed value — and is named by its index as well, so a multi-line array points at
+/// the line the offending entry is written on instead of at the `schemas` key.
 fn read_schemas(
     contents: &str,
     span: Option<Range<usize>>,
@@ -572,10 +573,14 @@ fn read_schemas(
     let mut seen: BTreeSet<String> = BTreeSet::new();
 
     for (index, value) in array.iter().enumerate() {
+        // The span of the entry itself, falling back to the key that declares the
+        // array when the entry carries none of its own.
+        let entry_span = value.span().or_else(|| span.clone());
+
         let raw = value.as_str().ok_or_else(|| {
             syntax_error(
                 contents,
-                span.clone(),
+                entry_span.clone(),
                 format!("`{SCHEMAS_KEY}[{index}]` must be a database schema name string"),
             )
         })?;
@@ -585,7 +590,7 @@ fn read_schemas(
         if name.is_empty() {
             return Err(syntax_error(
                 contents,
-                span.clone(),
+                entry_span,
                 format!("`{SCHEMAS_KEY}[{index}]` requires a database schema name"),
             ));
         }
@@ -593,7 +598,7 @@ fn read_schemas(
         if !seen.insert(name.to_owned()) {
             return Err(syntax_error(
                 contents,
-                span,
+                entry_span,
                 format!("duplicate schema `{name}` in `{SCHEMAS_KEY}`"),
             ));
         }

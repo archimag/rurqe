@@ -186,6 +186,36 @@ fn schemas_with_duplicates_are_rejected() {
 }
 
 #[test]
+fn schema_entries_are_reported_at_their_own_position() {
+    for (contents, expected) in [
+        (
+            "schemas = [\n    \"auth\",\n    42,\n]\n",
+            "`schemas[1]` must be a database schema name string",
+        ),
+        (
+            "schemas = [\n    \"auth\",\n    \"  \",\n]\n",
+            "`schemas[1]` requires a database schema name",
+        ),
+        (
+            "schemas = [\n    \"auth\",\n    \" auth \",\n]\n",
+            "duplicate schema `auth` in `schemas`",
+        ),
+    ] {
+        let err = CodegenConfig::parse(contents).expect_err("the entry is rejected");
+
+        assert!(
+            matches!(&err, ConfigError::Syntax { line: 3, column: 5, .. }),
+            "the entry is reported where it is written: {err}"
+        );
+        assert!(
+            err.to_string().contains("line 3, column 5"),
+            "the rendered diagnostic carries the entry's position: {err}"
+        );
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
+#[test]
 fn schemas_must_not_repeat_the_primary_schema() {
     let declared = CodegenConfig::parse(
         "primary_schema = \"app\"\n\
