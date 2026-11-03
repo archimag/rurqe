@@ -79,7 +79,9 @@ use fs4::fs_std::FileExt;
 use crate::cli::error::{CliCause, HeldSection, SectionHolder};
 use crate::cli::CliError;
 
-use super::super::{artifact_directory, marker_stem, write_file};
+use super::super::{
+    artifact_directory, marker_stem, sweep_stale_temporaries, write_file, STALE_TEMPORARY_AGE,
+};
 
 /// The suffix appended to the marker's stem to name its lock entry.
 const LOCK_SUFFIX: &str = ".lock";
@@ -402,14 +404,46 @@ fn open_entry(lock_path: &Path) -> Result<File, CliError> {
 /// once it is complete and flushed, so the publication is atomic: a concurrent
 /// reader meets either the whole previous record or the whole fresh one, never
 /// a truncated or half-written body, and a writer dying mid-publication leaves
-/// the complete previous record beside a staged sibling nothing ever reads.
+/// the complete previous record beside the stalled sibling of that very write.
+///
+/// The stalled sibling is swept by the publication that resumes the artifact
+/// class, because the record is a class of its own: no command enumerates
+/// `<marker>.lock.record` among the artifacts it sweeps, so nothing else would
+/// ever remove the debris of an interrupted publication. The sweep runs while
+/// the section is held, so it is best-effort: the debris of a writer that
+/// provably no longer lives never justifies failing an acquisition.
 fn publish_record(record_path: &Path, record: &OwnerRecord) -> Result<(), CliError> {
+    sweep_record_debris(record_path);
     write_file(record_path, &record.render()).map_err(|error| {
         CliError::message(format!(
             "failed to record the owner of the checkpoint lock into `{}`: {error}",
             record_path.display()
         ))
     })
+}
+
+/// Discards the staged owner records an interrupted publication left behind.
+///
+/// The sweep is opportunistic, exactly like the sweep of a commit: the debris
+/// belongs to a process that is already gone, so a directory that cannot be
+/// scanned is reported without failing the publication whose section is already
+/// held, and the liveness gate keeps the in-flight staging of a concurrent
+/// writer intact.
+fn sweep_record_debris(record_path: &Path) {
+    match sweep_stale_temporaries(record_path, STALE_TEMPORARY_AGE) {
+        Ok(removed) => {
+            for path in removed {
+                tracing::debug!(
+                    artifact = %path.display(),
+                    "discarded a staged owner record an interrupted publication left behind"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(
+            error = %error,
+            "failed to sweep the staged owner records of an interrupted publication"
+        ),
+    }
 }
 
 /// Whether `error` reports an advisory lock another holder owns.
@@ -618,6 +652,86 @@ mod tests {
         assert_eq!(OwnerRecord::parse(&text), Some(fresh));
     }
 
+    /// A process id no process can carry.
+    ///
+    /// Unix caps process ids well below this value, so the liveness probe of a
+    /// sweep answers `ESRCH` for a sibling recorded under it; a platform without
+    /// a probe keeps such a sibling, so the regression below is Unix alone.
+    #[cfg(unix)]
+    const DEAD_PID: u32 = 2_000_000_000;
+
+    /// The staged sibling `write_file` produces for `path` under a writer scope.
+    #[cfg(unix)]
+    fn staged_sibling(path: &Path, pid: u32, nonce: u128, sequence: u64) -> PathBuf {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        artifact_directory(path).join(format!(".{name}.{pid}.{nonce}.{sequence}.tmp"))
+    }
+
+    /// Backdates `path`, so the sweep of staged siblings sees it as abandoned.
+    #[cfg(unix)]
+    fn backdate(path: &Path, age: Duration) {
+        let modified = SystemTime::now()
+            .checked_sub(age)
+            .expect("a representable modification time");
+
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .or_else(|_| std::fs::File::open(path))
+            .expect("open the planted sibling")
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("stamp the planted sibling");
+    }
+
+    /// The record is an artifact class of its own, so the publication that
+    /// resumes it is what clears the sibling a killed one stranded: no command
+    /// enumerates `<marker>.lock.record` among the artifacts it sweeps.
+    #[cfg(unix)]
+    #[test]
+    fn a_publication_sweeps_the_staged_record_an_interrupted_one_left_behind() {
+        let scratch = Scratch::new("record-debris");
+        let checkpoint = scratch.checkpoint();
+        let record_path = record_path_of(&lock_path_of(&checkpoint));
+
+        // The owner provably names no process, so the liveness gate of the sweep
+        // cannot keep the debris on a machine that runs a writer under the
+        // recycled number.
+        let abandoned = Duration::from_secs(48 * 60 * 60);
+        let debris = staged_sibling(&record_path, DEAD_PID, 5, 1);
+        std::fs::write(&debris, "pid=1\nnonce=2\nheartbeat=3\n").expect("plant a staged record");
+        backdate(&debris, abandoned);
+
+        // A sibling of a writer that may still live — a recycled id, a second
+        // host sharing it, or this very process — belongs to work still in
+        // flight and is kept, however old a forward clock correction makes it
+        // look.
+        let in_flight = staged_sibling(&record_path, std::process::id(), 7, 2);
+        std::fs::write(&in_flight, "pid=1\nnonce=7\nheartbeat=3\n").expect("plant a live sibling");
+        backdate(&in_flight, abandoned);
+
+        let section = CheckpointLock::acquire(&checkpoint).expect("a fresh section");
+
+        assert!(
+            !debris.exists(),
+            "the staged record of a dead writer is swept"
+        );
+        assert!(
+            in_flight.exists(),
+            "the staged record of a writer that may live is kept"
+        );
+        assert_eq!(
+            OwnerRecord::parse(&std::fs::read_to_string(&record_path).expect("the record"))
+                .expect("the owner record of the current writer")
+                .pid,
+            std::process::id()
+        );
+
+        drop(section);
+    }
     #[test]
     fn a_reader_concurrent_with_publications_never_meets_a_torn_record() {
         let scratch = Scratch::new("concurrent");

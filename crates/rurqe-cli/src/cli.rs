@@ -33,8 +33,8 @@ pub use report::CommandOutput;
 
 use self::commands::{
     apply_migrations, baseline_database, carry_notice, clean_database, cleanup_stage, commit_stage,
-    help_text, initialise_stage, prune_migrations, repair_history, report_status, verify_stage,
-    write_file, Project,
+    help_text, initialise_stage, prune_migrations, repair_history, report_status,
+    sweep_stale_temporaries, verify_stage, write_file, Project, STALE_TEMPORARY_AGE,
 };
 use self::connection::resolve_database_url;
 
@@ -259,6 +259,11 @@ pub(crate) fn run_cli_with_config(
             }
             let code = generate_schema_rs(&catalog, &options)
                 .map_err(|err| CliError::message(format!("failed to generate schema code: {err}")))?;
+            // Both artifacts are published through the staged write `write_file`
+            // performs, and the generated module lands in a directory no
+            // lifecycle command scans, so the generation that publishes them
+            // again sweeps the siblings an interrupted one stranded beside them.
+            sweep_codegen_debris(&lock_path, &output);
             // The snapshot is published before the generated module, because the
             // order decides which partial state a failure leaves behind: a module
             // still embedding the previous `SCHEMA_HASH` beside the current snapshot
@@ -410,6 +415,38 @@ pub(crate) fn run_cli_with_config(
             let migrations_dir = migrations_dir.unwrap_or_else(|| project.migrations_dir());
             let checkpoint_path = checkpoint_path.unwrap_or_else(|| project.checkpoint_path());
             prune_migrations(before, &migrations_dir, &checkpoint_path, dry_run)
+        }
+    }
+}
+
+/// Discards the staged siblings an interrupted code generation left behind.
+///
+/// Both artifacts of a generation are published through the staged write
+/// [`write_file`] performs, so a process killed between the staging and the
+/// rename strands a hidden sibling beside them — and the generated module lands
+/// in the developer's source tree, which no lifecycle command scans. The
+/// generation that publishes the artifacts again therefore sweeps their debris,
+/// exactly as a commit sweeps the debris of the artifacts it publishes.
+///
+/// The sweep is opportunistic: the debris belongs to a process that is already
+/// gone, so a sweep that cannot complete is reported without failing a
+/// generation that is otherwise writable, and the liveness gate keeps the
+/// in-flight staging of a concurrent writer intact.
+fn sweep_codegen_debris(lock_path: &Path, output: &Path) {
+    for artifact in [lock_path, output] {
+        match sweep_stale_temporaries(artifact, STALE_TEMPORARY_AGE) {
+            Ok(removed) => {
+                for path in removed {
+                    tracing::debug!(
+                        artifact = %path.display(),
+                        "discarded a staged artifact an interrupted code generation left behind"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                error = %error,
+                "failed to sweep the staged artifacts of an interrupted code generation"
+            ),
         }
     }
 }

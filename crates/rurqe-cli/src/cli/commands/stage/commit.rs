@@ -185,7 +185,9 @@ pub(crate) fn commit_stage(
 
     // Debris of an interrupted commit is discarded first, so the artifacts
     // written below never share a directory with the staged siblings a killed
-    // process left behind for good.
+    // process left behind for good. The owner record of the section is not in
+    // the list: the acquisition above published it through the same staged
+    // write and swept the siblings of that class while it took the section.
     sweep_commit_debris(&[lock_path, checkpoint_path, boundary.as_path()]);
 
     // A commit an earlier process left halfway is repaired before the marker is
@@ -390,6 +392,14 @@ fn refuse_cross_engine_scratch(database_url: &str, scratch_url: &str) -> Result<
 }
 
 /// Removes the staged siblings an interrupted commit abandoned next to its artifacts.
+///
+/// The list names every artifact class the commit itself publishes — the catalog
+/// snapshot, the checkpoint marker, and the boundary snapshot — because the
+/// coverage follows the classes rather than the directory they happen to share:
+/// each one is swept by the command that publishes it again. The owner record of
+/// the checkpoint section is not listed, since it is a class of its own that the
+/// acquisition publishing it sweeps while it takes the section.
+///
 /// The sweep is opportunistic: the debris belongs to a process that is already
 /// gone, so a sweep that cannot complete is reported without failing a commit
 /// that is otherwise writable.

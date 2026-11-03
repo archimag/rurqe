@@ -229,6 +229,13 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
     std::fs::create_dir_all(stale_boundary.join("users.sql")).expect("plant a staged boundary");
     backdate(&stale_boundary, abandoned);
 
+    // The owner record of the section is a staged write of its own, so a
+    // publication killed mid-way strands its sibling beside the lock entry; the
+    // acquisition that publishes it again sweeps it while it takes the section.
+    let stale_record = dir.join(staged_sibling("checkpoint.lock.record", DEAD_PID, 5, 4));
+    std::fs::write(&stale_record, "owner record").expect("plant a staged owner record");
+    backdate(&stale_record, abandoned);
+
     commit_stage(
         version("3.2"),
         ":memory:",
@@ -251,6 +258,10 @@ fn committing_the_stage_sweeps_the_debris_of_an_interrupted_commit() {
     assert!(
         !stale_boundary.exists(),
         "the staged boundary of the killed commit is swept"
+    );
+    assert!(
+        !stale_record.exists(),
+        "the staged owner record of a killed publication is swept"
     );
     assert!(
         dir.join("checkpoint-stage").exists(),

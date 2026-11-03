@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-
+#[cfg(unix)]
+use std::time::Duration;
 use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::Checksum;
 
@@ -1706,9 +1707,101 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
+#[cfg(unix)]
+#[test]
+fn codegen_sweeps_the_staged_siblings_an_interrupted_generation_left_behind() {
+    let dir = scratch("codegen-debris");
+    let configuration = dir.join(crate::config::DEFAULT_CONFIG_PATH);
+    std::fs::write(&configuration, "[codegen]\noutput = \"generated/schema.rs\"\n")
+        .expect("write the project configuration");
+
+    let db = dir.join("app.db");
+    {
+        let conn = rusqlite::Connection::open(&db).expect("open sqlite database");
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL);")
+            .expect("create schema");
+    }
+
+    // The generated module lands in a directory no lifecycle command scans, and
+    // the snapshot is an artifact class of its own, so the generation that
+    // publishes both again is what sweeps the siblings a killed one stranded.
+    let output = dir.join("generated").join("schema.rs");
+    let lock_path = dir.join("rurqe").join("schema.lock");
+    let abandoned = Duration::from_secs(48 * 60 * 60);
+    let mut debris = Vec::new();
+    for artifact in [&output, &lock_path] {
+        std::fs::create_dir_all(artifact.parent().expect("the artifact has a directory"))
+            .expect("create the artifact directory");
+
+        let staged = staged_sibling(artifact, DEAD_PID, 5, 1);
+        std::fs::write(&staged, "staged").expect("plant a staged artifact");
+        backdate(&staged, abandoned);
+        debris.push(staged);
+    }
+
+    run_cli_with_config(
+        vec![
+            "rurqe".to_owned(),
+            "codegen".to_owned(),
+            "--database-url".to_owned(),
+            db.display().to_string(),
+        ],
+        &configuration,
+    )
+    .expect("the code generation succeeds");
+
+    for staged in &debris {
+        assert!(
+            !staged.exists(),
+            "the staged artifact `{}` of a dead writer is swept",
+            staged.display()
+        );
+    }
+    assert!(output.is_file(), "the generated module is written");
+    assert!(lock_path.is_file(), "the catalog snapshot is written");
+}
+
+/// A process id no process can carry.
+///
+/// Unix caps process ids well below this value, so the liveness gate of a sweep
+/// proves the writer recorded in a planted name gone; a platform without the
+/// probe keeps such a sibling, so the regression above is Unix alone.
+#[cfg(unix)]
+const DEAD_PID: u32 = 2_000_000_000;
+
+/// The staged sibling `write_file` produces for `path` under a writer scope.
+#[cfg(unix)]
+fn staged_sibling(path: &Path, pid: u32, nonce: u128, sequence: u64) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+
+    directory.join(format!(".{name}.{pid}.{nonce}.{sequence}.tmp"))
+}
+
+/// Backdates `path`, so a sweep of staged siblings sees it as abandoned.
+#[cfg(unix)]
+fn backdate(path: &Path, age: Duration) {
+    let modified = std::time::SystemTime::now()
+        .checked_sub(age)
+        .expect("a representable modification time");
+
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .or_else(|_| std::fs::File::open(path))
+        .expect("open the planted sibling")
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .expect("stamp the planted sibling");
+}
+
 #[test]
 fn a_repeated_installation_neither_fails_nor_replaces_the_sink() {
-    install_diagnostics();
 
     // A process reaches the entry point again when it runs a second command, so
     // the installation has to stay idempotent instead of installing a second
