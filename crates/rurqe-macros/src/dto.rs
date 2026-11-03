@@ -6,6 +6,12 @@
 //! from functions without repeating column types and without decoding rows by
 //! tuple index.
 //!
+//! The declaration is concrete: every field type is read from the schema column
+//! marker it names, so the expansion has no type parameter to give the struct it
+//! emits. A declaration carrying generic parameters or a `where` clause is
+//! rejected with a diagnostic naming `dto!` and the concrete form it expects,
+//! instead of the parser's generic missing-body error.
+//!
 //! The same declaration describes the row of a related collection: the struct
 //! implements [`MultisetRow`](rurqe_core::nested::MultisetRow) together with
 //! [`ToSqlVal`](rurqe_core::expr::ToSqlVal),
@@ -51,6 +57,7 @@ impl Parse for Dto {
         let vis: Visibility = input.parse()?;
         input.parse::<Token![struct]>()?;
         let ident: Ident = input.parse()?;
+        reject_generics(input)?;
 
         let content;
         syn::braced!(content in input);
@@ -66,6 +73,32 @@ impl Parse for Dto {
             fields,
         })
     }
+}
+
+/// Rejects a declaration carrying generic parameters or a `where` clause.
+///
+/// Every field type is read from the schema column marker the field names, so the
+/// expansion has no type parameter to give the struct it emits and no bound to
+/// state for one. The struct body is what the parser looks for next, so a
+/// declaration carrying generics would fail there with an error naming neither
+/// `dto!` nor the form it expects; the input is refused here, where both can be
+/// named.
+fn reject_generics(input: ParseStream) -> syn::Result<()> {
+    if input.peek(Token![<]) {
+        return Err(input.error(
+            "`dto!` cannot declare generic parameters; \
+             declare a concrete struct whose fields are schema column markers",
+        ));
+    }
+
+    if input.peek(Token![where]) {
+        return Err(input.error(
+            "`dto!` cannot declare a `where` clause; \
+             declare a concrete struct whose fields are schema column markers",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Expands a parsed `dto!` input into the struct declaration and the record
@@ -265,5 +298,39 @@ mod tests {
         assert!(!rendered.contains("Selection"));
         assert!(!rendered.contains("push_projections"));
         assert!(!rendered.contains("push_column_names"));
+    }
+    #[test]
+    fn a_generic_declaration_names_the_macro_and_the_expected_form() {
+        let error = expand(quote! {
+            pub struct Wrapper<T> {
+                UserId,
+            }
+        })
+        .expect_err("a generic declaration is refused");
+
+        assert_eq!(
+            error.to_string(),
+            "`dto!` cannot declare generic parameters; \
+             declare a concrete struct whose fields are schema column markers"
+        );
+    }
+
+    #[test]
+    fn a_where_clause_names_the_macro_and_the_expected_form() {
+        let error = expand(quote! {
+            pub struct Wrapper
+            where
+                UserId: Copy,
+            {
+                UserId,
+            }
+        })
+        .expect_err("a where clause is refused");
+
+        assert_eq!(
+            error.to_string(),
+            "`dto!` cannot declare a `where` clause; \
+             declare a concrete struct whose fields are schema column markers"
+        );
     }
 }
