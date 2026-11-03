@@ -39,36 +39,6 @@ The shortest statement names a relation, projects, and reads:
 {{#rustdoc_include ../examples/quickstart.rs:query}}
 ```
 
-## Logical query processing order
-
-A statement is written in one order and evaluated in another. Every consequence the rest of this page draws — which name a clause may read, which column survives a grouping, why a field turns into `Option<T>` — follows from the evaluation order, so the order comes first:
-
-```text
-FROM → WHERE → GROUP BY → HAVING → WINDOW → SELECT → DISTINCT
-     → UNION / INTERSECT / EXCEPT → ORDER BY → LIMIT / OFFSET
-```
-
-| Step | What it makes available | What it forecloses |
-|---|---|---|
-| `FROM` / `JOIN` | the relations, and the declared type of every column, outer-join nullability included | any reference to a relation the clause did not introduce |
-| `WHERE` | the source rows | the output names of the projection, and every aggregate |
-| `GROUP BY` | the groups, and the grouped columns | every stored column outside the grouping |
-| `HAVING` | the filtered groups | the per-row columns the grouping dropped; an aggregate is legal here and not in `WHERE` |
-| `WINDOW` | window expressions over the grouped rows | an output name, which does not exist yet |
-| `SELECT` | the projected attributes and their output names | nothing — it creates the names the later steps read |
-| `DISTINCT` | deduplicated rows | the row-locking clauses |
-| `UNION` / `INTERSECT` / `EXCEPT` | the combined rows under the output names of the first projection | a second projection list, and the relation-qualified ordering |
-| `ORDER BY` | ordered rows | nothing in the row type |
-| `LIMIT` / `OFFSET` | the final window of rows | nothing |
-
-Three of those steps carry most of a query's semantics.
-
-**`WHERE` runs before the projection exists.** A field name produced by `select!` or `cols!` is an output name, and an output name is created by `SELECT`, so a filter addresses the column markers of the relations, not the field names of the row. The projection below renames `UserId` and `UserEmail` to `user_id` and `contact_email`, while its filter keeps working with `UserActive`: the renames are names the result carries, not names a predicate may read. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly with `.order_by_output*` / `.order_by_index*`.
-
-**`GROUP BY` runs before the projection is evaluated.** Once a query is grouped, a stored column survives into the projection only when it is grouped, aggregated, constant, or read through a window; anything else names a value the grouping collapsed. The refusal happens at the call site, not in the engine.
-
-**`FROM` fixes nullability before the projection is written.** The type of a projected attribute follows from the relations the statement introduced: a column read through an outer join is an `Option<T>`, and no part of the projection mentions it.
-
 ## SQL ↔ DSL mapping
 
 The table is the deterministic reference: every clause of the anatomy has a row, and the row names the builder method that produces it, the effect it has on the statement, and the clause family that takes it further in depth.
@@ -102,6 +72,36 @@ The shortest chain that both compiles and executes reads a relation, projects it
 ```
 
 Assembling the statement opened no connection: the terminal call renders it and runs it on the asynchronous pool, while `build()` is the same step without execution — the one place that can refuse a syntactically sound but semantically invalid statement, so such a refusal arrives before any network I/O.
+
+### Logical query processing order
+
+A statement is written in one order and evaluated in another. Every consequence the rest of this page draws — which name a clause may read, which column survives a grouping, why a field turns into `Option<T>` — follows from the evaluation order, so the order comes first:
+
+```text
+FROM → WHERE → GROUP BY → HAVING → WINDOW → SELECT → DISTINCT
+     → UNION / INTERSECT / EXCEPT → ORDER BY → LIMIT / OFFSET
+```
+
+| Step | What it makes available | What it forecloses |
+|---|---|---|
+| `FROM` / `JOIN` | the relations, and the declared type of every column, outer-join nullability included | any reference to a relation the clause did not introduce |
+| `WHERE` | the source rows | the output names of the projection, and every aggregate |
+| `GROUP BY` | the groups, and the grouped columns | every stored column outside the grouping |
+| `HAVING` | the filtered groups | the per-row columns the grouping dropped; an aggregate is legal here and not in `WHERE` |
+| `WINDOW` | window expressions over the grouped rows | an output name, which does not exist yet |
+| `SELECT` | the projected attributes and their output names | nothing — it creates the names the later steps read |
+| `DISTINCT` | deduplicated rows | the row-locking clauses |
+| `UNION` / `INTERSECT` / `EXCEPT` | the combined rows under the output names of the first projection | a second projection list, and the relation-qualified ordering |
+| `ORDER BY` | ordered rows | nothing in the row type |
+| `LIMIT` / `OFFSET` | the final window of rows | nothing |
+
+Three of those steps carry most of a query's semantics.
+
+**`WHERE` runs before the projection exists.** A field name produced by `select!` or `cols!` is an output name, and an output name is created by `SELECT`, so a filter addresses the column markers of the relations, not the field names of the row. The projection below renames `UserId` and `UserEmail` to `user_id` and `contact_email`, while its filter keeps working with `UserActive`: the renames are names the result carries, not names a predicate may read. A compound statement is the one place where an output name becomes addressable, and it is addressed explicitly with `.order_by_output*` / `.order_by_index*`.
+
+**`GROUP BY` runs before the projection is evaluated.** Once a query is grouped, a stored column survives into the projection only when it is grouped, aggregated, constant, or read through a window; anything else names a value the grouping collapsed. The refusal happens at the call site, not in the engine.
+
+**`FROM` fixes nullability before the projection is written.** The type of a projected attribute follows from the relations the statement introduced: a column read through an outer join is an `Option<T>`, and no part of the projection mentions it.
 
 ### Projection
 
