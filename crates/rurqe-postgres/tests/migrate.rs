@@ -348,7 +348,7 @@ fn the_catalog_statements_project_the_schema_of_every_row() {
     assert!(introspect::POSTGRES_FOREIGN_KEYS.contains("namespace.nspname AS table_schema"));
     assert!(introspect::POSTGRES_INDEXES.contains("namespace.nspname AS table_schema"));
     assert!(introspect::POSTGRES_CHECKS.contains("namespace.nspname AS table_schema"));
-    assert!(introspect::POSTGRES_VIEWS.contains("SELECT table_schema, view_name"));
+    assert!(introspect::POSTGRES_VIEWS.contains("SELECT table_schema, table_name AS view_name"));
     assert!(introspect::POSTGRES_TRIGGERS.contains("namespace.nspname AS table_schema"));
 }
 
@@ -376,8 +376,17 @@ fn the_foreign_key_statement_reads_the_referenced_schema() {
 #[test]
 fn the_trigger_statement_skips_the_internal_triggers() {
     assert!(introspect::POSTGRES_TRIGGERS.contains("NOT trigger_row.tgisinternal"));
+    assert!(introspect::POSTGRES_TRIGGERS.contains("NOT trigger_row.tgisinternal"));
 }
 
+#[test]
+fn the_view_statement_aliases_the_name_information_schema_carries() {
+    // `information_schema.views` carries the name of a view in `table_name`
+    // and defines no `view_name` column, so a statement selecting one is
+    // refused by every server; the alias keeps the label a decoded row
+    // carries.
+    assert!(introspect::POSTGRES_VIEWS.contains("table_name AS view_name"));
+}
 #[test]
 fn the_schema_neighbour_statement_ignores_a_populated_selection() {
     let statement = introspect::POSTGRES_SCHEMA_NEIGHBOURS;

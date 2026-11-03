@@ -237,8 +237,13 @@ ORDER BY namespace.nspname, check_table.relname, constraint_row.conname;
 "#;
 
 /// Query to fetch the views of the introspected schemas.
+///
+/// `information_schema.views` carries the name of a view in its `table_name`
+/// column, because the standard defines no `view_name` column there. The
+/// statement aliases the column to the `view_name` label a decoded row
+/// carries, and orders by that alias.
 pub const POSTGRES_VIEWS: &str = r#"
-SELECT table_schema, view_name, view_definition
+SELECT table_schema, table_name AS view_name, view_definition
 FROM information_schema.views
 WHERE table_schema::text = ANY($1)
 ORDER BY table_schema, view_name;
