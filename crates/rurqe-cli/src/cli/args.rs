@@ -385,6 +385,20 @@ fn universal_flag_beside_version(token: &str) -> Option<CliCommand> {
 }
 
 /// Parses command-line arguments into a typed [`CliCommand`].
+///
+/// `args` has the shape of a process argument vector: its first element names
+/// the program the invocation was started through and is classified rather than
+/// parsed — its file stem selects the subcommand of a `cargo-<name>` dispatch —
+/// while every element after it is the invocation itself. A leading `rurqe` or
+/// `db` token, and the subcommand cargo repeats to a `cargo-<name>` binary, are
+/// dropped before the action is parsed.
+///
+/// The program name is therefore load-bearing. A vector that opens with the
+/// subcommand instead of it, such as `["prune", "--before", "2"]`, loses
+/// `prune` to the program position and reports `--before` as an unknown
+/// command. A caller holding subcommand-style arguments supplies a program name
+/// of its own, or passes a process argument vector such as [`std::env::args`]
+/// through unchanged.
 pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
     let tokens: Vec<&str> = args.iter().map(String::as_str).collect();
 

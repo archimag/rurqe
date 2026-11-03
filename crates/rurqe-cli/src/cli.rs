@@ -120,6 +120,17 @@ macro_rules! with_migration_backend {
 
 /// Runs the CLI toolchain and returns the report it produced.
 ///
+/// `args` is a process argument vector, exactly as [`std::env::args`] yields it:
+/// its first element names the program the invocation was started through, and
+/// every element after it is the invocation itself. The leading token is never
+/// parsed as a command — its file stem classifies the executable, which is what
+/// selects the subcommand of a `cargo-<name>` dispatch — so it doubles as the
+/// placeholder that keeps a subcommand-style call aligned: an embedder holding
+/// `["prune", "--before", "2"]` supplies a program name of its own
+/// (`["rurqe", "prune", "--before", "2"]`) or hands over [`std::env::args`]
+/// verbatim, because a vector that opens with the subcommand loses that token to
+/// the program position and reports the flag behind it as an unknown command.
+///
 /// The command implementations of this crate are reachable as a library, so
 /// none of them writes to a stream of its own: the report comes back to the
 /// caller and the process entry point [`run`](crate::run) prints it. Warnings
@@ -130,6 +141,10 @@ pub fn run_cli(args: Vec<String>) -> Result<CommandOutput, CliError> {
 }
 
 /// Runs the CLI toolchain against the project configuration at `config_path`.
+///
+/// `args` carries the argument vector [`run_cli`] documents: the program name
+/// the invocation was started through in its first position, followed by the
+/// invocation itself.
 ///
 /// The configuration path is the fallback of the cascade rather than a constant
 /// of this function, so whoever owns the directory holding `rurqe.toml` decides
