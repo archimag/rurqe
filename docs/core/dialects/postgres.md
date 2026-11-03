@@ -75,21 +75,30 @@ The three helpers are what a statement uses when the document or the query has t
 
 ## JSON and JSONB Documents
 
-A column holding a JSON or JSONB document is declared as `PgJson`, which carries the document as its text, or — with the `serde_json` feature — as `serde_json::Value` or `Json<T>`. A column holding plain text is not a JSON document and has none of the operators below.
+PostgreSQL stores a JSON document in one of two types, and the operators it defines differ between them. A `json` column is declared as `PgJson` and a `jsonb` column as `PgJsonb`; both carry the document as its text, so a schema maps either kind without pulling in a serialisation crate. With the `serde_json` feature a column may also be declared as `serde_json::Value` or `Json<T>`. A column holding plain text is not a JSON document and has none of the operators below.
+
+Extraction is defined for both kinds. `json_get` returns a document of the column's own kind — PostgreSQL types `json -> text` as `json` and `jsonb -> text` as `jsonb` — while `json_get_text` is the operator that yields text:
+
+| SQL form | Method | Reads |
+|---|---|---|
+| `"metadata" -> $1` | `json_get(key)` | the document at the given address, of the column's own kind |
+| `"metadata" ->> $1` | `json_get_text(key)` | the value at the given address, as text |
+
+Containment and the existence tests are defined for `jsonb` alone: the `json` type has no such operators, so a statement applying one to a `json` column is rejected by the server. They are therefore offered for a `PgJsonb` column and for its optional form:
 
 | SQL form | Method | Reads |
 |---|---|---|
 | `"metadata" @> $1` | `json_contains(document)` | the column contains the given document |
 | `"metadata" ? $1` | `json_has_key(key)` | the document has the given object key |
 | `"metadata" ?\| $1` | `json_has_any_keys(keys)` | the document has any of the given keys |
-| `"metadata" -> $1` | `json_get(key)` | the value at the given address |
-| `"metadata" ->> $1` | `json_get_text(key)` | the value at the given address, as text |
+
+A `PgJson` column offers the extraction operators alone. So does a column declared as `serde_json::Value` or `Json<T>`, because such a type carries a document without stating whether the column stores it as `json` or as `jsonb`: the operators valid for either kind stay available, and the `jsonb`-only ones are refused at compile time instead of by the server.
 
 `json_get` and `json_get_text` address an object member by its key and an array element by its zero-based index. An object key binds as one text parameter, while an array index is written into the statement as an integer literal, so the server resolves the integer overload of the operator:
 
-- `("metadata" -> $1)` — the value at the bound object key
+- `("metadata" -> $1)` — the document at the bound object key
 - `("metadata" ->> $1)` — the value at the bound object key, as text
-- `("metadata" -> 0)` — the value at the array index
+- `("metadata" -> 0)` — the document at the array index
 
 `json_has_any_keys` binds its keys as one array parameter, because the `?|` operator reads a `text[]` operand.
 

@@ -1489,7 +1489,7 @@ mod postgres_extension_traits {
         Doc => "docs" {
             DocId => "id": i64,
             DocContent => "content": String,
-            DocMetadata => "metadata": PgJson,
+            DocMetadata => "metadata": PgJsonb,
         }
     );
 
@@ -1506,12 +1506,17 @@ mod postgres_extension_traits {
     fn the_bounded_value_markers_are_reachable_through_the_prelude() {
         fn assert_text_value<T: PgTextValue + PgTextSearchValue>() {}
         fn assert_json_value<T: PgJsonValue>() {}
+        fn assert_jsonb_value<T: PgJsonbValue>() {}
 
         assert_text_value::<String>();
         assert_text_value::<Option<String>>();
         assert_text_value::<&'static str>();
         assert_json_value::<PgJson>();
         assert_json_value::<Option<PgJson>>();
+        assert_json_value::<PgJsonb>();
+        assert_json_value::<Option<PgJsonb>>();
+        assert_jsonb_value::<PgJsonb>();
+        assert_jsonb_value::<Option<PgJsonb>>();
     }
 
     #[test]
@@ -1560,7 +1565,7 @@ mod postgres_extension_traits {
     }
 
     #[test]
-    fn json_operators_render_against_a_pg_json_column() {
+    fn jsonb_operators_render_against_a_pg_jsonb_column() {
         let contains = rendered(DocMetadata.json_contains("{\"active\": true}"));
         assert_eq!(
             contains.sql,
@@ -1629,26 +1634,28 @@ mod postgres_extension_traits {
 
     #[cfg(feature = "serde_json")]
     #[test]
-    fn json_operators_read_a_serde_json_document() {
+    fn json_extraction_reads_a_serde_json_document() {
         fn assert_json_value<T: PgJsonValue>() {}
         assert_json_value::<serde_json::Value>();
 
+        // A document type does not state whether its column stores the document
+        // as `json` or as `jsonb`, so only the extraction operators are offered
+        // for it, and the extracted document keeps that type.
         let built = select_from::<Postgres<Pg16>, Payload>()
-            .select((PayloadId,))
-            .where_(PayloadData.json_contains("{\"a\": 1}"))
-            .where_(PayloadData.json_has_key("a"))
+            .select((PayloadId, PayloadData.json_get("owner")))
+            .where_(PayloadData.json_get_text("kind").is_not_null())
             .build()
             .expect("valid query");
 
         assert_eq!(
             built.sql,
-            "SELECT \"id\" FROM \"payloads\" WHERE ((\"data\" @> $1) AND (\"data\" ? $2))"
+            "SELECT \"id\", (\"data\" -> $1) FROM \"payloads\" WHERE ((\"data\" ->> $2) IS NOT NULL)"
         );
         assert_eq!(
             built.params,
             vec![
-                SqlVal::Text("{\"a\": 1}".to_owned()),
-                SqlVal::Text("a".to_owned()),
+                SqlVal::Text("owner".to_owned()),
+                SqlVal::Text("kind".to_owned()),
             ]
         );
     }

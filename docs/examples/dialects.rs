@@ -51,8 +51,8 @@ fn main() -> Result<(), BuildError> {
     println!("{} / {}", fourteen.sql, sixteen.sql);
 
     // ANCHOR: jsonb
-    // A JSON or JSONB column is filtered and projected through the native
-    // operators, so a document never leaves the typed builder.
+    // A JSONB column is filtered and projected through the native operators,
+    // so a document never leaves the typed builder.
     let documents = select_from(Profile)
         .select(cols! {
             profile_id: ProfileId,

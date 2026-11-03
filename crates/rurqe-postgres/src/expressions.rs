@@ -5,6 +5,7 @@ use rurqe_core::expr::{
     SqlArrayElement, SqlVal, ToSqlVal,
 };
 use rurqe_core::query::MakeNullable;
+use rurqe_core::row::{FromSqlValue, RowDecodeError};
 use rurqe_core::schema::Column;
 
 /// A column value the PostgreSQL regex operators read.
@@ -43,12 +44,16 @@ impl PgTextSearchValue for Option<String> {}
 impl PgTextSearchValue for &'static str {}
 impl PgTextSearchValue for Option<&'static str> {}
 
-/// A JSON or JSONB document carried as its text.
+/// A `json` document carried as its text.
 ///
-/// PostgreSQL prints a JSON document as text and accepts it in that form, so a
-/// schema maps a `json` or `jsonb` column onto this wrapper without pulling in a
+/// PostgreSQL prints a `json` document as text and accepts it in that form, so a
+/// schema maps a `json` column onto this wrapper without pulling in a
 /// serialisation crate. The default type parameter makes a bare `PgJson` name a
 /// document held as a `String`.
+///
+/// A `json` column offers the extraction operators of [`PgJsonExpressions`] and
+/// nothing else: containment and the existence tests are defined for `jsonb`
+/// alone, so a column of this kind is declared as [`PgJsonb`] to reach them.
 ///
 /// ```
 /// use rurqe_postgres::rurqe_core::expr::{SqlVal, ToSqlVal};
@@ -62,41 +67,144 @@ impl PgTextSearchValue for Option<&'static str> {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct PgJson<T = String>(pub T);
 
-impl<T: Into<String>> ToSqlVal for PgJson<T> {
-    fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.0.into())
+/// A `jsonb` document carried as its text.
+///
+/// The wrapper mirrors [`PgJson`] and adds the operators PostgreSQL defines for
+/// `jsonb` alone: containment (`@>`) and the existence tests (`?`, `?|`).
+///
+/// ```
+/// use rurqe_postgres::rurqe_core::expr::{SqlVal, ToSqlVal};
+/// use rurqe_postgres::PgJsonb;
+///
+/// assert_eq!(
+///     PgJsonb("[1, 2]").to_sql_val(),
+///     SqlVal::Text("[1, 2]".to_owned())
+/// );
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct PgJsonb<T = String>(pub T);
+
+/// Generates the conversions a document wrapper shares with its sibling.
+///
+/// A `json` document and a `jsonb` document travel as the text of the document,
+/// so the conversions of [`PgJson`] and [`PgJsonb`] differ in nothing but the
+/// type they are implemented for.
+macro_rules! impl_pg_document {
+    ($document:ident) => {
+        impl<T: Into<String>> ToSqlVal for $document<T> {
+            fn to_sql_val(self) -> SqlVal {
+                SqlVal::Text(self.0.into())
+            }
+        }
+
+        impl<T: Clone + Into<String>> ToSqlVal for &$document<T> {
+            fn to_sql_val(self) -> SqlVal {
+                SqlVal::Text(self.0.clone().into())
+            }
+        }
+
+        impl<T> MakeNullable for $document<T> {
+            type Nullable = Option<$document<T>>;
+        }
+
+        impl<T: 'static + Send + Sync> PgJsonValue for $document<T> {
+            type Document = $document<T>;
+        }
+
+        impl<T: From<String> + 'static + Send + Sync> FromSqlValue for $document<T> {
+            fn from_sql_value(value: &SqlVal) -> Result<Self, RowDecodeError> {
+                document_text::<$document<T>>(value).map(|text| $document(T::from(text)))
+            }
+        }
+    };
+}
+
+impl_pg_document!(PgJson);
+impl_pg_document!(PgJsonb);
+
+/// Reads the text of a JSON document out of the value a column reports.
+///
+/// A driver decodes a `json` or `jsonb` column into the text of the document,
+/// and the `serde_json` binding decodes it into a `SqlVal::Json` value; both
+/// forms carry the same document, so both are read back into the text the
+/// wrapper holds.
+fn document_text<D>(value: &SqlVal) -> Result<String, RowDecodeError> {
+    match value {
+        SqlVal::Text(text) => Ok(text.clone()),
+        #[cfg(feature = "serde_json")]
+        SqlVal::Json(json) => Ok(json.to_string()),
+        _ => Err(RowDecodeError::TypeMismatch {
+            target: std::any::type_name::<D>(),
+            found: value.variant_name(),
+        }),
     }
 }
 
-impl<T: Clone + Into<String>> ToSqlVal for &PgJson<T> {
-    fn to_sql_val(self) -> SqlVal {
-        SqlVal::Text(self.0.clone().into())
-    }
-}
-
-impl<T> MakeNullable for PgJson<T> {
-    type Nullable = Option<PgJson<T>>;
-}
-
-/// A column value the PostgreSQL JSON operators read.
+/// A column value the PostgreSQL JSON extraction operators read.
+///
+/// Extraction (`->` and `->>`) is defined for a `json` document and a `jsonb`
+/// document alike, so both storage kinds satisfy the marker. The kind still
+/// decides the type of the extracted value, which is why the marker names the
+/// [`Document`](PgJsonValue::Document) an extraction yields.
+///
+/// A document type that does not state its storage kind — `serde_json::Value`
+/// and `Json<T>` — satisfies the marker as well, because extraction is valid for
+/// either kind; the operators defined for `jsonb` alone are offered through
+/// [`PgJsonbValue`] instead.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a PostgreSQL JSON value",
     label = "the JSON operators read a JSON document",
-    note = "declare the column as `PgJson`, `Option<PgJson>`, or — with the `serde_json` feature — as `serde_json::Value` or `Json<T>`"
+    note = "declare the column as `PgJson`, `PgJsonb`, `Option<PgJson>`, or `Option<PgJsonb>`, or — with the `serde_json` feature — as `serde_json::Value` or `Json<T>`"
 )]
-pub trait PgJsonValue {}
+pub trait PgJsonValue {
+    /// The document type an extraction (`->`) from the value yields.
+    type Document: 'static + Send + Sync;
+}
 
-impl<T> PgJsonValue for PgJson<T> {}
-impl<T> PgJsonValue for Option<PgJson<T>> {}
+/// A column value the JSONB-only PostgreSQL operators read.
+///
+/// Containment (`@>`) and the existence tests (`?`, `?|`) are defined for a
+/// `jsonb` document alone. The marker is implemented for the values that state
+/// that storage — [`PgJsonb`] and its optional form — and never for [`PgJson`]
+/// or for a document type that does not state its kind.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not state a `jsonb` document",
+    label = "the containment and existence operators read `jsonb` alone",
+    note = "declare the column as `PgJsonb` or `Option<PgJsonb>`; a `PgJson` column and a document type without a storage kind offer the extraction operators only"
+)]
+pub trait PgJsonbValue: PgJsonValue {}
+
+impl<T: 'static + Send + Sync> PgJsonValue for Option<PgJson<T>> {
+    type Document = PgJson<T>;
+}
+
+impl<T: 'static + Send + Sync> PgJsonValue for Option<PgJsonb<T>> {
+    type Document = PgJsonb<T>;
+}
+
+impl<T: 'static + Send + Sync> PgJsonbValue for PgJsonb<T> {}
+
+impl<T: 'static + Send + Sync> PgJsonbValue for Option<PgJsonb<T>> {}
 
 #[cfg(feature = "serde_json")]
-impl PgJsonValue for serde_json::Value {}
+impl PgJsonValue for serde_json::Value {
+    type Document = serde_json::Value;
+}
+
 #[cfg(feature = "serde_json")]
-impl PgJsonValue for Option<serde_json::Value> {}
+impl PgJsonValue for Option<serde_json::Value> {
+    type Document = serde_json::Value;
+}
+
 #[cfg(feature = "serde_json")]
-impl<T> PgJsonValue for rurqe_core::expr::Json<T> {}
+impl<T: 'static + Send + Sync> PgJsonValue for rurqe_core::expr::Json<T> {
+    type Document = rurqe_core::expr::Json<T>;
+}
+
 #[cfg(feature = "serde_json")]
-impl<T> PgJsonValue for Option<rurqe_core::expr::Json<T>> {}
+impl<T: 'static + Send + Sync> PgJsonValue for Option<rurqe_core::expr::Json<T>> {
+    type Document = rurqe_core::expr::Json<T>;
+}
 
 /// PostgreSQL POSIX regular expression operators.
 ///
@@ -166,11 +274,11 @@ where
     }
 }
 
-/// PostgreSQL JSON and JSONB operators.
+/// PostgreSQL JSON extraction operators.
 ///
-/// The operators read a JSON document, so they are offered for a column whose
-/// Rust type is a JSON value ([`PgJsonValue`]). A column holding text is not a
-/// JSON document:
+/// Extraction is defined for a `json` document and a `jsonb` document alike, so
+/// the operators are offered for a column whose Rust type is a JSON value
+/// ([`PgJsonValue`]). A column holding text is not a JSON document:
 ///
 /// ```compile_fail
 /// use rurqe_postgres::PgJsonExpressions;
@@ -182,9 +290,86 @@ where
 /// );
 ///
 /// // Fails to compile: `content` holds text, not a JSON document.
+/// let _ = DocContent.json_get("owner");
+/// ```
+///
+/// The kind of the column decides the document an extraction yields: `->`
+/// returns a `json` value for a `json` column and a `jsonb` value for a `jsonb`
+/// one, so [`json_get`](PgJsonExpressions::json_get) carries the document type of
+/// the column instead of text. Only
+/// [`json_get_text`](PgJsonExpressions::json_get_text) — the `->>` operator —
+/// yields text.
+pub trait PgJsonExpressions {
+    /// The scope of the table the column belongs to.
+    type Scope;
+
+    /// The document type an extraction from the column yields.
+    type Document: 'static + Send + Sync;
+
+    /// The document at an object key or an array index (`->`).
+    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<Self::Document, Self::Scope>;
+
+    /// The value at an object key or an array index, rendered as text (`->>`).
+    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Scope>;
+}
+
+impl<C> PgJsonExpressions for C
+where
+    C: Column,
+    C::RustType: PgJsonValue,
+{
+    type Scope = C::Table;
+    type Document = <C::RustType as PgJsonValue>::Document;
+
+    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<Self::Document, C::Table> {
+        json_extract::<C, Self::Document>("->", key.into())
+    }
+
+    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
+        json_extract::<C, String>("->>", key.into())
+    }
+}
+
+/// PostgreSQL JSONB operators.
+///
+/// Containment (`@>`) and the existence tests (`?`, `?|`) are defined for a
+/// `jsonb` document alone: the `json` type has no such operators, and the server
+/// rejects a statement that applies one to it. The operators are therefore
+/// offered for a column whose Rust type states a `jsonb` storage
+/// ([`PgJsonbValue`]): a [`PgJsonb`] column, or its optional form.
+///
+/// A [`PgJson`] column holds the other kind, and a document type that states no
+/// kind holds either, so both offer the extraction operators alone:
+///
+/// ```compile_fail
+/// use rurqe_postgres::{PgJson, PgJsonbExpressions};
+///
+/// rurqe_postgres::rurqe_core::table!(
+///     Doc => "docs" {
+///         DocMetadata => "metadata": PgJson,
+///     }
+/// );
+///
+/// // Fails to compile: containment is defined for `jsonb` alone, and the column
+/// // states a `json` document.
+/// let _ = DocMetadata.json_contains("{\"a\": 1}");
+/// ```
+///
+/// A column holding plain text is not a JSON document either:
+///
+/// ```compile_fail
+/// use rurqe_postgres::PgJsonbExpressions;
+///
+/// rurqe_postgres::rurqe_core::table!(
+///     Doc => "docs" {
+///         DocContent => "content": String,
+///     }
+/// );
+///
+/// // Fails to compile: `content` holds text, not a JSON document.
 /// let _ = DocContent.json_contains("{\"a\": 1}");
 /// ```
-pub trait PgJsonExpressions {
+pub trait PgJsonbExpressions {
     /// The scope of the table the column belongs to.
     type Scope;
 
@@ -196,18 +381,12 @@ pub trait PgJsonExpressions {
 
     /// JSONB has any keys (`?|`).
     fn json_has_any_keys(self, keys: &[&str]) -> Expr<bool, Self::Scope>;
-
-    /// JSONB value at an object key or an array index (`->`).
-    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Scope>;
-
-    /// JSONB value at an object key or an array index, rendered as text (`->>`).
-    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, Self::Scope>;
 }
 
-impl<C> PgJsonExpressions for C
+impl<C> PgJsonbExpressions for C
 where
     C: Column,
-    C::RustType: PgJsonValue,
+    C::RustType: PgJsonbValue,
 {
     type Scope = C::Table;
 
@@ -233,14 +412,6 @@ where
         )));
 
         Expr::column::<C>().dialect_op::<Vec<SqlVal>, bool, _>("?|", array)
-    }
-
-    fn json_get<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
-        json_extract::<C>("->", key.into())
-    }
-
-    fn json_get_text<K: Into<JsonKey>>(self, key: K) -> Expr<String, C::Table> {
-        json_extract::<C>("->>", key.into())
     }
 }
 
@@ -334,7 +505,7 @@ impl From<i32> for JsonKey {
     }
 }
 
-/// Builds a `(<column> -> <path>)` extraction over the JSONB column `C`.
+/// Builds a `(<column> -> <path>)` extraction over the JSON column `C`.
 ///
 /// The column stays symbolic, so its reference is qualified against the relations
 /// of the statement the extraction belongs to and quoted by the dialect. An object
@@ -343,7 +514,15 @@ impl From<i32> for JsonKey {
 /// the operator instead of typing a parameter as `text`. The path component
 /// references no relation, so it carries the empty scope, and the extraction
 /// inherits the scope of the column alone.
-fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Table> {
+///
+/// `Out` is the document the operator yields: `->` returns a value of the column's
+/// own storage kind, so the caller names the kind it extracts, while `->>` names
+/// `String`.
+fn json_extract<C, Out>(op: &'static str, key: JsonKey) -> Expr<Out, C::Table>
+where
+    C: Column,
+    C::RustType: PgJsonValue,
+{
     let column = Expr::column::<C>();
 
     match key {
@@ -351,7 +530,7 @@ fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Ta
         // `text` operand of the operator.
         JsonKey::Key(key) => {
             let path: Expr<String> = Expr::literal(key);
-            column.dialect_op::<String, String, _>(op, path)
+            column.dialect_op::<String, Out, _>(op, path)
         }
         // An array index is written into the statement as an integer literal.
         // The statement is sent without parameter type hints, so an untyped
@@ -364,7 +543,7 @@ fn json_extract<C: Column>(op: &'static str, key: JsonKey) -> Expr<String, C::Ta
         // `i32`, so it holds nothing but digits and a sign.
         JsonKey::Index(index) => {
             let path: Expr<i32> = Expr::raw_owned_fragments(vec![index.to_string()], Vec::new());
-            column.dialect_op::<i32, String, _>(op, path)
+            column.dialect_op::<i32, Out, _>(op, path)
         }
     }
 }
@@ -624,20 +803,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions, PgJson,
-        PgJsonExpressions, PgJsonValue, PgRegexExpressions, PgTextSearchExpressions,
-        PgTextSearchValue, PgTextValue,
+        plainto_tsquery, to_tsquery, to_tsvector, JsonKey, PgArrayExpressions, PgJson, PgJsonb,
+        PgJsonbExpressions, PgJsonbValue, PgJsonExpressions, PgJsonValue, PgRegexExpressions,
+        PgTextSearchExpressions, PgTextSearchValue, PgTextValue,
     };
     use crate::dialect::Postgres;
     use rurqe_core::expr::{render_expr, Expr, ExprKind, NonAggregate, SqlVal, ToSqlVal};
     use rurqe_core::query::MakeNullable;
+    use rurqe_core::row::{FromSqlValue, RowDecodeError};
     use rurqe_core::schema::{AliasedCol, Column, TableRef};
     use rurqe_core::table;
 
     table!(
         Doc => "docs" {
             DocContent => "content": String,
-            DocMetadata => "metadata": PgJson,
+            DocMetadata => "metadata": PgJsonb,
+            DocLegacy => "legacy": PgJson,
             DocQuoted => "a\"b": String,
         }
     );
@@ -904,13 +1085,55 @@ mod tests {
 
     #[test]
     fn json_extraction_carries_the_column_scope_and_qualifies_it() {
-        let value: Expr<String, Doc> = DocMetadata.json_get("owner");
+        let value: Expr<PgJsonb, Doc> = DocMetadata.json_get("owner");
         let (sql, _) = render(
             value.kind(),
             &[TableRef::plain("docs"), TableRef::plain("posts")],
         );
 
         assert_eq!(sql, "(\"docs\".\"metadata\" -> $1)");
+
+        let legacy: Expr<PgJson, Doc> = DocLegacy.json_get("owner");
+        let (sql, _) = render(
+            legacy.kind(),
+            &[TableRef::plain("docs"), TableRef::plain("posts")],
+        );
+
+        assert_eq!(sql, "(\"docs\".\"legacy\" -> $1)");
+    }
+
+    #[test]
+    fn json_extraction_yields_the_document_of_its_column() {
+        // `->` returns a value of the column's own storage kind, so the extracted
+        // document is `json` for a `json` column and `jsonb` for a `jsonb` one.
+        // `->>` is the operator that yields text, and it yields it for either kind.
+        let jsonb: Expr<PgJsonb, Doc> = DocMetadata.json_get("owner");
+        let json: Expr<PgJson, Doc> = DocLegacy.json_get("owner");
+        let text: Expr<String, Doc> = DocLegacy.json_get_text("owner");
+
+        let (rendered_jsonb, _) = render(jsonb.kind(), &[TableRef::plain("docs")]);
+        let (rendered_json, _) = render(json.kind(), &[TableRef::plain("docs")]);
+        let (rendered_text, _) = render(text.kind(), &[TableRef::plain("docs")]);
+
+        assert_eq!(rendered_jsonb, "(\"metadata\" -> $1)");
+        assert_eq!(rendered_json, "(\"legacy\" -> $1)");
+        assert_eq!(rendered_text, "(\"legacy\" ->> $1)");
+    }
+
+    #[test]
+    fn a_document_decodes_from_the_value_of_its_column() {
+        assert_eq!(
+            PgJson::from_sql_value(&SqlVal::Text("{\"a\": 1}".to_owned())),
+            Ok(PgJson("{\"a\": 1}".to_owned()))
+        );
+        assert_eq!(
+            PgJsonb::from_sql_value(&SqlVal::Text("[1, 2]".to_owned())),
+            Ok(PgJsonb("[1, 2]".to_owned()))
+        );
+        assert!(matches!(
+            PgJsonb::<String>::from_sql_value(&SqlVal::I64(1)),
+            Err(RowDecodeError::TypeMismatch { .. })
+        ));
     }
 
     #[test]
@@ -936,11 +1159,21 @@ mod tests {
     #[test]
     fn a_json_column_carries_the_json_marker() {
         fn assert_json_value<T: PgJsonValue>() {}
+        fn assert_jsonb_value<T: PgJsonbValue>() {}
         fn assert_nullable<T: MakeNullable<Nullable = Option<T>>>() {}
 
         assert_json_value::<PgJson>();
         assert_json_value::<PgJson<String>>();
         assert_json_value::<Option<PgJson>>();
+        assert_json_value::<PgJsonb>();
+        assert_json_value::<PgJsonb<String>>();
+        assert_json_value::<Option<PgJsonb>>();
+
+        // Only a value stating the `jsonb` storage reaches the operators defined
+        // for that kind alone.
+        assert_jsonb_value::<PgJsonb>();
+        assert_jsonb_value::<PgJsonb<String>>();
+        assert_jsonb_value::<Option<PgJsonb>>();
 
         #[cfg(feature = "serde_json")]
         {
@@ -951,11 +1184,20 @@ mod tests {
         }
 
         assert_nullable::<PgJson>();
+        assert_nullable::<PgJsonb>();
         assert_eq!(
             PgJson("{\"a\": 1}").to_sql_val(),
             SqlVal::Text("{\"a\": 1}".to_owned())
         );
         assert_eq!((&PgJson("{}")).to_sql_val(), SqlVal::Text("{}".to_owned()));
+        assert_eq!(
+            PgJsonb("[1, 2]").to_sql_val(),
+            SqlVal::Text("[1, 2]".to_owned())
+        );
+        assert_eq!(
+            (&PgJsonb("{}")).to_sql_val(),
+            SqlVal::Text("{}".to_owned())
+        );
     }
 
     #[test]
@@ -967,5 +1209,6 @@ mod tests {
         }
 
         assert_json_column::<DocMetadata>();
+        assert_json_column::<DocLegacy>();
     }
 }

@@ -49,7 +49,7 @@ table!(
     Profile => "profiles" {
         ProfileId => "id": i64,
         ProfileBio => "bio": String,
-        ProfileMetadata => "metadata": PgJson,
+        ProfileMetadata => "metadata": PgJsonb,
         ProfileTags => "tags": Vec<String>,
     }
 );
