@@ -95,18 +95,7 @@ INSERT INTO "users" ("id", "name") VALUES (?, ?) ON CONFLICT DO NOTHING
 The clause binds after the inserted values and before any `RETURNING` projection, so its parameters follow the row parameters in statement order. Below the threshold the clause has no builder method:
 
 ```rust,compile_fail
-use rurqe::sqlite::sqlite3_0::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-// Rejected at compile time: ON CONFLICT requires SQLite 3.24+.
-let _ = insert_into(User)
-    .values(UserId::set(1i64))
-    .on_conflict_do_nothing();
+{{#rustdoc_include ../../examples/guards/sqlite_gates.rs:on_conflict_below_threshold}}
 ```
 
 ## `RETURNING`
@@ -124,16 +113,7 @@ INSERT INTO "users" ("id", "name") VALUES (?, ?) RETURNING "id" AS "user_id"
 The clause hands the affected rows back in the same statement, so a mutation returns its decoded row without a second round trip. Below the threshold the clause has no builder method:
 
 ```rust,compile_fail
-use rurqe::sqlite::sqlite3_24::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-// Rejected at compile time: RETURNING requires SQLite 3.35+.
-let _ = delete_from(User).allow_all().returning(cols!(UserId));
+{{#rustdoc_include ../../examples/guards/sqlite_gates.rs:returning_below_threshold}}
 ```
 
 ## Nested Collections and JSON Aggregation
@@ -156,29 +136,7 @@ FROM "users"
 The document holds one object per child row, keyed by the field names of the nested projection, so the row decodes without a positional index, and a parent without children receives an empty array instead of a missing field. Below the threshold the projection is rejected by the compiler:
 
 ```rust,compile_fail
-use rurqe::sqlite::sqlite3_35::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-table!(
-    Order => "orders" {
-        OrderId => "id": i64,
-        OrderUserId => "user_id": i64,
-    }
-);
-
-// Rejected at compile time: the JSON functions a nested collection renders with
-// are part of a default build only from SQLite 3.38, so the projection is
-// rejected below that release.
-let _ = select_from(User)
-    .select(cols! {
-        user_id: UserId,
-        orders: nest_many(select_from(Order).select(cols!(order_id: OrderId))),
-    });
+{{#rustdoc_include ../../examples/guards/sqlite_gates.rs:nested_collection_below_threshold}}
 ```
 
 ## Embedded and In-Memory Databases
@@ -212,35 +170,13 @@ A transaction block runs between `BEGIN` and `COMMIT`: the block commits when it
 Some clauses belong to a client-server engine and have no meaning in an embedded database. SQLite locks the whole database file for the duration of a write, so it has no per-row locking, and the locking methods are absent from the builder:
 
 ```rust,compile_fail
-use rurqe::sqlite::prelude::*;
-
-table!(
-    Job => "jobs" {
-        JobId => "id": i64,
-    }
-);
-
-// Rejected at compile time: SQLite has no per-row locking, so the clause has
-// no builder method.
-let _ = select_from(Job)
-    .select(cols!(JobId))
-    .for_update()
-    .skip_locked();
+{{#rustdoc_include ../../examples/guards/sqlite_gates.rs:row_locking}}
 ```
 
 `DISTINCT ON` is a PostgreSQL clause as well, so the builder offers no such method on this dialect:
 
 ```rust,compile_fail
-use rurqe::sqlite::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-// Rejected at compile time: DISTINCT ON is not a clause SQLite implements.
-let _ = select_from(User).select(cols!(UserId)).distinct_on(UserId);
+{{#rustdoc_include ../../examples/guards/sqlite_gates.rs:distinct_on}}
 ```
 
 The same holds for `LATERAL` joins, `FULL OUTER JOIN`, `DELETE ... USING`, `GREATEST` / `LEAST`, the null-safe `IS DISTINCT FROM` comparisons, the JSON document operators, array columns, regular expressions, full-text search, and an alias on the target of an `INSERT`; the capability summary above records each of them as unavailable. The alias is an extension of the standard rather than a production of ISO SQL, so this dialect has no grammar for it and no constructor starts such a statement.
