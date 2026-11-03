@@ -5,7 +5,7 @@ The promise "valid SQL or a compile error" cannot be expressed entirely inside t
 1. **The compiler (Gate 1)** enforces relational invariants expressible as positive assertions: relation scope isolation, outer-join nullability lifting, typestates, dialect capability gating, and the grouping coverage of a query that grouped its rows.
 2. **Validation inside `.build()` (Gate 2)** enforces the rules that need a negative assertion (absence of duplicate unaliased relations), a cross-clause alignment (`DISTINCT ON` prefix matching leading `ORDER BY`), or a statement-level aggregation the builder typestates never saw: an aggregate projected beside a bare column without a grouping (`UngroupedColumnWithAggregate`), and the ordering, deduplication, and `HAVING` clauses of a collapsed statement.
 
-A statement that passes both gates is guaranteed valid for the target dialect and engine version. Neither gate touches the runtime: query construction is runtime-orthogonal, and the terminal method alone determines whether execution is awaited or synchronous.
+A statement that passes both gates is guaranteed valid for the target dialect and engine version. Both gates decide the statement before any I/O: assembling a query performs no I/O and carries no runtime or connection type, so the terminal method alone determines whether execution is awaited or synchronous.
 
 ## Gate 1: The Compiler
 
@@ -19,7 +19,7 @@ Compile-time type soundness prevents syntactically and semantically invalid quer
 | A `SELECT` projects, an `UPDATE` assigns, an `INSERT` has rows | Terminal calls do not exist until required statement clauses are written |
 | A grouped query projects only grouped columns, aggregates, constants, and windows | After `.group_by(...)` the projection, the `HAVING` predicate, and the window specification are checked against the recorded grouping at the call site |
 | The engine must support the clause | Unsupported clauses have no methods: `.for_update()` on SQLite, `RETURNING` below SQLite 3.35 |
-| A raw SQL template binds exactly one parameter per declared placeholder | The `sql!` / `raw_sql!` macros refuse a template whose placeholder census disagrees while the macro expands |
+| A raw SQL template binds exactly one parameter per declared placeholder | The `sql!` / `raw_sql!` macros refuse a template whose placeholder count disagrees with the parameters it is given while the macro expands |
 Compiler error messages describe the violated SQL rule directly rather than leaking internal generic type cascades:
 
 ```rust,compile_fail

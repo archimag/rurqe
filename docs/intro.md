@@ -49,10 +49,10 @@ RURQE unifies four foundational design principles into a cohesive developer expe
   * Comprehensive relational operations: multi-table joins, subqueries, common table expressions (`WITH`), window functions, grouping, `CASE WHEN` constructs, `LATERAL` joins, and set operations (`UNION`, `INTERSECT`, `EXCEPT`).
   * Mathematically sound nullability propagation: columns participating in `LEFT JOIN` or outer joins are automatically lifted to `Option<T>` at compile time.
 * **Lifecycle Integrity:**
-  * Dual lifecycle workflows: classic sequential migrations (`V...`, `R...` scripts with SHA-256 audit trails) alongside the declarative Stage + Tail model.
+  * Dual lifecycle workflows: classic sequential migrations (`V...`, `R...` scripts with SHA-256 audit trails), or stage-based schema evolution, where a declarative stage holds the complete target DDL and an active migration tail advances databases that already hold data.
   * Instant cold-start initialization: clean environments initialize directly from declarative schema DDL (`schema/`) in milliseconds.
   * Cryptographic checkpoint markers (`checkpoint.toml`) anchor migration tails and permit pruning historical migrations without rewriting baselines.
-  * Continuous verification of the Golden Equation catches schema divergence in CI.
+  * Continuous verification that the declarative stage and the migration tail produce the same catalog catches schema divergence in CI.
   * Both routes run from application code: the migration protocol and the catalog introspection of an engine live in its driver crate behind a `migrate` feature, so a binary applies the artifacts it bakes into itself over the connection it already holds — the command line is a convenience for the working loop, never a prerequisite.
 * **Compile-Time Soundness and Zero-Cost Guarantees:**
   * Monomorphized builders compile down to static SQL string buffers and direct deserialization passes with zero virtual calls or runtime overhead.

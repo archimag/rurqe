@@ -91,7 +91,7 @@ The filter, the ordering, the row limit, and any grouping of the nested statemen
 - The rows of a collection are ordered by the nested statement, never by the order in which the parent rows arrived.
 
 ## Raw SQL inside a nested query
-
+A `sql!` / `raw_sql!` template is checked where the macro expands, so a literal template whose placeholders disagree with the parameters it is given is refused before it becomes part of a statement. A raw expression assembled from fragments without the macro — including one written inside a nested query — is caught by the pre-flight validation of the enclosing statement, which reports the mismatch as `BuildError::RawSql` before any SQL is rendered, so a value never binds into a lost or shifted slot.
 A `sql!` / `raw_sql!` template is censused where the macro expands, so a literal template whose placeholders disagree with the parameters it is given is refused before it becomes part of a statement. A raw expression assembled from fragments without the macro — including one written inside a nested query — is caught by the pre-flight validation of the enclosing statement, which reports the mismatch as `BuildError::RawSql` before any SQL is rendered, so a value never binds into a lost or shifted slot.
 
 ## SQLite Rendering
