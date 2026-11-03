@@ -43,6 +43,7 @@ Rules that require checking the absence of a relation or comparing multi-clause 
 |---|---|
 | `DISTINCT ON (x)` must lead the `ORDER BY` with the same expression | `DistinctOnOrderMismatch` |
 | `DISTINCT` must order by an expression the projection produces | `DistinctOrderNotProjected` |
+| A statement must request one of `DISTINCT` and `DISTINCT ON (...)` | `DistinctWithDistinctOn` |
 | A compound statement must order by a name or a position it produces | `CompoundOrderColumn`, `CompoundOrderIndex` |
 | A set operation must combine operands projecting the same number of columns | `SetOperandArity` |
 | Two relations must not share one effective name | `DuplicateRelation` |

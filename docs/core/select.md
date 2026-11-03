@@ -166,7 +166,8 @@ Below the stated threshold the feature does not exist on the target, so the meth
 
 - A query without a projection does not render: `.build()` and the fetch helpers are not available on it.
 - A projection is recorded once. After `UNION`, `INTERSECT`, or `EXCEPT` the output columns are the ones the first list named, so `.select(...)` is unreachable on the combined statement; ordering the combined rows goes through `.order_by_output_asc(...)` or `.order_by_index(...)`.
-- Every projected item must belong to a relation the statement introduces. A column of a table outside the scope is refused at the call site, and the diagnostic note points at the remedy — introduce the column's table with `from` or a join before projecting it.
+- A statement requests one deduplication flavour. `.distinct()` keeps one row of each distinct combination of the projected attributes, `.distinct_on(...)` keeps one row per group its clause names, and the statement renders a single prefix before its projection list, so recording both is refused while the statement is built (`DistinctWithDistinctOn`) instead of dropping the whole-row deduplication without a diagnostic. Keep one of the two clauses.
+- Every projected item must belong to a relation the statement introduces.
 - A hand-written selection that records nothing is rejected while the statement is built, instead of rendering `SELECT  FROM "users"`.
 - Two relations sharing one effective name in `FROM` / `JOIN` are rejected while the statement is built: alias the second occurrence, and both render under their own name.
 

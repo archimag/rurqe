@@ -107,6 +107,7 @@ impl StatementRef<'_> {
         let relations = self.validate_relations()?;
         self.validate_cte_names()?;
         self.validate_distinct_on_prefix()?;
+        self.validate_distinct_flavours()?;
         self.validate_distinct_lock()?;
         self.validate_distinct_order()?;
         self.validate_compound_order()?;
@@ -237,6 +238,30 @@ impl StatementRef<'_> {
                 Some(criterion) if equivalent_expressions(&criterion.expr, expected) => {}
                 _ => return Err(BuildError::DistinctOnOrderMismatch { position }),
             }
+        }
+        Ok(())
+    }
+
+    /// Rejects a statement that records both deduplication flavours.
+    ///
+    /// `DISTINCT` keeps one row of each distinct combination of the projected
+    /// attributes, while `DISTINCT ON (...)` keeps one row per group the clause
+    /// names; the statement renders a single prefix between the `SELECT` keyword
+    /// and the projection list, so a statement recording both renders the
+    /// `DISTINCT ON (...)` prefix alone and the whole-row deduplication vanishes
+    /// without a diagnostic. The fluent chain reaches the pair — `distinct` and the
+    /// accumulating `distinct_on` leave the query in the same deduplicated state —
+    /// and a statement assembled from AST data can record both flags as well, so
+    /// the pair is rejected here and surfaces as
+    /// [`BuildError::DistinctWithDistinctOn`] before any SQL is rendered.
+    ///
+    /// The rule runs ahead of the locking rule, so a statement that also requests a
+    /// row-level lock reports the flavour contradiction rather than the lock: the
+    /// two clauses it names are the ones the caller has to choose between, while
+    /// the lock only forbids both of them.
+    fn validate_distinct_flavours(&self) -> Result<(), BuildError> {
+        if self.distinct && !self.distinct_on.is_empty() {
+            return Err(BuildError::DistinctWithDistinctOn);
         }
         Ok(())
     }

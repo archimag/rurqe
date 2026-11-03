@@ -89,6 +89,14 @@ impl<D: Dialect, Tables, Output, Projected> SelectQuery<D, Tables, Output, Proje
     /// moves out of [`NoLock`] and [`SelectQuery::for_update`] and
     /// [`SelectQuery::for_share`] stop applying to it:
     ///
+    /// A statement requests one deduplication flavour. `distinct_on` records the
+    /// other one on the state this call leaves the query in, so
+    /// `.distinct().distinct_on(...)` compiles, and `.build()` rejects the pair as
+    /// [`DistinctWithDistinctOn`](crate::query::BuildError::DistinctWithDistinctOn):
+    /// the statement renders a single prefix before its projection list, so the
+    /// whole-row deduplication recorded here would otherwise disappear without a
+    /// diagnostic.
+    ///
     /// ```compile_fail
     /// use rurqe_core::dialect::{Dialect, SupportsRowLocking};
     /// use rurqe_core::query::SelectQuery;
@@ -215,6 +223,14 @@ impl<D: Dialect + SupportsDistinctOn, Tables, Output, Projected>
     /// statement assembled from AST data is rejected during `.build()` as
     /// [`BuildError::DistinctOnWithLock`](crate::query::BuildError::DistinctOnWithLock)
     /// as well.
+    ///
+    /// This is also the state [`SelectQuery::distinct`] leaves the query in, so a
+    /// statement that already selected `DISTINCT` can record a `DISTINCT ON`
+    /// criterion beside it. The two clauses deduplicate different things — the whole
+    /// projected row against one row per named group — and the statement renders a
+    /// single prefix before its projection list, so `.build()` rejects the pair as
+    /// [`DistinctWithDistinctOn`](crate::query::BuildError::DistinctWithDistinctOn)
+    /// instead of dropping the whole-row deduplication.
     ///
     /// ```compile_fail
     /// use rurqe_core::dialect::{Dialect, SupportsDistinctOn, SupportsRowLocking};

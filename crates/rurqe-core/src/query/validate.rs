@@ -164,6 +164,26 @@ pub enum BuildError {
     /// statement assembled from AST data still can, so the clause pair is rejected
     /// here instead of by the engine.
     DistinctWithLock,
+    /// A statement requests both `DISTINCT` and `DISTINCT ON (...)`.
+    ///
+    /// The two clauses deduplicate different things: `DISTINCT` keeps one row of
+    /// each distinct combination of the projected attributes, while
+    /// `DISTINCT ON (...)` keeps one row per group the clause names, choosing the
+    /// surviving row through the leading `ORDER BY` criteria. A statement renders
+    /// a single prefix between the `SELECT` keyword and the projection list, so a
+    /// statement carrying both flags renders the `DISTINCT ON (...)` prefix alone
+    /// and the whole-row deduplication disappears without a diagnostic — the
+    /// emitted statement no longer means what the caller wrote.
+    ///
+    /// The fluent chain reaches the pair because
+    /// [`SelectQuery::distinct`](crate::query::SelectQuery::distinct) and the
+    /// accumulating
+    /// [`SelectQuery::distinct_on`](crate::query::SelectQuery::distinct_on) leave
+    /// the query in the same deduplicated state, so `.distinct().distinct_on(...)`
+    /// compiles, and a statement assembled from AST data can record both flags as
+    /// well. The pair is therefore rejected before a single character of the
+    /// statement is rendered, and the caller keeps one of the two clauses.
+    DistinctWithDistinctOn,
     /// A statement nested inside another statement requests a row-level lock.
     ///
     /// A locking clause claims the rows the statement read until the transaction
@@ -591,6 +611,17 @@ impl fmt::Display for BuildError {
                     "a DISTINCT statement cannot request a row-level lock; \
                      PostgreSQL rejects `SELECT DISTINCT ... FOR UPDATE` and `... FOR SHARE`, \
                      so drop the locking clause or the DISTINCT clause"
+                )
+            }
+            BuildError::DistinctWithDistinctOn => {
+                write!(
+                    f,
+                    "a statement requests both `DISTINCT` and `DISTINCT ON (...)`; \
+                     `DISTINCT` keeps one row of each distinct combination of the projected attributes, \
+                     while `DISTINCT ON (...)` keeps one row per group it names, \
+                     and the statement renders a single prefix before its projection list, \
+                     so the whole-row deduplication would be dropped without a diagnostic; \
+                     keep one of the two clauses"
                 )
             }
             BuildError::NestedLock => {

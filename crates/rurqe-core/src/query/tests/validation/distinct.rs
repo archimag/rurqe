@@ -118,6 +118,80 @@ fn build_error_display_distinct_order_not_projected() {
 }
 
 #[test]
+fn build_error_display_distinct_with_distinct_on() {
+    let msg = BuildError::DistinctWithDistinctOn.to_string();
+    assert!(msg.contains("a statement requests both `DISTINCT` and `DISTINCT ON (...)`"));
+    assert!(msg.contains("keep one of the two clauses"));
+}
+
+#[test]
+fn distinct_then_distinct_on_is_rejected_before_rendering() {
+    // Both calls leave the query in the same deduplicated state, so the chain
+    // compiles; the pair is rejected while the statement is built instead of
+    // rendering the `DISTINCT ON (...)` prefix alone and dropping the
+    // whole-row deduplication without a diagnostic.
+    let query = SelectQuery::<MockDialect>::new()
+        .from::<Order>()
+        .select((OrderId,))
+        .distinct()
+        .distinct_on(OrderUserId)
+        .order_by_asc(OrderUserId);
+
+    assert_eq!(query.build(), Err(BuildError::DistinctWithDistinctOn));
+}
+
+#[test]
+fn a_statement_recording_both_deduplication_flavours_is_rejected() {
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "id",
+    });
+    ast.distinct_on.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        OrderDirection::Asc,
+    ));
+
+    assert_eq!(ast.validate(), Err(BuildError::DistinctWithDistinctOn));
+}
+
+#[test]
+fn a_statement_recording_both_flavours_reports_them_before_the_lock() {
+    // The flavour contradiction names the two clauses the caller has to choose
+    // between, while the locking rule only forbids both of them, so the pair
+    // is reported first.
+    let mut ast = empty_ast();
+    ast.from = Some(TableRef::plain("orders"));
+    ast.distinct = true;
+    ast.projections.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.distinct_on.push(ExprKind::Column {
+        table: "orders",
+        name: "user_id",
+    });
+    ast.order_by.push(OrderCriterion::new(
+        ExprKind::Column {
+            table: "orders",
+            name: "user_id",
+        },
+        OrderDirection::Asc,
+    ));
+    ast.lock = Some(crate::expr::LockClause::new(crate::expr::LockStrength::Update));
+
+    assert_eq!(ast.validate(), Err(BuildError::DistinctWithDistinctOn));
+}
+#[test]
 fn a_distinct_statement_ordering_a_projected_expression_is_accepted() {
     let mut ast = empty_ast();
     ast.from = Some(TableRef::plain("orders"));

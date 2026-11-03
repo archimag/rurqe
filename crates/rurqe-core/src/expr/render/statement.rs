@@ -292,6 +292,11 @@ impl<'a> StatementRef<'a> {
         params: &mut Vec<SqlVal>,
         relations: &[TableRef],
     ) -> Result<(), RawSqlError> {
+        // The two deduplication flavours share one prefix before the projection
+        // list, so a statement recording both renders the `DISTINCT ON (...)` form
+        // alone. The pre-flight pass rejects that pair as
+        // `BuildError::DistinctWithDistinctOn`, so at most one flag is recorded by
+        // the time a statement reaches the renderer.
         if !self.distinct_on.is_empty() {
             sql.push_str("DISTINCT ON (");
             render_expressions::<D>(sql, params, self.distinct_on, relations)?;
