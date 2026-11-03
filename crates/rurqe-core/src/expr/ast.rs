@@ -1,26 +1,25 @@
 //! Expression AST nodes, nested subqueries, CASE/typed expression builders, and
 //! the dialect-neutral statement AST they are rendered into.
 
-use core::marker::PhantomData;
-
-use super::builder::{Aggregate, DirectAggregate, Expr, NonAggregate};
+use super::builder::{DirectAggregate, Expr, NonAggregate};
 use super::fragments::RawFragments;
-use super::operand::FunctionOperand;
 use super::ops::{AnySubquery, CombineAggr, CombinedAggr, IntoExpr};
 use super::scope::{MergeScope, Merged};
 use super::val::{AggregateFunc, BinaryOp, SqlVal};
-use crate::dialect::Dialect;
-use crate::query::BuildError;
 use crate::schema::Column;
 
+mod case;
 mod statement;
+mod subquery;
 
+pub use case::{CaseBranch, CaseBuilder, HasBranches, NoBranches};
 pub use statement::{
     CteAst, DerivedAst, DialectInScope, JoinAst, JoinKind, LockClause, LockStrength, LockWait,
     MergeDialect, MergedDialect, NullsOrder, OrderCriterion, OrderDirection, RequiresAll,
     RequiresDistinctFrom, RequiresGreatest, RequiresNullsOrdering, SelectAst, SetOpAst, SetOpKind,
     WindowExprKind, WindowFrame, WindowFrameBound, WindowFrameKind,
 };
+pub use subquery::{Subquery, SubqueryOp};
 
 /// The shape of a SQL expression tree.
 #[derive(Debug, Clone, PartialEq)]
@@ -230,278 +229,6 @@ pub enum ExprKind {
         /// The SQL identifier the expression is projected under.
         alias: &'static str,
     },
-}
-
-/// A single `WHEN condition THEN result` branch of a [`ExprKind::Case`] expression.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CaseBranch {
-    /// The predicate guarding the branch.
-    pub condition: ExprKind,
-    /// The value produced when `condition` holds.
-    pub result: ExprKind,
-}
-
-/// A nested query rendered inline within a predicate of an enclosing statement.
-///
-/// The nested query is described as the same dialect-neutral statement data as
-/// the statement it is embedded into, so two predicates over equal nested
-/// statements are equal as well, and the enclosing statement renders the nested
-/// one with its own dialect. It renders on demand into the buffers of the
-/// enclosing statement, so its parameters continue the placeholder numbering of
-/// the outer query instead of starting over:
-///
-/// ```text
-/// SELECT "id" FROM "users" WHERE ("id" IN (SELECT "user_id" FROM "orders" WHERE ("total" > $1)))
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-pub struct Subquery {
-    // The statement is boxed because it may itself hold a predicate over a
-    // nested query: `SelectAst` carries `ExprKind` values, and `ExprKind`
-    // carries a `Subquery`. Boxing the statement breaks that value cycle, so
-    // the three types keep a finite size while staying plain comparable data.
-    query: Box<SelectAst>,
-}
-
-impl Subquery {
-    /// Creates a subquery around the statement `query`.
-    pub fn new(query: SelectAst) -> Self {
-        Self {
-            query: Box::new(query),
-        }
-    }
-
-    /// The statement the nested query is defined by.
-    pub fn ast(&self) -> &SelectAst {
-        self.query.as_ref()
-    }
-
-    /// Renders the nested query into the buffers of the enclosing statement.
-    ///
-    /// The statement is validated by the pre-flight pass before any of its SQL is
-    /// written, so a nested statement assembled by hand is rejected exactly like a
-    /// top-level one and nothing reaches the buffers when the pass fails. A
-    /// statement the pass already accepted — as the enclosing statement of a
-    /// rendered expression does — is rendered through the crate-internal
-    /// [`StatementRef`](crate::expr::StatementRef) view instead, so its clauses are
-    /// not validated twice.
-    ///
-    /// # Rejection at render time
-    ///
-    /// Wrapping a hand-assembled statement in a [`Subquery`] does not lift it out
-    /// of the pre-flight pass, so a statement whose `FROM` and `JOIN` address one
-    /// relation is rejected here just as it is at the top level:
-    ///
-    /// ```
-    /// use rurqe_core::dialect::Dialect;
-    /// use rurqe_core::expr::{ExprKind, JoinAst, JoinKind, SelectAst, Subquery};
-    /// use rurqe_core::query::BuildError;
-    /// use rurqe_core::schema::TableRef;
-    ///
-    /// struct MockDialect;
-    ///
-    /// impl Dialect for MockDialect {
-    ///     fn push_quoted_identifier(out: &mut String, ident: &str) {
-    ///         out.push('"');
-    ///         out.push_str(ident);
-    ///         out.push('"');
-    ///     }
-    ///
-    ///     fn push_placeholder(out: &mut String, _index: usize) {
-    ///         out.push('?');
-    ///     }
-    /// }
-    ///
-    /// let ast = SelectAst {
-    ///     ctes: Vec::new(),
-    ///     distinct: false,
-    ///     distinct_on: Vec::new(),
-    ///     projections: vec![ExprKind::Column {
-    ///         table: "orders",
-    ///         name: "id",
-    ///     }],
-    ///     from: Some(TableRef::plain("orders")),
-    ///     joins: vec![JoinAst {
-    ///         kind: JoinKind::Inner,
-    ///         table: TableRef::plain("orders"),
-    ///         lateral: None,
-    ///         on: None,
-    ///     }],
-    ///     derived: Vec::new(),
-    ///     filter: None,
-    ///     group_by: Vec::new(),
-    ///     having: None,
-    ///     order_by: Vec::new(),
-    ///     limit: None,
-    ///     offset: None,
-    ///     set_operations: Vec::new(),
-    ///     compound_order_by: Vec::new(),
-    ///     compound_limit: None,
-    ///     compound_offset: None,
-    ///     lock: None,
-    /// };
-    ///
-    /// let nested = Subquery::new(ast);
-    ///
-    /// let mut sql = String::new();
-    /// let mut params = Vec::new();
-    ///
-    /// assert_eq!(
-    ///     nested.render::<MockDialect>(&mut sql, &mut params),
-    ///     Err(BuildError::DuplicateRelation { name: "orders" })
-    /// );
-    /// assert!(sql.is_empty());
-    /// assert!(params.is_empty());
-    /// ```
-    pub fn render<D: Dialect>(
-        &self,
-        sql: &mut String,
-        params: &mut Vec<SqlVal>,
-    ) -> Result<(), BuildError> {
-        self.query.render::<D>(sql, params)
-    }
-}
-
-/// The predicate operator applied to a [`Subquery`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SubqueryOp {
-    /// A parenthesised `(subquery)` read as a single scalar value.
-    ///
-    /// Produced when a single-column `SelectQuery` is converted into an operand,
-    /// so the nested statement can be compared like any other value.
-    Scalar,
-    /// `EXISTS (subquery)`
-    Exists,
-    /// `operand IN (subquery)`
-    In,
-}
-
-/// Typestate marker of a `CASE` builder that has declared no `WHEN` branch yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NoBranches;
-
-/// Typestate marker of a `CASE` builder holding at least one `WHEN` branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct HasBranches;
-
-/// Phantom marker carrying the result type, the branch state, the referenced
-/// scope, the aggregation marker, and the dialect marker of a [`CaseBuilder`].
-type CaseMarker<T, Branches, Scope, Aggr, D> = PhantomData<fn() -> (T, Branches, Scope, Aggr, D)>;
-
-/// Builder for a searched `CASE` expression producing values of type `T`.
-///
-/// The builder carries the tables `Scope`, the dialect requirements `D`, and the
-/// aggregation marker `Aggr` that its conditions and results contribute. The
-/// aggregation marker starts at [`Aggregate`] — the identity of the folding
-/// algebra, since a `CASE` without operands is a constant — and every branch
-/// folds its own markers into it through [`CombineAggr`]:
-///
-/// - a condition or result that is an aggregate keeps the whole expression an
-///   aggregate, so `CASE WHEN SUM("total") > 0 THEN SUM("total") ELSE 0 END`
-///   stays projectable from a grouped query;
-/// - a condition or result reading a bare column — or an operand whose scope was
-///   dropped with [`Expr::without_scope`](super::Expr::without_scope) — computes
-///   one value per row, so the whole expression becomes [`NonAggregate`] and a
-///   grouped query rejects it unless every column it reads is grouped;
-/// - a bound value references no table, so it leaves the marker of the remaining
-///   operands standing.
-///
-/// The finished expression therefore keeps the scope, the dialect constraints,
-/// and the aggregation marker of every operand instead of degrading into a
-/// constant.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CaseBuilder<T, Branches = NoBranches, Scope = (), Aggr = Aggregate, D = ()> {
-    branches: Vec<CaseBranch>,
-    else_branch: Option<ExprKind>,
-    _marker: CaseMarker<T, Branches, Scope, Aggr, D>,
-}
-
-impl<T> CaseBuilder<T, NoBranches, (), Aggregate, ()> {
-    pub(super) fn new() -> Self {
-        Self {
-            branches: Vec::new(),
-            else_branch: None,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T, Branches, Scope, Aggr, D> CaseBuilder<T, Branches, Scope, Aggr, D> {
-    /// Appends a `WHEN condition THEN result` branch.
-    ///
-    /// The branch folds the aggregation markers of both the condition and the
-    /// result into the marker of the whole expression, so a branch reading a
-    /// bare column makes the expression per-row while a branch over aggregates
-    /// keeps it an aggregate.
-    #[allow(clippy::type_complexity)]
-    pub fn when<ConditionScope, ConditionAggr, ConditionD, V>(
-        mut self,
-        condition: Expr<bool, ConditionScope, ConditionAggr, ConditionD>,
-        result: V,
-    ) -> CaseBuilder<
-        T,
-        HasBranches,
-        Merged<Merged<Scope, ConditionScope>, V::Scope>,
-        CombinedAggr<CombinedAggr<Aggr, ConditionAggr, ConditionScope>, V::Aggr, V::Scope>,
-        MergedDialect<MergedDialect<D, ConditionD>, V::Dialect>,
-    >
-    where
-        Scope: MergeScope<ConditionScope>,
-        Merged<Scope, ConditionScope>: MergeScope<V::Scope>,
-        Aggr: CombineAggr<ConditionAggr, ConditionScope>,
-        CombinedAggr<Aggr, ConditionAggr, ConditionScope>: CombineAggr<V::Aggr, V::Scope>,
-        D: MergeDialect<ConditionD>,
-        MergedDialect<D, ConditionD>: MergeDialect<V::Dialect>,
-        V: FunctionOperand<T>,
-    {
-        self.branches.push(CaseBranch {
-            condition: condition.into_kind(),
-            result: result.into_operand_kind(),
-        });
-        CaseBuilder {
-            branches: self.branches,
-            else_branch: self.else_branch,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Sets the `ELSE` fallback rendered when no branch matches.
-    ///
-    /// The fallback folds its own aggregation marker into the marker of the
-    /// whole expression, exactly as a branch result does.
-    #[allow(clippy::type_complexity)]
-    pub fn else_<V>(
-        mut self,
-        value: V,
-    ) -> CaseBuilder<
-        T,
-        Branches,
-        Merged<Scope, V::Scope>,
-        CombinedAggr<Aggr, V::Aggr, V::Scope>,
-        MergedDialect<D, V::Dialect>,
-    >
-    where
-        Scope: MergeScope<V::Scope>,
-        Aggr: CombineAggr<V::Aggr, V::Scope>,
-        D: MergeDialect<V::Dialect>,
-        V: FunctionOperand<T>,
-    {
-        self.else_branch = Some(value.into_operand_kind());
-        CaseBuilder {
-            branches: self.branches,
-            else_branch: self.else_branch,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<T, Scope, Aggr, D> CaseBuilder<T, HasBranches, Scope, Aggr, D> {
-    /// Finalises the expression.
-    pub fn end(self) -> Expr<T, Scope, Aggr, D> {
-        Expr::new(ExprKind::Case {
-            branches: self.branches,
-            else_branch: self.else_branch.map(Box::new),
-        })
-    }
 }
 
 impl Expr<i64> {
