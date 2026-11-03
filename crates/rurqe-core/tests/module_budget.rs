@@ -57,9 +57,6 @@ const EXPECTED_EXCEPTIONS: &[&str] = &[
     // The connection gate: target detection, the transport policy, and the
     // spellings it classifies.
     "crates/rurqe-cli/src/cli/connection.rs",
-    // The grouped query builder together with the grouped projections it
-    // accepts.
-    "crates/rurqe-core/src/query/group_by.rs",
     // The `SqlType` derive: every storage mode and the impls it emits.
     "crates/rurqe-macros/src/sql_type.rs",
     // The versioned `schema.lock` DTOs together with their round-trip tests.
