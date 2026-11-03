@@ -60,9 +60,6 @@ const EXPECTED_EXCEPTIONS: &[&str] = &[
     // The grouped query builder together with the grouped projections it
     // accepts.
     "crates/rurqe-core/src/query/group_by.rs",
-    // The pre-flight validation facade: the error catalogue and the relation
-    // registry its submodules report through.
-    "crates/rurqe-core/src/query/validate.rs",
     // The statement rules the pre-flight validator applies.
     "crates/rurqe-core/src/query/validate/rules.rs",
     // The `SqlType` derive: every storage mode and the impls it emits.
