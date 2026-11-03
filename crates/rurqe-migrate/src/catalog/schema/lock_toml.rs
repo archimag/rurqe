@@ -221,7 +221,6 @@ struct IndexLock {
     /// Whether the index is declared `UNIQUE`.
     unique: bool,
     /// The access method (e.g. `btree`), if specified.
-    /// The access method (e.g. `btree`), if specified.
     ///
     /// The three optional keys are skipped when absent rather than rendered as
     /// null, which TOML cannot represent; the reader treats an absent key and

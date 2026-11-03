@@ -46,7 +46,6 @@ What differs is what an engine can declare, and the difference survives into the
 - PostgreSQL carries a native type for a UUID, a native document type (`json` and `jsonb`), an array type (`T[]`), and an enum created with `CREATE TYPE … AS ENUM`. Each of them is a column type the server validates.
 - SQLite has storage classes and type affinity. The introspector maps a declared type onto the shared kinds, recovers an enum from a `CHECK (col IN (...))` constraint, and reads a document as JSON text rather than as a type of its own. The engine has no array column type, so a catalog it produces describes no array column.
 - A document operation follows the same split: `@>` and `?` are defined for `jsonb` alone, while `->` and `->>` read either kind, so a column states its kind through `PgJsonb` or `PgJson` and only the operators that kind supports are offered; SQLite evaluates a document through its JSON functions, which is also how a nested collection is assembled there.
-A document operation follows the same split: `@>`, `?`, `->`, and `->>` are operators of the PostgreSQL document type, while SQLite evaluates a document through its JSON functions, which is also how a nested collection is assembled there.
 
 ## Engine Extensions
 
