@@ -247,9 +247,17 @@ fn render_record(table: &TablePlan<'_>, options: &CodegenOptions) -> String {
         out.push_str(&column.field_ident);
         out.push_str(": FromSqlValue::from_sql_value(\n");
         out.push_str("                values\n");
-        out.push_str("                    .get(");
-        out.push_str(&index.to_string());
-        out.push_str(")\n");
+        // A read at the first index is spelled `.first()` instead of `.get(0)`,
+        // so a user workspace denying warnings under `clippy::get_first` accepts
+        // the generated module without an allow attribute; every later column
+        // keeps its positional read.
+        if index == 0 {
+            out.push_str("                    .first()\n");
+        } else {
+            out.push_str("                    .get(");
+            out.push_str(&index.to_string());
+            out.push_str(")\n");
+        }
         out.push_str("                    .ok_or(RowDecodeError::ArityMismatch {\n");
         out.push_str("                        expected: ");
         out.push_str(&arity);
@@ -309,7 +317,8 @@ mod tests {
         assert!(code.contains("RowDecodeError::ArityMismatch"));
         // The generated row reader never indexes the slice directly, so a short
         // response reports `ArityMismatch` instead of panicking.
-        assert!(code.contains("values\n                    .get(0)"));
+        assert!(code.contains("values\n                    .first()"));
+        assert!(!code.contains(".get(0)"));
         assert!(!code.contains("values["));
     }
 

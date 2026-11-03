@@ -44,7 +44,7 @@ impl FromRow for UsersRecord {
         Ok(Self {
             email: FromSqlValue::from_sql_value(
                 values
-                    .get(0)
+                    .first()
                     .ok_or(RowDecodeError::ArityMismatch {
                         expected: 3,
                         actual: values.len(),
@@ -109,7 +109,7 @@ schema!(
                     Ok(Self {
                         expires_at: FromSqlValue::from_sql_value(
                             values
-                                .get(0)
+                                .first()
                                 .ok_or(RowDecodeError::ArityMismatch {
                                     expected: 3,
                                     actual: values.len(),
