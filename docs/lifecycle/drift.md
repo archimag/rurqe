@@ -104,7 +104,7 @@ cargo rurqe stage verify --scratch-url :memory: --schema app
 When the configuration file already names the schemas, the flags are unnecessary.
 A selection that describes nothing is reported rather than certified: the warning
 travels in the output of a gate that passes and inside the failure of a gate that
-rejects, after its findings, so a wrong `--schema` is recognizable from the gate's
+rejects, after its findings, so a wrong `--schema` is recognisable from the gate's
 own output instead of surfacing only as relations the catalog claims to miss.
 A malformed `rurqe.toml` aborts either command instead of being partially applied.
 

@@ -6,7 +6,7 @@ module declaring one marker per table and one marker per column, each carrying
 the Rust type the column decodes into, so a query addresses a schema the
 database actually has rather than a schema somebody remembered to update.
 
-A normalized snapshot of the same catalog is written into the artifact directory
+A normalised snapshot of the same catalog is written into the artifact directory
 as `rurqe/schema.lock`, and the generated module embeds the digest of that catalog
 as `SCHEMA_HASH`. The two artifacts are therefore two views of one catalog, and a
 module that no longer matches its snapshot is detectable without opening a

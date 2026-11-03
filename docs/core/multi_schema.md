@@ -39,7 +39,7 @@ The schema name is written once, on the head of the block, and `schema!` attache
 
 The macro establishes both Rust namespaces simultaneously:
 
-* **Value namespace:** Synthesizes a zero-sized struct `Auth` and a constant `pub const Auth: Auth = Auth { ... };`, providing dot-accessible table markers in PascalCase (`Auth.Sessions`).
+* **Value namespace:** Synthesises a zero-sized struct `Auth` and a constant `pub const Auth: Auth = Auth { ... };`, providing dot-accessible table markers in PascalCase (`Auth.Sessions`).
 * **Type namespace:** Generates a submodule `pub mod auth { ... }` matching standard module naming conventions, exposing unit structs as types for function signatures and trait implementations (`auth::Sessions`, `auth::SessionsId`).
 
 Supporting items belonging to the schema — such as records, domain enums, or table aliases — are declared in an optional `@items { ... }` block, which is expanded verbatim inside the generated module.

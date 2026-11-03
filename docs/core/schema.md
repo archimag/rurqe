@@ -16,7 +16,7 @@ Each invocation declares exactly one table and ends with a semicolon, so a decla
 
 RURQE supports two addressing styles for table columns:
 
-* **Standalone Column Markers (`UserId`):** Used in queries referencing a single relation, minimizing syntactic noise.
+* **Standalone Column Markers (`UserId`):** Used in queries referencing a single relation, minimising syntactic noise.
 * **Table-Prefixed Columns (`User.UserId`):** Used when disambiguating columns across multiple joined tables or aliases.
 
 Both forms refer to the identical zero-sized marker, generate identical SQL AST nodes, and compile with zero runtime overhead:
@@ -50,7 +50,7 @@ Wrapping a type in `Option<T>` marks the column as nullable in the schema. In ad
 
 While `table!` is ideal for tests, rapid prototyping, and self-contained examples, production applications generate schema definitions directly from the live database catalog via `rurqe-cli`:
 
-* `cargo rurqe codegen`: Introspects tables, views, primary keys, foreign keys, enums, and nullability, outputting a typed `schema.rs` and writing the normalized catalog snapshot to `schema.lock`.
-* `cargo rurqe verify`: Verifies in CI that migrations, the database catalog, and the generated schema code remain completely synchronized.
+* `cargo rurqe codegen`: Introspects tables, views, primary keys, foreign keys, enums, and nullability, outputting a typed `schema.rs` and writing the normalised catalog snapshot to `schema.lock`.
+* `cargo rurqe verify`: Verifies in CI that migrations, the database catalog, and the generated schema code remain completely synchronised.
 
 In a real project the markers are not written by hand: `cargo rurqe codegen` introspects the live database catalog and generates a `schema.rs` with the same unit structs, the `SCHEMA_HASH` constant, and DTO structs. The catalog snapshot is fixed in `schema.lock`, and `cargo rurqe verify` in CI checks that the code, the migrations, and the database have not drifted apart. The snapshot and the generated module cover every schema the project declares: the relations of the primary schema stay flat items of the module, while the relations of every secondary schema are grouped into a `schema!` block. A hand-written `table!` remains the tool for tests and small projects, and the examples in this book use it.

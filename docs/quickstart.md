@@ -52,7 +52,7 @@ cargo rurqe codegen --database-url postgres://app@localhost:5432/app
 The command introspects the declared schemas and writes two artifacts from one catalog:
 
 * the marker module at `src/schema.rs` — one marker per table and one marker per column, each carrying the Rust type the column decodes into, so a query addresses a relation the database actually has;
-* the snapshot `rurqe/schema.lock` beneath the artifact directory, which is the normalized catalog the lifecycle compares against.
+* the snapshot `rurqe/schema.lock` beneath the artifact directory, which is the normalised catalog the lifecycle compares against.
 
 The module embeds the digest of the catalog as `SCHEMA_HASH`, so the code and the snapshot it was generated from stay provably in step, and a module that no longer matches its snapshot is detectable without opening a database. For a `users` table of three columns the module declares the table, its columns, and the digest it was generated from:
 
@@ -72,7 +72,7 @@ The generated module is a schema declaration like a hand-written one: a table an
 {{#rustdoc_include examples/quickstart.rs:query}}
 ```
 
-Assembling the chain opens no connection. Execution happens at the terminal call alone (`.fetch_all(&pool).await?`), which decodes every row into a synthesized record; the chain that builds the statement is the same for the blocking drivers, and only the terminal call differs.
+Assembling the chain opens no connection. Execution happens at the terminal call alone (`.fetch_all(&pool).await?`), which decodes every row into a synthesised record; the chain that builds the statement is the same for the blocking drivers, and only the terminal call differs.
 
 A projection names its items, so a fetched row is read by those names rather than by a position in the row:
 

@@ -34,7 +34,7 @@ The boundary between application code and a relational database typically suffer
 2. **Untyped SQL strings:** Raw strings bypass the compiler. Typos in column identifiers, omitted joins, or invalid nullability expectations remain invisible until execution.
 3. **Loss of type guarantees:** Relational structures are flattened into tuples or weakly typed rows, losing provenance and nullability invariants.
 
-RURQE resolves these challenges using compiler checks, zero-cost monomorphized abstractions, and deterministic catalog introspection. A query written through the typed DSL passes both validation gates before it is dispatched; a statement issued through the raw SQL escape hatches (`sql!`, `raw_sql!`) bypasses them by design, and its failures surface as typed execution errors at runtime.
+RURQE resolves these challenges using compiler checks, zero-cost monomorphised abstractions, and deterministic catalog introspection. A query written through the typed DSL passes both validation gates before it is dispatched; a statement issued through the raw SQL escape hatches (`sql!`, `raw_sql!`) bypasses them by design, and its failures surface as typed execution errors at runtime.
 
 ## The Four Architectural Pillars
 
@@ -42,7 +42,7 @@ RURQE unifies four foundational design principles into a cohesive developer expe
 
 * **Query DSL Ergonomics:**
   * Pinned dialect preludes (`use rurqe::postgres::prelude::*;`) and value-based table markers (`select_from(User)`) eliminate generic parameters and turbofish syntax from application queries.
-  * Named projection macros (`select!`, `cols!`, `dto!`) synthesize typed row records directly from column definitions, avoiding positional tuple indexing.
+  * Named projection macros (`select!`, `cols!`, `dto!`) synthesise typed row records directly from column definitions, avoiding positional tuple indexing.
   * Editor tooling such as `rust-analyzer` provides full completion, type hints, and rename refactoring without requiring an active database server.
 * **Relational Depth:**
   * The live database catalog serves as the single source of truth for schema definitions and generated column markers.
@@ -50,12 +50,12 @@ RURQE unifies four foundational design principles into a cohesive developer expe
   * Mathematically sound nullability propagation: columns participating in `LEFT JOIN` or outer joins are automatically lifted to `Option<T>` at compile time.
 * **Lifecycle Integrity:**
   * Dual lifecycle workflows: classic sequential migrations (`V...`, `R...` scripts with SHA-256 audit trails), or stage-based schema evolution, where a declarative stage holds the complete target DDL and an active migration tail advances databases that already hold data.
-  * Instant cold-start initialization: clean environments initialize directly from declarative schema DDL (`schema/`) in milliseconds.
+  * Instant cold-start initialisation: clean environments initialise directly from declarative schema DDL (`schema/`) in milliseconds.
   * Cryptographic checkpoint markers (`checkpoint.toml`) anchor migration tails and permit pruning historical migrations without rewriting baselines.
   * Continuous verification that the declarative stage and the migration tail produce the same catalog catches schema divergence in CI.
   * Both routes run from application code: the migration protocol and the catalog introspection of an engine live in its driver crate behind a `migrate` feature, so a binary applies the artifacts it bakes into itself over the connection it already holds — the command line is a convenience for the working loop, never a prerequisite.
 * **Compile-Time Soundness and Zero-Cost Guarantees:**
-  * Monomorphized builders compile down to static SQL string buffers and direct deserialization passes with zero virtual calls or runtime overhead.
+  * Monomorphised builders compile down to static SQL string buffers and direct deserialisation passes with zero virtual calls or runtime overhead.
   * Dialect and version capability traits (`SupportsReturning`, `SupportsOnConflict`, `SupportsRowLocking`) enforce engine-specific syntax at compile time; unsupported methods do not exist on incompatible dialect targets.
   * Actionable compiler diagnostics via `#[diagnostic::on_unimplemented]` explain violated SQL rules directly rather than exposing internal trait cascades.
 
@@ -66,7 +66,7 @@ RURQE unifies four foundational design principles into a cohesive developer expe
   * **Tier 1 (compile time):** relation scope isolation, projection and `IN` subquery typing, outer-join nullability lifted to `Option<T>`, the typestates of a statement (a `SELECT` without a projection, an `UPDATE` without `SET`, an unfiltered `UPDATE` or `DELETE`), the projection rules of a grouped query, and dialect and version capability gates. A violation does not compile.
   * **Tier 2 (pre-flight in `.build()`):** the rules that need a negative assertion (a relation must be *absent* from the scope) or the alignment of a clause with another one written later in the chain. Among them: an unaliased duplicate relation, the leading `ORDER BY` prefix of `DISTINCT ON`, the `ORDER BY` coverage of `DISTINCT`, the ordering targets of a compound statement, and an aggregate projected alongside a bare column without `GROUP BY`. A violation returns `Err(BuildError)` instead of a statement, before any network I/O.
 * **Native or Nothing:** Engine features that cannot be expressed natively are not simulated with synthetic runtime workarounds. If a database engine lacks a capability (such as row-level locking on SQLite), the builder method does not exist.
-* **Zero Cost:** Monomorphized query chains and zero-sized markers compile directly to parameterized SQL strings and zero-allocation decoders without virtual dispatch or garbage collection.
+* **Zero Cost:** Monomorphised query chains and zero-sized markers compile directly to parameterised SQL strings and zero-allocation decoders without virtual dispatch or garbage collection.
 * **Panic-Free Architecture:** Fallible operations consistently return typed errors (`Result<T, E>`), distinguishing build validation failures (`BuildError`), decoding mismatches (`RowDecodeError`), and backend failures (`ExecutionError`).
 
 ## Practical Guarantees
@@ -76,4 +76,4 @@ RURQE unifies four foundational design principles into a cohesive developer expe
 * Mutation statements (`UPDATE`, `DELETE`) require a filter predicate (`.where_(...)`) or an explicit `.allow_all()` call before they can be compiled or executed.
 * Clauses unsupported by the active dialect or version do not exist on the query builder and are rejected at compile time.
 * Ambiguous queries containing colliding unaliased table names are rejected prior to network transmission during `.build()`.
-* Schema definitions and Rust structs remain synchronized via deterministic catalog hashing (`schema.lock`) and automated verification.
+* Schema definitions and Rust structs remain synchronised via deterministic catalog hashing (`schema.lock`) and automated verification.
