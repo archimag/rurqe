@@ -1,9 +1,8 @@
 use super::*;
 use crate::checksum::Checksum;
 
-// Declared in the canonical column order the snapshot sorts into
-// (`email` precedes `id`), so a reparsed snapshot equals a catalog
-// built from this fixture.
+// Declared in the order the snapshot sorts into (`email` precedes `id`), so
+// the round trips below reproduce this declaration.
 fn users() -> TableDef {
     TableDef::new(
         "users",
@@ -35,16 +34,18 @@ fn orders() -> TableDef {
 
 #[test]
 fn lock_renders_tables_columns_and_keys() {
-    // Declared out of the canonical order, so the equality proves the writer
-    // applied it: the reparsed snapshot equals the canonically declared
-    // catalog that rendered it.
+    // Declared out of the canonical order, so the rendered text proves the
+    // writer applied it and the reader reproduces that canonical order.
     let catalog = SchemaCatalog::new(vec![users(), orders()]);
     let canonical = SchemaCatalog::new(vec![orders(), users()]);
 
     let lock = catalog.to_lock();
 
     assert!(lock.starts_with("version = 5"), "got: {lock}");
-    assert_eq!(SchemaCatalog::from_lock(&lock).unwrap(), canonical);
+    assert_eq!(lock, canonical.to_lock());
+    let reparsed = SchemaCatalog::from_lock(&lock).unwrap();
+    assert_eq!(reparsed.tables[0].name, "orders");
+    assert_eq!(reparsed, canonical);
 }
 
 #[test]
@@ -70,6 +71,7 @@ fn lock_is_independent_of_declaration_order() {
 
     assert_eq!(catalog.to_lock(), canonical.to_lock());
     assert_eq!(catalog.schema_hash(), canonical.schema_hash());
+    assert_eq!(catalog, canonical);
 }
 
 #[test]
@@ -202,8 +204,8 @@ fn from_lock_round_trips_the_canonical_snapshot() {
 fn numeric_columns_round_trip_through_the_lock() {
     let catalog = SchemaCatalog::new(vec![TableDef::new(
         "invoices",
-        // Declared in the canonical order the snapshot sorts columns into,
-        // so the reparsed catalog equals the one that rendered it.
+        // Declared in the order the snapshot sorts into, so the round trip
+        // reproduces this declaration.
         vec![
             ColumnDef::new("discount", TypeKind::Numeric, true),
             ColumnDef::new("total", TypeKind::Numeric, false).with_default("0"),
@@ -456,8 +458,8 @@ fn quoted_defaults_survive_quotes_backslashes_and_line_breaks() {
 
 #[test]
 fn snapshots_round_trip_checks_views_triggers_and_index_attributes() {
-    // Declared in the canonical order the writer sorts into, so the reparsed
-    // snapshot equals the catalog that rendered it.
+    // Declared in the order the writer sorts into, so the round trip
+    // reproduces this declaration.
     let catalog = SchemaCatalog::new(vec![
         TableDef::new(
             "orders",
@@ -696,6 +698,68 @@ fn the_schema_layer_belongs_to_the_snapshot() {
     // into different snapshots and therefore different hashes.
     assert_ne!(attributed.to_lock(), flat.to_lock());
     assert_ne!(attributed.schema_hash(), flat.schema_hash());
+}
+
+#[test]
+fn equality_ignores_declaration_order() {
+    // The two catalogs describe one schema: only the order their entities were
+    // declared in differs, and that order is not part of the schema.
+    let mut declared = SchemaCatalog::new(vec![orders(), users()]);
+    declared.enums = vec![
+        EnumDef::new("colour", vec!["red".to_owned()]),
+        EnumDef::new("mood", vec!["happy".to_owned(), "sad".to_owned()]),
+    ];
+
+    let mut reordered = declared.clone();
+    reordered.enums.reverse();
+    reordered.tables.reverse();
+    for table in &mut reordered.tables {
+        table.columns.reverse();
+    }
+
+    assert_eq!(reordered, declared);
+    assert_eq!(reordered.schema_hash(), declared.schema_hash());
+    assert_eq!(reordered.to_lock(), declared.to_lock());
+}
+
+#[test]
+fn equality_follows_the_canonical_encoding() {
+    let catalog = SchemaCatalog::new(vec![orders(), users()]);
+
+    let mut renamed = catalog.clone();
+    renamed.tables[0].name = "accounts".to_owned();
+    assert_ne!(renamed, catalog);
+
+    let mut nullable = catalog.clone();
+    let column = &mut nullable.tables[0].columns[0];
+    column.nullable = !column.nullable;
+    assert_ne!(nullable, catalog);
+
+    let mut attributed = catalog.clone();
+    attributed.tables[0].schema = Some("tenant".to_owned());
+    assert_ne!(attributed, catalog);
+
+    let mut defaulted = catalog.clone();
+    defaulted.tables[1].columns[0].default = Some("'unknown'".to_owned());
+    assert_ne!(defaulted, catalog);
+
+    assert_eq!(SchemaCatalog::default(), SchemaCatalog::new(Vec::new()));
+}
+
+#[test]
+fn equality_keeps_the_order_that_carries_meaning() {
+    // An enum type is defined by the order of its labels, so a catalog whose
+    // labels were declared in the opposite order describes a different type.
+    let ordered = SchemaCatalog::default().with_enums(vec![EnumDef::new(
+        "mood",
+        vec!["happy".to_owned(), "sad".to_owned()],
+    )]);
+
+    let mut reversed = ordered.clone();
+    reversed.enums[0].variants.reverse();
+
+    assert_ne!(reversed, ordered);
+    assert_ne!(reversed.schema_hash(), ordered.schema_hash());
 }
 
 #[test]

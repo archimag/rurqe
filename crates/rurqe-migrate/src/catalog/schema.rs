@@ -10,7 +10,16 @@ mod lock_toml;
 mod parser;
 
 /// The complete schema of a database as an engine-neutral catalog.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Two catalogs compare equal exactly when they describe the same schema,
+/// whatever order their entities were declared in: equality is decided by the
+/// canonical byte encoding that [`checksum`](Self::checksum) digests, so two
+/// catalogs are equal precisely when their [`schema_hash`](Self::schema_hash)
+/// values are. The orders that carry meaning — the labels of an enum, the
+/// columns of a primary key, the column pairs of a foreign key, and the columns
+/// of an index — stay part of the comparison, exactly as they stay part of the
+/// digest.
+#[derive(Debug, Clone, Default)]
 pub struct SchemaCatalog {
     /// The tables of the schema.
     pub tables: Vec<TableDef>,
@@ -21,6 +30,14 @@ pub struct SchemaCatalog {
     /// The triggers declared by the database.
     pub triggers: Vec<TriggerDef>,
 }
+
+impl PartialEq for SchemaCatalog {
+    fn eq(&self, other: &Self) -> bool {
+        super::digest::encode(self) == super::digest::encode(other)
+    }
+}
+
+impl Eq for SchemaCatalog {}
 
 impl SchemaCatalog {
     /// Creates a catalog from the given tables and no enum types, views, or triggers.
