@@ -507,3 +507,53 @@ fn a_projection_written_after_a_grouped_list_is_reported() {
         );
     }
 }
+
+#[test]
+fn attributes_that_do_not_remove_the_field_stay_accepted() {
+    let item: ProjectionItem =
+        parse_str("#[doc = \"identifier\"] #[allow(dead_code)] users::ID")
+            .expect("descriptive attributes are carried onto the field");
+
+    assert_eq!(item.attrs.len(), 2);
+    assert_eq!(item.field_ident().expect("named"), "id");
+}
+
+#[test]
+fn an_attribute_that_compiles_the_field_away_is_rejected() {
+    for source in [
+        "#[cfg(feature = \"extra\")] users::ID",
+        "#[cfg_attr(feature = \"extra\", doc = \"identifier\")] users::NAME",
+    ] {
+        let error = parse_str::<ProjectionItem>(source)
+            .expect_err("the attribute would remove the projected field");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("cannot be written on a projection"),
+            "unexpected message for `{source}`: {message}"
+        );
+        assert!(
+            message.contains("guard the whole"),
+            "no remedy in `{source}`: {message}"
+        );
+    }
+}
+
+#[test]
+fn field_removing_attributes_are_rejected_inside_a_projection_list() {
+    let error = parse_str::<ProjectionList>("users::ID, #[cfg(feature = \"extra\")] users::EMAIL")
+        .expect_err("the attribute would remove the projected field");
+
+    assert!(
+        error.to_string().contains("cannot be written on a projection"),
+        "unexpected message: {error}"
+    );
+
+    let error = parse_braced_body("{ #[cfg_attr(test, doc = \"identifier\")] users::EMAIL }")
+        .expect_err("the attribute would remove the projected field");
+
+    assert!(
+        error.to_string().contains("cannot be written on a projection"),
+        "unexpected message: {error}"
+    );
+}

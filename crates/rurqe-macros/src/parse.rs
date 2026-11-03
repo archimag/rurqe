@@ -93,6 +93,14 @@ impl ProjectionTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectionItem {
     /// Outer attributes attached to the projection item (if any).
+    ///
+    /// The attributes are carried onto the record field of the same name, so a
+    /// `#[doc]` comment or a lint level describes the field it was written for.
+    /// An attribute that compiles the field away (`#[cfg]`, or a `#[cfg_attr]`
+    /// that expands to it) is rejected while the item is parsed: the projection
+    /// list fixes the row arity and the nested-row keys of the record, so a
+    /// conditional field would leave the generated decode naming a field the
+    /// configuration removed.
     pub attrs: Vec<Attribute>,
     /// The projected column or expression.
     pub target: ProjectionTarget,
@@ -142,6 +150,7 @@ impl ProjectionItem {
 impl Parse for ProjectionItem {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let attrs = input.call(Attribute::parse_outer)?;
+        reject_field_removing_attributes(&attrs)?;
 
         // Collect the raw item tokens up to the next top-level comma, so an
         // `as alias` suffix is distinguished from a Rust cast expression.
@@ -165,6 +174,43 @@ impl Parse for ProjectionItem {
         })
     }
 }
+
+/// Rejects an attribute that would compile the projected field away.
+///
+/// The projection list fixes the record the macros emit: the decode reads one
+/// field per projection, the arity guard counts them, and `MultisetRow::FIELDS`
+/// publishes one key per field. `#[cfg]` — and a `#[cfg_attr]` that expands to
+/// it — would drop the field from the declaration while those arms keep naming
+/// it, so the emitted code would stop compiling inside the expansion on the
+/// configuration that removed the field. The attribute is rejected here
+/// instead, where the offending projection and its remedy can be named.
+fn reject_field_removing_attributes(attrs: &[Attribute]) -> syn::Result<()> {
+    for attr in attrs {
+        let Some(segment) = attr.path().segments.last() else {
+            continue;
+        };
+        let label = segment.ident.to_string();
+        let name = label.strip_prefix("r#").unwrap_or(&label);
+
+        if !matches!(name, "cfg" | "cfg_attr") {
+            continue;
+        }
+
+        return Err(syn::Error::new_spanned(
+            attr,
+            format!(
+                "`#[{name}]` cannot be written on a projection: the projection list fixes the \
+                 decoded row arity and the nested-row JSON keys, so a field compiled away \
+                 would leave the generated decode naming a field that does not exist; guard \
+                 the whole `select!` or `dto!` invocation with the attribute instead, so \
+                 every configuration projects a complete list"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Collects the item body tokens up to the next top-level comma.
 ///
 /// A comma between two projections separates them, while a comma inside a
