@@ -93,6 +93,7 @@ A finished statement also participates in a query without being given a name of 
 | a named statement the query reads (`WITH`) | `.as_cte::<Marker>()` and `.with(...)` |
 | a statement used as a relation in the join list | `.as_table::<Marker>()` and `.inner_join_subquery(...)` / `.left_join_subquery(...)` |
 | a statement evaluated for every row it is joined with | `.as_lateral::<Marker>()` and `.cross_join_lateral(...)` / `.left_join_lateral(...)` |
+
 ```rust,no_run
 {{#rustdoc_include ../examples/cte.rs:derived}}
 ```
@@ -116,6 +117,7 @@ A left-joined derived table lifts its columns to `Option<T>` exactly like a left
 `total_spent` arrives as `Option<f64>` there, because the aggregate produces one row per user that has orders and the left join leaves every other user without a match.
 
 `LATERAL` is a dialect capability: PostgreSQL supports it, SQLite does not, so the methods do not exist there at compile time.
+
 ## Dialect capability gates
 
 | Feature | PostgreSQL | SQLite |
@@ -127,7 +129,8 @@ A left-joined derived table lifts its columns to `Option<T>` exactly like a left
 | `LATERAL`, `LEFT JOIN LATERAL` | every declared version | never |
 | `WITH RECURSIVE` | not offered | not offered |
 
-`LATERAL` is gated by a dialect capability, so on SQLite the methods that take a lateral relation do not exist and the compiler refuses the call instead of the engine refusing the statement. A recursive `WITH` is not part of the API, receives no builder method, and is unavailable.
+`LATERAL` is gated by a dialect capability, so on SQLite the methods that take a lateral relation do not exist and the compiler refuses the call instead of the engine refusing the statement.
+
 ## Compile-time and typestate guards
 
 - Rows are published only by a statement that projects them: `as_cte`, `as_table`, and `as_lateral` do not exist on a query without a projection, so a relation can never be named after a statement that would render `SELECT  FROM ...`.
