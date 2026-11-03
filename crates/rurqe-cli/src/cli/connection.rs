@@ -35,18 +35,64 @@ use crate::target::{DatabaseTarget, TargetError};
 use super::error::{CliCause, CliError, TransportRefusal};
 use super::redact::{host_name, redact_database_url};
 
+/// The environment variable a command falls back to when its flag names no target.
+const DATABASE_URL_VARIABLE: &str = "DATABASE_URL";
+
 /// Resolves the target database URL from the flag or the `DATABASE_URL` environment variable.
+///
+/// The flag wins over the environment, and the environment is read only when the
+/// invocation named no target: a variable the command never consults cannot refuse
+/// it. A variable that is present but not valid UTF-8 travels as its own failure
+/// from [`environment_database_url`] instead of being folded into the "nothing
+/// supplied" answer, so the diagnostic never claims that no target was configured
+/// for a target that is configured.
 pub(super) fn resolve_database_url(supplied: Option<String>) -> Result<String, CliError> {
-    supplied
-        .or_else(|| std::env::var("DATABASE_URL").ok())
+    let resolved = match supplied {
+        Some(url) => Some(url),
+        None => environment_database_url()?,
+    };
+
+    resolved
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
-            CliError::message(
+            CliError::message(format!(
                 "no database URL provided: pass `--database-url <url>` or set the \
-                 DATABASE_URL environment variable"
-                    .to_owned(),
-            )
+                 {DATABASE_URL_VARIABLE} environment variable"
+            ))
         })
+}
+
+/// Reads `DATABASE_URL`, keeping an absent variable apart from an undecodable one.
+///
+/// `std::env::var` reports `VarError::NotUnicode` for a variable the platform can
+/// represent but Unicode cannot, so reducing the read to `Option` — the shape
+/// `.ok()` produces — would state that nothing was configured while the variable is
+/// set. The crate keeps the same distinction on the argument surface, where
+/// `arguments_to_utf8` rejects a non-UTF-8 argument by position instead of
+/// panicking during collection; this is the environment half of it. The value is
+/// never echoed and never rewritten into replacement characters, because a
+/// connection string may carry credentials.
+pub(super) fn environment_database_url() -> Result<Option<String>, CliError> {
+    classify_database_url(std::env::var(DATABASE_URL_VARIABLE))
+}
+
+/// Classifies what reading `DATABASE_URL` answered.
+///
+/// The classification is separated from the read so both answers of the
+/// environment — decodable, and present but undecodable — are covered without a
+/// test mutating the process environment the rest of the suite shares.
+fn classify_database_url(
+    read: Result<String, std::env::VarError>,
+) -> Result<Option<String>, CliError> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CliError::message(format!(
+            "the `{DATABASE_URL_VARIABLE}` environment variable is not valid UTF-8: set it to \
+             UTF-8 text, since a database URL carrying raw bytes is rejected rather than \
+             rewritten"
+        ))),
+    }
 }
 
 /// A live database connection opened from a URL or filesystem path.
@@ -835,13 +881,47 @@ mod tests {
         assert_eq!(TlsDemandingMode::VerifyCa.libpq_spelling(), "verify-ca");
         assert_eq!(TlsDemandingMode::VerifyFull.libpq_spelling(), "verify-full");
         assert_eq!(
-            TlsDemandingMode::ALL,
-            [
-                TlsDemandingMode::Require,
-                TlsDemandingMode::VerifyCa,
-                TlsDemandingMode::VerifyFull
-            ]
+            TlsDemandingMode::ALL.map(TlsDemandingMode::libpq_spelling),
+            ["require", "verify-ca", "verify-full"]
         );
+    }
+
+    /// A variable the process does not carry names no target at all, so the
+    /// resolution stays free to report that nothing was supplied.
+    #[test]
+    fn an_absent_variable_names_no_target() {
+        let read = classify_database_url(Err(std::env::VarError::NotPresent));
+        let absent = read.expect("an absent variable is not a failure");
+
+        assert_eq!(absent, None);
+    }
+
+    /// A variable the platform can represent but Unicode cannot is a failure
+    /// of its own: the resolution never claims that no target was configured,
+    /// which is exactly what reducing the read to `Option` used to fabricate.
+    #[test]
+    fn an_undecodable_variable_is_reported_instead_of_treated_as_unset() {
+        let undecodable = std::env::VarError::NotUnicode(std::ffi::OsString::new());
+        let read = classify_database_url(Err(undecodable));
+        let rejected = read.expect_err("the variable is set but unreadable");
+        let message = rejected.to_string();
+
+        assert!(message.contains("DATABASE_URL"), "got {message}");
+        assert!(message.contains("not valid UTF-8"), "got {message}");
+        assert!(
+            !message.contains("no database URL provided"),
+            "the diagnostic never claims the variable is unset: {message}"
+        );
+    }
+
+    /// A variable that decodes is the target it names, verbatim.
+    #[test]
+    fn a_decodable_variable_carries_the_target_it_names() {
+        let url = "postgres://app@db.internal:5432/app";
+        let read = classify_database_url(Ok(url.to_owned()));
+        let target = read.expect("a decodable variable is not a failure");
+
+        assert_eq!(target, Some(url.to_owned()));
     }
 
     #[test]

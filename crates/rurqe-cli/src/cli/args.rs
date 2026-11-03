@@ -275,7 +275,7 @@ pub(crate) fn resolve_equation_url(supplied: Option<String>) -> Result<String, C
 
 /// Resolves the server `stage cleanup` sweeps the abandoned scratch databases on.
 pub(crate) fn resolve_cleanup_url(supplied: Option<String>) -> Result<String, CliError> {
-    scratch_url(supplied).ok_or_else(|| {
+    scratch_url(supplied)?.ok_or_else(|| {
         CliError::message(
             "no scratch database URL provided: pass `--scratch-url <url>` (or \
              `--database-url <url>`, or set the DATABASE_URL environment variable); the sweep \
@@ -288,11 +288,17 @@ pub(crate) fn resolve_cleanup_url(supplied: Option<String>) -> Result<String, Cl
 /// Applies the shared precedence of a scratch database URL.
 ///
 /// The flag supplied by the caller wins over the `DATABASE_URL` environment
-/// variable, and a blank value names nothing at all.
-fn scratch_url(supplied: Option<String>) -> Option<String> {
-    supplied
-        .or_else(|| std::env::var("DATABASE_URL").ok())
-        .filter(|value| !value.trim().is_empty())
+/// variable, and a blank value names nothing at all. The environment is read only
+/// when the flag named no target, through the reader of the connection module, so
+/// a variable that is present but not valid UTF-8 is reported instead of being
+/// folded into the "nothing supplied" answer [`resolve_cleanup_url`] renders.
+fn scratch_url(supplied: Option<String>) -> Result<Option<String>, CliError> {
+    let resolved = match supplied {
+        Some(url) => Some(url),
+        None => super::connection::environment_database_url()?,
+    };
+
+    Ok(resolved.filter(|value| !value.trim().is_empty()))
 }
 
 /// Borrows the value following the flag at `*idx`, advancing past both.
