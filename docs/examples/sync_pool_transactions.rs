@@ -11,6 +11,18 @@ use rurqe::sqlite::rusqlite;
 
 /// Builds a one-connection pool over an in-memory database holding the table
 /// the blocks write to.
+///
+/// Both halves of that description are load-bearing. `r2d2_sqlite` opens a
+/// fresh `rusqlite::Connection` for every connection it manages, and an
+/// in-memory connection owns a private, empty database, so the schema created
+/// here exists on the single connection this pool holds and nowhere else.
+/// `.max_size(1)` is what makes every `transaction` checkout reuse that
+/// connection: a larger pool would hand a block a second, schema-less
+/// database, and a connection the pool discards — one whose health check
+/// fails — is replaced by a fresh, empty one for the same reason. A pool that
+/// needs several connections over in-memory SQLite shares one database
+/// through a named memory URI instead; this example keeps one connection
+/// exactly because it does not.
 fn account_pool() -> SqlitePool<SqliteConnectionManager> {
     let pool = SqlitePool::new(
         r2d2::Pool::builder()
