@@ -16,11 +16,16 @@
 //! The guard reads source text only and never compiles anything: compiling
 //! the targets is the job of `cargo check --workspace --all-targets` in the
 //! same pipeline.
+//!
+//! The anchor grammar comes from `rurqe_examples::anchors`, which classifies
+//! every marker once, so the inclusion checks and the pairing check of this
+//! guard cannot disagree about what an anchor line is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rurqe_examples::anchors::{self, AnchorLine};
 use serde::Deserialize;
 
 /// The directive tag every chapter inclusion starts with.
@@ -120,17 +125,19 @@ fn registered_example_names() -> Vec<String> {
 
 /// Anchor regions one example file declares: every `// ANCHOR: <name>` line.
 ///
-/// The closing `// ANCHOR_END: <name>` marker shares no prefix with the
-/// opening one, so a single prefix test cannot mistake it for a declaration.
+/// The classification comes from `rurqe_examples::anchors`, the grammar the
+/// crate publishes, so this inclusion check and `check_anchor_pairing` below
+/// read one spelling of a marker. A malformed directive declares no region:
+/// the pairing check reports it instead, rather than the two checks
+/// disagreeing about whether the marker exists at all.
 fn declared_anchors(path: &Path) -> Vec<String> {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("example file {path:?} is not readable: {error}"));
     source
         .lines()
-        .filter_map(|line| {
-            line.trim()
-                .strip_prefix("// ANCHOR: ")
-                .map(|name| name.trim().to_owned())
+        .filter_map(|line| match anchors::classify(line) {
+            AnchorLine::Open(name) => Some(name.to_owned()),
+            AnchorLine::Close(_) | AnchorLine::Malformed(_) | AnchorLine::Text => None,
         })
         .collect()
 }
@@ -559,7 +566,9 @@ fn every_include_sits_inside_a_rust_no_run_fence() {
          documents the directive instead of performing it, and `rust,compile_fail` or \
          `rust,ignore` carries a block that the book never substitutes"
     );
-}/// Structure holding an anchor pairing violation in an example file.
+}
+
+/// Structure holding an anchor pairing violation in an example file.
 #[derive(Debug)]
 #[allow(dead_code)]
 struct AnchorViolation {
@@ -567,10 +576,13 @@ struct AnchorViolation {
     line: usize,
     message: String,
 }
-
 /// Verifies that every `// ANCHOR: <name>` directive in `path` has a matching
 /// and properly nested `// ANCHOR_END: <name>` closing directive, with no
-/// duplicate anchor names, empty names, or malformed directives.
+/// duplicate anchor names and no malformed directive.
+///
+/// The classification comes from `rurqe_examples::anchors`, the same grammar
+/// `declared_anchors` reads above, so a marker this check pairs is a marker the
+/// inclusion checks can see.
 fn check_anchor_pairing(path: &Path) -> Vec<AnchorViolation> {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("example file {path:?} is not readable: {error}"));
@@ -584,64 +596,51 @@ fn check_anchor_pairing(path: &Path) -> Vec<AnchorViolation> {
 
     for (idx, line) in source.lines().enumerate() {
         let line_num = idx + 1;
-        let trimmed = line.trim();
-
-        if let Some(rest) = trimmed.strip_prefix("// ANCHOR:") {
-            let name = rest.trim();
-            if name.is_empty() {
-                violations.push(AnchorViolation {
-                    file: file_name.clone(),
-                    line: line_num,
-                    message: "empty anchor name in `// ANCHOR:` directive".to_string(),
-                });
-                continue;
+        match anchors::classify(line) {
+            AnchorLine::Open(name) => {
+                if !seen_anchors.insert(name.to_owned()) {
+                    violations.push(AnchorViolation {
+                        file: file_name.clone(),
+                        line: line_num,
+                        message: format!("duplicate anchor `{name}` declared in the same file"),
+                    });
+                }
+                open_anchors.push((name.to_owned(), line_num));
             }
-            if !seen_anchors.insert(name.to_string()) {
-                violations.push(AnchorViolation {
-                    file: file_name.clone(),
-                    line: line_num,
-                    message: format!("duplicate anchor `{name}` declared in the same file"),
-                });
-            }
-            open_anchors.push((name.to_string(), line_num));
-        } else if let Some(rest) = trimmed.strip_prefix("// ANCHOR_END:") {
-            let name = rest.trim();
-            if name.is_empty() {
-                violations.push(AnchorViolation {
-                    file: file_name.clone(),
-                    line: line_num,
-                    message: "empty anchor name in `// ANCHOR_END:` directive".to_string(),
-                });
-                continue;
-            }
-            if let Some(pos) = open_anchors.iter().rposition(|(open_name, _)| open_name == name) {
-                if pos != open_anchors.len() - 1 {
+            AnchorLine::Close(name) => {
+                let Some(position) = open_anchors
+                    .iter()
+                    .rposition(|(open_name, _)| open_name.as_str() == name)
+                else {
+                    violations.push(AnchorViolation {
+                        file: file_name.clone(),
+                        line: line_num,
+                        message: format!("`// ANCHOR_END: {name}` matches no open anchor"),
+                    });
+                    continue;
+                };
+                let displaced = open_anchors.last().filter(|_| position + 1 != open_anchors.len());
+                if let Some((open_name, open_line)) = displaced {
                     violations.push(AnchorViolation {
                         file: file_name.clone(),
                         line: line_num,
                         message: format!(
-                            "anchor `{name}` closed out of order; expected to close `{}` opened on line {}",
-                            open_anchors.last().unwrap().0,
-                            open_anchors.last().unwrap().1
+                            "anchor `{name}` closed out of order; expected to close \
+                             `{open_name}` opened on line {open_line}"
                         ),
                     });
                 }
-                open_anchors.remove(pos);
-            } else {
-                violations.push(AnchorViolation {
-                    file: file_name.clone(),
-                    line: line_num,
-                    message: format!("`// ANCHOR_END: {name}` does not match any currently open anchor"),
-                });
+                open_anchors.remove(position);
             }
-        } else if trimmed.starts_with("// ANCHOR") {
-            violations.push(AnchorViolation {
+            AnchorLine::Malformed(directive) => violations.push(AnchorViolation {
                 file: file_name.clone(),
                 line: line_num,
                 message: format!(
-                    "malformed anchor directive `{trimmed}`; expected `// ANCHOR: <name>` or `// ANCHOR_END: <name>`"
+                    "malformed anchor directive `{directive}`; expected `// ANCHOR: <name>` \
+                     or `// ANCHOR_END: <name>`"
                 ),
-            });
+            }),
+            AnchorLine::Text => {}
         }
     }
 
@@ -649,7 +648,10 @@ fn check_anchor_pairing(path: &Path) -> Vec<AnchorViolation> {
         violations.push(AnchorViolation {
             file: file_name.clone(),
             line: open_line,
-            message: format!("anchor `{unclosed}` opened on line {open_line} is never closed with `// ANCHOR_END: {unclosed}`"),
+            message: format!(
+                "anchor `{unclosed}` opened on line {open_line} is never closed with \
+                 `// ANCHOR_END: {unclosed}`"
+            ),
         });
     }
 
@@ -678,6 +680,67 @@ fn every_anchor_is_properly_paired_and_closed() {
          `// ANCHOR: <name>` must have a unique name and be properly closed with a matching \
          `// ANCHOR_END: <name>`"
     );
+}
+
+/// The canonical opening marker, exactly as the convention spells it, opens a
+/// region, and the canonical closing marker closes it, whatever the
+/// indentation and the trailing whitespace of the line carrying them.
+#[test]
+fn the_anchor_grammar_accepts_the_canonical_spelling() {
+    let open = anchors::classify("// ANCHOR: query");
+    assert_eq!(open, AnchorLine::Open("query"));
+
+    let indented = anchors::classify("    // ANCHOR: query   ");
+    assert_eq!(indented, AnchorLine::Open("query"));
+
+    let close = anchors::classify("// ANCHOR_END: query");
+    assert_eq!(close, AnchorLine::Close("query"));
+
+    let indented_close = anchors::classify("\t// ANCHOR_END: query");
+    assert_eq!(indented_close, AnchorLine::Close("query"));
+}
+
+/// A marker without the space after the colon is a malformed directive rather
+/// than a differently spelled boundary: no consumer of the grammar can read a
+/// region boundary where its neighbour reads none.
+#[test]
+fn the_anchor_grammar_rejects_the_spaceless_near_miss() {
+    let open = anchors::classify("// ANCHOR:query");
+    assert_eq!(open, AnchorLine::Malformed("// ANCHOR:query"));
+
+    let close = anchors::classify("// ANCHOR_END:query");
+    assert_eq!(close, AnchorLine::Malformed("// ANCHOR_END:query"));
+}
+
+/// A marker carrying no name delimits nothing, whichever of the two markers it
+/// was meant to be.
+#[test]
+fn the_anchor_grammar_rejects_a_marker_without_a_name() {
+    let open = anchors::classify("// ANCHOR:");
+    assert_eq!(open, AnchorLine::Malformed("// ANCHOR:"));
+
+    let padded_open = anchors::classify("// ANCHOR:   ");
+    assert_eq!(padded_open, AnchorLine::Malformed("// ANCHOR:"));
+
+    let close = anchors::classify("// ANCHOR_END:");
+    assert_eq!(close, AnchorLine::Malformed("// ANCHOR_END:"));
+
+    let padded_close = anchors::classify("// ANCHOR_END:  ");
+    assert_eq!(padded_close, AnchorLine::Malformed("// ANCHOR_END:"));
+}
+
+/// A line carrying no anchor directive passes through untouched, so the
+/// grammar only ever reports on the markers themselves.
+#[test]
+fn the_anchor_grammar_leaves_ordinary_lines_untouched() {
+    let statement = anchors::classify("let users = select_from(Users);");
+    assert_eq!(statement, AnchorLine::Text);
+
+    let comment = anchors::classify("// a plain comment");
+    assert_eq!(comment, AnchorLine::Text);
+
+    let empty = anchors::classify("");
+    assert_eq!(empty, AnchorLine::Text);
 }
 
 /// Structure holding a code fence violation in a book chapter.

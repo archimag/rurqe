@@ -25,10 +25,14 @@
 //! `fn main` wrapper, a connection stub — stays outside the anchored regions, so
 //! the fragment reads on its own in the rendered chapter.
 //!
-//! The library target provides shared infrastructure for the example targets,
-//! such as the centralized [`example_pool`] function. The example files are
-//! registered in `Cargo.toml` as explicit `[[example]]` targets, because Cargo
-//! discovers example targets only under `<package>/examples/`.
+//! The library target provides shared infrastructure for the example targets
+//! and for the guard that audits them: the centralized [`example_pool`]
+//! function and the anchor grammar in [`anchors`], which classifies every
+//! fragment marker exactly once. The example files are registered in
+//! `Cargo.toml` as explicit `[[example]]` targets, because Cargo discovers
+//! example targets only under `<package>/examples/`.
+
+pub mod anchors;
 
 use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
