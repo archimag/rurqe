@@ -135,26 +135,7 @@ A left-joined derived table lifts its columns to `Option<T>` exactly like a left
 - Two relations under one name are refused while the statement is built, before any SQL reaches the engine; alias one of them so each occurrence carries a name of its own.
 - The engine recorded by the named statement has to match the engine of the query that reads it, so a relation built for one dialect does not compile into a statement of another.
 ```rust,compile_fail
-use rurqe::postgres::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-table!(
-    UserTotals => "user_totals" {
-        TotalsOwnerId => "owner_id": i64,
-        TotalsTotal => "total": f64,
-    }
-);
-
-fn main() {
-    // Rejected: `user_totals` is named by the marker, but this statement records
-    // no projection, so there is no statement to publish as a relation.
-    let totals = select_from(User).as_cte::<UserTotals>();
-}
+{{#rustdoc_include ../examples/guards/queries.rs:cte_without_projection}}
 ```
 
 ```text
@@ -166,25 +147,7 @@ error[E0599]: no method named `as_cte` found for struct `SelectQuery<Postgres<Pg
 The accepted form projects the statement first — `select_from(Order).group_by(OrderUserId).select(cols! { ... }).as_cte::<UserTotals>()`.
 
 ```rust,compile_fail
-use rurqe::postgres::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-table!(
-    UserTotals => "user_totals" {
-        TotalsOwnerId => "owner_id": i64,
-        TotalsTotal => "total": f64,
-    }
-);
-
-fn main() {
-    // Rejected: the query never reads `user_totals`, so the column is out of scope.
-    let rows = select_from(User).select(cols!(UserId, TotalsTotal));
-}
+{{#rustdoc_include ../examples/guards/queries.rs:cte_out_of_scope_column}}
 ```
 
 ```text

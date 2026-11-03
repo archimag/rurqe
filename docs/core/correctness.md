@@ -23,22 +23,7 @@ Compile-time type soundness prevents syntactically and semantically invalid quer
 Compiler error messages describe the violated SQL rule directly rather than leaking internal generic type cascades:
 
 ```rust,compile_fail
-use rurqe::postgres::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-table!(
-    Order => "orders" {
-        OrderTotal => "total": f64,
-    }
-);
-
-// Rejected by the compiler: `OrderTotal` belongs to a table the query never introduces
-let _ = select_from(User).select(cols!(UserId, OrderTotal));
+{{#rustdoc_include ../examples/guards/queries.rs:out_of_scope_projection}}
 ```
 
 ```text

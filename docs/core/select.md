@@ -171,18 +171,7 @@ Below the stated threshold the feature does not exist on the target, so the meth
 - Two relations sharing one effective name in `FROM` / `JOIN` are rejected while the statement is built: alias the second occurrence, and both render under their own name.
 
 ```rust,compile_fail
-use rurqe::postgres::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-fn main() {
-    // Rejected: nothing is projected, so there is no statement to build.
-    let statement = select_from(User).build();
-}
+{{#rustdoc_include ../examples/guards/queries.rs:select_without_projection}}
 ```
 
 ```text
@@ -192,24 +181,7 @@ refusing to build a SELECT query without a projection
 The accepted form projects first — `select_from(User).select(cols!(UserId)).build()`.
 
 ```rust,compile_fail
-use rurqe::postgres::prelude::*;
-
-table!(
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-table!(
-    Order => "orders" {
-        OrderTotal => "total": f64,
-    }
-);
-
-fn main() {
-    // Rejected: `OrderTotal` belongs to `orders`, a relation this query never reads.
-    let rows = select_from(User).select(cols!(UserId, OrderTotal));
-}
+{{#rustdoc_include ../examples/guards/queries.rs:select_out_of_scope_projection}}
 ```
 
 ```text

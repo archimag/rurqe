@@ -16,3 +16,5 @@
 //! lists.
 
 #![doc = include_str!("../guards/mutations.rs")]
+
+#![doc = include_str!("../guards/queries.rs")]
