@@ -34,12 +34,16 @@ use self::wire::{base_type, wire_of, Wire};
 /// adapters a build compiles: a match written against it carries a wildcard arm,
 /// so a variant added for a new adapter does not break the matches already
 /// compiled.
-///
 /// One variant follows the feature matrix directly. `PgError::Pool` exists only
 /// under the `deadpool-postgres` feature, because the asynchronous pool is the
 /// adapter that checks a connection out of a pool on its own. The shape of the
 /// enum is therefore the shape of the adapters a build carries, and a downstream
 /// match observes the variant set of its own build.
+///
+/// The `Driver` variant renders the failure it wraps through
+/// [`driver_failure`], so a refusal the server described reaches the operator
+/// with the message, the detail, and the hint the server sent instead of the
+/// bare `db error` label of the driver.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PgError {
@@ -101,7 +105,7 @@ pub enum PgError {
 impl fmt::Display for PgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PgError::Driver(error) => write!(f, "PostgreSQL driver error: {error}"),
+            PgError::Driver(error) => write!(f, "{}", driver_failure(error)),
             PgError::UnsupportedType(name) => write!(
                 f,
                 "unsupported PostgreSQL column type `{name}`: cannot decode into a SQL value"
@@ -243,10 +247,37 @@ fn parse_timestamptz(value: &str) -> Result<chrono::DateTime<chrono::Utc>, chron
     ))
 }
 
+/// Composes a server refusal from the fields the server reported.
+///
+/// The driver renders a refusal with `as_db_error` behind a bare `db error`
+/// label, and the text, the detail, and the hint the server sent live behind
+/// that accessor rather than in the rendered message. Composing them here is
+/// what keeps the reason the server reported visible to the operator.
+pub(crate) fn server_refusal(message: &str, detail: Option<&str>, hint: Option<&str>) -> String {
+    let detail = detail.map(|text| format!(" ({text})")).unwrap_or_default();
+    let hint = hint.map(|text| format!("; hint: {text}")).unwrap_or_default();
+    format!("{message}{detail}{hint}")
+}
+
+/// Renders a driver failure as the description an operator reads.
+///
+/// A refusal the server described is composed from the fields of its `Db`
+/// error through [`server_refusal`], because the driver renders that variant
+/// as a bare `db error` that carries no reason at all. A failure the server did
+/// not describe — a lost connection, a closed socket — keeps the full `Display`
+/// of the driver, which for those failures is the complete description. Every
+/// surface that shows a driver failure to an operator renders it here, so no
+/// path can collapse a server refusal back into the unnamed label.
+pub(crate) fn driver_failure(error: &DriverError) -> String {
+    match error.as_db_error() {
+        Some(db_error) => server_refusal(db_error.message(), db_error.detail(), db_error.hint()),
+        None => error.to_string(),
+    }
+}
+
 /// A [`SqlVal`] bound to the parameter type expected by the PostgreSQL driver.
 #[derive(Debug)]
 pub(crate) struct SqlValParam<'a>(pub(crate) &'a SqlVal);
-
 /// The parameters of one statement, prepared once for a driver call.
 ///
 /// A statement binds its parameters in two steps: every [`SqlVal`] is wrapped in

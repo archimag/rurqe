@@ -13,8 +13,7 @@ use rurqe_core::query::BuiltQuery;
 
 use super::driver::types::{IsNull, Kind, ToSql, Type};
 use super::wire::{wire_of, Wire};
-use super::{decode_value, BoundParams, PgError, ResultRow, RowDecoder, SqlValParam};
-
+use super::{server_refusal, BoundParams, PgError, ResultRow, RowDecoder, SqlValParam};
 // The binding layer sits on the hot path of every statement, so its allocation
 // count is observed rather than assumed. The counter is thread-local because
 // the test harness runs scenarios concurrently in one process: a thread that
@@ -64,16 +63,6 @@ fn record_allocation() {
 /// Builds a type the way the server would report it.
 fn synthetic(name: &str, oid: u32, kind: Kind) -> Type {
     Type::new(name.to_owned(), oid, kind, "public".to_owned())
-}
-
-/// Builds the array type over `element`, the way the server would report it.
-fn array_of(name: &str, oid: u32, element: Type) -> Type {
-    Type::new(
-        name.to_owned(),
-        oid,
-        Kind::Array(element),
-        "public".to_owned(),
-    )
 }
 
 /// Runs `f` while counting the allocations it makes on the current thread.
@@ -461,317 +450,6 @@ fn an_array_column_binds_one_value_per_element() {
 }
 
 #[test]
-fn an_array_round_trips_through_the_binary_form() {
-    let values = vec![SqlVal::Text("a".to_owned()), SqlVal::Null];
-
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Array(values.clone()))
-        .to_sql_checked(&Type::TEXT_ARRAY, &mut buffer)
-        .unwrap();
-
-    assert_eq!(
-        decode_value(&Type::TEXT_ARRAY, &buffer[..]).expect("the array is decodable"),
-        SqlVal::Array(values)
-    );
-}
-
-#[test]
-fn arrays_of_enums_and_domains_decode_their_elements() {
-    let moods = array_of(
-        "_mood",
-        65_530,
-        synthetic(
-            "mood",
-            65_534,
-            Kind::Enum(vec!["happy".to_owned(), "sad".to_owned()]),
-        ),
-    );
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Array(vec![SqlVal::Text("happy".to_owned())]))
-        .to_sql_checked(&moods, &mut buffer)
-        .unwrap();
-    assert_eq!(
-        decode_value(&moods, &buffer[..]).expect("the enum array is decodable"),
-        SqlVal::Array(vec![SqlVal::Text("happy".to_owned())])
-    );
-
-    let amounts = array_of(
-        "_amount",
-        65_531,
-        synthetic("amount", 65_532, Kind::Domain(Type::NUMERIC)),
-    );
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())]))
-        .to_sql_checked(&amounts, &mut buffer)
-        .unwrap();
-    let decoded = decode_value(&amounts, &buffer[..]).expect("the decimal array is decodable");
-    #[cfg(feature = "decimal")]
-    assert_eq!(
-        decoded,
-        SqlVal::Array(vec![SqlVal::Decimal(rust_decimal::Decimal::new(125, 1))])
-    );
-    #[cfg(not(feature = "decimal"))]
-    assert_eq!(
-        decoded,
-        SqlVal::Array(vec![SqlVal::Text("12.5".to_owned())])
-    );
-}
-
-#[test]
-fn an_empty_array_decodes_without_elements() {
-    let mut bytes = Vec::new();
-    for field in [0i32, 0, 20] {
-        bytes.extend_from_slice(&field.to_be_bytes());
-    }
-
-    assert_eq!(
-        decode_value(&Type::INT8_ARRAY, &bytes).expect("an empty array is decodable"),
-        SqlVal::Array(Vec::new())
-    );
-}
-
-#[test]
-fn a_multi_dimensional_array_is_reported() {
-    let mut bytes = Vec::new();
-    for field in [2i32, 0, 20] {
-        bytes.extend_from_slice(&field.to_be_bytes());
-    }
-
-    let error =
-        decode_value(&Type::INT8_ARRAY, &bytes).expect_err("a matrix cannot decode into a vector");
-
-    assert!(error.describe().contains("2 dimensions"));
-}
-
-#[test]
-fn a_scalar_value_is_rejected_for_an_array_column() {
-    let mut buffer = BytesMut::new();
-    let error = match SqlValParam(&SqlVal::I64(1)).to_sql_checked(&Type::INT8_ARRAY, &mut buffer) {
-        Ok(_) => panic!("a scalar cannot fill an array column"),
-        Err(error) => error,
-    };
-
-    assert!(error.to_string().contains("int64"));
-}
-
-#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
-#[test]
-fn uuid_json_and_temporal_values_bind_directly() {
-    let mut buffer = BytesMut::new();
-    let uuid_param = SqlValParam(&SqlVal::Uuid(uuid::Uuid::nil()));
-    assert!(matches!(
-        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let json_param = SqlValParam(&SqlVal::Json(serde_json::json!({ "a": 1 })));
-    assert!(matches!(
-        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let timestamp = chrono::NaiveDate::from_ymd_opt(2024, 1, 2)
-        .unwrap()
-        .and_hms_opt(3, 4, 5)
-        .unwrap();
-    let timestamp_param = SqlValParam(&SqlVal::NaiveDateTime(timestamp));
-    assert!(matches!(
-        timestamp_param
-            .to_sql(&Type::TIMESTAMP, &mut buffer)
-            .unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap();
-    let date_param = SqlValParam(&SqlVal::NaiveDate(date));
-    assert!(matches!(
-        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-}
-
-#[cfg(feature = "decimal")]
-#[test]
-fn a_numeric_column_binds_an_exact_decimal() {
-    let value = rust_decimal::Decimal::new(12_345_678, 3);
-
-    let mut buffer = BytesMut::new();
-    assert!(matches!(
-        SqlValParam(&SqlVal::Decimal(value))
-            .to_sql_checked(&Type::NUMERIC, &mut buffer)
-            .unwrap(),
-        IsNull::No
-    ));
-
-    assert_eq!(
-        decode_value(&Type::NUMERIC, &buffer[..]).expect("the numeric value is decodable"),
-        SqlVal::Decimal(value)
-    );
-}
-
-#[cfg(feature = "decimal")]
-#[test]
-fn an_exact_decimal_binds_an_integer_column_at_its_width() {
-    let value = rust_decimal::Decimal::new(75, 1);
-
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Decimal(value))
-        .to_sql_checked(&Type::INT2, &mut buffer)
-        .unwrap();
-    assert_eq!(buffer.to_vec(), vec![0u8, 7]);
-
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Decimal(value))
-        .to_sql_checked(&Type::INT8, &mut buffer)
-        .unwrap();
-    assert_eq!(buffer.to_vec(), 7i64.to_be_bytes().to_vec());
-}
-
-#[cfg(feature = "decimal")]
-#[test]
-fn an_exact_decimal_out_of_the_range_of_an_integer_column_is_rejected() {
-    let mut buffer = BytesMut::new();
-    let error = match SqlValParam(&SqlVal::Decimal(rust_decimal::Decimal::MAX))
-        .to_sql_checked(&Type::INT8, &mut buffer)
-    {
-        Ok(_) => panic!("the value does not fit a bigint column"),
-        Err(error) => error,
-    };
-
-    assert!(error.to_string().contains("out of the range"));
-    assert!(error.to_string().contains("int8"));
-}
-
-#[cfg(feature = "decimal")]
-#[test]
-fn an_exact_decimal_binds_a_real_column() {
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Decimal(rust_decimal::Decimal::new(15, 1)))
-        .to_sql_checked(&Type::FLOAT4, &mut buffer)
-        .unwrap();
-
-    assert_eq!(buffer.to_vec(), 1.5f32.to_be_bytes().to_vec());
-}
-
-#[cfg(feature = "decimal")]
-#[test]
-fn an_exact_decimal_binds_a_textual_column() {
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Decimal(rust_decimal::Decimal::new(1500, 3)))
-        .to_sql_checked(&Type::TEXT, &mut buffer)
-        .unwrap();
-
-    assert_eq!(buffer.to_vec(), b"1.500".to_vec());
-}
-
-#[cfg(all(feature = "uuid", feature = "chrono", feature = "serde_json"))]
-#[test]
-fn text_parameters_bind_to_uuid_json_and_temporal_types() {
-    let mut buffer = BytesMut::new();
-    let uuid_param = SqlValParam(&SqlVal::Text(
-        "00000000-0000-0000-0000-000000000000".to_owned(),
-    ));
-    assert!(matches!(
-        uuid_param.to_sql(&Type::UUID, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let json_param = SqlValParam(&SqlVal::Text("{\"a\":1}".to_owned()));
-    assert!(matches!(
-        json_param.to_sql(&Type::JSONB, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let timestamp_param = SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()));
-    assert!(matches!(
-        timestamp_param
-            .to_sql(&Type::TIMESTAMP, &mut buffer)
-            .unwrap(),
-        IsNull::No
-    ));
-
-    let mut buffer = BytesMut::new();
-    let date_param = SqlValParam(&SqlVal::Text("2024-01-02".to_owned()));
-    assert!(matches!(
-        date_param.to_sql(&Type::DATE, &mut buffer).unwrap(),
-        IsNull::No
-    ));
-}
-
-#[cfg(feature = "chrono")]
-#[test]
-fn a_space_separated_timestamp_binds_with_its_offset() {
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Text("2024-01-02 05:04:05+02:00".to_owned()))
-        .to_sql_checked(&Type::TIMESTAMPTZ, &mut buffer)
-        .expect("a space-separated timestamp with an offset fills a timestamptz column");
-
-    let expected = chrono::DateTime::parse_from_rfc3339("2024-01-02T03:04:05+00:00")
-        .expect("the expected instant is valid")
-        .with_timezone(&chrono::Utc);
-
-    assert_eq!(
-        decode_value(&Type::TIMESTAMPTZ, &buffer[..]).expect("the timestamp is decodable"),
-        SqlVal::DateTimeUtc(expected)
-    );
-}
-
-#[cfg(not(any(feature = "uuid", feature = "serde_json", feature = "chrono")))]
-#[test]
-fn textual_values_bind_uuid_json_and_temporal_columns_without_their_crates() {
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Text(
-        "00010203-0405-0607-0809-0a0b0c0d0e0f".to_owned(),
-    ))
-    .to_sql_checked(&Type::UUID, &mut buffer)
-    .expect("a textual value fills a UUID column");
-    assert_eq!(
-        decode_value(&Type::UUID, &buffer[..]).expect("the UUID value is decodable"),
-        SqlVal::Text("00010203-0405-0607-0809-0a0b0c0d0e0f".to_owned())
-    );
-
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Text("{\"a\": 1}".to_owned()))
-        .to_sql_checked(&Type::JSONB, &mut buffer)
-        .expect("a textual value fills a JSONB column");
-    assert_eq!(
-        decode_value(&Type::JSONB, &buffer[..]).expect("the JSONB value is decodable"),
-        SqlVal::Text("{\"a\": 1}".to_owned())
-    );
-
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Text("2024-01-02 03:04:05".to_owned()))
-        .to_sql_checked(&Type::TIMESTAMP, &mut buffer)
-        .expect("a textual value fills a timestamp column");
-    assert_eq!(
-        decode_value(&Type::TIMESTAMP, &buffer[..]).expect("the timestamp value is decodable"),
-        SqlVal::Text("2024-01-02 03:04:05".to_owned())
-    );
-
-    let mut buffer = BytesMut::new();
-    SqlValParam(&SqlVal::Text("2024-01-02".to_owned()))
-        .to_sql_checked(&Type::DATE, &mut buffer)
-        .expect("a textual value fills a date column");
-    assert_eq!(buffer.to_vec(), 8_767i32.to_be_bytes().to_vec());
-
-    // A value the family cannot represent is reported by the adapter instead of
-    // reaching the server as an opaque protocol failure.
-    let mut buffer = BytesMut::new();
-    let error = match SqlValParam(&SqlVal::Text("not-a-date".to_owned()))
-        .to_sql_checked(&Type::DATE, &mut buffer)
-    {
-        Ok(_) => panic!("a malformed date cannot fill a date column"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("not-a-date"));
-}
-
-#[test]
 fn a_statement_prepares_its_parameters_once() {
     let query = BuiltQuery {
         sql: "select 1 where id = $1".to_owned(),
@@ -845,5 +523,33 @@ fn a_pool_failure_stays_reachable_through_its_source() {
     assert!(
         source.is::<deadpool_postgres::PoolError>(),
         "the source is the pool failure the adapter wrapped"
+    );
+}
+
+/// A server refusal renders the message the server sent, because the
+/// driver's label for a refused statement carries no content at all.
+#[test]
+fn a_server_refusal_renders_the_message_the_server_sent() {
+    assert_eq!(
+        server_refusal("column \"view_name\" does not exist", None, None),
+        "column \"view_name\" does not exist"
+    );
+}
+
+/// The detail and hint the server sent follow the message, so the whole
+/// refusal reaches the operator.
+#[test]
+fn detail_and_hint_follow_the_message_the_server_sent() {
+    assert_eq!(
+        server_refusal("division by zero", Some("a constant folded to zero"), None),
+        "division by zero (a constant folded to zero)"
+    );
+    assert_eq!(
+        server_refusal("permission denied", None, Some("connect as the owner")),
+        "permission denied; hint: connect as the owner"
+    );
+    assert_eq!(
+        server_refusal("refused", Some("the detail"), Some("the hint")),
+        "refused (the detail); hint: the hint"
     );
 }

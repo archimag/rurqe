@@ -17,7 +17,7 @@ use rurqe_migrate::introspect::{
     RawPrimaryKeyMetadata, RawTableMetadata, RawTriggerMetadata, RawViewMetadata, SchemaSelection,
 };
 
-use crate::backend::types::PgError;
+use crate::backend::types::{driver_failure, PgError};
 
 mod queries;
 
@@ -448,59 +448,18 @@ pub fn column_error(statement: &str, column: &str, error: impl std::fmt::Display
         "failed to read column `{column}` from the {statement} query: {error}"
     ))
 }
-
 /// Describes a catalog statement the driver refused.
 ///
-/// A refusal the server described keeps its message, detail, and hint behind
-/// `as_db_error`, because the driver renders the whole `Db` variant as the
-/// bare `db error`; the fields the server sent are composed instead, so an
-/// operator reads what the server said about the statement the catalog ran. A
-/// failure the server did not describe — a lost connection, a closed socket —
-/// keeps the driver's own rendering.
+/// The driver failure is rendered through the binding layer, which composes the
+/// message, the detail, and the hint a server refusal carries instead of the
+/// bare `db error` label the driver renders that variant as. A failure the
+/// server did not describe — a lost connection, a closed socket — keeps the
+/// driver's own rendering. Every surface of the crate that shows a driver
+/// failure to an operator renders it the same way, so the catalog reports what
+/// the server said about the statement it ran.
 fn query_error(label: &str, error: postgres::Error) -> PgError {
-    let reason = match error.as_db_error() {
-        Some(db_error) => server_refusal(db_error.message(), db_error.detail(), db_error.hint()),
-        None => error.to_string(),
-    };
-    PgError::Catalog(format!("the {label} query failed: {reason}"))
-}
-
-/// Composes a server refusal from the fields the server reported.
-fn server_refusal(message: &str, detail: Option<&str>, hint: Option<&str>) -> String {
-    let detail = detail.map(|text| format!(" ({text})")).unwrap_or_default();
-    let hint = hint.map(|text| format!("; hint: {text}")).unwrap_or_default();
-    format!("{message}{detail}{hint}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::server_refusal;
-
-    /// A server refusal renders the message the server sent, because the
-    /// driver's label for a refused statement carries no content at all.
-    #[test]
-    fn a_server_refusal_renders_the_message_the_server_sent() {
-        assert_eq!(
-            server_refusal("column \"view_name\" does not exist", None, None),
-            "column \"view_name\" does not exist"
-        );
-    }
-
-    /// The detail and hint the server sent follow the message, so the whole
-    /// refusal reaches the operator.
-    #[test]
-    fn detail_and_hint_follow_the_message_the_server_sent() {
-        assert_eq!(
-            server_refusal("division by zero", Some("a constant folded to zero"), None),
-            "division by zero (a constant folded to zero)"
-        );
-        assert_eq!(
-            server_refusal("permission denied", None, Some("connect as the owner")),
-            "permission denied; hint: connect as the owner"
-        );
-        assert_eq!(
-            server_refusal("refused", Some("the detail"), Some("the hint")),
-            "refused (the detail); hint: the hint"
-        );
-    }
+    PgError::Catalog(format!(
+        "the {label} query failed: {}",
+        driver_failure(&error)
+    ))
 }
