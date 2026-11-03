@@ -106,5 +106,11 @@ The row is read through the declaration, by name only, so the column order of a 
 projection field `id` is produced by more than one projection; rename one of them with `as <alias>` or `alias: <expr>`
 ```
 
+- A trailing `as` names the field, so it is never read as a Rust cast. An alias spelled as a type (`Expr::count_all() as i64`, `users.id as Text`) is refused, because reading it as a name would drop the conversion and name the field after a type:
+
+```text
+`as i64` reads as a Rust cast rather than a field name; the trailing `as` names the projected field, so reading it as a name would drop the cast and name the field after a type; name the field with `alias: <target>` and write a conversion in the expression itself (`.cast::<T>()`)
+```
+
 - A marker named after a Rust keyword that has no raw form (`Crate`, `Super`) cannot name a field, so it needs an explicit name: `crate_id: Crate`.
 - `dto!` accepts schema columns only. A computed item is a projection of a statement rather than a declaration of a row, so an expression is projected through `select!` or `cols!` instead.

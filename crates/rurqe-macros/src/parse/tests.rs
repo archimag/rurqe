@@ -183,6 +183,85 @@ fn keyword_aliases_are_escaped_into_raw_identifiers() {
 }
 
 #[test]
+fn a_trailing_alias_spelled_as_a_primitive_type_is_rejected() {
+    for source in [
+        "users.id as i64",
+        "count(orders.id) as i64",
+        "Expr::sum::<UserId>() as f64",
+        "users.id as u32",
+        "users.id as usize",
+        "users.id as bool",
+        "users.id as str",
+    ] {
+        let error = parse_str::<ProjectionItem>(source).expect_err("the alias reads as a cast");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("reads as a Rust cast"),
+            "unexpected message for `{source}`: {message}"
+        );
+        assert!(
+            message.contains("alias: <target>"),
+            "no remedy in `{source}`: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_trailing_alias_spelled_as_a_named_type_is_rejected() {
+    for source in [
+        "users.id as Text",
+        "Expr::count_all() as Total",
+        "users.id as UserId",
+    ] {
+        let error = parse_str::<ProjectionItem>(source).expect_err("the alias reads as a cast");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("reads as a Rust cast"),
+            "unexpected message for `{source}`: {message}"
+        );
+        assert!(
+            message.contains("alias: <target>"),
+            "no remedy in `{source}`: {message}"
+        );
+    }
+}
+
+#[test]
+fn the_unambiguous_naming_forms_name_the_field() {
+    let item: ProjectionItem = parse_str("i64: users.id").expect("the leading form names a field");
+    assert_eq!(item.field_ident().expect("named"), "i64");
+
+    let item: ProjectionItem = parse_str("Total: Expr::count_all()").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "Total");
+
+    let item: ProjectionItem = parse_str("users.id as user_id").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "user_id");
+
+    // A cast keeps its own `as` inside the expression, so the trailing pair the
+    // naming form is read from stays the field name.
+    let item: ProjectionItem =
+        parse_str("widened: (users.id as f64) * 2.0").expect("valid projection");
+    assert_eq!(item.field_ident().expect("named"), "widened");
+}
+
+#[test]
+fn a_cast_alias_is_rejected_inside_a_projection_list() {
+    for source in [
+        "users::ID, count(orders.id) as i64",
+        "(users::ID, users.id as Text)",
+    ] {
+        let error = parse_str::<ProjectionList>(source).expect_err("the alias reads as a cast");
+
+        assert!(
+            error.to_string().contains("reads as a Rust cast"),
+            "unexpected message for `{source}`: {error}"
+        );
+    }
+}
+
+#[test]
 fn raw_keyword_aliases_are_used_verbatim() {
     let item: ProjectionItem = parse_str("users.id as r#type").expect("valid projection");
     assert_eq!(item.field_ident().expect("named"), "r#type");

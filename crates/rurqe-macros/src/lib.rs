@@ -40,6 +40,21 @@ use proc_macro::TokenStream;
 /// projection list fixes the row arity and the nested-row keys of the record, so
 /// the statement would keep projecting a column its record no longer has a field
 /// to decode into.
+///
+/// The trailing `as <alias>` form names the field and is never read as a Rust
+/// cast. An alias spelled as a type (`Expr::count_all() as i64`, `users.id as
+/// Text`) is refused instead of silently dropping the conversion and naming the
+/// record field after a type; the leading form names the same field without the
+/// ambiguity, and a conversion belongs in the expression itself:
+///
+/// ```ignore
+/// let query = SelectQuery::<Postgres>::new()
+///     .from::<Order>()
+///     .select(select!(
+///         order_total: OrderTotal,
+///         widened: Expr::column::<OrderTotal>().cast::<f64>(),
+///     ));
+/// ```
 #[proc_macro]
 pub fn select(input: TokenStream) -> TokenStream {
     crate::select::expand(input.into())
@@ -78,6 +93,10 @@ pub fn cols(input: TokenStream) -> TokenStream {
 ///     }
 /// }
 /// ```
+///
+/// Field names follow the same rules as [`select!`]: `UserEmail as
+/// contact_email` renames the field, and a trailing alias spelled as a type is
+/// refused there as well, because that spelling is how a Rust cast is written.
 #[proc_macro]
 pub fn dto(input: TokenStream) -> TokenStream {
     crate::dto::expand(input.into())

@@ -89,7 +89,8 @@ impl ProjectionTarget {
 ///
 /// Can represent a schema column (`users::ID`, `UserId`) or an SQL expression
 /// (`users.id`, `Expr::count_all()`), optionally named through `alias: <target>`
-/// or `<target> as alias`.
+/// or `<target> as alias`. The trailing form shares its spelling with a Rust
+/// cast, so an alias spelled as a type is refused instead of being consumed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectionItem {
     /// Outer attributes attached to the projection item (if any).
@@ -292,6 +293,13 @@ fn closes_generic_arguments(previous: &[TokenTree]) -> bool {
 }
 /// Splits the leading `alias:` or trailing `as alias` naming from an item body.
 ///
+/// The leading form names the projection with the identifier written before the
+/// colon, and that form is unambiguous: `total: Expr::count_all()` fixes a field
+/// name no expression can be mistaken for, so a name spelled as a type stays
+/// available there. The trailing form shares its spelling with a Rust cast, so
+/// its identifier has to read as a field name, which [`reject_cast_alias`]
+/// enforces.
+///
 /// The naming is normalised into the field identifier the projection exposes, so
 /// an alias written as a Rust keyword (`Expr::count_all() as type`) reaches the
 /// generated record as the raw identifier of the same name instead of producing a
@@ -313,6 +321,7 @@ fn split_naming(tokens: Vec<TokenTree>) -> syn::Result<(Option<Ident>, TokenStre
             if keyword == "as" {
                 let target: TokenStream = tokens[..len - 2].iter().cloned().collect();
                 if !target.is_empty() {
+                    reject_cast_alias(alias)?;
                     return Ok((Some(alias_ident(alias)?), target));
                 }
             }
@@ -367,6 +376,49 @@ fn alias_ident(alias: &Ident) -> syn::Result<Ident> {
     }
 
     Ok(Ident::new_raw(bare, alias.span()))
+}
+/// The Rust primitive type names, which name a type wherever they are spelled.
+const PRIMITIVE_TYPE_NAMES: &[&str] = &[
+    "bool", "char", "f32", "f64", "i128", "i16", "i32", "i64", "i8", "isize", "str", "u128",
+    "u16", "u32", "u64", "u8", "usize",
+];
+
+/// Rejects a trailing alias spelled as a Rust type.
+///
+/// The trailing `as <alias>` form names the projected field, and the parser cannot
+/// tell that naming apart from a Rust cast written in expression position:
+/// `users.id as user_id` names a field while `users.id as i64` is a cast.
+/// Consuming the second as a name would silently repurpose it: the conversion
+/// would be dropped from the projection, the record would gain a field named after
+/// a type, and the statement would publish that name as the SQL alias of the
+/// un-cast expression. The spelling decides, so an alias reading as a type is
+/// reported together with the unambiguous spellings instead.
+fn reject_cast_alias(alias: &Ident) -> syn::Result<()> {
+    let label = alias.to_string();
+    let bare = label.strip_prefix("r#").unwrap_or(&label);
+
+    if !reads_as_type(bare) {
+        return Ok(());
+    }
+
+    Err(syn::Error::new(
+        alias.span(),
+        format!(
+            "`as {bare}` reads as a Rust cast rather than a field name; the trailing `as` \
+             names the projected field, so reading it as a name would drop the cast and name \
+             the field after a type; name the field with `alias: <target>` and write a \
+             conversion in the expression itself (`.cast::<T>()`)"
+        ),
+    ))
+}
+
+/// Reports whether a trailing alias is spelled as a Rust type.
+///
+/// A field name is written in snake case after the marker it projects, while a
+/// cast target is a primitive name or a type spelled in Pascal case, so the
+/// spelling separates the two readings of the trailing `as`.
+fn reads_as_type(label: &str) -> bool {
+    PRIMITIVE_TYPE_NAMES.contains(&label) || label.starts_with(|c: char| c.is_ascii_uppercase())
 }
 
 /// Derives the field identifier of a schema column marker path.
