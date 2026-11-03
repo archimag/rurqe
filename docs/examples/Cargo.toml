@@ -46,6 +46,15 @@ r2d2_sqlite = "0.24"
 # list and no target can silently drop out of the anchor-coverage check.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# The generated-module fixture is derived from the code generator instead of
+# being transcribed, so the generator the toolchain itself uses is named here
+# and the derivation test renders the module from the catalog the chapter
+# documents.
+rurqe-cli = { path = "../../crates/rurqe-cli", version = "0.1.0" }
+# The documented catalog maps a timestamp column onto its domain type, so the
+# generated module names `chrono::NaiveDateTime` and the fixture is compiled
+# against the same `chrono` release the facade decodes it with.
+chrono = "0.4"
 
 # The example files sit at the package root rather than in a nested `examples/`
 # subdirectory, so an include path from a chapter never climbs out of the book

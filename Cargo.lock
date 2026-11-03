@@ -1037,10 +1037,12 @@ dependencies = [
 name = "rurqe-examples"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "deadpool-postgres",
  "r2d2",
  "r2d2_sqlite",
  "rurqe",
+ "rurqe-cli",
  "serde",
  "tokio",
  "tokio-postgres",
