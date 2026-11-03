@@ -1,7 +1,7 @@
 //! Conversion of bound values and statements into operand expression nodes.
 
 use crate::dialect::Dialect;
-use crate::query::{HasProjection, SelectQuery, TableScope};
+use crate::query::{HasProjection, SelectQuery, TableScope, Unlocked};
 
 use crate::expr::ast::{ExprKind, SubqueryOp};
 use crate::expr::builder::{Expr, NonAggregate};
@@ -228,10 +228,11 @@ impl<C: Column> IntoExpr<C::RustType> for C {
         C::expr_kind()
     }
 }
-impl<D, Tables, T> IntoExpr<T> for SelectQuery<D, Tables, (T,), HasProjection>
+impl<D, Tables, T, Lock> IntoExpr<T> for SelectQuery<D, Tables, (T,), HasProjection, Lock>
 where
     D: Dialect,
     Tables: TableScope,
+    Lock: Unlocked,
 {
     type Scope = ();
     type Aggr = NonAggregate;

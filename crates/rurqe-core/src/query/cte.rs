@@ -8,7 +8,7 @@ use crate::expr::{DerivedAst, SelectAst};
 use crate::schema::Table;
 
 use super::scope::TableScope;
-use super::select::{HasProjection, SelectQuery};
+use super::select::{HasProjection, SelectQuery, Unlocked};
 
 /// Phantom marker carrying the table, row type, and dialect of a subquery.
 ///
@@ -57,8 +57,12 @@ impl<T: Table, Row, D: Dialect> Cte<T, Row, D> {
     /// Creates a CTE for the table `T` from a `SelectQuery`.
     ///
     /// The query is consumed, so its clauses move into the expression instead of
-    /// being copied.
-    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
+    /// being copied. It also has to be unlocked: a statement that claims its rows
+    /// for its own transaction is executed on its own rather than nested into
+    /// another statement — see [`Unlocked`].
+    pub fn new<S: TableScope, Lock: Unlocked>(
+        query: SelectQuery<D, S, Row, HasProjection, Lock>,
+    ) -> Self {
         Self {
             name: T::NAME,
             query: query.into_ast(),
@@ -69,9 +73,12 @@ impl<T: Table, Row, D: Dialect> Cte<T, Row, D> {
 
 impl<Row, D: Dialect> Cte<(), Row, D> {
     /// Creates a CTE with an explicit alias `name` from a `SelectQuery`.
-    pub fn named<S: TableScope>(
+    ///
+    /// Like every conversion into a nested position, the conversion accepts an
+    /// unlocked query alone — see [`Unlocked`].
+    pub fn named<S: TableScope, Lock: Unlocked>(
         name: &'static str,
-        query: SelectQuery<D, S, Row, HasProjection>,
+        query: SelectQuery<D, S, Row, HasProjection, Lock>,
     ) -> Self {
         Self {
             name,
@@ -93,16 +100,16 @@ impl<T: Table, Row: 'static, D: 'static> Table for Cte<T, Row, D> {
 }
 
 /// Starts a CTE definition for the table marker `T` from `query`.
-pub fn cte<T: Table, D: Dialect, S: TableScope, Row>(
-    query: SelectQuery<D, S, Row, HasProjection>,
+pub fn cte<T: Table, D: Dialect, S: TableScope, Row, Lock: Unlocked>(
+    query: SelectQuery<D, S, Row, HasProjection, Lock>,
 ) -> Cte<T, Row, D> {
     Cte::new(query)
 }
 
 /// Starts a CTE definition with an explicit alias `name` from `query`.
-pub fn cte_named<D: Dialect, S: TableScope, Row>(
+pub fn cte_named<D: Dialect, S: TableScope, Row, Lock: Unlocked>(
     name: &'static str,
-    query: SelectQuery<D, S, Row, HasProjection>,
+    query: SelectQuery<D, S, Row, HasProjection, Lock>,
 ) -> Cte<(), Row, D> {
     Cte::named(name, query)
 }
@@ -140,8 +147,11 @@ impl<T: Table, Row, D: Dialect> Lateral<T, Row, D> {
     /// Wraps `query` into a `LATERAL` subquery exposed under the table `T`.
     ///
     /// The query is consumed, so its clauses move into the subquery instead of
-    /// being copied.
-    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
+    /// being copied. Like every conversion into a nested position, the
+    /// conversion accepts an unlocked query alone — see [`Unlocked`].
+    pub fn new<S: TableScope, Lock: Unlocked>(
+        query: SelectQuery<D, S, Row, HasProjection, Lock>,
+    ) -> Self {
         Self {
             query: query.into_ast(),
             _marker: PhantomData,
@@ -150,8 +160,8 @@ impl<T: Table, Row, D: Dialect> Lateral<T, Row, D> {
 }
 
 /// Wraps `query` into a `LATERAL` subquery exposing its rows under the table marker `T`.
-pub fn lateral<T: Table, D: Dialect, S: TableScope, Row>(
-    query: SelectQuery<D, S, Row, HasProjection>,
+pub fn lateral<T: Table, D: Dialect, S: TableScope, Row, Lock: Unlocked>(
+    query: SelectQuery<D, S, Row, HasProjection, Lock>,
 ) -> Lateral<T, Row, D> {
     Lateral::new(query)
 }
@@ -212,7 +222,12 @@ impl<T: Table, Row, D: Dialect> DerivedTable<T, Row, D> {
     /// marker carries none. Recording the bare table name of an aliased marker
     /// would leave the subquery unmatched, so the statement would read the stored
     /// table of that name instead of the rows of `query`.
-    pub fn new<S: TableScope>(query: SelectQuery<D, S, Row, HasProjection>) -> Self {
+    ///
+    /// Like every conversion into a nested position, the conversion accepts an
+    /// unlocked query alone — see [`Unlocked`].
+    pub fn new<S: TableScope, Lock: Unlocked>(
+        query: SelectQuery<D, S, Row, HasProjection, Lock>,
+    ) -> Self {
         let reference = T::table_ref();
         Self {
             name: reference.alias.unwrap_or(reference.name),

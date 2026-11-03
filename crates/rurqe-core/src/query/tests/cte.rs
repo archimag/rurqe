@@ -10,7 +10,7 @@ fn single_cte_renders_with_clause_and_binds_sequential_parameters() {
         .from::<User>()
         .select((UserId, UserName))
         .where_(Expr::column::<UserId>().gt(10i64));
-    let active_cte = cte::<User, _, _, _>(active);
+    let active_cte = cte::<User, _, _, _, _>(active);
 
     let built = SelectQuery::<MockDialect>::new()
         .with(active_cte)

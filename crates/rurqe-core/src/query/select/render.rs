@@ -203,12 +203,16 @@ impl<D: Dialect, Tables: TableScope, Output, P: ProjectionPresent, Lock: Unlocke
     }
 }
 
-impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output, HasProjection> {
+impl<D: Dialect, Tables: TableScope, Output, Lock: Unlocked>
+    SelectQuery<D, Tables, Output, HasProjection, Lock>
+{
     /// Converts this query into a CTE for the table `T`.
     ///
     /// The conversion is reachable only once the query projects its rows, so a
     /// query without a projection has no statement to publish as a named
-    /// relation:
+    /// relation. It also accepts an unlocked query alone, because a statement
+    /// that claims its rows for its own transaction is executed on its own
+    /// rather than becoming the body of a `WITH` clause — see [`Unlocked`]:
     ///
     /// ```compile_fail
     /// use rurqe_core::dialect::Dialect;
@@ -247,16 +251,24 @@ impl<D: Dialect, Tables: TableScope, Output> SelectQuery<D, Tables, Output, HasP
     /// The marker declares the columns of the projected rows, which the caller
     /// states by choosing it: the relation is then referenced like a stored table
     /// — `"name"."column"` — while the database materialises nothing.
+    ///
+    /// Like every conversion into a nested position, the conversion accepts an
+    /// unlocked query alone — see [`Unlocked`].
     pub fn as_table<T: Table>(self) -> DerivedTable<T, Output, D> {
         DerivedTable::new(self)
     }
 
     /// Converts this query into a named CTE with alias `name`.
+    ///
+    /// The nested statement has to be unlocked as well — see [`Unlocked`].
     pub fn as_named_cte(self, name: &'static str) -> Cte<(), Output, D> {
         Cte::named(name, self)
     }
 
     /// Converts this query into a `LATERAL` subquery exposed under the table marker `T`.
+    ///
+    /// Like every conversion into a nested position, the conversion accepts an
+    /// unlocked query alone — see [`Unlocked`].
     pub fn as_lateral<T: Table>(self) -> Lateral<T, Output, D> {
         Lateral::new(self)
     }
