@@ -88,6 +88,12 @@ pub enum PgError {
         failure: DriverError,
     },
     /// The connection could not be checked out of a `deadpool-postgres` pool.
+    ///
+    /// The pool failure stays reachable through
+    /// [`source`](std::error::Error::source), exactly as the driver failure of
+    /// [`Driver`](PgError::Driver) does: the pool separates a checkout timeout
+    /// from a backend failure inside that value, so a caller inspects the cause
+    /// instead of parsing the rendered message.
     #[cfg(feature = "deadpool-postgres")]
     Pool(deadpool_postgres::PoolError),
 }
@@ -131,7 +137,7 @@ impl StdError for PgError {
             PgError::ConnectionPoisoned { .. } => None,
             PgError::AbandonedTransaction { failure } => Some(failure),
             #[cfg(feature = "deadpool-postgres")]
-            PgError::Pool(_) => None,
+            PgError::Pool(error) => Some(error),
         }
     }
 }

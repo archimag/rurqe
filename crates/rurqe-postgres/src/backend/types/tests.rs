@@ -824,3 +824,26 @@ fn a_result_set_is_decoded_one_row_at_a_time() {
         "decoding a further row must not allocate another copy of the result set"
     );
 }
+
+#[cfg(feature = "deadpool-postgres")]
+#[test]
+fn a_pool_failure_stays_reachable_through_its_source() {
+    // A checkout failure reaches the adapter as the pool error of the driver,
+    // whose own variants separate a backpressure timeout from a backend
+    // failure. The adapter wraps it whole, so the cause has to stay reachable
+    // through `source()` instead of surviving only in the rendered message.
+    let failure = deadpool_postgres::PoolError::Backend(
+        "not a connection string"
+            .parse::<tokio_postgres::Config>()
+            .expect_err("the text is not a connection string"),
+    );
+    let error = PgError::Pool(failure);
+
+    let source = std::error::Error::source(&error)
+        .expect("the wrapped pool failure is the source of the adapter error");
+
+    assert!(
+        source.is::<deadpool_postgres::PoolError>(),
+        "the source is the pool failure the adapter wrapped"
+    );
+}
