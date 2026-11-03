@@ -20,19 +20,6 @@ pub trait SelectTarget {
     /// The Rust type produced for this projection.
     type RustType;
 
-    /// Pushes the identifier name of this target if it is a simple column reference.
-    ///
-    /// A target that names no stored column — an expression computed from several
-    /// columns, an aggregate, or a window call — contributes no name and keeps this
-    /// default. The name is what a clause addressing columns alone renders: the
-    /// column list of an `INSERT INTO ... SELECT` and the conflict target of an
-    /// `ON CONFLICT` clause. The projection list of a statement is taken from
-    /// [`to_expr_kind`](SelectTarget::to_expr_kind) instead, so a target without a
-    /// name still projects the value it computes.
-    fn push_column_name(&self, out: &mut Vec<&'static str>) {
-        let _ = out;
-    }
-
     /// Builds the dialect-neutral AST node this target renders into.
     ///
     /// The node describes the projection as plain data, so the surrounding
@@ -43,10 +30,6 @@ pub trait SelectTarget {
 
 impl<C: Column> SelectTarget for C {
     type RustType = C::RustType;
-
-    fn push_column_name(&self, out: &mut Vec<&'static str>) {
-        out.push(C::NAME);
-    }
 
     fn to_expr_kind(&self) -> ExprKind {
         C::expr_kind()
@@ -366,6 +349,12 @@ impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7);
 impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
 
 /// A list of selected columns whose Rust value types form the query row type.
+///
+/// A selection records the projection items of a statement and nothing else: it
+/// appends them through [`push_projections`](Selection::push_projections), which
+/// is what the statement renders. The columns a clause addresses by name are
+/// stated by [`TableSelection::push_column_names`], the surface of a selection
+/// whose every item is a column of the mutated table.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a supported selection",
     label = "select a column or a tuple of columns",
@@ -374,19 +363,6 @@ impl_selection_for!(T1 P1, T2 P2, T3 P3, T4 P4, T5 P5, T6 P6, T7 P7, T8 P8);
 pub trait Selection {
     /// The tuple of Rust values produced for a single row.
     type Row;
-
-    /// Appends the SQL names of simple selected columns to `out`.
-    ///
-    /// A selection of computed expressions names no column, which is the state
-    /// this default serves: the method is what a clause addressing columns alone
-    /// renders — the column list of an `INSERT INTO ... SELECT` and the conflict
-    /// target of an `ON CONFLICT` clause — while the projection list of a statement
-    /// is taken from [`push_projections`](Selection::push_projections). A selection
-    /// carrying columns delegates the call to [`SelectTarget::push_column_name`] of
-    /// every item, which is what the tuple and macro implementations do.
-    fn push_column_names(&self, out: &mut Vec<&'static str>) {
-        let _ = out;
-    }
 
     /// Appends the dialect-neutral AST node of every projection item to `out`.
     ///
@@ -412,9 +388,6 @@ pub trait Selection {
     ///
     ///     // Fails to compile: `push_projections` records the items the statement
     ///     // projects, so every implementation has to state them.
-    ///     fn push_column_names(&self, out: &mut Vec<&'static str>) {
-    ///         let _ = out;
-    ///     }
     /// }
     /// ```
     ///
@@ -430,11 +403,6 @@ macro_rules! impl_selection {
         #[allow(non_snake_case, unused_assignments)]
         impl<$($target: SelectTarget),+> Selection for ($($target,)+) {
             type Row = ($($target::RustType,)+);
-
-            fn push_column_names(&self, out: &mut Vec<&'static str>) {
-                let ($($target,)+) = self;
-                $($target.push_column_name(out);)+
-            }
 
             fn push_projections(&self, out: &mut Vec<ExprKind>) {
                 let ($($target,)+) = self;
@@ -453,19 +421,42 @@ impl_selection!(T1, T2, T3, T4, T5, T6);
 impl_selection!(T1, T2, T3, T4, T5, T6, T7);
 impl_selection!(T1, T2, T3, T4, T5, T6, T7, T8);
 
-/// Statically asserts that every projected column belongs to the mutated table `T`.
+/// The selection surface of a table a statement mutates.
+///
+/// A `RETURNING` clause projects the columns of the mutated table, and the
+/// conflict target of an `ON CONFLICT` clause names them, so both clauses take a
+/// selection that states the columns of that table. The trait is therefore the
+/// only surface that names columns: [`Selection`] records the projection items of
+/// a statement, while a selection reaches this trait only when every one of its
+/// items is a column of `T`, which is exactly when a list of names agrees with
+/// the projections beside it.
+///
+/// Every implementation states the names itself through the required method, so a
+/// selection cannot inherit a list describing only some of its projections.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a selection of table `{T}`",
     label = "one of the projected columns belongs to another table",
     note = "project only columns of the mutated table in a RETURNING clause or conflict target"
 )]
-pub trait TableSelection<T: Table>: Selection {}
+pub trait TableSelection<T: Table>: Selection {
+    /// Appends the SQL names of the selected columns to `out`, in declaration order.
+    ///
+    /// The name is what a clause addressing columns alone renders — the conflict
+    /// target of an `ON CONFLICT` clause — while a `RETURNING` clause renders the
+    /// items recorded by [`Selection::push_projections`]. The method has no default
+    /// body, so an implementation states the columns it selects instead of leaving
+    /// the list to a default that could describe none of them.
+    fn push_column_names(&self, out: &mut Vec<&'static str>);
+}
 
 macro_rules! impl_table_selection {
     ($($column:ident),+) => {
         impl<T: Table, $($column: Column + ColumnBelongsTo<T>),+> TableSelection<T>
             for ($($column,)+)
         {
+            fn push_column_names(&self, out: &mut Vec<&'static str>) {
+                $(out.push($column::NAME);)+
+            }
         }
     };
 }
@@ -515,6 +506,7 @@ mod tests {
     crate::table!(
         User => "users" {
             UserId => "id": i64,
+            UserName => "name": String,
         }
     );
 
@@ -595,6 +587,20 @@ mod tests {
         fn assert_rust_type<C: Column<RustType = Option<i64>>>() {}
 
         assert_rust_type::<Nullable<UserId>>();
+    }
+
+    /// Collects the column names a selection reports for the mutated table `T`.
+    fn column_names<T: Table, S: TableSelection<T>>(selection: S) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        selection.push_column_names(&mut out);
+        out
+    }
+
+    #[test]
+    fn the_tuple_table_selection_names_its_columns_in_declaration_order() {
+        assert_eq!(column_names::<User, _>((UserId,)), vec!["id"]);
+        assert_eq!(column_names::<User, _>((UserId, UserName)), vec!["id", "name"]);
+        assert_eq!(column_names::<User, _>((UserName, UserId)), vec!["name", "id"]);
     }
 
     #[test]

@@ -522,7 +522,9 @@ impl Selection for MixedReturning {
     }
 }
 
-impl TableSelection<User> for MixedReturning {}
+impl TableSelection<User> for MixedReturning {
+    fn push_column_names(&self, _out: &mut Vec<&'static str>) {}
+}
 
 /// A selection made only of computed projections.
 struct ExpressionOnlyReturning;
@@ -534,8 +536,9 @@ impl Selection for ExpressionOnlyReturning {
         out.push(computed_projection());
     }
 }
-
-impl TableSelection<User> for ExpressionOnlyReturning {}
+impl TableSelection<User> for ExpressionOnlyReturning {
+    fn push_column_names(&self, _out: &mut Vec<&'static str>) {}
+}
 
 #[test]
 fn returning_renders_a_computed_projection_beside_a_column() {

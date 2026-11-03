@@ -38,6 +38,14 @@
 //! column of a table the clause cannot address, are therefore rejected at the call
 //! site that embeds the projection.
 //!
+//! Naming the selected columns is the duty of that implementation alone: the
+//! expansion states one `Column::NAME` per column item in the `TableSelection`
+//! implementation, while the general
+//! [`Selection`](rurqe_core::query::Selection) implementation records the
+//! projection list and nothing else. A projection list mixing column markers with
+//! computed items therefore carries no column-naming surface at all, so the name
+//! list and the projection list of one selection cannot disagree in arity.
+//!
 //! Every path the expansion emits is anchored at `::rurqe::__core`, the re-export
 //! of `rurqe-core` the facade publishes for its macros: a procedural macro cannot
 //! name its own facade the way a declarative macro does with `$crate`, so the
@@ -80,7 +88,8 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
     let mut from_positions = TokenStream::new();
     // A projection list selects the mutated table only while every item is a
     // column of it, so the flag is cleared as soon as a computed projection is
-    // recorded.
+    // recorded. That implementation is also where the expansion names the selected
+    // columns, which is why a mixed list carries no naming surface.
     let mut all_columns = true;
     let mut record_params = Vec::new();
     let mut record_args = Vec::new();
@@ -155,9 +164,9 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 belongs_bounds.extend(quote! {
                     #element: ::rurqe::__core::schema::ColumnBelongsTo<__T>,
                 });
-                // `push_column_names` names the columns themselves — an `INSERT`
-                // column list or an `ON CONFLICT` target takes no alias — while
-                // the projection below carries the field name of the record.
+                // Column naming lives in the `TableSelection` implementation
+                // emitted below — an `ON CONFLICT` target takes no alias — while
+                // the projection carries the field name of the record.
                 name_pushes.extend(quote! {
                     out.push(<#element as ::rurqe::__core::schema::Column>::NAME);
                 });
@@ -209,7 +218,12 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
             where
                 #selection_bounds
                 #belongs_bounds
-            {}
+            {
+                #[allow(unused_variables)]
+                fn push_column_names(&self, out: &mut ::std::vec::Vec<&'static str>) {
+                    #name_pushes
+                }
+            }
         }
     } else {
         TokenStream::new()
@@ -240,11 +254,6 @@ fn expand_projections(projections: &ProjectionList) -> syn::Result<TokenStream> 
                 #selection_bounds
             {
                 type Row = #record_ident<#(#record_args),*>;
-
-                #[allow(unused_variables)]
-                fn push_column_names(&self, out: &mut ::std::vec::Vec<&'static str>) {
-                    #name_pushes
-                }
 
                 #[allow(unused_variables)]
                 fn push_projections(
@@ -394,6 +403,30 @@ mod tests {
     }
 
     #[test]
+    fn a_projection_of_columns_names_them_from_the_table_selection_implementation() {
+        let projections = projection_list("UserId, UserEmail");
+        let expanded = expand_projections(&projections).expect("projections expand");
+        let rendered = compact(&expanded);
+
+        let table_impl = rendered
+            .find("::rurqe::__core::query::TableSelection")
+            .expect("the table selection implementation is emitted");
+        let naming = rendered
+            .find("push_column_names")
+            .expect("the table selection implementation names its columns");
+
+        // The naming method is emitted once, inside the implementation that alone
+        // may name columns.
+        assert_eq!(rendered.matches("push_column_names").count(), 1);
+        assert!(table_impl < naming);
+        // The naming is emitted inside the `TableSelection` implementation,
+        // whose generic parameters are the element markers of the selection, so
+        // the pin names those parameters rather than the record fields.
+        assert!(rendered.contains("out.push(<E0as::rurqe::__core::schema::Column>::NAME);"));
+        assert!(rendered.contains("out.push(<E1as::rurqe::__core::schema::Column>::NAME);"));
+    }
+
+    #[test]
     fn a_projection_with_a_computed_item_is_not_a_table_selection() {
         let projections = projection_list("UserId, total: Expr::count_all()");
         let expanded = expand_projections(&projections).expect("projections expand");
@@ -403,6 +436,10 @@ mod tests {
         // mutated row, so no implementation is emitted for any table.
         assert!(!rendered.contains("TableSelection"));
         assert!(!rendered.contains("ColumnBelongsTo"));
+        // The naming surface lives in that implementation alone, so a mixed list
+        // carries none at all: the column-name and projection lists of one
+        // selection can no longer disagree in arity.
+        assert!(!rendered.contains("push_column_names"));
     }
 
     /// Renders an expansion without the whitespace the token stream interleaves,

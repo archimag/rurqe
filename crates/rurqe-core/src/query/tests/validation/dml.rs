@@ -204,7 +204,9 @@ impl Selection for TrunkReturning {
     }
 }
 
-impl TableSelection<Order> for TrunkReturning {}
+impl TableSelection<Order> for TrunkReturning {
+    fn push_column_names(&self, _out: &mut Vec<&'static str>) {}
+}
 
 #[test]
 fn an_insert_returning_projection_embedding_an_invalid_statement_is_rejected() {

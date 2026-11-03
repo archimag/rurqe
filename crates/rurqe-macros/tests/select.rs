@@ -110,14 +110,27 @@ fn read_collection<R: SqlArrayElement>(
 /// Asserts that the record of `_row` can be one element of a collection.
 fn assert_element<R: SqlArrayElement>(_row: &R) {}
 
+/// Collects the column names a selection reports for the mutated table `T`.
+///
+/// Naming columns is the duty of `TableSelection` alone, so the helper can only
+/// be called for a selection whose every item is a column of `T` — the surface a
+/// conflict target or a `RETURNING` clause requires.
+fn column_names<T: rurqe_core::schema::Table, S: rurqe_core::query::TableSelection<T>>(
+    selection: S,
+) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    selection.push_column_names(&mut out);
+    out
+}
+
 #[test]
 fn projects_columns_in_declaration_order() {
     let selection = select!(UserId, UserEmail, UserActive);
 
-    let mut names = Vec::new();
-    selection.push_column_names(&mut names);
-
-    assert_eq!(names, vec!["id", "email", "active"]);
+    assert_eq!(
+        column_names::<User, _>(selection),
+        vec!["id", "email", "active"]
+    );
 }
 
 #[test]

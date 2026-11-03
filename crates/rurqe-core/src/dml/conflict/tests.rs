@@ -57,10 +57,10 @@ impl AssignmentScope for EmptyAssignments {
 
 /// A selection that records a projection while naming no target column.
 ///
-/// The tuple implementations inside the crate always name at least one column,
-/// while the trait is public and `Selection::push_column_names` defaults to
-/// recording nothing, so a selection declared outside the crate can leave the
-/// conflict target empty while still providing a projection — the shape the
+/// The tuple implementations inside the crate name every column they select,
+/// while `TableSelection` is public and its `push_column_names` records whatever
+/// an implementation states, so a selection declared outside the crate can leave
+/// the conflict target empty while still providing a projection — the shape the
 /// missing-target rejection is written for.
 struct NamelessTarget;
 
@@ -72,7 +72,9 @@ impl Selection for NamelessTarget {
     }
 }
 
-impl TableSelection<User> for NamelessTarget {}
+impl TableSelection<User> for NamelessTarget {
+    fn push_column_names(&self, _out: &mut Vec<&'static str>) {}
+}
 
 fn assert_target_scope<S: ConflictTargetScope<User>>() {}
 

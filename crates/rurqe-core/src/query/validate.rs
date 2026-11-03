@@ -462,11 +462,12 @@ pub enum BuildError {
     /// form the grammar accepts without a target.
     ///
     /// [`InsertQuery::on_conflict`](crate::dml::InsertQuery::on_conflict)
-    /// derives the target column list from the selection it is given, and
-    /// [`Selection::push_column_names`](crate::query::Selection::push_column_names)
-    /// records nothing by default, so a selection pushing projections while
-    /// naming no column leaves the clause without a target. The clause is
-    /// rejected here before a single character of it is rendered.
+    /// derives the target column list from the selection it is given through
+    /// [`TableSelection::push_column_names`](crate::query::TableSelection::push_column_names),
+    /// which every implementation of that public trait states for itself and may
+    /// leave recording nothing at all. A selection that projects a row while
+    /// naming no target column therefore leaves the clause without a target, and
+    /// the clause is rejected here before a single character of it is rendered.
     MissingConflictTarget,
     /// A statement records no projected column.
     ///
