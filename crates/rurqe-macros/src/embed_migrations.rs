@@ -290,12 +290,29 @@ fn plan(configuration: &CodegenConfig, directory: &Path) -> Result<Artifacts, St
 /// An absent directory holds no script, which is how an artifact a project does
 /// not keep switches itself off. A directory that cannot be listed is an error:
 /// silently skipping a script would bake a collection missing part of the schema.
+///
+/// Every script is baked under the file name that identifies it and from the path
+/// that name composes with the artifact directory, so both halves have to be text.
+/// The directory is validated once, because it prefixes the path of every entry,
+/// and each name is validated once, because the directory leaves no other part of
+/// that path unchecked.
 fn scan(directory: &Path) -> Result<Vec<Script>, String> {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(read_failure(directory, &error)),
     };
+
+    // The artifact directory prefixes every inclusion path this scan bakes, so it
+    // is validated once here instead of once per entry. An absent directory
+    // returned above holds no script, which is why it needs no path of its own.
+    if directory.to_str().is_none() {
+        return Err(format!(
+            "the artifact directory `{}` has a path that is not valid UTF-8, so the macro cannot \
+             bake the scripts it holds",
+            directory.display()
+        ));
+    }
 
     let mut scripts = Vec::new();
 
@@ -310,23 +327,23 @@ fn scan(directory: &Path) -> Result<Vec<Script>, String> {
             continue;
         }
 
-        let Some(text) = path.to_str() else {
+        // The file name identifies the script inside the baked collection and
+        // completes the path its `include_str!` reads, so it has to be text. The
+        // directory was validated above, so the name is the only remaining part of
+        // that path which can turn out not to be text. Every directory entry names
+        // itself: `read_dir` never yields `.`, `..`, or a nameless entry.
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
             return Err(format!(
-                "the script `{}` has a path that is not valid UTF-8, so the macro cannot bake it",
+                "the script `{}` has a file name that is not valid UTF-8, so the macro cannot \
+                 bake it",
                 path.display()
-            ));
-        };
-
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            return Err(format!(
-                "the script `{text}` has a file name that is not valid UTF-8, so the macro \
-                 cannot bake it"
             ));
         };
 
         scripts.push(Script {
             name: name.to_owned(),
-            path: path.clone(),
+            path,
         });
     }
 
@@ -489,6 +506,26 @@ mod tests {
 
         assert!(error.contains("holds no top-level `*.sql` script"), "{error}");
         assert!(error.contains("rurqe.toml"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_script_name_that_is_not_text_is_rejected() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = temporary_directory("non-utf8-name");
+        let directory = root.join("migrations");
+        let name = std::ffi::OsString::from_vec(b"V1__in\xFFt.sql".to_vec());
+        write(&directory.join(&name), "SELECT 1;");
+
+        let error = plan(&fixture_configuration("migrations", "schema"), &root)
+            .expect_err("a name that is not text cannot identify a baked script");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(
+            error.contains("file name that is not valid UTF-8"),
+            "{error}"
+        );
     }
 
     #[test]
