@@ -48,13 +48,27 @@ Given `only_active: bool` and `name: Option<&str>`, a handler builds the stateme
 {{#rustdoc_include ../examples/filtering.rs:dynamic}}
 ```
 
-With the flag set and the search term present, both predicates land in the statement: `WHERE (("active" = $1) AND ("name" = $2))`, in the order they were added. With the flag clear and the option absent, the statement carries no `WHERE` at all — the snippet above takes the first branch only, so it renders `WHERE ("active" = $1)`.
+With the flag set and the search term present, both predicates land in the statement: `WHERE (("active" = $1) AND ("name" = $2))`, in the order they were added. In the snippet above the flag holds and the option is absent, so the search predicate is skipped and the statement renders `WHERE ("active" = $1)`; with the flag clear as well, no `WHERE` clause is rendered at all.
 
-- `.where_(pred)`: adds the condition with `AND`.
-- `.where_opt(Option<pred>)`: adds it when the option is `Some`.
-- `.when(flag, |q| ...)`: applies the closure when the flag holds.
-- `.if_some(value, |q, v| ...)`: applies the closure on `Some`, handing the value over.
-The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`. Mutations add two spellings of their own: `.where_opt_or_all(...)` and `.allow_all()`.
+The surface is one, partitioned by the statements that offer it.
+
+Every filtering statement — `SELECT`, `UPDATE`, and `DELETE` alike — accepts two spellings:
+
+- `.where_(pred)` adds the condition with `AND`, so repeated calls keep folding.
+- `.where_opt(Option<pred>)` adds the predicate when the option is `Some` and leaves the statement unchanged otherwise. On a mutation the call is the `.where_if(...)` spelling below, so an absent predicate keeps the filtering typestate the statement arrived with.
+
+A `SELECT` additionally accepts the conditional composition closures:
+
+- `.when(flag, |q| ...)` applies the closure when the flag holds.
+- `.if_some(value, |q, v| ...)` applies the closure on `Some`, handing the value over.
+
+The closure returns the query it was given, so a clause that would change the query type — a projection, a join, a lock — stays outside `when` and `if_some`.
+
+A mutation — `UPDATE` or `DELETE` — adds three spellings of its own:
+
+- `.where_opt_or_all(Option<pred>)` records the predicate when it is present, and an absent predicate is an explicit confirmation of the full-table mutation.
+- `.where_if(Option<pred>)` records the predicate when it is present and keeps the filtering typestate, so an absent predicate never widens into a full-table mutation: the caller supplies the missing predicate or opts in through `.allow_all()`.
+- `.allow_all()` confirms a full-table mutation explicitly, without recording a condition.
 
 ## `LIKE`, `ILIKE`, and SQLite
 
