@@ -32,9 +32,9 @@ pub use redact::redact_database_url;
 pub use report::CommandOutput;
 
 use self::commands::{
-    apply_migrations, baseline_database, clean_database, cleanup_stage, commit_stage, help_text,
-    initialise_stage, prune_migrations, repair_history, report_status, verify_stage, write_file,
-    Project,
+    apply_migrations, baseline_database, carry_notice, clean_database, cleanup_stage, commit_stage,
+    help_text, initialise_stage, prune_migrations, repair_history, report_status, verify_stage,
+    write_file, Project,
 };
 use self::connection::resolve_database_url;
 
@@ -99,12 +99,20 @@ macro_rules! with_migration_backend {
                 let notice = report_vacuous_postgres_selection(&mut client, &selection)?;
                 let mut $backend = PostgresMigrationBackend::new(client).with_schemas(selection);
 
-                // The notice travels in the report of the command, so a digest
-                // computed over a selection that describes nothing reaches the
-                // operator whether or not a tracing sink is installed.
-                let mut output = $run?;
-                output.notice(notice);
-                Ok(output)
+                // The notice reaches the operator whether or not a tracing sink is
+                // installed: a successful command carries it in the report it prints,
+                // while a failing command carries it inside the error, which is the
+                // only output a failure guarantees. Folding the notice into the error
+                // keeps the warning beside the misleading findings a wrong selection
+                // manufactures instead of discarding it with the report that never
+                // materialised.
+                match $run {
+                    Ok(mut output) => {
+                        output.notice(notice);
+                        Ok(output)
+                    }
+                    Err(error) => Err(carry_notice(notice.as_deref(), error)),
+                }
             }
         }
     }};
@@ -283,8 +291,13 @@ pub(crate) fn run_cli_with_config(
             })?;
             let schema_code = project.resolve_schema_code(schema_path)?;
             let (catalog, notice) = introspect_database_selection_notice(&url, &selection)?;
-            verify_drift(&catalog, &expected_lock, schema_code.as_deref())
-                .map_err(|err| CliError::with_cause(CliCause::Drift(err)))?;
+            verify_drift(&catalog, &expected_lock, schema_code.as_deref()).map_err(|err| {
+                // The drift gate is the only failure that can follow the notice, and
+                // a wrong selection is exactly what manufactures its misleading
+                // findings, so the warning travels inside the error while a passing
+                // gate reports it beside the result.
+                carry_notice(notice.as_deref(), CliError::with_cause(CliCause::Drift(err)))
+            })?;
 
             // A selection that describes nothing compares nothing against
             // nothing, so the pass is reported together with the notice that

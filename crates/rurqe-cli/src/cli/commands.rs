@@ -36,6 +36,29 @@ pub(super) fn cli_error(err: impl std::fmt::Display) -> CliError {
     CliError::message(err.to_string())
 }
 
+/// Folds the schema-selection notice of a command into the failure it reported.
+///
+/// A command resolves its schema selection before it opens the database, and a
+/// selection that describes nothing produces the one warning that explains the
+/// misleading findings a wrong `--schema` manufactures: a catalog digest computed
+/// over no relation, a drift gate reporting every relation as missing, a cold start
+/// anchored to an empty hash. The notice travels in the report of a successful
+/// command, but the only output a failing command guarantees is its error, so the
+/// warning is appended to the failure line here instead of being discarded together
+/// with the report that never materialised — the same principle `carry_recovery`
+/// applies to a repaired interrupted commit.
+///
+/// The typed cause of the failure is preserved, because the notice is appended as
+/// its own trailing line rather than substituted for the failure; an absent notice
+/// leaves the error untouched.
+pub(crate) fn carry_notice(notice: Option<&str>, mut error: CliError) -> CliError {
+    let Some(notice) = notice else {
+        return error;
+    };
+
+    error.extend_message(format!("\n{notice}"));
+    error
+}
 /// The generated module code generation writes when the project declares no path.
 ///
 /// The path is the built-in default of the generator — the last tier of the
