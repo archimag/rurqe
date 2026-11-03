@@ -25,20 +25,18 @@ Every declared path resolves against the directory holding the file, never again
 
 The document is read strictly, because a misspelled key would resolve an artifact into a directory the project never intended, generate a module with the wrong types, or describe a catalog the project never targeted. An unknown key, a value of the wrong shape, a blank name, and a repeated declaration are each refused with the line and the column of the declaration that caused it, and a file that is malformed in any way aborts the command instead of being partially applied — a command that consumes no artifact path at all, `stage cleanup` included, validates the file it accepted just the same.
 
-## Configuration parameters
-kKcr | 
-k48Z | | Key | Type | Default | Purpose |
-kgDk | |---|---|---|---|
-kURE | | `root` | string | `rurqe` | The artifact directory every lifecycle artifact lives beneath. |
-R9bb | | `primary_schema` | string | `public` | The database schema the project's catalog digests describe. |
-k2N9 | | `schema` | string | — | The legacy spelling of `primary_schema`; both keys configure one setting. |
-kj4N | | `schemas` | array of strings | `[]` | The secondary schemas described beside the primary one. |
-kmrZ | | `migrations.dir` | string | `<root>/migrations` | The directory holding the migration tail. |
-RYNr | | `stage.dir` | string | `<root>/schema` | The directory holding the declarative stage. |
-kNp7 | | `stage.checkpoint` | string | `<migrations.dir>/checkpoint.toml` | The file holding the boundary marker. |
-km2f | | `codegen.output` | string | `src/schema.rs` | The module code generation writes and verification reads. |
-kXgf | | `codegen.domain_types` | boolean | `false` | Whether the generator emits the application's domain types. |
-RRVX | | `codegen.type_overrides` | table | empty table | The Rust type generated for a named column. |
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `root` | string | `rurqe` | The artifact directory every lifecycle artifact lives beneath. |
+| `primary_schema` | string | `public` | The database schema the project's catalog digests describe. |
+| `schema` | string | — | The legacy spelling of `primary_schema`; both keys configure one setting. |
+| `schemas` | array of strings | `[]` | The secondary schemas described beside the primary one. |
+| `migrations.dir` | string | `<root>/migrations` | The directory holding the migration tail. |
+| `stage.dir` | string | `<root>/schema` | The directory holding the declarative stage. |
+| `stage.checkpoint` | string | `<migrations.dir>/checkpoint.toml` | The file holding the boundary marker. |
+| `codegen.output` | string | `src/schema.rs` | The module code generation writes and verification reads. |
+| `codegen.domain_types` | boolean | `false` | Whether the generator emits the application's domain types. |
+| `codegen.type_overrides` | table | empty table | The Rust type generated for a named column. |
 
 Nothing else is accepted, at the root and inside the sections alike, and the refusal lands on the declaration:
 
