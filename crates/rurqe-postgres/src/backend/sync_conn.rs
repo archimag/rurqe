@@ -233,6 +233,7 @@ impl PgConnection<&mut postgres::Client> {
     /// that in fact still holds a transaction would let a `BEGIN` join it, which is
     /// exactly what the repair prevents. A pooled checkout is the caller that can
     /// state it, because the connection was returned to the pool in an idle state.
+    #[cfg_attr(not(feature = "r2d2"), allow(dead_code))]
     pub(crate) fn borrowed_idle(
         client: &mut postgres::Client,
     ) -> PgConnection<&mut postgres::Client> {
