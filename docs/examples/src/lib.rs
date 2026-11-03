@@ -33,6 +33,7 @@
 //! example targets only under `<package>/examples/`.
 
 pub mod anchors;
+pub mod markers;
 
 use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;

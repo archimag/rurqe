@@ -3,22 +3,7 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table!(
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-    }
-);
-
-table!(
-    /// The `orders` table.
-    Order => "orders" {
-        OrderId => "id": i64,
-        OrderTotal => "total": f64,
-        OrderStatus => "status": String,
-        OrderUserId => "user_id": i64,
-    }
-);
+use rurqe_examples::markers::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {

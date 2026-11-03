@@ -2,13 +2,7 @@
 
 use rurqe::postgres::prelude::*;
 use rurqe_examples::example_pool;
-table!(
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-    }
-);
+use rurqe_examples::markers::*;
 
 table!(
     /// The `events` table.

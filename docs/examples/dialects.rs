@@ -6,27 +6,7 @@ use rurqe::postgres::pg14;
 use rurqe::postgres::pg16;
 use rurqe::postgres::prelude::*;
 use rurqe::sqlite::{sqlite3_0, sqlite3_24, sqlite3_35};
-
-table!(
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-    }
-);
-table_alias! {
-    /// The `u` alias of the `users` table.
-    UserAlias => User as "u"
-}
-table!(
-    /// The `profiles` table, read through the PostgreSQL extensions.
-    Profile => "profiles" {
-        ProfileId => "id": i64,
-        ProfileBio => "bio": String,
-        ProfileMetadata => "metadata": PgJson,
-        ProfileTags => "tags": Vec<String>,
-    }
-);
+use rurqe_examples::markers::*;
 
 fn main() -> Result<(), BuildError> {
     // ANCHOR: postgres
