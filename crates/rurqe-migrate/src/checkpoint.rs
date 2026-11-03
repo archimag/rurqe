@@ -162,6 +162,14 @@ impl Checkpoint {
     /// tail as usual; a target below it — or one that never recorded a version —
     /// is rejected, because the scripts that would bring it forward have been
     /// pruned.
+    ///
+    /// Both probes read the successful rows alone: the stage-marker probe skips
+    /// an unsuccessful entry, and so does the recorded-version probe. A history
+    /// whose newest row is the in-progress `<< Stage >>` marker of an interrupted
+    /// cold start therefore records no version here, and the boundary reports the
+    /// target as outdated. The caller checks failed entries before it reaches
+    /// this method, so the actionable partial-initialisation diagnostic wins over
+    /// the boundary rejection.
     pub fn validate_history(&self, history: &[SchemaHistoryEntry]) -> Result<(), Error> {
         let stage_marker = history.iter().find(|entry| {
             entry.success

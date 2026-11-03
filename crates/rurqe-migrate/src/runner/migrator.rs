@@ -525,11 +525,31 @@ impl Migrator {
 
         Ok(())
     }
+    /// Rejects a history the run cannot continue from.
+    ///
+    /// A failed entry is reported first, before the checkpoint boundary is
+    /// measured. [`Checkpoint::validate_history`] reads that boundary through the
+    /// successful rows alone, so the in-progress `<< Stage >>` marker an
+    /// interrupted cold start leaves behind — an unsuccessful row carrying the
+    /// boundary version — would otherwise surface as
+    /// [`Error::OutdatedCheckpoint`], whose remedy is to advance the target or
+    /// rebuild it from `schema/`, while `repair` is what actually clears the
+    /// state. Reporting the failure first keeps the actionable diagnostic,
+    /// whatever boundary is attached.
     fn validate_history(
         &self,
         history: &[SchemaHistoryEntry],
         migrations: &[Migration],
     ) -> Result<(), Error> {
+        for entry in history {
+            if !entry.success {
+                return Err(Error::FailedMigrationAlreadyApplied {
+                    script: entry.script.clone(),
+                    installed_rank: entry.installed_rank,
+                });
+            }
+        }
+
         if let Some(checkpoint) = &self.checkpoint {
             checkpoint.validate_history(history)?;
         }
@@ -538,13 +558,6 @@ impl Migrator {
             migrations.iter().map(|m| (m.script.as_str(), m)).collect();
 
         for entry in history {
-            if !entry.success {
-                return Err(Error::FailedMigrationAlreadyApplied {
-                    script: entry.script.clone(),
-                    installed_rank: entry.installed_rank,
-                });
-            }
-
             if let Some(m) = migrations_by_script.get(entry.script.as_str()) {
                 if m.is_versioned() && entry.is_modified(m) {
                     return Err(Error::ChecksumMismatch {

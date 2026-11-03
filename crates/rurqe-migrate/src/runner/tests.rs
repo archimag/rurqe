@@ -108,6 +108,60 @@ fn checkpoint_rejects_diverged_stage_marker_hash() {
 }
 
 #[test]
+fn an_interrupted_cold_start_is_reported_as_failed_under_a_checkpoint() {
+    let mut backend = InMemoryBackend::new();
+    let interrupted = SchemaHistoryEntry {
+        installed_rank: 1,
+        version: Some("3".parse().expect("a valid version")),
+        description: "stage".to_owned(),
+        kind: MigrationKind::Baseline,
+        script: crate::stage::STAGE_SCRIPT.to_owned(),
+        checksum: Some(Checksum::of(b"stage")),
+        installed_on: "2024-01-01 00:00:00".to_owned(),
+        execution_time_ms: 0,
+        success: false,
+    };
+    backend.history.push(interrupted);
+
+    let tail = Migration::parse("V4__tail.sql", "CREATE TABLE orders (id INTEGER);")
+        .expect("a valid script name");
+
+    // Without a boundary the failed entry is what the run reports ...
+    let unbounded = Migrator::new()
+        .migrate(&mut backend, std::slice::from_ref(&tail))
+        .expect_err("an interrupted cold start blocks the run");
+    assert!(
+        matches!(
+            &unbounded,
+            Error::FailedMigrationAlreadyApplied {
+                script,
+                installed_rank: 1
+            } if script == crate::stage::STAGE_SCRIPT
+        ),
+        "got {unbounded:?}"
+    );
+    assert!(unbounded.to_string().contains("repair"), "got {unbounded}");
+
+    // ... and an attached checkpoint answers exactly the same way. The boundary
+    // reads the successful rows alone, so the failed marker is invisible to it:
+    // reporting the failure first is what keeps the actionable remedy visible.
+    let bounded = Migrator::with_checkpoint(boundary("3"))
+        .migrate(&mut backend, &[tail])
+        .expect_err("the failed entry blocks a bounded run too");
+    assert!(
+        !matches!(&bounded, Error::OutdatedCheckpoint { .. }),
+        "the boundary must not mask the failed entry: {bounded:?}"
+    );
+    assert_eq!(
+        unbounded, bounded,
+        "the attached boundary never changes the diagnostic of a failed entry"
+    );
+
+    assert_eq!(backend.history.len(), 1, "no script of the run was applied");
+    assert!(!backend.locked, "the lock is released on the way out");
+}
+
+#[test]
 fn checkpoint_accepts_a_catalog_matching_its_hash() {
     let mut backend = InMemoryBackend::new();
     let stage = Migration::parse("V3__stage.sql", "CREATE TABLE users (id INTEGER);")
