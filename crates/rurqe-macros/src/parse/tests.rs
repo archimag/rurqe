@@ -636,3 +636,49 @@ fn field_removing_attributes_are_rejected_inside_a_projection_list() {
         "unexpected message: {error}"
     );
 }
+
+#[test]
+fn a_bare_marker_spelling_reports_the_turbofish_and_the_alias_remedy() {
+    for source in [
+        "Nullable<UserId>",
+        "users::Nullable<UserId>",
+        "Nullable<Vec<UserId>>",
+        "payload: Nullable<UserId>",
+        "Nullable<UserId> as payload",
+    ] {
+        let error = parse_str::<ProjectionItem>(source)
+            .expect_err("a bare generic argument list is not expression syntax");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("spelled without its turbofish"),
+            "unexpected message for `{source}`: {message}"
+        );
+        assert!(
+            message.contains("`Nullable::<...>`"),
+            "no turbofish spelling in `{source}`: {message}"
+        );
+        assert!(
+            message.contains("alias: <target>"),
+            "no alias remedy in `{source}`: {message}"
+        );
+    }
+}
+
+#[test]
+fn an_unclosed_comparison_keeps_the_grammar_diagnostic() {
+    let error = parse_str::<ProjectionItem>("price <").expect_err("the comparison is incomplete");
+
+    assert!(
+        !error.to_string().contains("spelled without its turbofish"),
+        "an unclosed comparison is not a marker spelling: {error}"
+    );
+}
+
+#[test]
+fn the_turbofish_spelling_is_the_named_column_marker() {
+    let item: ProjectionItem = parse_str("Nullable::<UserId>").expect("valid projection");
+
+    assert!(matches!(item.target, ProjectionTarget::Column(_)));
+    assert_eq!(item.field_ident().expect("named"), "user_id");
+}

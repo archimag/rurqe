@@ -162,7 +162,17 @@ impl Parse for ProjectionItem {
         }
 
         let (alias, target_tokens) = split_naming(tokens)?;
-        let target: Expr = syn::parse2(target_tokens)?;
+        let target: Expr = match syn::parse2(target_tokens.clone()) {
+            Ok(target) => target,
+            // A marker spelled with a bare argument list is not expression syntax,
+            // so the grammar refuses it at the tail of the item; the check names the
+            // spelling and its remedy in place of that generic diagnostic.
+            Err(error) => {
+                let trees: Vec<TokenTree> = target_tokens.into_iter().collect();
+                reject_bare_marker(&trees)?;
+                return Err(error);
+            }
+        };
         let target = match target {
             Expr::Path(path) if path.qself.is_none() => ProjectionTarget::Column(path.path),
             other => ProjectionTarget::Expr(other),
@@ -290,7 +300,87 @@ fn closes_generic_arguments(previous: &[TokenTree]) -> bool {
         }
         _ => true,
     }
+    }
+
+/// Reports a column marker written with a bare generic argument list.
+///
+/// A marker takes its type arguments through the turbofish (`Nullable::<UserId>`),
+/// because that is the only spelling the expression grammar accepts: outside a
+/// turbofish a `<` is a comparison operator, so the bare form (`Nullable<UserId>`)
+/// is read as a chain of comparisons and refused at the tail of the item with
+/// `expected expression`. That diagnostic names neither the spelling nor its
+/// remedy, so the item is inspected once the grammar has refused it: a `<` that
+/// follows a marker identifier and is closed by a `>` is the bare argument list,
+/// and it is reported together with the turbofish to write instead.
+///
+/// The check runs only after a failed parse, and only on a closed argument list,
+/// so a projection the grammar accepts keeps its reading and a comparison reports
+/// the grammar's own error.
+fn reject_bare_marker(tokens: &[TokenTree]) -> syn::Result<()> {
+    for (open, token) in tokens.iter().enumerate() {
+        let TokenTree::Punct(punct) = token else {
+            continue;
+        };
+        if punct.as_char() != '<' {
+            continue;
+        }
+
+        // The list begins where the marker identifier ends, which is exactly the
+        // position the turbofish requirement reserves for type arguments.
+        let Some(marker_index) = open.checked_sub(1) else {
+            continue;
+        };
+        let Some(TokenTree::Ident(marker)) = tokens.get(marker_index) else {
+            continue;
+        };
+        let Some(close) = closing_angle(tokens, open) else {
+            continue;
+        };
+        let Some(spelled) = tokens.get(marker_index..=close) else {
+            continue;
+        };
+
+        let marker = marker.to_string();
+        return Err(syn::Error::new_spanned(
+            spelled.iter().cloned().collect::<TokenStream>(),
+            format!(
+                "`{marker}<...>` is a column marker spelled without its turbofish; type \
+                 arguments are expression syntax only after `::`, so the bare spelling is \
+                 read as a chain of comparisons; write `{marker}::<...>`, or name the \
+                 projection explicitly with `as <alias>` or `alias: <target>`"
+            ),
+        ));
+    }
+
+    Ok(())
 }
+
+/// Returns the index of the `>` closing the argument list opened at `open`.
+///
+/// Arguments nest (`Nullable<Vec<UserId>>`), so every `<` opens one list and every
+/// `>` closes one, except the `>` of an arrow, which closes none.
+fn closing_angle(tokens: &[TokenTree], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+
+    for (index, token) in tokens.iter().enumerate().skip(open) {
+        let TokenTree::Punct(punct) = token else {
+            continue;
+        };
+        match punct.as_char() {
+            '<' => depth += 1,
+            '>' if depth > 0 && closes_generic_arguments(&tokens[..index]) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 /// Splits the leading `alias:` or trailing `as alias` naming from an item body.
 ///
 /// The leading form names the projection with the identifier written before the
