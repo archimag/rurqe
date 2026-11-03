@@ -38,10 +38,11 @@
 //! the directory holding `rurqe.toml`, so a command reads the same layout
 //! whatever its working directory is:
 //!
-//! A declared path is therefore relative to that directory: a value the host
-//! reads as absolute or rooted, and one that climbs out of it with `..`, are
-//! refused while the file is parsed, so a declaration relocates an artifact
-//! inside the project but never outside it.
+//! A declared path is therefore relative to that directory, and it is written the
+//! way it resolves: a value the host reads as absolute or rooted, and a value
+//! carrying a `..` segment — a round trip that ends back inside the directory
+//! included — are refused while the file is parsed, so a declaration relocates an
+//! artifact inside the project but never rewrites where it lands.
 //!
 //! ```text
 //! project/
@@ -204,9 +205,11 @@ impl CodegenConfig {
     /// rejected where it is written.
     ///
     /// The resolution never replaces that directory: a declared path the host
-    /// reads as absolute or rooted — `root = "/var/rurqe"` — and a path climbing
-    /// out of it with `..` are both refused at the key that declares them, so a
-    /// declaration relocates an artifact inside the project only.
+    /// reads as absolute or rooted — `root = "/var/rurqe"` — is refused at the
+    /// key that declares it, exactly like a path carrying a `..` segment, a round
+    /// trip that ends back inside the directory included. A declaration relocates
+    /// an artifact inside the project; it never spells one location through the
+    /// arithmetic of another.
     ///
     /// An override path is written in one of three equivalent spellings: the
     /// quoted `"auth.users.id" = "..."` form declares one path directly, the

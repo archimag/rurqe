@@ -10,10 +10,10 @@
 //! Every table of the document is read strictly: a key the parser does not know
 //! is rejected where it is written, so a misspelled `[migrations].dir` or
 //! `[stage].checkpoint` cannot silently fall back to the conventional path.
-//! A declared path is resolved against the directory holding the document, so a
-//! value the host reads as absolute or rooted, or one that climbs out of that
-//! directory with `..`, is refused at its own key instead of relocating an
-//! artifact the project never intended.
+//! A declared path resolves against the directory holding the document, so it is
+//! written as the plain relative path it resolves to; an absolute or rooted value
+//! and any `..` segment — a round trip ending back inside it included — are
+//! refused at their own key, so a declaration never relocates an artifact.
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -114,10 +114,8 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
                 config.read_codegen_section(contents, table, span, &mut overrides)?;
             }
             other => {
-                // A table-valued declaration opens a section; a scalar declares a
-                // single key. The two are named differently, so a misspelled
-                // `primary_schemas` or `roots` is reported as the key it is rather
-                // than as a section the file never opened.
+                // A table-valued declaration opens a section and a scalar declares
+                // a key, so the two are named differently in the diagnostic.
                 let message = if item.is_table_like() || item.is_array_of_tables() {
                     format!("unknown configuration section `{other}`")
                 } else {
@@ -158,11 +156,9 @@ pub(super) fn document(contents: &str) -> Result<CodegenConfig, ConfigError> {
 
 /// Resolves the primary schema declared through either root key.
 ///
-/// Declaring both keys is refused rather than ranked: the legacy `schema` key is
-/// kept as an alias of `primary_schema`, so a file carrying both would name two
-/// primary schemas without saying which one wins. The diagnostic sits on the
-/// alias — the declaration whose removal remedies the file — and names the
-/// position of `primary_schema`, so both keys are located at once.
+/// Declaring both keys is refused rather than ranked, because the legacy `schema`
+/// key is an alias of `primary_schema` and the file would name two primary
+/// schemas. The diagnostic sits on the alias and names the other key's position.
 fn resolve_primary_schema(
     contents: &str,
     primary: Option<(String, Option<Range<usize>>)>,
@@ -307,20 +303,16 @@ impl CodegenConfig {
     /// A TOML document spells one path in three equivalent forms — the quoted
     /// `"auth.users.id"`, the dotted `auth.users.id`, and the nested
     /// `[codegen.type_overrides.auth.users]` — and all three reach this function as
-    /// a key carrying a string, a key carrying a table, or a chain of tables. The
-    /// `prefix` records the segments the enclosing tables contributed, so the three
-    /// forms flatten onto the same `auth.users.id` entry and the collision between
-    /// two of them is detected instead of one silently overwriting the other.
+    /// a string-valued key or a chain of tables. `prefix` records the segments the
+    /// enclosing tables contributed, so the three forms flatten onto the same
+    /// entry and the collision between two of them is detected instead of one
+    /// silently overwriting the other.
     ///
     /// `prefix` is `None` only before the first table segment, so the base of the
-    /// recursion is told apart from a key that is itself empty. The empty string is
-    /// never used as a stand-in for "no prefix yet": a quoted empty key names an
-    /// empty segment, and the entry is refused here instead of being flattened onto
-    /// the path its children spell.
-    ///
-    /// The schema a three-segment path names is validated once the whole
-    /// document has been read, by [`validate_override_schemas`], because the
-    /// `schemas` key may follow the table that declares the override.
+    /// recursion is told apart from a quoted empty key, which names an empty
+    /// segment and is refused here. [`validate_override_schemas`] checks the
+    /// schema of a three-segment path once the whole document has been read,
+    /// because `schemas` may follow the table that declares the override.
     fn read_overrides(
         &mut self,
         contents: &str,
@@ -379,10 +371,7 @@ impl CodegenConfig {
     /// Records one override, rejecting an empty type or a repeated path.
     ///
     /// The declared Rust type is trimmed like every other declared string, so a
-    /// value written with surrounding whitespace — or as a multi-line string
-    /// carrying a trailing newline — is stored as the type it names rather than
-    /// as the bytes that happen to surround it.
-    ///
+    /// value written with surrounding whitespace is stored as the type it names.
     /// The declaration keeps the position of its own key, which is where the
     /// schema cross-check reports it once the whole document is read.
     fn insert_override(
@@ -403,11 +392,8 @@ impl CodegenConfig {
             ));
         }
 
-        // The quoted (`"users.id"`), the dotted (`users.id`), and the nested
-        // (`[codegen.type_overrides.users]`) spelling of one path are distinct TOML
-        // keys, so the collision between two of them only surfaces here: TOML itself
-        // rejects a path repeated in the very same spelling, before the document
-        // reaches this point.
+        // The three spellings of one path are distinct TOML keys, so their
+        // collision only surfaces here; TOML rejects a repeat of one spelling.
         if self
             .type_overrides
             .insert(schema_path.clone(), rust_type.to_owned())
@@ -452,11 +438,9 @@ fn read_required_string(
 /// Reads a key whose value is a path the document declares.
 ///
 /// The value is read like any other string and then resolved against the
-/// directory holding `rurqe.toml`, so it has to stay inside that directory: a
-/// path the host reads as absolute or rooted replaces the whole accumulated path
-/// when it is joined, and a `..` segment climbs out of it. Both are refused at
-/// the key that declares them, because a silently relocated artifact is never
-/// what the project asked for.
+/// directory holding `rurqe.toml`, so it is written as the plain relative path it
+/// resolves to, and [`validate_declared_path`] refuses a value that would place
+/// the artifact elsewhere.
 fn read_required_path(
     contents: &str,
     span: Option<Range<usize>>,
@@ -470,13 +454,13 @@ fn read_required_path(
     Ok(value)
 }
 
-/// Refuses a declared path that does not resolve beneath the directory holding
-/// the configuration file.
+/// Refuses a declared path that names its location through anything but a plain
+/// relative path.
 ///
-/// A path the host reads as absolute or rooted replaces the configuration
-/// directory, and a `..` segment leaves it, so neither is accepted: a declaration
-/// names a location relative to the directory holding `rurqe.toml`, and the file
-/// never relocates an artifact outside the project.
+/// A value the host reads as absolute or rooted replaces the configuration
+/// directory entirely, and a `..` segment rewrites the position the path has
+/// reached, so neither shape is accepted: the refusal covers the segment itself,
+/// a round trip such as `ddl/../schema` included.
 fn validate_declared_path(
     contents: &str,
     span: Option<Range<usize>>,
@@ -507,8 +491,9 @@ fn validate_declared_path(
             contents,
             span,
             format!(
-                "`{key}` must stay inside the directory holding the configuration file; \
-                 `{value}` climbs out of it with `..`"
+                "`{key}` must be a path without a `..` segment; `{value}` contains one, and \
+                 every such segment is refused, including a round trip that ends back inside \
+                 the directory holding the configuration file"
             ),
         ));
     }
@@ -519,8 +504,7 @@ fn validate_declared_path(
 /// Reads a document-root key naming one database schema.
 ///
 /// The name decides which catalog a digest describes, so a value that is not a
-/// string is reported where it is declared and a blank one is refused instead of
-/// silently selecting nothing.
+/// string and a blank one are both refused where they are declared.
 fn read_schema_name(
     contents: &str,
     span: Option<Range<usize>>,
@@ -550,12 +534,9 @@ fn read_schema_name(
 
 /// Reads the document-root `schemas` array naming the secondary schemas.
 ///
-/// Every entry is trimmed and has to be non-empty, and a name may appear once: the
-/// array describes the schemas the project declares beside the primary one, so a
-/// repeated entry would introspect the same catalog twice. A rejected entry is
-/// reported at the entry itself — the immutable document retains the span of every
-/// parsed value — and is named by its index as well, so a multi-line array points at
-/// the line the offending entry is written on instead of at the `schemas` key.
+/// Every entry is trimmed and has to be non-empty, and a name may appear once,
+/// because a repeated entry would introspect the same catalog twice. A rejected
+/// entry is reported at the entry itself and named by its index as well.
 fn read_schemas(
     contents: &str,
     span: Option<Range<usize>>,
@@ -573,8 +554,7 @@ fn read_schemas(
     let mut seen: BTreeSet<String> = BTreeSet::new();
 
     for (index, value) in array.iter().enumerate() {
-        // The span of the entry itself, falling back to the key that declares the
-        // array when the entry carries none of its own.
+        // The span of the entry itself, falling back to the key of the array.
         let entry_span = value.span().or_else(|| span.clone());
 
         let raw = value.as_str().ok_or_else(|| {
@@ -612,10 +592,9 @@ fn read_schemas(
 /// Validates an override path and returns it with every segment trimmed.
 ///
 /// A path names a primary-schema column as `table.column` and a secondary-schema
-/// column as `schema.table.column`, so it carries two or three segments and every
-/// one of them has to be non-empty. The segments are trimmed and rejoined, because
-/// the path is compared against the catalog spelling of the names: a key written
-/// with surrounding spaces would otherwise never match the column it names.
+/// column as `schema.table.column`, so it carries two or three non-empty segments;
+/// the segments are trimmed and rejoined because the path is compared against the
+/// catalog spelling of the names.
 fn require_override_path(
     contents: &str,
     span: Option<Range<usize>>,
@@ -645,20 +624,17 @@ fn require_override_path(
 
     Ok(segments.join("."))
 }
-/// The declaration of one override: its flattened path and the position of its
-/// key.
+/// The declaration of one override: its flattened path and the position of its key.
 type OverrideDeclaration = (String, Option<Range<usize>>);
 
 /// Splits a `schema.table.column` path into its three segments.
 ///
-/// `None` means the path is a `table.column` one, which addresses a column of
-/// the primary schema and therefore needs no schema cross-check.
+/// `None` means the path is a `table.column` one, which needs no cross-check.
 fn schema_qualified_path(path: &str) -> Option<(&str, &str, &str)> {
     let (schema, rest) = path.split_once('.')?;
     let (table, column) = rest.split_once('.')?;
 
-    // `require_override_path` refuses a fourth segment, so the last segment of
-    // an accepted path never carries a dot of its own.
+    // `require_override_path` refuses a fourth segment.
     if column.contains('.') {
         return None;
     }
@@ -670,14 +646,10 @@ fn schema_qualified_path(path: &str) -> Option<(&str, &str, &str)> {
 ///
 /// A primary-schema column is addressed as `table.column` and a column of a
 /// secondary schema as `schema.table.column` for a schema the document declares
-/// in `schemas`, so a three-segment path naming anything else addresses no
-/// column the generator ever looks up: the generated module would keep the type
-/// the default mapping produces while the file believes the column was
-/// overridden. That is the silent misconfiguration every other rule of this
-/// parser refuses, so the path is reported where it is declared.
-///
-/// The cross-check runs once the whole document has been read, because a dotted
-/// root key may declare an override before the `schemas` key that authorises it.
+/// in `schemas`, so a three-segment path naming anything else addresses no column
+/// the generator ever looks up and would silently keep the default mapping. The
+/// check runs once the whole document has been read, because a dotted root key
+/// may declare an override before the `schemas` key that authorises it.
 fn validate_override_schemas(
     contents: &str,
     primary: Option<&str>,

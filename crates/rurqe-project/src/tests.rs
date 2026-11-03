@@ -1164,7 +1164,7 @@ fn an_absolute_declared_path_is_rejected() {
 }
 
 #[test]
-fn a_declared_path_climbing_out_of_the_project_is_rejected() {
+fn a_declared_path_carrying_a_parent_segment_is_rejected() {
     for (contents, key) in [
         ("[migrations]\ndir = \"../db\"\n", "migrations.dir"),
         ("[stage]\ndir = \"ddl/../schema\"\n", "stage.dir"),
@@ -1177,7 +1177,8 @@ fn a_declared_path_climbing_out_of_the_project_is_rejected() {
             "codegen.output",
         ),
     ] {
-        let err = CodegenConfig::parse(contents).expect_err("a `..` segment leaves the project");
+        let err = CodegenConfig::parse(contents)
+            .expect_err("a `..` segment is refused, whether or not it leaves the directory");
 
         assert!(matches!(&err, ConfigError::Syntax { .. }), "{err}");
         let message = err.to_string();
@@ -1187,6 +1188,35 @@ fn a_declared_path_climbing_out_of_the_project_is_rejected() {
             "the refusal names the segment: {message}"
         );
     }
+}
+
+/// `ddl/../schema` starts and ends inside the configuration directory, so a refusal
+/// may not claim the path leaves it. The rule refuses the `..` segment itself, and
+/// the diagnostic says so.
+#[test]
+fn a_parent_segment_is_refused_even_when_it_stays_inside_the_project() {
+    let err = CodegenConfig::parse("[stage]\ndir = \"ddl/../schema\"\n")
+        .expect_err("a `..` round trip inside the project is refused like one that leaves it");
+
+    assert!(
+        matches!(&err, ConfigError::Syntax { line: 2, column: 1, .. }),
+        "{err}"
+    );
+
+    let message = err.to_string();
+    assert!(message.contains("stage.dir"), "the key is named: {message}");
+    assert!(
+        message.contains("`ddl/../schema`"),
+        "the refused value is quoted: {message}"
+    );
+    assert!(
+        !message.contains("climbs out"),
+        "a path that ends inside the project never leaves it: {message}"
+    );
+    assert!(
+        message.contains("round trip"),
+        "the refusal states that a round trip inside the project is refused too: {message}"
+    );
 }
 
 #[test]
