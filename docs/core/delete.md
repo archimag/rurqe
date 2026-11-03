@@ -1,6 +1,6 @@
 # DELETE
 
-A `DELETE` removes rows of one table. The chain records the filter that selects the rows, optionally an extra relation the decision is read from, and optionally a projection of the removed rows. Like an `UPDATE`, a statement that silently matches every row is unwritable by accident. Every fragment on this page is included from `examples/crud.rs`.
+A `DELETE` removes rows of one table. The chain records the filter that selects the rows, optionally an extra relation the decision is read from, and optionally a projection of the removed rows. Like an `UPDATE`, a statement that silently matches every row is unwritable by accident. Every accepted form on this page is included from a compiled example target and every rejected one from a compiled guard fixture, so the page cannot drift from the code it documents.
 
 ## Clause anatomy
 
@@ -95,8 +95,7 @@ refusing to build a full-table mutation without a filter
 ```
 
 ```rust,compile_fail
-// Rejected: the statement removes rows but restricts none.
-let removed = delete_from(User).build();
+{{#rustdoc_include ../examples/guards/mutations.rs:unfiltered_delete}}
 ```
 
 The accepted form records the filter — `.where_(UserId.eq(1i64))` — or states the intent with `.allow_all()`.

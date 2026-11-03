@@ -1,6 +1,6 @@
 # UPDATE
 
-An `UPDATE` rewrites rows of one table. The chain records the assignments, the filter that selects the rows, and optionally an extra source relation to read from and a projection of the rewritten rows. The filter is a typestate, not a convention: a statement that silently matches every row is unwritable by accident. Every fragment on this page is included from `examples/crud.rs`.
+An `UPDATE` rewrites rows of one table. The chain records the assignments, the filter that selects the rows, and optionally an extra source relation to read from and a projection of the rewritten rows. The filter is a typestate, not a convention: a statement that silently matches every row is unwritable by accident. Every accepted form on this page is included from a compiled example target and every rejected one from a compiled guard fixture.
 
 ## Clause anatomy
 
@@ -116,19 +116,13 @@ refusing to build a mutation without column values
 ```
 
 ```rust,compile_fail
-// Rejected: the statement assigns a value but restricts no row.
-let mutating = update(User)
-    .set(UserName::set("root"))
-    .build();
+{{#rustdoc_include ../examples/guards/mutations.rs:unfiltered_update}}
 ```
 
 The accepted form records the filter — `.where_(UserId.eq(1i64))` — or states the intent with `.allow_all()`.
 
 ```rust,compile_fail
-// Rejected: the statement restricts a row but assigns nothing to it.
-let mutating = update(User)
-    .where_(UserId.eq(1i64))
-    .build();
+{{#rustdoc_include ../examples/guards/mutations.rs:update_without_assignments}}
 ```
 
 The accepted form records the assignment first — `.set(UserName::set("root"))` — and then the filter.

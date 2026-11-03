@@ -35,6 +35,17 @@
 pub mod anchors;
 pub mod markers;
 
+/// The compile-failure fixtures the book quotes, compiled as doctests.
+///
+/// The module carries no code of its own: it attaches the fixture files under
+/// `guards/` as documentation, so rustdoc collects the `compile_fail` blocks
+/// they fence and `cargo test --doc` asserts each rejection the book shows.
+///
+/// It exists only while rustdoc gathers doctests, so a normal build — and the
+/// coverage guard's audit of the example targets — never sees it.
+#[cfg(doctest)]
+mod guards;
+
 use deadpool_postgres::Runtime;
 use rurqe::postgres::prelude::*;
 use tokio_postgres::NoTls;

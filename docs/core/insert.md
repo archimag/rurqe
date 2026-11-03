@@ -1,6 +1,6 @@
 # INSERT
 
-An `INSERT` writes rows into exactly one table. The chain names the target table, then the row source — literal rows or a `SELECT` — and optionally the policy for a row that collides with a unique constraint and the projection of the written rows. Every fragment on this page is included from the compiled example crate, so the page cannot drift from the code it documents.
+An `INSERT` writes rows into exactly one table. The chain names the target table, then the row source — literal rows or a `SELECT` — and optionally the policy for a row that collides with a unique constraint and the projection of the written rows. Every accepted form on this page is included from a compiled example target and every rejected one from a compiled guard fixture, so the page cannot drift from the code it documents.
 
 ## Clause anatomy
 
@@ -136,21 +136,7 @@ Below the stated threshold the clause does not exist on the target, so the metho
 - A `RETURNING` projection that reads an aggregate or a window call is rejected while the statement is assembled, as `BuildError::AggregateInRowClause` or `BuildError::WindowInRowClause`, before any SQL is rendered; project the columns of the written row instead, and compute the aggregate in a statement that reads rows.
 
 ```rust,compile_fail
-use rurqe::postgres::prelude::*;
-
-table!(
-    /// The `users` table.
-    User => "users" {
-        UserId => "id": i64,
-        UserName => "name": String,
-        UserEmail => "email": String,
-    }
-);
-
-fn main() {
-    // Rejected: the statement names a table but records no row to insert.
-    let written = insert_into(User).build();
-}
+{{#rustdoc_include ../examples/guards/mutations.rs:insert_without_rows}}
 ```
 
 ```text
@@ -168,14 +154,7 @@ The accepted form records the rows first — `.values((UserId::set(1i64), UserNa
 An alias on the target is a separate guard. `INSERT INTO "users" AS "u" (...)` is a PostgreSQL extension of the standard rather than a production of ISO SQL, so the constructor that starts such a statement is offered by that dialect alone: on a target without the capability the constructor cannot be named, and the capability states the reason.
 
 ```rust,compile_fail
-use rurqe::sqlite::prelude::*;
-
-fn assert_aliased_insert<D: Dialect + SupportsAliasedInsertTarget>() {}
-
-fn main() {
-    // Rejected: SQLite renders no alias production on the INSERT target.
-    assert_aliased_insert::<Sqlite<Sqlite3_35>>();
-}
+{{#rustdoc_include ../examples/guards/mutations.rs:aliased_insert_target}}
 ```
 
 ```text
