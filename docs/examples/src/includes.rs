@@ -168,10 +168,7 @@ fn collect_directives(dir: &Path, directives: &mut Vec<Directive>) {
             }
             collect_directives(&path, directives);
         } else if path.extension().is_some_and(|ext| ext == "md") {
-            if path
-                .file_name()
-                .is_some_and(|name| name == "Conventions.md")
-            {
+            if is_book_metadata(&path) {
                 continue;
             }
             collect_file_directives(&path, directives);

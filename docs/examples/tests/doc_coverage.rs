@@ -35,8 +35,8 @@ use std::path::Path;
 
 use rurqe_examples::anchors::{self, AnchorLine};
 use rurqe_examples::includes::{
-    Directive, book_source, example_directives, is_skipped_directory, package_root,
-    relative_chapter_files, summary_entries,
+    Directive, book_source, example_directives, is_book_metadata, is_skipped_directory,
+    package_root, relative_chapter_files, summary_entries,
 };
 use serde::Deserialize;
 
@@ -384,10 +384,7 @@ fn collect_hidden_scaffolding(dir: &Path, hidden: &mut Vec<(String, usize, Strin
             }
             collect_hidden_scaffolding(&path, hidden);
         } else if path.extension().is_some_and(|ext| ext == "md") {
-            if path
-                .file_name()
-                .is_some_and(|name| name == "Conventions.md")
-            {
+            if is_book_metadata(&path) {
                 continue;
             }
             let text = fs::read_to_string(&path)
@@ -818,10 +815,7 @@ fn collect_fence_violations(dir: &Path, violations: &mut Vec<FenceViolation>) {
             }
             collect_fence_violations(&path, violations);
         } else if path.extension().is_some_and(|ext| ext == "md") {
-            if path
-                .file_name()
-                .is_some_and(|name| name == "Conventions.md")
-            {
+            if is_book_metadata(&path) {
                 continue;
             }
             check_chapter_fences(&path, violations);
