@@ -13,7 +13,8 @@ use rurqe_migrate::checkpoint::Checkpoint;
 use rurqe_migrate::version::MigrationVersion;
 
 use crate::cli::commands::{
-    best_effort, sweep_stale_temporaries, sync_directory, write_file, STALE_TEMPORARY_AGE,
+    best_effort, carry_notice, sweep_stale_temporaries, sync_directory, write_file,
+    STALE_TEMPORARY_AGE,
 };
 use crate::cli::{redact_database_url, CliCause, CliError, CommandOutput};
 use crate::config::SchemaSelection;
@@ -113,7 +114,12 @@ pub(crate) fn commit_stage(
     let stage = load_stage(stage_dir)?;
     let (catalog, notice) = introspect_database_selection_notice(database_url, selection)?;
 
-    // The parity gate runs before the section is ever taken: the lock and the
+    // Every failure below this point folds the notice the catalog read produced:
+    // a selection that describes nothing manufactures exactly the misleading
+    // findings a wrong `--schema` produces, and the failure channel is the only
+    // output a failing command guarantees, so the warning travels inside the
+    // error instead of being discarded with the report that never materialised.
+    let with_notice = |error: CliError| carry_notice(notice.as_deref(), error);
     // marker describe the live database while the boundary snapshot replays the
     // declarative stage, so a stage that drifted from the database would seal a
     // triple that contradicts itself and make `stage verify` fail on a checkpoint
@@ -132,9 +138,10 @@ pub(crate) fn commit_stage(
     let parity = ParityScratch::of(parity_target);
 
     let diff = compare_stage_with_live_selection(&stage, &catalog, parity_target, selection)
-        .map_err(|error| CliError::with_cause(CliCause::Stage(error)))?;
+        .map_err(|error| CliError::with_cause(CliCause::Stage(error)))
+        .map_err(with_notice)?;
     if !diff.is_empty() {
-        return Err(stage_parity_failure(stage_dir, &diff, &parity));
+        return Err(stage_parity_failure(stage_dir, &diff, &parity, notice.as_deref()));
     }
 
     let lock = catalog.to_lock();
@@ -143,7 +150,7 @@ pub(crate) fn commit_stage(
 
     // The staged boundary is assembled here, beside the artifact it replaces, so
     // the section below only has to rename it into place.
-    let staged = create_staging_dir(&boundary)?;
+    let staged = create_staging_dir(&boundary).map_err(with_notice)?;
     if let Err(error) = write_staged_boundary(&stage, &staged) {
         best_effort(
             std::fs::remove_dir_all(&staged),
@@ -152,7 +159,7 @@ pub(crate) fn commit_stage(
                 staged.display()
             ),
         );
-        return Err(error);
+        return Err(with_notice(error));
     }
 
     // Flushing the staging directory makes the staged names durable before the
@@ -165,7 +172,7 @@ pub(crate) fn commit_stage(
                 staged.display()
             ),
         );
-        return Err(error);
+        return Err(with_notice(error));
     }
 
     // From here on every failure discards the staged sibling: the swap renames it
@@ -174,7 +181,7 @@ pub(crate) fn commit_stage(
 
     // The section is bounded by local filesystem work alone: the sweep, the
     // repair, the rewind guard, the `schema.lock` publication, and the swap.
-    let section = CheckpointLock::acquire(checkpoint_path)?;
+    let section = CheckpointLock::acquire(checkpoint_path).map_err(with_notice)?;
 
     // Debris of an interrupted commit is discarded first, so the artifacts
     // written below never share a directory with the staged siblings a killed
@@ -192,8 +199,12 @@ pub(crate) fn commit_stage(
     // guard, the lock write, or the swap can fail, so every one of them folds its
     // report into the failure it returns: the failure channel is the only output a
     // failing command guarantees.
-    let recovery = super::recover_interrupted_commit(checkpoint_path, section.writer())?;
-    let fail = |error: CliError| carry_recovery(recovery.as_deref(), error);
+    let recovery = super::recover_interrupted_commit(checkpoint_path, section.writer())
+        .map_err(with_notice)?;
+    // A repaired commit still reports the warning its selection produced: both
+    // folds apply, because the failure channel is the only output a failing
+    // command guarantees.
+    let fail = |error: CliError| with_notice(carry_recovery(recovery.as_deref(), error));
 
     // The marker is re-read inside the section, so a writer that committed while
     // this one prepared cannot have its boundary rewound here.
@@ -412,12 +423,19 @@ fn sweep_commit_debris(artifacts: &[&Path]) {
 /// The gate runs during the preparation of the commit, before the checkpoint
 /// section is taken, so nothing was written and nothing was repaired: the artifacts
 /// of this commit and the parked copies of an interrupted one are all untouched.
+///
+/// The notice the catalog read produced is appended as the trailing line of the
+/// diagnostic, after the findings, the remedy, and the lifecycle of the scratch
+/// target: a selection that describes nothing is exactly what manufactures the
+/// findings above it, so the warning travels inside the failure instead of being
+/// discarded with the report that never materialised.
 fn stage_parity_failure(
     stage_dir: &Path,
     diff: &SchemaDiff,
     scratch: &ParityScratch,
+    notice: Option<&str>,
 ) -> CliError {
-    CliError::message(format!(
+    let diagnostic = CliError::message(format!(
         "the declarative stage `{}` does not describe the database this commit would anchor:\n{}Hint: \
          bring `schema/` and the database back into agreement — apply the migration that closes \
          the gap, or re-init the stage from the live catalog — then re-run `stage commit`. {} The gate \
@@ -427,7 +445,9 @@ fn stage_parity_failure(
         stage_dir.display(),
         StageFindings(diff),
         scratch.lifecycle()
-    ))
+    ));
+
+    carry_notice(notice, diagnostic)
 }
 
 /// The findings of a commit-level parity check rendered with its own wording.
@@ -436,5 +456,77 @@ struct StageFindings<'a>(&'a SchemaDiff);
 impl fmt::Display for StageFindings<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.write_details(f, DiffWording::COMMIT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{stage_parity_failure, ParityScratch};
+    use crate::drift::SchemaDiff;
+
+    /// The warning the catalog read produces when the selected schemas describe
+    /// nothing, shaped the way the introspection notice words it.
+    const WARNING: &str = "warning: none of the selected schemas (public) holds a table or view";
+
+    /// The findings a commit rejected by its parity gate renders: one table the
+    /// declarative stage declares and the live database lacks.
+    fn drifted() -> SchemaDiff {
+        SchemaDiff {
+            missing_tables: vec!["users".to_owned()],
+            ..SchemaDiff::default()
+        }
+    }
+
+    /// A selection that describes nothing produces the warning, and the parity
+    /// diagnostic appends it as its trailing line: the findings above it are
+    /// exactly what a wrong `--schema` manufactures, and the failure channel is
+    /// the only output a failing command guarantees.
+    #[test]
+    fn the_parity_diagnostic_trails_the_selection_warning() {
+        let error = stage_parity_failure(
+            Path::new("rurqe/schema"),
+            &drifted(),
+            &ParityScratch::of(":memory:"),
+            Some(WARNING),
+        );
+
+        let message = error.to_string();
+        assert!(
+            message.contains("Table `users` is declared in the stage"),
+            "the diagnostic renders the findings, got {message}"
+        );
+        assert!(
+            message.contains("but missing from the database"),
+            "the finding names the side the table is missing from, got {message}"
+        );
+        assert!(
+            message.ends_with(WARNING),
+            "the warning trails the diagnostic, got {message}"
+        );
+    }
+
+    /// A selection that describes something produces no warning, and the
+    /// diagnostic keeps ending where it always did — after the lifecycle of the
+    /// scratch target the gate materialised the stage in.
+    #[test]
+    fn the_parity_diagnostic_renders_without_a_warning() {
+        let error = stage_parity_failure(
+            Path::new("rurqe/schema"),
+            &drifted(),
+            &ParityScratch::of(":memory:"),
+            None,
+        );
+
+        let message = error.to_string();
+        assert!(
+            message.contains("parity scratch target `:memory:`"),
+            "the diagnostic names the scratch target, got {message}"
+        );
+        assert!(
+            !message.contains("warning:"),
+            "no warning is invented, got {message}"
+        );
     }
 }
