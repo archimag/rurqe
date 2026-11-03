@@ -42,6 +42,8 @@ pub enum CliCause {
     Stage(StageError),
     /// The project configuration could not be read or validated.
     Config(ConfigError),
+    /// The connection gate refused the transport of a database target.
+    Transport(TransportRefusal),
     /// Another writer held the checkpoint section for the bounded wait.
     SectionHeld(HeldSection),
 }
@@ -58,6 +60,7 @@ impl CliCause {
             Self::Drift(error) => error.to_string(),
             Self::Stage(error) => error.to_string(),
             Self::Config(error) => error.to_string(),
+            Self::Transport(refusal) => refusal.to_string(),
             Self::SectionHeld(held) => held.to_string(),
         }
     }
@@ -70,6 +73,7 @@ impl fmt::Display for CliCause {
             Self::Drift(_) => "schema drift",
             Self::Stage(_) => "stage lifecycle",
             Self::Config(_) => "project configuration",
+            Self::Transport(_) => "transport policy",
             Self::SectionHeld(_) => "checkpoint-section contention",
         })
     }
@@ -83,9 +87,10 @@ impl std::error::Error for CliCause {
             Self::Drift(error) => Some(error),
             Self::Stage(error) => Some(error),
             Self::Config(error) => Some(error),
-            // The refusal carries no wrapped taxonomy: its holder is a payload
-            // the acquisition observed, not a failure of its own.
-            Self::SectionHeld(_) => None,
+            // The refusals carry no wrapped taxonomy: their payload is what the
+            // connection gate or the section acquisition observed, not a failure
+            // of its own.
+            Self::Transport(_) | Self::SectionHeld(_) => None,
         }
     }
 }
@@ -177,6 +182,85 @@ impl fmt::Display for SectionHolder {
         }
     }
 }
+/// The transport policy a connection string violated.
+///
+/// The connection gate refuses a target in exactly three ways, and each one is a
+/// variant, so an embedding application tells a target that names no engine from
+/// a TLS demand this build cannot honour and from a remote session the caller
+/// never acknowledged without matching the rendered prose. Every `url` field
+/// carries the already-redacted connection string, so a payload can never hold a
+/// credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportRefusal {
+    /// The connection string names no engine this build connects to.
+    UnrecognisedTarget {
+        /// The scheme the string spells, when it spells one.
+        scheme: Option<String>,
+        /// The redacted connection string.
+        url: String,
+    },
+    /// The connection string demands TLS this build cannot provide.
+    TlsUnavailable {
+        /// The transport mode the string demands, spelled the way libpq spells it.
+        ssl_mode: String,
+        /// The redacted connection string.
+        url: String,
+    },
+    /// A remote session would be opened in cleartext without the caller stating it.
+    UnacknowledgedCleartext {
+        /// The remote host the session would reach.
+        host: String,
+        /// The transport mode the connection string carries.
+        ssl_mode: String,
+        /// The redacted connection string.
+        url: String,
+    },
+}
+
+impl fmt::Display for TransportRefusal {
+    /// The refusal the shared channel writes, naming the target and the remedy.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnrecognisedTarget { scheme, url } => {
+                let reason = match scheme {
+                    Some(scheme) => format!(
+                        "names the URL scheme `{scheme}`, which this build of rurqe-cli connects \
+                         to neither"
+                    ),
+                    None => "names no database engine".to_owned(),
+                };
+
+                write!(
+                    formatter,
+                    "`{url}` {reason}: PostgreSQL is addressed by a `postgres://` or \
+                     `postgresql://` URL or a libpq keyword/value string such as \
+                     `host=db.internal dbname=app`, and SQLite by a `sqlite:` URL, `:memory:`, or \
+                     a path ending in `.db`, `.sqlite`, or `.sqlite3`"
+                )
+            }
+            Self::TlsUnavailable { ssl_mode, url } => {
+                write!(
+                    formatter,
+                    "`{url}` demands TLS (`sslmode={ssl_mode}`), but this build of rurqe-cli links no \
+                     TLS backend; refusing to send credentials and data in cleartext. Terminate TLS \
+                     in front of the server and connect to that local hop, or acknowledge the \
+                     plaintext path explicitly with `sslmode=disable`; a Unix-domain socket needs \
+                     neither"
+                )
+            }
+            Self::UnacknowledgedCleartext { host, ssl_mode, url } => {
+                write!(
+                    formatter,
+                    "`{url}` would reach the remote host `{host}` in cleartext (`sslmode={ssl_mode}`), \
+                     because this build of rurqe-cli links no TLS backend; refusing to send \
+                     credentials and data unencrypted. Terminate TLS in front of the server and \
+                     connect to that local hop, or acknowledge the plaintext path explicitly with \
+                     `sslmode=disable`"
+                )
+            }
+        }
+    }
+}
 
 /// A failure of the toolchain, as the shared operator channel reports it.
 ///
@@ -258,7 +342,7 @@ impl std::error::Error for CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCause, CliError, HeldSection, SectionHolder};
+    use super::{CliCause, CliError, HeldSection, SectionHolder, TransportRefusal};
     use crate::config::ConfigError;
     use crate::drift::DriftError;
     use crate::stage::StageError;
@@ -385,5 +469,66 @@ mod tests {
         let cause = error.source().expect("the line carries its cause");
         assert_eq!(cause.to_string(), "checkpoint-section contention");
         assert!(cause.source().is_none());
+    }
+
+    /// A transport refusal is a typed cause: its class label names the policy,
+    /// its line reproduces the refusal wording verbatim, and it wraps no
+    /// taxonomy failure of its own.
+    #[test]
+    fn a_transport_refusal_carries_its_class_and_policy_wording() {
+        let error = CliError::with_cause(CliCause::Transport(TransportRefusal::TlsUnavailable {
+            ssl_mode: "require".to_owned(),
+            url: "postgres://***@db.internal/app".to_owned(),
+        }));
+
+        let line = error.to_string();
+        assert!(
+            line.contains("`postgres://***@db.internal/app` demands TLS (`sslmode=require`)"),
+            "got {line}"
+        );
+        assert!(line.contains("a Unix-domain socket needs neither"), "got {line}");
+
+        let cause = error.source().expect("the line carries its cause");
+        assert_eq!(cause.to_string(), "transport policy");
+        assert!(cause.source().is_none());
+    }
+
+    /// Every refusal class renders the policy wording the connection gate used
+    /// before the class became a cause, so the operator line cannot drift.
+    #[test]
+    fn every_transport_refusal_renders_its_policy_line() {
+        let unrecognised = TransportRefusal::UnrecognisedTarget {
+            scheme: Some("mysql".to_owned()),
+            url: "<unrecognised database URL>".to_owned(),
+        }
+        .to_string();
+        assert!(unrecognised.contains("names the URL scheme `mysql`"), "got {unrecognised}");
+        assert!(
+            unrecognised.contains("PostgreSQL is addressed by"),
+            "got {unrecognised}"
+        );
+
+        let bare = TransportRefusal::UnrecognisedTarget {
+            scheme: None,
+            url: "<unrecognised database URL>".to_owned(),
+        }
+        .to_string();
+        assert!(bare.contains("names no database engine"), "got {bare}");
+
+        let cleartext = TransportRefusal::UnacknowledgedCleartext {
+            host: "db.internal".to_owned(),
+            ssl_mode: "prefer".to_owned(),
+            url: "postgres://***@db.internal/app".to_owned(),
+        }
+        .to_string();
+        assert!(
+            cleartext.contains("would reach the remote host `db.internal` in cleartext"),
+            "got {cleartext}"
+        );
+        assert!(cleartext.contains("(`sslmode=prefer`)"), "got {cleartext}");
+        assert!(
+            cleartext.contains("acknowledge the plaintext path explicitly with `sslmode=disable`"),
+            "got {cleartext}"
+        );
     }
 }

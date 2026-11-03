@@ -32,7 +32,7 @@ use postgres::error::SqlState;
 
 use crate::target::{DatabaseTarget, TargetError};
 
-use super::error::CliError;
+use super::error::{CliCause, CliError, TransportRefusal};
 use super::redact::{host_name, redact_database_url};
 
 /// Resolves the target database URL from the flag or the `DATABASE_URL` environment variable.
@@ -87,19 +87,15 @@ pub(crate) fn connect(url: &str) -> Result<Connection, CliError> {
 /// target is rejected at the connection gate with one wording instead of being
 /// handed to a driver that can only misread it.
 fn unrecognised_target(error: TargetError, url: &str) -> CliError {
-    let reason = match error {
-        TargetError::UnrecognisedScheme { scheme } => format!(
-            "names the URL scheme `{scheme}`, which this build of rurqe-cli connects to neither"
-        ),
-        TargetError::Unrecognised => "names no database engine".to_owned(),
+    let scheme = match error {
+        TargetError::UnrecognisedScheme { scheme } => Some(scheme),
+        TargetError::Unrecognised => None,
     };
 
-    CliError::message(format!(
-        "`{}` {reason}: PostgreSQL is addressed by a `postgres://` or `postgresql://` URL or a \
-         libpq keyword/value string such as `host=db.internal dbname=app`, and SQLite by a \
-         `sqlite:` URL, `:memory:`, or a path ending in `.db`, `.sqlite`, or `.sqlite3`",
-        redact_database_url(url)
-    ))
+    CliError::with_cause(CliCause::Transport(TransportRefusal::UnrecognisedTarget {
+        scheme,
+        url: redact_database_url(url),
+    }))
 }
 
 /// Opens a SQLite connection, in memory when the target names no file.
@@ -254,13 +250,12 @@ fn enforce_transport_policy(config: &postgres::Config, url: &str) -> Result<(), 
         return Ok(());
     }
 
-    Err(CliError::message(format!(
-        "`{}` would reach the remote host `{host}` in cleartext (`sslmode={}`), because this \
-         build of rurqe-cli links no TLS backend; refusing to send credentials and data \
-         unencrypted. Terminate TLS in front of the server and connect to that local hop, or \
-         acknowledge the plaintext path explicitly with `sslmode=disable`",
-        redact_database_url(url),
-        ssl_mode_name(ssl_mode)
+    Err(CliError::with_cause(CliCause::Transport(
+        TransportRefusal::UnacknowledgedCleartext {
+            host,
+            ssl_mode: ssl_mode_name(ssl_mode),
+            url: redact_database_url(url),
+        },
     )))
 }
 
@@ -274,13 +269,10 @@ fn enforce_transport_policy(config: &postgres::Config, url: &str) -> Result<(), 
 /// plaintext path explicitly with `sslmode=disable`; a Unix-domain socket needs
 /// neither.
 fn tls_unavailable(ssl_mode: &str, url: &str) -> CliError {
-    CliError::message(format!(
-        "`{}` demands TLS (`sslmode={ssl_mode}`), but this build of rurqe-cli links no TLS \
-         backend; refusing to send credentials and data in cleartext. Terminate TLS in front of \
-         the server and connect to that local hop, or acknowledge the plaintext path explicitly \
-         with `sslmode=disable`; a Unix-domain socket needs neither",
-        redact_database_url(url)
-    ))
+    CliError::with_cause(CliCause::Transport(TransportRefusal::TlsUnavailable {
+        ssl_mode: ssl_mode.to_owned(),
+        url: redact_database_url(url),
+    }))
 }
 
 /// The `sslmode` modes libpq defines that demand TLS.
@@ -560,6 +552,7 @@ mod tests {
             "got {message}"
         );
         assert!(!message.contains("s3cret"), "got {message}");
+        assert!(error.cause().is_none());
     }
 
     #[test]
@@ -574,6 +567,16 @@ mod tests {
         assert!(message.contains("sslmode=require"), "got {message}");
         assert!(message.contains("TLS backend"), "got {message}");
         assert!(!message.contains("s3cret"), "got {message}");
+
+        let Some(CliCause::Transport(refusal)) = error.cause() else {
+            panic!("a TLS demand is a transport cause");
+        };
+        match refusal {
+            TransportRefusal::TlsUnavailable { ssl_mode, .. } => {
+                assert_eq!(ssl_mode.as_str(), "require");
+            }
+            other => panic!("the refusal names the demanded mode, got {other:?}"),
+        }
     }
 
     /// Parses a connection string through the driver's own parser.
@@ -592,6 +595,17 @@ mod tests {
         assert!(message.contains("sslmode=prefer"), "got {message}");
         assert!(message.contains("sslmode=disable"), "got {message}");
         assert!(!message.contains("s3cret"), "got {message}");
+
+        let Some(CliCause::Transport(refusal)) = error.cause() else {
+            panic!("an implicit downgrade is a transport cause");
+        };
+        match refusal {
+            TransportRefusal::UnacknowledgedCleartext { host, ssl_mode, .. } => {
+                assert_eq!(host.as_str(), "db.internal");
+                assert_eq!(ssl_mode.as_str(), "prefer");
+            }
+            other => panic!("the refusal names the remote host, got {other:?}"),
+        }
     }
 
     #[test]
@@ -626,6 +640,16 @@ mod tests {
             .expect_err("the driver may land on the remote host");
 
         assert!(error.to_string().contains("db.internal"), "got {error}");
+
+        let Some(CliCause::Transport(refusal)) = error.cause() else {
+            panic!("a remote host on the list is a transport cause");
+        };
+        match refusal {
+            TransportRefusal::UnacknowledgedCleartext { host, .. } => {
+                assert_eq!(host.as_str(), "db.internal");
+            }
+            other => panic!("the refusal names the remote host, got {other:?}"),
+        }
     }
 
     #[test]
@@ -711,6 +735,19 @@ mod tests {
                 !message.contains("invalid PostgreSQL connection string"),
                 "`{url}` reports the TLS demand instead of a syntax error: {message}"
             );
+
+            let Some(CliCause::Transport(refusal)) = error.cause() else {
+                panic!("`{url}` reports its TLS demand as a transport cause");
+            };
+            match refusal {
+                TransportRefusal::TlsUnavailable { ssl_mode, .. } => {
+                    assert!(
+                        ssl_mode.starts_with("verify-"),
+                        "`{url}` names the demanded mode: {ssl_mode}"
+                    );
+                }
+                other => panic!("`{url}` names the demanded mode, got {other:?}"),
+            }
         }
     }
 
@@ -827,5 +864,23 @@ mod tests {
             message.contains("PostgreSQL is addressed by"),
             "got {message}"
         );
+
+        let Some(CliCause::Transport(bare_refusal)) = bare.cause() else {
+            panic!("a bare value that names no engine is a transport cause");
+        };
+        match bare_refusal {
+            TransportRefusal::UnrecognisedTarget { scheme: None, .. } => {}
+            other => panic!("a bare value spells no scheme, got {other:?}"),
+        }
+
+        let Some(CliCause::Transport(schemed_refusal)) = schemed.cause() else {
+            panic!("an unrecognised scheme is a transport cause");
+        };
+        match schemed_refusal {
+            TransportRefusal::UnrecognisedTarget { scheme: Some(scheme), .. } => {
+                assert_eq!(scheme.as_str(), "mysql");
+            }
+            other => panic!("the refusal names the spelled scheme, got {other:?}"),
+        }
     }
 }
