@@ -13,6 +13,9 @@
 //! - `rules` reads the statement data alone: relation disjointness, `WITH` clause
 //!   names, the `DISTINCT` and `DISTINCT ON` alignment, the compound ordering, and
 //!   the set operation arity;
+//! - `equivalence` compares two assembled expressions in the canonical form the
+//!   engine sees, which is the comparison the `DISTINCT` and `DISTINCT ON`
+//!   ordering rules match their clauses through;
 //! - `aggregation` decides whether the projections, the `GROUP BY` clause, and the
 //!   `HAVING` predicate describe one evaluable aggregation, and where an aggregate
 //!   or a window call may appear at all;
@@ -30,6 +33,7 @@
 //! vocabulary itself lives in `error`, which this facade re-exports.
 
 mod aggregation;
+mod equivalence;
 mod error;
 mod qualifiers;
 mod rules;
