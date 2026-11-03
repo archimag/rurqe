@@ -22,6 +22,7 @@
 //! line stays byte-identical to the text the taxonomy's own `Display` produces.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::config::ConfigError;
 use crate::drift::DriftError;
@@ -41,6 +42,8 @@ pub enum CliCause {
     Stage(StageError),
     /// The project configuration could not be read or validated.
     Config(ConfigError),
+    /// Another writer held the checkpoint section for the bounded wait.
+    SectionHeld(HeldSection),
 }
 
 impl CliCause {
@@ -55,6 +58,7 @@ impl CliCause {
             Self::Drift(error) => error.to_string(),
             Self::Stage(error) => error.to_string(),
             Self::Config(error) => error.to_string(),
+            Self::SectionHeld(held) => held.to_string(),
         }
     }
 }
@@ -66,6 +70,7 @@ impl fmt::Display for CliCause {
             Self::Drift(_) => "schema drift",
             Self::Stage(_) => "stage lifecycle",
             Self::Config(_) => "project configuration",
+            Self::SectionHeld(_) => "checkpoint-section contention",
         })
     }
 }
@@ -78,6 +83,97 @@ impl std::error::Error for CliCause {
             Self::Drift(error) => Some(error),
             Self::Stage(error) => Some(error),
             Self::Config(error) => Some(error),
+            // The refusal carries no wrapped taxonomy: its holder is a payload
+            // the acquisition observed, not a failure of its own.
+            Self::SectionHeld(_) => None,
+        }
+    }
+}
+
+/// The checkpoint section a command could not enter within its bounded wait.
+///
+/// The section is the artifacts' own: one command at a time mutates the
+/// checkpoint marker, the boundary snapshot beside it, and the migration tail,
+/// and a command that finds the section held by a live writer reports that
+/// holder instead of taking the section over. The refusal is the whole
+/// diagnostic of that outcome — the lock path, the holder the owner record
+/// names, and the licence the kernel grants — so it travels as a typed cause
+/// whose line is exactly the text an operator reads.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HeldSection {
+    /// The lock entry guarding the section.
+    lock_path: PathBuf,
+    /// The holder the owner record of the section names.
+    holder: SectionHolder,
+}
+
+impl HeldSection {
+    /// Builds the refusal of the section held through `lock_path` by `holder`.
+    pub fn new(lock_path: impl Into<PathBuf>, holder: SectionHolder) -> Self {
+        Self {
+            lock_path: lock_path.into(),
+            holder,
+        }
+    }
+
+    /// The lock entry guarding the section.
+    pub fn lock_path(&self) -> &Path {
+        &self.lock_path
+    }
+
+    /// The holder the acquisition was refused for.
+    pub fn holder(&self) -> &SectionHolder {
+        &self.holder
+    }
+}
+
+impl fmt::Display for HeldSection {
+    /// The refusal the channel writes, naming the holder and the remedy.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "the checkpoint lock `{}` is held by {}; refusing to mutate the checkpoint artifacts \
+             concurrently. The operating system holds the lock for that writer, releases it the \
+             moment the writer exits, and never preempts it while the writer lives, so re-running \
+             this command once the owner finishes is safe",
+            self.lock_path.display(),
+            self.holder
+        )
+    }
+}
+
+/// The holder a checkpoint section was refused for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SectionHolder {
+    /// The owner record names the writer holding the section.
+    Recorded {
+        /// The process id of the holder.
+        pid: u32,
+        /// The nonce the holder entered the section with.
+        nonce: u128,
+        /// The whole seconds since the holder entered its section.
+        age_seconds: u128,
+    },
+    /// The holder is in its section but has published no record yet.
+    Entering,
+    /// The owner record of the section names no holder.
+    Unreadable,
+}
+
+impl fmt::Display for SectionHolder {
+    /// The holder as the refusal names it, with its section age when it has one.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Recorded {
+                pid,
+                nonce,
+                age_seconds,
+            } => write!(
+                formatter,
+                "pid {pid} (nonce {nonce}), in its section for {age_seconds} second(s)"
+            ),
+            Self::Entering => formatter.write_str("a writer that is still entering its section"),
+            Self::Unreadable => formatter.write_str("a writer whose owner record cannot be read"),
         }
     }
 }
@@ -94,7 +190,13 @@ pub struct CliError {
     message: String,
     /// The typed failure the line was rendered from, when the failure belongs to a
     /// named taxonomy.
-    cause: Option<CliCause>,
+    ///
+    /// The cause is boxed because [`CliError`] is the `Err` variant of nearly every
+    /// fallible function of the crate: a taxonomy payload stored inline would size
+    /// each of those results, and the compiler's own lint refuses an error type
+    /// that outweighs the value it accompanies. The allocation happens on the
+    /// failure path alone, which cannot avoid rendering a message either.
+    cause: Option<Box<CliCause>>,
 }
 
 impl CliError {
@@ -118,13 +220,13 @@ impl CliError {
     pub fn with_cause(cause: CliCause) -> Self {
         Self {
             message: cause.line(),
-            cause: Some(cause),
+            cause: Some(Box::new(cause)),
         }
     }
 
     /// The typed cause of this failure, when it belongs to a named taxonomy.
     pub fn cause(&self) -> Option<&CliCause> {
-        self.cause.as_ref()
+        self.cause.as_deref()
     }
 
     /// Appends `suffix` to the operator line, keeping the cause it was built from.
@@ -149,19 +251,20 @@ impl std::error::Error for CliError {
     /// The cause of the failure, so the chain reaches the typed taxonomy.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.cause
-            .as_ref()
+            .as_deref()
             .map(|cause| cause as &(dyn std::error::Error + 'static))
-    }
+}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCause, CliError};
+    use super::{CliCause, CliError, HeldSection, SectionHolder};
     use crate::config::ConfigError;
     use crate::drift::DriftError;
     use crate::stage::StageError;
 
     use std::error::Error;
+    use std::path::Path;
 
     /// A line-only failure renders the line it was built with and reports no cause.
     #[test]
@@ -246,5 +349,41 @@ mod tests {
              workspace was repaired before this failure"
         );
         assert!(matches!(error.cause(), Some(CliCause::Stage(_))));
+    }
+    /// A held section is a typed refusal: its class label names the contention,
+    /// its line names the holder the record of the section carries, and the
+    /// cause wraps no taxonomy failure of its own.
+    #[test]
+    fn a_section_held_cause_names_the_recorded_holder() {
+        let error = CliError::with_cause(CliCause::SectionHeld(HeldSection::new(
+            Path::new("migrations/checkpoint.lock"),
+            SectionHolder::Recorded {
+                pid: 4242,
+                nonce: 17,
+                age_seconds: 3,
+            },
+        )));
+
+        let line = error.to_string();
+        assert!(
+            line.contains("the checkpoint lock `migrations/checkpoint.lock` is held by pid 4242"),
+            "got {line}"
+        );
+        assert!(
+            line.contains("in its section for 3 second(s)"),
+            "got {line}"
+        );
+        assert!(
+            line.contains("never preempts it while the writer lives"),
+            "got {line}"
+        );
+        assert!(
+            line.contains("re-running this command once the owner finishes is safe"),
+            "got {line}"
+        );
+
+        let cause = error.source().expect("the line carries its cause");
+        assert_eq!(cause.to_string(), "checkpoint-section contention");
+        assert!(cause.source().is_none());
     }
 }

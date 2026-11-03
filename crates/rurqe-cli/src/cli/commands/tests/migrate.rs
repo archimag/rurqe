@@ -53,8 +53,25 @@ fn assert_refusal(error: &crate::cli::CliError) {
         message.contains(&format!("nonce {HOLDER_NONCE}")),
         "got {message}"
     );
-}
 
+    // The typed class survives the command hop, so an embedder reads the
+    // refusal as checkpoint-section contention instead of matching its prose.
+    match error.cause() {
+        Some(crate::cli::error::CliCause::SectionHeld(held)) => assert!(
+            matches!(
+                held.holder(),
+                crate::cli::error::SectionHolder::Recorded {
+                    pid: HOLDER_PID,
+                    nonce: HOLDER_NONCE,
+                    ..
+                }
+            ),
+            "unexpected holder: {:?}",
+            held.holder()
+        ),
+        other => panic!("expected the section-held cause, got {other:?}"),
+    }
+}
 #[test]
 fn apply_migrations_reads_the_tail_inside_the_checkpoint_section() {
     let dir = workspace("migrate-up-section");

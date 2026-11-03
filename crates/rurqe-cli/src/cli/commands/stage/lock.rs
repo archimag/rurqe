@@ -76,6 +76,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fs4::fs_std::FileExt;
 
+use crate::cli::error::{CliCause, HeldSection, SectionHolder};
 use crate::cli::CliError;
 
 use super::super::{artifact_directory, marker_stem, write_file};
@@ -455,27 +456,29 @@ fn now_nanos() -> u128 {
 /// the section is released by the operating system the moment its holder exits,
 /// so re-running the command once the owner finishes is safe and cannot preempt
 /// a writer that still lives.
+///
+/// The refusal travels as [`CliCause::SectionHeld`], so an embedding application
+/// reads the holder the acquisition was refused for instead of matching the
+/// wording. A record that cannot be read at all is the failure of the read
+/// itself: the refusal never guesses an owner from a body it failed to read,
+/// while the recovery that repairs a foreign record keeps its own line-only
+/// diagnosis.
 fn held_failure(lock_path: &Path) -> CliError {
     let record_path = record_path_of(lock_path);
     let holder = match read_record(&record_path) {
-        Ok(RecordEntry::Held(owner)) => {
-            let age_seconds = now_nanos().saturating_sub(owner.heartbeat) / NANOS_PER_SECOND;
-            format!(
-                "pid {} (nonce {}), in its section for {age_seconds} second(s)",
-                owner.pid, owner.nonce
-            )
-        }
-        Ok(RecordEntry::Absent) => "a writer that is still entering its section".to_owned(),
-        _ => "a writer whose owner record cannot be read".to_owned(),
+        Ok(RecordEntry::Held(owner)) => SectionHolder::Recorded {
+            pid: owner.pid,
+            nonce: owner.nonce,
+            age_seconds: now_nanos().saturating_sub(owner.heartbeat) / NANOS_PER_SECOND,
+        },
+        Ok(RecordEntry::Absent) => SectionHolder::Entering,
+        Ok(RecordEntry::Debris) => SectionHolder::Unreadable,
+        // The read itself failed, so there is no owner to name and the failure
+        // keeps the text its own step produced.
+        Err(error) => return error,
     };
 
-    CliError::message(format!(
-        "the checkpoint lock `{}` is held by {holder}; refusing to mutate the checkpoint artifacts \
-         concurrently. The operating system holds the lock for that writer, releases it the moment \
-         the writer exits, and never preempts it while the writer lives, so re-running this command \
-         once the owner finishes is safe",
-        lock_path.display()
-    ))
+    CliError::with_cause(CliCause::SectionHeld(HeldSection::new(lock_path, holder)))
 }
 
 /// Plants the owner record of a foreign writer and holds a real advisory lock.
@@ -825,6 +828,25 @@ mod tests {
         assert!(message.contains("pid 4242"), "got {message}");
         assert!(message.contains("nonce 17"), "got {message}");
         assert!(message.contains("never preempts"), "got {message}");
+
+        // The refusal is a typed cause, so the holder the kernel refused this
+        // writer for reaches an embedder as the payload of the section-held
+        // class instead of as prose it would have to match.
+        match error.cause() {
+            Some(CliCause::SectionHeld(held)) => assert!(
+                matches!(
+                    held.holder(),
+                    SectionHolder::Recorded {
+                        pid: 4242,
+                        nonce: 17,
+                        ..
+                    }
+                ),
+                "unexpected holder: {:?}",
+                held.holder()
+            ),
+            other => panic!("expected the section-held cause, got {other:?}"),
+        }
 
         drop(holder);
         CheckpointLock::acquire_within(&checkpoint, Duration::from_millis(20))
