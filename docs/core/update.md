@@ -65,15 +65,9 @@ UPDATE "users" SET "name" = $1 FROM "accounts" WHERE ("users"."id" = "accounts".
 
 ### Filters assembled at runtime
 
-| Method | Behavior |
-|---|---|
-| `.where_(pred)` | records the predicate; repeated calls fold with `AND` |
-| `.where_opt(Option<pred>)` | records the predicate when it is present |
-| `.where_opt_or_all(Option<pred>)` | records the predicate, or confirms the full-table mutation when it is absent |
-| `.where_if(...)` | the conditional form of `.where_` |
-| `.allow_all()` | confirms a full-table mutation explicitly |
+The runtime-filter inventory belongs to the WHERE chapter, *Predicates and `WHERE`*: that chapter names every spelling a filtering statement accepts and what each one records. What follows is only what those spellings mean on an `UPDATE`.
 
-An absent branch adds no clause, and the statement keeps its type, so nothing downstream has to be re-typed.
+The conditional spellings record the predicate and leave the filtering typestate untouched, so an absent optional predicate adds no clause and leaves the statement exactly in the state it arrived with — an `UPDATE` that is still unfiltered after such a call cannot be built until the caller supplies the missing predicate. A full-table mutation is confirmed only by the spellings that grant it: `.where_opt_or_all(...)` through an absent predicate, and `.allow_all()` explicitly. Neither one records a condition.
 
 ### `RETURNING`
 

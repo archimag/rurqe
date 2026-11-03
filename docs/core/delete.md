@@ -59,7 +59,7 @@ DELETE FROM "users" USING "accounts" WHERE ("users"."id" = "accounts"."id")
 
 ### Filters assembled at runtime
 
-The dynamic spellings of the filter — `.where_opt(...)`, `.where_opt_or_all(...)`, `.where_if(...)` — and the explicit `.allow_all()` behave on a `DELETE` exactly as they do on an `UPDATE`. An absent branch adds no clause, and the statement keeps its type.
+The runtime-filter inventory belongs to the WHERE chapter, *Predicates and `WHERE`*. On a `DELETE` the mutation spellings behave exactly as they do on an `UPDATE`: an absent predicate adds no clause, and the statement keeps the type it arrived with unless the call itself grants the full-table mutation.
 ### `RETURNING`
 
 ```rust,no_run
