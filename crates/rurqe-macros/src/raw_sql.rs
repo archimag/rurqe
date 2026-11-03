@@ -5,6 +5,11 @@
 //! macro emits is anchored at `::rurqe::__core` — the re-export the facade
 //! publishes for its macros — so a crate that depends only on `rurqe` compiles
 //! the generated expression without adding `rurqe-core` to its manifest.
+//! Both macros share one grammar, `sql!([<Type>] "<template>" [, parameter]*)`. The
+//! template is always a string literal, and the type the expression decodes to stands in
+//! angle brackets in front of it, so the type position is separated from the parameters
+//! syntactically: a first argument that is neither a template nor a bracketed type is
+//! refused with the grammar instead of being parsed as a type.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -12,6 +17,9 @@ use syn::parse::{Parse, ParseStream};
 use syn::{Expr, LitStr, Token, Type};
 
 /// Parsed representation of `sql!(...)` and `raw_sql!(...)`.
+///
+/// The explicit type keeps its angle brackets, so the field is `Some` only for a type the
+/// call states in front of its template.
 pub struct RawSqlInput {
     pub explicit_type: Option<Type>,
     pub template: LitStr,
@@ -28,13 +36,16 @@ impl Parse for RawSqlInput {
                 input.parse::<Token![,]>()?;
             }
             Some(ty)
-        } else if !input.peek(LitStr) {
-            let ty: Type = input.parse()?;
-            input.parse::<Token![,]>()?;
-            Some(ty)
         } else {
             None
         };
+
+        if !input.peek(LitStr) {
+            return Err(input.error(
+                "expected a string literal template: write `<Type> \"template\" [, parameter]*` \
+                 to state the expression type, or `\"template\" [, parameter]*` to infer it",
+            ));
+        }
 
         let template: LitStr = input.parse()?;
 
@@ -57,6 +68,11 @@ impl Parse for RawSqlInput {
 }
 
 /// Expands parsed `sql!` / `raw_sql!` macro inputs into an `Expr<T>` construction block.
+///
+/// The grammar is `sql!([<Type>] "<template>" [, parameter]*)`: the template is a string
+/// literal, an explicit type stands in angle brackets in front of it, and every token after
+/// the template is a bound parameter. The parser refuses a first argument that is neither a
+/// template nor a bracketed type before the template is censused.
 ///
 /// The placeholder census and the split into literal text fragments are delegated
 /// to `rurqe_core::expr::parse_raw_sql`, the same routine the runtime uses, so the

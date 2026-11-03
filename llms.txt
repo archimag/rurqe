@@ -172,13 +172,12 @@ let query = select_from::<Postgres, Order>()
 
 ### 7. Controlled Raw SQL Escape Hatch (`sql!`, `raw_sql!`)
 
-Parameter binding prevents SQL injection and adapts automatically to dialect placeholders (`$1`, `$2` vs `?`):
+The grammar is `sql!([<Type>] "<template>" [, parameter]*)`: the template is always a string literal, and an explicit type stands in angle brackets in front of it, so a misplaced argument is refused by the parser instead of being read as a type. Parameter binding prevents SQL injection and adapts automatically to dialect placeholders (`$1`, `$2` vs `?`):
 
 ```rust
 // Positional placeholders `?` (escaped as `??`):
 let custom_filter = sql!(
-    bool,
-    "EXTRACT(YEAR FROM created_at) = ? AND status = ?",
+    <bool> "EXTRACT(YEAR FROM created_at) = ? AND status = ?",
     2024i64,
     "active"
 );

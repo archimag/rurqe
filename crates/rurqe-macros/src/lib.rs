@@ -106,14 +106,21 @@ pub fn dto(input: TokenStream) -> TokenStream {
 
 /// Builds a raw SQL expression with bound parameters and compile-time placeholder validation.
 ///
+/// The grammar is `sql!([<Type>] "<template>" [, parameter]*)`: the template is always a
+/// string literal, and an explicit type — the Rust type of the value the expression yields —
+/// stands in angle brackets in front of it, so the type position is separated from the
+/// parameters syntactically and a misplaced argument is refused by the parser instead of
+/// being read as a type. Omitting the type leaves it to inference from the position the
+/// expression is used in, and a comma may follow the type.
+///
 /// Parameters are bound safely as [`SqlVal`](::rurqe_core::expr::SqlVal) literals and rendered
 /// using dialect-appropriate parameter placeholders (e.g. `$1` for PostgreSQL, `?` for SQLite),
 /// preventing SQL injection vulnerabilities.
 ///
 /// ```ignore
 /// let pred = sql!("strftime('%Y-%m', date) = ?", "2024-01");
-/// let explicit = sql!(bool, "data @> '{\"active\": true}'::jsonb");
-/// let count = sql!(i64, "COUNT(*)");
+/// let explicit = sql!(<bool> "data @> '{\"active\": true}'::jsonb");
+/// let count = sql!(<i64> "COUNT(*)");
 /// ```
 #[proc_macro]
 pub fn sql(input: TokenStream) -> TokenStream {

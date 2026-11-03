@@ -506,8 +506,7 @@ fn a_left_joined_derived_table_lifts_its_columns_into_options() {
 #[test]
 fn sql_macro_integrates_into_query_clauses_and_binds_typed_params() {
     let custom_filter = sql!(
-        bool,
-        "EXTRACT(YEAR FROM created_at) = ? AND status = ?",
+        <bool> "EXTRACT(YEAR FROM created_at) = ? AND status = ?",
         2024i64,
         "active"
     );
@@ -539,7 +538,7 @@ fn sql_macro_integrates_into_query_clauses_and_binds_typed_params() {
 
 #[test]
 fn raw_sql_macro_escapes_and_formats_subexpressions() {
-    let expr = raw_sql!(bool, "data ?? 'role' AND score >= {}", 90i64);
+    let expr = raw_sql!(<bool> "data ?? 'role' AND score >= {}", 90i64);
 
     let built = select_from::<Postgres<Pg16>, User>()
         .select((UserId,))
@@ -559,7 +558,7 @@ fn sql_macro_composes_with_group_by_and_having() {
     let built = select_from::<Postgres<Pg16>, Order>()
         .group_by(OrderUserId)
         .select((OrderUserId, sql!(<i64> "COUNT(*)")))
-        .having(sql!(bool, "SUM(total) > ?", 250.0))
+        .having(sql!(<bool> "SUM(total) > ?", 250.0))
         .having(Expr::count_all().lt(100i64))
         .build()
         .expect("valid query");

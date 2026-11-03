@@ -657,7 +657,7 @@ fn borrowed_newtypes_bind_as_parameters() {
     );
 
     // A raw template binds the borrowed value through the same contract.
-    let from_macro = sql!(bool, "\"accounts\".\"id\" = ?", &id);
+    let from_macro = sql!(<bool> "\"accounts\".\"id\" = ?", &id);
     assert_eq!(
         from_macro.kind(),
         &ExprKind::Raw {
@@ -672,7 +672,7 @@ fn borrowed_newtypes_bind_as_parameters() {
         SqlVal::Text("addr_1".to_owned())
     );
 
-    let from_macro = sql!(bool, "\"wallets\".\"address\" = ?", &address);
+    let from_macro = sql!(<bool> "\"wallets\".\"address\" = ?", &address);
     assert_eq!(
         from_macro.kind(),
         &ExprKind::Raw {

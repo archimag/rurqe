@@ -7,8 +7,8 @@
 //! collection built per call.
 //!
 //! The helpers below take the arguments of one invocation — the optional explicit
-//! type followed by the template and its parameters — because that token stream is
-//! what the expansion parses; the `sql!(...)` wrapper never reaches it.
+//! type in angle brackets followed by the template and its parameters — because that
+//! token stream is what the expansion parses; the `sql!(...)` wrapper never reaches it.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -45,10 +45,23 @@ fn a_template_with_one_placeholder_borrows_its_fragments() {
 
 #[test]
 fn every_fragment_of_a_multi_placeholder_template_is_borrowed() {
-    let emitted = expand_compact(quote! { bool, "a = {} AND b = {}", 1i64, 2i64 });
+    let emitted = expand_compact(quote! { <bool> "a = {} AND b = {}", 1i64, 2i64 });
 
     assert!(!emitted.contains("String"));
     assert!(emitted.contains(&compact(quote! { &["a = ", " AND b = ", ""] })));
     assert!(emitted.contains("to_sql_val(1i64)"));
     assert!(emitted.contains("to_sql_val(2i64)"));
+}
+
+#[test]
+fn a_first_argument_that_is_not_a_template_is_refused() {
+    // The type position is bracketed, so an argument written first by mistake cannot be
+    // read as a type: the expansion reports the grammar instead of emitting an
+    // `Expr::<threshold>` no name in scope can resolve.
+    let error = super::expand(quote! { threshold, "age >= ?", threshold })
+        .expect_err("a misplaced argument is not a type");
+    let message = error.to_string();
+
+    assert!(message.contains("string literal template"), "{message}");
+    assert!(message.contains("<Type> \"template\""), "{message}");
 }

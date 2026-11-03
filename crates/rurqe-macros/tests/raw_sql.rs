@@ -15,7 +15,7 @@ fn sql_macro_constructs_parameterless_expression() {
 
 #[test]
 fn sql_macro_accepts_explicit_type_and_question_marks() {
-    let expr = sql!(bool, "strftime('%Y-%m', created_at) = ?", "2024-01");
+    let expr = sql!(<bool> "strftime('%Y-%m', created_at) = ?", "2024-01");
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
@@ -26,7 +26,7 @@ fn sql_macro_accepts_explicit_type_and_question_marks() {
 }
 
 #[test]
-fn sql_macro_accepts_angle_bracket_type() {
+fn sql_macro_accepts_a_bracketed_type_without_a_comma() {
     let expr = sql!(<i64> "COUNT(*)");
     assert_eq!(
         expr.kind(),
@@ -39,7 +39,7 @@ fn sql_macro_accepts_angle_bracket_type() {
 
 #[test]
 fn sql_macro_handles_escaped_question_marks_and_multiple_arguments() {
-    let expr = sql!(bool, "data ?? 'role' AND age >= ?", 18i64);
+    let expr = sql!(<bool> "data ?? 'role' AND age >= ?", 18i64);
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
@@ -63,7 +63,7 @@ fn raw_sql_macro_alias_functions_identically() {
 
 #[test]
 fn sql_macro_binds_optional_parameters_through_to_sql_val() {
-    let present = sql!(bool, "age = ?", Some(18i64));
+    let present = sql!(<bool> "age = ?", Some(18i64));
     assert_eq!(
         present.kind(),
         &ExprKind::Raw {
@@ -72,7 +72,7 @@ fn sql_macro_binds_optional_parameters_through_to_sql_val() {
         }
     );
 
-    let absent = sql!(bool, "age = ?", None::<i64>);
+    let absent = sql!(<bool> "age = ?", None::<i64>);
     assert_eq!(
         absent.kind(),
         &ExprKind::Raw {
@@ -81,7 +81,7 @@ fn sql_macro_binds_optional_parameters_through_to_sql_val() {
         }
     );
 
-    let owned = sql!(bool, "name = ?", Some(String::from("root")));
+    let owned = sql!(<bool> "name = ?", Some(String::from("root")));
     assert_eq!(
         owned.kind(),
         &ExprKind::Raw {
@@ -94,8 +94,7 @@ fn sql_macro_binds_optional_parameters_through_to_sql_val() {
 #[test]
 fn sql_macro_binds_json_parameters_through_to_sql_val() {
     let owned = sql!(
-        bool,
-        "payload @> ?",
+        <bool> "payload @> ?",
         Json(serde_json::json!({ "role": "admin" }))
     );
     assert_eq!(
@@ -107,7 +106,7 @@ fn sql_macro_binds_json_parameters_through_to_sql_val() {
     );
 
     let payload = Json(serde_json::json!([1, 2, 3]));
-    let borrowed = sql!(bool, "payload @> ?", &payload);
+    let borrowed = sql!(<bool> "payload @> ?", &payload);
     assert_eq!(
         borrowed.kind(),
         &ExprKind::Raw {
@@ -121,7 +120,7 @@ fn sql_macro_binds_json_parameters_through_to_sql_val() {
 #[test]
 fn sql_macro_binds_borrowed_values_without_moving_them() {
     let name = String::from("root");
-    let expr = sql!(bool, "name = ? AND parent = ?", &name, name.as_str());
+    let expr = sql!(<bool> "name = ? AND parent = ?", &name, name.as_str());
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {
@@ -146,7 +145,7 @@ fn sql_macro_unescapes_braces_in_json_literals() {
 
 #[test]
 fn sql_macro_unescapes_braces_around_parameters() {
-    let expr = sql!(bool, "payload @> '{{\"role\": ?}}'::jsonb", "admin");
+    let expr = sql!(<bool> "payload @> '{{\"role\": ?}}'::jsonb", "admin");
     assert_eq!(
         expr.kind(),
         &ExprKind::Raw {

@@ -336,7 +336,7 @@ let results = select_from::<Postgres, User>()
     .select((UserId, UserName));
 
 // 3. Safe raw SQL escape hatch with compile-time parameter binding
-let custom_filter = sql!(bool, "EXTRACT(YEAR FROM created_at) = ?", 2024i64);
+let custom_filter = sql!(<bool> "EXTRACT(YEAR FROM created_at) = ?", 2024i64);
 ```
 
 ---
