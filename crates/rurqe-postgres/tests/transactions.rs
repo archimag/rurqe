@@ -1179,6 +1179,75 @@ mod async_connection {
             "the poisoned connection refuses further statements: {refused:?}"
         );
     }
+
+    /// A terminal call whose future is dropped after the handle handed its
+    /// transaction over proves nothing: the `COMMIT` may never have reached the
+    /// server, so the connection is poisoned instead of being handed to the next
+    /// caller inside a transaction nothing can close.
+    #[tokio::test]
+    async fn a_dropped_commit_poisons_the_connection() {
+        let Some(url) = support::database_url("PgAsyncTransaction dropped commit") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        let handle = connection
+            .transaction()
+            .await
+            .expect("the transaction opens");
+        support::execute(&handle, "SELECT 1")
+            .await
+            .expect("the statement runs inside the transaction");
+        // The first poll takes the transaction out of the handle and dispatches
+        // the `COMMIT`, and the drop that follows leaves the statement without
+        // its answer.
+        poll_once_then_drop(handle.commit()).await;
+
+        assert!(
+            connection.is_poisoned(),
+            "the dropped terminal call records the unproven transaction on the connection"
+        );
+
+        let refused =
+            AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
+        assert!(
+            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+            "the poisoned connection refuses further statements: {refused:?}"
+        );
+    }
+    /// The rollback form is guarded the same way: a dropped `ROLLBACK` leaves the
+    /// statements of the transaction pending on the server, so the connection is
+    /// poisoned as well.
+    #[tokio::test]
+    async fn a_dropped_rollback_poisons_the_connection() {
+        let Some(url) = support::database_url("PgAsyncTransaction dropped rollback") else {
+            return;
+        };
+        let mut connection = connect(&url).await;
+
+        let handle = connection
+            .transaction()
+            .await
+            .expect("the transaction opens");
+        support::execute(&handle, "SELECT 1")
+            .await
+            .expect("the statement runs inside the transaction");
+        // The terminal call is dropped before the driver answers the `ROLLBACK`,
+        // so the adapter cannot prove the transaction was closed.
+        poll_once_then_drop(handle.rollback()).await;
+
+        assert!(
+            connection.is_poisoned(),
+            "the dropped terminal call records the unproven transaction on the connection"
+        );
+
+        let refused =
+            AsyncQueryBackend::fetch_raw(&connection, &support::statement("SELECT 1")).await;
+        assert!(
+            matches!(&refused, Err(PgError::ConnectionPoisoned { .. })),
+            "the poisoned connection refuses further statements: {refused:?}"
+        );
+    }
     /// Polls `future` once and drops it, leaving the statement it dispatched in
     /// flight.
     ///

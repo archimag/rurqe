@@ -493,7 +493,10 @@ impl AsyncQueryBackend for PgAsyncConnection {
 /// requests from its own `Drop` is a fire-and-forget statement the adapter
 /// neither awaits nor observes, so the transaction may stay open on the server,
 /// and the connection refuses further work rather than running the next caller
-/// inside it.
+/// inside it. A terminal call that is cancelled is the same ending one step
+/// later: the handle has already handed its transaction to the awaited statement
+/// by then, so the call guards that statement itself and records the poison when
+/// its future is dropped before the statement resolves.
 pub struct PgAsyncTransaction<'a> {
     /// The open transaction, taken by the terminal call that ends it.
     ///
@@ -511,17 +514,29 @@ impl<'a> PgAsyncTransaction<'a> {
     ///
     /// The terminal call takes the transaction out of the handle before it awaits
     /// the commit, so the handle ends with nothing pending: the transaction it
-    /// carried was closed by the awaited statement. A commit the driver refuses
-    /// poisons the connection and returns the driver failure: the transaction
-    /// state is unknown from that point on, so the connection refuses every
-    /// further statement with [`PgError::ConnectionPoisoned`] instead of running
-    /// the work of the next caller inside it.
+    /// carried was closed by the awaited statement. The statement is guarded
+    /// while it is in flight, so a future dropped before it resolves poisons the
+    /// connection instead of leaving the transaction unproven — nothing is left
+    /// for the handle's own `Drop` to request at that point. A commit the driver
+    /// refuses poisons the connection and returns the driver failure: the
+    /// transaction state is unknown from that point on, so the connection refuses
+    /// every further statement with [`PgError::ConnectionPoisoned`] instead of
+    /// running the work of the next caller inside it.
     pub async fn commit(mut self) -> Result<(), PgError> {
         let Some(inner) = self.inner.take() else {
             return Err(consumed_refusal());
         };
+        // The handle carries no transaction from here on, so its own `Drop` can
+        // prove nothing about it: the guard records the poison when the future
+        // of this call is dropped before the statement resolved.
+        let mut guard = BlockExitGuard::new(Arc::clone(&self.poison));
 
-        match inner.commit().await {
+        let outcome = inner.commit().await;
+        // The statement resolved, so the ending it produced is the one recorded
+        // below: the guard has nothing left to report.
+        guard.mark_completed();
+
+        match outcome {
             Ok(()) => {
                 tracing::info!("committed transaction");
                 Ok(())
@@ -537,16 +552,27 @@ impl<'a> PgAsyncTransaction<'a> {
     /// Rolls the transaction back, discarding all its work.
     ///
     /// The terminal call takes the transaction out of the handle exactly as
-    /// [`commit`](PgAsyncTransaction::commit) does. A rollback the driver refuses
-    /// poisons the connection for the same reason a refused commit does: the
-    /// statements of the transaction stay pending on the server, and nothing the
-    /// caller could run next is outside them.
+    /// [`commit`](PgAsyncTransaction::commit) does, and it arms the same guard for
+    /// the statement it awaits: a future dropped before the rollback resolves
+    /// poisons the connection, because the statements of the transaction stay
+    /// pending on the server and nothing the caller could run next is outside
+    /// them. A rollback the driver refuses poisons the connection for the same
+    /// reason a refused commit does.
     pub async fn rollback(mut self) -> Result<(), PgError> {
         let Some(inner) = self.inner.take() else {
             return Err(consumed_refusal());
         };
+        // The handle carries no transaction from here on, so its own `Drop` can
+        // prove nothing about it: the guard records the poison when the future
+        // of this call is dropped before the statement resolved.
+        let mut guard = BlockExitGuard::new(Arc::clone(&self.poison));
 
-        match inner.rollback().await {
+        let outcome = inner.rollback().await;
+        // The statement resolved, so the ending it produced is the one recorded
+        // below: the guard has nothing left to report.
+        guard.mark_completed();
+
+        match outcome {
             Ok(()) => {
                 tracing::warn!("rolled back transaction");
                 Ok(())
@@ -570,6 +596,9 @@ impl Drop for PgAsyncTransaction<'_> {
     /// a fire-and-forget statement the adapter neither awaits nor observes, so the
     /// server-side transaction may stay open; the connection is poisoned instead
     /// of letting a later caller run inside it.
+    /// A terminal call whose own future was dropped before its statement resolved
+    /// is recorded by the guard that call arms, not here: by then this handle
+    /// already carries no transaction.
     fn drop(&mut self) {
         if self.inner.is_some() {
             self.poison.mark(String::from(ABANDONED_BLOCK));
