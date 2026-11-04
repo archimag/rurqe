@@ -673,8 +673,17 @@ fn a_duplicate_insert_reports_its_sqlstate_and_constraint() {
     ));
     db.execute(&insert).expect("the first row is written");
 
+    // The duplicate reuses only the `name` of the stored row, so the
+    // primary key accepts it and the refusal the server reports is the
+    // one the named unique constraint raised.
+    let duplicate = insert_into::<Postgres, RefusedUser>().values((
+        RefusedUserId::set(2i64),
+        RefusedUserName::set("root"),
+        RefusedUserEmail::set("copy@example.com"),
+    ));
+
     let failure = db
-        .execute(&insert)
+        .execute(&duplicate)
         .expect_err("the unique constraint refuses the duplicate row");
     let error = failure
         .as_backend()
