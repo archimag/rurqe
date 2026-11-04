@@ -120,6 +120,35 @@ mod support {
             reason: failure.to_string(),
         })
     }
+
+    /// Reads the single integer a statement such as `SELECT pg_backend_pid()`
+    /// produces.
+    #[cfg(feature = "tokio-postgres")]
+    pub(super) fn single_int(rows: Vec<Vec<SqlVal>>, sql: &str) -> Result<i32, PgError> {
+        let value = rows
+            .into_iter()
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .ok_or_else(|| PgError::InvalidValue {
+                column_type: String::from("int4"),
+                reason: format!("`{sql}` returned no row with a single column"),
+            })?;
+        i32::from_sql_value(&value).map_err(|failure| PgError::InvalidValue {
+            column_type: String::from("int4"),
+            reason: failure.to_string(),
+        })
+    }
+
+    /// Reads the rows a parameterless statement produces through an
+    /// asynchronous backend.
+    #[cfg(feature = "tokio-postgres")]
+    pub(super) async fn fetch<B>(backend: &B, sql: &str) -> Result<Vec<Vec<SqlVal>>, PgError>
+    where
+        B: AsyncQueryBackend<Error = PgError>,
+    {
+        AsyncQueryBackend::fetch_raw(backend, &statement(sql)).await
+    }
+
     /// The failure a block returns when the scenario only needs an error value.
     ///
     /// The variant names a decoding failure because it is the one `PgError`
@@ -592,6 +621,7 @@ mod sync_pool {
 mod async_pool {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     use deadpool_postgres::{Manager, ManagerConfig, Pool, Runtime};
     use rurqe_postgres::{PgAsyncPool, PgError};
@@ -948,10 +978,11 @@ mod async_pool {
 
     /// The contract break the pool documents — a transaction-control statement
     /// issued through a single-statement path — leaves the session inside a
-    /// transaction, and the idle proof of the next block ends it before that
-    /// block opens.
+    /// transaction, and the idle proof of the next statement ends it before that
+    /// statement runs: the statement executes in autocommit, so its work
+    /// persists instead of being discarded with the abandoned transaction.
     #[tokio::test]
-    async fn a_statement_path_break_is_ended_before_the_next_block() {
+    async fn a_statement_path_break_is_ended_by_the_next_statement() {
         let Some(url) = support::database_url("PgAsyncPool::execute_raw leaked transaction reset")
         else {
             return;
@@ -965,7 +996,13 @@ mod async_pool {
             "INSERT INTO rurqe_tx_async_break (id, amount) VALUES (1, 100)",
         )
         .await
-        .expect("the row of the broken transaction is written");
+        .expect("the statement of the broken transaction runs");
+
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_break").await,
+            (1, 100),
+            "the proof ended the abandoned `BEGIN`, so the statement ran in autocommit"
+        );
 
         pool.transaction(|scope| {
             Box::pin(async move {
@@ -982,8 +1019,130 @@ mod async_pool {
 
         assert_eq!(
             support::totals(&pool, "rurqe_tx_async_break").await,
-            (1, 200),
-            "the proof ended the abandoned transaction, so only the block's row persists"
+            (2, 300),
+            "the statement ran in autocommit and the block committed its own work"
+        );
+    }
+
+    /// Opens a connection of its own, for the probes the pooled connection
+    /// cannot answer while a statement holds it.
+    async fn admin(url: &str) -> tokio_postgres::Client {
+        let (client, connection) = tokio_postgres::connect(url, NoTls)
+            .await
+            .expect("the probe connection is accepted");
+        // The task drives the socket until the probe client is dropped.
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+    }
+
+    /// Polls `pg_stat_activity` until `predicate` selects a row, or — with
+    /// `present` false — until it selects none, bounded by the poll budget.
+    async fn await_activity(
+        admin: &tokio_postgres::Client,
+        predicate: &str,
+        backend: i32,
+        present: bool,
+    ) -> bool {
+        let sql = format!("SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND {predicate}");
+        let observed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let listed = admin
+                    .query_opt(&sql, &[&backend])
+                    .await
+                    .expect("the activity probe runs");
+                if listed.is_some() == present {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+
+        observed.is_ok()
+    }
+
+    /// A statement whose future is dropped before it settles leaves no checkout
+    /// to recycle: the guard cannot await a proof, so it takes the connection
+    /// out of the pool and closes it, and the pool serves a fresh one.
+    #[tokio::test]
+    async fn a_cancelled_statement_destroys_its_checkout() {
+        let Some(url) = support::database_url("PgAsyncPool::execute_raw cancelled statement")
+        else {
+            return;
+        };
+        let pool = pool(&url);
+        reset(&pool, "rurqe_tx_async_cancelled").await;
+        let admin = admin(&url).await;
+
+        // The pool holds one connection, so the backend of every statement is
+        // the backend of the connection the cancellation destroys.
+        let pid_sql = "SELECT pg_backend_pid()";
+        let rows = support::fetch(&pool, pid_sql)
+            .await
+            .expect("the backend reports its process id");
+        let backend = support::single_int(rows, pid_sql).expect("the id column holds an integer");
+
+        let sleeping = tokio::spawn({
+            let pool = pool.clone();
+            async move {
+                let sql = "SELECT pg_sleep(0.5)";
+                support::execute(&pool, sql).await
+            }
+        });
+        // The task is aborted while the server still runs the statement, so
+        // neither a success nor a refusal ever settles its checkout.
+        let started = await_activity(
+            &admin,
+            "state = 'active' AND query LIKE '%pg_sleep%'",
+            backend,
+            true,
+        )
+        .await;
+        assert!(
+            started,
+            "backend {backend} never reported the `pg_sleep` of the cancelled statement"
+        );
+        sleeping.abort();
+        match sleeping.await {
+            Ok(_) => panic!("the cancelled statement never returns a value"),
+            Err(failure) => assert!(
+                failure.is_cancelled(),
+                "the statement was cancelled rather than failed: {failure}"
+            ),
+        }
+
+        // The checkout was destroyed instead of recycled, so its session leaves
+        // the server and the pool opens a fresh connection for the next
+        // statement.
+        assert!(
+            await_activity(&admin, "true", backend, false).await,
+            "backend {backend} stayed in `pg_stat_activity` past the poll budget"
+        );
+        let rows = support::fetch(&pool, pid_sql)
+            .await
+            .expect("the pool serves a fresh connection");
+        let fresh = support::single_int(rows, pid_sql).expect("the id column holds an integer");
+        assert_ne!(fresh, backend, "the pool opened a fresh connection");
+
+        // Nothing of the cancelled statement reached the fixture, and the block
+        // that follows commits its own work alone.
+        pool.transaction(|scope| {
+            Box::pin(async move {
+                support::execute(
+                    &scope,
+                    "INSERT INTO rurqe_tx_async_cancelled (id, amount) VALUES (1, 100)",
+                )
+                .await?;
+                Ok::<(), PgError>(())
+            })
+        })
+        .await
+        .expect("the pool serves a fresh connection for the block");
+        assert_eq!(
+            support::totals(&pool, "rurqe_tx_async_cancelled").await,
+            (1, 100)
         );
     }
 }

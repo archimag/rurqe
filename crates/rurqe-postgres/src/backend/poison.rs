@@ -24,6 +24,14 @@ use super::types::PgError;
 pub(crate) const ABANDONED_BLOCK: &str =
     "the transaction block ended without a clean COMMIT or ROLLBACK";
 
+/// Reason recorded when a statement checkout ended before its statement settled.
+///
+/// A statement owns no control statement, so a checkout that ends before its
+/// statement settled destroys the connection for a reason of its own instead of
+/// borrowing the transaction-block one.
+pub(crate) const ABANDONED_STATEMENT: &str =
+    "the statement checkout ended before its statement settled";
+
 /// Describes a refused transaction-control statement as a poison reason.
 ///
 /// The reason names the statement the adapter issued and carries the failure the
