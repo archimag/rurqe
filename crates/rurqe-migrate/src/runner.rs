@@ -26,7 +26,7 @@
 //! timestamp rendering of the metadata table.
 
 mod apply;
-mod backend;
+pub(crate) mod backend;
 mod guard;
 mod memory;
 mod migrator;

@@ -2,6 +2,7 @@
 
 use crate::error::Error;
 use crate::history::SchemaHistoryEntry;
+use crate::runner::backend::with_transaction;
 #[cfg(feature = "tokio")]
 use crate::runner::join_offloaded;
 use crate::runner::{current_timestamp, LockGuard, MigrationBackend, MigrationTransaction};
@@ -252,14 +253,7 @@ fn record_marker<B: MigrationBackend>(
     guard: &mut LockGuard<'_, B>,
     entry: &SchemaHistoryEntry,
 ) -> Result<(), Error> {
-    let mut tx = guard.begin()?;
-
-    if let Err(error) = tx.record_entry(entry) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
-
-    tx.commit()
+    with_transaction(guard, |tx| tx.record_entry(entry))
 }
 
 /// Records the applied stage marker, anchoring the digest its transaction observes.
@@ -278,32 +272,19 @@ fn record_applied_marker<B: MigrationBackend>(
     marker: &StageMarker,
     replaces: i64,
 ) -> Result<SchemaHistoryEntry, Error> {
-    let mut tx = guard.begin()?;
+    with_transaction(guard, |tx| {
+        let checksum = match tx.catalog_checksum()? {
+            Some(checksum) => checksum,
+            None => marker.checksum(),
+        };
 
-    let checksum = match tx.catalog_checksum() {
-        Ok(Some(checksum)) => checksum,
-        Ok(None) => marker.checksum(),
-        Err(error) => {
-            let _ = tx.rollback();
-            return Err(error);
-        }
-    };
+        let entry = marker.entry(1, current_timestamp(), checksum, true);
 
-    let entry = marker.entry(1, current_timestamp(), checksum, true);
+        tx.delete_entry(replaces)?;
+        tx.record_entry(&entry)?;
 
-    if let Err(error) = tx.delete_entry(replaces) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
-
-    if let Err(error) = tx.record_entry(&entry) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
-
-    tx.commit()?;
-
-    Ok(entry)
+        Ok(entry)
+    })
 }
 
 /// Applies a fully transactional stage and records its marker in one transaction.
@@ -324,34 +305,24 @@ fn apply_stage_atomically<B: MigrationBackend>(
     stage: &DeclarativeStage,
     marker: &StageMarker,
 ) -> Result<SchemaHistoryEntry, Error> {
-    let mut tx = guard.begin()?;
-
-    for script in stage.scripts() {
-        if let Err(error) = tx.execute(script.sql()) {
-            let _ = tx.rollback();
-            return Err(stage_script_failed(script, &error));
+    with_transaction(guard, |tx| {
+        for script in stage.scripts() {
+            if let Err(error) = tx.execute(script.sql()) {
+                return Err(stage_script_failed(script, &error));
+            }
         }
-    }
 
-    let checksum = match tx.catalog_checksum() {
-        Ok(Some(checksum)) => checksum,
-        Ok(None) => marker.checksum(),
-        Err(error) => {
-            let _ = tx.rollback();
-            return Err(error);
-        }
-    };
+        let checksum = match tx.catalog_checksum()? {
+            Some(checksum) => checksum,
+            None => marker.checksum(),
+        };
 
-    let entry = marker.entry(1, current_timestamp(), checksum, true);
+        let entry = marker.entry(1, current_timestamp(), checksum, true);
 
-    if let Err(error) = tx.record_entry(&entry) {
-        let _ = tx.rollback();
-        return Err(error);
-    }
+        tx.record_entry(&entry)?;
 
-    tx.commit()?;
-
-    Ok(entry)
+        Ok(entry)
+    })
 }
 
 /// Withdraws the in-progress marker of a stage the backend refused to run.
@@ -474,16 +445,15 @@ fn apply_stage<B: MigrationBackend>(
         }
 
         let batch = scripts.get(start..index).unwrap_or_default();
-        let mut tx = guard.begin()?;
-
-        for script in batch {
-            if let Err(error) = tx.execute(script.sql()) {
-                let _ = tx.rollback();
-                return Err(stage_script_failed(script, &error));
+        with_transaction(guard, |tx| {
+            for script in batch {
+                if let Err(error) = tx.execute(script.sql()) {
+                    return Err(stage_script_failed(script, &error));
+                }
             }
-        }
 
-        tx.commit()?;
+            Ok(())
+        })?;
     }
 
     Ok(())

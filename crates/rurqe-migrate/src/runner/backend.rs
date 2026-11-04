@@ -124,10 +124,11 @@ pub trait MigrationBackend {
 ///
 /// The runner drives every transactional step through [`with_transaction`], which
 /// commits on success and rolls back on failure, so the contract is enforced in one
-/// place instead of at each call site. It has to hold: [`LockGuard`] releases the
-/// exclusive migration lock as soon as the runner propagates an error, so a
-/// transaction left open on that path would hold row and table locks while another
-/// runner already owns the lock.
+/// place instead of at each call site — the cold start of the declarative stage
+/// included, which writes its markers and applies its atomic stage through the same
+/// helper. It has to hold: [`LockGuard`] releases the exclusive migration lock as
+/// soon as the runner propagates an error, so a transaction left open on that path
+/// would hold row and table locks while another runner already owns the lock.
 pub trait MigrationTransaction {
     /// Executes a raw SQL script within the transaction.
     fn execute(&mut self, sql: &str) -> Result<(), Error>;
@@ -180,7 +181,7 @@ pub trait MigrationTransaction {
 /// termination contract of [`MigrationTransaction`]: [`LockGuard`] releases the
 /// exclusive migration lock as soon as the runner propagates the error, so no open
 /// database transaction may outlive that lock.
-pub(super) fn with_transaction<'g, B, T>(
+pub(crate) fn with_transaction<'g, B, T>(
     guard: &'g mut LockGuard<'_, B>,
     work: impl FnOnce(&mut B::Transaction<'g>) -> Result<T, Error>,
 ) -> Result<T, Error>
