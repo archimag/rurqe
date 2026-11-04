@@ -7,7 +7,11 @@
 //! addresses SQLite — and a value that parser rejects is classified by the
 //! libpq keyword/value shape, `:memory:`, or its file extension, so a
 //! connection string that names its engine is never reclassified by the shape
-//! of the database name it ends with. An absolute Windows filesystem spelling
+//! of the database name it ends with. The keyword/value form is read from the
+//! first whitespace-separated token alone, which has to open with a
+//! keyword-shaped `key=`, so a filesystem path that merely contains an equals
+//! sign is still classified by its extension. An absolute Windows filesystem
+//! spelling
 //! — a drive letter followed by `:`, or a leading `\` UNC prefix — names a
 //! file ahead of the URL parser, which would otherwise read `C:/data/app.db`
 //! as the single-letter scheme `c` and reject the most natural target spelling
@@ -75,7 +79,10 @@ impl DatabaseTarget {
     /// by scheme: it is a libpq keyword/value string, `:memory:`, a SQLite file
     /// path — or a malformed URL of a supported engine, whose own driver has to
     /// report the defect, which is why the scheme prefixes keep routing to their
-    /// engine ahead of the rejection. An absolute Windows filesystem spelling
+    /// engine ahead of the rejection. A libpq keyword/value string is recognised
+    /// by the keyword-shaped `key=` its first token opens with, so a filesystem
+    /// path that merely contains an equals sign stays a file. An absolute
+    /// Windows filesystem spelling
     /// — a drive letter followed by `:`, or a leading `\` UNC prefix — is
     /// classified even earlier, as pure string logic, because the URL parser
     /// reads its drive letter as a single-letter scheme.
@@ -112,8 +119,10 @@ impl DatabaseTarget {
         }
 
         // A libpq keyword/value string carries a `key=value` pair; the driver
-        // validates the keywords once the target opens.
-        if url.contains('=') {
+        // validates the keywords once the target opens. The shape is read from
+        // the first token alone, so a path that merely contains an equals sign
+        // reaches the extension check below instead of the PostgreSQL driver.
+        if names_libpq_keywords(url) {
             return Ok(DatabaseTarget::Postgres);
         }
 
@@ -154,6 +163,27 @@ fn names_postgres(url: &str) -> bool {
     ["postgres", "postgresql"]
         .into_iter()
         .any(|scheme| strip_scheme(url, scheme).is_some())
+}
+
+/// Whether `url` spells a libpq keyword/value connection string.
+///
+/// The shape is decided by the first whitespace-separated token: libpq splits
+/// such a string on ASCII whitespace and pairs every token at its first `=`,
+/// and libpq parameter names are ASCII alphanumerics and underscores. A token
+/// whose text before the `=` carries a path separator, a dot, or any other
+/// non-keyword character therefore names a file rather than a parameter, so a
+/// bare SQLite path such as `data/app=1.db` reaches the extension check
+/// instead of the PostgreSQL driver, while `dbname=app.db user=app` still
+/// classifies as a keyword/value string.
+fn names_libpq_keywords(url: &str) -> bool {
+    let Some(token) = url.split_ascii_whitespace().next() else {
+        return false;
+    };
+    let Some((key, _)) = token.split_once('=') else {
+        return false;
+    };
+
+    !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 /// Strips a case-insensitive `scheme:` prefix, returning what follows it.
@@ -313,6 +343,53 @@ mod tests {
                 "{url}"
             );
         }
+    }
+
+    #[test]
+    fn a_keyword_connection_string_is_recognised_by_its_first_token() {
+        for url in [
+            "dbname=app.db",
+            "dbname=app.db user=app",
+            "host=localhost dbname=app.db",
+            "application_name=app=1 dbname=app.db",
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                Ok(DatabaseTarget::Postgres),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_name_carrying_an_equals_sign_is_still_a_sqlite_file() {
+        for url in [
+            "data/app=1.db",
+            "build/env=prod.db",
+            "data/app=1.sqlite",
+            "data/app=1.sqlite3",
+            "C:/data/app=1.db",
+            "C:\\data\\app=1.db",
+        ] {
+            assert_eq!(
+                DatabaseTarget::parse(url),
+                Ok(DatabaseTarget::SqliteFile(url.to_owned())),
+                "{url}"
+            );
+            assert_eq!(detect_dialect(Some(url)), DatabaseDialect::Sqlite, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_file_name_carrying_an_equals_sign_and_no_known_extension_names_nothing() {
+        assert_eq!(
+            DatabaseTarget::parse("data/app=1"),
+            Err(TargetError::Unrecognised)
+        );
+        assert_eq!(
+            DatabaseTarget::parse("build/env=prod"),
+            Err(TargetError::Unrecognised)
+        );
     }
 
     #[test]
