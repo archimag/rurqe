@@ -610,3 +610,121 @@ fn a_raw_rollback_inside_a_nested_scope_does_not_poison_the_bookkeeping() {
         })
         .expect("a fresh typed transaction opens");
 }
+
+/// Asserts that every bare statement entry refuses work on `connection`.
+///
+/// The refusal travels through the crate's adapter-refusal channel — a driver
+/// conversion failure carrying the recorded transaction-control failure and the
+/// recovery the next typed transaction entry performs — so the assertions pin
+/// the contract instead of the driver's exact error variant.
+fn assert_refuses_bare_statements(connection: &mut SqliteConnection) {
+    let statement = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserId, UserName));
+    let insert = InsertQuery::<Sqlite<Sqlite3_35>, User>::new()
+        .values((UserId::set(2i64), UserName::set("guest")));
+
+    let refusals = [
+        connection
+            .fetch_all(&statement)
+            .expect_err("fetch_raw refuses a poisoned connection"),
+        connection
+            .fetch_optional(&statement)
+            .expect_err("fetch_raw_limited refuses a poisoned connection"),
+        connection
+            .fetch_one(&statement)
+            .expect_err("fetch_raw_limited refuses a poisoned connection"),
+        connection
+            .execute(&insert)
+            .expect_err("execute_raw refuses a poisoned connection"),
+    ];
+
+    for failure in refusals {
+        let backend = failure.as_backend().expect("the refusal is an adapter error");
+        match backend {
+            rurqe_sqlite::rusqlite::Error::ToSqlConversionFailure(cause) => {
+                let message = cause.to_string();
+                assert!(
+                    message.contains("refused transaction-control statement"),
+                    "the refusal names the recorded failure: {message}"
+                );
+                assert!(
+                    message.contains("the next typed transaction"),
+                    "the refusal names the recovery: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+}
+
+#[test]
+fn a_poisoned_connection_refuses_bare_statements_until_the_transaction_is_closed() {
+    let connection = Connection::open_in_memory().expect("open in-memory database");
+    connection
+        .execute_batch(CREATE_USERS)
+        .expect("create users table");
+    let mut adapter = SqliteConnection::new(connection);
+
+    // A refused transaction-control statement is the only way into the poisoned
+    // state, and SQLite rolls a transaction back whenever the database file is
+    // still untouched, so the refusal is provoked where the engine does raise
+    // one: the raw handle releases the savepoint of a nested block, which makes
+    // the guard's own release and its fallback rollback fail while the
+    // enclosing transaction stays open.
+    let outcome = adapter.transaction(|conn| -> Result<(), TestError> {
+        conn.execute_batch("INSERT INTO users (id, name) VALUES (1, 'root')")?;
+
+        let nested = conn.transaction(|inner| -> Result<(), TestError> {
+            inner.execute_batch("INSERT INTO users (id, name) VALUES (2, 'guest')")?;
+            inner.execute_batch("RELEASE SAVEPOINT rurqe_sp_1")?;
+            Ok(())
+        });
+        assert!(nested.is_err(), "the guard lost the savepoint of the nested block");
+
+        // The transaction stays open, so the work of the failed block may still
+        // be pending: every bare statement entry refuses before the driver sees
+        // the statement.
+        assert!(
+            conn.is_poisoned(),
+            "the refused savepoint statement poisons the adapter"
+        );
+        assert_refuses_bare_statements(conn);
+
+        Ok(())
+    });
+
+    // The pending failure supersedes the successful closure: the enclosing
+    // block refuses to commit, and its own rollback closes the transaction,
+    // which discards both inserts and clears the record.
+    assert!(
+        outcome.is_err(),
+        "the enclosing block refuses the pending failure"
+    );
+    assert!(
+        !adapter.is_poisoned(),
+        "closing the transaction clears the poison record"
+    );
+    assert!(!adapter.transaction_status().is_open());
+
+    let statement = SelectQuery::<Sqlite<Sqlite3_35>>::new()
+        .from::<User>()
+        .select((UserId, UserName));
+    let rows = adapter
+        .fetch_all(&statement)
+        .expect("the connection serves statements again");
+    assert!(
+        rows.is_empty(),
+        "the enclosing rollback discarded both inserts"
+    );
+
+    adapter
+        .transaction(|conn| -> Result<(), TestError> {
+            conn.execute_batch("INSERT INTO users (id, name) VALUES (3, 'admin')")?;
+            Ok(())
+        })
+        .expect("a fresh typed transaction opens");
+
+    let rows = adapter.fetch_all(&statement).expect("fetch all succeeds");
+    assert_eq!(rows, vec![(3i64, "admin".to_owned())]);
+}

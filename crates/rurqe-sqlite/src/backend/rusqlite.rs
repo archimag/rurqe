@@ -32,6 +32,15 @@ use super::types::{value_ref_to_sql_val, SqlValParam};
 /// [`QueryBackendExt`](rurqe_core::query::QueryBackendExt) become available.
 /// It also dereferences to the wrapped [`Connection`], so raw SQL can still be
 /// executed directly.
+///
+/// The adapter refuses every bare statement while its bookkeeping records a
+/// poison, which is the state a refused transaction-control statement leaves
+/// behind: the session may still hold the transaction whose statement failed,
+/// so a statement issued there would join the abandoned transaction, whose
+/// work disappears with the rollback that eventually closes it. The guard
+/// protocol keeps running through the transaction-control path, because the
+/// rollback a dropping scope issues and the retry of the next transaction
+/// entry are exactly the statements that end the state.
 pub struct SqliteConnection<B = Connection> {
     connection: B,
     status: TransactionStatus<::rusqlite::Error>,
@@ -126,6 +135,65 @@ impl<B: BorrowMut<Connection>> SqliteConnection<B> {
         }
     }
 }
+
+impl<B> SqliteConnection<B> {
+    /// Reports whether the connection is poisoned and refuses bare statements.
+    ///
+    /// The state is recorded when the adapter can no longer prove that the
+    /// session is outside a transaction: a rollback, a savepoint rollback, or
+    /// a savepoint release the driver refused while the transaction it was
+    /// meant to close stayed open leaves the work of the block pending. A
+    /// statement issued on such a session would join the abandoned
+    /// transaction, whose work disappears when it is finally rolled back,
+    /// while the caller observed the statement succeed. The adapter therefore
+    /// refuses every bare statement before it reaches the driver, and a caller
+    /// holding the handle detects the state here instead of observing work
+    /// nobody keeps.
+    ///
+    /// The state is not permanent, because the connection can still close what
+    /// it could not undo: the next typed transaction entry retries the refused
+    /// control statement before its block opens, and a retry the driver accepts
+    /// clears the record. A caller therefore reads `false` once the abandoned
+    /// transaction is closed for real, and the connection serves work again
+    /// without being discarded.
+    pub fn is_poisoned(&self) -> bool {
+        self.status.is_poisoned()
+    }
+
+    /// Refuses to execute a statement while the connection records a poison.
+    ///
+    /// The adapter can no longer prove that the session is outside the
+    /// transaction whose control statement the driver refused, so a bare
+    /// statement would run inside the abandoned transaction: SQLite accepts it
+    /// there, and the work disappears with the rollback that eventually closes
+    /// that transaction, while the caller observed it succeed. The refusal
+    /// carries the recorded driver failure, and the recovery a synchronous
+    /// connection offers is the next typed transaction entry, which retries the
+    /// abandoned statement instead of joining it.
+    fn refuse_if_poisoned(&self) -> Result<(), ::rusqlite::Error> {
+        match self.status.poison() {
+            Some(error) => Err(poison_refusal(error)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Builds the refusal reported for a bare statement on a poisoned connection.
+///
+/// The crate reports an adapter-side refusal through the driver's conversion
+/// failure carrying a `std::io::Error` that names the reason, exactly as the
+/// `NaN` and non-finite-array parameter refusals do, so the public error type
+/// of the adapter stays the driver's own. The reason names the recorded
+/// transaction-control failure and the recovery the next typed transaction
+/// entry performs.
+fn poison_refusal(error: &::rusqlite::Error) -> ::rusqlite::Error {
+    let cause = ::std::io::Error::other(format!(
+        "the connection recorded a refused transaction-control statement ({error}); \
+         the next typed transaction retries it before its block opens"
+    ));
+    ::rusqlite::Error::ToSqlConversionFailure(Box::new(cause))
+}
+
 /// Renders a savepoint name as a quoted SQLite identifier.
 ///
 /// A savepoint name cannot be bound as a parameter, so it is rendered into the
@@ -174,10 +242,26 @@ impl<B: BorrowMut<Connection>> TransactionalConnection for SqliteConnection<B> {
 }
 
 impl<B: BorrowMut<Connection>> TransactionBackend for SqliteConnection<B> {
+    /// Opens a transaction outside the poison gate.
+    ///
+    /// The statement is executed directly on the wrapped connection, because
+    /// the transaction entry is where a poisoned connection recovers: the
+    /// shared guard retries the refused control statement here, and a gate on
+    /// this path would leave the state unrepairable. SQLite serialises access
+    /// through database-level locking, so the requested isolation level does
+    /// not map onto a `BEGIN` clause.
     fn begin(&mut self, _isolation: Option<IsolationLevel>) -> Result<(), Self::Error> {
-        // SQLite serialises access through database-level locking, so the
-        // requested isolation level does not map onto a `BEGIN` clause.
         self.connection.borrow_mut().execute_batch("BEGIN")
+    }
+
+    /// Commits the open transaction outside the poison gate.
+    ///
+    /// The guard refuses the commit of a poisoned connection before it reaches
+    /// this method, and the rollback a dropping guard issues afterwards is one
+    /// of the statements that ends the state, so the statement itself is never
+    /// gated.
+    fn commit(&mut self) -> Result<(), Self::Error> {
+        self.connection.borrow_mut().execute_batch("COMMIT")
     }
 
     /// Rolls the transaction back, tolerating a transaction the raw handle
@@ -195,6 +279,20 @@ impl<B: BorrowMut<Connection>> TransactionBackend for SqliteConnection<B> {
             Ok(()) => Ok(()),
             Err(error) => self.benign_if_closed(error),
         }
+    }
+
+    /// Opens the savepoint `name` outside the poison gate.
+    ///
+    /// A nested block opens its savepoint through this method after the
+    /// recovery of the entry returned, so the statement belongs to the control
+    /// protocol that ends a poisoned state rather than to the bare statements
+    /// it refuses. The name is rendered as a quoted SQLite identifier, so
+    /// every savepoint statement of this adapter renders its name through the
+    /// identifier rule instead of depending on the character set
+    /// `rurqe-core` validates the name against.
+    fn savepoint(&mut self, name: &SavepointName) -> Result<(), Self::Error> {
+        let statement = format!("SAVEPOINT {}", quoted_savepoint(name.as_str()));
+        self.connection.borrow_mut().execute_batch(&statement)
     }
 
     /// Rolls back to the savepoint `name`, tolerating a savepoint the raw
@@ -252,19 +350,37 @@ impl<B: BorrowMut<Connection>> DerefMut for SqliteConnection<B> {
 impl<B: BorrowMut<Connection>> QueryBackend for SqliteConnection<B> {
     type Error = ::rusqlite::Error;
 
+    /// Reads every row of `query` on a session the adapter can vouch for.
+    ///
+    /// A poisoned connection refuses the statement before it reaches the
+    /// driver, because the session may still hold the transaction whose
+    /// control statement failed: the rows would otherwise observe work nobody
+    /// keeps.
     fn fetch_raw(&mut self, query: &BuiltQuery) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        self.refuse_if_poisoned()?;
         fetch_raw_with(self.connection.borrow_mut(), query)
     }
 
+    /// Reads at most `limit` rows of `query` on a session the adapter can
+    /// vouch for, refusing a poisoned connection exactly as
+    /// [`fetch_raw`](QueryBackend::fetch_raw) does.
     fn fetch_raw_limited(
         &mut self,
         query: &BuiltQuery,
         limit: Option<usize>,
     ) -> Result<Vec<Vec<SqlVal>>, Self::Error> {
+        self.refuse_if_poisoned()?;
         fetch_raw_limited_with(self.connection.borrow_mut(), query, limit)
     }
 
+    /// Executes `query` on a session the adapter can vouch for.
+    ///
+    /// A poisoned connection refuses the statement before it reaches the
+    /// driver: a write would otherwise join the abandoned transaction and
+    /// disappear with the rollback that eventually closes it, while the caller
+    /// observed it succeed.
     fn execute_raw(&mut self, query: &BuiltQuery) -> Result<u64, Self::Error> {
+        self.refuse_if_poisoned()?;
         execute_raw_with(self.connection.borrow_mut(), query)
     }
 }
