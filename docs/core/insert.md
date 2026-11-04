@@ -30,7 +30,7 @@ The shortest executable statement records one row — `insert_into(User).values(
 | SQL clause | Builder method | Effect on the statement |
 |---|---|---|
 | `INSERT INTO "users"` | `insert_into(User)` | names the table; the statement still has no row source, so it is not executable and cannot be built |
-| `AS "u"` | `InsertQuery::<Postgres<Pg16>, Aliased<User, UserAlias>>::into_aliased_table()` | starts the statement on an aliased target; the constructor exists only on a dialect that accepts the form |
+| `AS "u"` | `pg16::insert_into(User.as_alias(UserAlias))` | starts the statement on an aliased target; a target handed to the entry point on a dialect that does not accept the form is rejected while the statement is built |
 | `("id", "name", "email")` | the column list of `.values(...)`, `.values_many(...)`, or `.from_select(...)` | the written columns; each value is checked against its column type |
 | `VALUES (...)` | `.values(row)` | records one row and makes the statement executable |
 | `VALUES (...), (...)` | `.values_many([row, row])` | records many rows; an empty list yields an error instead of a query |
@@ -152,7 +152,7 @@ error[E0277]: refusing to build an INSERT without rows
 
 The accepted form records the rows first — `.values((UserId::set(1i64), UserName::set("root")))` — and only then builds or executes the statement.
 
-An alias on the target is a separate guard. `INSERT INTO "users" AS "u" (...)` is a PostgreSQL extension of the standard rather than a production of ISO SQL, so the constructor that starts such a statement is offered by that dialect alone: on a target without the capability the constructor cannot be named, and the capability states the reason.
+An alias on the target is a separate guard. `INSERT INTO "users" AS "u" (...)` is a PostgreSQL extension of the standard rather than a production of ISO SQL, so the capability that accepts the form is declared by that dialect alone: a target without the capability cannot name the constructor dedicated to the aliased target, and the capability states the reason.
 
 ```rust,compile_fail
 {{#rustdoc_include ../examples/guards/mutations.rs:aliased_insert_target}}
@@ -164,10 +164,10 @@ error[E0277]: dialect `Sqlite<Sqlite3_35>` does not support an alias on the INSE
     = note: an aliased INSERT target requires a dialect that implements `SupportsAliasedInsertTarget` (such as PostgreSQL)
 ```
 
-The accepted form takes the capability-gated constructor, which names the aliased relation as the target type:
+The accepted form hands the aliased table to the pinned entry point as a value and records the row through the accessor the alias declares:
 
 ```rust,no_run
 {{#rustdoc_include ../examples/dialects.rs:aliased_insert}}
 ```
 
-A target that carries an alias but was handed to the generic constructor on a dialect without the capability is rejected while the statement is built — as `BuildError::AliasedInsertTarget` — before a single character of SQL is rendered.
+The entry point itself carries no capability gate, so a statement whose target carries an alias is refused while it is built — as `BuildError::AliasedInsertTarget` — on a dialect that does not accept the form, before a single character of SQL is rendered.

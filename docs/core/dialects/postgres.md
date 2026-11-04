@@ -176,7 +176,7 @@ The statement renders:
 INSERT INTO "users" AS "u" ("id") VALUES ($1) RETURNING "u"."id"
 ```
 
-Whether the alias is accepted is a property of the target the statement addresses rather than of the clauses it records, so the capability is stated twice. Such a statement starts from the constructor `into_aliased_table` rather than from `insert_into`, and the constructor exists only on a dialect that accepts the form, which keeps the statement unwritable on a target that cannot parse it; a statement assembled through the generic constructor is rejected while it is built — `BuildError::AliasedInsertTarget` — before a single character of SQL is rendered. An `UPDATE` and a `DELETE` accept an alias on their target on both engines; only the `INSERT` target is the extension.
+Whether the alias is accepted is a property of the target the statement addresses rather than of the clauses it records, so the capability is stated twice. The statement starts from `insert_into` of the pinned `pg16` module, which receives the aliased table as a value, and a target that carries an alias is refused while the statement is built — `BuildError::AliasedInsertTarget` — on a dialect that does not accept the form, before a single character of SQL is rendered. The capability-gated constructor `into_aliased_table` remains the entry that exists only where the dialect accepts the form, which keeps the statement unwritable on a target that cannot parse it. An `UPDATE` and a `DELETE` accept an alias on their target on both engines; only the `INSERT` target is the extension.
 
 ## Connections and Pools
 

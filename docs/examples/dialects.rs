@@ -99,11 +99,11 @@ fn main() -> Result<(), BuildError> {
 
     // ANCHOR: aliased_insert
     // PostgreSQL accepts an alias on the target of an `INSERT`, so the inserted
-    // row stays reachable through it. The constructor exists only where the
-    // engine accepts the form, so the aliased relation is named as the target
-    // type of the pinned release.
-    let aliased = InsertQuery::<Postgres<Pg16>, Aliased<User, UserAlias>>::into_aliased_table()
-        .values(AliasedCol::<UserAlias, UserId>::set(7i64))
+    // row stays reachable through it. The aliased table enters the pinned entry
+    // point as a value, and the row is recorded and projected through the
+    // accessor the alias declares.
+    let aliased = pg16::insert_into(User.as_alias(UserAlias))
+        .values(UserAlias.UserId.set(7i64))
         .returning((UserAlias.UserId,))
         .build()?;
     // ANCHOR_END: aliased_insert
